@@ -139,6 +139,9 @@ pub struct AnalysisContext<'a> {
     /// reference with no text (an include it did not find, a `{&name}` with
     /// no value), sorted. The compiler may see text there.
     pub elided: &'a [u32],
+    /// The offsets of [`elided`](Self::elided) where an include did not
+    /// arrive, sorted. Statements the include held may sit there.
+    pub elided_includes: &'a [u32],
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -163,6 +166,7 @@ impl<'a> AnalysisContext<'a> {
             parse_recovered: false,
             tokens: &[],
             elided: &[],
+            elided_includes: &[],
         }
     }
 
@@ -176,6 +180,13 @@ impl<'a> AnalysisContext<'a> {
     /// (builder-style). `offsets` must be sorted.
     pub fn with_elided(mut self, offsets: &'a [u32]) -> Self {
         self.elided = offsets;
+        self
+    }
+
+    /// Record where an include did not arrive (builder-style). `offsets` must
+    /// be sorted.
+    pub fn with_elided_includes(mut self, offsets: &'a [u32]) -> Self {
+        self.elided_includes = offsets;
         self
     }
 

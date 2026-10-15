@@ -91,6 +91,10 @@ pub struct ScopeOptions<'a> {
     /// no text, sorted. One after the record phrase of a read without a
     /// visible lock phrase makes its lock Unknown (`unexpanded-include`).
     pub elided: &'a [u32],
+    /// The offsets of `elided` where an include did not arrive, sorted. A
+    /// statement the include held may write a record: one after a read, in
+    /// its scope, makes `written` Unknown (`unexpanded-include`).
+    pub elided_includes: &'a [u32],
     /// The source is an include file checked alone: an elided reference
     /// anywhere in a read makes its lock Unknown, because the includer's
     /// definitions are missing.
@@ -174,6 +178,37 @@ fn runs_after(
         b = blk.parent;
     }
     false
+}
+
+/// Whether an include that did not arrive (`includes`, sorted offsets) lies
+/// in the scope of the read, where text it held may run after the read: it
+/// comes later in the text, or an iterating block holds it and the read.
+fn include_may_run_after(
+    flow: &oxabl_flow::FileFlow,
+    read: &RecordRead,
+    bound: Option<(UnitId, oxabl_flow::BlockId)>,
+    includes: &[u32],
+) -> bool {
+    if includes.is_empty() {
+        return false;
+    }
+    let cfg = flow.unit(read.unit);
+    let scope = bound
+        .filter(|(u, _)| *u == read.unit)
+        .map_or(oxabl_flow::BlockId::ROUTINE, |(_, b)| b);
+    let span = cfg.block(scope).span;
+    let from = includes.partition_point(|&o| o < span.start);
+    includes[from..]
+        .iter()
+        .take_while(|&&o| o < span.end)
+        .filter(|&&o| o < read.at.start || o >= read.at.end)
+        .any(|&o| {
+            let innermost = cfg
+                .blocks()
+                .filter(|(_, b)| b.span.start <= o && o < b.span.end)
+                .min_by_key(|(_, b)| b.span.end - b.span.start);
+            innermost.is_some_and(|(id, _)| runs_after(flow, read, o, id, bound))
+        })
 }
 
 /// Analyse a parsed file. `source` must be the text the statements were
@@ -312,6 +347,11 @@ pub fn analyze_tokens(
                 .any(|&(u, block, at)| u == read.unit && runs_after(&flow, read, at, block, bound))
         {
             written = Written::Unknown(UnknownReason::Callee);
+        }
+        if written == Written::No
+            && include_may_run_after(&flow, read, bound, options.elided_includes)
+        {
+            written = Written::Unknown(UnknownReason::UnexpandedInclude);
         }
         read.written = written;
     }

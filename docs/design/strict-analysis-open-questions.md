@@ -663,7 +663,11 @@ session holds the record with `EXCLUSIVE-LOCK` (Recalled, high). `NO-LOCK` answe
 wait, but may see a change another session has not committed (a dirty read; Recalled, high), so
 its answer can differ from the committed one for an "already exists" check. Its message names
 the wait, and its help always suggests `NO-LOCK` and says so. A read whose lock phrase the text may hide (L5) is not
-reported.
+reported. An include that did not arrive (`PREPROC007`) after a read, in its scope or in an
+iterating block of it, may write the record: `written` is Unknown (`unexpanded-include`), so the
+help suggests no lock. The rest of the file is judged as before. LK002 is not reported for a
+transaction that holds such an include after its last read: the include may `RELEASE` the
+record.
 
 LK002 rests on L4 (Documented, and Recalled medium for the downgrade), S1, S2, S4 (Recalled
 medium for `DO TRANSACTION`), the documented half of S5 (a weak scope raised by a free

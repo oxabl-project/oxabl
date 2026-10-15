@@ -43,7 +43,8 @@
 //! Not reported:
 //!
 //! - a transaction whose last read into the buffer is `NO-LOCK`, or that
-//!   releases or deletes the record after its last read;
+//!   releases or deletes the record after its last read, or holds an include
+//!   that did not arrive after its last read (the include may release it);
 //! - a transaction whose last read into the buffer is the record phrase of a
 //!   `FOR EACH` or a `PRESELECT`: whether the buffer still holds a record after
 //!   the last iteration is not decided;
@@ -190,7 +191,9 @@ fn finding(
     } else if scope.block == tx || !block_within(unit, scope.block, tx) {
         return None;
     }
-    if released_after(ctx.source, tx_span, last.at.start, &buffer.name) {
+    if released_after(ctx.source, tx_span, last.at.start, &buffer.name)
+        || include_after(ctx.elided_includes, tx_span, last.at.end)
+    {
         return None;
     }
     if !cross_unit
@@ -346,6 +349,13 @@ fn released_after(source: &str, tx: Span, after: u32, name: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether an include that did not arrive lies in `tx` after `after`: it may
+/// release or delete the record.
+fn include_after(includes: &[u32], tx: Span, after: u32) -> bool {
+    let from = includes.partition_point(|&o| o < after.max(tx.start));
+    includes.get(from).is_some_and(|&o| o < tx.end)
 }
 
 /// Whether a statement runs between `from` and `to` other than the `END` of
