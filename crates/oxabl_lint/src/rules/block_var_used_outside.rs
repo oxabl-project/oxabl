@@ -520,7 +520,7 @@ mod paths {
                         }
                     }
                 }
-                SK::Message { items, .. } => {
+                SK::Message { items, .. } | SK::Put { items, .. } => {
                     for e in items {
                         read(self, e);
                     }

@@ -1464,6 +1464,7 @@ impl<'a> Builder<'a> {
             SK::Assignment { .. }
             | SK::Assign { .. }
             | SK::Display { .. }
+            | SK::Put { .. }
             | SK::StreamIo { .. }
             | SK::Publish { .. }
             | SK::Unsubscribe { .. } => Shape::plain(!self.no_error_text(s)),
