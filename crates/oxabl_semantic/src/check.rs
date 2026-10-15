@@ -328,7 +328,7 @@ impl<'a> CheckWalker<'a> {
             }
             StatementKind::Message { items, .. }
             | StatementKind::Put { items, .. }
-            | StatementKind::Form { items }
+            | StatementKind::Form { items, .. }
             | StatementKind::Enable { items }
             | StatementKind::WaitFor { widgets: items }
             | StatementKind::Disable { items }

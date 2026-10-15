@@ -1,7 +1,7 @@
 use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CommentKind, CreateTarget, CreateTargetKind,
-    DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, ExpressionKind, FindType,
+    DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, ExpressionKind, FindType, FrameField,
     HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
     StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral,
@@ -8351,7 +8351,7 @@ fn define_frame_with_content() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
     match stmt.kind {
-        StatementKind::DefineFrame { name, raw_span } => {
+        StatementKind::DefineFrame { name, raw_span, .. } => {
             assert_eq!(name.name, "cust-frame");
             // raw_span should cover content between name and period
             let raw_text = &source[raw_span.start as usize..raw_span.end as usize];
@@ -12991,7 +12991,7 @@ fn down_and_up_are_head_parsed_with_stream_and_lines() {
 fn form_is_head_parsed_with_items_and_format_options() {
     let source = "FORM HEADER\n  \"Page:\" AT 64 PAGE-NUMBER(s1) FORMAT \">>9\":U\n  v-user AT 1 + v-col\n  /* note */ tt.name LABEL \"Name\" COLON 20 SKIP(1)\n  STRING(TIME, \"HH:MM\") NO-LABEL TO 30\n  WITH FRAME f-hdr PAGE-TOP v-width.";
     let stmts = assert_parses_clean(source);
-    let StatementKind::Form { items } = &stmts[0].kind else {
+    let StatementKind::Form { items, .. } = &stmts[0].kind else {
         panic!("expected Form, got {:?}", stmts[0].kind);
     };
     // "Page:", PAGE-NUMBER(s1), v-user, 1 + v-col, tt.name, STRING(...).
@@ -13007,12 +13007,10 @@ fn form_leaves_unmodelled_item_options_to_the_tail() {
         ("FORM v-a BGCOLOR 3 v-b.", 1, "v-b"),
         ("FORM v-a AT ROW 2 COL 5 v-b.", 1, "v-b"),
         ("FORM v-a AT v-col v-b.", 1, "v-b"),
-        // A frame-only variable is a declaration, not a reference.
-        ("FORM v-a v-new AS CHARACTER v-b.", 1, "v-new"),
         ("FORM v-a VIEW-AS FILL-IN v-b WITH FRAME f.", 1, "v-b"),
     ] {
         let stmts = assert_parses_clean(source);
-        let StatementKind::Form { items } = &stmts[0].kind else {
+        let StatementKind::Form { items, .. } = &stmts[0].kind else {
             panic!("{source}: expected Form, got {:?}", stmts[0].kind);
         };
         assert_eq!(items.len(), modelled, "{source}: {items:?}");
@@ -13207,5 +13205,74 @@ fn buffer_parameters_and_like_take_a_database_qualified_table() {
     assert_eq!(
         like_table.as_ref().map(|t| t.name.as_str()),
         Some("sports.Customer")
+    );
+}
+
+fn frame_field_names(fields: &[FrameField]) -> Vec<(&str, String)> {
+    fields
+        .iter()
+        .map(|f| {
+            let ty = match &f.type_source {
+                TypeSource::Explicit(dt) => format!("{dt:?}"),
+                TypeSource::Like { source } => format!("like {}", source.name),
+            };
+            (f.name.name.as_str(), ty)
+        })
+        .collect()
+}
+
+#[test]
+fn form_declares_frame_fields_and_keeps_parsing_items() {
+    let source = "FORM v-a v-new AS CHARACTER FORMAT \"x(8)\" v-b\n  v-qty LIKE sports.Item.Qty LABEL \"Qty\" v-c\n  WITH FRAME f.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::Form { items, fields } = &stmts[0].kind else {
+        panic!("expected Form, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(items.len(), 3, "v-a, v-b, v-c: {items:?}");
+    assert_eq!(
+        frame_field_names(fields),
+        vec![
+            ("v-new", "Character".to_string()),
+            ("v-qty", "like sports.Item.Qty".to_string()),
+        ]
+    );
+    let tail = tail_names(&stmts[0]);
+    assert!(
+        !tail.contains(&"v-new") && !tail.contains(&"v-c"),
+        "{tail:?}"
+    );
+}
+
+#[test]
+fn update_and_enable_do_not_declare_frame_fields() {
+    for source in [
+        "UPDATE v-a v-new AS CHARACTER v-b.",
+        "ENABLE v-a v-new AS CHARACTER v-b.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            tail_names(&stmts[0]).contains(&"v-new"),
+            "{source}: {:?}",
+            stmts[0]
+        );
+    }
+}
+
+#[test]
+fn define_frame_declares_its_frame_fields() {
+    let source = "DEFINE FRAME f-main\n  \"Order:\" VIEW-AS TEXT AT ROW 1 COL 1\n  v-order AS CHARACTER FORMAT \"x(20)\" VIEW-AS FILL-IN SIZE 20 BY 1 AT ROW 1 COL 8\n  v-count AS INTEGER EXTENT 3\n  v-desc LIKE Item.Desc VIEW-AS EDITOR SIZE 30 BY 2\n  Customer.Name AT ROW 3 COL 1 v-known\n  WITH NO-LABELS SIZE 40 BY 6.";
+    let stmts = assert_parses_clean(source);
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    let StatementKind::DefineFrame { name, fields, .. } = &stmts[0].kind else {
+        panic!("expected DefineFrame, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(name.name, "f-main");
+    assert_eq!(
+        frame_field_names(fields),
+        vec![
+            ("v-order", "Character".to_string()),
+            ("v-count", "Integer".to_string()),
+            ("v-desc", "like Item.Desc".to_string()),
+        ]
     );
 }

@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
+    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, FrameField,
     HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
     RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeArguments,
     TypeSource, UsingSource,
@@ -325,9 +325,11 @@ impl<'a> Walker<'a> {
             StatementKind::DefineStream { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Streams, SymbolKind::Stream);
             }
-            StatementKind::DefineFrame { name, .. } => {
+            StatementKind::DefineFrame { name, fields, .. } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
+                self.declare_frame_fields(stmt, scope, fields);
             }
+            StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
             StatementKind::DefineWidget { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
             }
@@ -847,6 +849,25 @@ impl<'a> Walker<'a> {
             && let Some(id) = sym
         {
             self.symbols.record_block_defined(id, block_scope);
+        }
+    }
+
+    /// Declare the variables that `name AS type` / `name LIKE field` frame
+    /// items define, scoped like `DEFINE VARIABLE`. An item whose name already
+    /// names a variable in scope uses that variable rather than declaring one,
+    /// as the same field in a second frame does.
+    fn declare_frame_fields(&mut self, stmt: &Statement, scope: ScopeId, fields: &[FrameField]) {
+        for field in fields {
+            let atom = fold_atom(&field.name.name);
+            if self
+                .tree
+                .resolve(scope, NamespaceId::Values, &atom)
+                .is_some_and(|sym| self.symbols.get(sym).kind != SymbolKind::BuiltIn)
+            {
+                continue;
+            }
+            let flags = SymbolFlags::empty();
+            self.declare_variable(stmt, scope, &field.name, &field.type_source, None, flags);
         }
     }
 
@@ -2599,8 +2620,11 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             StatementKind::DefineStream { .. } | StatementKind::DefineWidget { .. } => {}
-            StatementKind::DefineFrame { raw_span, .. } => {
+            StatementKind::DefineFrame {
+                raw_span, fields, ..
+            } => {
                 self.note_unmodelled_text(*raw_span, scope);
+                self.note_frame_field_sources(fields, scope);
             }
             StatementKind::DefineEvent { parameters, .. } => {
                 if let Some(ev) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
@@ -3045,8 +3069,13 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, mode);
                 }
             }
-            StatementKind::Form { items }
-            | StatementKind::Enable { items }
+            StatementKind::Form { items, fields } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+                self.note_frame_field_sources(fields, scope);
+            }
+            StatementKind::Enable { items }
             | StatementKind::WaitFor { widgets: items }
             | StatementKind::Disable { items } => {
                 for e in items {
@@ -4801,6 +4830,15 @@ impl<'a> ResolveWalker<'a> {
             .is_none()
         {
             self.schema_default_buffer(&table);
+        }
+    }
+
+    /// Note the tables the `LIKE` frame fields copy.
+    fn note_frame_field_sources(&mut self, fields: &[FrameField], scope: ScopeId) {
+        for field in fields {
+            if let TypeSource::Like { source } = &field.type_source {
+                self.note_like_source(source, scope, false);
+            }
         }
     }
 
@@ -6790,6 +6828,7 @@ mod tests {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineFrame {
             name: id("f1"),
             raw_span: Span { start: 0, end: 0 },
+            fields: Vec::new(),
         })]);
         let s = find_symbol(&tree, &symbols, NamespaceId::Frames, "f1").unwrap();
         assert_eq!(s.kind, SymbolKind::Frame);

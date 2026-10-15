@@ -522,7 +522,7 @@ mod paths {
                 }
                 SK::Message { items, .. }
                 | SK::Put { items, .. }
-                | SK::Form { items }
+                | SK::Form { items, .. }
                 | SK::Enable { items }
                 | SK::WaitFor { widgets: items }
                 | SK::Disable { items }

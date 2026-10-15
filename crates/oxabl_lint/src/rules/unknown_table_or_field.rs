@@ -219,7 +219,7 @@ impl Visitor<'_> {
             }
             StatementKind::Message { items, .. }
             | StatementKind::Put { items, .. }
-            | StatementKind::Form { items }
+            | StatementKind::Form { items, .. }
             | StatementKind::Enable { items }
             | StatementKind::WaitFor { widgets: items }
             | StatementKind::Disable { items }

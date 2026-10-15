@@ -9,13 +9,13 @@
 use oxabl_ast::{
     AccessModifier, Annotation, AnnotationAttribute, AnnotationValue, AssignPair, BufferTarget,
     CreateTarget, CreateTargetKind, DataRelation, DataSourceBuffer, DataSourceKeys, DbTriggerEvent,
-    DisplayItem, Expression, ExpressionKind, FindType, HandleParamKind, HandlePassingOptions,
-    Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
-    ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SkippedTail, SortDirection,
-    Span, Statement, StatementKind, StreamDirection, StreamOperation, StringLiteral,
-    SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
-    TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
-    XmlSerializeOptions,
+    DisplayItem, Expression, ExpressionKind, FindType, FrameField, HandleParamKind,
+    HandlePassingOptions, Identifier, IndexField, Literal, LockType, OnAction, OnEventClause,
+    OnKind, ParameterDirection, ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget,
+    SkippedTail, SortDirection, Span, Statement, StatementKind, StreamDirection, StreamOperation,
+    StringLiteral, SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam,
+    TriggerReferencing, TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch,
+    WidgetQualifier, WidgetRef, XmlSerializeOptions,
 };
 use oxabl_lexer::TokenValue;
 use oxabl_lexer::{Kind, is_callable_kind};
@@ -4115,9 +4115,10 @@ impl Parser<'_> {
     /// `FORM [item ...] [{HEADER | BACKGROUND} item ...] [EXCEPT ...] [frame-phrase]`.
     fn parse_form_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume FORM
-        let items = self.parse_frame_items(false);
+        let mut fields = Vec::new();
+        let items = self.parse_frame_items(false, Some(&mut fields));
         let tail = self.skip_tail_to_statement_end();
-        Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+        Ok(self.stmt_with_tail(StatementKind::Form { items, fields }, tail))
     }
 
     /// `WAIT-FOR event-list OF widget-list [OR event-list OF widget-list]...`.
@@ -4197,7 +4198,7 @@ impl Parser<'_> {
             Ok(())
         };
         if head.is_ok() {
-            items = self.parse_frame_items(false);
+            items = self.parse_frame_items(false, None);
         }
         let tail = self.skip_tail_to_statement_end();
         let kind = match verb {
@@ -4217,7 +4218,7 @@ impl Parser<'_> {
         if self.check(Kind::UnlessHidden) {
             self.advance();
         }
-        let targets = self.parse_frame_items(true);
+        let targets = self.parse_frame_items(true, None);
         let range = self.skip_to_statement_end_editing_aware();
         let tail = self.skipped_tail(range);
         let kind = if update {
@@ -4232,8 +4233,13 @@ impl Parser<'_> {
     /// The list ends at the first token that does not start an item. With
     /// `targets`, only fields, variables and records are items (constants and
     /// `^` are passed over), and an option operand that is not a literal ends
-    /// the list.
-    fn parse_frame_items(&mut self, targets: bool) -> Vec<Expression> {
+    /// the list. A `name AS type` / `name LIKE field` item goes to `fields`, or
+    /// ends the list when there is none.
+    fn parse_frame_items(
+        &mut self,
+        targets: bool,
+        mut fields: Option<&mut Vec<FrameField>>,
+    ) -> Vec<Expression> {
         let mut items = Vec::new();
         'items: loop {
             if !targets && (self.check(Kind::Header) || self.check(Kind::Background)) {
@@ -4270,19 +4276,29 @@ impl Parser<'_> {
             };
             // `name AS type` and `name LIKE field` declare a frame-only variable.
             if self.check(Kind::KwAs) || self.check(Kind::Like) {
-                self.current = mark;
-                break;
-            }
-            match item.kind {
-                ExpressionKind::Literal(_) if targets => {}
-                ExpressionKind::Identifier(_)
-                | ExpressionKind::FieldAccess { .. }
-                | ExpressionKind::ArrayAccess { .. } => items.push(item),
-                _ if targets => {
+                let (Some(fields), ExpressionKind::Identifier(name)) =
+                    (fields.as_deref_mut(), item.kind)
+                else {
                     self.current = mark;
                     break;
+                };
+                let Ok(type_source) = self.parse_type_source() else {
+                    self.current = mark;
+                    break;
+                };
+                fields.push(FrameField { name, type_source });
+            } else {
+                match item.kind {
+                    ExpressionKind::Literal(_) if targets => {}
+                    ExpressionKind::Identifier(_)
+                    | ExpressionKind::FieldAccess { .. }
+                    | ExpressionKind::ArrayAccess { .. } => items.push(item),
+                    _ if targets => {
+                        self.current = mark;
+                        break;
+                    }
+                    _ => items.push(item),
                 }
-                _ => items.push(item),
             }
             loop {
                 match self.peek().kind {
@@ -6793,12 +6809,14 @@ impl Parser<'_> {
 
     /// Parse DEFINE FRAME frame-name ... .
     /// Simplified: skips all tokens between name and period, storing the raw span.
+    /// Only the frame fields the body declares are modelled.
     fn parse_define_frame(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume FRAME
         let name = self.parse_identifier()?;
 
         // Record start of unparsed content
         let raw_start = self.peek().start as u32;
+        let body = self.current;
 
         // Skip frame phrase content.  Use skip_to_statement_end() so that field-access dots
         // inside VALIDATE expressions (e.g. t-pc-center.company) are not mistaken for
@@ -6809,8 +6827,48 @@ impl Parser<'_> {
             start: raw_start,
             end: raw_end,
         };
+        let fields = self.frame_field_declarations(body, self.current - 1);
 
-        Ok(self.stmt_with_tail(StatementKind::DefineFrame { name, raw_span }, tail))
+        Ok(self.stmt_with_tail(
+            StatementKind::DefineFrame {
+                name,
+                raw_span,
+                fields,
+            },
+            tail,
+        ))
+    }
+
+    /// The `name AS type` / `name LIKE field` items among the tokens
+    /// `from..to` of a frame body. A name after `.` or `:` is a field or an
+    /// attribute, not an item.
+    fn frame_field_declarations(&mut self, from: usize, to: usize) -> Vec<FrameField> {
+        let resume = self.current;
+        let mut fields = Vec::new();
+        let mut i = from;
+        while i + 1 < to {
+            let kind = self.token_at(i).kind;
+            let declares = matches!(self.token_at(i + 1).kind, Kind::KwAs | Kind::Like);
+            let after_access = i > from
+                && matches!(
+                    self.token_at(i - 1).kind,
+                    Kind::Period | Kind::Colon | Kind::DoubleColon
+                );
+            if declares && !after_access && Self::can_be_identifier(kind) {
+                self.current = i;
+                if let Ok(name) = self.parse_identifier()
+                    && let Ok(type_source) = self.parse_type_source()
+                    && self.current <= to
+                {
+                    fields.push(FrameField { name, type_source });
+                    i = self.current;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        self.current = resume;
+        fields
     }
 
     /// Parse INPUT/OUTPUT/INPUT-OUTPUT stream I/O statement.

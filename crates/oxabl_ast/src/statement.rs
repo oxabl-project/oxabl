@@ -285,6 +285,9 @@ pub enum StatementKind {
         /// Items in source order, including `AT` and `SKIP` operands that are
         /// not literals.
         items: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than read one. They are not in `items`.
+        fields: Vec<FrameField>,
     },
 
     /// UPDATE statement — displays fields and variables and lets the user
@@ -678,7 +681,12 @@ pub enum StatementKind {
 
     /// DEFINE FRAME frame-name ... .
     /// Simplified: captures name and raw span of unparsed content for formatter round-tripping.
-    DefineFrame { name: Identifier, raw_span: Span },
+    DefineFrame {
+        name: Identifier,
+        raw_span: Span,
+        /// The `name AS type` / `name LIKE field` items of the frame.
+        fields: Vec<FrameField>,
+    },
 
     /// DEFINE BUTTON / BROWSE / RECTANGLE / IMAGE / MENU / SUB-MENU — a static
     /// widget definition. Only the widget name is modelled; the rest of the
@@ -1175,6 +1183,14 @@ pub enum TypeSource {
     Explicit(DataType),
     /// Inherited type: `... LIKE Customer.CustNum`
     Like { source: Identifier },
+}
+
+/// A frame field that a FORM or DEFINE FRAME item declares as a variable:
+/// `name AS type` or `name LIKE field`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameField {
+    pub name: Identifier,
+    pub type_source: TypeSource,
 }
 
 /// A field definition in a DEFINE TEMP-TABLE statement.
