@@ -122,7 +122,12 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
         let cfg = cfgs.entry(x.unit).or_insert_with(|| {
             builder
                 .get_or_insert_with(|| {
-                    UnitBuilder::new(program, ctx.source, &FlowOptions::default())
+                    UnitBuilder::with_tokens(
+                        program,
+                        ctx.source,
+                        ctx.tokens,
+                        &FlowOptions::default(),
+                    )
                 })
                 .build(x.unit)
         });
