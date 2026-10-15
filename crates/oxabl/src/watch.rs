@@ -218,7 +218,16 @@ fn cycle(
     let affected: Option<HashSet<PathBuf>> = if everything {
         None
     } else {
-        let graph = ReverseGraph::build(&lint, &indexed);
+        let (graph, _) = ReverseGraph::build_with(
+            &indexed,
+            opts.jobs,
+            || {
+                LintPipeline::new(&config, &fs)
+                    .with_preprocess(opts.preprocess)
+                    .with_shared_producers(&producers)
+            },
+            |_, _, _| (),
+        );
         let mut set: HashSet<PathBuf> = HashSet::new();
         for path in changed.unwrap_or_default() {
             set.extend(graph.rebuild_set(&Subject::file(path)));
