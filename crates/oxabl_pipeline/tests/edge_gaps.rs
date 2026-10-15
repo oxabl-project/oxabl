@@ -1316,3 +1316,53 @@ fn an_include_reached_from_two_sites_lists_its_not_taken_reference_per_site() {
     assert_eq!(sites.len(), 2);
     assert_ne!(sites[0], sites[1]);
 }
+
+#[test]
+fn a_class_in_the_skipped_tail_of_a_modelled_statement_is_an_edge_or_degrades_the_set() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/app/text/Quote.cls"),
+        "CLASS app.text.Quote:\n  METHOD PUBLIC STATIC CHARACTER shell(p AS CHARACTER):\n    RETURN p.\n  END METHOD.\nEND CLASS.\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/main.p");
+
+    // The command's operands after the first, an output line whose output macro
+    // is not defined, and one whose static accesses are the only expressions.
+    for source in [
+        "DEFINE STREAM s.\nDEFINE VARIABLE c AS CHARACTER NO-UNDO.\nINPUT STREAM s THROUGH VALUE(\"cmd\") VALUE(app.text.Quote:shell(c)) NO-ECHO.\n",
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n{&out} \"<td>\" app.text.Quote:shell(c) \"</td>\":U.\n",
+        "{&out} '~{ \"a\": \"' app.text.Quote:shell(\"x\") app.text.Quote:shell(\"y\") '\" }'.\n",
+    ] {
+        let edges = pipeline.edge_set(source).expect("edge set");
+        let classes: Vec<_> = edges
+            .of_kind(EdgeKind::ClassReference)
+            .map(|e| e.target.key().to_string())
+            .collect();
+        assert_eq!(classes, ["app.text.quote"], "{source}");
+        assert!(edges.completeness().is_complete(), "{source}");
+    }
+
+    let lost = pipeline
+        .edge_set("{&out} \"<td>\" app.text.Nothere:shell(\"x\") \"</td>\".\n")
+        .expect("edge set");
+    assert_eq!(lost.of_kind(EdgeKind::ClassReference).count(), 0);
+    assert_eq!(
+        lost.completeness().reasons(),
+        [DegradedReason::UnmodelledStatement]
+    );
+
+    // A handle's attribute in a tail is not a class, and leaves the set complete.
+    let handle = pipeline
+        .edge_set("DEFINE VARIABLE h AS HANDLE NO-UNDO.\n{&out} \"<td>\" h:name \"</td>\".\n")
+        .expect("edge set");
+    assert_eq!(handle.of_kind(EdgeKind::ClassReference).count(), 0);
+    assert!(handle.completeness().is_complete());
+
+    // Nor is a frame named by a path.
+    let frame = pipeline
+        .edge_set("ASSIGN FRAME app/lock:WIDTH-CHARS = BROWSE b:WIDTH-CHARS.\n")
+        .expect("edge set");
+    assert!(frame.completeness().is_complete());
+}
