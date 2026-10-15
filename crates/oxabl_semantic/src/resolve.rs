@@ -2512,6 +2512,15 @@ impl<'a> ResolveWalker<'a> {
     fn walk_statement(&mut self, stmt: &Statement, scope: ScopeId) {
         if let Some(tail) = &stmt.skipped_tail {
             self.credit_unmodelled_names(&tail.names, scope);
+            // A tail runs to the statement's end, and a class-shaped run in it
+            // starts with a harvested name, so the first name bounds the scan.
+            if let Some(first) = tail.names.first() {
+                let span = Span {
+                    start: first.span.start,
+                    end: stmt.span.end,
+                };
+                self.note_unmodelled_class_runs(span, scope);
+            }
         }
         match &stmt.kind {
             // ---- Declarations with initializers --------------------------
@@ -4822,10 +4831,10 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
-    /// Offer the class-shaped runs of a recognized-but-unmodelled statement to the
-    /// class lookup: `NEW name(...)` and a `name:` member access. The statement
-    /// has no expressions to walk, so without this a class it names would give
-    /// neither an edge nor a row.
+    /// Offer the class-shaped runs of a recognized-but-unmodelled statement, or of
+    /// a modelled statement's skipped tail, to the class lookup: `NEW name(...)`
+    /// and a `name:` member access. The skipped text has no expressions to walk,
+    /// so without this a class it names would give neither an edge nor a row.
     ///
     /// A run that is a class is recorded like any other naming site. One that
     /// cannot be told from a handle or a table field is recorded as unattributed,
@@ -5918,13 +5927,18 @@ fn class_shaped_runs(text: &str) -> Vec<ClassShapedRun> {
         let after_member = i > 0
             && matches!(tokens[i - 1].kind, Kind::Colon | Kind::Period)
             && tokens[i - 1].end == start;
+        // `dir/name:attr` is a path segment, such as a frame named by a path.
+        let in_path = i > 1
+            && tokens[i - 1].kind == Kind::Slash
+            && tokens[i - 1].end == start
+            && tokens[i - 2].end == tokens[i - 1].start;
         let after_new = i > 0 && tokens[i - 1].kind == Kind::New;
         let is_receiver = tokens
             .get(next)
             .is_some_and(|t| t.kind == Kind::Colon && t.start == end);
         let is_constructor =
             after_new && tokens.get(next).is_some_and(|t| t.kind == Kind::LeftParen);
-        if !after_member && (is_constructor || is_receiver) {
+        if !after_member && !in_path && (is_constructor || is_receiver) {
             runs.push(ClassShapedRun {
                 name: start..end,
                 is_constructor,

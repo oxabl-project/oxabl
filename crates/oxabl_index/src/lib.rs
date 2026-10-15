@@ -64,12 +64,16 @@ pub mod search;
 mod written;
 
 pub use batch::{BatchIndex, ExcludingFile};
-pub use closure::{ConditionalIncludeName, conditional_include_closure};
+pub use closure::{
+    ClosureTarget, ConditionalIncludeName, conditional_include_closure,
+    conditional_include_closure_with,
+};
 pub use deps::{
-    BranchKind, Completeness, ConditionalBranch, ConditionalInclude, ConditionalIncludeClosure,
-    ConditionalReference, DegradedReason, DependencyEdge, DependencyEdges, DirectIncludeInput,
-    EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput,
-    UnreadableIncludeInput, UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
+    BranchKind, ClosureReference, Completeness, ConditionalBranch, ConditionalInclude,
+    ConditionalIncludeClosure, ConditionalReference, DegradedReason, DependencyEdge,
+    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
+    NestedUnresolvedIncludeInput, UnreadableIncludeInput, UnresolvedIncludeInput,
+    UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
 pub use producers::{SharedProducers, definitions_in};

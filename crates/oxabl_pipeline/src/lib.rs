@@ -80,9 +80,10 @@ pub use reverse::{
 // Re-exported so a consumer of the reverse query need not also depend on
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{
-    BranchKind, Completeness, ConditionalBranch, ConditionalInclude, ConditionalIncludeClosure,
-    ConditionalReference, DegradedReason, DependencyEdge, DependencyEdges, EdgeKind, EdgeTarget,
-    IncludeContext, ReferenceSyntax, SharedProducers, UnresolvedReference, definitions_in,
+    BranchKind, ClosureReference, Completeness, ConditionalBranch, ConditionalInclude,
+    ConditionalIncludeClosure, ConditionalReference, DegradedReason, DependencyEdge,
+    DependencyEdges, EdgeKind, EdgeTarget, IncludeContext, ReferenceSyntax, SharedProducers,
+    UnresolvedReference, definitions_in,
 };
 
 use oxabl_common::FileId;

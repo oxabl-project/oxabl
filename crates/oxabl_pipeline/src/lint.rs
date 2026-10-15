@@ -90,14 +90,15 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, BranchKind, ConditionalBranch, ConditionalInclude, ConditionalIncludeName,
-    ConditionalReference, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
-    NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers, UnreadableIncludeInput,
-    UnresolvedIncludeInput, WrittenReference, build_edge_set, conditional_include_closure,
-    written_imports, written_references,
+    BatchIndex, BranchKind, ClosureReference, ClosureTarget, ConditionalBranch, ConditionalInclude,
+    ConditionalIncludeName, ConditionalReference, DirectIncludeInput, EdgeInputs, EdgeKind,
+    EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers,
+    UnreadableIncludeInput, UnresolvedIncludeInput, WrittenReference, build_edge_set,
+    conditional_include_closure_with, written_imports, written_references,
 };
 use oxabl_semantic::{
-    IndexAnswer, IndexName, LocateKind, Located, Semantic, SourceContext, WorkspaceIndex,
+    IndexAnswer, IndexName, LocateKind, Located, Semantic, SourceContext, UnresolvedReason,
+    WorkspaceIndex,
 };
 use oxabl_workspace::{FileSystem, is_include_fragment};
 
@@ -520,10 +521,11 @@ impl<'a> LintPipeline<'a> {
         self
     }
 
-    /// Make each edge set carry what its conditional includes would read
+    /// Make each edge set carry what its conditional includes would read, and
+    /// the class and program names their targets write
     /// ([`DependencyEdges::conditional_include_closure`](oxabl_index::DependencyEdges::conditional_include_closure)).
-    /// Off by default: it reads and expands every conditional include's target
-    /// once per file.
+    /// Off by default: it reads, expands and analyses every conditional
+    /// include's target once per file.
     #[must_use]
     pub fn with_conditional_include_closure(mut self, enabled: bool) -> Self {
         self.conditional_closure = enabled;
@@ -893,7 +895,9 @@ impl<'a> LintPipeline<'a> {
                 root_relative_paths: &[],
                 ..includes
             };
-            conditional_include_closure(&names, &includes)
+            conditional_include_closure_with(&names, &includes, &mut |target| {
+                self.closure_references(target, &paths)
+            })
         });
 
         let edges = build_edge_set(&EdgeInputs {
@@ -973,6 +977,84 @@ impl<'a> LintPipeline<'a> {
                 }
             }
         });
+        out
+    }
+
+    /// The class and program names a conditional include's target writes, from
+    /// its expansion on its own under `include_paths`: the edges an analysis of
+    /// the taken text finds, as a fragment, and the names written in the
+    /// branches it did not take.
+    ///
+    /// Resolved through this handle's index, so a name of the file being
+    /// analysed is not listed, as it is never an edge of its own.
+    fn closure_references(
+        &self,
+        target: ClosureTarget<'_>,
+        include_paths: &[PathBuf],
+    ) -> Vec<ClosureReference> {
+        let Ok(expanded) = expand_source_with(
+            ROOT_FILE_ID,
+            Some(target.name),
+            target.source,
+            self.fs,
+            include_paths,
+            &self.config.preprocessor,
+            true,
+        ) else {
+            return Vec::new();
+        };
+        let (semantic, parse_recovered) = self.with_run_index(|index| {
+            analyze_from_expanded(
+                &expanded,
+                &self.config.schema,
+                self.config.schema_loaded,
+                index,
+                SourceContext::IncludeFragment,
+            )
+        });
+        let no_site = |_: oxabl_common::VirtualSpan| None;
+        let edges = build_edge_set(&EdgeInputs {
+            semantic: &semantic,
+            schema: &self.config.schema,
+            direct_includes: &[],
+            transitive_includes: &[],
+            include_origins: &[],
+            unresolved_includes: &[],
+            nested_unresolved_includes: &[],
+            unreadable_includes: &[],
+            parse_recovered,
+            preprocessor_loss: false,
+            resolve_span: &no_site,
+            include_site: &no_site,
+        });
+        let names =
+            |kind: EdgeKind| matches!(kind, EdgeKind::ClassReference | EdgeKind::ProgramReference);
+        let mut out: Vec<ClosureReference> = edges
+            .edges()
+            .iter()
+            .filter(|edge| names(edge.kind))
+            .map(|edge| {
+                ClosureReference::new(
+                    edge.kind,
+                    false,
+                    edge.target.key().to_string(),
+                    Some(edge.target.clone()),
+                )
+            })
+            .collect();
+        out.extend(
+            edges
+                .unresolved()
+                .iter()
+                // A located file that could not be used is an edge already.
+                .filter(|row| names(row.kind) && row.reason != UnresolvedReason::PresentButUnusable)
+                .map(|row| ClosureReference::new(row.kind, false, row.name.clone(), None)),
+        );
+        out.extend(
+            self.conditional_references(&expanded)
+                .into_iter()
+                .map(|r| ClosureReference::new(r.kind, true, r.name, r.target)),
+        );
         out
     }
 

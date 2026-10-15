@@ -197,7 +197,32 @@ fn main() {
                                             );
                                         }
                                         for c in edges.conditional_include_closure() {
-                                            let _ = writeln!(text, "L {c:?}");
+                                            let _ = writeln!(
+                                                text,
+                                                "L {} | {:?} | {:?} | {:?} | {:?} | {}",
+                                                c.name,
+                                                c.via,
+                                                c.path,
+                                                c.reaches,
+                                                c.unresolved,
+                                                c.complete
+                                            );
+                                            for r in &c.references {
+                                                let file = match &r.target {
+                                                    Some(EdgeTarget::IndexedFile {
+                                                        file, ..
+                                                    }) => run
+                                                        .indexed_path(*file)
+                                                        .map(|p| p.display().to_string())
+                                                        .unwrap_or_else(|| "?".into()),
+                                                    _ => String::new(),
+                                                };
+                                                let _ = writeln!(
+                                                    text,
+                                                    "LR {:?} {} {} | {}",
+                                                    r.kind, r.conditional, r.name, file
+                                                );
+                                            }
                                         }
                                         let _ = writeln!(text, "C {:?}", edges.completeness());
                                     }

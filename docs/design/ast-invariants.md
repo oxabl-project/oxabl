@@ -290,6 +290,10 @@ kind.
   non-counting lookup that can only mark a symbol as unjudgeable. They never produce a
   `references` entry, so they cannot reach LINT0001 or LINT0003, and they are not offered to
   the table namespaces.
+- The tail's class-shaped runs (`name:member`, `NEW name(`) are offered to the class lookup,
+  as a `Skipped` node's are, from the first harvested name to the statement's end. A run that
+  resolves is a dependency edge; one that cannot be told from a handle or a field degrades
+  the edge set.
 - The field is excluded from `PartialEq`, like `id` and `span`.
 
 ## 9. Property body distinguishes absence from emptiness
