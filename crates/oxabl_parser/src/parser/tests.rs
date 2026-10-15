@@ -12802,3 +12802,70 @@ fn raw_transfer_and_underline_are_unmodelled_statements_and_raw_transfer_is_stil
     }
     assert_parses_clean("DEFINE VARIABLE raw-transfer AS INTEGER NO-UNDO.\nraw-transfer = 1.");
 }
+
+#[test]
+fn new_with_a_parenthesised_buffer_is_a_function_call() {
+    let stmts = assert_parses_clean("l = NEW(customer).");
+    let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+        panic!("expected assignment, got {:?}", stmts[0].kind);
+    };
+    let ExpressionKind::FunctionCall { name, arguments } = &value.kind else {
+        panic!("expected a call, got {:?}", value.kind);
+    };
+    assert_eq!(name.name, "NEW");
+    assert_eq!(arguments.len(), 1);
+}
+
+#[test]
+fn new_with_a_class_name_is_still_an_instantiation() {
+    let stmts = assert_parses_clean("o = NEW Foo(1).");
+    let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+        panic!("expected assignment, got {:?}", stmts[0].kind);
+    };
+    assert!(matches!(value.kind, ExpressionKind::New { .. }));
+}
+
+#[test]
+fn byte_order_constants_are_expressions() {
+    for source in [
+        "SET-BYTE-ORDER(m) = BIG-ENDIAN.",
+        "SET-BYTE-ORDER(m) = LITTLE-ENDIAN.",
+        "SET-BYTE-ORDER(m) = HOST-BYTE-ORDER.",
+        "i = HOST-BYTE-ORDER.",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn overlay_is_a_target_and_a_value() {
+    for source in [
+        "OVERLAY(s, 1, 3) = \"abc\".",
+        "OVERLAY(s, 1, 3, \"CHARACTER\") = \"abc\".",
+        "s = OVERLAY(s, 1, 3).",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn input_from_os_dir_takes_a_path_expression() {
+    for source in [
+        "INPUT FROM OS-DIR(\".\").",
+        "INPUT STREAM s FROM OS-DIR(cDir + \"/x\") NO-ECHO.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::StreamIo {
+            operation: StreamOperation::From(source_expr),
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected INPUT FROM, got {:?}", stmts[0].kind);
+        };
+        assert!(
+            matches!(&source_expr.kind, ExpressionKind::FunctionCall { name, .. } if name.name.eq_ignore_ascii_case("os-dir")),
+            "{source}: {:?}",
+            source_expr.kind
+        );
+    }
+}

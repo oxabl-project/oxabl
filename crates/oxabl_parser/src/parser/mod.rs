@@ -1331,8 +1331,10 @@ impl<'a> Parser<'a> {
                     | Kind::GoPending
                     // READ-EXACT-NUM is a socket read mode constant
                     | Kind::ReadExactNum
-                    // BIG-ENDIAN / LITTLE-ENDIAN are byte-order constants
+                    // BIG-ENDIAN / LITTLE-ENDIAN / HOST-BYTE-ORDER are byte-order constants
                     | Kind::BigEndian
+                    | Kind::LittleEndian
+                    | Kind::HostByteOrder
                     // WINDOW is a system object attribute name (e.g. lframes:window)
                     | Kind::Window
                     // SCREEN-LINES is an ABL system variable (number of screen rows)
