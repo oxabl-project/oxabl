@@ -3908,10 +3908,10 @@ mod tests {
         // `{{&frame}.f …}` — dynamic include whose file name is built from a
         // `&SCOPED-DEFINE` variable. Preprocessor must pre-expand `{&frame}`
         // before resolving the include.
-        let fs = make_fs(&[("/inc/menu_prc.f", "expanded body")]);
+        let fs = make_fs(&[("/inc/widget_menu.f", "expanded body")]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
-        let source = "&SCOPED-DEFINE frame menu_prc\n{{&frame}.f}";
+        let source = "&SCOPED-DEFINE frame widget_menu\n{{&frame}.f}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert!(
             result.to_text().contains("expanded body"),
@@ -3975,27 +3975,27 @@ mod tests {
 
     #[test]
     fn expand_include_with_name_on_own_line() {
-        // Real-world shape observed in production ABL: the include name appears on one line
+        // Common shape: the include name appears on one line
         // and named args follow on subsequent lines. The whole reference spans
         // multiple lines inside `{...}`. Previously, parse_include_name captured
         // the trailing newline as part of the name and resolution silently failed.
         let fs = make_fs(&[(
-            "/inc/currexch.i",
+            "/inc/fxconv.i",
             "If {&currency} gt \" \" then {&exchange} = 1.\nElse {&exchange} = -1.",
         )]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
         let source = "\
 If x ne y THEN
-    {currexch.i
-    &currency = \"sv-currency\"
+    {fxconv.i
+    &currency = \"src-currency\"
     &exchange = \"c-exchange\" }
 ELSE
     ASSIGN c-exchange = 1.";
         let result = pp.process(FileId::new(1), source).unwrap();
         let text = result.to_text();
         assert!(
-            text.contains("If sv-currency gt"),
+            text.contains("If src-currency gt"),
             "expected expanded include body with substituted &currency, got:\n{text}"
         );
         assert!(
@@ -4464,16 +4464,16 @@ ELSE
 
     #[test]
     fn parse_include_args_named_are_numbered_positionally() {
-        // Regression for the ad100.p -> dbfcntl.i -> dbspdn.i `{3}` gap: an
+        // Regression for the main.p -> outer.i -> inner.i `{3}` gap: an
         // include invoked with only named args must still resolve `{N}` to the
-        // Nth argument's value. Here {3} = the third named arg (max-down = 8).
+        // Nth argument's value. Here {3} = the third named arg (max-rows = 8).
         let args = parse_include_args(
-            "db/dbspdn.i &file=file-cleanup &frame=ad/ad100 &max-down=8 &find=ad/ad100.a",
-            "db/dbspdn.i",
+            "db/inner.i &file=file-work &frame=ui/main &max-rows=8 &find=ui/main.a",
+            "db/inner.i",
         );
         assert_eq!(args.positional[3], "8", "{{3}} must be the 3rd arg's value");
-        assert_eq!(args.positional[1], "file-cleanup");
-        assert_eq!(args.positional[2], "ad/ad100");
+        assert_eq!(args.positional[1], "file-work");
+        assert_eq!(args.positional[2], "ui/main");
     }
 
     #[test]
@@ -4484,32 +4484,32 @@ ELSE
 
     #[test]
     fn parse_include_args_multiline() {
-        let inner = "ms/report.i &event       = \"start\"\n             &stream-name = \"s-printer\"\n             &rpt-printer = \"p-printer\"\n             &max-columns = 80";
-        let args = parse_include_args(inner, "ms/report.i");
+        let inner = "inc/report.i &event       = \"start\"\n             &stream-name = \"s-device\"\n             &rpt-device = \"p-device\"\n             &max-columns = 80";
+        let args = parse_include_args(inner, "inc/report.i");
         assert_eq!(
             args.positional,
-            vec!["ms/report.i", "start", "s-printer", "p-printer", "80"]
+            vec!["inc/report.i", "start", "s-device", "p-device", "80"]
         );
         assert_eq!(args.named.len(), 4);
         assert_eq!(args.named[0], ("event".to_string(), "start".to_string()));
         assert_eq!(
             args.named[1],
-            ("stream-name".to_string(), "s-printer".to_string())
+            ("stream-name".to_string(), "s-device".to_string())
         );
         assert_eq!(
             args.named[2],
-            ("rpt-printer".to_string(), "p-printer".to_string())
+            ("rpt-device".to_string(), "p-device".to_string())
         );
         assert_eq!(args.named[3], ("max-columns".to_string(), "80".to_string()));
     }
 
     #[test]
     fn named_arg_resolves_positionally_through_nested_includes() {
-        // End-to-end analogue of ad100.p -> dbfcntl.i -> dbspdn.i: a value
+        // End-to-end analogue of main.p -> outer.i -> inner.i: a value
         // enters the top include by name and is forwarded down by name at each
         // level, then the innermost include consumes it positionally as `{3}`.
-        // Progress expands `{3}` to that value (verified via COMPILE PREPROCESS
-        // on ad100.p, where `{3}` -> 8); before the fix it expanded to empty,
+        // Progress expands `{3}` to that value (verified via COMPILE PREPROCESS,
+        // where `{3}` -> 8); before the fix it expanded to empty,
         // producing `id_[]` -> a spurious parse error that cascaded upward.
         let fs = make_fs(&[
             (
@@ -4518,17 +4518,17 @@ ELSE
             ),
             (
                 "/inc/outer.i",
-                "{inner.i &file={&file} &frame={&frame} &max-down={&max-down}}",
+                "{inner.i &file={&file} &frame={&frame} &max-rows={&max-rows}}",
             ),
         ]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
-        let source = "{outer.i &file=file-cleanup &frame=ad/f &max-down=8}";
+        let source = "{outer.i &file=file-work &frame=ui/f &max-rows=8}";
         let result = pp.process(FileId::new(1), source).unwrap();
         assert_eq!(
             &*result.to_text(),
             "find first t where recid(t) = id_[8] no-error.",
-            "{{3}} must thread the third named arg (max-down=8) down the chain",
+            "{{3}} must thread the third named arg (max-rows=8) down the chain",
         );
     }
 
@@ -5231,11 +5231,11 @@ done.
 
         // Caller passes an override name.
         let overridden = pp
-            .process(FileId::new(1), "{line.i &T-LINE = t-order-line}")
+            .process(FileId::new(1), "{line.i &T-LINE = t-item-row}")
             .unwrap()
             .to_text();
         assert!(
-            overridden.contains("def temp-table t-order-line no-undo"),
+            overridden.contains("def temp-table t-item-row no-undo"),
             "include arg must be captured, got: {overridden}"
         );
         assert!(

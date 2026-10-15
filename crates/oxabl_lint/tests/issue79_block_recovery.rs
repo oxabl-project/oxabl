@@ -94,7 +94,7 @@ fn body_error_block_no_fp() {
 /// orphan the enclosing blocks. The outermost DO WHILE header read (`done`)
 /// and the array/index reads (`id_`, `indx_`) inside the surviving blocks are
 /// all counted, and at least one parse error is still reported.
-/// Mirrors the ad100.i -> dbfcntl.i -> dbspdn.i shape from the issue.
+/// Mirrors the top.i -> outer.i -> inner.i shape from the issue.
 #[test]
 fn cascade_nested_error_does_not_orphan_outer_blocks() {
     let src = "\

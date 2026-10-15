@@ -207,7 +207,7 @@
 * **lexer,parser:** tilde line-continuation in skip_whitespace, Progress.* class type ([f6914bf](https://github.com/oxabl-project/oxabl/commit/f6914bf725b0c2a3cfccdadef7a552abcb81de88))
 * **lexer,parser:** trailing-minus numbers, MESSAGE AUTO-RETURN modifier ([0829044](https://github.com/oxabl-project/oxabl/commit/0829044eb0967d24ccb948ccc7715c764b54dc5a))
 * **parser,lexer:** handle :U1 format suffix, ACCUM statement, and REPOSITION-TO-ROW method calls ([067ac61](https://github.com/oxabl-project/oxabl/commit/067ac61d349a4abc3b3055496cd065a92c7036d5))
-* **parser,lexer:** handle dotnetrm/ patterns — 100% success rate ([36c94a9](https://github.com/oxabl-project/oxabl/commit/36c94a9bfa104666c0b760803da98d56f2af89ab))
+* **parser,lexer:** handle more real-world patterns ([36c94a9](https://github.com/oxabl-project/oxabl/commit/36c94a9bfa104666c0b760803da98d56f2af89ab))
 * **parser:** accept preprocessor references as identifiers ([61544d7](https://github.com/oxabl-project/oxabl/commit/61544d7106c7bd3db0c1f520779fb2e52143b1af))
 * **parser:** ACCUM expression with qualified fields and BY clause ([9941171](https://github.com/oxabl-project/oxabl/commit/9941171f994da08fc8f733c2f94f60fa3a03a283))
 * **parser:** add GET-KEY-VALUE skip and LOAD/UNLOAD/USE registry statement handlers ([1b0fcec](https://github.com/oxabl-project/oxabl/commit/1b0fcec7b0bf5e4e2efbc158c8c9c0fbdaf3c4b7))

@@ -429,7 +429,7 @@ protects real check numbers.
    - **PREPROC002** (unclosed &IF, if collected) — should drop toward 0
    - **PREPROC007** — may move with include path differences; not the #65 signal
 4. **Downstream pin (when pushing):** after oxabl is on a pushable rev, bump
-   pivot’s oxabl `rev` in `Cargo.toml` the same way as #58 and re-run the
+   the downstream consumer's oxabl `rev` in `Cargo.toml` the same way as #58 and re-run the
    consumer-side sample check; expect no net-new parse noise.
 
 ### Pass / fail rule

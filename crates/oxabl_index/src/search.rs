@@ -179,7 +179,7 @@ pub fn folded_program_path(target: &IndexName) -> PathBuf {
 }
 
 /// A `RUN` target as a path. The AVM reads `\` as a separator on every
-/// platform, so `comm\expdist.p` names the file `comm/expdist.p`.
+/// platform, so `util\export.p` names the file `util/export.p`.
 fn program_relative(target: &str) -> PathBuf {
     if target.contains('\\') {
         PathBuf::from(target.replace('\\', "/"))
@@ -1000,12 +1000,12 @@ mod tests {
 
     #[test]
     fn a_backslash_run_target_finds_the_file_under_a_directory() {
-        let fs = fs_with(&["/src/comm/expdist.p", "/src/comm/other.w"]);
+        let fs = fs_with(&["/src/util/export.p", "/src/util/other.w"]);
         let paths = dirs(&["/src"]);
         for (target, expected) in [
-            ("comm\\expdist.p", "/src/comm/expdist.p"),
-            ("Comm\\ExpDist.p", "/src/comm/expdist.p"),
-            ("comm\\other", "/src/comm/other.w"),
+            ("util\\export.p", "/src/util/export.p"),
+            ("Util\\Export.p", "/src/util/export.p"),
+            ("util\\other", "/src/util/other.w"),
         ] {
             assert_eq!(
                 find_name(&fs, &paths, &IndexName::new(target), NameKind::Program),

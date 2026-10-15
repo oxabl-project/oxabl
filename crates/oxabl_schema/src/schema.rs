@@ -709,7 +709,7 @@ mod tests {
 
     #[test]
     fn resolve_field_exact_match_wins() {
-        let mut t = new_table("scr-wiper");
+        let mut t = new_table("widget-cfg");
         push_field(&mut t, "Class");
         push_field(&mut t, "Methods");
         push_field(&mut t, "Source");
@@ -722,12 +722,11 @@ mod tests {
 
     #[test]
     fn resolve_field_unique_prefix_resolves() {
-        let mut t = new_table("scr-wiper");
+        let mut t = new_table("widget-cfg");
         push_field(&mut t, "Class");
         push_field(&mut t, "Methods");
         push_field(&mut t, "Source");
-        // `method` is an unambiguous abbreviation of `Methods` (the real
-        // corpus case: scr-wiper.method).
+        // `method` is an unambiguous abbreviation of `Methods`.
         match t.resolve_field(&fold_atom("method")) {
             FieldResolution::Unique(f) => assert_eq!(f.name, fold_atom("methods")),
             other => panic!("expected Unique, got {other:?}"),
@@ -762,7 +761,7 @@ mod tests {
 
     #[test]
     fn resolve_field_no_match_is_not_found() {
-        let mut t = new_table("scr-wiper");
+        let mut t = new_table("widget-cfg");
         push_field(&mut t, "Class");
         push_field(&mut t, "Methods");
         assert_eq!(

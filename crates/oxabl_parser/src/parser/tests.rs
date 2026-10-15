@@ -2616,7 +2616,7 @@ fn parse_define_variable_like_with_initial() {
 
 #[test]
 fn parse_define_variable_decimal_decimals_extent() {
-    let source = "Def var tax-round as decimal decimals 2 extent 5.";
+    let source = "Def var rate-adj as decimal decimals 2 extent 5.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -2627,7 +2627,7 @@ fn parse_define_variable_decimal_decimals_extent() {
             extent,
             ..
         } => {
-            assert_eq!(name.name, "tax-round");
+            assert_eq!(name.name, "rate-adj");
             assert!(matches!(
                 type_source,
                 TypeSource::Explicit(DataType::Decimal)
@@ -2963,8 +2963,8 @@ fn parse_next_prompt_statement() {
 
 #[test]
 fn parse_if_then_do_else_with_preproc_placeholder() {
-    // Corpus pattern (ad100.p, secco.p, static/*.p): an undefined preprocessor
-    // variable placeholder appears between `End.` and `Else`. The placeholder
+    // An undefined preprocessor variable placeholder appears between `End.`
+    // and `Else`. The placeholder
     // would normally expand to additional `Else If` branches; in raw
     // (unpreprocessed) source it lexes as `{&name}`. The parser must look past
     // it to bind ELSE.
@@ -2988,8 +2988,7 @@ fn parse_if_then_do_else_with_preproc_placeholder() {
 
 #[test]
 fn parse_if_then_do_end_else_do_end_nested_in_procedure() {
-    // Same pattern but inside a PROCEDURE body, which is the shape seen in
-    // the failing corpus files (e.g. wam_tmpl/manage_store.p).
+    // Same pattern but inside a PROCEDURE body.
     let source = "\
         PROCEDURE p:\n\
             IF x > 0 THEN DO:\n\
@@ -3178,8 +3177,8 @@ fn parse_return_error_without_value_is_a_bare_return() {
 #[test]
 fn run_target_stops_at_whitespace_and_comments() {
     for (source, expected) in [
-        ("RUN comm/expdist PERSISTENT SET h (1).", "comm/expdist"),
-        ("RUN comm/expdist\n  PERSISTENT SET h.", "comm/expdist"),
+        ("RUN util/export PERSISTENT SET h (1).", "util/export"),
+        ("RUN util/export\n  PERSISTENT SET h.", "util/export"),
         ("RUN sub2 /* c */.", "sub2"),
         ("RUN sub2 // c\n.", "sub2"),
         ("RUN sub2.p /* c */.", "sub2.p"),
@@ -10690,7 +10689,7 @@ fn parse_multiple_includes() {
 
 #[test]
 fn parse_include_with_named_args() {
-    let source = r#"{ms/report.i &event="start" &stream-name="s-printer"}."#;
+    let source = r#"{inc/report.i &event="start" &stream-name="s-device"}."#;
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
@@ -10698,7 +10697,7 @@ fn parse_include_with_named_args() {
         StatementKind::IncludeReference { path_and_args, .. } => {
             assert_eq!(
                 path_and_args,
-                r#"ms/report.i &event="start" &stream-name="s-printer""#
+                r#"inc/report.i &event="start" &stream-name="s-device""#
             );
         }
         _ => panic!("Expected IncludeReference statement, got {:?}", stmt),
@@ -10772,7 +10771,7 @@ fn parse_end_statement_without_trailing_period_at_eof() {
     // A comment after the last statement (before EoF) is also valid.
     for source in &[
         "end",
-        "end /* end for each std-doc */",
+        "end /* end for each item-doc */",
         "assign x = 1",
         "assign x = 1 /* comment */",
         "do:\n   assign x = 1.\nend",
@@ -10794,11 +10793,11 @@ fn dataset_preprop_compound_name_member_access() {
     // DATASET/BUFFER keyword followed by a name that includes an adjacent preprop
     // reference must consume the whole compound name so that postfix `:member`
     // access can be parsed. E.g. `dataset ds{&mainTable}:handle` or
-    // `hdsTarget:copy-dataset(hds{&mainTable},true,false,true)`.
+    // `hdsDest:copy-dataset(hds{&mainTable},true,false,true)`.
     for source in &[
-        "hdsTarget = dataset ds{&mainTable}:handle.",
-        "hdsTarget:copy-dataset(hds{&mainTable},true,false,true).",
-        "hdsTarget:copy-dataset(dataset ds{&mainTable}:handle,true).",
+        "hdsDest = dataset ds{&mainTable}:handle.",
+        "hdsDest:copy-dataset(hds{&mainTable},true,false,true).",
+        "hdsDest:copy-dataset(dataset ds{&mainTable}:handle,true).",
     ] {
         let tokens = tokenize(source);
         let mut parser = Parser::new(&tokens, source);
@@ -11479,7 +11478,7 @@ fn skipped_underline_harvests_the_variable_not_the_keyword() {
 /// so the harvest looks the same from the outside.
 #[test]
 fn skipped_unix_drops_the_field_half_of_a_qualified_name() {
-    assert_eq!(harvest("UNIX vendor.vend-number."), vec!["vendor"]);
+    assert_eq!(harvest("UNIX supplier.supp-id."), vec!["supplier"]);
 }
 
 /// The broad `can_be_identifier` classifier admits unreserved option keywords
@@ -11597,7 +11596,7 @@ fn skipped_span_covers_the_whole_statement() {
 #[test]
 fn skipped_ordinary_form_is_not_a_table_candidate() {
     assert!(!marks_tables("UNDERLINE v-total."));
-    assert!(!marks_tables("UNDERLINE vendor.vend-number."));
+    assert!(!marks_tables("UNDERLINE supplier.supp-id."));
 }
 
 /// `DEFINE QUERY q FOR tt.` names its backing table, so its harvest is offered
@@ -12111,7 +12110,7 @@ fn run_target_takes_every_path_shape_the_avm_accepts() {
         ("RUN a/b.c.p.", "a/b.c.p"),
         ("RUN a.b/c.p.", "a.b/c.p"),
         ("RUN a.b.c.", "a.b.c"),
-        ("RUN comm\\expdist.p.", "comm\\expdist.p"),
+        ("RUN util\\export.p.", "util\\export.p"),
         ("RUN x\\y\\z.p (1).", "x\\y\\z.p"),
         ("RUN 3rd/x.p.", "3rd/x.p"),
         ("RUN 3rd.p.", "3rd.p"),

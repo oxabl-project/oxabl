@@ -157,7 +157,7 @@ All Track B open questions were grilled through with the project owner and are s
 
 ## Project Constraints
 
-- **No proprietary or customer data / PII / private corpus in the oxabl repo.** All in-repo benchmarks and fixtures use **synthetic ABL**. The real ERP corpus stays out-of-repo and is referenced by **absolute path for local runs only** — never committed, never used as a checked-in fixture. This applies to every fixture or benchmark this track adds (S2/S3/S6 corpus work runs against the out-of-repo path locally; committed tests use synthetic samples).
+- **No proprietary or customer data / PII / private corpus in the oxabl repo.** All in-repo benchmarks and fixtures use **synthetic ABL**. The real-world corpus stays out-of-repo and is referenced by **absolute path for local runs only** — never committed, never used as a checked-in fixture. This applies to every fixture or benchmark this track adds (S2/S3/S6 corpus work runs against the out-of-repo path locally; committed tests use synthetic samples).
 
 ## Sequencing / Dependencies
 

@@ -642,7 +642,7 @@ impl Parser<'_> {
 
         // COPY-LOB: complex LOB manipulation statement — skip to next statement period.
         // Uses skip_to_statement_end() (not skip_to_period()) to avoid stopping at
-        // '.' field-access separators inside expressions like clob_data.datawad.
+        // '.' field-access separators inside expressions like doc_data.body_text.
         if self.check(Kind::CopyLob) {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
@@ -3498,12 +3498,12 @@ impl Parser<'_> {
             self.parse_identifier()?
         };
 
-        // Dotted version-number procedure names: e.g. setup_18.4.2_spdata lexes as
-        // Identifier("setup_18") + DecimalLiteral(".4") + DecimalLiteral(".2") + Identifier("_spdata").
+        // Dotted version-number procedure names: e.g. config_18.4.2_extra lexes as
+        // Identifier("config_18") + DecimalLiteral(".4") + DecimalLiteral(".2") + Identifier("_extra").
         // Consume the extra tokens to advance past the full name.
         while self.check(Kind::DecimalLiteral) {
             self.advance(); // consume ".4", ".2", etc.
-            // An underscore/alpha-led segment directly following (e.g. "_spdata") is a separate Identifier.
+            // An underscore/alpha-led segment directly following (e.g. "_data") is a separate Identifier.
             if self.check(Kind::Identifier) {
                 self.advance();
             }
@@ -3756,7 +3756,7 @@ impl Parser<'_> {
                     if self.check(Kind::Comma) {
                         self.advance(); // consume comma
                     } else if last_was_include && !self.check(Kind::RightParen) {
-                        // An include reference (e.g. {ms/global-out.i &COMMA}) expands to an
+                        // An include reference (e.g. {inc/list-out.i &COMMA}) expands to an
                         // argument plus a trailing comma — allow any next token to follow.
                     } else if matches!(
                         self.peek().kind,
@@ -3877,7 +3877,7 @@ impl Parser<'_> {
                     if self.check(Kind::Comma) {
                         self.advance();
                     } else if last_was_include && !self.check(Kind::RightParen) {
-                        // Include ref (e.g. {ms/global-out.i &COMMA}) expands to include a
+                        // Include ref (e.g. {inc/list-out.i &COMMA}) expands to include a
                         // trailing comma — continue without consuming a literal comma.
                     } else if matches!(
                         self.peek().kind,
@@ -3931,7 +3931,7 @@ impl Parser<'_> {
             false
         };
 
-        // Skip any trailing content before the period (e.g. hold-code.hold-logic or extra ')')
+        // Skip any trailing content before the period (e.g. lock-code.lock-rule or extra ')')
         // and consume the terminating period.
         let mut tail = None;
         if !self.check(Kind::Period) && !self.at_end() {
@@ -5371,7 +5371,7 @@ impl Parser<'_> {
     /// comment, so a period followed by whitespace is the statement terminator.
     fn parse_procedure_name(&mut self) -> ParseResult<(String, Span)> {
         // Procedure names are file paths and can start with any word-like token,
-        // including reserved keywords (e.g., `do/doclimit.p`, `for/something.p`),
+        // including reserved keywords (e.g., `do/limit.p`, `for/something.p`),
         // a digit (`3rd/x.p`), a `/` (`RUN /opt/app/batch.p`) or `./` / `../`.
         let first = self.peek().kind;
         let leading_dot = first == Kind::Period
@@ -5607,7 +5607,7 @@ impl Parser<'_> {
         self.parse_class_modifiers(&mut is_abstract, &mut is_final);
 
         // Parse class name (dotted). Use parse_class_qualified_name() so that reserved
-        // keywords used as namespace prefixes (e.g. `do.wsdo800obj`) are accepted.
+        // keywords used as namespace prefixes (e.g. `do.widgetobj`) are accepted.
         let name = self.parse_class_qualified_name()?;
 
         // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
@@ -6209,7 +6209,7 @@ impl Parser<'_> {
             // A period is a name separator only if the next token is on the same line
             // (no newline in the source between the period end and the next token start).
             // This distinguishes "Progress.Lang.Class." (Class on same line = name segment)
-            // from "HarmonizationCode.\nclass" (class on next line = statement terminator).
+            // from "LabelFinder.\nclass" (class on next line = statement terminator).
             let period_end = self.token_at(self.current).end;
             let next_token_start = self.peek_at(1).start;
             let same_line = !self.source[period_end..next_token_start].contains('\n');
@@ -7088,7 +7088,7 @@ impl Parser<'_> {
         let body = self.current;
 
         // Skip frame phrase content.  Use skip_to_statement_end() so that field-access dots
-        // inside VALIDATE expressions (e.g. t-pc-center.company) are not mistaken for
+        // inside VALIDATE expressions (e.g. t-cost-area.company) are not mistaken for
         // the terminating period.
         let tail = self.skip_tail_to_statement_end();
         let raw_end = self.token_at(self.current - 1).start as u32;

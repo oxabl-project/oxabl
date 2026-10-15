@@ -116,7 +116,7 @@
 * **lexer:** Consume ABL translation suffixes (:U, :T) as part of string literals ([962ad7d](https://github.com/oxabl-project/oxabl/commit/962ad7d25bcad7e445680eaa3194c39fdafabe06))
 * **lexer:** Consume ABL translation suffixes (:U, :T) as part of string literals ([af6bdc3](https://github.com/oxabl-project/oxabl/commit/af6bdc3aa1a43dfba36c9e111be2294e16959ed6))
 * **parser,lexer:** handle :U1 format suffix, ACCUM statement, and REPOSITION-TO-ROW method calls ([067ac61](https://github.com/oxabl-project/oxabl/commit/067ac61d349a4abc3b3055496cd065a92c7036d5))
-* **parser,lexer:** handle dotnetrm/ patterns — 100% success rate ([36c94a9](https://github.com/oxabl-project/oxabl/commit/36c94a9bfa104666c0b760803da98d56f2af89ab))
+* **parser,lexer:** handle more real-world patterns ([36c94a9](https://github.com/oxabl-project/oxabl/commit/36c94a9bfa104666c0b760803da98d56f2af89ab))
 * **parser:** add THROW statement and ON phrase support ([668fd45](https://github.com/oxabl-project/oxabl/commit/668fd4543479358e0be21318b95f6c955894f13d))
 * **parser:** add Xref/XrefXml to can_be_identifier for COMPILE member access ([6b3d050](https://github.com/oxabl-project/oxabl/commit/6b3d0504e4cf4d278952ee1e38c42ce8e2791482))
 * **parser:** BY-REFERENCE modifier, inline IF, BELL, QUERY expr, END CASE, RELATION-FIELD ([5ad0fb7](https://github.com/oxabl-project/oxabl/commit/5ad0fb7cbde7c9e6a0479319d474fedaaffc185c))
