@@ -221,6 +221,7 @@ pub enum Kind {
     ToRowid,
     Trim,
     Userid,
+    TypeOf,
 
     // Properties
     Ascending,
@@ -1051,6 +1052,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "termina" => Some(Kind::Terminal),
             "through" => Some(Kind::Through),
             "trigger" => Some(Kind::Trigger),
+            "type-of" => Some(Kind::TypeOf),
             "underli" => Some(Kind::Underline),
             "unforma" => Some(Kind::Unformatted),
             "v6frame" => Some(Kind::V6frame),

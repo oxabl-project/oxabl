@@ -839,3 +839,13 @@ min_abbreviation = "COMP"
 name = "NO-APPLY"
 reserved = false
 keyword_type = "Option"
+
+# =============================================================================
+# TYPE-OF
+# Unreserved built-in function whose second argument names a type; the
+# dependency scan of not-taken &IF text dispatches on it.
+# =============================================================================
+
+[[add]]
+name = "TYPE-OF"
+keyword_type = "Function"

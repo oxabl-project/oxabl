@@ -70,6 +70,7 @@ pub fn is_callable_kind(kind: Kind) -> bool {
             | Kind::Time
             | Kind::ToRowid
             | Kind::Trim
+            | Kind::TypeOf
             | Kind::Userid
     )
 }
@@ -130,5 +131,6 @@ pub const CALLABLE_FUNCTION_KINDS: &[Kind] = &[
     Kind::Time,
     Kind::ToRowid,
     Kind::Trim,
+    Kind::TypeOf,
     Kind::Userid,
 ];
