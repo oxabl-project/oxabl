@@ -1066,7 +1066,7 @@ These rows are not modelled yet. They are the input of NL001, NL002 and NL004 (s
 | N3 | **A field of an empty buffer is an error, not `?`.** Reading or assigning `b.f` when `b` has no record raises ERROR (`** No <table> record is available`). | Documented. | `finds.p` |
 | N4 | `NO-WAIT NO-ERROR` on a record another session locks leaves the buffer empty, with `LOCKED b` true. | Recalled, medium. | — |
 | N5 | `FIND NEXT` and `FIND PREV` with `NO-ERROR` past the last record leave the buffer empty (the usual end of a `REPEAT` that walks an index). | Documented. | `loops.p` |
-| N6 | `FIND CURRENT b NO-ERROR` fails, and leaves the buffer empty, when `b` has no record or another session deleted it. | Recalled, low. | `finds.p` |
+| N6 | `FIND CURRENT b NO-ERROR` fails, and leaves the buffer empty, when `b` has no record or another session deleted it. The model takes it as no source and no refill: it re-reads the record the buffer holds, and the buffer stays as it was. On both corpora these were re-reads to change the lock right after the record was used, and two of the first fifteen findings of the second corpus were such re-reads. | Recalled, low; the model's choice is Proposed. | `finds.p` |
 | N7 | `NO-ERROR` on a statement also suppresses the error of N3: `ASSIGN x = b.f NO-ERROR` with no record raises nothing, and `x` is unchanged. | Recalled, medium. | `finds.p` |
 | N8 | **`ERROR-STATUS`.** Each statement with `NO-ERROR` resets `ERROR-STATUS`; a statement without it leaves it alone. After a `FIND ... NO-ERROR` that found no record, `ERROR-STATUS:ERROR` is `yes`; after one that found a record, `no`. | Recalled, medium. | `guards.p` |
 | N9 | `CAN-FIND` reads with a buffer of its own (S9): it neither fills nor empties `b`. | Recalled, high. | `guards.p` |
@@ -1077,14 +1077,15 @@ These rows are not modelled yet. They are the input of NL001, NL002 and NL004 (s
 
 | # | The model | Confidence | Fixture |
 |---|---|---|---|
-| G1 | `AVAILABLE b`, `AVAIL b` and `AVAILABLE(b)` in the condition of an `IF` statement: on the `THEN` edge `b` has a record; on the `ELSE` edge (taken with or without an `ELSE`) it is empty. `NOT` swaps the edges. | Documented. | `guards.p` |
+| G1 | `AVAILABLE b`, `AVAIL b` and `AVAILABLE(b)` in the condition of an `IF` statement: on the `THEN` edge `b` has a record; on the `ELSE` edge (taken with or without an `ELSE`) it is empty. `NOT` swaps the edges. The operand is always a buffer, also where a variable of the same name hides the table from the scope analysis (S11): the model then looks the name up among the buffers the unit can see. | Documented. | `guards.p` |
 | G2 | `AND` and `OR` combine: the `THEN` edge of `A AND B` has what either side gives; its `ELSE` edge only what both give on their `ELSE` edges. `OR` is the dual. Parentheses are looked through. | Inferred from G1. | `guards.p` |
 | G3 | `DO WHILE` and `REPEAT WHILE` guard the body by their condition; the edge that leaves the loop is guarded by the negation only when the header has no `TO` (a `TO` limit leaves too). | Inferred from G1. | `loops.p` |
 | G4 | An arm that does not reach the code after the `IF` (`LEAVE`, `NEXT`, `RETURN`, `RETURN ERROR`, `UNDO, ...`, `THROW`, `STOP`, `QUIT`, a `DO` block that ends with one) guards the rest: the flow graph only reaches it from the other arm. An arm that rejoins keeps the buffer maybe empty. | Documented (the flow graph's block semantics, section 5). | `guards.p` |
-| G5 | `ERROR-STATUS:ERROR` in a condition: when on every path the last statement with `NO-ERROR` is a `FIND` of `b`, the `ERROR-STATUS:ERROR` false edge has a record in `b` (N8). Any other `NO-ERROR` statement in between breaks the link. | Inferred from N8. | `guards.p` |
+| G5 | `ERROR-STATUS:ERROR` in a condition: its false edge has a record in `b` when, on every path, the last statement with `NO-ERROR` is the `FIND` of `b` or `b` was refilled or guarded after that `FIND` (N8). A chain `IF NOT ERROR-STATUS:ERROR THEN FIND c ... NO-ERROR.` keeps the link. Any other `NO-ERROR` statement after an unguarded `FIND` breaks it. | Inferred from N8. | `guards.p` |
 | G6 | `CAN-FIND` is no guard (N9). `LOCKED b` being true says `b` is empty; being false says nothing. | Recalled, high. | `guards.p` |
 | G7 | A condition that names `b` at record level in a form the model does not read (`ROWID(b) = ?`, `RECID(b) <> ?`, `BUFFER b:AVAILABLE`, `AVAILABLE b = no`, `LOCKED b`, `NEW b`) counts as a guard of `b` on both edges: Unknown. | Proposed. | `guards.p` |
 | G8 | **Inside one statement.** A field of `b` in a statement that also tests `AVAILABLE b` anywhere (the `IF ... THEN ... ELSE` function, `AND`, `OR`, `DISPLAY ... WHEN`) is taken as guarded (N10). The test is by statement, not by operand, so `NOT AVAILABLE b AND b.f = x` is missed. | Proposed (conservative). | `guards.p` |
+| G9 | **Dependent finds.** When a guard or a completed field reference proves that `c` has a record, a `FIND c ... NO-ERROR` whose criteria read a field of `b` found its record, so `b` had one too (a field of an empty `b` raises an error, which `NO-ERROR` turns into a failed `FIND`, N7). The model then forgets the failed finds of `b`. It does not check that `b` was not found again in between. | Inferred from N3 and N7. | `guards.p` |
 
 ### 9.4 Where a record comes back
 
@@ -1097,6 +1098,7 @@ These rows are not modelled yet. They are the input of NL001, NL002 and NL004 (s
 | K5 | A statement that may change `b` where the file does not show it: `b` passed as `BUFFER b` to a call, a statement form the model does not know that names `b`, a dynamic method on any handle (`FIND-*`, `GET-*`, `BUFFER-CREATE`, `BUFFER-COPY`, `FILL`, `QUERY-OPEN`, `REPOSITION-*`, `SYNCHRONIZE`, `RAW-TRANSFER`: the handle may be `BUFFER b:HANDLE`), and an unexpanded `{...}` or an elided `{&name}` in the statement. Unknown for `b`, or for every buffer when the target cannot be told. | Inferred. | `unknown.p` |
 | K6 | A statement that runs other code of the file or another program (`RUN`, a user-defined or dynamic function, `SUPER`, a method call, `PUBLISH`, `APPLY`, `WAIT-FOR`, an input statement whose triggers may run) may change a shared buffer and any buffer another routine of the file names: Unknown for those. | Inferred. | `unknown.p` |
 | K7 | Each routine starts with no failed `FIND` known: a buffer of the main block that an internal procedure uses may hold any record when the procedure is called. | Proposed (conservative). | `units.p` |
+| K8 | **Error paths are not followed.** The flow graph lets every statement without `NO-ERROR` raise ERROR (section 5), also an `IF AVAILABLE b` test that cannot. On a raise edge the model forgets every failed `FIND`: where a statement raised, the error is the first problem. A `CATCH` or `ON ERROR` arm that reads a field of a buffer a `FIND` in its block may have left empty is therefore not reported. | Proposed (conservative). On the second corpus this removed 42 of 825 findings; those read were raise paths from statements that cannot raise. | `finds.p` |
 
 ### 9.5 What the model leaves Unknown
 
@@ -1107,7 +1109,13 @@ These rows are not modelled yet. They are the input of NL001, NL002 and NL004 (s
 - **A statement** that holds an elided reference (an undefined `{&name}`, a `{N}` with no
   argument): it may hide `NO-ERROR`, a guard or a write. The model forgets every failed `FIND` there
   and reports nothing in it.
-- Everything in K4 to K7.
+- **A branch of a statement-level `&IF`** that the preprocessor left in the text (its test was
+  not decided): the branch may never be compiled, so a use in it is not reported. Its statements
+  still refill and forget.
+- **Correlated guards.** A guard through a variable (`IF NOT AVAILABLE b THEN lError = TRUE.`
+  ... `IF lError THEN RETURN.`) or a loop that runs only with a record is not seen: the model is
+  path-insensitive. These are the false positives left (section 9.7).
+- Everything in K4 to K8.
 
 ### 9.6 The rule NL003 (M5, first slice)
 
@@ -1117,9 +1125,9 @@ analysis the `LK`, `TX` and `DB` rules use, and only when the rule is enabled. I
 them.
 
 A field of `b` is reported where `b` may be empty because a `FIND ... NO-ERROR` of `b` may have
-failed (N1, N5, N6) and no guard (G1-G8) or refill (K1-K7) lies on some path between them. It
-rests on N1, N3 (Documented) and N7, N10 (Recalled, medium). The message quotes the `FIND`. One
-finding per field reference; a reference in a `FINALLY` block counts once.
+failed (N1, N5) and no guard (G1-G9) or refill (K1-K8) lies on some path between them. It rests on
+N1, N3 (Documented) and N7, N10 (Recalled, medium). The message quotes the `FIND`. One finding per
+statement and buffer, at its first field reference; a statement in a `FINALLY` block counts once.
 
 Left out:
 
@@ -1128,10 +1136,57 @@ Left out:
 - record-level uses of an empty buffer (`DISPLAY b`, `BUFFER-COPY b TO c`, `DELETE b`), which
   raise the same error: a later slice may add them;
 - a `FOR FIRST` or `FOR LAST` that finds nothing (it runs no iteration, so no field is read);
-- `RELEASE` and `DELETE` as sources (N11);
+- `FIND CURRENT ... NO-ERROR` as a source (N6), and `RELEASE` and `DELETE` (N11);
+- error paths (K8);
 - everything section 9.5 leaves Unknown.
 
-### 9.7 What NL001, NL002 and NL004 need
+### 9.7 Corpus check
+
+Verified, counts only. Over the two corpora of section 7.6, as `oxabl check` expands them, with
+their schemas and `strict.nulls` switched on (`crates/oxabl/examples/nulls_corpus.rs`): no panic.
+NL003 gives 9,154 findings in the first corpus (10,619 programs and 3,549 include files checked)
+and 714 in the second (2,526 and 782). 3,823 and 49 of them are at the `{...}` site of an
+include; two include lines of the first corpus account for 3,583 of those, so the findings have
+5,370 and 701 distinct anchors.
+
+Triage. Fifteen random findings per corpus were read against the code, in rounds; each round's
+wrong ones changed the model:
+
+- **`FIND CURRENT ... NO-ERROR`** after the record was used (2 of the first 15, second corpus):
+  now no source (N6).
+- **Raise paths** (an `IF NOT AVAILABLE` test that "may raise" into an `ON ERROR` arm that
+  rejoins; 1 of the first 15, first corpus): error paths are no longer followed (K8).
+- **A table name hidden by a variable of the same name** in `AVAILABLE` (3 of the first 15,
+  first corpus): G1 now looks the name up.
+- **`ERROR-STATUS` chains** (`IF NOT ERROR-STATUS:ERROR THEN FIND ... NO-ERROR.` repeated, then
+  one test): G5 now keeps the link (1 of 15).
+- **Dependent finds** (`FIND c WHERE ROWID(c) = TO-ROWID(b.id) NO-ERROR.` and a guard of `c`
+  only; 4 of 15, second corpus): G9.
+- **A loop over `RECID(b)`** that runs only with a record (1 of 15): K4 covers a loop header that
+  names `b`.
+
+In the last round, 14 of 15 were right in each corpus; the one wrong finding of each was a
+correlated guard (a variable, a dependent find proved by a later use), and the final model drops
+both without dropping a right one. Correlated guards through a variable (section 9.5) are the
+known class left. That is a false-positive rate near 7 % on a sample this small, so the rule
+stays a preview warning.
+
+The right findings are of four kinds: a control or setup record found with `NO-ERROR` and used at
+once (the most common; the record exists in every working database, but the code does not say
+so); a record found by `ROWID` or `RECID` passed in by the caller; a not-available arm that
+reports the problem and then falls through to the use; and real bugs. The samples held at least
+eight that look like bugs: four tests of the wrong buffer (`FIND bOrder ... IF NOT AVAILABLE
+Order`), one `IF NOT AVAILABLE b THEN x = b.f`, one message in the not-available arm that names a
+field of the missing record, and two not-available arms that set an error flag and fall through
+to the use.
+
+**Cost.** With `strict.nulls` off nothing is computed: `oxabl check` gives byte-identical output
+on both trees before and after this change, and its wall time is the same within the noise. With
+the group on, the scope analysis the rule reads dominates (it is shared with `strict.locks`); the
+failed-find analysis on top of it is within the noise on the first corpus and under a second on
+the second (12.1 s and 12.9 s with `strict.locks` on, in one process).
+
+### 9.8 What NL001, NL002 and NL004 need
 
 - **NL001** (unknown in a comparison or condition): a forward dataflow of "may be `?`" per
   variable, parameter and field, with the sources of V2 (the schema's `MANDATORY` flag and
