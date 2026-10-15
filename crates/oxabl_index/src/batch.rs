@@ -23,7 +23,7 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::facts::{ClassFacts, FileFacts};
-use crate::producers::{SharedProducers, mentions_shared};
+use crate::producers::{SharedProducers, may_define_shared};
 use crate::{IncludeContext, index_file_at, search};
 
 /// The generation a batch reports.
@@ -651,6 +651,10 @@ impl Memo {
     /// Index the files of `files` that can produce a `SHARED` name, reading each
     /// once, and remember them as seeded. A file this index already knows is
     /// left as it is.
+    ///
+    /// The prefilter skips only a file that [`index_file_at`] would find no
+    /// definition in, so a file is a producer by the same rule whether an
+    /// earlier lookup indexed it or not.
     fn index_possible_producers(&mut self, includes: &IncludeContext<'_>, files: &[PathBuf]) {
         for path in files {
             let key = search::normalize_lexically(path);
@@ -661,7 +665,7 @@ impl Memo {
             let Ok(source) = includes.fs.read(path) else {
                 continue;
             };
-            if mentions_shared(&source) {
+            if may_define_shared(&key, &source, includes) {
                 let file = self.insert_facts(key, Some(&source), includes).file;
                 self.seeded.insert(file);
             }

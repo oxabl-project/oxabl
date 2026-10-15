@@ -573,6 +573,11 @@ impl<'a> LintPipeline<'a> {
     /// [`shared_producers`](Self::shared_producers), then give every thread's
     /// handle a borrow of it. The answers are the same as the seeded ones.
     ///
+    /// A file in the set that is nothing but includes and directives produces
+    /// what its includes define. A file with code of its own produces only what
+    /// its text as written defines: a `DEFINE NEW SHARED` it gets from an include
+    /// is not found, and a consumer of that name gets no edge to it.
+    ///
     /// Apply to the **run** handle, before any lookup.
     #[must_use]
     pub fn with_shared_producers(mut self, producers: &'a SharedProducers) -> Self {
@@ -722,6 +727,12 @@ impl<'a> LintPipeline<'a> {
     /// answers only from the files this file's own lookups reached, such as a
     /// program it `RUN`s. Either way the edge set does not depend on which files
     /// the run analysed before.
+    ///
+    /// A producer that is nothing but includes and directives is found through
+    /// them. A producer with code of its own is judged by its text as written, so
+    /// a `DEFINE NEW SHARED` it gets only from an include gives no edge, and the
+    /// edge set's [`Completeness`](oxabl_index::Completeness) does not record that
+    /// gap.
     ///
     /// The whole-workspace reverse pass calls this per file. Guarded, unlike
     /// [`expand`](Self::expand) and [`collect`](Self::collect): one unparseable or

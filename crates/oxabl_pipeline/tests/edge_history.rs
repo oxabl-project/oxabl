@@ -144,3 +144,107 @@ fn a_reused_pipeline_with_a_shared_producer_map_gives_the_same_edges_as_a_fresh_
         "the map holds no producer of the name"
     );
 }
+
+/// A producer whose `NEW SHARED` definition comes only from its include, and a
+/// consumer that names nothing that would pull the producer in.
+mod producer_built_from_includes {
+    use super::*;
+
+    const DEFS: &str = "DEFINE NEW SHARED VARIABLE v-x AS INTEGER NO-UNDO.\nRUN b.p.\n";
+    const B: &str = "DEFINE SHARED VARIABLE v-x AS INTEGER NO-UNDO.\nMESSAGE v-x.\n";
+    const C: &str = "RUN a.p.\n";
+
+    fn workspace(a: &str) -> InMemoryFileSystem {
+        let mut fs = InMemoryFileSystem::new();
+        fs.insert(PathBuf::from("/p/a.p"), a);
+        fs.insert(PathBuf::from("/p/defs.i"), DEFS);
+        fs.insert(PathBuf::from("/p/b.p"), B);
+        fs.insert(PathBuf::from("/p/c.p"), C);
+        fs
+    }
+
+    fn config() -> PipelineConfig {
+        PipelineConfig {
+            include_paths: vec![PathBuf::from("/p")],
+            ..PipelineConfig::default()
+        }
+    }
+
+    fn known() -> Vec<PathBuf> {
+        ["/p/a.p", "/p/b.p", "/p/c.p"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    /// The consumer's edges under every way a run can be seeded and reused.
+    fn every_order(a: &str) -> Vec<(&'static str, Vec<String>)> {
+        let fs = workspace(a);
+        let config = config();
+        let known = known();
+        let map = LintPipeline::new(&config, &fs).shared_producers(&known);
+        let mut seen = Vec::new();
+
+        let fresh = LintPipeline::new(&config, &fs).with_known_files(&known);
+        seen.push(("seeded, fresh", observed(&fresh, "/p/b.p", B)));
+
+        let reused = LintPipeline::new(&config, &fs).with_known_files(&known);
+        observed(&reused, "/p/c.p", C);
+        seen.push(("seeded, after c.p", observed(&reused, "/p/b.p", B)));
+
+        let reused = LintPipeline::new(&config, &fs).with_known_files(&known);
+        observed(&reused, "/p/a.p", a);
+        seen.push(("seeded, after a.p", observed(&reused, "/p/b.p", B)));
+
+        // Two threads, each with its own seeded index and its own share of roots.
+        let first = LintPipeline::new(&config, &fs).with_known_files(&known);
+        let second = LintPipeline::new(&config, &fs).with_known_files(&known);
+        observed(&second, "/p/c.p", C);
+        observed(&first, "/p/a.p", a);
+        seen.push(("per thread, first", observed(&first, "/p/b.p", B)));
+        seen.push(("per thread, second", observed(&second, "/p/b.p", B)));
+
+        let fresh = LintPipeline::new(&config, &fs).with_shared_producers(&map);
+        seen.push(("map, fresh", observed(&fresh, "/p/b.p", B)));
+
+        let reused = LintPipeline::new(&config, &fs).with_shared_producers(&map);
+        observed(&reused, "/p/c.p", C);
+        seen.push(("map, after c.p", observed(&reused, "/p/b.p", B)));
+        seen
+    }
+
+    fn assert_found_everywhere(a: &str) {
+        let want = format!(
+            "{} {}",
+            EdgeKind::SharedProducer.as_str(),
+            Path::new("/p/a.p").display()
+        );
+        for (how, edges) in every_order(a) {
+            let shared: Vec<&String> = edges
+                .iter()
+                .filter(|e| e.starts_with(EdgeKind::SharedProducer.as_str()))
+                .collect();
+            assert_eq!(shared.len(), 1, "{how}: {edges:?}");
+            assert!(shared[0].starts_with(&want), "{how}: {edges:?}");
+        }
+    }
+
+    #[test]
+    fn a_producer_that_is_only_includes_is_found_in_every_order() {
+        assert_found_everywhere("{defs.i}\n");
+    }
+
+    /// Not found, by the documented rule, but alike in every order.
+    #[test]
+    fn a_producer_with_code_of_its_own_and_an_include_is_missed_in_every_order() {
+        let a = "DEFINE VARIABLE v-own AS INTEGER NO-UNDO.\n{defs.i}\nMESSAGE v-own.\n";
+        for (how, edges) in every_order(a) {
+            assert!(
+                !edges
+                    .iter()
+                    .any(|e| e.starts_with(EdgeKind::SharedProducer.as_str())),
+                "{how}: {edges:?}"
+            );
+        }
+    }
+}

@@ -12653,3 +12653,152 @@ fn seek_statement_parses_with_end_operand() {
         StatementKind::Skipped { .. }
     ));
 }
+
+#[test]
+fn a_statement_cut_short_at_the_end_of_the_file_does_not_panic() {
+    for source in [
+        "DO TRANSACTION ON ",
+        "IF LOCKED",
+        "IF LOCKED ",
+        "CATCH e AS",
+        "CATCH e AS ",
+        "x = NEW",
+        "FIND FIRST t NO-LOCK NO-ERROR. IF AVAILABLE",
+        "DO ON ERROR UNDO, LEAVE ON",
+    ] {
+        let tokens = tokenize(source);
+        let _ = Parser::new(&tokens, source).parse_program();
+    }
+}
+
+/// Every prefix of each file parses without a panic: a buffer being typed is
+/// cut at any byte.
+#[test]
+fn no_prefix_of_a_representative_file_panics() {
+    let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources");
+    for name in [
+        "bench_parser_control_flow.abl",
+        "bench_parser_datasets.abl",
+        "bench_parser_declarations.abl",
+        "bench_parser_expressions.abl",
+        "bench_parser_oo_abl.abl",
+        "bench_parser_procs_funcs.abl",
+        "bench_parser_skipped_forms.abl",
+        "bench_parser_temp_tables.abl",
+        "bench_lint_class.abl",
+        "bench_lint_procedural.abl",
+    ] {
+        let text = std::fs::read_to_string(resources.join(name)).expect("fixture");
+        for end in (0..=text.len()).filter(|&end| text.is_char_boundary(end)) {
+            let source = &text[..end];
+            let parsed = std::panic::catch_unwind(|| {
+                let tokens = tokenize(source);
+                let _ = Parser::new(&tokens, source).parse_program();
+            });
+            assert!(
+                parsed.is_ok(),
+                "{name} cut at byte {end} panics; the prefix ends with {:?}",
+                &source[source.len().saturating_sub(40)..]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_keyword_against_a_block_header_colon_still_ends_the_header() {
+    for source in [
+        "CASE x:WHEN 1 THEN MESSAGE \"one\". OTHERWISE MESSAGE \"other\". END CASE.",
+        "CASE x:WHEN \"a\" OR WHEN \"b\" THEN MESSAGE \"ab\". END CASE.",
+        "CASE x: WHEN 1 THEN MESSAGE \"one\". END CASE.",
+        "CASE o:Value:WHEN 1 THEN MESSAGE \"one\". END CASE.",
+        "CASE x:OTHERWISE MESSAGE \"other\". END CASE.",
+        "CASE x:OTHERWISE DO: MESSAGE \"other\". END. END CASE.",
+        "FOR EACH t WHERE t.a = x:DISPLAY t.a. END.",
+        "FOR EACH t WHERE t.a = x:DELETE t. END.",
+        "FOR EACH t BY t.a DESCENDING:DISPLAY t.a. END.",
+        "DO WHILE x:IF x THEN LEAVE. END.",
+        "DO WHILE x:LEAVE. END.",
+        "REPEAT WHILE x < 3:ASSIGN x = x + 1. END.",
+        "DO i = 1 TO n:IF i > 1 THEN LEAVE. END.",
+        "IF x THEN DO:MESSAGE \"x\". END.",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn a_keyword_member_is_still_read_before_what_can_follow_a_member() {
+    for source in [
+        "r = o:When.",
+        "r = o:Otherwise(1).",
+        "r = o:Display + 1.",
+        "IF o:Display AND o:When THEN MESSAGE \"x\".",
+        "DISPLAY o:Display FORMAT \"x(8)\" WITH FRAME f.",
+        "r = MAXIMUM(o:Display, o:When).",
+        "r = o:When[1].",
+        "o:Display = 2.",
+        "r = IF a THEN o:When ELSE 0.",
+        "CASE o:When:WHEN 1 THEN MESSAGE \"one\". END CASE.",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn a_do_block_takes_while_transaction_and_on_phrases_in_any_order() {
+    for source in [
+        "DO ON ERROR UNDO, LEAVE ON ENDKEY UNDO, LEAVE TRANSACTION WHILE i < 3:\n  i = i + 1.\nEND.",
+        "DO TRANSACTION WHILE i < 3 ON ERROR UNDO, LEAVE:\n  i = i + 1.\nEND.",
+        "DO WHILE i < 3 TRANSACTION ON ERROR UNDO, LEAVE:\n  i = i + 1.\nEND.",
+        "DO WHILE i < 3 ON ERROR UNDO, LEAVE TRANSACTION:\n  i = i + 1.\nEND.",
+        "DO ON ERROR UNDO, RETRY TRANSACTION WHILE i < 3:\n  i = i + 1.\nEND.",
+        "DO i = 1 TO 3 TRANSACTION ON ERROR UNDO, THROW:\n  MESSAGE i.\nEND.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Do {
+            transaction,
+            while_condition,
+            to,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected DO, got {:?}", stmts[0].kind);
+        };
+        assert!(*transaction, "{source}");
+        assert!(while_condition.is_some() || to.is_some(), "{source}");
+    }
+}
+
+#[test]
+fn override_and_abstract_on_a_property_come_in_either_order() {
+    for source in [
+        "DEFINE PUBLIC ABSTRACT OVERRIDE PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+        "DEFINE PUBLIC OVERRIDE ABSTRACT PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+        "DEFINE OVERRIDE PUBLIC ABSTRACT PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 1, "{source}");
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Property { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
+
+#[test]
+fn raw_transfer_and_underline_are_unmodelled_statements_and_raw_transfer_is_still_a_name() {
+    for source in [
+        "RAW-TRANSFER BUFFER Customer TO BUFFER tt NO-ERROR.",
+        "RAW-TRANSFER Customer TO tt.",
+        "UNDERLINE Customer.Name WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+    assert_parses_clean("DEFINE VARIABLE raw-transfer AS INTEGER NO-UNDO.\nraw-transfer = 1.");
+}

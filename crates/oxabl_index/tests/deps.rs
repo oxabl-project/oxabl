@@ -846,3 +846,18 @@ fn a_dynamic_buffer_field_named_like_a_table_is_no_edge() {
         assert!(table_edges(source).is_empty(), "{source}");
     }
 }
+
+#[test]
+fn a_table_named_by_raw_transfer_underline_or_current_changed_is_an_edge() {
+    for source in [
+        "RAW-TRANSFER Customer TO Customer.",
+        "RAW-TRANSFER BUFFER Customer TO BUFFER Customer.",
+        "UNDERLINE Customer.Name.",
+        "UNDERLINE Customer.Name WITH FRAME f.",
+        "MESSAGE CURRENT-CHANGED Customer.",
+        "MESSAGE CURRENT-CHANGED(Customer).",
+        "IF CURRENT-CHANGED Customer THEN MESSAGE 1.",
+    ] {
+        assert_eq!(table_edges(source), ["customer"], "{source}");
+    }
+}

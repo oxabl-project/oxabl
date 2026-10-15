@@ -15,6 +15,11 @@
 //! of the run, so a `SharedProducer` edge built that way is not reproducible.
 //! Build the map over every file the run can see, and the edge is the same on
 //! every thread and in every order.
+//!
+//! A file that produces a name only through an include is found when it is
+//! nothing but includes and directives. One with code of its own is judged by
+//! its text as written, as [`index_file`] judges it, so its producer edge is
+//! missing, on every thread and in every order alike.
 
 use std::path::{Path, PathBuf};
 
@@ -27,7 +32,9 @@ use crate::{IncludeContext, IndexedFileId, index_file_at};
 ///
 /// Holds paths as given, so an index reads a producer the same way it reads any
 /// other file. A file the map lists is a producer only as far as it reads and
-/// parses: one that is unreadable or does not parse defines nothing.
+/// parses: one that is unreadable or does not parse defines nothing. A file
+/// with code of its own defines only what its text as written defines, not a
+/// name an include defines for it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SharedProducers {
     by_name: FxHashMap<Box<str>, Vec<PathBuf>>,
@@ -89,18 +96,41 @@ impl SharedProducers {
 /// The same answer as indexing the file, reached without the parse for a file
 /// that cannot say `SHARED` at all: the keyword has no abbreviation, so a text
 /// without it defines no shared name, and that is nearly every file of a tree.
-/// A file is judged by its own text here, so one whose only `SHARED` definition
-/// comes from an include it is expanded through is not a producer.
+/// A file [`index_file`] expands, such as one that is nothing but includes and
+/// directives, is judged by its expanded text. Any other file is judged by its
+/// own text, so one with code of its own whose only `SHARED` definition comes
+/// from an include is not a producer.
 pub fn definitions_in(path: &Path, includes: &IncludeContext<'_>) -> Vec<IndexName> {
     let Ok(source) = includes.fs.read(path) else {
         return Vec::new();
     };
-    if !mentions_shared(&source) {
+    if !may_define_shared(path, &source, includes) {
         return Vec::new();
     }
     index_file_at(IndexedFileId::new(0), path, &source, includes)
         .0
         .shared_definitions
+}
+
+/// Whether [`index_file_at`] can find a shared definition in `source`, the file
+/// at `path`: a superset test. A file whose text does not say `SHARED` is parsed
+/// only when it names an include, and expanded only when `index_file_at` may
+/// expand it.
+pub(crate) fn may_define_shared(path: &Path, source: &str, includes: &IncludeContext<'_>) -> bool {
+    mentions_shared(source)
+        || (names_an_include(source)
+            && crate::may_be_expanded(source)
+            && crate::expanded_text_at(path, source, includes)
+                .is_some_and(|text| mentions_shared(&text)))
+}
+
+/// Whether `source` holds a `{` that does not open a `{&name}` reference. A
+/// superset of the files that name an include.
+fn names_an_include(source: &str) -> bool {
+    source
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0] == b'{' && pair[1] != b'&')
 }
 
 /// Whether `source` holds the word `SHARED` in any case, as part of any longer
@@ -224,6 +254,69 @@ mod tests {
                 definitions_in(Path::new("/f.p"), &in_fs(&fs, &predefined)),
                 crate::index_file(IndexedFileId::new(0), source, &in_fs(&fs, &predefined))
                     .shared_definitions,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_prefilter_agrees_with_indexing_a_file_through_its_includes() {
+        let include_paths = [PathBuf::from("/")];
+        let predefined = PreprocessorConfig::default();
+        for source in [
+            "{defs.i}",
+            "DEFINE VARIABLE v-own AS INTEGER NO-UNDO.\n{defs.i}",
+            "{plain.i}\nDEFINE VARIABLE v-own AS INTEGER NO-UNDO.",
+            "{gone.i}\nDEFINE VARIABLE v-own AS INTEGER NO-UNDO.",
+            "DEFINE {head.i} VARIABLE v-b AS INTEGER NO-UNDO.",
+            "CLASS c:\n{defs.i}\nEND CLASS.",
+        ] {
+            let fs = fs_with(&[
+                ("/f.p", source),
+                (
+                    "/defs.i",
+                    "DEFINE NEW SHARED VARIABLE v-a AS INTEGER NO-UNDO.",
+                ),
+                ("/plain.i", "MESSAGE 1."),
+                ("/head.i", "NEW SHARED"),
+            ]);
+            let includes = IncludeContext {
+                fs: &fs,
+                include_paths: &include_paths,
+                root_relative_paths: &[],
+                predefined: &predefined,
+            };
+            assert_eq!(
+                definitions_in(Path::new("/f.p"), &includes),
+                index_file_at(IndexedFileId::new(0), Path::new("/f.p"), source, &includes)
+                    .0
+                    .shared_definitions,
+                "{source}"
+            );
+        }
+        for (source, want) in [
+            ("{defs.i}", &["v-a"][..]),
+            ("DEFINE {head.i} VARIABLE v-b AS INTEGER NO-UNDO.", &["v-b"]),
+            ("MESSAGE 2.\n{defs.i}", &[]),
+        ] {
+            let fs = fs_with(&[
+                ("/f.p", source),
+                (
+                    "/defs.i",
+                    "DEFINE NEW SHARED VARIABLE v-a AS INTEGER NO-UNDO.",
+                ),
+                ("/head.i", "NEW SHARED"),
+            ]);
+            let includes = IncludeContext {
+                fs: &fs,
+                include_paths: &include_paths,
+                root_relative_paths: &[],
+                predefined: &predefined,
+            };
+            let want: Vec<IndexName> = want.iter().map(|name| IndexName::new(name)).collect();
+            assert_eq!(
+                definitions_in(Path::new("/f.p"), &includes),
+                want,
                 "{source}"
             );
         }
