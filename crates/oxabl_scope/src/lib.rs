@@ -466,7 +466,7 @@ pub fn analyze_flow(
             field: r.field,
             write: r.write,
             passed: r.passed,
-            opaque: r.opaque,
+            opaque: r.skipped,
         })
         .collect();
     references.sort_by_key(|r| r.at.start);

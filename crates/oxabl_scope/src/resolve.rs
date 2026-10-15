@@ -35,8 +35,10 @@ pub(crate) struct Ref {
     /// Passed to a call as `BUFFER b`.
     pub passed: bool,
     /// In a statement of a form the model does not know, which may change
-    /// the record.
+    /// the record, of a database buffer: the block's transaction is Unknown.
     pub opaque: bool,
+    /// In a statement of a form the model does not know, of any buffer.
+    pub skipped: bool,
     /// A field of the buffer, not the buffer itself.
     pub field: bool,
 }
@@ -889,6 +891,7 @@ impl<'a> Resolver<'a> {
                 write: r.write,
                 passed: r.passed,
                 opaque: r.form == Form::UnknownSkipped && database,
+                skipped: r.form == Form::UnknownSkipped,
                 field: self.field[i],
             });
         }
@@ -983,6 +986,7 @@ impl<'a> Resolver<'a> {
                         write: None,
                         passed: false,
                         opaque: false,
+                        skipped: false,
                         field: false,
                     });
                 }
