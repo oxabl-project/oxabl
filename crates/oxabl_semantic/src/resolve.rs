@@ -334,6 +334,7 @@ impl<'a> Walker<'a> {
             StatementKind::Update { fields, .. } | StatementKind::Set { fields, .. } => {
                 self.declare_frame_fields(stmt, scope, fields)
             }
+            StatementKind::Message { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
             StatementKind::DefineWidget { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
             }
@@ -3188,7 +3189,11 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
-            StatementKind::Message { items, set_targets } => {
+            StatementKind::Message {
+                items,
+                set_targets,
+                fields,
+            } => {
                 for e in items {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
@@ -3200,6 +3205,7 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Write,
                     );
                 }
+                self.note_frame_field_sources(fields, scope);
             }
 
             // ---- RUN / buffer ops ---------------------------------------
@@ -9336,6 +9342,7 @@ mod tests {
             stmt_n(StatementKind::Message {
                 items: vec![item],
                 set_targets: vec![id("answer")],
+                fields: vec![],
             }),
         ];
         let (_t, symbols, _r, _) = run_full(&stmts);
