@@ -4,7 +4,8 @@
 
 use oxabl_ast::{
     BufferTarget, CreateTarget, Expression, ExpressionKind as EK, NodeId, OnAction, OnKind,
-    ParameterType, RunTarget, Span, Statement, StatementKind as SK, TriggerReferencing,
+    ParameterType, RunTarget, Span, Statement, StatementKind as SK, StreamOperation,
+    TriggerReferencing,
 };
 use oxabl_flow::{BlockId, BlockKind, Cfg, FileFlow, UnitId, UnitKind};
 use oxabl_lexer::{Kind, Token as LexToken, is_callable_kind};
@@ -565,6 +566,27 @@ impl<'a> Collector<'a> {
                 };
                 self.scan_stmt(s.span, place, spans, context);
             }
+            SK::StreamIo { operation, .. } => {
+                let context = self.context(enclosing);
+                // A target written without `VALUE(...)` is a file name.
+                let file: SmallVec<[Span; 1]> = match operation {
+                    StreamOperation::From(e)
+                    | StreamOperation::To { target: e, .. }
+                    | StreamOperation::Through(e)
+                        if self.tokens[self.range(e.span)]
+                            .first()
+                            .is_some_and(|t| t.kind != Kind::Value) =>
+                    {
+                        smallvec::smallvec![e.span]
+                    }
+                    _ => SmallVec::new(),
+                };
+                let spans = Spans {
+                    consumed: &file,
+                    ..Spans::default()
+                };
+                self.scan_stmt(s.span, place, spans, context);
+            }
             SK::Assignment { target, .. } => {
                 let context = self.context(enclosing);
                 let writes: SmallVec<[(Span, UpdateKind); 1]> = write_span(target)
@@ -1069,11 +1091,21 @@ impl<'a> Collector<'a> {
             k if read_only_statement(k) => (Form::Known, None),
             _ => (Form::UnknownSkipped, None),
         };
-        // `COPY-LOB FROM x TO y`: what follows TO is written.
+        // `COPY-LOB FROM x TO [OBJECT] y`: what follows TO is written, unless
+        // it is `FILE name`, which writes a file.
         let mut writes: SmallVec<[(Span, UpdateKind); 1]> = SmallVec::new();
         let form = if first == Kind::CopyLob {
-            let to = toks.iter().position(|t| t.kind == Kind::To);
-            if let Some(to) = to.and_then(|i| toks.get(i + 1)) {
+            let to = toks.iter().position(|t| t.kind == Kind::To).map(|i| {
+                if toks.get(i + 1).is_some_and(|t| t.kind == Kind::Object) {
+                    i + 1
+                } else {
+                    i
+                }
+            });
+            let target = to
+                .and_then(|i| toks.get(i + 1))
+                .filter(|t| !self.text(t).eq_ignore_ascii_case("FILE"));
+            if let Some(to) = target {
                 writes.push((
                     Span {
                         start: to.start as u32,
