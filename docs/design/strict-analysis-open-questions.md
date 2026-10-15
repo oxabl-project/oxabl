@@ -580,7 +580,7 @@ carry.
 | L1 | `FIND`, a `FOR` record phrase, `OPEN QUERY` and `CAN-FIND` without a lock phrase read with `SHARE-LOCK` (the model's `default share`). A `GET` without one takes the lock its query was opened with: the last `OPEN QUERY` of that query before it in the file, else Unknown (`query-lock`). The `-NL` startup option, if remembered right, makes the default `NO-LOCK` for some of them; the model does not read startup options. | Documented for `FIND` and `FOR`; Recalled for `CAN-FIND`, `OPEN QUERY` and `GET`; Recalled, low, for `-NL`. | `locks.p`, `queries.p` |
 | L2 | Temp-table records have no locks: the lock of a read on a temp-table buffer is `n/a`, whatever the phrase. | Documented. | `locks.p` |
 | L3 | A record read with `SHARE-LOCK` and then changed in a transaction is upgraded to `EXCLUSIVE-LOCK` at the change. A change to a record read with `NO-LOCK` is a run-time error. The model marks a read `written` when a write to the same buffer lies in the same scope of that buffer after the read (for a `FOR` phrase, in its block): the input LK001 needs to know whether `NO-LOCK` is a safe fix. When no write follows but the buffer is passed to a call after the read (`RUN p (BUFFER b)`, `f(BUFFER b)`), or it is a shared buffer and a `RUN` follows in the unit, the answer is Unknown (`callee`). | Recalled, medium; the `written` test is Inferred (it is textual, not a path query). | `locks.p` |
-| L4 | **Lifetime.** A lock taken in a transaction is held until the transaction ends. If the buffer's scope is still open then, an `EXCLUSIVE-LOCK` is downgraded to `SHARE-LOCK`, held until the scope ends, the buffer reads another record, or `RELEASE`. A `SHARE-LOCK` taken outside a transaction is released when the buffer's record changes or its scope ends. This is why LK002 compares a buffer's scope with its transaction block. | Documented for the end of the transaction; Recalled, medium, for the downgrade. | (LK002, later) |
+| L4 | **Lifetime.** A lock taken in a transaction is held until the transaction ends. If the buffer's scope is still open then, an `EXCLUSIVE-LOCK` is downgraded to `SHARE-LOCK`, held until the scope ends, the buffer reads another record, or `RELEASE`. A `SHARE-LOCK` taken outside a transaction is released when the buffer's record changes or its scope ends. This is why LK002 compares a buffer's scope with its transaction block. | Documented for the end of the transaction; Recalled, medium, for the downgrade. | LK002 tests in `oxabl_lint` |
 | L5 | A lock phrase that the expanded text does not show (an unexpanded include or preprocessor name in the phrase) gives Unknown (`unexpanded-include`). | Inferred. | `opaque.p` |
 
 ### 7.5 What `COMPILE ... LISTING` shows
@@ -638,3 +638,60 @@ scopes in sibling procedures), S4 (`DO TRANSACTION` and `DO ON ERROR` without re
 (the meaning of `Tran`), X3 and X4 (the format), then B3, S7, S10 and S11.
 `scripts/gen-scope-listings.sh` writes the listings, and the harness reports each disagreement
 with both sides.
+
+### 7.7 The lock rules (M3)
+
+LK001, LK002 and LK003 (`strict.locks`, preview, warning) select findings from `oxabl_scope`;
+`oxabl_lint` computes one analysis per file through `RunShared`, and only when one of the three
+rules is enabled. They are routed like the `HD` rules (section 3, "Handle rules in includes").
+
+Common to the three rules:
+
+- **Unknown is silent.** A file with a file-level Unknown (recovered parse, unexpanded include,
+  past the work budget) gets no finding. A buffer whose scope is Unknown or external gets no LK002
+  finding and no `NO-LOCK` suggestion in LK001.
+- **Database tables only.** A read counts only when its table is in the loaded schema
+  (`RecordRead::table` is `Table::Database`). With no schema, every table is `Unknown` and the
+  rules are silent: the name can be a temp-table that the file does not show.
+
+LK001 rests on L1 and L2. Its help suggests `NO-LOCK` only when `written` is No (L3) and the
+buffer's scope is known; it suggests `EXCLUSIVE-LOCK` when `written` is Yes, and no lock when
+`written` is Unknown. No autofix yet. `GET` is not reported (it takes the lock of its query).
+
+LK002 rests on L4 (Documented, and Recalled medium for the downgrade), S1, S2, S4 (Recalled
+medium for `DO TRANSACTION`), the documented half of S5 (a weak scope raised by a free
+reference), B2 (Recalled medium), T1 and the documented half of T2. Those meet the bar
+"Documented, or Recalled with medium confidence or more", so the rule ships. Findings that need
+an inferred rule are left out: the general merge of S5 (a free scope absorbed by an outer free
+scope), B3 (classes), and T2 for functions, methods, property accessors and `ON ... DO` triggers.
+Also left out: a transaction whose last read into the buffer is `NO-LOCK`, or that releases or
+deletes the record after it; a transaction whose last read is a `FOR EACH` or `PRESELECT` phrase
+(whether the buffer still holds a record after the last iteration is not decided); a scope in
+which nothing runs after the transaction block. A record that `CREATE` makes is held the same way
+but is not reported. Medium confidence overall: B2 and S4 decide most findings, and section 7.6
+lists both as the first to check against a listing.
+
+LK003 uses the flow graph of the unit (`oxabl_flow::UnitBuilder`, built only when a candidate
+exists). The upgrade is `FIND CURRENT b EXCLUSIVE-LOCK` or `FIND b2 WHERE ROWID(b2) = ROWID(b)
+EXCLUSIVE-LOCK` (or `RECID`) after a `NO-LOCK` read of `b` in the same loop (its own record
+phrase, or a `FIND` or `GET` before it). "Every iteration": the end of the loop body is reachable
+from its start on normal edges, but not around the upgrade. An upgrade with `NO-WAIT` is not
+reported: the loop then skips records that another session holds, which a loop that reads with
+`EXCLUSIVE-LOCK` cannot do.
+
+**Corpus check (verified, counts only).** Over two large real corpora, with their schemas, the
+three rules ran with no panic. LK001 gave 5,321 and 466 findings, 96 % and 82 % of them on
+`CAN-FIND`. LK002 gave 1,013 and 270; LK003 119 and 32. Fifteen findings per rule per corpus were
+read against the code:
+
+- LK001: 30 of 30 correct (one on a dictionary table, `_File`, counted unsure).
+- LK002: in a first sample, 25 correct and 5 unsure, all with a `FOR EACH` phrase as the last
+  read; the rule now leaves those out. A second sample: 30 of 30 correct, if B2 and S4 hold. Most
+  are an internal procedure of a persistent or server-side procedure that locks the file's default
+  buffer, so the record stays `SHARE-LOCK`ed after the call returns.
+- LK003: in a first sample, 9 of 30 were deliberate: `NO-WAIT` with a `LOCKED` test that skips
+  records another session holds. The rule now leaves those out. A second sample: 30 of 30
+  correct.
+
+A finding in an include that does not parse alone is reported at each `{...}` site: one widely
+included fragment gave 1,131 of the 1,164 use-site findings of LK001 in the first corpus.

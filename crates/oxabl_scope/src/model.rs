@@ -402,6 +402,9 @@ pub struct RecordRead {
     /// The buffer read into; `None` when it does not resolve. A `CAN-FIND`
     /// names the table, and reads with a buffer of its own.
     pub buffer: Option<BufferId>,
+    /// The table read: the buffer's, or for a `CAN-FIND` the table its name
+    /// resolves to.
+    pub table: Table,
     pub at: Span,
     pub lock: Lock,
     /// Whether the record is changed later in the same scope (for a `FOR`

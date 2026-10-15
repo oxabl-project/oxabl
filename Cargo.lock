@@ -1146,6 +1146,7 @@ dependencies = [
  "oxabl_parser",
  "oxabl_preprocessor",
  "oxabl_schema",
+ "oxabl_scope",
  "oxabl_semantic",
  "oxabl_workspace",
  "rust_decimal",

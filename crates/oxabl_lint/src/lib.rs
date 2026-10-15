@@ -50,10 +50,15 @@
 //! | HD003 | [`persistent_procedure_leak`] | `strict.handles`    | `RUN ... PERSISTENT SET h` that nothing deletes           |
 //! | HD004 | [`memptr_not_freed`]        | `strict.handles`      | `SET-SIZE(m) = n` with no `SET-SIZE(m) = 0`               |
 //! | HD005 | [`missing_widget_pool`]     | `strict.handles`      | dynamic objects with no widget pool scoped to the procedure |
+//! | LK001 | [`default_lock`]            | `strict.locks`        | a database read with no lock phrase (`SHARE-LOCK`)        |
+//! | LK002 | [`lock_outlives_transaction`] | `strict.locks`      | a record still locked after its transaction, because the buffer scope is wider |
+//! | LK003 | [`lock_upgrade_in_loop`]    | `strict.locks`        | a `NO-LOCK` read upgraded to `EXCLUSIVE-LOCK` on every iteration |
 //!
 //! The `HD` rules read one analysis of the file's dynamic objects
-//! (`oxabl_handles`), made once per [`Registry::run_where`] through
-//! [`RunShared`] and only when one of them is enabled.
+//! (`oxabl_handles`), and the `LK` rules one analysis of its buffer scopes,
+//! transactions and locks (`oxabl_scope`). Each is made once per
+//! [`Registry::run_where`] through [`RunShared`] and only when one of its
+//! rules is enabled.
 //!
 //! A finding that sits in an include file is dropped when the includer is
 //! linted. A context-free rule reports it once, in the include file itself,
@@ -75,13 +80,14 @@ mod shared;
 
 pub use registry::{
     BUILTIN_GROUPS, BUILTIN_RULES, FnRule, HandlesFn, Registry, RegistryError, Rule, RuleFn,
-    RuleGroup, RuleMeta, Stability, groups,
+    RuleGroup, RuleMeta, ScopesFn, Stability, groups,
 };
 pub use rules::{
     CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
-    LINT0005, LINT0006, TX006, assigned_but_never_read, block_var_used_outside,
-    delete_not_in_finally, dynamic_invoke, handle_not_deleted, memptr_not_freed, missing_no_undo,
-    missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
+    LINT0005, LINT0006, LK001, LK002, LK003, TX006, assigned_but_never_read,
+    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
+    handle_not_deleted, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
+    missing_no_undo, missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
     type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
 pub use shared::RunShared;

@@ -5,9 +5,12 @@
 
 pub mod assigned_but_never_read;
 pub mod block_var_used_outside;
+pub mod default_lock;
 pub mod delete_not_in_finally;
 pub mod dynamic_invoke;
 pub mod handle_not_deleted;
+pub mod lock_outlives_transaction;
+pub mod lock_upgrade_in_loop;
 pub mod memptr_not_freed;
 pub mod missing_no_undo;
 pub mod missing_widget_pool;
@@ -22,6 +25,8 @@ pub mod unused_variable;
 
 // Wording and anchoring for the handle rules.
 mod handle_support;
+// Shared queries over the scope analysis for the lock rules.
+mod lock_support;
 // Walk and source helpers for the syntactic strict rules.
 mod syntactic;
 
@@ -57,3 +62,10 @@ pub const HD003: &str = "HD003";
 pub const HD004: &str = "HD004";
 /// Diagnostic code for `missing-widget-pool` (HD005).
 pub const HD005: &str = "HD005";
+
+/// Diagnostic code for `default-lock` (LK001).
+pub const LK001: &str = "LK001";
+/// Diagnostic code for `lock-outlives-transaction` (LK002).
+pub const LK002: &str = "LK002";
+/// Diagnostic code for `lock-upgrade-in-loop` (LK003).
+pub const LK003: &str = "LK003";
