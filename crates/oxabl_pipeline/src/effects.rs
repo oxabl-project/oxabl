@@ -36,6 +36,8 @@ pub struct EffectFile {
     pub lines: Vec<u32>,
     /// Each unit's span mapped to root coordinates, if possible.
     pub root_units: Vec<Option<oxabl_ast::Span>>,
+    root_headers: Vec<Option<u32>>,
+    unknown_calls: Vec<usize>,
     callees: HashMap<u32, u32>,
     solved: Arc<Vec<Summary>>,
     names: Arc<Vec<String>>,
@@ -53,6 +55,75 @@ pub(crate) fn fingerprint(expanded: &oxabl_analyze::ExpandedFile) -> u64 {
 }
 
 impl EffectFile {
+    /// Short database summaries at root header offsets. Include-only units are omitted.
+    pub fn effect_lenses(&self) -> Vec<(u32, String)> {
+        self.effects
+            .units()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, u)| {
+                let at = self.root_headers[i]?;
+                let summary = &self.summaries()[i];
+                let mut reads = std::collections::BTreeSet::new();
+                let mut writes = std::collections::BTreeSet::new();
+                for e in &summary.effects {
+                    if e.op.writes() {
+                        writes.insert(e.table.clone());
+                    } else {
+                        reads.insert(e.table.clone());
+                    }
+                }
+                // Keep direct facts even when a bounded summary drops an effect.
+                for e in self.effects.unit_effects(u.unit) {
+                    let name = match &e.table {
+                        oxabl_scope::Table::Database(n) => n.clone(),
+                        oxabl_scope::Table::Unknown(n) => format!("?{n}"),
+                        oxabl_scope::Table::TempTable { .. } => continue,
+                    };
+                    if e.op.writes() {
+                        writes.insert(name);
+                    } else {
+                        reads.insert(name);
+                    }
+                }
+                if reads.is_empty() && writes.is_empty() && u.calls.is_empty() {
+                    return None;
+                }
+                let mut parts = Vec::new();
+                for (verb, names) in [("reads", reads), ("writes", writes)] {
+                    if !names.is_empty() {
+                        parts.push(format!("{verb} {}", {
+                            let remaining = names.len().saturating_sub(3);
+                            let mut names =
+                                names.into_iter().take(3).collect::<Vec<_>>().join(", ");
+                            if remaining > 0 {
+                                names.push_str(&format!(", +{remaining} tables"));
+                            }
+                            names
+                        }));
+                    }
+                }
+                if !u.calls.is_empty() {
+                    let unknown = self.unknown_calls[i];
+                    parts.push(format!(
+                        "{} call{}{}",
+                        u.calls.len(),
+                        if u.calls.len() == 1 { "" } else { "s" },
+                        if unknown > 0 {
+                            format!(" ({unknown} unknown)")
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
+                if !summary.partial.is_empty() {
+                    parts.push("partial".into());
+                }
+                Some((at, parts.join(" · ")))
+            })
+            .collect()
+    }
+
     pub(crate) fn matches(&self, expansion: &Expansion) -> bool {
         expansion
             .expanded()
@@ -93,6 +164,7 @@ struct Direct {
     effects: FileEffects,
     lines: Vec<u32>,
     root_units: Vec<Option<oxabl_ast::Span>>,
+    root_headers: Vec<Option<u32>>,
     incomplete: Vec<oxabl_effects::EffectUnknown>,
     fingerprint: u64,
 }
@@ -110,7 +182,7 @@ fn direct(run: &LintPipeline<'_>, path: &Path, expansion: &Expansion) -> Option<
     ctx.schema_loaded = run.config().schema_loaded;
     let shared = oxabl_lint::RunShared::default();
     let effects = shared.effects(&program.statements, &ctx).clone();
-    let root_units = effects
+    let root_units: Vec<Option<oxabl_ast::Span>> = effects
         .units()
         .iter()
         .map(|u| {
@@ -134,6 +206,22 @@ fn direct(run: &LintPipeline<'_>, path: &Path, expansion: &Expansion) -> Option<
             })
         })
         .collect();
+    let root_headers = effects
+        .units()
+        .iter()
+        .enumerate()
+        .map(|(i, u)| {
+            if u.kind == UnitKind::Main {
+                return root_units[i].map(|s| s.start);
+            }
+            expanded
+                .resolve_root_span(oxabl_ast::Span {
+                    start: u.span.start,
+                    end: u.span.start.saturating_add(1),
+                })
+                .map(|s| s.start)
+        })
+        .collect();
     let mut incomplete = Vec::new();
     if !program.errors.is_empty() {
         incomplete.push(oxabl_effects::EffectUnknown::RecoveredParse);
@@ -152,6 +240,7 @@ fn direct(run: &LintPipeline<'_>, path: &Path, expansion: &Expansion) -> Option<
         path: key(path),
         effects,
         root_units,
+        root_headers,
         lines: std::iter::once(0)
             .chain(text.match_indices('\n').map(|(i, _)| (i + 1) as u32))
             .collect(),
@@ -342,6 +431,16 @@ impl LintPipeline<'_> {
                     effects: f.effects,
                     lines: f.lines,
                     root_units: f.root_units,
+                    root_headers: f.root_headers,
+                    unknown_calls: nodes[base..end]
+                        .iter()
+                        .map(|n| {
+                            n.calls
+                                .iter()
+                                .filter(|(c, _)| matches!(c, Callee::Unknown(_)))
+                                .count()
+                        })
+                        .collect(),
                     summary_range: base..end,
                     callees,
                     solved: Arc::clone(&solved),

@@ -703,6 +703,19 @@ impl<'a> LintPipeline<'a> {
         self
     }
 
+    /// Whether a strict rule that reads database effects is enabled for this file.
+    pub fn effect_lenses_enabled(&self) -> bool {
+        let severities = self
+            .file()
+            .map(|p| self.config.lint_severities.for_path(p))
+            .unwrap_or_else(|| self.config.lint_severities.clone());
+        let registry = oxabl_lint::Registry::builtin_shared();
+        registry.rules().any(|r| {
+            matches!(r.meta().code, "DB001" | "TX004")
+                && registry.severity_for(r, &severities).is_some()
+        })
+    }
+
     /// Whether TX004 is enabled for this file. This query computes no effects.
     pub fn callee_summaries_enabled(&self) -> bool {
         let severities = self
