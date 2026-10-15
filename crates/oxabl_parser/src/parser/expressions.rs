@@ -1077,7 +1077,11 @@ impl Parser<'_> {
         // ABL allows both parenthesized and bare forms, e.g.:
         //   IF AVAILABLE order THEN ...
         //   IF AVAILABLE(order) THEN ...
-        if self.check(Kind::Available) || self.check(Kind::Ambiguous) {
+        // CURRENT-CHANGED takes its record the same way.
+        if self.check(Kind::Available)
+            || self.check(Kind::Ambiguous)
+            || self.check(Kind::CurrentChanged)
+        {
             let token = self.advance().clone();
             let name = Identifier {
                 span: Span {

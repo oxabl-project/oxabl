@@ -497,6 +497,7 @@ fn main() {
             "quit",
             "r-index",
             "raw",
+            "raw-transfer",
             "rcode-info",
             "rcode-information",
             "read-available",

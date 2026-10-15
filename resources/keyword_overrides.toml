@@ -454,6 +454,11 @@ keyword_type = "Option"
 name = "STDCALL"
 keyword_type = "Option"
 
+# Unreserved statement keyword the parser dispatches on
+[[add]]
+name = "RAW-TRANSFER"
+keyword_type = "Statement"
+
 # Member qualifiers
 [[add]]
 name = "ABSTRACT"

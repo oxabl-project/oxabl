@@ -1221,6 +1221,7 @@ impl<'a> Parser<'a> {
                     | Kind::Form
                     | Kind::Put
                     | Kind::CopyLob
+                    | Kind::RawTransfer
                     | Kind::OsDir
                     | Kind::Update
                     // Preprocessor references used as identifiers (e.g. {&table-name}, {&buffer})

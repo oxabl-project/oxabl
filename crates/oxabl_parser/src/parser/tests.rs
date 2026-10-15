@@ -12785,3 +12785,20 @@ fn override_and_abstract_on_a_property_come_in_either_order() {
         );
     }
 }
+
+#[test]
+fn raw_transfer_and_underline_are_unmodelled_statements_and_raw_transfer_is_still_a_name() {
+    for source in [
+        "RAW-TRANSFER BUFFER Customer TO BUFFER tt NO-ERROR.",
+        "RAW-TRANSFER Customer TO tt.",
+        "UNDERLINE Customer.Name WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+    assert_parses_clean("DEFINE VARIABLE raw-transfer AS INTEGER NO-UNDO.\nraw-transfer = 1.");
+}

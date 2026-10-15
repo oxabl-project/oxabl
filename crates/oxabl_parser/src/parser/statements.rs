@@ -649,6 +649,16 @@ impl Parser<'_> {
             return self.parse_put_statement();
         }
 
+        // RAW-TRANSFER [BUFFER|FIELD] source TO [BUFFER|FIELD] target [NO-ERROR].
+        // UNDERLINE [STREAM s] field ... [frame-phrase].
+        // Unmodelled; their record and field operands are harvested.
+        if (self.check(Kind::RawTransfer) || self.check(Kind::Underline))
+            && !self.check_at(1, Kind::Equals)
+        {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+
         // SEEK INPUT|OUTPUT|stream TO expr|END. — stream positioning, skip to statement end.
         if self.check(Kind::Seek) {
             let (_, hi) = self.skip_to_statement_end();
@@ -2571,7 +2581,6 @@ impl Parser<'_> {
                         }
                     }
                 }
-
             } else {
                 // not a counting loop
                 self.current = saved_pos;
