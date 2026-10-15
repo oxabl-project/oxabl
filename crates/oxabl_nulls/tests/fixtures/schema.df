@@ -1,0 +1,28 @@
+ADD TABLE "Customer"
+ADD FIELD "CustNum" OF "Customer" AS integer
+ADD FIELD "Name" OF "Customer" AS character
+ADD FIELD "Balance" OF "Customer" AS decimal
+
+ADD INDEX "CustNum" ON "Customer"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "CustNum" ASCENDING
+
+ADD TABLE "Order"
+ADD FIELD "OrderNum" OF "Order" AS integer
+ADD FIELD "CustNum" OF "Order" AS integer
+ADD FIELD "Total" OF "Order" AS decimal
+
+ADD INDEX "OrderNum" ON "Order"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "OrderNum" ASCENDING
+
+ADD TABLE "Item"
+ADD FIELD "ItemNum" OF "Item" AS integer
+ADD FIELD "Price" OF "Item" AS decimal
+
+ADD INDEX "ItemNum" ON "Item"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "ItemNum" ASCENDING

@@ -98,6 +98,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - `crates/oxabl_handles` - Lifetimes of dynamic objects per unit (create, free and escape sites, leaking paths), read by the `strict.handles` rules
 - `crates/oxabl_scope` - Buffer scopes, transaction blocks and lock modes per unit, as the compiler assigns them, plus the `COMPILE ... LISTING` block-table parser its oracle harness uses
 - `crates/oxabl_effects` - Database effects per unit (table, operation, lock, access shape, likely index), transitive summaries over the call graph, and the `COMPILE ... XREF` parser its oracle harness uses
+- `crates/oxabl_nulls` - Unknown values per unit; this slice: buffers a failed `FIND ... NO-ERROR` may leave without a record, and the field references that read them
 
 (Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_semantic`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
 
