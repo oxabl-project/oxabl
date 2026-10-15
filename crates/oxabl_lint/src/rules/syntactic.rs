@@ -306,9 +306,12 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
             }
         }
         StatementKind::StreamIo { operation, .. } => match operation {
-            StreamOperation::From(e)
-            | StreamOperation::Through(e)
-            | StreamOperation::To { target: e, .. } => walk_expression(v, e),
+            StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                if let Some(e) = target.expression() {
+                    walk_expression(v, e);
+                }
+            }
+            StreamOperation::Through(e) => walk_expression(v, e),
             StreamOperation::Close => {}
         },
         StatementKind::Create { target, .. } => {

@@ -3470,11 +3470,13 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
                 match operation {
-                    StreamOperation::From(e) | StreamOperation::Through(e) => {
-                        self.walk_expression(e, scope, AccessMode::Read);
+                    StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                        if let Some(e) = target.expression() {
+                            self.walk_expression(e, scope, AccessMode::Read);
+                        }
                     }
-                    StreamOperation::To { target, .. } => {
-                        self.walk_expression(target, scope, AccessMode::Read);
+                    StreamOperation::Through(e) => {
+                        self.walk_expression(e, scope, AccessMode::Read);
                     }
                     StreamOperation::Close => {}
                 }

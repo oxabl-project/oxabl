@@ -480,6 +480,7 @@ fn main() {
             "preselect",
             "prev",
             "primary",
+            "printer",
             "private",
             "privileges",
             "proc-ha",
