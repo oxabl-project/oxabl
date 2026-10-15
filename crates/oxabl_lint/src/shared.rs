@@ -1,10 +1,10 @@
 //! Facts that one registry run computes once for several rules.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 
 use oxabl_ast::Statement;
 use oxabl_effects::{EffectOptions, FileEffects};
-use oxabl_flow::FileFlow;
+use oxabl_flow::{FileFlow, FlowOptions};
 use oxabl_handles::FileHandles;
 use oxabl_index::calls::FileCalls;
 use oxabl_scope::{FileScopes, ScopeOptions};
@@ -16,6 +16,9 @@ use oxabl_semantic::AnalysisContext;
 #[derive(Default)]
 pub struct RunShared<'a> {
     summaries: Option<&'a dyn CalleeSummaries>,
+    /// The scopes will be analysed: the CFGs of every unit serve the dynamic
+    /// objects too.
+    share_flow: Cell<bool>,
     handles: OnceCell<FileHandles>,
     tokens: OnceCell<Vec<oxabl_lexer::Token>>,
     flow: OnceCell<FileFlow>,
@@ -35,16 +38,25 @@ impl<'a> RunShared<'a> {
         self
     }
 
+    /// Note whether the run will analyse the scopes too.
+    pub(crate) fn share_flow(&self, scopes: bool) {
+        self.share_flow.set(scopes);
+    }
+
     /// The complete or partial summary of the callee at this call site.
     pub fn callee_summary(&self, at: u32) -> Option<&oxabl_effects::summary::Summary> {
         self.summaries?.callee_summary(at)
     }
 
-    /// The dynamic objects of the file, analysed once. `source` is the text
-    /// `program` was parsed from.
-    pub fn handles(&self, program: &[Statement], source: &str) -> &FileHandles {
-        self.handles
-            .get_or_init(|| oxabl_handles::analyze_file(program, source))
+    /// The dynamic objects of the file, analysed once.
+    pub fn handles(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileHandles {
+        self.handles.get_or_init(|| {
+            if self.share_flow.get() || self.flow.get().is_some() {
+                let flow = self.flow(program, ctx);
+                return oxabl_handles::analyze_flow(program, ctx.source, ctx.tokens, flow);
+            }
+            oxabl_handles::analyze_tokens(program, ctx.source, ctx.tokens, &FlowOptions::default())
+        })
     }
 
     /// The buffer scopes, transaction blocks and record reads of the file,
@@ -96,7 +108,12 @@ impl<'a> RunShared<'a> {
 
     fn flow(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileFlow {
         self.flow.get_or_init(|| {
-            oxabl_flow::build_file_with(program, ctx.source, &scope_options(ctx).flow)
+            oxabl_flow::build_file_tokens(
+                program,
+                ctx.source,
+                self.tokens(ctx),
+                &scope_options(ctx).flow,
+            )
         })
     }
 }

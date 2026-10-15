@@ -134,11 +134,13 @@ fn bench_realistic(c: &mut Criterion, name: &str, fixture: &str, expected: &[&st
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let schema = Schema::empty();
 
-    let default_ctx = AnalysisContext::new(FileId::new(1), &source, &schema);
+    // The contexts carry the parsed tokens, as `check` gives them.
+    let default_ctx = AnalysisContext::new(FileId::new(1), &source, &schema).with_tokens(&tokens);
     let mut strict = LintSeverityMap::new();
     strict.base_mut().enable_group("strict");
-    let strict_ctx =
-        AnalysisContext::new(FileId::new(1), &source, &schema).with_lint_severities(strict);
+    let strict_ctx = AnalysisContext::new(FileId::new(1), &source, &schema)
+        .with_tokens(&tokens)
+        .with_lint_severities(strict);
     let sem = analyze_file(&program.statements, &default_ctx);
 
     let registry = Registry::builtin();

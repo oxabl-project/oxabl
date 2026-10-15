@@ -27,7 +27,9 @@ pub(crate) struct Folded(SmallVec<[u8; 32]>);
 
 impl Folded {
     pub(crate) fn new(s: &str) -> Self {
-        Folded(s.bytes().map(|b| b.to_ascii_lowercase()).collect())
+        let mut folded = SmallVec::from_slice(s.as_bytes());
+        folded.make_ascii_lowercase();
+        Folded(folded)
     }
 }
 
@@ -209,15 +211,18 @@ pub(crate) struct Token {
 /// The significant tokens of the analysed text: the lexer's, without
 /// comments.
 fn significant(tokens: &[LexToken]) -> Vec<Token> {
-    tokens
-        .iter()
-        .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
-        .map(|t| Token {
-            kind: t.kind,
-            start: t.start,
-            end: t.end,
-        })
-        .collect()
+    let mut out = Vec::with_capacity(tokens.len());
+    out.extend(
+        tokens
+            .iter()
+            .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
+            .map(|t| Token {
+                kind: t.kind,
+                start: t.start,
+                end: t.end,
+            }),
+    );
+    out
 }
 
 pub(crate) fn collect(
@@ -1679,10 +1684,7 @@ impl<'a> Collector<'a> {
                 i = end;
                 continue;
             }
-            let words: SmallVec<[Folded; 3]> = (i..end)
-                .step_by(2)
-                .map(|j| Folded::new(self.text(&self.tokens[j])))
-                .collect();
+            let words = (end - i).div_ceil(2);
             let span = Span {
                 start: t.start as u32,
                 end: self.tokens[end - 1].end as u32,
@@ -1694,7 +1696,7 @@ impl<'a> Collector<'a> {
                     write = Some(*kind);
                 }
             }
-            let what = if words.len() == 1 {
+            let what = if words == 1 {
                 // A keyword is a field name only where an operand can stand,
                 // and never a built-in function's.
                 let target = sc.writes.iter().any(|(w, _)| w.start as usize == t.start);
@@ -1705,11 +1707,16 @@ impl<'a> Collector<'a> {
                     continue;
                 }
                 What::Bare {
-                    word: words.into_iter().next().unwrap_or_default(),
+                    word: Folded::new(self.text(&t)),
                     keyword,
                 }
-            } else if words.len() <= 3 {
-                What::Dotted(words)
+            } else if words <= 3 {
+                What::Dotted(
+                    (i..end)
+                        .step_by(2)
+                        .map(|j| Folded::new(self.text(&self.tokens[j])))
+                        .collect(),
+                )
             } else {
                 i = end;
                 continue;

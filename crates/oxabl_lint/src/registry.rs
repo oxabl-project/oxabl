@@ -150,6 +150,20 @@ pub trait Rule: Send + Sync {
     /// Run the rule over `program` and its semantic model.
     fn run(&self, program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic>;
 
+    /// Whether the rule reads the dynamic objects of the file
+    /// ([`RunShared::handles`]). The default is `false`.
+    fn reads_handles(&self) -> bool {
+        false
+    }
+
+    /// Whether the rule reads the buffer scopes of the file
+    /// ([`RunShared::scopes`]). When a rule over the dynamic objects runs
+    /// before such a rule, the run builds the CFGs of every unit once, for
+    /// both. The default is `false`.
+    fn reads_scopes(&self) -> bool {
+        false
+    }
+
     /// [`run`](Self::run) with the facts that one registry run shares between
     /// rules. The default ignores them.
     fn run_shared(
@@ -244,6 +258,17 @@ impl Rule for FnRule {
         self.run_shared(program, sem, ctx, &RunShared::default())
     }
 
+    fn reads_handles(&self) -> bool {
+        matches!(self.body, Body::Handles(_))
+    }
+
+    fn reads_scopes(&self) -> bool {
+        matches!(
+            self.body,
+            Body::Scopes(_) | Body::Effects(_) | Body::Shared(_)
+        )
+    }
+
     fn run_shared(
         &self,
         program: &[Statement],
@@ -254,7 +279,7 @@ impl Rule for FnRule {
         match self.body {
             Body::Shared(check) => check(program, ctx, shared),
             Body::Plain(run) => run(program, sem, ctx),
-            Body::Handles(check) => check(shared.handles(program, ctx.source), ctx),
+            Body::Handles(check) => check(shared.handles(program, ctx), ctx),
             Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
             Body::Effects(check) => check(
                 shared.effects(program, ctx),
@@ -812,15 +837,29 @@ impl Registry {
         shared: &RunShared,
     ) -> Vec<Diagnostic> {
         let fragment = ctx.source_context.is_include_fragment();
-        let mut out = Vec::new();
-        for rule in self.rules() {
+        let enabled = |rule: &dyn Rule| {
             let meta = rule.meta();
             if !select(meta) || (fragment && meta.requires_compilation_unit) {
-                continue;
+                return None;
             }
-            let Some(severity) = self.severity_for(rule, &ctx.lint_severities) else {
+            self.severity_for(rule, &ctx.lint_severities)
+        };
+        let mut decided = false;
+        let mut out = Vec::new();
+        for (i, rule) in self.rules().enumerate() {
+            let Some(severity) = enabled(rule) else {
                 continue;
             };
+            // The first rule over the dynamic objects asks whether the
+            // scopes will be analysed too.
+            if !decided && rule.reads_handles() {
+                decided = true;
+                let scopes = self
+                    .rules()
+                    .skip(i + 1)
+                    .any(|r| r.reads_scopes() && enabled(r).is_some());
+                shared.share_flow(scopes);
+            }
             out.extend(
                 rule.run_shared(program, sem, ctx, shared)
                     .into_iter()

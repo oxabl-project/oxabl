@@ -253,12 +253,12 @@ pub fn analyze_tokens(
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
-    let flow = oxabl_flow::build_file_with(program, source, &options.flow);
+    let flow = oxabl_flow::build_file_tokens(program, source, tokens, &options.flow);
     analyze_flow(program, source, tokens, &flow, schema, options)
 }
 
-/// [`analyze_tokens`] over the file's flow graphs, built by the caller with
-/// `oxabl_flow::build_file_with(program, source, &options.flow)`.
+/// [`analyze_tokens`] over the file's CFGs, already built from the same
+/// statements with `options.flow` (`oxabl_flow::build_file_tokens`).
 pub fn analyze_flow(
     program: &[Statement],
     source: &str,

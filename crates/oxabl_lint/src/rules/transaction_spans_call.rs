@@ -145,6 +145,10 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
         let Some(tx) = enclosing_transaction(scopes, unit, block, fragment) else {
             continue;
         };
+        // Lexes the statement, so it is asked only inside a transaction.
+        if on_server(ctx.source, span) {
+            continue;
+        }
         let what = match callee {
             Callee::Dynamic => "a procedure named at run time".to_string(),
             Callee::InHandle(name) => {
@@ -171,8 +175,8 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     diags
 }
 
-/// Every `RUN` whose callee is not in the file and runs in this session, in
-/// source order.
+/// Every `RUN` whose callee is not in the file, in source order. One with an
+/// `ON SERVER` phrase, which runs in another session, is among them.
 fn opaque_runs(program: &[Statement], source: &str) -> Vec<(Span, Callee)> {
     struct Runs<'a> {
         source: &'a str,
@@ -189,7 +193,7 @@ fn opaque_runs(program: &[Statement], source: &str) -> Vec<(Span, Callee)> {
             else {
                 return true;
             };
-            if *asynchronous || on_server(self.source, stmt.span) {
+            if *asynchronous {
                 return true;
             }
             let this_procedure = in_handle.as_ref().is_some_and(|h| {

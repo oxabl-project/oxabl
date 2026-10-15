@@ -12,12 +12,13 @@ use std::mem;
 use oxabl_ast::{
     FindType, LockType, NodeId, OnAction, OnKind, Span, Statement, StatementKind as SK,
 };
+use oxabl_lexer::Token;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::FileFlow;
 use crate::model::*;
-use crate::tokens::{self, Control, Header, Input};
+use crate::tokens::{self, Control, Header, Input, Src};
 
 /// Options for [`build_file_with`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -38,12 +39,28 @@ pub fn build_file(program: &[Statement], source: &str) -> FileFlow {
 
 /// [`build_file`] with options.
 pub fn build_file_with(program: &[Statement], source: &str, options: &FlowOptions) -> FileFlow {
-    let directive = file_directive(program, source).max(options.default_directive);
+    build_file_tokens(program, source, &[], options)
+}
+
+/// [`build_file_with`] with the tokens the statements were parsed from
+/// (`oxabl_lexer::tokenize(source)`), so header phrases are read from them
+/// instead of lexing each header again. Empty `tokens` lex as before.
+pub fn build_file_tokens(
+    program: &[Statement],
+    source: &str,
+    tokens: &[Token],
+    options: &FlowOptions,
+) -> FileFlow {
+    let src = Src {
+        text: source,
+        tokens,
+    };
+    let directive = file_directive(program, src).max(options.default_directive);
     let specs = unit_specs(program, source);
     let units = specs
         .iter()
         .enumerate()
-        .map(|(i, spec)| Builder::new(source, directive, UnitId(i as u32), spec).build(spec))
+        .map(|(i, spec)| Builder::new(src, directive, UnitId(i as u32), spec).build(spec))
         .collect();
     FileFlow { units, directive }
 }
@@ -55,7 +72,7 @@ pub fn build_file_with(program: &[Statement], source: &str, options: &FlowOption
 /// is in, and [`build`](Self::build) builds that unit alone. The result equals
 /// the unit of [`build_file`] with the same [`UnitId`].
 pub struct UnitBuilder<'a> {
-    source: &'a str,
+    src: Src<'a>,
     directive: Option<ErrorDirective>,
     specs: Vec<UnitSpec<'a>>,
     unit_of: FxHashMap<NodeId, UnitId>,
@@ -65,7 +82,22 @@ impl<'a> UnitBuilder<'a> {
     /// Find the units of `program`, which was parsed from `source`. This walks
     /// the statements once and builds nothing.
     pub fn new(program: &'a [Statement], source: &'a str, options: &FlowOptions) -> Self {
-        let directive = file_directive(program, source).max(options.default_directive);
+        Self::with_tokens(program, source, &[], options)
+    }
+
+    /// [`new`](Self::new) with the tokens the statements were parsed from, as
+    /// [`build_file_tokens`] takes them.
+    pub fn with_tokens(
+        program: &'a [Statement],
+        source: &'a str,
+        tokens: &'a [Token],
+        options: &FlowOptions,
+    ) -> Self {
+        let src = Src {
+            text: source,
+            tokens,
+        };
+        let directive = file_directive(program, src).max(options.default_directive);
         let specs = unit_specs(program, source);
         let mut unit_of = FxHashMap::default();
         for (i, spec) in specs.iter().enumerate() {
@@ -81,7 +113,7 @@ impl<'a> UnitBuilder<'a> {
             }
         }
         UnitBuilder {
-            source,
+            src,
             directive,
             specs,
             unit_of,
@@ -100,7 +132,7 @@ impl<'a> UnitBuilder<'a> {
     /// Build one unit.
     pub fn build(&self, unit: UnitId) -> Cfg {
         let spec = &self.specs[unit.index()];
-        Builder::new(self.source, self.directive, unit, spec).build(spec)
+        Builder::new(self.src, self.directive, unit, spec).build(spec)
     }
 }
 
@@ -142,7 +174,7 @@ fn unit_specs<'a>(program: &'a [Statement], source: &str) -> Vec<UnitSpec<'a>> {
     specs
 }
 
-fn file_directive(program: &[Statement], source: &str) -> Option<ErrorDirective> {
+fn file_directive(program: &[Statement], source: Src<'_>) -> Option<ErrorDirective> {
     program
         .iter()
         .filter(|s| matches!(s.kind, SK::Skipped { .. }))
@@ -335,7 +367,7 @@ fn is_unit_stmt(s: &Statement) -> bool {
 }
 
 /// Whether any statement in `stmts` (outside nested units) blocks for input.
-fn contains_input(stmts: &[Statement], src: &str) -> bool {
+fn contains_input(stmts: &[Statement], src: Src<'_>) -> bool {
     stmts.iter().any(|s| match &s.kind {
         SK::Skipped { .. } => tokens::skipped_input(src, s.span) == Input::Blocking,
         SK::Message { set_targets, .. } => !set_targets.is_empty(),
@@ -490,7 +522,7 @@ struct BlockInit<'a, 'h> {
 }
 
 struct Builder<'a> {
-    src: &'a str,
+    src: Src<'a>,
     directive: Option<ErrorDirective>,
     cfg: Cfg,
     frames: Vec<Frame<'a>>,
@@ -499,7 +531,7 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    fn new(src: &'a str, directive: Option<ErrorDirective>, id: UnitId, spec: &UnitSpec) -> Self {
+    fn new(src: Src<'a>, directive: Option<ErrorDirective>, id: UnitId, spec: &UnitSpec) -> Self {
         Builder {
             src,
             directive,
@@ -1415,7 +1447,7 @@ impl<'a> Builder<'a> {
     }
 
     fn no_error_text(&self, s: &Statement) -> bool {
-        tokens::ends_with_no_error(self.src, s.span)
+        tokens::ends_with_no_error(self.src.text, s.span)
     }
 
     fn shape(&self, s: &'a Statement) -> Shape<'a> {
@@ -1455,7 +1487,7 @@ impl<'a> Builder<'a> {
                 },
             },
             SK::ExpressionStatement(_) => {
-                if tokens::is_stop_statement(self.src, s.span) {
+                if tokens::is_stop_statement(self.src.text, s.span) {
                     Shape::Stop
                 } else {
                     Shape::plain(!self.no_error_text(s))
