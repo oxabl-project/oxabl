@@ -215,11 +215,19 @@ fn analyze(
     if index.creating.is_empty() {
         return FileHandles::default();
     }
-    let builder = UnitBuilder::with_tokens(program, source, tokens, options);
+    let builder = std::cell::OnceCell::new();
+    let builder =
+        || builder.get_or_init(|| UnitBuilder::with_tokens(program, source, tokens, options));
+    // A statement with nodes is in the unit that has them; the builder
+    // answers for the others.
     let mut units: Vec<UnitId> = index
         .creating
         .iter()
-        .filter_map(|&s| builder.unit_of(s))
+        .filter_map(|&s| {
+            flow.and_then(|f| f.find_stmt(s))
+                .map(|(cfg, _)| cfg.id())
+                .or_else(|| builder().unit_of(s))
+        })
         .collect();
     units.sort_unstable();
     units.dedup();
@@ -228,7 +236,7 @@ fn analyze(
         .into_iter()
         .map(|u| match flow {
             Some(flow) => analysis::analyze_unit(flow.unit(u), &index, source, &budget),
-            None => analysis::analyze_unit(&builder.build(u), &index, source, &budget),
+            None => analysis::analyze_unit(&builder().build(u), &index, source, &budget),
         })
         .filter(|u| !u.objects.is_empty() || !u.pools.is_empty())
         .collect();
