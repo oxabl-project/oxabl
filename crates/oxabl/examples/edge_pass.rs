@@ -15,11 +15,14 @@
 //! `--dump <file>` writes every edge set, in root order, with each indexed file
 //! resolved to a path. Two dumps are equal when two runs built the same edges.
 //!
+//! `--closure on` adds the closure of the conditional includes to every set.
+//! `--root-relative .,rf` replaces the tree's root-relative include paths.
+//!
 //! # Usage
 //! ```text
 //! cargo run -p oxabl --release --example edge_pass -- \
 //!     <root> [--threads N] [--seeding shared|per-thread|unseeded] \
-//!     [--analysis edges|full] [--dump file]
+//!     [--analysis edges|full] [--dump file] [--closure on] [--root-relative LIST]
 //! ```
 
 use std::fmt::Write as _;
@@ -61,6 +64,8 @@ fn main() {
     let mut seeding = Seeding::Shared;
     let mut full = false;
     let mut dump: Option<PathBuf> = None;
+    let mut closure = false;
+    let mut root_relative: Option<Vec<PathBuf>> = None;
     while let Some(flag) = args.next() {
         let value = args.next().unwrap_or_default();
         match flag.as_str() {
@@ -78,6 +83,16 @@ fn main() {
             }
             "--analysis" => full = value == "full",
             "--dump" => dump = Some(PathBuf::from(value)),
+            "--closure" => closure = value == "on",
+            "--root-relative" => {
+                root_relative = Some(
+                    value
+                        .split(',')
+                        .filter(|entry| !entry.is_empty())
+                        .map(PathBuf::from)
+                        .collect(),
+                );
+            }
             other => {
                 eprintln!("unknown flag `{other}`");
                 std::process::exit(2);
@@ -95,7 +110,10 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let (config, _) = PipelineConfig::resolve(&root, &ConfigOverrides::default());
+    let (mut config, _) = PipelineConfig::resolve(&root, &ConfigOverrides::default());
+    if let Some(paths) = root_relative {
+        config.root_relative_include_paths = paths;
+    }
     let fs = RealFileSystem;
 
     let started = Instant::now();
@@ -110,7 +128,8 @@ fn main() {
         let workers: Vec<_> = (0..threads)
             .map(|_| {
                 scope.spawn(|| {
-                    let run = LintPipeline::new(&config, &fs);
+                    let run =
+                        LintPipeline::new(&config, &fs).with_conditional_include_closure(closure);
                     let run = match (seeding, &producers) {
                         (Seeding::Shared, Some(map)) => run.with_shared_producers(map),
                         (Seeding::PerThread, _) => run.with_known_files(&files),
@@ -155,6 +174,28 @@ fn main() {
                                         }
                                         for c in edges.conditional_includes() {
                                             let _ = writeln!(text, "I {c:?}");
+                                        }
+                                        for c in edges.conditional_references() {
+                                            let file = match &c.target {
+                                                Some(EdgeTarget::IndexedFile { file, .. }) => run
+                                                    .indexed_path(*file)
+                                                    .map(|p| p.display().to_string())
+                                                    .unwrap_or_else(|| "?".into()),
+                                                _ => String::new(),
+                                            };
+                                            let _ = writeln!(
+                                                text,
+                                                "R {:?} {} {} | {} | {:?} | {:?}",
+                                                c.kind,
+                                                c.syntax.as_str(),
+                                                c.name,
+                                                file,
+                                                c.span,
+                                                c.include_site
+                                            );
+                                        }
+                                        for c in edges.conditional_include_closure() {
+                                            let _ = writeln!(text, "L {c:?}");
                                         }
                                         let _ = writeln!(text, "C {:?}", edges.completeness());
                                     }
