@@ -32,7 +32,8 @@ impl RunShared {
     }
 }
 
-/// [`oxabl_scope::analyze_file_with`] under `ctx`.
+/// [`oxabl_scope::analyze_tokens`] under `ctx`, with its tokens when it has
+/// them.
 pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> FileScopes {
     let options = ScopeOptions {
         parse_recovered: ctx.parse_recovered,
@@ -41,5 +42,8 @@ pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> Fi
         ..ScopeOptions::default()
     };
     let schema = ctx.schema_loaded.then_some(ctx.schema);
-    oxabl_scope::analyze_file_with(program, ctx.source, schema, &options)
+    if ctx.tokens.is_empty() {
+        return oxabl_scope::analyze_file_with(program, ctx.source, schema, &options);
+    }
+    oxabl_scope::analyze_tokens(program, ctx.source, ctx.tokens, schema, &options)
 }

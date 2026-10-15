@@ -1121,6 +1121,7 @@ pub fn collect_from_expanded_selecting(
         .with_index(index)
         .with_source_context(source_context)
         .with_parse_recovered(out.parse_recovered)
+        .with_tokens(&tokens)
         .with_elided(expanded.elided_offsets());
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
