@@ -124943,13 +124943,13 @@
         "Fail"
       ]
     },
-    "Progress.Collections.HashMap<KV>": {
+    "Progress.Collections.HashMap<K,V>": {
       "kind": "class",
       "package": "Progress.Collections",
       "page": "Progress.Collections.HashMapltKVgt-class.html",
       "inherits": "Progress.Lang.Object",
       "implements": [
-        "Progress.Collections.IMap<KV>"
+        "Progress.Collections.IMap<K,V>"
       ],
       "methods": [
         {
@@ -125088,7 +125088,7 @@
         }
       ]
     },
-    "Progress.Collections.HashMapIterator<KV>": {
+    "Progress.Collections.HashMapIterator<K,V>": {
       "kind": "class",
       "package": "Progress.Collections",
       "page": "Progress.Collections.HashMapIteratorltKVgt-class.html",
@@ -125371,7 +125371,7 @@
         }
       ]
     },
-    "Progress.Collections.IMap<KV>": {
+    "Progress.Collections.IMap<K,V>": {
       "kind": "interface",
       "package": "Progress.Collections",
       "page": "Progress.Collections.IMapltKVgt-interface.html",
@@ -125565,7 +125565,7 @@
         }
       ]
     },
-    "Progress.Collections.KeyValuePair<KV>": {
+    "Progress.Collections.KeyValuePair<K,V>": {
       "kind": "class",
       "package": "Progress.Collections",
       "page": "Progress.Collections.KeyValuePairltKVgt-class.html",
@@ -125722,7 +125722,7 @@
         }
       ]
     },
-    "Progress.Collections.ListIterator-<T>": {
+    "Progress.Collections.ListIterator<T>": {
       "kind": "class",
       "package": "Progress.Collections",
       "page": "Progress.Collections.ListIterator-ltTgt-class.html",
@@ -126234,7 +126234,7 @@
         }
       ]
     },
-    "Progress.Data.DataType-enumeration": {
+    "Progress.Data.DataType": {
       "kind": "class",
       "package": "Progress.Data",
       "page": "Progress.Data.DataType-enumeration-class.html",
@@ -131577,7 +131577,7 @@
         }
       ]
     },
-    "Progress.Lang.SoapFau<Error": {
+    "Progress.Lang.SoapFaultError": {
       "kind": "class",
       "package": "Progress.Lang",
       "page": "Progress.Lang.SoapFaultError-class.html",

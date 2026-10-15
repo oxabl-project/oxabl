@@ -95,13 +95,7 @@ impl PageNaming {
                 }
                 Some(stem.to_string())
             }
-            PageNaming::DitaSuffixed => {
-                let dotted = stem
-                    .strip_suffix("-class")
-                    .or_else(|| stem.strip_suffix("-interface"))
-                    .or_else(|| stem.strip_suffix("-enumeration"))?;
-                Some(decode_generics(dotted))
-            }
+            PageNaming::DitaSuffixed => dita_stem_to_name(stem),
         }
     }
 }
@@ -1009,10 +1003,33 @@ fn qualify_unqualified_supertypes(index: &mut BuiltinIndex) {
 // DITA ("ABL Reference") renderer — `Progress.*` type and member pages
 // =============================================================================
 
-/// Decode the `lt`/`gt` generic encoding used in `abl-reference` page file
-/// names: `Progress.Collections.IListltTgt` → `Progress.Collections.IList<T>`.
-fn decode_generics(name: &str) -> String {
-    name.replace("lt", "<").replace("gt", ">")
+/// The dotted type name of an `abl-reference` page file stem, or `None` when
+/// the stem names no type page.
+///
+/// The stem ends in `-class`, `-interface` or `-enumeration`; one enum's page
+/// carries both (`Progress.Data.DataType-enumeration-class`). Generics are
+/// encoded as `lt<params>gt` on the last segment, with the parameters run
+/// together and sometimes a stray dash before them
+/// (`Progress.Collections.ListIterator-ltTgt`). Only that trailing shape is
+/// decoded, so a name that merely contains `lt` (`SoapFaultError`) is kept.
+/// Every documented type parameter is one capital letter, so `KV` is `K,V`,
+/// the spelling the signature pages use.
+fn dita_stem_to_name(stem: &str) -> Option<String> {
+    let dotted = stem
+        .strip_suffix("-class")
+        .or_else(|| stem.strip_suffix("-interface"))
+        .or_else(|| stem.strip_suffix("-enumeration"))?;
+    let dotted = dotted.strip_suffix("-enumeration").unwrap_or(dotted);
+    let Some(open) = dotted.strip_suffix("gt").and_then(|s| s.rfind("lt")) else {
+        return Some(dotted.to_string());
+    };
+    let params = &dotted[open + 2..dotted.len() - 2];
+    if params.is_empty() || !params.bytes().all(|b| b.is_ascii_uppercase()) {
+        return Some(dotted.to_string());
+    }
+    let base = dotted[..open].trim_end_matches('-');
+    let params: Vec<String> = params.chars().map(String::from).collect();
+    Some(format!("{base}<{}>", params.join(",")))
 }
 
 /// Parse a `Progress.*` type page (the DITA renderer). The page carries the
@@ -1194,12 +1211,7 @@ fn dita_supertype(section: &ElementRef, heading: &str) -> Option<String> {
 fn dita_href_to_name(a: &ElementRef) -> Option<String> {
     let href = a.value().attr("href")?;
     let file = href.split('#').next()?;
-    let stem = file.strip_suffix(".html")?;
-    let dotted = stem
-        .strip_suffix("-class")
-        .or_else(|| stem.strip_suffix("-interface"))
-        .or_else(|| stem.strip_suffix("-enumeration"))?;
-    Some(decode_generics(dotted))
+    dita_stem_to_name(file.strip_suffix(".html")?)
 }
 
 /// Member name from a class-page link text: `Clone( ) method (Progress.Lang.Object)`
@@ -2139,5 +2151,32 @@ mod tests {
         );
         // Unresolvable unqualified names are left alone.
         assert_eq!(area_set.implements, vec!["Other".to_string()]);
+    }
+
+    #[test]
+    fn dita_stem_decodes_only_a_trailing_generic() {
+        let name = |stem| dita_stem_to_name(stem).unwrap();
+        assert_eq!(name("Progress.Lang.Object-class"), "Progress.Lang.Object");
+        assert_eq!(
+            name("Progress.Collections.IListltTgt-interface"),
+            "Progress.Collections.IList<T>"
+        );
+        assert_eq!(
+            name("Progress.Collections.HashMapltKVgt-class"),
+            "Progress.Collections.HashMap<K,V>"
+        );
+        assert_eq!(
+            name("Progress.Collections.ListIterator-ltTgt-class"),
+            "Progress.Collections.ListIterator<T>"
+        );
+        assert_eq!(
+            name("Progress.Lang.SoapFaultError-class"),
+            "Progress.Lang.SoapFaultError"
+        );
+        assert_eq!(
+            name("Progress.Data.DataType-enumeration-class"),
+            "Progress.Data.DataType"
+        );
+        assert_eq!(dita_stem_to_name("Progress.Lang.package"), None);
     }
 }
