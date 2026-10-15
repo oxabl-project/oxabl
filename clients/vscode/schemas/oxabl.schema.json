@@ -272,6 +272,14 @@
           },
           "type": "array"
         },
+        "root_relative_include_paths": {
+          "default": [],
+          "description": "Search paths resolved against the directory of each root file and searched before `include_paths`, in order. Default empty.\n\nFor a shop that compiles each program with its own directory, or fixed subdirectories of it, first on the PROPATH: `[\".\", \"rf\"]` searches `<dir>` and `<dir>/rf` for a root in `<dir>`. Includes, classes and `RUN` targets are all searched this way; an indexed class or program reads its own includes with the paths of its own directory.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "run_extensions": {
           "default": [
             "p",

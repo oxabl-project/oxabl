@@ -34,6 +34,7 @@
 //! `FileSystem` through them is a change with its own blast radius. Keeping the
 //! I/O in the thin outer layer leaves that for another day.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use oxabl_common::{Diagnostic, LintSeverityMap};
@@ -151,6 +152,12 @@ pub struct PipelineConfig {
     /// Absolute include search directories, first-match-wins, duplicate-free.
     pub include_paths: Vec<PathBuf>,
 
+    /// Search directories resolved against each root file's directory and
+    /// searched before [`include_paths`](Self::include_paths)
+    /// (`[workspace.sources].root_relative_include_paths`), as written. Default
+    /// empty. See [`include_paths_for`](Self::include_paths_for).
+    pub root_relative_include_paths: Vec<PathBuf>,
+
     /// Lint settings lowered from `[workspace.lint]`: rule severities, group
     /// toggles and per-directory overrides anchored at the workspace root.
     /// [`LintPipeline`](crate::LintPipeline) resolves them per file.
@@ -205,6 +212,7 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         PipelineConfig {
             include_paths: Vec::new(),
+            root_relative_include_paths: Vec::new(),
             lint_severities: LintConfig::default().to_severity_map(),
             style: StyleGuide::default_base(),
             schema: Schema::empty(),
@@ -218,6 +226,28 @@ impl Default for PipelineConfig {
 }
 
 impl PipelineConfig {
+    /// The search paths of the file at `file`: each root-relative path resolved
+    /// against its directory, then [`include_paths`](Self::include_paths), each
+    /// once. The include paths alone with no file or no root-relative path.
+    pub fn include_paths_for(&self, file: Option<&Path>) -> Cow<'_, [PathBuf]> {
+        match file {
+            Some(file) if !self.root_relative_include_paths.is_empty() => {
+                Cow::Owned(oxabl_index::search::root_include_paths(
+                    file,
+                    &self.root_relative_include_paths,
+                    &self.include_paths,
+                ))
+            }
+            _ => Cow::Borrowed(&self.include_paths),
+        }
+    }
+
+    /// Whether any file has a search path: an include path or a root-relative
+    /// one.
+    pub fn searches_any_path(&self) -> bool {
+        !self.include_paths.is_empty() || !self.root_relative_include_paths.is_empty()
+    }
+
     /// Resolve configuration for a run anchored at `anchor`, which may be the
     /// file or the directory the client was pointed at — both resolve
     /// identically, since a file anchor starts the ancestor walk at its parent.
@@ -395,6 +425,11 @@ fn derive(
             return (
                 PipelineConfig {
                     include_paths,
+                    root_relative_include_paths: config
+                        .workspace
+                        .sources
+                        .root_relative_include_paths
+                        .clone(),
                     lint_severities,
                     style,
                     schema: Schema::empty(),
@@ -449,6 +484,11 @@ fn derive(
     (
         PipelineConfig {
             include_paths,
+            root_relative_include_paths: config
+                .workspace
+                .sources
+                .root_relative_include_paths
+                .clone(),
             lint_severities,
             style,
             schema,
@@ -1372,5 +1412,56 @@ mod tests {
     fn config_warning_renders_readably() {
         let w = ConfigWarning::Config("failed to parse oxabl.toml: boom".to_string());
         assert_eq!(w.to_string(), "failed to parse oxabl.toml: boom");
+    }
+
+    #[test]
+    fn root_relative_paths_come_first_resolved_against_the_files_directory() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\ninclude_paths = [\"inc\", \"app/rf\"]\n\
+             root_relative_include_paths = [\".\", \"rf\"]\n",
+        );
+        let (config, _) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+        assert_eq!(
+            config.root_relative_include_paths,
+            [".", "rf"].map(PathBuf::from)
+        );
+        assert_eq!(
+            config.include_paths,
+            [root.join("inc"), root.join("app/rf")]
+        );
+
+        let file = root.join("app/main.p");
+        assert_eq!(
+            config.include_paths_for(Some(&file)).into_owned(),
+            [root.join("app"), root.join("app/rf"), root.join("inc")]
+        );
+        assert_eq!(
+            config.include_paths_for(None).into_owned(),
+            config.include_paths
+        );
+        assert!(config.searches_any_path());
+    }
+
+    #[test]
+    fn without_root_relative_paths_every_file_searches_the_include_paths() {
+        let config = PipelineConfig {
+            include_paths: vec![PathBuf::from("/inc")],
+            ..PipelineConfig::default()
+        };
+        assert!(matches!(
+            config.include_paths_for(Some(Path::new("/app/main.p"))),
+            Cow::Borrowed(paths) if paths == [PathBuf::from("/inc")]
+        ));
+        let none = PipelineConfig {
+            root_relative_include_paths: vec![PathBuf::from(".")],
+            ..PipelineConfig::default()
+        };
+        assert!(none.searches_any_path());
+        assert!(!PipelineConfig::default().searches_any_path());
     }
 }

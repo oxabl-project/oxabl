@@ -107,6 +107,32 @@ pub fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
+/// The search paths of the file at `file`: each of `root_relative` resolved
+/// against the file's directory, then `include_paths`, each once, in order.
+///
+/// `include_paths` alone when `root_relative` is empty or `file` has no
+/// directory.
+pub fn root_include_paths(
+    file: &Path,
+    root_relative: &[PathBuf],
+    include_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let Some(dir) = file.parent().filter(|_| !root_relative.is_empty()) else {
+        return include_paths.to_vec();
+    };
+    let mut paths: Vec<PathBuf> = Vec::with_capacity(root_relative.len() + include_paths.len());
+    for path in root_relative
+        .iter()
+        .map(|entry| normalize_lexically(&dir.join(entry)))
+        .chain(include_paths.iter().cloned())
+    {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
 /// Extension of an ABL class file. A qualified class name maps onto a path by
 /// replacing dots with separators and appending this — the standard ABL
 /// convention, and the reason no separate class-path setting is needed.

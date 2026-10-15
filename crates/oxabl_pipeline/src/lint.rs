@@ -500,6 +500,7 @@ impl<'a> LintPipeline<'a> {
             // be unconditional rather than another thing a client can forget.
             index: RunIndex::Owned(Box::new(
                 BatchIndex::new(fs, &config.include_paths)
+                    .with_root_relative_paths(&config.root_relative_include_paths)
                     .with_run_extensions(&config.run_extensions)
                     .with_case_insensitive_lookup(config.case_insensitive_lookup)
                     .with_preprocessor(&config.preprocessor),
@@ -606,6 +607,7 @@ impl<'a> LintPipeline<'a> {
         oxabl_index::IncludeContext {
             fs: self.fs,
             include_paths: &self.config.include_paths,
+            root_relative_paths: &self.config.root_relative_include_paths,
             predefined: &self.config.preprocessor,
         }
     }
@@ -867,7 +869,14 @@ impl<'a> LintPipeline<'a> {
                     computed_name: c.computed_name,
                 })
                 .collect();
-            conditional_include_closure(&names, &self.index_includes())
+            let includes = self.index_includes();
+            let paths = self.config.include_paths_for(self.file());
+            let includes = oxabl_index::IncludeContext {
+                include_paths: &paths,
+                root_relative_paths: &[],
+                ..includes
+            };
+            conditional_include_closure(&names, &includes)
         });
 
         let edges = build_edge_set(&EdgeInputs {
@@ -988,7 +997,7 @@ impl<'a> LintPipeline<'a> {
                 self.file().and_then(Path::to_str),
                 source,
                 self.fs,
-                &self.config.include_paths,
+                &self.config.include_paths_for(self.file()),
                 &self.config.preprocessor,
                 self.preprocess,
             ),

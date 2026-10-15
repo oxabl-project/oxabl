@@ -93,6 +93,9 @@ const INDEXED_FILE: FileId = FileId::new(1);
 pub struct IncludeContext<'a> {
     pub fs: &'a dyn FileSystem,
     pub include_paths: &'a [PathBuf],
+    /// Paths resolved against the directory of the file being indexed and searched
+    /// before `include_paths`; see [`search::root_include_paths`].
+    pub root_relative_paths: &'a [PathBuf],
     /// Answers the AVM's predefined names (`{&OPSYS}` and friends).
     pub predefined: &'a PreprocessorConfig,
 }
@@ -103,9 +106,40 @@ impl<'a> IncludeContext<'a> {
         IncludeContext {
             fs: &NoFiles,
             include_paths: &[],
+            root_relative_paths: &[],
             predefined,
         }
     }
+
+    /// The search paths of the file at `file`: the root-relative paths against
+    /// its directory, then the include paths.
+    pub fn paths_for(&self, file: &Path) -> std::borrow::Cow<'a, [PathBuf]> {
+        if self.root_relative_paths.is_empty() {
+            return std::borrow::Cow::Borrowed(self.include_paths);
+        }
+        std::borrow::Cow::Owned(search::root_include_paths(
+            file,
+            self.root_relative_paths,
+            self.include_paths,
+        ))
+    }
+}
+
+/// [`index_file`] for the file at `path`, its includes read with the search
+/// paths of its own directory.
+pub fn index_file_at(
+    file: IndexedFileId,
+    path: &Path,
+    source: &str,
+    includes: &IncludeContext<'_>,
+) -> (FileFacts, Vec<PathBuf>) {
+    let paths = includes.paths_for(path);
+    let includes = IncludeContext {
+        include_paths: &paths,
+        root_relative_paths: &[],
+        ..*includes
+    };
+    index_file_with_includes(file, source, &includes)
 }
 
 /// A filesystem with nothing in it.
@@ -702,6 +736,7 @@ mod tests {
             &IncludeContext {
                 fs: &fs,
                 include_paths: &include_paths,
+                root_relative_paths: &[],
                 predefined: &predefined,
             },
         )

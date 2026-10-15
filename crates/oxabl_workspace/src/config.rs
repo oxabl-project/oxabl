@@ -387,6 +387,17 @@ pub struct SourcesConfig {
     #[serde(default)]
     pub include_paths: Vec<PathBuf>,
 
+    /// Search paths resolved against the directory of each root file and
+    /// searched before `include_paths`, in order. Default empty.
+    ///
+    /// For a shop that compiles each program with its own directory, or fixed
+    /// subdirectories of it, first on the PROPATH: `[".", "rf"]` searches
+    /// `<dir>` and `<dir>/rf` for a root in `<dir>`. Includes, classes and `RUN`
+    /// targets are all searched this way; an indexed class or program reads its
+    /// own includes with the paths of its own directory.
+    #[serde(default)]
+    pub root_relative_include_paths: Vec<PathBuf>,
+
     /// Extensions tried, in order, for a `RUN` target written without one
     /// (`RUN post-order`), written without the dot. Default `["p", "w"]`.
     ///
@@ -507,6 +518,7 @@ impl Default for SourcesConfig {
         SourcesConfig {
             directories: Vec::new(),
             include_paths: Vec::new(),
+            root_relative_include_paths: Vec::new(),
             run_extensions: default_run_extensions(),
             case_insensitive_lookup: false,
             root_extensions: default_root_extensions(),
@@ -924,5 +936,23 @@ name = "bad"
         let normalized = normalize_root_extensions(&list);
         assert_eq!(normalized.extensions, ["pp"]);
         assert_eq!(normalized.rejected, ["i", ".I", "", "a/b"]);
+    }
+
+    #[test]
+    fn root_relative_include_paths_default_empty_and_parse_as_a_list() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert!(
+            config
+                .workspace
+                .sources
+                .root_relative_include_paths
+                .is_empty()
+        );
+        let toml = "[workspace]\nname = \"p\"\n[workspace.sources]\nroot_relative_include_paths = [\".\", \"rf\"]\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert_eq!(
+            config.workspace.sources.root_relative_include_paths,
+            [PathBuf::from("."), PathBuf::from("rf")]
+        );
     }
 }
