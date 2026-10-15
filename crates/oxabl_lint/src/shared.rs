@@ -14,7 +14,8 @@ use oxabl_semantic::AnalysisContext;
 /// share. Each fact is computed on first use, so a run that enables no rule
 /// that needs it pays nothing.
 #[derive(Default)]
-pub struct RunShared {
+pub struct RunShared<'a> {
+    summaries: Option<&'a dyn CalleeSummaries>,
     handles: OnceCell<FileHandles>,
     tokens: OnceCell<Vec<oxabl_lexer::Token>>,
     flow: OnceCell<FileFlow>,
@@ -22,7 +23,23 @@ pub struct RunShared {
     effects: OnceCell<FileEffects>,
 }
 
-impl RunShared {
+/// Answers in expanded byte coordinates. Missing and partial answers are Unknown.
+pub trait CalleeSummaries {
+    fn callee_summary(&self, at: u32) -> Option<&oxabl_effects::summary::Summary>;
+}
+
+impl<'a> RunShared<'a> {
+    /// Supply cross-file summaries for this file.
+    pub fn with_summaries(mut self, summaries: &'a dyn CalleeSummaries) -> Self {
+        self.summaries = Some(summaries);
+        self
+    }
+
+    /// The complete or partial summary of the callee at this call site.
+    pub fn callee_summary(&self, at: u32) -> Option<&oxabl_effects::summary::Summary> {
+        self.summaries?.callee_summary(at)
+    }
+
     /// The dynamic objects of the file, analysed once. `source` is the text
     /// `program` was parsed from.
     pub fn handles(&self, program: &[Statement], source: &str) -> &FileHandles {

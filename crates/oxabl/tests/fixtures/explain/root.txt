@@ -1,0 +1,5 @@
+main.p (expanded lines)
+unit main <main> @1
+  direct: none
+  summary: complete
+  transitive: read Customer no-lock once via <root>/read.p::main

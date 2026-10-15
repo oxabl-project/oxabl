@@ -75,3 +75,42 @@ fn fixtures_match_their_snapshots() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn truncated_calls_never_produce_a_complete_summary() {
+    let source = "MESSAGE \"hi\".";
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    let flow = oxabl_flow::build_file(&program.statements, source);
+    let scopes =
+        oxabl_scope::analyze_file_with(&program.statements, source, None, &ScopeOptions::default());
+    let calls = FileCalls {
+        truncated: true,
+        ..FileCalls::default()
+    };
+    let effects = oxabl_effects::analyze_file(
+        &program.statements,
+        source,
+        &tokens,
+        &flow,
+        &scopes,
+        &calls,
+        None,
+        &EffectOptions::default(),
+    );
+    let nodes: Vec<_> = effects
+        .units()
+        .iter()
+        .map(|u| oxabl_effects::summary::Node::of_unit(&effects, u, |_| None))
+        .collect();
+    let summaries =
+        oxabl_effects::summary::summarize(&nodes, &oxabl_effects::summary::graph_of(&nodes));
+    assert!(!summaries[0].known_no_writes());
+    assert!(
+        summaries[0]
+            .partial
+            .contains(&oxabl_effects::summary::Partial::Unit(
+                oxabl_effects::EffectUnknown::TooComplex
+            ))
+    );
+}
