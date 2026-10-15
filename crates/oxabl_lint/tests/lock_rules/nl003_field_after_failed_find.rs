@@ -39,7 +39,7 @@ IF NOT AVAILABLE Customer THEN RETURN.
 c = Customer.Name.
 FIND FIRST Order NO-LOCK NO-ERROR.
 IF NOT AVAILABLE Order THEN CREATE Order.
-Order.Total = 1.
+Order.CustNum = 1.
 REPEAT:
     FIND NEXT Item NO-LOCK NO-ERROR.
     IF NOT AVAILABLE Item THEN LEAVE.
@@ -72,7 +72,7 @@ n = Order.OrderNum.
 ";
     let diags = check(run, src);
     assert_eq!(lines(src, &diags), [6]);
-    assert!(diags[0].message.contains("(or one of 1 others)"));
+    assert!(diags[0].message.contains("(or 1 other)"));
 }
 
 #[test]

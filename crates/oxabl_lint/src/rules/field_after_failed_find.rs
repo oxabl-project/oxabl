@@ -118,6 +118,7 @@ pub fn check(
         let find = quote(ctx.source, nulls.find(first).at);
         let more = match m.finds.len() {
             1 => String::new(),
+            2 => " (or 1 other)".to_string(),
             n => format!(" (or one of {} others)", n - 1),
         };
         let verb = if m.write { "assigned" } else { "read" };
