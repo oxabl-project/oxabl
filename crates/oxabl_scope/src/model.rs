@@ -234,7 +234,7 @@ pub struct Reference {
     /// `BUFFER b` passed to a call, which may change the record.
     pub passed: bool,
     /// In a statement of a form the model does not know, which may change
-    /// the record.
+    /// the record (of a temp-table too).
     pub opaque: bool,
 }
 

@@ -1,6 +1,6 @@
 //! What a condition says about records: which buffers have a record on the
 //! edge where it is true, and which on the edge where it is false (section
-//! 9.3, G1, G2, G5, G7).
+//! 9.3, G1, G2, G5-G7).
 
 use oxabl_lexer::Kind;
 use oxabl_scope::BufferId;
@@ -11,8 +11,10 @@ use crate::analysis::Tok;
 /// What one edge of a condition proves.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Proves {
-    /// Buffers that have a record (or are Unknown, G7).
+    /// Buffers that have a record.
     pub buffers: SmallVec<[BufferId; 2]>,
+    /// Buffers named in a form the grammar does not read: Unknown (G7).
+    pub unknown: SmallVec<[BufferId; 2]>,
     /// `ERROR-STATUS:ERROR` is false.
     pub no_error: bool,
 }
@@ -22,6 +24,9 @@ pub(crate) struct Proves {
 pub(crate) struct Cond {
     pub yes: Proves,
     pub no: Proves,
+    /// `ERROR-STATUS` in a form the grammar does not read: the finds it
+    /// links are Unknown on both edges.
+    pub es_unknown: bool,
 }
 
 /// A reference at a token: its buffer, and whether it names a field.
@@ -64,6 +69,7 @@ impl Parser<'_> {
             a = Cond {
                 yes: common(&a.yes, &b.yes),
                 no: union(&a.no, &b.no),
+                es_unknown: a.es_unknown || b.es_unknown,
             };
         }
         a
@@ -77,6 +83,7 @@ impl Parser<'_> {
             a = Cond {
                 yes: union(&a.yes, &b.yes),
                 no: common(&a.no, &b.no),
+                es_unknown: a.es_unknown || b.es_unknown,
             };
         }
         a
@@ -89,6 +96,7 @@ impl Parser<'_> {
             return Cond {
                 yes: c.no,
                 no: c.yes,
+                es_unknown: c.es_unknown,
             };
         }
         self.primary()
@@ -106,6 +114,7 @@ impl Parser<'_> {
                 })
             }
             Some(Kind::Available) => self.available(),
+            Some(Kind::Locked) => self.locked(),
             Some(Kind::ErrorStatus) => self.error_status(),
             _ => None,
         };
@@ -123,6 +132,24 @@ impl Parser<'_> {
 
     /// `AVAILABLE b`, `AVAILABLE(b)`, `AVAILABLE db.b`.
     fn available(&mut self) -> Option<Cond> {
+        let buffer = self.buffer_operand()?;
+        Some(Cond {
+            yes: Proves {
+                buffers: smallvec::smallvec![buffer],
+                ..Proves::default()
+            },
+            ..Cond::default()
+        })
+    }
+
+    /// `LOCKED b`: true says `b` is empty, false says nothing (G6).
+    fn locked(&mut self) -> Option<Cond> {
+        self.buffer_operand()?;
+        Some(Cond::default())
+    }
+
+    /// The buffer operand of `AVAILABLE` or `LOCKED`, after the keyword.
+    fn buffer_operand(&mut self) -> Option<BufferId> {
         self.i += 1;
         let paren = self.peek() == Some(Kind::LeftParen);
         if paren {
@@ -142,16 +169,11 @@ impl Parser<'_> {
             }
             self.i += 1;
         }
-        Some(Cond {
-            yes: Proves {
-                buffers: smallvec::smallvec![buffer],
-                no_error: false,
-            },
-            no: Proves::default(),
-        })
+        Some(buffer)
     }
 
-    /// `ERROR-STATUS:ERROR`.
+    /// `ERROR-STATUS:ERROR`, alone or compared with a logical constant
+    /// (`= TRUE`, `<> NO`, ...).
     fn error_status(&mut self) -> Option<Cond> {
         let colon = self.toks.get(self.i + 1)?;
         let name = self.toks.get(self.i + 2)?;
@@ -160,12 +182,33 @@ impl Parser<'_> {
             return None;
         }
         self.i += 3;
-        Some(Cond {
-            yes: Proves::default(),
-            no: Proves {
-                buffers: SmallVec::new(),
-                no_error: true,
-            },
+        let mut error = true;
+        if let Some(op) = self
+            .peek()
+            .filter(|k| matches!(k, Kind::Equals | Kind::Eq | Kind::NotEqual | Kind::Ne))
+        {
+            let value = match self.toks.get(self.i + 1).map(|t| t.kind)? {
+                Kind::KwTrue | Kind::Yes => true,
+                Kind::KwFalse | Kind::No => false,
+                _ => return None,
+            };
+            self.i += 2;
+            error = value == matches!(op, Kind::Equals | Kind::Eq);
+        }
+        let no_error = Proves {
+            no_error: true,
+            ..Proves::default()
+        };
+        Some(if error {
+            Cond {
+                no: no_error,
+                ..Cond::default()
+            }
+        } else {
+            Cond {
+                yes: no_error,
+                ..Cond::default()
+            }
         })
     }
 
@@ -192,35 +235,45 @@ impl Parser<'_> {
     }
 
     fn mentions(&self, from: usize, to: usize) -> Cond {
-        let mut buffers: SmallVec<[BufferId; 2]> = SmallVec::new();
+        let mut unknown: SmallVec<[BufferId; 2]> = SmallVec::new();
+        let mut es_unknown = false;
         for t in &self.toks[from..to] {
+            es_unknown |= t.kind == Kind::ErrorStatus;
             if let Some((b, false, _)) = (self.refs)(t.start)
-                && !buffers.contains(&b)
+                && !unknown.contains(&b)
             {
-                buffers.push(b);
+                unknown.push(b);
             }
         }
         let p = Proves {
-            buffers,
-            no_error: false,
+            unknown,
+            ..Proves::default()
         };
         Cond {
             yes: p.clone(),
             no: p,
+            es_unknown,
         }
     }
 }
 
-/// What two conditions prove when both hold.
-fn union(a: &Proves, b: &Proves) -> Proves {
-    let mut buffers = a.buffers.clone();
-    for x in &b.buffers {
-        if !buffers.contains(x) {
-            buffers.push(*x);
+/// Both lists, once each.
+fn merged(a: &[BufferId], b: &[BufferId]) -> SmallVec<[BufferId; 2]> {
+    let mut out: SmallVec<[BufferId; 2]> = a.into();
+    for x in b {
+        if !out.contains(x) {
+            out.push(*x);
         }
     }
+    out
+}
+
+/// What two conditions prove when both hold. Unknown on either side stays
+/// Unknown.
+fn union(a: &Proves, b: &Proves) -> Proves {
     Proves {
-        buffers,
+        buffers: merged(&a.buffers, &b.buffers),
+        unknown: merged(&a.unknown, &b.unknown),
         no_error: a.no_error || b.no_error,
     }
 }
@@ -234,6 +287,7 @@ fn common(a: &Proves, b: &Proves) -> Proves {
             .filter(|x| b.buffers.contains(x))
             .copied()
             .collect(),
+        unknown: merged(&a.unknown, &b.unknown),
         no_error: a.no_error && b.no_error,
     }
 }

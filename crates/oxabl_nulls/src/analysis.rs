@@ -9,7 +9,7 @@
 
 use oxabl_ast::{NodeId, Span};
 use oxabl_flow::dataflow::{Analysis, BitSet, Direction, solve};
-use oxabl_flow::{Cfg, EdgeKind, FileFlow, NodeIx, NodeKind, OpaqueReason, UnitId};
+use oxabl_flow::{Cfg, EdgeKind, FileFlow, NodeIx, NodeKind, OpaqueReason, UnitId, UnitKind};
 use oxabl_lexer::{Kind, Token};
 use oxabl_scope::{BufferId, BufferKind, FileScopes, ReadKind, Reference, Table};
 use rustc_hash::FxHashMap;
@@ -56,16 +56,19 @@ struct Facts {
     /// Buffers a completed field reference proves (K3).
     proven: SmallVec<[BufferId; 2]>,
     /// Buffers whose fields a statement with `NO-ERROR` reads: when it is a
-    /// `FIND` of another buffer that a guard then proves, they had a record
-    /// (G9).
+    /// `FIND` of another buffer, run while that buffer was empty, which a
+    /// guard then proves, they had a record (G9).
     suppressed: SmallVec<[BufferId; 2]>,
+    /// A `CASE` on `ERROR-STATUS`: the finds it links are Unknown after it.
+    es_unknown: bool,
     /// The statement is in a branch of a statement-level `&IF` whose test
     /// the preprocessor left: it may never be compiled (section 9.5).
     in_preproc: bool,
     /// Buffers the statement tests with `AVAILABLE` (G8).
     tested: SmallVec<[BufferId; 2]>,
     /// The condition of an `IF` or of a `WHILE` header, and whether its false
-    /// edge leaves the loop only when the condition is false (no `TO`).
+    /// edge leaves the loop only when the condition is false (no `TO` and no
+    /// record phrase).
     cond: Option<(Cond, bool)>,
 }
 
@@ -159,7 +162,15 @@ pub(crate) fn analyze(
             facts[*iv as usize].forget_all = true;
         }
     }
-    read_references(refs, &ref_owner, &is_tracked, &mut facts);
+    let widgets: Vec<bool> = refs
+        .iter()
+        .zip(&ref_owner)
+        .map(|(r, o)| {
+            let database = matches!(scopes.buffer(r.buffer).table, Table::Database(_));
+            r.field && widget(source, &toks, &intervals, *o, r, database)
+        })
+        .collect();
+    read_references(refs, &ref_owner, &widgets, &is_tracked, &mut facts);
 
     // Reads per statement: a FIND, FOR or query of a buffer refills it, and
     // its own criteria are no use of an empty record.
@@ -174,8 +185,37 @@ pub(crate) fn analyze(
         let node = flow.unit(unit).node(node);
         let stmt = node.stmt;
         let first = toks.partition_point(|t| t.start < intervals[iv].start);
-        f.find_current = toks.get(first).is_some_and(|t| t.kind == Kind::Find)
+        let lead = toks.get(first).map(|t| t.kind);
+        f.find_current = lead == Some(Kind::Find)
             && toks.get(first + 1).is_some_and(|t| t.kind == Kind::Current);
+        match lead {
+            // `RELEASE b` empties the buffer (N11); the model forgets (K4).
+            Some(Kind::Release) if node.kind == NodeKind::Stmt => {
+                for b in std::mem::take(&mut f.mentions) {
+                    if !f.kills.contains(&b) {
+                        f.kills.push(b);
+                    }
+                }
+            }
+            // `REPOSITION q` may fill the query's buffers (K4, K5).
+            Some(Kind::Reposition) if node.kind == NodeKind::Stmt => f.forget_all = true,
+            // A `CASE` on `AVAILABLE b` or `ERROR-STATUS`: Unknown in every
+            // branch (G7).
+            Some(Kind::Case) => {
+                for b in std::mem::take(&mut f.tested) {
+                    if !f.kills.contains(&b) {
+                        f.kills.push(b);
+                    }
+                }
+                let end = intervals[iv].end;
+                f.es_unknown = toks[first..]
+                    .iter()
+                    .take_while(|t| t.start < end)
+                    .zip(first..)
+                    .any(|(t, i)| t.kind == Kind::ErrorStatus && tok_owner[i] == Some(iv as u32));
+            }
+            _ => {}
+        }
         let own: SmallVec<[BufferId; 2]> = stmt
             .and_then(|s| reads_of.get(&s))
             .into_iter()
@@ -326,21 +366,52 @@ pub(crate) fn analyze(
             sites.buffer.push(buffer);
             sites.index.push(index);
             sites.of_buffer.entry(buffer).or_default().push(s);
-            let deps = sites.deps.entry(buffer).or_default();
+            let mut pairs: SmallVec<[u32; 2]> = SmallVec::new();
             for &d in &f.suppressed {
-                if d != buffer && !deps.contains(&d) {
-                    deps.push(d);
+                if d == buffer {
+                    continue;
+                }
+                let next = sites.pairs.len() as u32;
+                let p = *sites.pair_at.entry((buffer, d)).or_insert(next);
+                if p == next {
+                    sites.pairs.push((buffer, d));
+                    sites.pairs_of_target.entry(buffer).or_default().push(p);
+                    sites.pairs_of_dep.entry(d).or_default().push(p);
+                }
+                if !pairs.contains(&p) {
+                    pairs.push(p);
                 }
             }
+            if !pairs.is_empty() && !sites.target.contains_key(&buffer) {
+                sites.target.insert(buffer, sites.target.len() as u32);
+                // Empty when the unit starts: the main block runs first, and
+                // a routine's own buffer does not outlive it.
+                let b = scopes.buffer(buffer);
+                let main = matches!(cfg.unit().kind, UnitKind::Main | UnitKind::DbTrigger);
+                sites.empty_at_entry.push(
+                    !b.is_external()
+                        && (main
+                            || !shared.contains(&buffer)
+                                && b.scopes()
+                                    .is_some_and(|ss| ss.iter().all(|x| x.unit == unit))),
+                );
+            }
+            sites.deps.push(pairs);
         }
         if sites.buffer.is_empty() {
             continue;
+        }
+        let tests = solve(cfg, &TestAhead { ivs, facts: &facts });
+        let mut test_ahead = vec![false; cfg.node_count()];
+        for (n, _) in cfg.nodes() {
+            test_ahead[n.index()] = *tests.after(n);
         }
         let problem = Problem {
             ivs,
             facts: &facts,
             sites: &sites,
             shared: &shared,
+            test_ahead: &test_ahead,
         };
         let solution = solve(cfg, &problem);
         for (n, node) in cfg.nodes() {
@@ -528,8 +599,12 @@ fn read_tokens(
             | Kind::DynamicFunction
             | Kind::DynamicInvoke => f.calls = true,
             Kind::Identifier if next == Some(Kind::LeftParen) => f.calls = true,
-            Kind::Colon | Kind::DoubleColon => {
-                if let Some(name) = toks.get(i + 1) {
+            // A method or attribute is written against its handle; the colon
+            // that ends a block header or a label is not.
+            Kind::Colon | Kind::DoubleColon
+                if i > 0 && toks[i - 1].end == t.start && operand_end(toks[i - 1].kind) =>
+            {
+                if let Some(name) = toks.get(i + 1).filter(|n| n.start == t.end) {
                     if toks.get(i + 2).map(|t| t.kind) == Some(Kind::LeftParen) {
                         f.calls = true;
                     }
@@ -540,6 +615,97 @@ fn read_tokens(
             }
             _ => {}
         }
+    }
+}
+
+/// Whether a token can end the operand a method is called on.
+fn operand_end(kind: Kind) -> bool {
+    !matches!(
+        kind,
+        Kind::Do
+            | Kind::Repeat
+            | Kind::Transaction
+            | Kind::Then
+            | Kind::KwElse
+            | Kind::Otherwise
+            | Kind::Finally
+            | Kind::Period
+            | Kind::Colon
+    )
+}
+
+/// A field reference that names the frame field (the widget), not the
+/// record: an `@` target, a widget attribute or method
+/// (`b.f:SCREEN-VALUE`), `b.f IN FRAME f`, `INPUT [FRAME f] b.f`, and the
+/// fields of `ENABLE`, `DISABLE`, `PROMPT-FOR`, `HIDE`, `VIEW`, `CLEAR`,
+/// `WAIT-FOR` and `APPLY ... TO`. It neither reads nor proves a record.
+/// A temp-table field may hold a handle, so `tt.f:attr` is a widget only
+/// with `IN FRAME` or `IN BROWSE`; a database field cannot.
+fn widget(
+    source: &str,
+    toks: &[Tok],
+    intervals: &[Interval],
+    owner: Option<u32>,
+    r: &Reference,
+    database: bool,
+) -> bool {
+    let at = toks.partition_point(|t| t.start < r.at.start);
+    let kind = |i: usize| toks.get(i).map(|t| t.kind);
+    let prev = at.checked_sub(1).and_then(kind);
+    if prev == Some(Kind::At) {
+        return true;
+    }
+    // `INPUT` after `(` or `,` is the mode of a parameter.
+    let screen_input = |i: usize| {
+        kind(i) == Some(Kind::Input)
+            && !matches!(
+                i.checked_sub(1).and_then(kind),
+                Some(Kind::LeftParen | Kind::Comma)
+            )
+    };
+    if r.write.is_none()
+        && (at >= 1 && screen_input(at - 1)
+            || at >= 3
+                && screen_input(at - 3)
+                && matches!(kind(at - 2), Some(Kind::Frame | Kind::Browse)))
+    {
+        return true;
+    }
+    let in_frame = |i: usize| {
+        kind(i) == Some(Kind::KwIn) && matches!(kind(i + 1), Some(Kind::Frame | Kind::Browse))
+    };
+    let next = toks.partition_point(|t| t.start < r.at.end);
+    if let (Some(colon), Some(name)) = (toks.get(next), toks.get(next + 1))
+        && colon.kind == Kind::Colon
+        && colon.start == r.at.end
+        && name.start == colon.end
+        && source
+            .get(name.start as usize..)
+            .and_then(|s| s.chars().next())
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && (database || in_frame(next + 2))
+    {
+        return true;
+    }
+    if in_frame(next) {
+        return true;
+    }
+    let Some(iv) = owner else {
+        return false;
+    };
+    let first = toks.partition_point(|t| t.start < intervals[iv as usize].start);
+    match kind(first) {
+        Some(
+            Kind::Enable
+            | Kind::Disable
+            | Kind::PromptFor
+            | Kind::Hide
+            | Kind::View
+            | Kind::Clear
+            | Kind::WaitFor,
+        ) => true,
+        Some(Kind::Apply) => toks[first..at].iter().any(|t| t.kind == Kind::To),
+        _ => false,
     }
 }
 
@@ -579,10 +745,11 @@ fn dynamic_method(name: &str) -> bool {
 fn read_references(
     refs: &[Reference],
     owner: &[Option<u32>],
+    widgets: &[bool],
     tracked: &dyn Fn(BufferId) -> bool,
     facts: &mut [Facts],
 ) {
-    for (r, o) in refs.iter().zip(owner) {
+    for ((r, o), &widget) in refs.iter().zip(owner).zip(widgets) {
         let Some(iv) = o else {
             continue;
         };
@@ -592,6 +759,9 @@ fn read_references(
             if !f.kills.contains(&b) {
                 f.kills.push(b);
             }
+            continue;
+        }
+        if widget {
             continue;
         }
         if !r.field {
@@ -651,7 +821,17 @@ fn condition(
                 match t.kind {
                     Kind::LeftParen | Kind::LeftBracket => depth += 1,
                     Kind::RightParen | Kind::RightBracket => depth -= 1,
-                    Kind::To if depth == 0 => to = true,
+                    // A `TO` limit or a record phrase also ends the loop.
+                    Kind::To
+                    | Kind::KwFor
+                    | Kind::Each
+                    | Kind::First
+                    | Kind::Last
+                    | Kind::Preselect
+                        if depth == 0 =>
+                    {
+                        to = true
+                    }
                     Kind::KwWhile if depth == 0 => {
                         start = Some(i + 1);
                         break;
@@ -693,8 +873,18 @@ struct Sites {
     /// The index of each site in the file's finds.
     index: Vec<u32>,
     of_buffer: FxHashMap<BufferId, SmallVec<[u32; 2]>>,
-    /// Per buffer, the buffers whose fields its finds read in their criteria.
-    deps: FxHashMap<BufferId, SmallVec<[BufferId; 2]>>,
+    /// Per site, the pairs it sets: the buffers whose fields its criteria
+    /// read (G9).
+    deps: Vec<SmallVec<[u32; 2]>>,
+    /// `(c, b)`: a `FIND c ... NO-ERROR` reads a field of `b`.
+    pairs: Vec<(BufferId, BufferId)>,
+    pair_at: FxHashMap<(BufferId, BufferId), u32>,
+    pairs_of_target: FxHashMap<BufferId, SmallVec<[u32; 2]>>,
+    pairs_of_dep: FxHashMap<BufferId, SmallVec<[u32; 2]>>,
+    /// The buffers some pair starts from, by their index in `empty`.
+    target: FxHashMap<BufferId, u32>,
+    /// Per target, whether it is empty when the unit starts.
+    empty_at_entry: Vec<bool>,
 }
 
 /// The finds that may have failed, and the finds that `ERROR-STATUS:ERROR`
@@ -705,6 +895,13 @@ struct Sites {
 struct Fact {
     maybe: BitSet,
     error_status: BitSet,
+    /// The targets that are empty on every path.
+    empty: BitSet,
+    /// The pairs `(c, b)` where, on every path, `c` is empty, or its record
+    /// came from a `FIND c ... NO-ERROR` that read a field of `b` while this
+    /// held before it, and `b` was not found again with `NO-ERROR` since. A
+    /// proof of `c` then proves `b` (G9). Empty implies held.
+    pairs: BitSet,
 }
 
 struct Problem<'a> {
@@ -712,10 +909,77 @@ struct Problem<'a> {
     facts: &'a [Facts],
     sites: &'a Sites,
     shared: &'a [BufferId],
+    /// Per node, whether a test of `ERROR-STATUS` may follow it before a
+    /// statement with `NO-ERROR` resets it.
+    test_ahead: &'a [bool],
+}
+
+/// Whether a test of `ERROR-STATUS` may run before the next statement with
+/// `NO-ERROR`: a backward dataflow.
+struct TestAhead<'a> {
+    ivs: &'a [u32],
+    facts: &'a [Facts],
+}
+
+impl Analysis for TestAhead<'_> {
+    type Fact = bool;
+
+    fn direction(&self) -> Direction {
+        Direction::Backward
+    }
+
+    fn initial(&self, _cfg: &Cfg) -> bool {
+        false
+    }
+
+    fn boundary(&self, _cfg: &Cfg) -> bool {
+        false
+    }
+
+    fn join(&self, acc: &mut bool, other: &bool) {
+        *acc |= *other;
+    }
+
+    fn transfer(&self, _cfg: &Cfg, node: NodeIx, fact: &mut bool) {
+        let iv = self.ivs[node.index()];
+        if iv == u32::MAX {
+            return;
+        }
+        let f = &self.facts[iv as usize];
+        let tests = f.es_unknown
+            || f.cond
+                .as_ref()
+                .is_some_and(|(c, _)| c.es_unknown || c.yes.no_error || c.no.no_error);
+        if tests {
+            *fact = true;
+        } else if f.no_error || f.forget_all {
+            *fact = false;
+        }
+    }
 }
 
 impl Problem<'_> {
-    fn kill(&self, fact: &mut Fact, b: BufferId) {
+    /// Nothing known: after a raise edge, an opaque statement or elided text.
+    fn forgotten(&self) -> Fact {
+        let n = self.sites.buffer.len();
+        Fact {
+            maybe: BitSet::new_empty(n),
+            error_status: BitSet::new_full(n),
+            empty: BitSet::new_empty(self.sites.target.len()),
+            pairs: BitSet::new_empty(self.sites.pairs.len()),
+        }
+    }
+
+    /// Whether the target of a pair is empty on every path.
+    fn empty(&self, fact: &Fact, p: u32) -> bool {
+        self.sites
+            .target
+            .get(&self.sites.pairs[p as usize].0)
+            .is_some_and(|&t| fact.empty.contains(t as usize))
+    }
+
+    /// The failed finds of `b` are known not to have failed.
+    fn clear(&self, fact: &mut Fact, b: BufferId) {
         if let Some(ss) = self.sites.of_buffer.get(&b) {
             for &s in ss {
                 fact.maybe.remove(s as usize);
@@ -724,16 +988,40 @@ impl Problem<'_> {
         }
     }
 
-    /// A guard or a completed use proves `b` has a record (`kill` it too when
-    /// asked), so did the buffers its finds read in their criteria, else they
-    /// would have failed (G9).
-    fn guarded(&self, fact: &mut Fact, b: BufferId, kill: bool) {
-        if kill {
-            self.kill(fact, b);
+    /// `b` was refilled, or its record is Unknown.
+    fn refill(&self, fact: &mut Fact, b: BufferId) {
+        self.clear(fact, b);
+        if let Some(&t) = self.sites.target.get(&b) {
+            fact.empty.remove(t as usize);
         }
-        if let Some(deps) = self.sites.deps.get(&b) {
-            for &d in deps {
-                self.kill(fact, d);
+        if let Some(ps) = self.sites.pairs_of_target.get(&b) {
+            for &p in ps {
+                fact.pairs.remove(p as usize);
+            }
+        }
+    }
+
+    /// A guard or a completed use proves `b` has a record; so did the buffers
+    /// whose fields the `FIND` that filled it read, else it would have
+    /// failed (G9).
+    fn prove(&self, fact: &mut Fact, b: BufferId) {
+        let mut todo: SmallVec<[BufferId; 4]> = smallvec::smallvec![b];
+        let mut done: SmallVec<[BufferId; 4]> = SmallVec::new();
+        while let Some(b) = todo.pop() {
+            if done.contains(&b) {
+                continue;
+            }
+            done.push(b);
+            self.clear(fact, b);
+            if let Some(ps) = self.sites.pairs_of_target.get(&b) {
+                for &p in ps {
+                    if fact.pairs.contains(p as usize) {
+                        todo.push(self.sites.pairs[p as usize].1);
+                    }
+                }
+            }
+            if let Some(&t) = self.sites.target.get(&b) {
+                fact.empty.remove(t as usize);
             }
         }
     }
@@ -742,7 +1030,7 @@ impl Problem<'_> {
         // Error paths are not followed: where a statement raised, the error
         // is the first problem (K8).
         if matches!(edge, Some(EdgeKind::Raise(_))) {
-            *fact = self.initial(cfg);
+            *fact = self.forgotten();
             return;
         }
         let iv = self.ivs[node.index()];
@@ -759,11 +1047,19 @@ impl Problem<'_> {
             )
         );
         if f.forget_all || opaque {
-            let n = self.sites.buffer.len();
-            fact.maybe = BitSet::new_empty(n);
-            fact.error_status = BitSet::new_full(n);
+            *fact = self.forgotten();
             return;
         }
+        let site = self.sites.of_iv.get(&iv).copied();
+        // The pairs this find keeps: `c` was empty, or its record already
+        // depended on `b` (an abandoned `FIND` may keep it, N7).
+        let kept: SmallVec<[u32; 2]> = site
+            .map(|s| &self.sites.deps[s as usize])
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&p| fact.pairs.contains(p as usize))
+            .collect();
         if let Some((c, leaves_on_false)) = &f.cond {
             let proves = match edge {
                 Some(EdgeKind::True | EdgeKind::LoopBody) => Some(&c.yes),
@@ -778,31 +1074,74 @@ impl Problem<'_> {
                         .iter()
                         .filter(|&s| fact.maybe.contains(s))
                         .collect();
-                    for s in proven {
+                    for &s in &proven {
                         fact.maybe.remove(s);
-                        self.guarded(fact, self.sites.buffer[s], false);
+                    }
+                    // A buffer is proven when none of its finds may still
+                    // have failed.
+                    for &s in &proven {
+                        let b = self.sites.buffer[s];
+                        if !self.sites.of_buffer[&b]
+                            .iter()
+                            .any(|&x| fact.maybe.contains(x as usize))
+                        {
+                            self.prove(fact, b);
+                        }
                     }
                 }
                 for &b in &p.buffers {
-                    self.guarded(fact, b, true);
+                    self.prove(fact, b);
+                }
+                for &b in &p.unknown {
+                    self.refill(fact, b);
                 }
             }
+            if c.es_unknown
+                && matches!(
+                    edge,
+                    Some(
+                        EdgeKind::True | EdgeKind::False | EdgeKind::LoopBody | EdgeKind::LoopDone
+                    )
+                )
+            {
+                self.forget_linked(fact);
+            }
+        }
+        if f.es_unknown {
+            self.forget_linked(fact);
         }
         for &b in &f.kills {
-            self.kill(fact, b);
+            self.refill(fact, b);
         }
         for &b in &f.proven {
-            self.guarded(fact, b, true);
+            self.prove(fact, b);
         }
         if f.calls {
             for &b in self.shared {
-                self.kill(fact, b);
+                self.refill(fact, b);
+            }
+            // The code it runs may reset `ERROR-STATUS` or not: a test of it
+            // that follows says nothing known about the finds (G5).
+            if !f.no_error && self.test_ahead[node.index()] {
+                self.forget_linked(fact);
             }
         }
-        let site = self.sites.of_iv.get(&iv).copied();
         if let Some(s) = site {
-            self.kill(fact, self.sites.buffer[s as usize]);
+            let b = self.sites.buffer[s as usize];
+            self.refill(fact, b);
             fact.maybe.insert(s as usize);
+            // A new find of `b` may fail: an earlier find that read `b` proves
+            // nothing about it, unless that buffer is still empty.
+            if let Some(ps) = self.sites.pairs_of_dep.get(&b) {
+                for &p in ps {
+                    if !self.empty(fact, p) {
+                        fact.pairs.remove(p as usize);
+                    }
+                }
+            }
+            for &p in &kept {
+                fact.pairs.insert(p as usize);
+            }
         }
         if f.no_error {
             fact.error_status = BitSet::new_full(self.sites.buffer.len());
@@ -811,6 +1150,18 @@ impl Problem<'_> {
                     fact.error_status.remove(s);
                 }
             }
+        }
+    }
+
+    /// The finds `ERROR-STATUS` links are Unknown.
+    fn forget_linked(&self, fact: &mut Fact) {
+        let linked: SmallVec<[usize; 2]> = fact
+            .error_status
+            .iter()
+            .filter(|&s| fact.maybe.contains(s))
+            .collect();
+        for s in linked {
+            fact.maybe.remove(s);
         }
     }
 }
@@ -827,20 +1178,39 @@ impl Analysis for Problem<'_> {
         Fact {
             maybe: BitSet::new_empty(n),
             error_status: BitSet::new_full(n),
+            empty: BitSet::new_full(self.sites.target.len()),
+            pairs: BitSet::new_full(self.sites.pairs.len()),
         }
     }
 
     fn boundary(&self, _cfg: &Cfg) -> Fact {
         let n = self.sites.buffer.len();
+        let mut empty = BitSet::new_empty(self.sites.target.len());
+        for (t, &e) in self.sites.empty_at_entry.iter().enumerate() {
+            if e {
+                empty.insert(t);
+            }
+        }
+        // A proof of an empty buffer proves anything: it runs on no path.
+        let mut pairs = BitSet::new_empty(self.sites.pairs.len());
+        for (p, &(c, _)) in self.sites.pairs.iter().enumerate() {
+            if empty.contains(self.sites.target[&c] as usize) {
+                pairs.insert(p);
+            }
+        }
         Fact {
             maybe: BitSet::new_empty(n),
             error_status: BitSet::new_full(n),
+            empty,
+            pairs,
         }
     }
 
     fn join(&self, acc: &mut Fact, other: &Fact) {
         acc.maybe.union_with(&other.maybe);
         acc.error_status.intersect_with(&other.error_status);
+        acc.empty.intersect_with(&other.empty);
+        acc.pairs.intersect_with(&other.pairs);
     }
 
     fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut Fact) {
