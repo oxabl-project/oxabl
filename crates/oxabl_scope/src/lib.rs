@@ -1,0 +1,307 @@
+//! Buffer scopes, transaction blocks and lock modes in Progress ABL.
+//!
+//! [`analyze_file`] replays three decisions the OpenEdge compiler makes for a
+//! file, over the units and blocks of its flow graphs (`oxabl_flow`):
+//!
+//! * **Buffer scopes.** Every buffer (default buffers of database tables and
+//!   temp-tables, `DEFINE BUFFER`, parameters, shared and trigger buffers) and
+//!   the blocks it is scoped to ([`Buffer::scopes`]): a strong scope (`DO FOR`,
+//!   `REPEAT FOR`), a weak scope (a `FOR` record phrase), or the scope of free
+//!   references at the nearest block with record scoping. A free reference
+//!   whose block encloses another scope of the buffer raises that scope to
+//!   its own block ([`ScopeKind::Raised`]), and the scope names the reference
+//!   that raised it.
+//! * **Transaction blocks.** Each block's [`Transaction`]: explicit
+//!   (`TRANSACTION`), implicit with the first database update or
+//!   `EXCLUSIVE-LOCK` read the block holds directly, or none; and the
+//!   enclosing transaction block when it is a sub-transaction.
+//! * **Locks.** Each `FIND`, `FOR` phrase, `CAN-FIND`, `OPEN QUERY` and `GET`
+//!   with the lock it takes ([`RecordRead`]): explicit, the `SHARE-LOCK`
+//!   default, or none for a temp-table; and whether a write to the buffer
+//!   follows in the same scope.
+//!
+//! The ABL rules this follows, with confidence marks, are in
+//! `docs/design/strict-analysis-open-questions.md`, section 7. The oracle is
+//! the compiler's `COMPILE ... LISTING` output: [`listing`] parses its block
+//! table and compares it with the model, and the `scope_listing` example of
+//! the `oxabl` crate runs that comparison over a tree.
+//!
+//! # Unknown
+//!
+//! When the file does not show enough to decide, the answer is Unknown with a
+//! reason ([`UnknownReason`]), never a guess: an unexpanded include, a
+//! statement the parser skips whose form the model does not know, a dynamic
+//! buffer method that may update a record, an unqualified field that two
+//! buffers have, a table the schema does not have (or no schema), two scopes
+//! that conflict, a recovered parse, or a file past the work budget.
+//!
+//! # Names
+//!
+//! Names are resolved here, against the file's definitions and the schema,
+//! not through `oxabl_semantic`: the compiler picks the buffer of an
+//! unqualified field by the record phrases and record blocks around it.
+//! A name in a buffer position resolves to a buffer the unit defines, then
+//! one of an enclosing unit, then a temp-table's default buffer, then a
+//! schema table's default buffer, which belongs to the main block. An
+//! unqualified field resolves against the statement's own record phrases,
+//! then the enclosing `FOR` / `DO FOR` / `REPEAT FOR` blocks, then every
+//! buffer the file names. A declared variable wins over a field.
+//!
+//! # Budget
+//!
+//! The work is linear in the references of the file, except the merge of one
+//! buffer's candidate scopes, which is quadratic in their number and capped.
+//! A file with more than [`MAX_REFERENCES`] references gets Unknown
+//! (`too-complex`) everywhere.
+//!
+//! Spans are in the text the statements were parsed from (the expanded text
+//! when includes were expanded).
+
+mod collect;
+mod dump;
+pub mod listing;
+mod model;
+mod resolve;
+mod scopes;
+mod txn;
+
+pub use model::{
+    BlockScopes, Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind, RecordRead, Scope,
+    ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown, UnknownReason, Update, UpdateKind,
+    Written,
+};
+
+use oxabl_ast::{Span, Statement};
+use oxabl_flow::{FlowOptions, UnitId};
+use oxabl_schema::Schema;
+use rustc_hash::FxHashMap;
+
+/// References past this many in one file make every answer Unknown.
+pub const MAX_REFERENCES: usize = 400_000;
+
+/// Options for [`analyze_file_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScopeOptions {
+    /// The flow options (the default error directive).
+    pub flow: FlowOptions,
+    /// The parser recovered from an error: statements may be missing, so
+    /// every answer is Unknown (`recovered-parse`).
+    pub parse_recovered: bool,
+}
+
+/// The scopes, transaction blocks and record reads of one file.
+#[derive(Debug, Clone, Default)]
+pub struct FileScopes {
+    units: Vec<UnitScopes>,
+    buffers: Vec<Buffer>,
+    reads: Vec<RecordRead>,
+    unknown: Vec<Unknown>,
+}
+
+impl FileScopes {
+    /// Every unit, in source pre-order; the main block is first.
+    pub fn units(&self) -> &[UnitScopes] {
+        &self.units
+    }
+
+    /// One unit.
+    pub fn unit(&self, id: UnitId) -> &UnitScopes {
+        &self.units[id.index()]
+    }
+
+    /// Every buffer the file defines or names, in order of first sight.
+    pub fn buffers(&self) -> &[Buffer] {
+        &self.buffers
+    }
+
+    /// One buffer.
+    pub fn buffer(&self, id: BufferId) -> &Buffer {
+        &self.buffers[id.index()]
+    }
+
+    /// Every record read, in source order.
+    pub fn reads(&self) -> &[RecordRead] {
+        &self.reads
+    }
+
+    /// Reasons that hold for the whole file (an unexpanded include may name
+    /// a table no statement of the file names).
+    pub fn unknown(&self) -> &[Unknown] {
+        &self.unknown
+    }
+
+    /// A stable text rendering, for snapshot tests and debugging. `source` is
+    /// the text that was analysed; sites show as `@line`.
+    pub fn dump(&self, source: &str) -> String {
+        dump::dump(self, source)
+    }
+}
+
+/// Analyse a parsed file. `source` must be the text the statements were
+/// parsed from; `schema` is `None` when no schema is loaded.
+pub fn analyze_file(program: &[Statement], source: &str, schema: Option<&Schema>) -> FileScopes {
+    analyze_file_with(program, source, schema, &ScopeOptions::default())
+}
+
+/// [`analyze_file`] with options.
+pub fn analyze_file_with(
+    program: &[Statement],
+    source: &str,
+    schema: Option<&Schema>,
+    options: &ScopeOptions,
+) -> FileScopes {
+    let tokens = oxabl_lexer::tokenize(source);
+    analyze_tokens(program, source, &tokens, schema, options)
+}
+
+/// [`analyze_file_with`] with the tokens the statements were parsed from
+/// (`oxabl_lexer::tokenize(source)`), so the text is not lexed again.
+pub fn analyze_tokens(
+    program: &[Statement],
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    schema: Option<&Schema>,
+    options: &ScopeOptions,
+) -> FileScopes {
+    let flow = oxabl_flow::build_file_with(program, source, &options.flow);
+    let collected = collect::collect(program, source, collect::significant(tokens), &flow);
+    let mut file_unknown: Vec<Unknown> = Vec::new();
+    if options.parse_recovered {
+        file_unknown.push(Unknown {
+            reason: UnknownReason::RecoveredParse,
+            at: Span::DUMMY,
+        });
+    }
+    if collected.refs.len() > MAX_REFERENCES {
+        file_unknown.push(Unknown {
+            reason: UnknownReason::TooComplex,
+            at: Span::DUMMY,
+        });
+    }
+    let mut res = resolve::resolve(&collected, &flow, schema);
+    let scope_of = scopes::assign(&mut res, &flow);
+
+    // Unknowns: per buffer, per unit (every buffer the unit can see), file.
+    for (b, u) in std::mem::take(&mut res.buffer_unknowns) {
+        res.buffers[b.index()].unknown.push(u);
+    }
+    for (unit, u) in &res.unit_unknowns {
+        for b in &mut res.buffers {
+            let visible = std::iter::successors(Some(*unit), |x| flow.unit(*x).unit().parent)
+                .any(|x| x == b.owner);
+            let affected = match u.reason {
+                UnknownReason::NoSchema => !b.table.is_temp_table(),
+                _ => true,
+            };
+            if visible && affected && !b.is_external() {
+                b.unknown.push(*u);
+            }
+        }
+        if u.reason == UnknownReason::UnexpandedInclude
+            && !file_unknown.iter().any(|f| f.reason == u.reason)
+        {
+            file_unknown.push(*u);
+        }
+    }
+    for b in &mut res.buffers {
+        if !b.is_external() {
+            b.unknown.extend(file_unknown.iter().copied());
+        }
+        b.unknown.sort_by_key(|u| (u.reason, u.at.start));
+        b.unknown.dedup_by_key(|u| u.reason);
+    }
+
+    // Writes after each read, in the same scope; else a call that may write.
+    let mut ref_at: FxHashMap<(BufferId, u32), usize> = FxHashMap::default();
+    let mut later: FxHashMap<BufferId, Vec<usize>> = FxHashMap::default();
+    for (i, r) in res.refs.iter().enumerate() {
+        ref_at.entry((r.buffer, r.at.start)).or_insert(i);
+        if r.write.is_some() || r.passed {
+            later.entry(r.buffer).or_default().push(i);
+        }
+    }
+    for read in &mut res.reads {
+        let Some(b) = read.buffer else {
+            continue;
+        };
+        let scope = ref_at.get(&(b, read.at.start)).and_then(|&i| scope_of[i]);
+        let after = |i: usize| {
+            let r = &res.refs[i];
+            r.at.start > read.at.start
+                && match scope {
+                    Some(s) => scope_of[i] == Some(s),
+                    None => r.unit == read.unit,
+                }
+        };
+        let refs = later.get(&b).map_or(&[][..], Vec::as_slice);
+        let shared = matches!(
+            res.buffers[b.index()].kind,
+            BufferKind::Shared | BufferKind::NewShared
+        );
+        read.written = if refs
+            .iter()
+            .any(|&i| res.refs[i].write.is_some() && after(i))
+        {
+            Written::Yes
+        } else if refs.iter().any(|&i| res.refs[i].passed && after(i))
+            || shared
+                && res
+                    .runs
+                    .iter()
+                    .any(|&(u, at)| u == read.unit && at > read.at.start)
+        {
+            Written::Unknown(UnknownReason::Callee)
+        } else {
+            Written::No
+        };
+    }
+    res.reads.sort_by_key(|r| r.at.start);
+
+    let extra = file_unknown.first().copied();
+    let tx = txn::transactions(&flow, &res, extra);
+    let mut units: Vec<UnitScopes> = flow
+        .units()
+        .iter()
+        .zip(tx)
+        .map(|(cfg, tx)| {
+            let u = cfg.unit();
+            UnitScopes {
+                unit: cfg.id(),
+                kind: u.kind,
+                name: u.name.clone(),
+                span: u.span,
+                parent: u.parent,
+                blocks: cfg
+                    .blocks()
+                    .zip(tx)
+                    .map(|((id, b), t)| BlockScopes {
+                        id,
+                        kind: b.kind,
+                        stmt: b.stmt,
+                        span: b.span,
+                        parent: b.parent,
+                        label: b.label.clone(),
+                        transaction_capable: txn::capable(b),
+                        transaction: t,
+                        buffers: Vec::new(),
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    for b in &res.buffers {
+        if let Some(scopes) = b.scopes() {
+            for s in scopes {
+                units[s.unit.index()].blocks[s.block.index()]
+                    .buffers
+                    .push(b.id);
+            }
+        }
+    }
+    FileScopes {
+        units,
+        buffers: res.buffers,
+        reads: res.reads,
+        unknown: file_unknown,
+    }
+}
