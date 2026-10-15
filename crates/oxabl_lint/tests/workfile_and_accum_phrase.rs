@@ -123,3 +123,21 @@ fn trigger_procedure_old_and_new_buffers_are_declared() {
          PUT UNFORMATTED ob.cost nb.cost.\n",
     );
 }
+
+#[test]
+fn trigger_procedure_buffers_of_an_unknown_table_are_not_declared() {
+    let diags = lint(
+        "TRIGGER PROCEDURE FOR WRITE OF no-such-table NEW BUFFER nb.\n\
+         MESSAGE nb.bogus.\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.0 == "LINT0001" && d.message.contains("nb")),
+        "{:#?}",
+        diags
+            .iter()
+            .map(|d| format!("{}: {}", d.code.0, d.message))
+            .collect::<Vec<_>>()
+    );
+}

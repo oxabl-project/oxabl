@@ -750,12 +750,15 @@ impl<'a> Walker<'a> {
                 // parse-level ordering already nests them.
                 let _ = self.tree.push(ScopeKind::TriggerProcedure, scope, stmt.id);
                 // `NEW BUFFER n` / `OLD BUFFER n` are buffers of the target table.
-                for alias in [&referencing.new_buffer, &referencing.old_buffer]
-                    .into_iter()
-                    .flatten()
-                {
-                    let source = self.record_source_of(target, scope);
-                    self.declare_buffer(stmt, scope, alias, SymbolFlags::empty(), source);
+                // A target that does not resolve declares neither, so a use of
+                // one still reports the unknown name.
+                if let Some(source) = self.record_source_of(target, scope) {
+                    for alias in [&referencing.new_buffer, &referencing.old_buffer]
+                        .into_iter()
+                        .flatten()
+                    {
+                        self.declare_buffer(stmt, scope, alias, SymbolFlags::empty(), Some(source));
+                    }
                 }
             }
 
