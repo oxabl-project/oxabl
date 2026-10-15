@@ -824,6 +824,9 @@ impl ProcessContext<'_> {
                 }
                 _ => {
                     i += 1;
+                    while i < len && !SCAN_STOP[bytes[i] as usize] {
+                        i += 1;
+                    }
                 }
             }
         }
@@ -2115,6 +2118,18 @@ fn in_list_position(bytes: &[u8], start: usize, end: usize) -> bool {
     let after = bytes[end..].iter().find(|b| !b.is_ascii_whitespace());
     matches!(before, Some(b'(' | b',')) || matches!(after, Some(b',' | b')'))
 }
+
+/// The bytes the body scan of `process_source` acts on outside a comment.
+/// Every other byte is plain text it steps over.
+const SCAN_STOP: [bool; 256] = {
+    let mut stop = [false; 256];
+    stop[b'&' as usize] = true;
+    stop[b'{' as usize] = true;
+    stop[b'/' as usize] = true;
+    stop[b'\'' as usize] = true;
+    stop[b'"' as usize] = true;
+    stop
+};
 
 /// Whether the `{` at `open` starts a file include reference: optional
 /// whitespace, then the first byte of a file name.
