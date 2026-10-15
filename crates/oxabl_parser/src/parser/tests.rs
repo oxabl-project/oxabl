@@ -12743,3 +12743,28 @@ fn a_keyword_member_is_still_read_before_what_can_follow_a_member() {
         assert_parses_clean(source);
     }
 }
+
+#[test]
+fn a_do_block_takes_while_transaction_and_on_phrases_in_any_order() {
+    for source in [
+        "DO ON ERROR UNDO, LEAVE ON ENDKEY UNDO, LEAVE TRANSACTION WHILE i < 3:\n  i = i + 1.\nEND.",
+        "DO TRANSACTION WHILE i < 3 ON ERROR UNDO, LEAVE:\n  i = i + 1.\nEND.",
+        "DO WHILE i < 3 TRANSACTION ON ERROR UNDO, LEAVE:\n  i = i + 1.\nEND.",
+        "DO WHILE i < 3 ON ERROR UNDO, LEAVE TRANSACTION:\n  i = i + 1.\nEND.",
+        "DO ON ERROR UNDO, RETRY TRANSACTION WHILE i < 3:\n  i = i + 1.\nEND.",
+        "DO i = 1 TO 3 TRANSACTION ON ERROR UNDO, THROW:\n  MESSAGE i.\nEND.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Do {
+            transaction,
+            while_condition,
+            to,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected DO, got {:?}", stmts[0].kind);
+        };
+        assert!(*transaction, "{source}");
+        assert!(while_condition.is_some() || to.is_some(), "{source}");
+    }
+}

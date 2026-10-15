@@ -2570,33 +2570,29 @@ impl Parser<'_> {
                     }
                 }
 
-                // Optional TRANSACTION after counting loop: DO i = 1 TO 2 TRANSACTION:
-                if self.check(Kind::Transaction) {
-                    self.advance();
-                }
             } else {
                 // not a counting loop
                 self.current = saved_pos;
             }
         }
 
-        // check for WHILE
-        if self.check(Kind::KwWhile) {
-            self.advance();
-            while_condition = Some(self.parse_expression()?);
-            // Optional TRANSACTION after WHILE condition: DO WHILE cond TRANSACTION: ...
+        // WHILE, TRANSACTION and the ON phrases, in any order:
+        // DO ON ERROR UNDO, LEAVE TRANSACTION WHILE i < 3:
+        let mut on_actions = Vec::new();
+        loop {
+            let before = self.current;
+            if while_condition.is_none() && self.check(Kind::KwWhile) {
+                self.advance();
+                while_condition = Some(self.parse_expression()?);
+            }
             if self.check(Kind::Transaction) {
                 self.advance();
+                transaction = true;
             }
-        }
-
-        let mut on_actions = self.parse_block_on_phrases();
-
-        // TRANSACTION may follow the ON phrases: DO ON ERROR UNDO, LEAVE TRANSACTION:
-        if self.check(Kind::Transaction) {
-            self.advance();
-            transaction = true;
             on_actions.extend(self.parse_block_on_phrases());
+            if self.current == before {
+                break;
+            }
         }
 
         // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
@@ -2911,7 +2907,9 @@ impl Parser<'_> {
             match self.peek().kind {
                 Kind::Leave | Kind::Retry | Kind::Next => {
                     self.advance();
-                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
+                    if Self::can_be_identifier(self.peek().kind)
+                        && !matches!(self.peek().kind, Kind::Colon | Kind::Transaction)
+                    {
                         self.advance();
                     }
                 }
