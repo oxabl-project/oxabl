@@ -68,6 +68,7 @@ use std::path::{Path, PathBuf};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::search::normalize_lexically;
+use crate::written::ReferenceSyntax;
 use oxabl_ast::Span;
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -313,6 +314,63 @@ pub struct ConditionalInclude {
     pub computed_name: bool,
 }
 
+/// A class or program name written in a branch the preprocessor did not take.
+///
+/// Not an edge, for the reason a [`ConditionalInclude`] is not. Found by a token
+/// scan of the skipped text ([`written_references`](crate::written_references)),
+/// never a parse, and resolved through the index the file was analysed with.
+///
+/// A name whose [`syntax`](Self::syntax) may name something other than a class or
+/// a program file — a bare `AS x`, a static access `x:y`, a `RUN` name with no
+/// extension and no path — is listed only when it resolves. Any other name is
+/// listed whether it resolves or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalReference {
+    /// [`EdgeKind::ClassReference`] or [`EdgeKind::ProgramReference`].
+    pub kind: EdgeKind,
+    /// How the skipped text names the target.
+    pub syntax: ReferenceSyntax,
+    /// The name as written.
+    pub name: String,
+    /// The file the name resolves to, or `None` when it resolves to none.
+    pub target: Option<EdgeTarget>,
+    /// Where the dependent file writes the name, in its own bytes.
+    pub span: Option<Span>,
+    /// The root-level `{...}` site, in the dependent file's own bytes, of the
+    /// include chain that reached a name written in an include.
+    pub include_site: Option<Span>,
+    /// The enclosing branches, outermost first. The innermost was not taken.
+    pub branches: Vec<ConditionalBranch>,
+}
+
+/// What a [`ConditionalInclude`]'s target would read if its branch were taken.
+///
+/// The target is expanded on its own, with the dependent file's include paths and
+/// none of its defines or include arguments, so this is a reading of the target,
+/// not of the dependent file. Includes in the target's own not-taken branches are
+/// expanded too, as further entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalIncludeClosure {
+    /// The include name as written, as [`ConditionalInclude::name`].
+    pub name: String,
+    /// The conditional include, as written, whose target names this one in a
+    /// not-taken branch. `None` for a name the dependent file's own expansion
+    /// skipped.
+    pub via: Option<String>,
+    /// The file the name resolves to, lexically normalised. `None` when the name is
+    /// computed or resolves to no file.
+    pub path: Option<PathBuf>,
+    /// Every include the target reads at any depth, lexically normalised, sorted,
+    /// without `path`.
+    pub reaches: Vec<PathBuf>,
+    /// Include names in the target's expansion that resolved to no file or could
+    /// not be read.
+    pub unresolved: Vec<String>,
+    /// Whether `reaches` is everything: the name resolved, the target was read and
+    /// its expansion lost no text and left no include unresolved.
+    pub complete: bool,
+}
+
 /// Whether an edge set can be trusted to be everything the file depends on.
 ///
 /// `Degraded` does not mean the edges are wrong. It means the absence of an edge
@@ -366,7 +424,10 @@ impl Completeness {
 /// resolved dependency.
 ///
 /// Include references in branches that were not taken are a third collection,
-/// [`Self::conditional_includes`], for the same reason: they are never edges.
+/// [`Self::conditional_includes`], for the same reason: they are never edges. So
+/// are the class and program names those branches write,
+/// [`Self::conditional_references`], and what the conditional includes would
+/// read, [`Self::conditional_include_closure`].
 ///
 /// [`Self::completeness`] says whether the pair can be trusted. The default is
 /// `Complete` along with the empty collections: an edge set built from nothing
@@ -376,6 +437,8 @@ pub struct DependencyEdges {
     edges: Vec<DependencyEdge>,
     unresolved: Vec<UnresolvedReference>,
     conditional_includes: Vec<ConditionalInclude>,
+    conditional_references: Vec<ConditionalReference>,
+    conditional_include_closure: Vec<ConditionalIncludeClosure>,
     completeness: Completeness,
 }
 
@@ -407,6 +470,49 @@ impl DependencyEdges {
         includes.sort_by(|a, b| conditional_order(a).cmp(&conditional_order(b)));
         includes.dedup();
         self.conditional_includes = includes;
+        self
+    }
+
+    /// Every class and program name written in a branch that was not taken, in a
+    /// deterministic order, each once.
+    ///
+    /// Never merged into [`Self::edges`]. Empty unless the caller attached the
+    /// list with [`Self::with_conditional_references`].
+    pub fn conditional_references(&self) -> &[ConditionalReference] {
+        &self.conditional_references
+    }
+
+    /// Attach the class and program names of branches that were not taken. They
+    /// are ordered by site and deduplicated.
+    #[must_use]
+    pub fn with_conditional_references(
+        mut self,
+        mut references: Vec<ConditionalReference>,
+    ) -> Self {
+        references.sort_by(|a, b| reference_order(a).cmp(&reference_order(b)));
+        references.dedup();
+        self.conditional_references = references;
+        self
+    }
+
+    /// What each conditional include's target would read, one entry per name.
+    ///
+    /// Never merged into [`Self::edges`]. Empty unless the caller attached the
+    /// list with [`Self::with_conditional_include_closure`]; the pipeline does so
+    /// only when asked, since it reads and expands every target.
+    pub fn conditional_include_closure(&self) -> &[ConditionalIncludeClosure] {
+        &self.conditional_include_closure
+    }
+
+    /// Attach the closure of the conditional includes, ordered by name.
+    #[must_use]
+    pub fn with_conditional_include_closure(
+        mut self,
+        mut closure: Vec<ConditionalIncludeClosure>,
+    ) -> Self {
+        closure.sort_by(|a, b| (&a.via, &a.name).cmp(&(&b.via, &b.name)));
+        closure.dedup();
+        self.conditional_include_closure = closure;
         self
     }
 
@@ -580,6 +686,8 @@ pub fn build_edge_set(inputs: &EdgeInputs<'_>) -> DependencyEdges {
         edges,
         unresolved,
         conditional_includes: Vec::new(),
+        conditional_references: Vec::new(),
+        conditional_include_closure: Vec::new(),
         completeness: completeness(inputs),
     }
 }
@@ -632,6 +740,18 @@ fn conditional_order(c: &ConditionalInclude) -> (SiteOrder, SiteOrder, &str, &[C
     (
         site_order(c.span),
         site_order(c.include_site),
+        c.name.as_str(),
+        c.branches.as_slice(),
+    )
+}
+
+fn reference_order(
+    c: &ConditionalReference,
+) -> (SiteOrder, SiteOrder, EdgeKind, &str, &[ConditionalBranch]) {
+    (
+        site_order(c.span),
+        site_order(c.include_site),
+        c.kind,
         c.name.as_str(),
         c.branches.as_slice(),
     )

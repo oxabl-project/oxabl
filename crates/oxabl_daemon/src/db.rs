@@ -102,7 +102,7 @@ use std::sync::{Arc, RwLock};
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_index::search::{self, NameKind};
-use oxabl_index::{FileFacts, IncludeContext, index_file_with_includes};
+use oxabl_index::{FileFacts, IncludeContext, index_file_at};
 use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
@@ -199,6 +199,8 @@ pub struct IndexEnvironment {
     pub preprocessor: PreprocessorConfig,
     #[returns(ref)]
     pub include_paths: Vec<PathBuf>,
+    #[returns(ref)]
+    pub root_relative_include_paths: Vec<PathBuf>,
 }
 
 /// Salsa input carrying a monotonically-bumped schema revision. The diagnostics
@@ -397,6 +399,7 @@ impl IndexHandle {
                 db,
                 pipeline.preprocessor.clone(),
                 pipeline.include_paths.clone(),
+                pipeline.root_relative_include_paths.clone(),
             )
         })
     }
@@ -414,6 +417,7 @@ impl IndexHandle {
                 &*db,
                 pipeline.preprocessor.clone(),
                 pipeline.include_paths.clone(),
+                pipeline.root_relative_include_paths.clone(),
             ));
             return;
         };
@@ -426,6 +430,11 @@ impl IndexHandle {
             input
                 .set_include_paths(db)
                 .to(pipeline.include_paths.clone());
+        }
+        if *input.root_relative_include_paths(&*db) != pipeline.root_relative_include_paths {
+            input
+                .set_root_relative_include_paths(db)
+                .to(pipeline.root_relative_include_paths.clone());
         }
     }
 
@@ -620,9 +629,10 @@ fn indexed_facts(db: &dyn AblDatabase, file: IndexedFile) -> Arc<FileFacts> {
     let includes = IncludeContext {
         fs: &*config.fs,
         include_paths: environment.include_paths(db),
+        root_relative_paths: environment.root_relative_include_paths(db),
         predefined: environment.preprocessor(db),
     };
-    let (facts, read) = index_file_with_includes(id, &source, &includes);
+    let (facts, read) = index_file_at(id, path, &source, &includes);
     // The includes are read untracked, like the file itself, so each one's
     // revision is the edge that makes an edit to it re-extract these facts.
     for path in read {
@@ -701,19 +711,21 @@ fn indexed_defines_shared(db: &dyn AblDatabase, file: IndexedFile, name: IndexNa
 
 /// Locate `name` on the configured search paths, falling back to a
 /// case-insensitive search when the workspace asked for one.
-fn find_path(config: &AnalysisConfig, name: &IndexName, kind: NameKind) -> IndexAnswer<PathBuf> {
+///
+/// A lookup from `analysed` searches its root-relative paths first.
+fn find_path(
+    config: &AnalysisConfig,
+    analysed: Option<&Path>,
+    name: &IndexName,
+    kind: NameKind,
+) -> IndexAnswer<PathBuf> {
     let pipeline = &config.pipeline;
-    let answer = search::find_name_with(
-        &*config.fs,
-        &pipeline.include_paths,
-        name,
-        kind,
-        &pipeline.run_extensions,
-    );
+    let paths = pipeline.include_paths_for(analysed);
+    let answer = search::find_name_with(&*config.fs, &paths, name, kind, &pipeline.run_extensions);
     if pipeline.case_insensitive_lookup && answer == IndexAnswer::NotFound {
         return search::find_name_ignoring_case(
             &*config.fs,
-            &pipeline.include_paths,
+            &paths,
             name,
             kind,
             &pipeline.run_extensions,
@@ -773,7 +785,7 @@ impl<'db> SnapshotIndex<'db> {
     /// to a producer that is really its own earlier revision.
     fn locate(&self, name: &IndexName, kind: NameKind) -> IndexAnswer<IndexedFile> {
         let config = self.db.config();
-        match find_path(config, name, kind) {
+        match find_path(config, self.analysed.as_deref(), name, kind) {
             IndexAnswer::Found(path) => {
                 if self.is_analysed(&path) {
                     // `Unusable`, not `NotFound` — the file exists, it just cannot
@@ -835,7 +847,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
             LocateKind::Class => NameKind::Class,
             LocateKind::Program => NameKind::Program,
         };
-        match find_path(config, name, kind) {
+        match find_path(config, self.analysed.as_deref(), name, kind) {
             IndexAnswer::Found(path) if self.is_analysed(&path) => Located::Itself,
             IndexAnswer::Found(path) => {
                 let file = config.index.file_for(self.db, &path);
@@ -886,7 +898,9 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
     /// workspace — the same answer the CLI gives under the same configuration,
     /// which is what keeps the two clients from disagreeing about a diagnostic.
     fn searches_any_path(&self) -> bool {
-        !self.db.config().pipeline.include_paths.is_empty()
+        let pipeline = &self.db.config().pipeline;
+        !pipeline.include_paths.is_empty()
+            || (self.analysed.is_some() && !pipeline.root_relative_include_paths.is_empty())
     }
 }
 

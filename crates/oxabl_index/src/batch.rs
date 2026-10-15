@@ -24,7 +24,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::facts::{ClassFacts, FileFacts};
 use crate::producers::{SharedProducers, mentions_shared};
-use crate::{IncludeContext, index_file, search};
+use crate::{IncludeContext, index_file_at, search};
 
 /// The generation a batch reports.
 ///
@@ -47,6 +47,8 @@ const BATCH_REVISION: IndexRevision = IndexRevision::new(1);
 pub struct BatchIndex<'a> {
     fs: &'a dyn FileSystem,
     include_paths: &'a [PathBuf],
+    /// Paths resolved against the asking file's directory and searched first.
+    root_relative: &'a [PathBuf],
     /// Extensions an extensionless `RUN` target is tried with, in order; `None`
     /// is [`search::BARE_PROGRAM_EXTENSIONS`].
     run_extensions: Option<&'a [String]>,
@@ -124,6 +126,11 @@ struct Memo {
     classes: FxHashMap<OxablAtom, IndexAnswer<ClassFacts>>,
     /// Answers per `RUN` target key, for the same reasons.
     programs: FxHashMap<OxablAtom, IndexAnswer<IndexedFileId>>,
+    /// Answers per asking file's directory and class key, when root-relative
+    /// paths are configured: the directory decides which paths come first.
+    scoped_classes: FxHashMap<(PathBuf, OxablAtom), IndexAnswer<ClassFacts>>,
+    /// Answers per asking file's directory and `RUN` target key.
+    scoped_programs: FxHashMap<(PathBuf, OxablAtom), IndexAnswer<IndexedFileId>>,
     /// The inverse of `facts`: the path each minted id was indexed under.
     ///
     /// Kept rather than derived. Deriving it means scanning `facts` for the entry
@@ -166,6 +173,7 @@ impl<'a> BatchIndex<'a> {
         BatchIndex {
             fs,
             include_paths,
+            root_relative: &[],
             run_extensions: None,
             case_insensitive: false,
             preprocessor: None,
@@ -175,6 +183,8 @@ impl<'a> BatchIndex<'a> {
                 paths: FxHashMap::default(),
                 classes: FxHashMap::default(),
                 programs: FxHashMap::default(),
+                scoped_classes: FxHashMap::default(),
+                scoped_programs: FxHashMap::default(),
                 next_file_id: 1,
                 known_indexed: false,
                 seeded: FxHashSet::default(),
@@ -189,6 +199,18 @@ impl<'a> BatchIndex<'a> {
     #[must_use]
     pub fn with_run_extensions(mut self, extensions: &'a [String]) -> Self {
         self.run_extensions = Some(extensions);
+        self
+    }
+
+    /// Search `paths`, resolved against the directory of the file that asks,
+    /// before the include paths. An indexed file reads its own includes with the
+    /// paths of its own directory.
+    ///
+    /// Only a view with a file ([`excluding`](Self::excluding)) searches them for
+    /// a name. Apply before any lookup.
+    #[must_use]
+    pub fn with_root_relative_paths(mut self, paths: &'a [PathBuf]) -> Self {
+        self.root_relative = paths;
         self
     }
 
@@ -228,8 +250,18 @@ impl<'a> BatchIndex<'a> {
         IncludeContext {
             fs: self.fs,
             include_paths: self.include_paths,
+            root_relative_paths: self.root_relative,
             predefined,
         }
+    }
+
+    /// The directory of `file` and its root-relative paths, or `None` when there
+    /// are none to search.
+    fn scope(&self, file: Option<&Path>) -> Option<(PathBuf, Vec<PathBuf>)> {
+        let file = file.filter(|_| !self.root_relative.is_empty())?;
+        let dir = search::normalize_lexically(file.parent()?);
+        let paths = search::root_include_paths(file, self.root_relative, &[]);
+        Some((dir, paths))
     }
 
     fn find_path(&self, name: &IndexName, kind: search::NameKind) -> IndexAnswer<PathBuf> {
@@ -249,17 +281,111 @@ impl<'a> BatchIndex<'a> {
         kind: search::NameKind,
         extensions: &[E],
     ) -> IndexAnswer<PathBuf> {
-        let answer = search::find_name_with(self.fs, self.include_paths, name, kind, extensions);
+        self.find_name_on(self.include_paths, name, kind, extensions)
+    }
+
+    fn find_name_on<E: AsRef<str>>(
+        &self,
+        paths: &[PathBuf],
+        name: &IndexName,
+        kind: search::NameKind,
+        extensions: &[E],
+    ) -> IndexAnswer<PathBuf> {
+        let answer = search::find_name_with(self.fs, paths, name, kind, extensions);
         if self.case_insensitive && answer == IndexAnswer::NotFound {
-            return search::find_name_ignoring_case(
-                self.fs,
-                self.include_paths,
-                name,
-                kind,
-                extensions,
-            );
+            return search::find_name_ignoring_case(self.fs, paths, name, kind, extensions);
         }
         answer
+    }
+
+    /// [`find_name`](Self::find_name) on `paths` alone.
+    fn find_scoped(
+        &self,
+        paths: &[PathBuf],
+        name: &IndexName,
+        kind: search::NameKind,
+    ) -> IndexAnswer<PathBuf> {
+        match self.run_extensions {
+            Some(extensions) => self.find_name_on(paths, name, kind, extensions),
+            None => self.find_name_on(paths, name, kind, search::BARE_PROGRAM_EXTENSIONS),
+        }
+    }
+
+    /// [`class_facts`](Self::class_facts) for a lookup from the file at `file`:
+    /// its root-relative paths first, then the shared answer.
+    fn class_facts_from(&self, name: &IndexName, file: Option<&Path>) -> IndexAnswer<ClassFacts> {
+        let Some((dir, paths)) = self.scope(file) else {
+            return self.class_facts(name);
+        };
+        let key = (dir, name.as_written_atom().clone());
+        if let Some(hit) = self.memo().scoped_classes.get(&key) {
+            return hit.clone();
+        }
+        let answer = match self.find_scoped(&paths, name, search::NameKind::Class) {
+            IndexAnswer::Found(path) => self.class_in(name, &path),
+            IndexAnswer::NotFound => self.class_facts(name),
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
+            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
+        };
+        self.memo().scoped_classes.insert(key, answer.clone());
+        answer
+    }
+
+    /// The class `name` in the file at `path`, indexing it on first touch.
+    fn class_in(&self, name: &IndexName, path: &Path) -> IndexAnswer<ClassFacts> {
+        let facts = self
+            .memo()
+            .facts_for(&self.includes(&self.predefined()), path);
+        match facts.class(name).cloned() {
+            Some(class) => IndexAnswer::Found(class),
+            None => IndexAnswer::Unusable,
+        }
+    }
+
+    /// [`program`](WorkspaceIndex::program) for a lookup from the file at `file`.
+    fn program_from(&self, target: &IndexName, file: Option<&Path>) -> IndexAnswer<IndexedFileId> {
+        let Some((dir, paths)) = self.scope(file) else {
+            return self.program(target);
+        };
+        let key = (dir, target.as_written_atom().clone());
+        if let Some(hit) = self.memo().scoped_programs.get(&key) {
+            return hit.clone();
+        }
+        let answer = match self.find_scoped(&paths, target, search::NameKind::Program) {
+            IndexAnswer::Found(path) => {
+                let facts = self
+                    .memo()
+                    .facts_for(&self.includes(&self.predefined()), &path);
+                if facts.parsed {
+                    IndexAnswer::Found(facts.file)
+                } else {
+                    IndexAnswer::Unusable
+                }
+            }
+            IndexAnswer::NotFound => self.program(target),
+            IndexAnswer::Unusable => IndexAnswer::Unusable,
+            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
+        };
+        self.memo().scoped_programs.insert(key, answer.clone());
+        answer
+    }
+
+    /// [`located`](WorkspaceIndex::located) for a lookup from the file at `file`.
+    fn located_from(&self, kind: LocateKind, name: &IndexName, file: Option<&Path>) -> Located {
+        if let Some((_, paths)) = self.scope(file) {
+            let search_kind = match kind {
+                LocateKind::Class => search::NameKind::Class,
+                LocateKind::Program => search::NameKind::Program,
+            };
+            if let IndexAnswer::Found(path) = self.find_scoped(&paths, name, search_kind) {
+                return Located::In(
+                    self.memo()
+                        .facts_for(&self.includes(&self.predefined()), &path)
+                        .file,
+                );
+            }
+        }
+        self.located(kind, name)
     }
 
     /// Tell the index which files the run already knows it will read.
@@ -512,7 +638,7 @@ impl Memo {
         let id = IndexedFileId::new(self.next_file_id);
         self.next_file_id += 1;
         let facts = Arc::new(match source {
-            Some(source) => index_file(id, source, includes),
+            Some(source) => index_file_at(id, &key, source, includes).0,
             None => FileFacts::unparseable(id),
         });
         // Both halves of one mapping, inserted together: `indexed_path` is only sound
@@ -674,7 +800,10 @@ impl ExcludingFile<'_, '_> {
 
 impl WorkspaceIndex for ExcludingFile<'_, '_> {
     fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
-        let answer = self.index.class(name);
+        let answer = self
+            .index
+            .class_facts_from(name, self.path)
+            .map(|facts| facts.descriptor);
         if let IndexAnswer::Found(descriptor) = &answer {
             self.reach(descriptor.file);
         }
@@ -694,19 +823,20 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
         // The member list carries no file id of its own, so the owning class is
         // asked for one first. That costs nothing: both queries read the same
         // memo entry, so the pair is still one search and one parse.
-        if let IndexAnswer::Found(descriptor) = self.index.class(class) {
-            self.reach(descriptor.file);
-            if self.is_analysed(descriptor.file) {
+        let answer = self.index.class_facts_from(class, self.path);
+        if let IndexAnswer::Found(facts) = &answer {
+            self.reach(facts.descriptor.file);
+            if self.is_analysed(facts.descriptor.file) {
                 // Same answer `class` gives for the same reason: the file exists and
                 // is not usable as a foreign one.
                 return IndexAnswer::Unusable;
             }
         }
-        self.index.class_members(class)
+        answer.map(|facts| facts.members)
     }
 
     fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
-        let answer = self.index.program(target);
+        let answer = self.index.program_from(target, self.path);
         if let IndexAnswer::Found(file) = answer {
             self.reach(file);
         }
@@ -732,7 +862,7 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
     }
 
     fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
-        let answer = self.index.located(kind, name);
+        let answer = self.index.located_from(kind, name, self.path);
         if let Located::In(file) = answer {
             self.reach(file);
         }
@@ -750,10 +880,10 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
         self.index.revision()
     }
 
-    /// Delegated for the same reason: the view filters answers, it does not change
-    /// where they are searched for.
+    /// The index's paths, and the root-relative ones when the view has a file to
+    /// resolve them against.
     fn searches_any_path(&self) -> bool {
-        self.index.searches_any_path()
+        self.index.searches_any_path() || self.index.scope(self.path).is_some()
     }
 }
 
@@ -1340,6 +1470,7 @@ mod tests {
             &IncludeContext {
                 fs: &fs,
                 include_paths: &paths,
+                root_relative_paths: &[],
                 predefined: &PreprocessorConfig::default(),
             },
         );
@@ -1372,6 +1503,7 @@ mod tests {
             &IncludeContext {
                 fs: &fs,
                 include_paths: &paths,
+                root_relative_paths: &[],
                 predefined: &PreprocessorConfig::default(),
             },
         );
@@ -1408,6 +1540,7 @@ mod tests {
             &IncludeContext {
                 fs: &fs,
                 include_paths: &paths,
+                root_relative_paths: &[],
                 predefined: &PreprocessorConfig::default(),
             },
         );

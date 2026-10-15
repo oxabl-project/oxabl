@@ -1811,7 +1811,7 @@ fn run_conformance(
     // `.df`, and a malformed config degrades to flags-only with one warning, as
     // before: this command reports what oxabl can parse, not whether the caller's
     // configuration is right.
-    let effective_paths: Vec<PathBuf> = if preprocess {
+    let path_config = if preprocess {
         let overrides = ConfigOverrides {
             include_paths: include_paths.to_vec(),
             ..Default::default()
@@ -1820,10 +1820,11 @@ fn run_conformance(
         for warning in &warnings {
             eprintln!("warning: {warning}");
         }
-        config.include_paths
+        config
     } else {
-        Vec::new()
+        PipelineConfig::default()
     };
+    let effective_paths = &path_config.include_paths;
 
     if !json_output {
         eprintln!("Found {} ABL files", files.len());
@@ -1839,7 +1840,12 @@ fn run_conformance(
     if debug {
         let real_fs = RealFileSystem;
         for file in &files {
-            run_debug_parse(file, preprocess, &real_fs, &effective_paths);
+            run_debug_parse(
+                file,
+                preprocess,
+                &real_fs,
+                &path_config.include_paths_for(Some(file)),
+            );
         }
         return ExitCode::SUCCESS;
     }
@@ -1866,7 +1872,11 @@ fn run_conformance(
 
     for file in &files {
         if preprocess {
-            results.push(parse_file_with_preprocess(file, &real_fs, &effective_paths));
+            results.push(parse_file_with_preprocess(
+                file,
+                &real_fs,
+                &path_config.include_paths_for(Some(file)),
+            ));
         } else {
             results.push(parse_file(file));
         }

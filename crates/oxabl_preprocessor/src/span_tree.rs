@@ -130,6 +130,24 @@ pub struct SkippedInclude {
     pub computed_name: bool,
 }
 
+/// A stretch of source text inside a branch that was not taken.
+///
+/// Kept as a site, not as text, so a caller can scan what a different set of
+/// defines would compile; [`PreprocessedFile::source`] gives the text. Only
+/// text in a file the preprocessor read is listed. Directives are not part of
+/// it: a stretch ends at each `&IF`, `&ELSEIF`, `&ELSE` and `&ENDIF`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedText {
+    /// The skipped bytes, in the coordinates of the file that holds them.
+    pub site: FileSpan,
+    /// The enclosing include sites that led here, outermost first. Empty for
+    /// text in the file being processed.
+    pub via: Vec<FileSpan>,
+    /// The enclosing conditional branches, outermost first. The innermost was
+    /// not taken.
+    pub branches: Vec<SkippedBranch>,
+}
+
 /// Why the preprocessor lost sight of text it was asked to expand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -177,6 +195,8 @@ pub struct PreprocessedFile {
     /// Every include reference, at any depth, written inside a branch that was not
     /// taken. Never expanded.
     pub skipped_includes: Vec<SkippedInclude>,
+    /// Every stretch of text, at any depth, inside a branch that was not taken.
+    pub skipped_text: Vec<SkippedText>,
     /// Every place, at any depth, where text was dropped or a branch was chosen
     /// without the facts to choose it.
     pub text_losses: Vec<TextLoss>,
@@ -208,6 +228,7 @@ impl PreprocessedFile {
             unresolved_includes,
             unreadable_includes: Vec::new(),
             skipped_includes: Vec::new(),
+            skipped_text: Vec::new(),
             text_losses: Vec::new(),
             diagnostics,
             sources,
@@ -264,7 +285,8 @@ impl PreprocessedFile {
         }
     }
 
-    fn get_source(&self, file: FileId) -> Option<&str> {
+    /// The text of `file`, the root or an include this run read.
+    pub fn source(&self, file: FileId) -> Option<&Arc<str>> {
         // Ids are handed out in the order the sources are pushed, so the source
         // is usually at its id's offset from the first. The scan covers a table
         // built in another order.
@@ -278,7 +300,11 @@ impl PreprocessedFile {
         self.sources
             .iter()
             .find(|(id, _)| *id == file)
-            .map(|(_, src)| &**src)
+            .map(|(_, src)| src)
+    }
+
+    fn get_source(&self, file: FileId) -> Option<&str> {
+        self.source(file).map(|src| &**src)
     }
 }
 

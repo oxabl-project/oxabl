@@ -604,6 +604,7 @@ fn main() {
             "triggers",
             "trim",
             "true",
+            "type-of",
             "underl",
             "underline",
             "undo",

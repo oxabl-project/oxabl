@@ -72,7 +72,9 @@ pub use collect::{
 };
 // Re-exported so a consumer of an expansion need not also depend on the
 // preprocessor just to name the unresolved-include rows the expansion carries.
-pub use oxabl_preprocessor::{BranchDirective, SkippedBranch, SkippedInclude, UnresolvedInclude};
+pub use oxabl_preprocessor::{
+    BranchDirective, SkippedBranch, SkippedInclude, SkippedText, UnresolvedInclude,
+};
 
 use oxabl_ast::{NodeId, Statement};
 use oxabl_common::{Diagnostic, Severity};

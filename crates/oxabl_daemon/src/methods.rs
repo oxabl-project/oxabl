@@ -174,10 +174,7 @@ fn cross_file_refusal(root: &Path) -> Option<String> {
         root,
         &oxabl_pipeline::ConfigOverrides::default(),
     );
-    config
-        .include_paths
-        .is_empty()
-        .then(|| NO_INCLUDE_CONFIGURATION.to_string())
+    (!config.searches_any_path()).then(|| NO_INCLUDE_CONFIGURATION.to_string())
 }
 
 /// What a refused cross-file question says: what was refused, why, and the remedy.

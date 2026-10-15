@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use oxabl_semantic::IndexName;
 use rustc_hash::FxHashMap;
 
-use crate::{IncludeContext, IndexedFileId, index_file};
+use crate::{IncludeContext, IndexedFileId, index_file_at};
 
 /// Which files define each `DEFINE NEW [GLOBAL] SHARED` name.
 ///
@@ -98,7 +98,9 @@ pub fn definitions_in(path: &Path, includes: &IncludeContext<'_>) -> Vec<IndexNa
     if !mentions_shared(&source) {
         return Vec::new();
     }
-    index_file(IndexedFileId::new(0), &source, includes).shared_definitions
+    index_file_at(IndexedFileId::new(0), path, &source, includes)
+        .0
+        .shared_definitions
 }
 
 /// Whether `source` holds the word `SHARED` in any case, as part of any longer
@@ -128,6 +130,7 @@ mod tests {
         IncludeContext {
             fs,
             include_paths: &[],
+            root_relative_paths: &[],
             predefined,
         }
     }
@@ -219,7 +222,7 @@ mod tests {
             let predefined = PreprocessorConfig::default();
             assert_eq!(
                 definitions_in(Path::new("/f.p"), &in_fs(&fs, &predefined)),
-                index_file(IndexedFileId::new(0), source, &in_fs(&fs, &predefined))
+                crate::index_file(IndexedFileId::new(0), source, &in_fs(&fs, &predefined))
                     .shared_definitions,
                 "{source}"
             );
