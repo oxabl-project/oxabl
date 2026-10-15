@@ -467,9 +467,7 @@ impl<'a> Lexer<'a> {
                     } else {
                         end - 1 // strip closing quote only
                     };
-                value = TokenValue::String(OxablAtom::from(
-                    self.source[start + 1..content_end].to_string(),
-                ));
+                value = TokenValue::String(OxablAtom::from(&self.source[start + 1..content_end]));
             }
             Kind::KwTrue => value = TokenValue::Boolean(true),
             Kind::KwFalse => value = TokenValue::Boolean(false),
