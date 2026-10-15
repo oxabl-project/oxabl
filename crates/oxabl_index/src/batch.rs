@@ -463,7 +463,7 @@ impl<'a> BatchIndex<'a> {
     /// The path this run indexed `id` under, or `None` if `id` came from another
     /// index.
     ///
-    /// The inverse of [`indexed_id`](Self::indexed_id), and the only way an
+    /// The inverse of `indexed_id`, and the only way an
     /// [`IndexedFileId`] on a dependency edge becomes something a client can render
     /// or open: the id space is this index's own, so nothing outside it can do the
     /// mapping.

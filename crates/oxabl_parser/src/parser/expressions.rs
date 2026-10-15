@@ -572,7 +572,7 @@ impl Parser<'_> {
 
     /// Parse a primary expression and stamp its full-extent span.
     ///
-    /// Thin funnel over [`parse_primary_inner`](Self::parse_primary_inner):
+    /// Thin funnel over `parse_primary_inner`:
     /// `lo` is the first token examined, `hi` is the end of the last non-comment
     /// token consumed. Parenthesized groups therefore include the enclosing
     /// parens (U3), and every leaf/primary form is stamped uniformly regardless

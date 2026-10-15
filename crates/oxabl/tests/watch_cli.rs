@@ -108,6 +108,33 @@ fn include_edit_rechecks_its_includer() {
     assert!(!text.contains("other.p"), "{text}");
 }
 
+#[test]
+fn callee_summaries_are_shared_and_rebuilt() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n\n[workspace.lint]\nenable = [\"strict.transactions\"]\n",
+    )
+    .unwrap();
+    // One worker, and the caller sorted after its callee, so a worker that
+    // built a summary from its first file would judge the second with it.
+    let callee = tmp.path().join("a.p");
+    fs::write(&callee, "MESSAGE \"hi\".\n").unwrap();
+    let caller = tmp.path().join("z.p");
+    fs::write(&caller, "DO TRANSACTION:\nRUN a.p.\nEND.\n").unwrap();
+
+    let include_path = tmp.path().to_string_lossy().into_owned();
+    let watch = Watch::start(tmp.path(), &["-j", "1", "-I", &include_path]);
+    let text = watch.wait_for("watching").join("\n");
+    assert!(text.contains("checked 2 files: 0 with findings"), "{text}");
+
+    // A callee that now updates the database keeps the finding, so the next
+    // pass must rebuild the shared summaries, not reuse the old ones.
+    fs::write(&callee, "CREATE Customer.\n").unwrap();
+    let text = watch.wait_for("rechecked").join("\n");
+    assert!(text.contains("z.p") && text.contains("TX004"), "{text}");
+}
+
 #[cfg(unix)]
 #[test]
 fn ctrl_c_exits_cleanly() {

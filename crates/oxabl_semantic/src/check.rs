@@ -350,7 +350,12 @@ impl<'a> CheckWalker<'a> {
                     self.check_expression(e, scope);
                 }
             }
-            StatementKind::Update { targets, options } | StatementKind::Set { targets, options } => {
+            StatementKind::Update {
+                targets, options, ..
+            }
+            | StatementKind::Set {
+                targets, options, ..
+            } => {
                 for e in targets.iter().chain(options) {
                     self.check_expression(e, scope);
                 }

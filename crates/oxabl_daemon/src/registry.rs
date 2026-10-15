@@ -1049,7 +1049,7 @@ pub fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
 /// exactly one, and the loser exits without binding or writing.
 ///
 /// **Call this under the root lock.** Every caller in this crate does, and
-/// [`sweep_stale_staging`] relies on it: it removes this process's own staging file
+/// `sweep_stale_staging` relies on it: it removes this process's own staging file
 /// without checking whether a writer still has it open, which is only correct while one
 /// process has at most one same-root registration in flight. A caller outside the lock
 /// must serialise same-root writers itself.
@@ -1067,7 +1067,7 @@ pub fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
 /// one of them rename a body the other was still writing, which is the torn read
 /// this design exists to prevent. A per-writer name makes the guarantee real.
 /// Cleaning up after a writer that died is a separate job, and a pid-agnostic one:
-/// see [`sweep_stale_staging`].
+/// see `sweep_stale_staging`.
 ///
 /// The socket path is measured against `sun_path` here as well as at the bind, and
 /// this is the check that matters to a *client*. A registration naming a path no

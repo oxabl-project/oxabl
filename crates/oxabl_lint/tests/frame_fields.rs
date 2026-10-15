@@ -163,3 +163,34 @@ DISPLAY v-known v-unknown WITH FRAME f.
         vec!["undefined symbol `v-unknown`".to_string()]
     );
 }
+
+#[test]
+fn an_update_or_set_field_is_a_variable() {
+    let r = run("UPDATE v-ok AS LOGICAL LABEL \"Sure?\".
+IF v-ok THEN DISPLAY \"yes\".
+SET v-ok2 AS LOGICAL.
+DISPLAY v-ok2.
+");
+    assert!(
+        r.diags.is_empty(),
+        "expected no findings, got: {:#?}",
+        r.diags
+    );
+    assert_eq!(
+        variables(&r, "v-ok"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Logical))]
+    );
+    assert_eq!(
+        variables(&r, "v-ok2"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Logical))]
+    );
+}
+
+#[test]
+fn an_undeclared_update_item_is_still_undefined() {
+    let r = run("UPDATE v-known AS LOGICAL v-unknown.\n");
+    assert_eq!(
+        undefined(&r.diags),
+        vec!["undefined symbol `v-unknown`".to_string()]
+    );
+}

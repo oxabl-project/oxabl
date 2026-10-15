@@ -331,6 +331,9 @@ impl<'a> Walker<'a> {
                 self.declare_frame_fields(stmt, scope, fields);
             }
             StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
+            StatementKind::Update { fields, .. } | StatementKind::Set { fields, .. } => {
+                self.declare_frame_fields(stmt, scope, fields)
+            }
             StatementKind::DefineWidget { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
             }
@@ -3137,21 +3140,31 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
-            StatementKind::Update { targets, options } => {
+            StatementKind::Update {
+                targets,
+                options,
+                fields,
+            } => {
                 for e in targets {
                     self.walk_expression(e, scope, AccessMode::ReadWrite);
                 }
                 for e in options {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
+                self.note_frame_field_sources(fields, scope);
             }
-            StatementKind::Set { targets, options } => {
+            StatementKind::Set {
+                targets,
+                options,
+                fields,
+            } => {
                 for e in targets {
                     self.walk_expression(e, scope, AccessMode::Write);
                 }
                 for e in options {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
+                self.note_frame_field_sources(fields, scope);
             }
             StatementKind::Pause {
                 duration: a,

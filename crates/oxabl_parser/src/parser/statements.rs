@@ -91,7 +91,7 @@ impl Parser<'_> {
     /// Parse one statement and stamp its full-extent span (`lo..prev_end`,
     /// including the trailing `.`/`:`) onto the returned wrapper.
     ///
-    /// This is a thin funnel over [`parse_statement_inner`](Self::parse_statement_inner)
+    /// This is a thin funnel over `parse_statement_inner`
     /// (KTD2): `lo` is captured from the first token before dispatch, and `hi`
     /// is the end of the last non-comment token consumed. Because statement
     /// bodies are parsed by recursive `parse_statement` calls, every statement —
@@ -4243,21 +4243,31 @@ impl Parser<'_> {
         Ok(self.stmt_with_tail(kind, tail))
     }
 
-    /// `UPDATE` / `SET` `[UNLESS-HIDDEN] {field [format-phrase] | ^ | constant}... [frame-phrase]
-    /// [EDITING: ... END]`. The editing block is part of the skipped tail.
+    /// `UPDATE` / `SET` `[UNLESS-HIDDEN] {field [format-phrase] | name AS type |
+    /// name LIKE field | ^ | constant}... [frame-phrase] [EDITING: ... END]`.
+    /// The editing block is part of the skipped tail.
     fn parse_update_set_statement(&mut self) -> ParseResult<Statement> {
         let update = self.check(Kind::Update);
         self.advance(); // consume UPDATE / SET
         if self.check(Kind::UnlessHidden) {
             self.advance();
         }
-        let (targets, options) = self.parse_frame_items(true, None);
+        let mut fields = Vec::new();
+        let (targets, options) = self.parse_frame_items(true, Some(&mut fields));
         let range = self.skip_to_statement_end_editing_aware();
         let tail = self.skipped_tail(range);
         let kind = if update {
-            StatementKind::Update { targets, options }
+            StatementKind::Update {
+                targets,
+                options,
+                fields,
+            }
         } else {
-            StatementKind::Set { targets, options }
+            StatementKind::Set {
+                targets,
+                options,
+                fields,
+            }
         };
         Ok(self.stmt_with_tail(kind, tail))
     }
@@ -5580,7 +5590,7 @@ impl Parser<'_> {
     /// Parse a CLASS definition.
     ///
     /// ```text
-    /// CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]:
+    /// `CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]:`
     ///     body
     /// END CLASS.
     /// ```
@@ -5726,7 +5736,7 @@ impl Parser<'_> {
     /// Parse a METHOD definition.
     ///
     /// ```text
-    /// METHOD [access] [STATIC] [ABSTRACT] [OVERRIDE] (VOID | return-type) name (params):
+    /// `METHOD [access] [STATIC] [ABSTRACT] [OVERRIDE] (VOID | return-type) name (params):`
     ///     body
     /// END METHOD.
     /// ```
@@ -5895,11 +5905,11 @@ impl Parser<'_> {
 
     /// Parse a DEFINE PROPERTY statement.
     ///
-    /// Called after DEFINE [access] [STATIC] PROPERTY has been partially consumed.
+    /// Called after `DEFINE [access] [STATIC] PROPERTY` has been partially consumed.
     /// The access modifier and static flag are passed in.
     ///
     /// ```text
-    /// DEFINE [access] [STATIC] PROPERTY name AS type [NO-UNDO]
+    /// `DEFINE [access] [STATIC] PROPERTY name AS type [NO-UNDO]`
     ///     GET.                    -- auto-getter
     ///     GET: body END GET.      -- computed getter
     ///     SET.                    -- auto-setter
@@ -6076,7 +6086,7 @@ impl Parser<'_> {
     /// Parse a CONSTRUCTOR definition.
     ///
     /// ```text
-    /// CONSTRUCTOR [access] class-name (params):
+    /// `CONSTRUCTOR [access] class-name (params):`
     ///     body
     /// END CONSTRUCTOR.
     /// ```
@@ -6133,7 +6143,7 @@ impl Parser<'_> {
     /// Parse a DESTRUCTOR definition.
     ///
     /// ```text
-    /// DESTRUCTOR [PUBLIC] class-name ():
+    /// `DESTRUCTOR [PUBLIC] class-name ():`
     ///     body
     /// END DESTRUCTOR.
     /// ```
@@ -6924,8 +6934,8 @@ impl Parser<'_> {
         }))
     }
 
-    /// SUBSCRIBE [PROCEDURE subscriber-handle] [TO] event-name {IN handle | ANYWHERE}
-    ///   [RUN-PROCEDURE handler-name] [NO-ERROR].
+    /// `SUBSCRIBE [PROCEDURE subscriber-handle] [TO] event-name {IN handle | ANYWHERE}`
+    ///   `[RUN-PROCEDURE handler-name] [NO-ERROR].`
     fn parse_subscribe_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume SUBSCRIBE
 
@@ -6978,7 +6988,7 @@ impl Parser<'_> {
         }))
     }
 
-    /// UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].
+    /// `UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].`
     fn parse_unsubscribe_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume UNSUBSCRIBE
 
@@ -7020,7 +7030,7 @@ impl Parser<'_> {
         }))
     }
 
-    /// DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).
+    /// `DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).`
     fn parse_define_event(
         &mut self,
         access: AccessModifier,
@@ -7460,8 +7470,8 @@ impl Parser<'_> {
     }
 
     /// Parse a UI/developer event trigger:
-    /// ON event-list [OF widget-list] [OR event-list OF widget-list]... [ANYWHERE]
-    ///   { trigger-block | REVERT | PERSISTENT RUN proc [(args)] }
+    /// `ON event-list [OF widget-list] [OR event-list OF widget-list]... [ANYWHERE]`
+    ///   `{ trigger-block | REVERT | PERSISTENT RUN proc [(args)] }`
     fn parse_on_ui_event(&mut self) -> ParseResult<Statement> {
         let mut clauses = Vec::new();
         let mut anywhere = false;
@@ -7513,8 +7523,8 @@ impl Parser<'_> {
     }
 
     /// Parse a database event trigger:
-    /// ON CREATE|DELETE|FIND|WRITE|ASSIGN OF table [referencing] [OVERRIDE]
-    ///   { trigger-block | REVERT }
+    /// `ON CREATE|DELETE|FIND|WRITE|ASSIGN OF table [referencing] [OVERRIDE]`
+    ///   `{ trigger-block | REVERT }`
     fn parse_on_db_event(&mut self) -> ParseResult<Statement> {
         let event = self.parse_db_event_kind()?;
         self.expect_kind(Kind::Of, "Expected OF after database event")?;

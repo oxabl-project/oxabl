@@ -305,6 +305,9 @@ pub enum StatementKind {
         /// Non-literal expressions of the format options (`VALIDATE`, `WHEN`,
         /// `AT`, ...), read, in source order.
         options: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than read one. They are not in `targets`.
+        fields: Vec<FrameField>,
     },
 
     /// SET statement — prompts for fields and variables and assigns the input.
@@ -314,6 +317,9 @@ pub enum StatementKind {
         targets: Vec<Expression>,
         /// Non-literal expressions of the format options, read, in source order.
         options: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than assign one. They are not in `targets`.
+        fields: Vec<FrameField>,
     },
 
     /// APPLY statement — sends an event to a widget or procedure.
@@ -776,7 +782,7 @@ pub enum StatementKind {
         arguments: Vec<RunArgument>,
     },
 
-    /// SUBSCRIBE [PROCEDURE subscriber-handle] [TO] event-name {IN handle | ANYWHERE}
+    /// `SUBSCRIBE [PROCEDURE subscriber-handle] [TO] event-name {IN handle | ANYWHERE}`
     ///   [RUN-PROCEDURE handler-name] [NO-ERROR].
     Subscribe {
         /// Optional PROCEDURE subscriber-handle.
@@ -791,7 +797,7 @@ pub enum StatementKind {
         no_error: bool,
     },
 
-    /// UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].
+    /// `UNSUBSCRIBE [PROCEDURE subscriber-handle] [TO] {event-name | ALL} [IN publisher-handle].`
     Unsubscribe {
         /// Optional PROCEDURE subscriber-handle.
         subscriber: Option<Expression>,
@@ -801,7 +807,7 @@ pub enum StatementKind {
         in_handle: Option<Expression>,
     },
 
-    /// DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).
+    /// `DEFINE [access] [STATIC] [ABSTRACT] EVENT event-name SIGNATURE VOID (params...).`
     DefineEvent {
         /// Access modifier (defaults to PUBLIC).
         access: AccessModifier,
@@ -811,7 +817,7 @@ pub enum StatementKind {
         is_abstract: bool,
         /// Event name.
         name: Identifier,
-        /// Signature parameters (reuses DefineParameter via Vec<Statement>).
+        /// Signature parameters (reuses DefineParameter via `Vec<Statement>`).
         parameters: Vec<Statement>,
     },
 
@@ -1543,8 +1549,8 @@ pub enum SubscribeTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnKind {
     /// UI/developer event trigger (includes "WEB-NOTIFY" ANYWHERE form):
-    /// ON event-list OF widget-list [OR event-list OF widget-list]... [ANYWHERE]
-    ///   { trigger-block | REVERT | PERSISTENT RUN proc [(args)] }
+    /// `ON event-list OF widget-list [OR event-list OF widget-list]... [ANYWHERE]`
+    ///   `{ trigger-block | REVERT | PERSISTENT RUN proc [(args)] }`
     UiEvent {
         /// Event/widget clauses -- at least one, chained via OR.
         /// Empty when ANYWHERE is used standalone (e.g., ON "WEB-NOTIFY" ANYWHERE).
@@ -1555,8 +1561,8 @@ pub enum OnKind {
         action: OnAction,
     },
     /// Database event trigger:
-    /// ON CREATE|DELETE|FIND|WRITE|ASSIGN OF table [referencing] [OVERRIDE]
-    ///   { trigger-block | REVERT }
+    /// `ON CREATE|DELETE|FIND|WRITE|ASSIGN OF table [referencing] [OVERRIDE]`
+    ///   `{ trigger-block | REVERT }`
     DbEvent {
         /// The database event.
         event: DbTriggerEvent,
@@ -1621,11 +1627,11 @@ pub enum DbTriggerEvent {
 /// Shared between ON db-event triggers and TRIGGER PROCEDURE.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TriggerReferencing {
-    /// NEW [BUFFER] alias (WRITE triggers).
+    /// `NEW [BUFFER] alias` (WRITE triggers).
     pub new_buffer: Option<Identifier>,
-    /// OLD [BUFFER] alias (WRITE triggers).
+    /// `OLD [BUFFER] alias` (WRITE triggers).
     pub old_buffer: Option<Identifier>,
-    /// OLD [VALUE] alias (ASSIGN triggers in ON statement).
+    /// `OLD [VALUE] alias` (ASSIGN triggers in ON statement).
     pub old_value: Option<Identifier>,
 }
 

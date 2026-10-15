@@ -6,7 +6,7 @@ use crate::Kind;
 /// This includes user-defined identifiers and all built-in ABL functions.
 ///
 /// # Example
-/// ```ignore
+/// ```text
 /// // These are callable:
 /// // - myFunction()     -> Kind::Identifier
 /// // - NOW()            -> Kind::Now
