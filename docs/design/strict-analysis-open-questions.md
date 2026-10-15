@@ -695,3 +695,85 @@ read against the code:
 
 A finding in an include that does not parse alone is reported at each `{...}` site: one widely
 included fragment gave 1,131 of the 1,164 use-site findings of LK001 in the first corpus.
+
+### 7.8 The transaction rules (M3)
+
+TX001 to TX005 (`strict.transactions`, preview, warning) select findings from the same
+`oxabl_scope` analysis as the lock rules, made once per file through `RunShared`. They are routed
+like the `HD` and `LK` rules. TX006, in the same group, is syntactic and does not use the analysis.
+
+Common to the five rules:
+
+- **Unknown is silent.** A file with a file-level Unknown gets no finding. A buffer whose scope
+  is Unknown or external gets no TX005 finding. A block inside a block whose transaction status
+  is Unknown gets no TX001 finding.
+- **Which blocks are transactions.** A block counts when T1 makes it one (`TRANSACTION`), or the
+  documented half of T2 (a procedure or main block, a `FOR`, a `REPEAT`, a `DO ON ERROR` or
+  `DO ON ENDKEY`) with a first update of a table of the loaded schema. The implicit routine
+  blocks of functions, methods, property accessors and `ON ... DO` triggers are inferred and do
+  not count. With no schema, only `TRANSACTION` blocks count.
+- **Include files.** In an include checked alone, the main block is not judged: the includer
+  decides which block its statements are in.
+
+| # | The model | Confidence |
+|---|---|---|
+| U1 | `WAIT-FOR`, `UPDATE`, `SET`, `PROMPT-FOR`, `INSERT` (the screen form), `CHOOSE` and `READKEY` wait for the user. `PAUSE` with no time waits for a key; `PAUSE n` waits at most `n` seconds; `PAUSE ... BEFORE-HIDE` sets an option. `MESSAGE ... VIEW-AS ALERT-BOX` shows a modal box, and `MESSAGE ... SET` or `UPDATE` waits for input. | Documented for the statements; Recalled, high, for the `MESSAGE` forms. |
+| U2 | In a session with no user (batch, AppServer) the statements of U1 do not wait: an alert box is written to the log. | Recalled, medium. |
+| U3 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run the callee in another session, outside the caller's transaction. | Documented. |
+
+- **TX001** rests on T2 and T3. One finding per block, at its first update, for a block that no
+  other transaction block of its routine encloses (a sub-transaction is not reported). The main
+  block is left to TX002, a `TRIGGER PROCEDURE` to the transaction of the write that fires it.
+- **TX002** is the main block of a procedure file that is a transaction block, once per file. An
+  internal procedure that is one is reported by TX001.
+- **TX003** rests on U1 with the transaction blocks above. The statement must be in the
+  transaction block or in a block inside it of the same routine: a trigger or an internal
+  procedure that the transaction calls is not followed. `PAUSE n` is not reported: lock-retry
+  loops sleep with it.
+- **TX004** rests on T5 and U3. The workspace index tells which file a literal `RUN` target names,
+  but it holds no facts about what the file does. Every callee outside the file (another
+  program, `RUN ... IN h`, `RUN VALUE`, a super procedure) is therefore unknown, whether the index
+  finds it or not. An internal procedure with a body, and one declared `EXTERNAL`, are known. In
+  an include checked alone, a bare name may be an internal procedure of the includer and is not
+  reported.
+- **TX005** rests on S2, S4, the documented half of S5 (a weak scope raised by a free reference)
+  and B2 (Recalled, medium). It is reported when the raising reference and the `FOR` block are in
+  the same routine, or the reference is in the main block and the `FOR` block in a routine inside
+  it. Left out: a reference in one internal procedure that raises a `FOR` block in another (B2
+  with S5, the case section 7.6 marks to check first), the general merge of S5, a raise held by a
+  reference in a block header (S8) or in a statement the parser skips (S3; `DISABLE TRIGGERS FOR
+  LOAD OF t` among them), a raise to a block other than a routine block, and class files (B3).
+
+**Overlap with LK002.** A raised scope that keeps a record locked after a transaction gives both
+a TX005 finding, at the reference that raises the scope, and an LK002 finding, at the read in the
+transaction. Both are kept: one shows the cause, the other the lock. The help of LK002 names TX005
+when the scope is raised, and the help of TX005 names LK002.
+
+**Overlap with LK003.** The fix LK003 suggests, `FOR EACH ... EXCLUSIVE-LOCK`, makes the block a
+transaction block implicitly, which TX001 reports. The fixed example of LK003 therefore adds
+`TRANSACTION`.
+
+**Corpus check (verified, counts only).** Over the same two corpora, with their schemas, the five
+rules ran with no panic. TX001 gave 4,738 and 1,089 findings, TX002 250 and 73, TX003 342 and 184,
+TX004 6,391 and 3,043, TX005 1,410 and 309. The LK counts did not change. Fifteen findings per
+rule per corpus were read against the code, then the false-positive classes were fixed and a new
+sample of 15 was read for each rule that changed:
+
+- TX001: 29 of 30 correct. One was a `COPY-LOB ... TO FILE` that the engine read as a write to a
+  field; `oxabl_scope` now reads `TO FILE` as no write. A second sample of 15: 15 correct.
+- TX002: 30 of 30 correct.
+- TX003: 22 of 30 correct; 8 were `PAUSE n` sleeps in lock-retry loops, now left out. A second
+  sample: 30 of 30 correct by the rule. About 70 % of all TX003 findings are `MESSAGE ...
+  VIEW-AS ALERT-BOX`, and many of those are in code that runs on an AppServer, where U2 says the
+  box does not wait.
+- TX004: 26 of 30 correct; 4 were a `RUN` of a bare name in an include checked alone, which the
+  includer defines, now left out. A second sample of 15: 15 correct. About 30 % (first corpus)
+  and 78 % (second) are `RUN ... IN h`; in the second, most of those call one error-dialog
+  procedure, which is itself user interaction in a transaction.
+- TX005: 26 of 30 correct. Three were `DISABLE TRIGGERS FOR LOAD OF t` and one an `OUTPUT TO
+  t.d` whose file name the engine read as a field of `t`. `oxabl_scope` now reads an `OUTPUT`
+  or `INPUT` target written without `VALUE` as a file name, and TX005 leaves out raises held by a
+  skipped statement. A second sample: 30 of 30 correct, if B2 holds.
+
+Medium confidence overall: B2 and S4 decide most TX005 findings, and T2 for internal procedures
+(the largest share of TX001) is documented but not yet checked against a listing.

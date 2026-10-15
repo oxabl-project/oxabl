@@ -1,5 +1,9 @@
-//! End-to-end coverage for the `strict.locks` rules: `default-lock` (LK001),
-//! `lock-outlives-transaction` (LK002) and `lock-upgrade-in-loop` (LK003).
+//! End-to-end coverage for the rules over `oxabl_scope`: the `strict.locks`
+//! rules `default-lock` (LK001), `lock-outlives-transaction` (LK002) and
+//! `lock-upgrade-in-loop` (LK003), and the `strict.transactions` rules
+//! `implicit-transaction` (TX001), `procedure-wide-transaction` (TX002),
+//! `transaction-spans-ui` (TX003), `transaction-spans-call` (TX004) and
+//! `scope-widened` (TX005).
 //!
 //! Synthetic ABL runs through the real lexer, parser and semantic pass, with a
 //! small schema loaded, then through the rule itself.
@@ -9,12 +13,17 @@ mod lk001_default_lock;
 mod lk002_lock_outlives_transaction;
 mod lk003_lock_upgrade_in_loop;
 mod registry_run;
+mod tx001_implicit_transaction;
+mod tx002_procedure_wide_transaction;
+mod tx003_transaction_spans_ui;
+mod tx004_transaction_spans_call;
+mod tx005_scope_widened;
 
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
-use oxabl_semantic::{AnalysisContext, analyze_file};
+use oxabl_semantic::{AnalysisContext, SourceContext, analyze_file};
 
 type RuleFn =
     fn(&[oxabl_ast::Statement], &oxabl_semantic::Semantic, &AnalysisContext) -> Vec<Diagnostic>;
@@ -40,20 +49,49 @@ pub fn schema() -> Schema {
 
 /// Run one rule over `source` with the test schema, requiring a clean parse.
 pub fn check(rule: RuleFn, source: &str) -> Vec<Diagnostic> {
-    run(rule, source, Some(&schema()), false)
+    run(
+        rule,
+        source,
+        Some(&schema()),
+        false,
+        SourceContext::CompilationUnit,
+    )
+}
+
+/// [`check`] for an include file checked alone.
+pub fn check_fragment(rule: RuleFn, source: &str) -> Vec<Diagnostic> {
+    run(
+        rule,
+        source,
+        Some(&schema()),
+        false,
+        SourceContext::IncludeFragment,
+    )
 }
 
 /// [`check`] with no schema loaded.
 pub fn check_no_schema(rule: RuleFn, source: &str) -> Vec<Diagnostic> {
-    run(rule, source, None, false)
+    run(rule, source, None, false, SourceContext::CompilationUnit)
 }
 
 /// [`check`] for a file the parser must recover from.
 pub fn check_recovered(rule: RuleFn, source: &str) -> Vec<Diagnostic> {
-    run(rule, source, Some(&schema()), true)
+    run(
+        rule,
+        source,
+        Some(&schema()),
+        true,
+        SourceContext::CompilationUnit,
+    )
 }
 
-fn run(rule: RuleFn, source: &str, schema: Option<&Schema>, recovered: bool) -> Vec<Diagnostic> {
+fn run(
+    rule: RuleFn,
+    source: &str,
+    schema: Option<&Schema>,
+    recovered: bool,
+    context: SourceContext,
+) -> Vec<Diagnostic> {
     let tokens = tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     assert_eq!(
@@ -64,7 +102,8 @@ fn run(rule: RuleFn, source: &str, schema: Option<&Schema>, recovered: bool) -> 
     );
     let empty = Schema::empty();
     let mut ctx = AnalysisContext::new(FileId::UNKNOWN, source, schema.unwrap_or(&empty))
-        .with_parse_recovered(recovered);
+        .with_parse_recovered(recovered)
+        .with_source_context(context);
     ctx.schema_loaded = schema.is_some();
     let sem = analyze_file(&program.statements, &ctx);
     rule(&program.statements, &sem, &ctx)

@@ -21,7 +21,7 @@
 //! Fixed:
 //!
 //! ```abl
-//! FOR EACH Customer EXCLUSIVE-LOCK:
+//! FOR EACH Customer EXCLUSIVE-LOCK TRANSACTION:
 //!     Customer.Balance = 0.
 //! END.
 //! ```

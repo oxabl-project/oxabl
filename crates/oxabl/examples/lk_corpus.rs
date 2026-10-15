@@ -1,9 +1,10 @@
-//! lk_corpus — run the `strict.locks` rules (LK001-LK003) over a tree the way
-//! `oxabl check <dir>` does, and print the finding counts per rule per
-//! top-level directory.
+//! lk_corpus — run the rules over `oxabl_scope` (`strict.locks`, LK001-LK003,
+//! and `strict.transactions`, TX001-TX005) over a tree the way `oxabl check
+//! <dir>` does, and print the finding counts per rule per top-level directory.
 //!
 //! The tree's `oxabl.toml` is read as `check` reads it (its schema included);
-//! the group is switched on in memory. Roots go through `LintPipeline::run`,
+//! both groups are switched on in memory (TX006, also in
+//! `strict.transactions`, is not counted). Roots go through `LintPipeline::run`,
 //! and the `.i` files of the tree through `run_context_free`, as in
 //! `hd_corpus`.
 //!
@@ -23,7 +24,10 @@ use oxabl_analyze::DiagnosticSource;
 use oxabl_pipeline::{ConfigOverrides, LintPipeline, PipelineConfig};
 use oxabl_workspace::{RealFileSystem, discover_path, walk_include_fragments};
 
-const RULES: [&str; 3] = ["LK001", "LK002", "LK003"];
+const RULES: [&str; 8] = [
+    "LK001", "LK002", "LK003", "TX001", "TX002", "TX003", "TX004", "TX005",
+];
+const N: usize = RULES.len();
 
 struct Finding {
     rule: &'static str,
@@ -44,10 +48,9 @@ fn main() {
     for w in &warnings {
         eprintln!("warning: {w}");
     }
-    config
-        .lint_severities
-        .base_mut()
-        .enable_group("strict.locks");
+    let base = config.lint_severities.base_mut();
+    base.enable_group("strict.locks");
+    base.enable_group("strict.transactions");
 
     let roots = discover_path(&root).unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -120,9 +123,9 @@ fn main() {
             _ => ".".to_string(),
         }
     };
-    let mut table: BTreeMap<String, [usize; 3]> = BTreeMap::new();
-    let mut totals = [0usize; 3];
-    let mut use_site = [0usize; 3];
+    let mut table: BTreeMap<String, [usize; N]> = BTreeMap::new();
+    let mut totals = [0usize; N];
+    let mut use_site = [0usize; N];
     for f in &findings {
         let i = RULES.iter().position(|r| *r == f.rule).unwrap();
         table.entry(top(&f.path)).or_default()[i] += 1;
@@ -138,20 +141,12 @@ fn main() {
         println!("  {p}");
     }
     println!();
-    let row = |name: &str, c: &[usize; 3]| {
-        println!(
-            "{:<24}{:>8}{:>8}{:>8}{:>9}",
-            name,
-            c[0],
-            c[1],
-            c[2],
-            c.iter().sum::<usize>()
-        );
+    let row = |name: &str, c: &[usize; N]| {
+        let cells: String = c.iter().map(|n| format!("{n:>7}")).collect();
+        println!("{name:<24}{cells}{:>9}", c.iter().sum::<usize>());
     };
-    println!(
-        "{:<24}{:>8}{:>8}{:>8}{:>9}",
-        "directory", "LK001", "LK002", "LK003", "total"
-    );
+    let head: String = RULES.iter().map(|r| format!("{r:>7}")).collect();
+    println!("{:<24}{head}{:>9}", "directory", "total");
     for (dir, counts) in &table {
         row(dir, counts);
     }

@@ -67,6 +67,11 @@
 //! A record that `CREATE` makes in the transaction is held the same way, but
 //! only reads are reported.
 //!
+//! When a reference outside a `FOR` block raises the buffer's scope,
+//! `scope-widened` (TX005) reports that reference, and the help of this
+//! finding points at it. The two are kept: this one shows the lock, that one
+//! the cause.
+//!
 //! # Include files
 //!
 //! A finding in an include is reported in the include when the include alone
@@ -74,7 +79,7 @@
 
 use oxabl_ast::{Span, Statement};
 use oxabl_common::{Diagnostic, Severity};
-use oxabl_flow::{BlockId, BlockKind, ForQualifier, UnitKind};
+use oxabl_flow::{BlockId, BlockKind, ForQualifier};
 use oxabl_lexer::{Kind, Lexer};
 use oxabl_scope::{
     Buffer, BufferId, FileScopes, Lock, LockMode, ReadKind, RecordRead, Scope, ScopeKind, Table,
@@ -86,7 +91,8 @@ use rustc_hash::FxHashMap;
 use super::LK002;
 use super::handle_support::warning;
 use super::lock_support::{
-    block_within, describe_block, not_judged, same_buffer_name, unit_within,
+    block_within, describe_block, is_class, not_judged, same_buffer_name, transaction_documented,
+    unit_within,
 };
 
 /// Kebab-case rule name.
@@ -202,7 +208,7 @@ fn finding(
         Lock::Explicit(LockMode::ExclusiveLock) => "its EXCLUSIVE-LOCK becomes a SHARE-LOCK",
         _ => "its SHARE-LOCK is kept",
     };
-    let help = if cross_unit {
+    let mut help = if cross_unit {
         format!(
             "The procedure uses the file's buffer `{name}`, which is scoped to the main block. \
              Define a buffer for `{table}` in the procedure, or `RELEASE {name}` before the \
@@ -217,6 +223,12 @@ fn finding(
             name = buffer.name,
         )
     };
+    if scope.kind == ScopeKind::Raised {
+        help.push_str(
+            " A reference outside the block raises the buffer's scope; scope-widened (TX005) \
+             reports such references.",
+        );
+    }
     Some(warning(
         ctx,
         LK002,
@@ -230,20 +242,6 @@ fn finding(
         help,
         first.at,
     ))
-}
-
-/// A class file: the scope rules for classes (B3) are inferred.
-fn is_class(scopes: &FileScopes) -> bool {
-    scopes.units().iter().any(|u| {
-        matches!(
-            u.kind,
-            UnitKind::Method
-                | UnitKind::Constructor
-                | UnitKind::Destructor
-                | UnitKind::PropertyGet
-                | UnitKind::PropertySet
-        )
-    })
 }
 
 fn takes_lock(read: &RecordRead) -> bool {
@@ -279,22 +277,6 @@ fn outermost_transaction(unit: &UnitScopes, block: BlockId) -> Option<BlockId> {
         }
     }
     outer
-}
-
-/// Whether the transaction block rests on a documented rule (T1, T2).
-fn transaction_documented(unit: &UnitScopes, tx: BlockId) -> bool {
-    let b = unit.block(tx);
-    match (b.transaction.kind, b.kind) {
-        (TxKind::Explicit, _) => true,
-        (TxKind::Implicit(_), BlockKind::Routine(k)) => {
-            matches!(
-                k,
-                UnitKind::Main | UnitKind::Procedure | UnitKind::DbTrigger
-            )
-        }
-        (TxKind::Implicit(_), _) => true,
-        _ => false,
-    }
 }
 
 /// The scope of the buffer that holds `read`.

@@ -1,11 +1,12 @@
 //! Queries over the scope analysis shared by the `strict.locks` rules
-//! (LK001-LK003). The rules select findings from `oxabl_scope`; the facts
-//! themselves are not analysed here.
+//! (LK001-LK003) and the `strict.transactions` rules (TX001-TX005). The rules
+//! select findings from `oxabl_scope`; the facts themselves are not analysed
+//! here.
 
 use oxabl_ast::Span;
 use oxabl_flow::{BlockId, BlockKind, UnitId, UnitKind};
 use oxabl_lexer::{Kind, Lexer};
-use oxabl_scope::{FileScopes, ReadKind, UnitScopes};
+use oxabl_scope::{FileScopes, ReadKind, Table, TxKind, UnitScopes, Update, UpdateKind};
 
 use super::handle_support::quote;
 
@@ -49,7 +50,7 @@ pub(super) fn describe_block(source: &str, unit: &UnitScopes, block: BlockId) ->
 
 /// The header of the block statement at `span`: the text before the colon
 /// that opens its body.
-fn header(source: &str, span: Span) -> Span {
+pub(super) fn header(source: &str, span: Span) -> Span {
     let Some(text) = source.get(span.start as usize..span.end as usize) else {
         return span;
     };
@@ -84,4 +85,106 @@ pub(super) fn same_buffer_name(a: &str, b: &str) -> bool {
         s.rsplit('.').next().unwrap_or(s)
     }
     last(a).eq_ignore_ascii_case(last(b))
+}
+
+/// A class file: the scope rules for classes (B3) are inferred.
+pub(super) fn is_class(scopes: &FileScopes) -> bool {
+    scopes.units().iter().any(|u| {
+        matches!(
+            u.kind,
+            UnitKind::Method
+                | UnitKind::Constructor
+                | UnitKind::Destructor
+                | UnitKind::PropertyGet
+                | UnitKind::PropertySet
+        )
+    })
+}
+
+/// Whether the transaction block rests on a documented rule (T1, T2).
+pub(super) fn transaction_documented(unit: &UnitScopes, tx: BlockId) -> bool {
+    let b = unit.block(tx);
+    match (b.transaction.kind, b.kind) {
+        (TxKind::Explicit, _) => true,
+        (TxKind::Implicit(_), BlockKind::Routine(k)) => {
+            matches!(
+                k,
+                UnitKind::Main | UnitKind::Procedure | UnitKind::DbTrigger
+            )
+        }
+        (TxKind::Implicit(_), _) => true,
+        _ => false,
+    }
+}
+
+/// Whether `block` is a transaction block the transaction rules report on:
+/// explicit, or implicit by a documented rule with an update of a table of
+/// the loaded schema. The main block of an include fragment is none: the
+/// includer decides which block the fragment's statements are in.
+pub(super) fn known_transaction(
+    scopes: &FileScopes,
+    unit: &UnitScopes,
+    block: BlockId,
+    fragment: bool,
+) -> bool {
+    if !transaction_documented(unit, block) {
+        return false;
+    }
+    match unit.block(block).transaction.kind {
+        TxKind::Implicit(update) => {
+            !(fragment && unit.parent.is_none() && block == BlockId::ROUTINE)
+                && update
+                    .buffer
+                    .is_some_and(|b| matches!(scopes.buffer(b).table, Table::Database(_)))
+        }
+        kind => kind == TxKind::Explicit,
+    }
+}
+
+/// The outermost [`known_transaction`] block around `block`, itself included.
+pub(super) fn enclosing_transaction(
+    scopes: &FileScopes,
+    unit: &UnitScopes,
+    block: BlockId,
+    fragment: bool,
+) -> Option<BlockId> {
+    std::iter::successors(Some(block), |b| unit.block(*b).parent)
+        .filter(|&b| known_transaction(scopes, unit, b, fragment))
+        .last()
+}
+
+/// The innermost unit and block whose text holds the offset `at`.
+pub(super) fn locate(scopes: &FileScopes, at: u32) -> Option<(&UnitScopes, BlockId)> {
+    let inside = |span: Span| span.start <= at && at < span.end;
+    let unit = scopes
+        .units()
+        .iter()
+        .filter(|u| inside(u.span))
+        .max_by_key(|u| u.span.start)?;
+    let block = unit
+        .blocks
+        .iter()
+        .filter(|b| inside(b.span))
+        .max_by_key(|b| b.span.start)
+        .map_or(BlockId::ROUTINE, |b| b.id);
+    Some((unit, block))
+}
+
+/// What an update does, for a sentence: `` it assigns `Customer.Name`, a
+/// field of `Customer` ``.
+pub(super) fn update_phrase(scopes: &FileScopes, source: &str, update: &Update) -> String {
+    let table = update
+        .buffer
+        .map_or("a database table", |b| scopes.buffer(b).table.name());
+    match update.kind {
+        UpdateKind::Create => format!("it creates a record of `{table}`"),
+        UpdateKind::Delete => format!("it deletes a record of `{table}`"),
+        UpdateKind::Assign => format!(
+            "it assigns `{}`, a field of `{table}`",
+            quote(source, update.at)
+        ),
+        UpdateKind::BufferCopy => format!("it copies into a record of `{table}`"),
+        UpdateKind::Input => format!("it reads user input into `{}`", quote(source, update.at)),
+        UpdateKind::ExclusiveRead => format!("it reads `{table}` with EXCLUSIVE-LOCK"),
+    }
 }
