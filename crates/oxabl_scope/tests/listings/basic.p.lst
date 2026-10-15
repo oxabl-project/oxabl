@@ -1,0 +1,48 @@
+basic.p                               10/14/2026 09:00:00   PROGRESS(R) Page 1   
+
+{} Line Blk
+-- ---- ---
+      1     /* The listing beside this file is synthetic: written by hand from the
+      2        format in section 7.5 of strict-analysis-open-questions.md. */
+      3     DEFINE VARIABLE i AS INTEGER NO-UNDO.
+      4     
+      5   1 FOR EACH Customer NO-LOCK:
+      6   1   DISPLAY Customer.Name.
+      7     END.
+      8     
+      9   1 DO TRANSACTION:
+     10   1   CREATE Order.
+     11   1   Order.OrderNum = 1.
+     12     END.
+     13     
+     14   1 REPEAT:
+     15   1   FIND NEXT Item NO-LOCK.
+     16   2   IF Item.Price > 0 THEN DO:
+     17   2     i = i + 1.
+     18   1   END.
+     19     END.
+     20     
+     21   1 PROCEDURE upd:
+     22   1   DEFINE BUFFER bLine FOR OrderLine.
+     23   1   FIND FIRST bLine EXCLUSIVE-LOCK.
+     24   1   bLine.Qty = 0.
+     25     END PROCEDURE.
+basic.p                               10/14/2026 09:00:00   PROGRESS(R) Page 2   
+
+     File Name       Line Blk. Type   Tran            Blk. Label            
+-------------------- ---- ----------- ---- --------------------------------
+basic.p                 0 Procedure   No                                    
+    Buffers: sports.Order
+
+basic.p                 5 For         No                                    
+    Buffers: sports.Customer
+    Frames:  Unnamed
+
+basic.p                 9 Do          Yes                                   
+basic.p                14 Repeat      No                                    
+    Buffers: sports.Item
+
+basic.p                16 Do          No                                    
+basic.p                21 Procedure   Yes  Procedure upd                    
+    Buffers: bLine
+
