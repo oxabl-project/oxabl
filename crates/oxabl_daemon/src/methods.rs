@@ -782,7 +782,11 @@ fn build_workspace(
     let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
     progress.set_total(files.len());
     let fs = OverlayFileSystem { overlay };
-    let pipeline = LintPipeline::new(&config, &fs).with_known_files(&files);
+    let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(
+        &files,
+        std::thread::available_parallelism().map_or(1, usize::from),
+    );
+    let pipeline = LintPipeline::new(&config, &fs).with_shared_producers(&producers);
     let mut symbols = file_symbols(&files);
     let graph = ReverseGraph::build_with(&pipeline, &files, |path, expansion, result| {
         collect_symbols(path, expansion, result, &fs, &mut symbols);

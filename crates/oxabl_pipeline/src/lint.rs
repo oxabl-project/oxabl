@@ -605,6 +605,12 @@ impl<'a> LintPipeline<'a> {
         SharedProducers::build(files, &self.index_includes())
     }
 
+    /// [`shared_producers`](Self::shared_producers) scanned on `threads` threads.
+    /// The map is the same for any thread count.
+    pub fn shared_producers_parallel(&self, files: &[PathBuf], threads: usize) -> SharedProducers {
+        SharedProducers::build_parallel(files, &self.index_includes(), threads)
+    }
+
     /// Where the index reads an indexed file and the includes it is expanded
     /// through: this run's filesystem, include paths and preprocessor
     /// configuration.

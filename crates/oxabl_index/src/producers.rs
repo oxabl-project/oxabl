@@ -22,6 +22,7 @@
 //! missing, on every thread and in every order alike.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use oxabl_semantic::IndexName;
 use rustc_hash::FxHashMap;
@@ -54,6 +55,41 @@ impl SharedProducers {
                 .iter()
                 .map(|path| (path.clone(), definitions_in(path, includes))),
         )
+    }
+
+    /// [`build`](Self::build) on `threads` threads (at least one). The result is
+    /// the same as `build`'s for any thread count.
+    pub fn build_parallel(
+        files: &[PathBuf],
+        includes: &IncludeContext<'_>,
+        threads: usize,
+    ) -> Self {
+        let threads = threads.clamp(1, files.len().max(1));
+        if threads == 1 {
+            return Self::build(files, includes);
+        }
+        let next = AtomicUsize::new(0);
+        let definitions = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut mine = Vec::new();
+                        while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                            mine.push((path.clone(), definitions_in(path, includes)));
+                        }
+                        mine
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| match worker.join() {
+                    Ok(mine) => mine,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                })
+                .collect::<Vec<_>>()
+        });
+        Self::from_definitions(definitions)
     }
 
     /// Join per-file results of [`definitions_in`]. The result does not depend on
@@ -318,6 +354,41 @@ mod tests {
                 definitions_in(Path::new("/f.p"), &includes),
                 want,
                 "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parallel_scan_builds_the_map_a_serial_scan_builds() {
+        let sources: Vec<(String, String)> = (0..40)
+            .map(|n| {
+                let body = match n % 3 {
+                    0 => format!(
+                        "DEFINE NEW SHARED VARIABLE v-{} AS CHARACTER NO-UNDO.",
+                        n % 5
+                    ),
+                    1 => "DEFINE SHARED VARIABLE v-0 AS CHARACTER NO-UNDO.".to_string(),
+                    _ => "MESSAGE \"quiet\".".to_string(),
+                };
+                (format!("/src/f{n:02}.p"), body)
+            })
+            .collect();
+        let listed: Vec<(&str, &str)> = sources
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.as_str()))
+            .collect();
+        let fs = fs_with(&listed);
+        let files = paths(&listed);
+        let predefined = PreprocessorConfig::default();
+        let includes = in_fs(&fs, &predefined);
+
+        let serial = SharedProducers::build(&files, &includes);
+        assert!(!serial.is_empty());
+        for threads in [0, 1, 4, 64] {
+            assert_eq!(
+                SharedProducers::build_parallel(&files, &includes, threads),
+                serial,
+                "{threads} threads"
             );
         }
     }

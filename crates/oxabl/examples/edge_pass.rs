@@ -31,9 +31,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use oxabl_pipeline::{
-    ConfigOverrides, EdgeTarget, LintPipeline, PipelineConfig, SharedProducers, definitions_in,
-};
+use oxabl_pipeline::{ConfigOverrides, EdgeTarget, LintPipeline, PipelineConfig};
 use oxabl_workspace::{RealFileSystem, discover_path};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -122,31 +120,8 @@ fn main() {
     let started = Instant::now();
     // Counted in the wall time: it is the price of the shared strategy. Scanned
     // on the run's threads, as a client that has them would.
-    let producers = (seeding == Seeding::Shared).then(|| {
-        let scan = LintPipeline::new(&config, &fs);
-        let includes = scan.index_includes();
-        let next = AtomicUsize::new(0);
-        let definitions = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..threads)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut mine = Vec::new();
-                        loop {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(path) = files.get(i) else { break };
-                            mine.push((path.clone(), definitions_in(path, &includes)));
-                        }
-                        mine
-                    })
-                })
-                .collect();
-            workers
-                .into_iter()
-                .flat_map(|worker| worker.join().expect("worker panicked"))
-                .collect::<Vec<_>>()
-        });
-        SharedProducers::from_definitions(definitions)
-    });
+    let producers = (seeding == Seeding::Shared)
+        .then(|| LintPipeline::new(&config, &fs).shared_producers_parallel(&files, threads));
     let setup = started.elapsed();
 
     let next = AtomicUsize::new(0);
