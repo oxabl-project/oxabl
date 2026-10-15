@@ -1306,6 +1306,8 @@ impl<'a> Parser<'a> {
                     | Kind::SubAverage
                     | Kind::SubMaximum
                     | Kind::SubMinimum
+                    // The PRINTER target of OUTPUT TO (unreserved)
+                    | Kind::Printer
                     // Dynamic-object and widget type keywords of CREATE (unreserved)
                     | Kind::Object
                     | Kind::Widget

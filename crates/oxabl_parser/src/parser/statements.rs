@@ -7320,19 +7320,11 @@ impl Parser<'_> {
             | Kind::StringLiteral
             | Kind::Preprop
             | Kind::IncludeArgReference => true,
-            // PRINTER is unreserved and has no lexer kind, so it arrives as an
-            // identifier; recognise the lone spelling here.
-            _ => self.is_bare_printer_target(),
+            // `PRINTER`, but not the first part of a touching run such as
+            // `printer.txt`.
+            Kind::Printer => self.file_name_run_end() == self.peek().end,
+            _ => false,
         }
-    }
-
-    /// True for a `PRINTER` keyword target: the spelling `printer` standing
-    /// alone, not the first part of a touching run such as `printer.txt`.
-    fn is_bare_printer_target(&self) -> bool {
-        let tok = self.peek();
-        Self::can_be_identifier(tok.kind)
-            && self.source[tok.start..tok.end].eq_ignore_ascii_case("printer")
-            && self.file_name_run_end() == tok.end
     }
 
     /// Consume a bare file name and return it.

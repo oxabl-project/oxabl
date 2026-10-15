@@ -349,6 +349,7 @@ pub enum Kind {
     UnlessHidden,
     BufferName,
     File,
+    Printer,
 
     // Phrases
     Editing,
@@ -1402,6 +1403,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "preproc" => Some(Kind::Preprocess),
             "preprop" => Some(Kind::Preprop),
             "primary" => Some(Kind::Primary),
+            "printer" => Some(Kind::Printer),
             "private" => Some(Kind::Private),
             "proc-ha" => Some(Kind::ProcHandle),
             "proc-st" => Some(Kind::ProcStatus),

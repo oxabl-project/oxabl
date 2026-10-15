@@ -1117,3 +1117,10 @@ keyword_type = "Phrase"
 name = "SUB-MINIMUM"
 reserved = false
 keyword_type = "Phrase"
+
+# OUTPUT TO PRINTER [name]: the printer target of a stream I/O phrase.
+# Unreserved, exact name only: it stays a valid name.
+[[add]]
+name = "PRINTER"
+reserved = false
+keyword_type = "Option"
