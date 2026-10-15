@@ -1,0 +1,7 @@
+find#0 u0 @6 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#1 u0 @10 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#2 u0 @15 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#3 u0 @19 tt `FIND FIRST tt NO-ERROR.`
+find#4 u1 @25 b `FIND FIRST b NO-LOCK NO-ERROR.`
+find#5 u2 @29 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+missing u0 @21 tt `tt.k` read after find#3

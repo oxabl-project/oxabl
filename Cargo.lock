@@ -1416,6 +1416,7 @@ dependencies = [
  "oxabl_handles",
  "oxabl_index",
  "oxabl_lexer",
+ "oxabl_nulls",
  "oxabl_parser",
  "oxabl_preprocessor",
  "oxabl_schema",
@@ -1447,6 +1448,20 @@ dependencies = [
  "ropey",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "oxabl_nulls"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_flow",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "oxabl_schema",
+ "oxabl_scope",
+ "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]
