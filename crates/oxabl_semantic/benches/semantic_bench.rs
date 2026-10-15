@@ -81,6 +81,16 @@ ENABLE lv-name lv-city WITH FRAME f-detail.
 UPDATE lv-name lv-city WITH FRAME f-detail.
 "#;
 
+const BUILTIN_CLASSES: &str = r#"
+USING OpenEdge.Core.*.
+DEFINE VARIABLE text AS String NO-UNDO.
+DEFINE VARIABLE error-object AS Progress.Lang.AppError NO-UNDO.
+text = NEW String().
+error-object = NEW Progress.Lang.AppError().
+MESSAGE Progress.Lang.Class:GetClass("OpenEdge.Core.String").
+MESSAGE OpenEdge.Net.URI:Decode("example").
+"#;
+
 fn parse_program(source: &str) -> Vec<oxabl_ast::Statement> {
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
@@ -162,6 +172,7 @@ fn semantic_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "tiny", TINY);
     bench_fixture(&mut group, "medium", MEDIUM);
     bench_fixture(&mut group, "skipped", SKIPPED);
+    bench_fixture(&mut group, "builtin_classes", BUILTIN_CLASSES);
     group.finish();
 
     // Schema-loaded resolve bench: exercises the field-lookup hot path

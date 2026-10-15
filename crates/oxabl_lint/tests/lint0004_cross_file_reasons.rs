@@ -740,3 +740,48 @@ fn the_other_two_rules_stay_silent_for_every_cross_file_reason() {
         }
     }
 }
+
+#[test]
+fn shipped_dotted_static_receivers_are_external_with_or_without_an_index() {
+    let source = "MESSAGE Progress.Lang.Class:GetClass(\"x\").\n\
+                  MESSAGE OpenEdge.Net.URI:Decode(\"x\").\n\
+                  MESSAGE Progress.Reflect.DataType:CHARACTER.\n\
+                  MESSAGE System.Text.Encoding:UTF8.\n\
+                  MESSAGE Ccs.Common.Application:Instance.\n";
+    let stmts = parse(source);
+    let schema = customer_schema();
+    let fs = oxabl_workspace::InMemoryFileSystem::new();
+    let dirs = vec![std::path::PathBuf::from("/src")];
+    let index = oxabl_index::BatchIndex::new(&fs, &dirs);
+    for indexed in [false, true] {
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let ctx = if indexed { ctx.with_index(&index) } else { ctx };
+        let sem = analyze_file(&stmts, &ctx);
+        for rule in [undefined_symbol::run, unknown_table_or_field::run] {
+            let found = rule(&stmts, &sem, &ctx);
+            assert!(found.is_empty(), "indexed={indexed}: {found:?}");
+        }
+        assert!(sem.symbols.class_sites().is_empty());
+        assert_eq!(sem.symbols.class_lookups().count(), 0);
+    }
+}
+
+#[test]
+fn shipped_prefix_does_not_hide_a_local_buffer_field_error() {
+    let source = "DEFINE BUFFER Progress FOR Progress.\n\
+                  MESSAGE Progress.Lang:SCREEN-VALUE.\n\
+                  MESSAGE Progress.Missing.\n";
+    let stmts = parse(source);
+    let schema = oxabl_schema::test_support::schema_from_df(
+        "ADD TABLE \"Progress\"\nADD FIELD \"Lang\" OF \"Progress\" AS character\n",
+    );
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+    let sem = analyze_file(&stmts, &ctx);
+    assert!(sem.references.iter().any(|(_, resolution)| {
+        matches!(resolution, Resolution::Resolved(symbol)
+            if sem.symbols.get(*symbol).name.as_ref() == "lang")
+    }));
+    let found = unknown_table_or_field::run(&stmts, &sem, &ctx);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].message.contains("Missing"), "{found:?}");
+}

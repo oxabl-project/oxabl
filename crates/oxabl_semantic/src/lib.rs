@@ -15,6 +15,11 @@
 //! ordinary [`Resolution::Resolved`] against an index-synthesized symbol, so a
 //! consumer reading `references` needs no second lookup path.
 
+//! Documented OpenEdge built-in type names resolve without workspace files.
+//! This table checks membership only. Built-in references remain external and
+//! create no dependency edges. Member names, arity, and types are not checked.
+
+mod builtin_classes;
 mod builtins;
 mod check;
 mod coercion;
@@ -29,6 +34,7 @@ mod sequence;
 mod symbol;
 mod types;
 
+pub use builtin_classes::{BuiltinClass, builtin_class};
 pub use builtins::SYSTEM_HANDLES;
 pub use check::check_pass;
 pub use coercion::{
