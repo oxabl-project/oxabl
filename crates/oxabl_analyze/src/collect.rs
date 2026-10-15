@@ -618,24 +618,24 @@ impl ExpandedFile {
         chain
     }
 
-    /// The context of include expansion `include`: its chain and which of the
-    /// expansions of that file it is.
-    fn include_occurrence(&self, include: u32) -> IncludeOccurrence {
-        let path = &self.included[include as usize].path;
-        let same = |(_, entry): &(usize, &IncludedFile)| entry.path == *path;
-        let occurrence = self
+    /// For each include expansion, which expansion of its file it is (from 1)
+    /// and how many expansions that file has.
+    fn include_occurrences(&self) -> Vec<(u32, u32)> {
+        let mut seen: HashMap<&Path, u32> = HashMap::new();
+        let nth: Vec<u32> = self
             .included
             .iter()
-            .enumerate()
-            .filter(same)
-            .take_while(|(index, _)| *index <= include as usize)
-            .count() as u32;
-        let occurrences = self.included.iter().enumerate().filter(same).count() as u32;
-        IncludeOccurrence {
-            chain: self.include_chain(include),
-            occurrence,
-            occurrences,
-        }
+            .map(|entry| {
+                let count = seen.entry(entry.path.as_path()).or_default();
+                *count += 1;
+                *count
+            })
+            .collect();
+        self.included
+            .iter()
+            .zip(nth)
+            .map(|(entry, nth)| (nth, seen[entry.path.as_path()]))
+            .collect()
     }
 }
 
@@ -1217,7 +1217,7 @@ pub fn collect_from_expanded_selecting(
 
     for err in program.errors.into_iter().filter(|_| everything) {
         let virt = err.into_diagnostic(root);
-        if let Some(resolved) = resolve_diagnostic(virt, expanded) {
+        if let Ok(resolved) = resolve_diagnostic(virt, expanded) {
             out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
                 source: DiagnosticSource::Parse,
@@ -1241,13 +1241,12 @@ pub fn collect_from_expanded_selecting(
 
     let mut include_rows = IncludeRows::default();
     for d in sem.diagnostics.iter().filter(|_| everything) {
-        if let Some(resolved) = resolve_diagnostic(d.clone(), expanded) {
-            out.diagnostics.push(CollectedDiagnostic {
+        match resolve_diagnostic(d.clone(), expanded) {
+            Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
                 source: DiagnosticSource::Semantic,
-            });
-        } else {
-            include_rows.add(d, DiagnosticSource::Semantic, expanded, &mut out);
+            }),
+            Err(d) => include_rows.add(d, DiagnosticSource::Semantic, expanded, &mut out),
         }
     }
 
@@ -1261,13 +1260,15 @@ pub fn collect_from_expanded_selecting(
         ),
     };
     for d in linted {
-        if let Some(resolved) = resolve_diagnostic(d.clone(), expanded) {
-            out.diagnostics.push(CollectedDiagnostic {
+        match resolve_diagnostic(d, expanded) {
+            Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
                 source: DiagnosticSource::Lint,
-            });
-        } else if everything {
-            include_rows.add(&d, DiagnosticSource::Lint, expanded, &mut out);
+            }),
+            Err(d) if everything => {
+                include_rows.add(d, DiagnosticSource::Lint, expanded, &mut out);
+            }
+            Err(_) => {}
         }
     }
 
@@ -1279,6 +1280,9 @@ pub fn collect_from_expanded_selecting(
 #[derive(Default)]
 struct IncludeRows {
     seen: HashMap<(PathBuf, u32, u32, &'static str, &'static str, String), usize>,
+    /// Per include expansion, which expansion of its file it is and how many
+    /// that file has. Counted on the first row.
+    occurrences: Vec<(u32, u32)>,
 }
 
 impl IncludeRows {
@@ -1287,7 +1291,7 @@ impl IncludeRows {
     /// in the root.
     fn add(
         &mut self,
-        d: &Diagnostic,
+        mut d: Diagnostic,
         source: DiagnosticSource,
         expanded: &ExpandedFile,
         out: &mut CollectedDiagnostics,
@@ -1295,7 +1299,15 @@ impl IncludeRows {
         let Some((include, file, span)) = expanded.resolve_include_origin(d.span.span) else {
             return;
         };
-        let occurrence = expanded.include_occurrence(include);
+        if self.occurrences.is_empty() {
+            self.occurrences = expanded.include_occurrences();
+        }
+        let (occurrence, occurrences) = self.occurrences[include as usize];
+        let occurrence = IncludeOccurrence {
+            chain: expanded.include_chain(include),
+            occurrence,
+            occurrences,
+        };
         let path = expanded.included[include as usize].path.clone();
         let key = (
             path.clone(),
@@ -1309,10 +1321,8 @@ impl IncludeRows {
             out.include_origin[row].expansions.push(occurrence);
             return;
         }
-        let mut diagnostic = d.clone();
-        diagnostic.span = FileSpan { file, span };
-        diagnostic
-            .labels
+        d.span = FileSpan { file, span };
+        d.labels
             .retain_mut(|label| match expanded.resolve_span(label.span.span) {
                 Some(fs) => {
                     label.span = fs;
@@ -1322,7 +1332,7 @@ impl IncludeRows {
             });
         self.seen.insert(key, out.include_origin.len());
         out.include_origin.push(IncludeOriginDiagnostic {
-            diagnostic,
+            diagnostic: d,
             source,
             path,
             expansions: vec![occurrence],
@@ -1357,9 +1367,15 @@ pub fn analyze_from_expanded(
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,
-/// or drop it if its origin is not the root buffer (R8).
-fn resolve_diagnostic(mut d: Diagnostic, expanded: &ExpandedFile) -> Option<Diagnostic> {
-    d.span = expanded.resolve_span(d.span.span)?;
+/// or hand it back unchanged if its origin is not the root buffer (R8).
+fn resolve_diagnostic(
+    mut d: Diagnostic,
+    expanded: &ExpandedFile,
+) -> Result<Diagnostic, Diagnostic> {
+    let Some(span) = expanded.resolve_span(d.span.span) else {
+        return Err(d);
+    };
+    d.span = span;
     d.labels
         .retain_mut(|label| match expanded.resolve_span(label.span.span) {
             Some(fs) => {
@@ -1368,7 +1384,7 @@ fn resolve_diagnostic(mut d: Diagnostic, expanded: &ExpandedFile) -> Option<Diag
             }
             None => false,
         });
-    Some(d)
+    Ok(d)
 }
 
 /// Run the full pipeline for `source` and return every diagnostic, resolved to
@@ -1519,6 +1535,24 @@ mod tests {
             (10, 20, 2, 0),
             (30, 10, ROOT.raw(), 10),
         ])
+    }
+
+    #[test]
+    fn each_include_expansion_knows_which_of_its_files_expansions_it_is() {
+        let mut expanded = root_include_root();
+        expanded.included = ["a.i", "b.i", "a.i", "a.i"]
+            .into_iter()
+            .map(|path| IncludedFile {
+                path: PathBuf::from(path),
+                file: None,
+                parent: None,
+                site: None,
+            })
+            .collect();
+        assert_eq!(
+            expanded.include_occurrences(),
+            [(1, 3), (1, 1), (2, 3), (3, 3)]
+        );
     }
 
     /// A span ending exactly where the next chunk begins keeps its extent (R17).
