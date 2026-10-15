@@ -1,0 +1,13 @@
+unit u0 main
+  b0 main @1
+  b1 repeat @5 tx=implicit(exclusive-lock @8 Customer) buffers=Customer,Order
+buffer Customer default db:Customer owner=u0 refs=4
+  scope u0/b1 free @6 refs=4
+buffer Order default db:Order owner=u0 refs=3
+  scope u0/b1 free @6 refs=3
+read open-query Customer @6 u0/b1 lock=no-lock
+read open-query Order @6 u0/b1 lock=no-lock
+read get Customer @7 u0/b1 lock=no-lock
+read get Order @7 u0/b1 lock=no-lock
+read get Customer @8 u0/b1 lock=exclusive-lock
+read get Order @8 u0/b1 lock=exclusive-lock

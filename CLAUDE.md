@@ -96,6 +96,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - `crates/oxabl_codegen` - Code generation tool for lexer keywords
 - `crates/oxabl_flow` - Control-flow graphs per unit with ABL block semantics, plus a dataflow solver
 - `crates/oxabl_handles` - Lifetimes of dynamic objects per unit (create, free and escape sites, leaking paths), read by the `strict.handles` rules
+- `crates/oxabl_scope` - Buffer scopes, transaction blocks and lock modes per unit, as the compiler assigns them, plus the `COMPILE ... LISTING` block-table parser its oracle harness uses
 
 (Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_semantic`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
 

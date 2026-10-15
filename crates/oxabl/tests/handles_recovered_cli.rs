@@ -22,7 +22,7 @@ PROCEDURE b:
   main:
   DO ON ERROR UNDO main, LEAVE main
      ON STOP UNDO main, LEAVE main
-     TRANSACTION
+     PRESELECT EACH ttx
   :
     lx = TRUE.
   END.

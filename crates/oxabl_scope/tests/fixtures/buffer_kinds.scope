@@ -1,0 +1,12 @@
+unit u0 main
+  b0 main @1 buffers=shCust
+  b1 repeat @9
+unit u1 procedure takes-buffer
+  b0 procedure @13 tx=implicit(assign @15 pCust)
+buffer shCust new-shared db:Customer owner=u0 @3 refs=1
+  scope u0/b0 raised @3 absorbed=@10 refs=1
+buffer shOrder shared db:Order owner=u0 @4 refs=1 external
+buffer bUnused defined db:Item owner=u0 @5 refs=0
+buffer pCust parameter db:Customer owner=u1 @14 refs=1 external
+read find shOrder @8 u0/b0 lock=no-lock
+read find shCust @10 u0/b1 lock=no-lock

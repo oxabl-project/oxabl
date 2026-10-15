@@ -976,7 +976,7 @@ impl Parser<'_> {
             if self.check(Kind::TempTable) {
                 self.advance();
             }
-            let target = self.parse_identifier()?;
+            let target = self.parse_record_name()?;
             self.expect_period("Expected '.' after parameter definition")?;
             return Ok(self.stmt(StatementKind::DefineParameter {
                 direction: ParameterDirection::Input,
@@ -1439,7 +1439,10 @@ impl Parser<'_> {
                 self.advance();
                 let name = self.parse_identifier()?;
                 self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
-                let target = self.parse_identifier()?;
+                if self.check(Kind::TempTable) {
+                    self.advance();
+                }
+                let target = self.parse_record_name()?;
                 ParameterType::Buffer { name, target }
             }
             // Standard: name [INIT value] [NO-UNDO] AS type [NO-UNDO] or LIKE field [NO-UNDO]
@@ -1636,7 +1639,7 @@ impl Parser<'_> {
 
         if self.check(Kind::Like) || self.check(Kind::LikeSequential) {
             self.advance(); // consume LIKE or LIKE-SEQUENTIAL
-            like_table = Some(self.parse_identifier()?);
+            like_table = Some(self.parse_record_name()?);
 
             // Optional VALIDATE
             if self.check(Kind::Validate) {
@@ -1906,7 +1909,7 @@ impl Parser<'_> {
                 name: self.source[pp.start..pp.end].to_string(),
             })
         } else {
-            self.parse_identifier().map(BufferTarget::Table)?
+            self.parse_record_name().map(BufferTarget::Table)?
         };
 
         // Parse XML/serialize options (NAMESPACE-URI, SERIALIZE-NAME, etc.)
@@ -2377,19 +2380,17 @@ impl Parser<'_> {
         let mut by = None;
         let mut while_condition = None;
 
-        // Optional TRANSACTION keyword: DO TRANSACTION:
-        let transaction = if self.check(Kind::Transaction) {
-            self.advance();
-            true
-        } else {
-            false
-        };
-
-        // DO FOR table: — buffer lock scope; consume FOR and table name
-        if self.check(Kind::KwFor) {
-            self.advance(); // consume FOR
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance(); // consume table name
+        // `DO [FOR b1, b2] [TRANSACTION]`, in either order: strongly scoped
+        // buffers and the TRANSACTION keyword.
+        let mut transaction = false;
+        loop {
+            if self.check(Kind::Transaction) {
+                self.advance();
+                transaction = true;
+            } else if self.check(Kind::KwFor) {
+                self.skip_strong_scope_buffers();
+            } else {
+                break;
             }
         }
 
@@ -2503,7 +2504,13 @@ impl Parser<'_> {
             }
         }
 
-        let on_actions = self.parse_block_on_phrases();
+        let mut on_actions = self.parse_block_on_phrases();
+        // TRANSACTION may also follow the ON phrases.
+        if self.check(Kind::Transaction) {
+            self.advance();
+            transaction = true;
+            on_actions.extend(self.parse_block_on_phrases());
+        }
 
         // Optional WITH clause before block opener (e.g. WITH FRAME name, WITH WIDTH 255 NO-BOX).
         // The WITH clause can contain many frame options; consume everything until the
@@ -2639,6 +2646,17 @@ impl Parser<'_> {
     fn parse_repeat_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume REPEAT
 
+        // `REPEAT FOR b1, b2 [TRANSACTION]`: strongly scoped buffers.
+        loop {
+            if self.check(Kind::KwFor) {
+                self.skip_strong_scope_buffers();
+            } else if self.check(Kind::Transaction) && self.check_at(1, Kind::KwFor) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
         // Optional block label before the colon (LABEL: REPEAT)
         // Already handled at statement dispatch level; nothing extra needed here.
 
@@ -2689,11 +2707,13 @@ impl Parser<'_> {
             None
         };
 
-        let on_actions = self.parse_block_on_phrases();
+        let mut on_actions = self.parse_block_on_phrases();
 
-        // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:)
+        // Optional TRANSACTION keyword (e.g. REPEAT TRANSACTION:), which the ON
+        // phrases may also follow.
         if self.check(Kind::Transaction) {
             self.advance();
+            on_actions.extend(self.parse_block_on_phrases());
         }
 
         // Optional PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]
@@ -2817,7 +2837,10 @@ impl Parser<'_> {
             match self.peek().kind {
                 Kind::Leave | Kind::Retry | Kind::Next => {
                     self.advance();
-                    if Self::can_be_identifier(self.peek().kind) && !self.check(Kind::Colon) {
+                    if Self::can_be_identifier(self.peek().kind)
+                        && !self.check(Kind::Colon)
+                        && !self.check(Kind::Transaction)
+                    {
                         self.advance();
                     }
                 }
@@ -5573,7 +5596,7 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
-        let name = self.parse_identifier()?;
+        let name = self.parse_record_name()?;
         // A second identifier means the first was a type keyword we do not model.
         if Self::can_be_identifier(self.peek().kind)
             && !self.check(Kind::NoError)
@@ -5872,7 +5895,7 @@ impl Parser<'_> {
                 no_error,
             }));
         }
-        let buffer = self.parse_identifier()?;
+        let buffer = self.parse_record_name()?;
         // Skip optional VALIDATE(...) clause: DELETE table VALIDATE(true, "msg").
         if self.check(Kind::Validate) {
             self.advance(); // consume VALIDATE
@@ -5932,7 +5955,7 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
-        let buffer = self.parse_identifier()?;
+        let buffer = self.parse_record_name()?;
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after RELEASE statement")?;
         Ok(self.stmt(StatementKind::Release { buffer, no_error }))
@@ -5976,7 +5999,7 @@ impl Parser<'_> {
     // VALIDATE buffer-name [NO-ERROR].
     fn parse_validate_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume VALIDATE
-        let buffer = self.parse_identifier()?;
+        let buffer = self.parse_record_name()?;
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after VALIDATE statement")?;
         Ok(self.stmt(StatementKind::Validate { buffer, no_error }))
@@ -5985,15 +6008,7 @@ impl Parser<'_> {
     // BUFFER-COPY source [EXCEPT field...] TO target [ASSIGN field = expr ...] [NO-ERROR].
     fn parse_buffer_copy(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER-COPY
-        let source = self.parse_identifier()?;
-
-        // Source may be a db.table or buf.field reference: consume the dotted suffix.
-        if self.check(Kind::Period) && self.is_field_access_ahead() {
-            self.advance(); // consume '.'
-            if Self::can_be_identifier(self.peek().kind) {
-                self.advance(); // consume table/field name
-            }
-        }
+        let source = self.parse_record_name()?;
 
         // Optional USING or EXCEPT clause (field list to include/exclude)
         // Appears BEFORE the TO keyword: BUFFER-COPY src [USING|EXCEPT] f1 f2 TO target
@@ -6013,7 +6028,7 @@ impl Parser<'_> {
         }
 
         self.expect_kind(Kind::To, "Expected TO after source buffer in BUFFER-COPY")?;
-        let target = self.parse_identifier()?;
+        let target = self.parse_record_name()?;
 
         // Optional ASSIGN clause
         let assignments = if self.check(Kind::Assign) {
@@ -6037,7 +6052,7 @@ impl Parser<'_> {
     // BUFFER-COMPARE source TO target [SAVE RESULT IN lvar] [NO-ERROR].
     fn parse_buffer_compare(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume BUFFER-COMPARE
-        let source = self.parse_identifier()?;
+        let source = self.parse_record_name()?;
 
         // Optional USING or EXCEPT field-list clause (field1 field2 ...) before TO
         if self.check(Kind::Using) || self.check(Kind::Except) {
@@ -6051,7 +6066,7 @@ impl Parser<'_> {
             Kind::To,
             "Expected TO after source buffer in BUFFER-COMPARE",
         )?;
-        let target = self.parse_identifier()?;
+        let target = self.parse_record_name()?;
 
         // Optional BINARY option (compare byte-by-byte rather than field-by-field)
         if self.is_identifier_text_at(0, "BINARY") {
@@ -7179,6 +7194,47 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(AnnotationAttribute { name, value })
+    }
+
+    /// A record (buffer) name, which may be qualified by its database:
+    /// `customer`, `sports.customer`. The parts must touch, so the period
+    /// that ends `RELEASE customer.` is not read as a qualifier.
+    fn parse_record_name(&mut self) -> ParseResult<Identifier> {
+        let mut name = self.parse_identifier()?;
+        while self.check(Kind::Period)
+            && self.tokens[self.current].start == name.span.end as usize
+            && self.peek_at(1).start == self.tokens[self.current].end
+            && Self::can_be_identifier(self.peek_at(1).kind)
+        {
+            self.advance(); // consume '.'
+            let next = self.advance().clone();
+            name.name.push('.');
+            name.name.push_str(&self.source[next.start..next.end]);
+            name.span.end = next.end as u32;
+        }
+        Ok(name)
+    }
+
+    /// Skip `FOR b1 [, b2]...` of a `DO FOR` / `REPEAT FOR` header. A name may
+    /// be qualified by its database (`sports.customer`).
+    fn skip_strong_scope_buffers(&mut self) {
+        self.advance(); // consume FOR
+        while Self::can_be_identifier(self.peek().kind) {
+            let mut end = self.advance().end;
+            while self.check(Kind::Period)
+                && self.tokens[self.current].start == end
+                && self.peek_at(1).start == self.tokens[self.current].end
+                && Self::can_be_identifier(self.peek_at(1).kind)
+            {
+                self.advance();
+                end = self.advance().end;
+            }
+            if self.check(Kind::Comma) && Self::can_be_identifier(self.peek_at(1).kind) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
     }
 
     /// Parse a dotted name like `table.field` for ASSIGN OF targets.

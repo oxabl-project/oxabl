@@ -8,8 +8,8 @@ use oxabl_lint::{
 
 use super::{RuleFn, check_recovered};
 
-// Recovery closes the procedure at the `END.` of the `DO`, so the
-// `DELETE OBJECT` lands outside it.
+// The parser does not read `PRESELECT` on a `DO`, and recovery closes the
+// procedure at the `END.` of the `DO`, so the `DELETE OBJECT` lands outside it.
 const MOVED_FREE: &str = "\
 DEFINE VARIABLE lx AS LOGICAL NO-UNDO.
 PROCEDURE b:
@@ -18,7 +18,7 @@ PROCEDURE b:
   main:
   DO ON ERROR UNDO main, LEAVE main
      ON STOP UNDO main, LEAVE main
-     TRANSACTION
+     PRESELECT EACH ttx
   :
     lx = TRUE.
   END.
@@ -29,7 +29,7 @@ END PROCEDURE.
 const BROKEN_DO: &str = "\
   main:
   DO ON ERROR UNDO main, LEAVE main
-     TRANSACTION
+     PRESELECT EACH ttx
   :
     lx = TRUE.
   END.

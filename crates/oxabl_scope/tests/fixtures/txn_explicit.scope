@@ -1,0 +1,11 @@
+unit u0 main
+  b0 main @1 buffers=Customer
+  b1 do @2 tx=explicit
+  b2 repeat @6 tx=explicit
+  b3 for-each @10 tx=explicit buffers=Order
+buffer Customer default db:Customer owner=u0 refs=1
+  scope u0/b0 free @3 refs=1
+buffer Order default db:Order owner=u0 refs=1
+  scope u0/b3 weak @10 refs=1
+read find Customer @3 u0/b1 lock=no-lock
+read for Order @10 u0/b3 lock=no-lock

@@ -1,0 +1,24 @@
+unit u0 main
+  b0 main @1 buffers=Item
+  b1 for-each @8 buffers=Order
+  b2 for-each @10 buffers=OrderLine
+  b3 repeat @15
+  b4 repeat @25
+buffer bCust defined db:Customer owner=u0 @4 refs=1
+  scope u0/b3 free @16 refs=1
+  unknown ambiguous-field @21
+buffer Item default db:Item owner=u0 refs=4
+  scope u0/b0 raised @7 absorbed=@26 refs=4
+buffer Order default db:Order owner=u0 refs=4
+  scope u0/b1 weak @8 refs=4
+buffer OrderLine default db:OrderLine owner=u0 refs=2
+  scope u0/b2 weak @10 refs=2
+buffer Customer default db:Customer owner=u0 refs=1
+  scope u0/b0 free @20 refs=1
+  unknown ambiguous-field @21
+read find Item @7 u0/b0 lock=no-lock
+read for Order @8 u0/b1 lock=no-lock
+read for OrderLine @10 u0/b2 lock=no-lock
+read find bCust @16 u0/b3 lock=no-lock
+read find Customer @20 u0/b0 lock=no-lock
+read find Item @26 u0/b4 lock=no-lock

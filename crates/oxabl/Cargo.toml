@@ -79,3 +79,5 @@ walkdir = "2"
 oxabl_flow = { path = "../oxabl_flow", version = "0.2.0" }
 # The `handles_corpus` example only.
 oxabl_handles = { path = "../oxabl_handles", version = "0.1.0" }
+# The `scope_corpus` and `scope_listing` examples only.
+oxabl_scope = { path = "../oxabl_scope", version = "0.1.0" }

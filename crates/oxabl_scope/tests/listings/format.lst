@@ -1,0 +1,16 @@
+a.p                                   10/14/2026 09:00:00   PROGRESS(R) Page 3   
+
+     File Name       Line Blk. Type   Tran            Blk. Label            
+-------------------- ---- ----------- ---- --------------------------------
+a.p                     0 Procedure   Yes                                   
+    Buffers: sports.Customer
+             sports.Order
+    Frames:  Unnamed
+
+inc/b.i                12 For         No   outer                            
+    Buffers: ttLine, sports.Item
+a.p                                   10/14/2026 09:00:00   PROGRESS(R) Page 4   
+
+     File Name       Line Blk. Type   Tran            Blk. Label            
+-------------------- ---- ----------- ---- --------------------------------
+C:\My Work\a.p          40 Procedure   No   Procedure ip-name                
