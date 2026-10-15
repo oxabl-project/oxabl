@@ -12703,3 +12703,43 @@ fn no_prefix_of_a_representative_file_panics() {
         }
     }
 }
+
+#[test]
+fn a_keyword_against_a_block_header_colon_still_ends_the_header() {
+    for source in [
+        "CASE x:WHEN 1 THEN MESSAGE \"one\". OTHERWISE MESSAGE \"other\". END CASE.",
+        "CASE x:WHEN \"a\" OR WHEN \"b\" THEN MESSAGE \"ab\". END CASE.",
+        "CASE x: WHEN 1 THEN MESSAGE \"one\". END CASE.",
+        "CASE o:Value:WHEN 1 THEN MESSAGE \"one\". END CASE.",
+        "CASE x:OTHERWISE MESSAGE \"other\". END CASE.",
+        "CASE x:OTHERWISE DO: MESSAGE \"other\". END. END CASE.",
+        "FOR EACH t WHERE t.a = x:DISPLAY t.a. END.",
+        "FOR EACH t WHERE t.a = x:DELETE t. END.",
+        "FOR EACH t BY t.a DESCENDING:DISPLAY t.a. END.",
+        "DO WHILE x:IF x THEN LEAVE. END.",
+        "DO WHILE x:LEAVE. END.",
+        "REPEAT WHILE x < 3:ASSIGN x = x + 1. END.",
+        "DO i = 1 TO n:IF i > 1 THEN LEAVE. END.",
+        "IF x THEN DO:MESSAGE \"x\". END.",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn a_keyword_member_is_still_read_before_what_can_follow_a_member() {
+    for source in [
+        "r = o:When.",
+        "r = o:Otherwise(1).",
+        "r = o:Display + 1.",
+        "IF o:Display AND o:When THEN MESSAGE \"x\".",
+        "DISPLAY o:Display FORMAT \"x(8)\" WITH FRAME f.",
+        "r = MAXIMUM(o:Display, o:When).",
+        "r = o:When[1].",
+        "o:Display = 2.",
+        "r = IF a THEN o:When ELSE 0.",
+        "CASE o:When:WHEN 1 THEN MESSAGE \"one\". END CASE.",
+    ] {
+        assert_parses_clean(source);
+    }
+}

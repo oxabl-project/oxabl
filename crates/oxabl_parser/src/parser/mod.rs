@@ -1375,20 +1375,90 @@ impl<'a> Parser<'a> {
             )
     }
 
-    /// Whether `token` can name a member after a `:` or `::` that ended at
-    /// `colon_end`.
+    /// Whether the token at `index` can name a member after a `:` or `::` that
+    /// ended at `colon_end`.
     ///
     /// A colon followed by whitespace ends a block header (`CASE x: WHEN ...`),
     /// so only the targeted `can_be_member_name` kinds may follow one with a gap.
     /// A word written directly against the colon is a member name whatever
-    /// keyword it spells (`o:Fetch(a)`, `JsonDataType:NULL`).
-    fn is_member_name(&self, token: &Token, colon_end: usize) -> bool {
+    /// keyword it spells (`o:Fetch(a)`, `JsonDataType:NULL`), as long as what
+    /// comes after it can follow a member: `CASE x:WHEN 1` still ends the header.
+    fn is_member_name(&self, index: usize, colon_end: usize) -> bool {
+        let token = self.token_at(index);
         Self::can_be_member_name(token.kind)
             || (token.start == colon_end
                 && self.source[token.start..token.end]
                     .bytes()
                     .next()
-                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_'))
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                && Self::can_follow_member(self.next_non_comment_after(index).kind))
+    }
+
+    /// Whether a token of `kind` can come directly after a member access or a
+    /// method call in an expression or a statement.
+    fn can_follow_member(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::LeftParen
+                | Kind::RightParen
+                | Kind::Colon
+                | Kind::DoubleColon
+                | Kind::Equals
+                | Kind::PlusEquals
+                | Kind::MinusEquals
+                | Kind::StarEquals
+                | Kind::SlashEquals
+                | Kind::Period
+                | Kind::Comma
+                | Kind::LeftBracket
+                | Kind::RightBracket
+                | Kind::Plus
+                | Kind::Minus
+                | Kind::Star
+                | Kind::Slash
+                | Kind::At
+                | Kind::LessThan
+                | Kind::GreaterThan
+                | Kind::LessThanOrEqual
+                | Kind::GreaterThanOrEqual
+                | Kind::NotEqual
+                | Kind::Eq
+                | Kind::Ne
+                | Kind::Lt
+                | Kind::Le
+                | Kind::Gt
+                | Kind::Ge
+                | Kind::Begins
+                | Kind::Matches
+                | Kind::Contains
+                | Kind::Modulo
+                | Kind::And
+                | Kind::Or
+                | Kind::Then
+                | Kind::KwElse
+                | Kind::Format
+                | Kind::Label
+                | Kind::ColumnLabel
+                | Kind::NoError
+                | Kind::ViewAs
+                | Kind::With
+                | Kind::KwIn
+                | Kind::To
+                | Kind::By
+                | Kind::Descending
+                | Kind::KwAs
+                | Kind::Of
+                | Kind::Eof
+        )
+    }
+
+    /// The first non-comment token after `index`, or the EOF token.
+    fn next_non_comment_after(&self, index: usize) -> &Token {
+        let mut i = index + 1;
+        while self.token_at(i).kind == Kind::Comment {
+            i += 1;
+        }
+        self.token_at(i)
     }
 
     /// Returns true if the given Kind is "word-like" — an identifier, keyword, or
