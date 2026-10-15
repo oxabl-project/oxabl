@@ -1,13 +1,13 @@
 //! What the include a not-taken branch names would read if the branch were
 //! taken.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use oxabl_common::FileId;
 use oxabl_preprocessor::{MAX_INCLUDE_DEPTH, Preprocessor};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::deps::ConditionalIncludeClosure;
+use crate::deps::{ClosureReference, ConditionalIncludeClosure};
 use crate::search::normalize_lexically;
 use crate::{IncludeContext, included_paths};
 
@@ -29,6 +29,7 @@ struct Expanded {
     complete: bool,
     /// The target's own conditional includes.
     skipped: Vec<(String, bool)>,
+    references: Vec<ClosureReference>,
 }
 
 /// The closure of each of `names`, expanded on its own through `includes`.
@@ -41,6 +42,31 @@ struct Expanded {
 pub fn conditional_include_closure(
     names: &[ConditionalIncludeName<'_>],
     includes: &IncludeContext<'_>,
+) -> Vec<ConditionalIncludeClosure> {
+    conditional_include_closure_with(names, includes, &mut |_| Vec::new())
+}
+
+/// One target [`conditional_include_closure_with`] asks the caller to analyse.
+#[derive(Debug, Clone, Copy)]
+pub struct ClosureTarget<'a> {
+    /// The file the name resolved to.
+    pub path: &'a Path,
+    /// The include name as written.
+    pub name: &'a str,
+    /// The target's text.
+    pub source: &'a str,
+}
+
+/// [`conditional_include_closure`], with each entry's
+/// [`references`](ConditionalIncludeClosure::references) from `references`.
+///
+/// This crate cannot analyse a file, so the caller does: `references` is called
+/// once per target file that was read and expanded, and its answer is shared by
+/// every name that reaches the file. It is sorted and deduplicated here.
+pub fn conditional_include_closure_with(
+    names: &[ConditionalIncludeName<'_>],
+    includes: &IncludeContext<'_>,
+    references: &mut dyn FnMut(ClosureTarget<'_>) -> Vec<ClosureReference>,
 ) -> Vec<ConditionalIncludeClosure> {
     let mut out = Vec::new();
     let mut seen: FxHashSet<String> = FxHashSet::default();
@@ -66,13 +92,14 @@ pub fn conditional_include_closure(
                 reaches: Vec::new(),
                 unresolved: Vec::new(),
                 complete: false,
+                references: Vec::new(),
             });
             continue;
         };
         let key = normalize_lexically(&path);
         let expanded = by_path
             .entry(key.clone())
-            .or_insert_with(|| expand(&path, &name, includes));
+            .or_insert_with(|| expand(&path, &name, includes, references));
         let Some(expanded) = expanded else {
             out.push(ConditionalIncludeClosure {
                 name,
@@ -81,6 +108,7 @@ pub fn conditional_include_closure(
                 reaches: Vec::new(),
                 unresolved: Vec::new(),
                 complete: false,
+                references: Vec::new(),
             });
             continue;
         };
@@ -101,6 +129,7 @@ pub fn conditional_include_closure(
                 .collect(),
             unresolved: expanded.unresolved.clone(),
             complete: expanded.complete && !too_deep,
+            references: expanded.references.clone(),
             name,
         });
     }
@@ -109,7 +138,12 @@ pub fn conditional_include_closure(
 
 /// Expand the target at `path` on its own; `None` when it cannot be read or the
 /// preprocessor fails outright.
-fn expand(path: &std::path::Path, name: &str, includes: &IncludeContext<'_>) -> Option<Expanded> {
+fn expand(
+    path: &Path,
+    name: &str,
+    includes: &IncludeContext<'_>,
+    references: &mut dyn FnMut(ClosureTarget<'_>) -> Vec<ClosureReference>,
+) -> Option<Expanded> {
     let source = includes.fs.read(path).ok()?;
     let processed = Preprocessor::new(includes.fs, includes.include_paths)
         .with_predefined(includes.predefined)
@@ -128,6 +162,14 @@ fn expand(path: &std::path::Path, name: &str, includes: &IncludeContext<'_>) -> 
         .collect();
     unresolved.sort();
     unresolved.dedup();
+    let mut references = references(ClosureTarget {
+        path,
+        name,
+        source: &source,
+    });
+    references
+        .sort_by(|a, b| (a.kind, a.conditional, &a.name).cmp(&(b.kind, b.conditional, &b.name)));
+    references.dedup();
     Some(Expanded {
         reaches: included_paths(&processed),
         complete: unresolved.is_empty() && processed.text_losses.is_empty(),
@@ -137,5 +179,6 @@ fn expand(path: &std::path::Path, name: &str, includes: &IncludeContext<'_>) -> 
             .iter()
             .map(|skipped| (skipped.name.clone(), skipped.computed_name))
             .collect(),
+        references,
     })
 }

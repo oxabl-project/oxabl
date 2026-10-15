@@ -268,3 +268,65 @@ fn a_computed_or_missing_conditional_include_has_an_incomplete_closure() {
         [("nowhere.i", false, false), ("{&dir}/x.i", false, false)]
     );
 }
+
+#[test]
+fn the_closure_lists_the_names_a_conditional_target_writes() {
+    let files = [
+        CACHE,
+        ("app/sub.p", "MESSAGE 1.\n"),
+        ("a.i", "&IF FALSE &THEN\n{b.i}\n&ENDIF\n"),
+        (
+            "b.i",
+            "MESSAGE app.Cache:company.\nRUN app/sub.p.\nNEW app.Missing().\n&IF FALSE &THEN\nDEFINE VARIABLE o AS CLASS app.Gone NO-UNDO.\nRUN app/sub.p.\n&ENDIF\n",
+        ),
+    ];
+    let fs = fs(&files);
+    let config = config();
+    let run = LintPipeline::new(&config, &fs).with_conditional_include_closure(true);
+    let edges = run
+        .with_file("/proj/main.p")
+        .edge_set("{a.i}\n")
+        .expect("edge set");
+
+    assert_eq!(edges.of_kind(EdgeKind::ClassReference).count(), 0);
+    let [entry] = edges.conditional_include_closure() else {
+        panic!("one entry: {:?}", edges.conditional_include_closure());
+    };
+    assert_eq!(entry.name, "b.i");
+    let got: Vec<_> = entry
+        .references
+        .iter()
+        .map(|r| {
+            let path = match &r.target {
+                Some(EdgeTarget::IndexedFile { file, .. }) => run.indexed_path(*file),
+                _ => None,
+            };
+            (r.kind, r.conditional, r.name.as_str(), path)
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                EdgeKind::ClassReference,
+                false,
+                "app.cache",
+                Some(PathBuf::from("/proj/app/Cache.cls"))
+            ),
+            (EdgeKind::ClassReference, false, "app.missing", None),
+            (EdgeKind::ClassReference, true, "app.Gone", None),
+            (
+                EdgeKind::ProgramReference,
+                false,
+                "app/sub.p",
+                Some(PathBuf::from("/proj/app/sub.p"))
+            ),
+            (
+                EdgeKind::ProgramReference,
+                true,
+                "app/sub.p",
+                Some(PathBuf::from("/proj/app/sub.p"))
+            ),
+        ]
+    );
+}

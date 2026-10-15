@@ -56,6 +56,15 @@ struct Report {
     closure_files: BTreeSet<PathBuf>,
     /// (root, file) pairs the closure adds beyond the root's include edges.
     closure_new_pairs: usize,
+    closure_references: usize,
+    closure_references_resolved: usize,
+    closure_references_conditional: usize,
+    closure_reference_targets: BTreeSet<PathBuf>,
+    /// (root, file) pairs the closure's references add beyond the edges and the
+    /// conditional references.
+    closure_reference_new_pairs: usize,
+    class_edges: usize,
+    program_edges: usize,
 }
 
 fn discover(root: &Path) -> Vec<PathBuf> {
@@ -114,6 +123,8 @@ fn main() {
             continue;
         };
         r.roots += 1;
+        r.class_edges += edges.of_kind(EdgeKind::ClassReference).count();
+        r.program_edges += edges.of_kind(EdgeKind::ProgramReference).count();
         if edges.of_kind(EdgeKind::DirectInclude).next().is_some() {
             r.with_direct_include += 1;
         }
@@ -160,12 +171,34 @@ fn main() {
             }
         }
         r.reference_new_pairs += new_targets.len();
+        let reference_files: BTreeSet<PathBuf> = references
+            .iter()
+            .filter_map(|reference| match &reference.target {
+                Some(EdgeTarget::IndexedFile { file, .. }) => pipeline.indexed_path(*file),
+                _ => None,
+            })
+            .collect();
+        let mut new_reference_files = BTreeSet::new();
         let mut new_files = BTreeSet::new();
         for entry in edges.conditional_include_closure() {
             r.closure_entries += 1;
             r.closure_resolved += usize::from(entry.path.is_some());
             r.closure_incomplete += usize::from(!entry.complete);
             r.closure_nested += usize::from(entry.via.is_some());
+            for reference in &entry.references {
+                r.closure_references += 1;
+                r.closure_references_conditional += usize::from(reference.conditional);
+                let Some(EdgeTarget::IndexedFile { file, .. }) = &reference.target else {
+                    continue;
+                };
+                r.closure_references_resolved += 1;
+                if let Some(target) = pipeline.indexed_path(*file) {
+                    if !edge_files.contains(&target) && !reference_files.contains(&target) {
+                        new_reference_files.insert(target.clone());
+                    }
+                    r.closure_reference_targets.insert(target);
+                }
+            }
             for path in entry.path.iter().chain(&entry.reaches) {
                 r.closure_files.insert(path.clone());
                 if !edge_files.contains(path) {
@@ -174,6 +207,7 @@ fn main() {
             }
         }
         r.closure_new_pairs += new_files.len();
+        r.closure_reference_new_pairs += new_reference_files.len();
         let conditional = edges.conditional_includes();
         if conditional.is_empty() {
             continue;
@@ -196,6 +230,8 @@ fn main() {
         elapsed.as_secs_f64()
     );
     println!("roots analysed:                  {}", r.roots);
+    println!("class edges:                     {}", r.class_edges);
+    println!("program edges:                   {}", r.program_edges);
     println!("roots that failed:               {}", r.failed);
     println!("roots with a direct include:     {}", r.with_direct_include);
     println!("roots with a conditional include: {}", r.with_conditional);
@@ -240,5 +276,22 @@ fn main() {
         println!("  found in a target's branches:  {}", r.closure_nested);
         println!("  distinct files:                {}", r.closure_files.len());
         println!("  root-file pairs beyond edges:  {}", r.closure_new_pairs);
+        println!("  references:                    {}", r.closure_references);
+        println!(
+            "    resolved to a file:          {}",
+            r.closure_references_resolved
+        );
+        println!(
+            "    in a target's branches:      {}",
+            r.closure_references_conditional
+        );
+        println!(
+            "    distinct resolved files:     {}",
+            r.closure_reference_targets.len()
+        );
+        println!(
+            "    root-file pairs beyond edges and conditional references: {}",
+            r.closure_reference_new_pairs
+        );
     }
 }

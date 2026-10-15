@@ -350,6 +350,7 @@ pub struct ConditionalReference {
 /// not of the dependent file. Includes in the target's own not-taken branches are
 /// expanded too, as further entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ConditionalIncludeClosure {
     /// The include name as written, as [`ConditionalInclude::name`].
     pub name: String,
@@ -369,6 +370,48 @@ pub struct ConditionalIncludeClosure {
     /// Whether `reaches` is everything: the name resolved, the target was read and
     /// its expansion lost no text and left no include unresolved.
     pub complete: bool,
+    /// The class and program names the target's expansion writes, sorted, each
+    /// once. Empty unless the caller supplied an analysis
+    /// ([`conditional_include_closure_with`](crate::conditional_include_closure_with)).
+    pub references: Vec<ClosureReference>,
+}
+
+/// A class or program name a [`ConditionalIncludeClosure`]'s target writes.
+///
+/// Not an edge, for the reason a [`ConditionalInclude`] is not. The target is
+/// analysed on its own, as a fragment, so a name its includer would give another
+/// meaning (a buffer, a handle) can be read differently here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClosureReference {
+    /// [`EdgeKind::ClassReference`] or [`EdgeKind::ProgramReference`].
+    pub kind: EdgeKind,
+    /// Whether the name is written in a branch the target's own expansion did not
+    /// take. Such a name is found by a token scan, as a [`ConditionalReference`]
+    /// is, and listed under the same rule.
+    pub conditional: bool,
+    /// The name: as written for a conditional one, otherwise as the analysis
+    /// looked it up, folded to lower case.
+    pub name: String,
+    /// The file the name resolves to, or `None` when it resolves to none.
+    pub target: Option<EdgeTarget>,
+}
+
+impl ClosureReference {
+    /// A reference, for the caller that supplies the analysis.
+    pub fn new(
+        kind: EdgeKind,
+        conditional: bool,
+        name: String,
+        target: Option<EdgeTarget>,
+    ) -> Self {
+        ClosureReference {
+            kind,
+            conditional,
+            name,
+            target,
+        }
+    }
 }
 
 /// Whether an edge set can be trusted to be everything the file depends on.
