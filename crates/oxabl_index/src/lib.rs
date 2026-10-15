@@ -1,7 +1,7 @@
 //! Fact extraction and the batch workspace index.
 //!
 //! This crate is the *implementation* side of the seam
-//! [`oxabl_semantic::index`] defines: one routine, [`index_file`], that turns a
+//! `oxabl_semantic::index` defines: one routine, [`index_file`], that turns a
 //! referenced file into the facts the index answers with, and one plain in-run
 //! cache over it, [`BatchIndex`], that dedups shared dependencies.
 //!

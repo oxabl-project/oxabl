@@ -83,7 +83,7 @@
 //! every other file's in-flight computation. A cancelled computation is
 //! *abandoned work on a buffer that may not have changed at all*, so the server
 //! re-arms that buffer's debounce timer when a cancelled result arrives
-//! ([`crate::Server::handle_result`]) — dropping it would leave the untouched
+//! (`crate::Server::handle_result`) — dropping it would leave the untouched
 //! file displaying pre-edit diagnostics until the user typed in it.
 //!
 //! **Those two are still the only snapshot-reading entry points.** The index
@@ -223,7 +223,7 @@ pub struct SchemaHandle {
 /// *calling* tracked functions, so the answering value has to borrow a database
 /// handle — and salsa deliberately makes a database `Send` but not `Sync`. So the
 /// long-lived, shared, cloned-per-recompute part is this registry, and the
-/// borrowing [`SnapshotIndex`] view is built inside the query that uses it.
+/// borrowing `SnapshotIndex` view is built inside the query that uses it.
 ///
 /// # Why the registry survives a configuration change
 ///

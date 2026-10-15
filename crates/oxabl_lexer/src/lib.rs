@@ -26,7 +26,7 @@ pub use kind::Kind;
 /// [`Lexer`] to exhaustion (see the [`Iterator`] impl); memory-constrained
 /// consumers that want lazy tokenization can iterate a `Lexer` directly.
 ///
-/// The batch path deliberately drives [`read_next_token`](Lexer::read_next_token)
+/// The batch path deliberately drives `read_next_token`
 /// in a tight loop rather than going through the `Iterator` adaptor: `tokenize`
 /// is a lexer hot path, and the adaptor's per-token `Option`/EOF-state overhead
 /// measurably regressed it. The `Iterator` impl reuses the same

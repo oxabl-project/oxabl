@@ -58,7 +58,7 @@
 //! as `StatementKind::Skipped` carrying the identifiers it passed over, the
 //! resolve pass best-effort-resolves them, and this rule declines to fire for
 //! any symbol so marked — through the shared
-//! [`is_skipped`](super::unused_symbol_shared::is_skipped) predicate, the same
+//! `is_skipped` predicate, the same
 //! one LINT0002 and LINT0006 use.
 //!
 //! Names in a skipped tail of a *modelled* statement (`Statement::skipped_tail`)

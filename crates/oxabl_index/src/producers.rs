@@ -48,7 +48,7 @@ impl SharedProducers {
     /// [`definitions_in`] does one file and [`from_definitions`](Self::from_definitions)
     /// joins the results.
     /// `includes` reads both the files and the includes a file is expanded
-    /// through, as [`index_file`] does.
+    /// through, as `index_file` does.
     pub fn build(files: &[PathBuf], includes: &IncludeContext<'_>) -> Self {
         Self::from_definitions(
             files
@@ -132,7 +132,7 @@ impl SharedProducers {
 /// The same answer as indexing the file, reached without the parse for a file
 /// that cannot say `SHARED` at all: the keyword has no abbreviation, so a text
 /// without it defines no shared name, and that is nearly every file of a tree.
-/// A file [`index_file`] expands, such as one that is nothing but includes and
+/// A file `index_file` expands, such as one that is nothing but includes and
 /// directives, is judged by its expanded text. Any other file is judged by its
 /// own text, so one with code of its own whose only `SHARED` definition comes
 /// from an include is not a producer.

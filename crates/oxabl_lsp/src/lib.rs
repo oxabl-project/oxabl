@@ -239,7 +239,7 @@ pub fn serve_with(connection: &Connection, debounce_window: std::time::Duration)
 /// which reads that tree's contents into the daemon's index (R26).
 ///
 /// The declared root is resolved before it keys anything, so one tree is one
-/// session however the client spelled it (R2) — [`Sessions`] keys lexically and
+/// session however the client spelled it (R2) — `Sessions` keys lexically and
 /// trusts its callers to have resolved first — and a root that is not on disk is
 /// refused rather than keyed on and answered about later.
 ///

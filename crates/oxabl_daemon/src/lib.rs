@@ -23,7 +23,7 @@
 //! - [`db`] — the salsa substrate: one input per open buffer, one per workspace file
 //!   a lookup has reached, the two-phase expansion and diagnostics queries, and the
 //!   `WorkspaceIndex` implementation that memoizes the shared seam per file.
-//! - [`session`] — one [`Session`](session::Session) per workspace root, held in a
+//! - [`session`] — one [`Session`] per workspace root, held in a
 //!   map, plus the four disciplines that decide whether a completed background
 //!   computation is worth publishing. Those disciplines are the load-bearing part:
 //!   two copies of them would drift, and drifting means publishing a stale answer.

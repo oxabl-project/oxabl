@@ -67,7 +67,7 @@ impl<'a> ClassLattice<'a> {
     /// about once) where a bound would only say when we gave up. `from` is
     /// seeded into it, so a self-inheriting class terminates on its first level.
     ///
-    /// Both containers are inline up to [`CHAIN_INLINE`], and this function is
+    /// Both containers are inline up to `CHAIN_INLINE`, and this function is
     /// only reached from the `(Class, Class)` arm *after* the identity fast
     /// path — so the ordinary assignment, and every assignment between
     /// primitives, allocates nothing and walks nothing.

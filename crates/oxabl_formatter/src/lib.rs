@@ -6,7 +6,7 @@
 //! **idempotent** (`format(format(x)) == format(x)`) and **semantically
 //! identical** to its input.
 //!
-//! The engine is a pure library: [`format`] takes the original source, its
+//! The engine is a pure library: [`format()`] takes the original source, its
 //! parsed [`Program`], and a resolved [`StyleGuide`] and returns either the
 //! formatted string or a [`FormatBail`] explaining why the file was left
 //! untouched. On any bail the **original bytes are returned unchanged** — the
@@ -52,9 +52,9 @@ use oxabl_parser::Program;
 use oxabl_style::StyleGuide;
 use std::fmt;
 
-/// The single failure channel for [`format`] (R6.5).
+/// The single failure channel for [`format()`] (R6.5).
 ///
-/// Bails are **whole-file**: on any variant, [`format`] returns the input
+/// Bails are **whole-file**: on any variant, [`format()`] returns the input
 /// source bytes unchanged. There is no region-level partial formatting — the
 /// contract is "a formatted string, or a reason and the exact bytes that came
 /// in".
@@ -105,7 +105,7 @@ impl std::error::Error for FormatBail {}
 #[non_exhaustive]
 pub enum FormatFailure {
     /// The formatter deliberately declined to rewrite the file. The original
-    /// source bytes stand unchanged — the same contract as [`format`].
+    /// source bytes stand unchanged — the same contract as [`format()`].
     Bail(FormatBail),
     /// The formatter panicked. This is an oxabl bug, not a property of the
     /// input, and the caller should leave the file untouched and report it.
@@ -185,12 +185,12 @@ pub fn format(source: &str, program: &Program, style: &StyleGuide) -> Result<Str
 }
 
 /// One-call convenience: tokenize + parse `source` (raw, preprocessing off) and
-/// [`format`] the result, returning the reformatted string or a [`FormatBail`].
+/// [`format()`] the result, returning the reformatted string or a [`FormatBail`].
 ///
 /// This folds the `tokenize → parse_program → format` dance every client
 /// otherwise repeats, so the CLI, LSP, and the `oxabl` umbrella all format
 /// through one shared entry point. On any bail the original bytes are unchanged
-/// (see [`format`]).
+/// (see [`format()`]).
 ///
 /// # Panics
 ///
@@ -203,7 +203,7 @@ pub fn format_source(source: &str, style: &StyleGuide) -> Result<String, FormatB
     format_source_inner(source, style)
 }
 
-/// Tokenize + parse + [`format`] `source`, containing any internal panic.
+/// Tokenize + parse + [`format()`] `source`, containing any internal panic.
 ///
 /// The fallible sibling of `format_source` and the entry point new code should
 /// reach for. Every outcome of the panicking twin is preserved exactly and the

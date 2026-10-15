@@ -4,7 +4,7 @@
 //! parse, analyze, lint, format, and render diagnostics for ABL source. Rather
 //! than re-exporting every sub-crate wholesale, it presents a **curated**
 //! surface: each layer lives under a named module ([`ast`], [`parser`],
-//! [`semantic`], [`lint`], [`schema`], [`analyze`], [`formatter`], …) that
+//! [`semantic`], [`lint`], [`schema`], [`mod@analyze`], [`formatter`], …) that
 //! re-exports only the consumer-facing items of its sub-crate, plus a small set
 //! of top-level conveniences ([`parse`], [`Program`], [`Diagnostic`]).
 //!
@@ -22,19 +22,19 @@
 //! The lexer and parser can panic on some malformed input, so the three entry
 //! points that run them come in guarded form: [`try_parse`], [`try_analyze`] /
 //! [`try_analyze_with_fs`], and [`try_format_source`]. Each returns the panic as
-//! an [`InternalPanic`](common::InternalPanic) carrying its message rather than
+//! an [`InternalPanic`] carrying its message rather than
 //! unwinding into the caller. These are the canonical entry points; the
-//! panicking originals ([`parse`], [`analyze`], [`analyze_with_fs`],
+//! panicking originals ([`parse`], [`analyze()`], [`analyze_with_fs`],
 //! [`format_source`]) remain for compatibility and are deprecated.
 //!
 //! The guard adds exactly one arm and changes nothing else: a **recovered parse
 //! error is not a panic** (it still arrives in `Program::errors`), and a
 //! **formatter bail is not a panic** (it still arrives as a
 //! [`FormatBail`](formatter::FormatBail), now inside
-//! [`FormatFailure`](formatter::FormatFailure)).
+//! [`FormatFailure`]).
 //!
 //! Two conditions on the guarantee, both documented on
-//! [`catch_panic`](common::catch_panic): it requires the **unwinding** panic
+//! [`catch_panic`]: it requires the **unwinding** panic
 //! strategy, so a `panic = "abort"` profile anywhere in the build silently
 //! reduces every guard to a pass-through; and it is an explicit pass-through on
 //! `wasm32-unknown-unknown`, where stable Rust builds with `-Cpanic=abort` and a
@@ -83,7 +83,7 @@ pub fn parse(source: &str) -> Program {
 ///
 /// Recovered parse errors are **not** a failure here: they arrive in the `Ok`
 /// value's `errors` field exactly as they do from [`parse`]. An
-/// `Err(`[`InternalPanic`](common::InternalPanic)`)` means an oxabl bug.
+/// `Err(`[`InternalPanic`]`)` means an oxabl bug.
 ///
 /// ```
 /// let program = oxabl::try_parse("MESSAGE \"x\".").expect("no internal panic");
@@ -101,7 +101,7 @@ pub use oxabl_parser::Program;
 /// analysis layers.
 pub use oxabl_common::Diagnostic;
 
-/// Inputs to [`analyze`] / [`analyze_with_fs`], wrapping the five configurable
+/// Inputs to [`analyze()`] / [`analyze_with_fs`], wrapping the five configurable
 /// arguments of the underlying pipeline so callers don't juggle a long
 /// positional list. Every field has a sensible default (empty schema, no
 /// preprocessing, no include paths, built-in lint severities).
@@ -131,8 +131,8 @@ pub struct AnalyzeOptions {
 }
 
 impl Default for AnalyzeOptions {
-    /// Lint settings come from [`LintConfig::default`], the same value
-    /// [`PipelineConfig`](pipeline::PipelineConfig)'s own `Default` lowers, so
+    /// Lint settings come from [`LintConfig::default`](workspace::LintConfig::default), the same value
+    /// [`PipelineConfig`]'s own `Default` lowers, so
     /// an embedding caller gets the answer the CLI and the editor give (R19).
     fn default() -> Self {
         AnalyzeOptions {
@@ -146,7 +146,7 @@ impl Default for AnalyzeOptions {
 }
 
 /// The bridge from this crate's caller-facing options onto the shared
-/// [`PipelineConfig`](pipeline::PipelineConfig) the run actually consumes.
+/// [`PipelineConfig`] the run actually consumes.
 ///
 /// `AnalyzeOptions` is **not** deprecated: it stays the live input type on the
 /// `try_*` surface, and it is the browser client's only configuration handle. So
@@ -187,12 +187,12 @@ impl From<&AnalyzeOptions> for PipelineConfig {
 }
 
 /// Run the full parse → semantic → lint pipeline over an in-memory `source`,
-/// returning the [`Semantic`](semantic::Semantic) model (absent only on a fatal
+/// returning the [`Semantic`] model (absent only on a fatal
 /// preprocessing failure) and the collected diagnostics.
 ///
 /// This is the one-call convenience over the pipeline's long positional form:
 /// `source` is the argument, five inputs come from `options`, and the file
-/// system defaults to [`RealFileSystem`](workspace::RealFileSystem) (so include
+/// system defaults to [`RealFileSystem`] (so include
 /// resolution reads from disk). Consumers that must stay off disk — the LSP, or
 /// tests — should use [`analyze_with_fs`] with an in-memory file system.
 ///
@@ -206,14 +206,14 @@ pub fn analyze(source: &str, options: &AnalyzeOptions) -> (Option<Semantic>, Col
     analyze_inner(source, &RealFileSystem, options)
 }
 
-/// Like [`analyze`], but with a caller-provided [`FileSystem`](workspace::FileSystem)
+/// Like [`analyze()`], but with a caller-provided [`FileSystem`]
 /// for include resolution — e.g. an
 /// [`InMemoryFileSystem`](workspace::InMemoryFileSystem) so analysis never
 /// touches disk.
 ///
 /// # Panics
 ///
-/// Same transitive panic surface as [`analyze`]; use [`try_analyze_with_fs`].
+/// Same transitive panic surface as [`analyze()`]; use [`try_analyze_with_fs`].
 #[deprecated(
     note = "may panic on malformed input; use `try_analyze_with_fs`, which contains the panic"
 )]
@@ -226,7 +226,7 @@ pub fn analyze_with_fs(
 }
 
 /// Run the full parse → semantic → lint pipeline over `source`, containing any
-/// internal panic — the fallible sibling of [`analyze`] and the entry point new
+/// internal panic — the fallible sibling of [`analyze()`] and the entry point new
 /// code should reach for.
 ///
 /// The success shape is preserved whole, including the `None` model arm that
@@ -240,13 +240,13 @@ pub fn try_analyze(
 }
 
 /// Like [`try_analyze`], but with a caller-provided
-/// [`FileSystem`](workspace::FileSystem) — the fallible sibling of
+/// [`FileSystem`] — the fallible sibling of
 /// [`analyze_with_fs`].
 ///
 /// # Platform caveat
 ///
 /// The guard is a documented pass-through on `wasm32-unknown-unknown`; see
-/// [`catch_panic`](common::catch_panic).
+/// [`catch_panic`].
 pub fn try_analyze_with_fs(
     source: &str,
     fs: &dyn FileSystem,
@@ -258,7 +258,7 @@ pub fn try_analyze_with_fs(
 /// The shared body, so the fallible entry points do not have to call their own
 /// deprecated twins.
 ///
-/// This is a thin adapter over [`LintPipeline`](pipeline::LintPipeline) (KTD13),
+/// This is a thin adapter over [`LintPipeline`] (KTD13),
 /// not a second orchestration: the root file id, the expansion, the collection
 /// order, and the test-panic injection site all come from the shared pipeline, so
 /// this surface and the CLI/LSP/browser cannot answer differently for the same
@@ -268,7 +268,7 @@ pub fn try_analyze_with_fs(
 /// `run`, which is load-bearing and not an oversight. `run` contains a panic and
 /// reports it as a failed result; this function's callers are split precisely on
 /// that question — [`try_analyze`] wraps it in the guard, while the deprecated
-/// [`analyze`] is documented to panic. Calling `run` here would make `analyze`
+/// [`analyze()`] is documented to panic. Calling `run` here would make `analyze`
 /// silently return an empty model on an internal panic and make `try_analyze`
 /// incapable of ever returning `Err`.
 fn analyze_inner(
@@ -305,12 +305,12 @@ pub fn format_source(
 /// fallible sibling of [`format_source`] and the entry point new code should
 /// reach for.
 ///
-/// Its [`FormatFailure`](formatter::FormatFailure) distinguishes a deliberate
+/// Its [`FormatFailure`] distinguishes a deliberate
 /// bail (leave the file alone; the input was not formattable) from a contained
 /// panic (leave the file alone; oxabl has a bug), without nesting `Result`s.
 ///
 /// The body drives the shared
-/// [`FormatPipeline`](pipeline::FormatPipeline) (KTD13), so this surface, the
+/// [`FormatPipeline`] (KTD13), so this surface, the
 /// CLI, the language server, and the browser all format through one handle. The
 /// mapping back to the flat `Result` is total and lossless:
 /// [`Unchanged`](pipeline::FormatOutcome::Unchanged) is `Ok` with the original
@@ -332,15 +332,15 @@ pub use oxabl_common::render_diagnostics;
 
 /// AST node definitions — statements, expressions, data types, literals, and
 /// source-location types. This module surfaces `oxabl_ast`'s full public model:
-/// the node set is large and deeply interlinked (matching on a [`Statement`]
-/// reaches its [`StatementKind`], payload structs, and [`Span`]), so it is
+/// the node set is large and deeply interlinked (matching on a [`ast::Statement`]
+/// reaches its [`ast::StatementKind`], payload structs, and [`ast::Span`]), so it is
 /// re-exported as one curated data-model namespace rather than an item list
 /// that would drift on every new node.
 pub mod ast {
     pub use oxabl_ast::*;
 }
 
-/// Tokenizer for ABL source — the batch [`tokenize`](oxabl_lexer::tokenize)
+/// Tokenizer for ABL source — the batch [`tokenize`]
 /// entry point plus the token model.
 pub mod lexer {
     pub use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -421,7 +421,7 @@ pub mod analyze {
 
 /// Layout formatter — the pure [`format`](formatter::format) entry point and
 /// its [`FormatBail`](formatter::FormatBail) failure channel, plus the
-/// [`FormatFailure`](formatter::FormatFailure) channel that
+/// [`FormatFailure`] channel that
 /// [`try_format_source`] adds a contained-panic arm to.
 pub mod formatter {
     pub use oxabl_formatter::{FormatBail, FormatFailure, format};
@@ -449,8 +449,8 @@ pub mod style {
 /// to the client (R6, R7). [`ROOT_FILE_ID`](pipeline::ROOT_FILE_ID) is the one
 /// synthetic root file id every client shares.
 ///
-/// The **run handles** are here too — [`LintPipeline`](pipeline::LintPipeline),
-/// [`FormatPipeline`](pipeline::FormatPipeline), their result types, and the
+/// The **run handles** are here too — [`LintPipeline`],
+/// [`FormatPipeline`], their result types, and the
 /// [`position`](pipeline::position) helper. Narrowing this to the configuration
 /// surface would mean an external consumer could resolve a `PipelineConfig` and
 /// then have nothing to hand it to: the shared run would be reachable only by

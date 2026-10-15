@@ -3,7 +3,7 @@
 //! Reuses the workspace's existing policy for *what* a candidate may be — the
 //! root extension set of [`is_root_file`], where `.i` is never a root — and the
 //! configured path list, but **not**
-//! [`FileSystem::resolve_include`](oxabl_workspace::FileSystem::resolve_include):
+//! [`FileSystem::resolve_include`]:
 //! its first-match-wins contract is the wrong answer here.
 //!
 //! # Why exactly-one-match, not first-match-wins
@@ -34,7 +34,7 @@
 //! coincide — the source already wrote the name in lower case — the fallback is
 //! skipped, so the extra attempt costs nothing in the ordinary case. There is
 //! still no directory listing on the
-//! [`FileSystem`](oxabl_workspace::FileSystem) trait, so these two candidates
+//! [`FileSystem`] trait, so these two candidates
 //! are the whole search space; a third casing nobody wrote is not guessed at.
 //!
 //! # How that composes with exactly-one-match
@@ -62,7 +62,7 @@ use oxabl_workspace::{FileSystem, is_root_file, normalize_run_extension};
 /// Deliberately *not* [`std::fs::canonicalize`]. That touches the real
 /// filesystem — it stats every component and follows symlinks — which this crate
 /// cannot do: every lookup goes through the
-/// [`FileSystem`](oxabl_workspace::FileSystem) abstraction, whose two
+/// [`FileSystem`] abstraction, whose two
 /// implementations are a real-filesystem adapter and an in-memory map. The
 /// in-memory one is what the tests and the browser client run on, and there is
 /// nothing on disk for `canonicalize` to resolve against. A lexical normalization

@@ -57,7 +57,7 @@ pub enum SymbolKind {
     Class,
     Interface,
     /// System handles and pseudo-variables (e.g. `SESSION`, `THIS-OBJECT`).
-    /// Seeded by [`crate::builtins`].
+    /// Seeded by `crate::builtins`.
     BuiltIn,
     /// Dataset, data-source — tracked enough for duplicate detection and
     /// dump output, but with no declared type.

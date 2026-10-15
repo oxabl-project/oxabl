@@ -8,7 +8,7 @@
 //! symbol yields exactly one diagnostic.
 //!
 //! Skip-list (shared with LINT0006 via
-//! [`super::unused_symbol_shared`], captured as tests below):
+//! `unused_symbol_shared`, captured as tests below):
 //! - `OUTPUT` and `INPUT-OUTPUT` parameters (writing is the contract).
 //! - Parameters in `INTERFACE` method declarations (interfaces have no bodies).
 //! - Parameters in `ABSTRACT` methods (body never runs).
