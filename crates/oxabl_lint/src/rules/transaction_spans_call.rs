@@ -52,8 +52,9 @@
 //!   which cannot update the database;
 //! - in an include checked alone, a `RUN` of a name with no path or
 //!   extension, which may be an internal procedure of the includer;
-//! - `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER`: the callee runs in
-//!   another session, outside the transaction;
+//! - `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h`: the callee runs in
+//!   another session, outside the transaction (`ON [SERVER] SESSION` is the
+//!   local session, and is reported);
 //! - a block that is a transaction block only by an inferred rule, only
 //!   because of a temp-table update, or only when no schema is loaded;
 //! - in an include checked alone, its main block;
@@ -232,15 +233,25 @@ fn internal_procedures(program: &[Statement]) -> Vec<String> {
 }
 
 /// Whether the `RUN` has an `ON [SERVER] h` phrase: the callee runs in
-/// another session.
+/// another session. `ON [SERVER] SESSION` names the local session.
 fn on_server(source: &str, span: Span) -> bool {
     let text = source_of(source, span).unwrap_or("");
     let mut depth = 0u32;
-    for t in Lexer::new(text).take_while(|t| t.kind != Kind::Eof) {
+    let mut tokens = Lexer::new(text)
+        .take_while(|t| t.kind != Kind::Eof)
+        .filter(|t| t.kind != Kind::Comment);
+    while let Some(t) = tokens.next() {
         match t.kind {
             Kind::LeftParen => depth += 1,
             Kind::RightParen => depth = depth.saturating_sub(1),
-            Kind::On if depth == 0 => return true,
+            Kind::On if depth == 0 => {
+                let mut next = tokens.next().map(|t| t.kind);
+                if next == Some(Kind::Server) {
+                    next = tokens.next().map(|t| t.kind);
+                }
+                let after = tokens.next().map(|t| t.kind);
+                return next != Some(Kind::Session) || after == Some(Kind::Colon);
+            }
             _ => {}
         }
     }

@@ -84,3 +84,14 @@ END.
     assert_eq!(lines(src, &check(run, src)), [2, 3]);
     assert_eq!(lines(src, &check_fragment(run, src)), [3]);
 }
+
+#[test]
+fn on_session_runs_in_the_local_session() {
+    let src = "\
+DO TRANSACTION:
+    RUN other.p ON SESSION.
+    RUN other.p ON SERVER SESSION.
+END.
+";
+    assert_eq!(lines(src, &check(run, src)), [2, 3]);
+}

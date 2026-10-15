@@ -720,7 +720,7 @@ Common to the five rules:
 |---|---|---|
 | U1 | `WAIT-FOR`, `UPDATE`, `SET`, `PROMPT-FOR`, `INSERT` (the screen form), `CHOOSE` and `READKEY` wait for the user. `PAUSE` with no time waits for a key; `PAUSE n` waits at most `n` seconds; `PAUSE ... BEFORE-HIDE` sets an option. `MESSAGE ... VIEW-AS ALERT-BOX` shows a modal box, and `MESSAGE ... SET` or `UPDATE` waits for input. | Documented for the statements; Recalled, high, for the `MESSAGE` forms. |
 | U2 | In a session with no user (batch, AppServer) the statements of U1 do not wait: an alert box is written to the log. | Recalled, medium. |
-| U3 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run the callee in another session, outside the caller's transaction. | Documented. |
+| U3 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run the callee in another session, outside the caller's transaction. `RUN ... ON [SERVER] SESSION` names the local session: the callee runs in the caller's transaction. | Documented. |
 
 - **TX001** rests on T2 and T3. One finding per block, at its first update, for a block that no
   other transaction block of its routine encloses (a sub-transaction is not reported). The main
