@@ -489,7 +489,7 @@ fn skipped_statements_are_opaque_but_still_flow() {
     let p = parse(
         "\
 DEFINE VARIABLE i AS INTEGER NO-UNDO.
-ENABLE i.
+UNDERLINE i.
 LEAVE nowhere.
 ",
     );
@@ -503,7 +503,7 @@ LEAVE nowhere.
             OpaqueReason::UnresolvedLabel
         ]
     );
-    let put = p.node(cfg, "ENABLE");
+    let put = p.node(cfg, "UNDERLINE");
     let kinds: Vec<EdgeKind> = cfg.successors(put).map(|e| e.kind).collect();
     assert_eq!(kinds, [EdgeKind::Raise(Condition::Error), EdgeKind::Normal]);
     assert!(cfg.is_opaque());

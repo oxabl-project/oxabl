@@ -186,7 +186,11 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         }
         StatementKind::Message { items, .. }
         | StatementKind::Put { items, .. }
-        | StatementKind::Form { items } => {
+        | StatementKind::Form { items }
+        | StatementKind::Enable { items }
+        | StatementKind::Disable { items }
+        | StatementKind::Hide { items, .. }
+        | StatementKind::View { items, .. } => {
             for e in items {
                 walk_expression(v, e);
             }

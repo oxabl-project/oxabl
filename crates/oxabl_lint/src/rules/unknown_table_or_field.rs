@@ -219,7 +219,11 @@ impl Visitor<'_> {
             }
             StatementKind::Message { items, .. }
             | StatementKind::Put { items, .. }
-            | StatementKind::Form { items } => {
+            | StatementKind::Form { items }
+            | StatementKind::Enable { items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => {
                 for e in items {
                     self.walk_expression(e);
                 }

@@ -666,16 +666,14 @@ impl Parser<'_> {
             return self.parse_form_statement();
         }
 
-        // VIEW [STREAM s] FRAME f — UI frame display statement, skip to statement end.
-        if self.check(Kind::View) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
-        }
-
-        // HIDE [STREAM s] FRAME f [NO-PAUSE] — UI hide statement, skip to statement end.
-        if self.check(Kind::Hide) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+        // VIEW / HIDE / ENABLE / DISABLE — head-parsed widget lists; frames and
+        // options stay a skipped tail. DISABLE TRIGGERS is a different statement.
+        if self.check(Kind::View)
+            || self.check(Kind::Hide)
+            || self.check(Kind::Enable)
+            || (self.check(Kind::Disable) && self.peek_nth_non_comment(2).kind != Kind::Triggers)
+        {
+            return self.parse_widget_list_statement();
         }
 
         // UPDATE / SET — head-parsed; the frame phrase and EDITING block stay a
@@ -733,7 +731,6 @@ impl Parser<'_> {
         if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
-            || self.check(Kind::Enable)
             || self.check(Kind::Accumulate)
             || self.check(Kind::Accum) // abbreviation of ACCUMULATE
             || self.check(Kind::Open)
@@ -741,7 +738,6 @@ impl Parser<'_> {
             || self.check(Kind::Status)
             || self.check(Kind::Get)
             || self.check(Kind::Clear)
-            || self.check(Kind::Hide)
             // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             || self.check(Kind::Format)
             || self.check(Kind::Form)
@@ -4114,6 +4110,35 @@ impl Parser<'_> {
         let items = self.parse_frame_items(false);
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+    }
+
+    /// `ENABLE` / `DISABLE` `[UNLESS-HIDDEN] {ALL | widget [format-phrase] ...}
+    /// [frame-phrase]` and `HIDE` / `VIEW` `[STREAM s] [widget ...]`. `ALL`,
+    /// `FRAME f`, `MESSAGE`, `IN FRAME f` and `IN WINDOW w` end the list.
+    fn parse_widget_list_statement(&mut self) -> ParseResult<Statement> {
+        let verb = self.peek().kind;
+        self.advance(); // consume the verb
+        let mut stream_name = None;
+        let mut items = Vec::new();
+        let head = if matches!(verb, Kind::Hide | Kind::View) {
+            self.parse_stream_head().map(|s| stream_name = s)
+        } else {
+            if self.check(Kind::UnlessHidden) {
+                self.advance();
+            }
+            Ok(())
+        };
+        if head.is_ok() {
+            items = self.parse_frame_items(false);
+        }
+        let tail = self.skip_tail_to_statement_end();
+        let kind = match verb {
+            Kind::Hide => StatementKind::Hide { stream_name, items },
+            Kind::View => StatementKind::View { stream_name, items },
+            Kind::Enable => StatementKind::Enable { items },
+            _ => StatementKind::Disable { items },
+        };
+        Ok(self.stmt_with_tail(kind, tail))
     }
 
     /// `UPDATE` / `SET` `[UNLESS-HIDDEN] {field [format-phrase] | ^ | constant}... [frame-phrase]

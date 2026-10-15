@@ -328,7 +328,11 @@ impl<'a> CheckWalker<'a> {
             }
             StatementKind::Message { items, .. }
             | StatementKind::Put { items, .. }
-            | StatementKind::Form { items } => {
+            | StatementKind::Form { items }
+            | StatementKind::Enable { items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => {
                 for e in items {
                     self.check_expression(e, scope);
                 }

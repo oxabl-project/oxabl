@@ -306,6 +306,43 @@ pub enum StatementKind {
         targets: Vec<Expression>,
     },
 
+    /// ENABLE statement — enables widgets for input.
+    ///
+    /// The widgets (fields, variables, buttons, ...) are modelled with their
+    /// format options consumed. `ALL`, the frame phrase and anything the parser
+    /// does not recognise stay in [`Statement::skipped_tail`].
+    Enable {
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// DISABLE statement — disables widgets for input. Same shape as
+    /// [`StatementKind::Enable`]; `DISABLE TRIGGERS` is not this statement.
+    Disable {
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// HIDE statement — hides widgets.
+    ///
+    /// The stream and the widgets named are modelled. `FRAME f`, `MESSAGE`,
+    /// `ALL`, `IN FRAME f`, `IN WINDOW w` and `NO-PAUSE` stay in
+    /// [`Statement::skipped_tail`].
+    Hide {
+        /// Optional named stream (`HIDE STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// VIEW statement — shows widgets. Same shape as [`StatementKind::Hide`].
+    View {
+        /// Optional named stream (`VIEW STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
     /// UP statement — moves the cursor of a down frame back. Same shape as
     /// [`StatementKind::Down`].
     Up {

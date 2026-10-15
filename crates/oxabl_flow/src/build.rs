@@ -1470,6 +1470,10 @@ impl<'a> Builder<'a> {
             | SK::Export { .. }
             | SK::Down { .. }
             | SK::Form { .. }
+            | SK::Enable { .. }
+            | SK::Disable { .. }
+            | SK::Hide { .. }
+            | SK::View { .. }
             | SK::Up { .. }
             | SK::StreamIo { .. }
             | SK::Publish { .. }

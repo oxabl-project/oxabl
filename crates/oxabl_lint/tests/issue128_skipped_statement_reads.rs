@@ -174,7 +174,7 @@ fn ae3_fixture_is_non_vacuous() {
 /// LINT0001 reads.
 #[test]
 fn ae4_unresolvable_harvested_name_stays_silent() {
-    let src = "ENABLE some-name-that-does-not-exist.\n";
+    let src = "UNDERLINE some-name-that-does-not-exist.\n";
     let diags = lint_all(src, LintSeverityMap::new());
     assert!(
         of_code(&diags, LINT0001).is_empty(),
@@ -276,8 +276,8 @@ IF v-shown > 0 THEN DO:
   v-block-only = 3.
 END.
 
-ENABLE v-cust-name v-cust-city WITH FRAME f-cust.
-UPDATE v-cust-name v-cust-city WITH FRAME f-cust EDITING: v-edit-flag = TRUE. END.
+UNDERLINE v-cust-name v-cust-city WITH FRAME f-cust.
+PROMPT-FOR v-cust-name v-cust-city WITH FRAME f-cust EDITING: v-edit-flag = TRUE. END.
 DISPLAY v-shown.
 MESSAGE v-block-only.
 ";
@@ -320,7 +320,7 @@ fn r14_not_every_declared_variable_carries_the_flag() {
     }
     assert!(
         flagged.iter().any(|n| n == "v-cust-name"),
-        "the ENABLE/UPDATE list must be flagged; flagged = {flagged:?}"
+        "the UNDERLINE/PROMPT-FOR list must be flagged; flagged = {flagged:?}"
     );
 }
 
@@ -335,7 +335,7 @@ fn r14_not_every_declared_variable_carries_the_flag() {
 fn lint0001_output_is_unchanged_around_skipped_statements() {
     let src = "\
 DEFINE VARIABLE v-known AS INTEGER NO-UNDO.
-ENABLE v-ghost-in-skip.
+UNDERLINE v-ghost-in-skip.
 v-known = v-ghost-in-expression.
 ";
     let diags = lint_all(src, LintSeverityMap::new());

@@ -520,7 +520,13 @@ mod paths {
                         }
                     }
                 }
-                SK::Message { items, .. } | SK::Put { items, .. } | SK::Form { items } => {
+                SK::Message { items, .. }
+                | SK::Put { items, .. }
+                | SK::Form { items }
+                | SK::Enable { items }
+                | SK::Disable { items }
+                | SK::Hide { items, .. }
+                | SK::View { items, .. } => {
                     for e in items {
                         read(self, e);
                     }

@@ -11421,13 +11421,13 @@ fn classify_comment_defensive_brace_branch_is_excluded() {
 // ---------------------------------------------------------------------------
 
 /// The dispatch keyword is the range's first token and is dropped
-/// unconditionally, so `ENABLE` does not harvest itself.
+/// unconditionally, so `UNDERLINE` does not harvest itself.
 #[test]
-fn skipped_enable_harvests_the_variable_not_the_keyword() {
-    assert_eq!(harvest("ENABLE v-total."), vec!["v-total"]);
+fn skipped_underline_harvests_the_variable_not_the_keyword() {
+    assert_eq!(harvest("UNDERLINE v-total."), vec!["v-total"]);
 }
 
-/// `UNIX` consumes its own keyword before skipping, where `ENABLE` does not.
+/// `UNIX` consumes its own keyword before skipping, where `UNDERLINE` does not.
 /// Anchoring the range on the statement's first token normalizes both shapes,
 /// so the harvest looks the same from the outside.
 #[test]
@@ -11444,7 +11444,7 @@ fn skipped_unix_drops_the_field_half_of_a_qualified_name() {
 #[test]
 fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
     assert_eq!(
-        harvest(r#"ENABLE v-total FORMAT ">>9"."#),
+        harvest(r#"UNDERLINE v-total FORMAT ">>9"."#),
         vec!["v-total", "FORMAT"]
     );
 }
@@ -11454,7 +11454,7 @@ fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
 #[test]
 fn skipped_harvest_keeps_spaced_division_operands() {
     assert_eq!(
-        harvest("ENABLE v-total / v-count."),
+        harvest("UNDERLINE v-total / v-count."),
         vec!["v-total", "v-count"]
     );
 }
@@ -11549,7 +11549,7 @@ fn skipped_span_covers_the_whole_statement() {
 /// the roughly thirty #128 dispatch sites are unchanged in behavior and cost.
 #[test]
 fn skipped_ordinary_form_is_not_a_table_candidate() {
-    assert!(!marks_tables("ENABLE v-total."));
+    assert!(!marks_tables("UNDERLINE v-total."));
     assert!(!marks_tables("UNDERLINE vendor.vend-number."));
 }
 
@@ -13060,4 +13060,42 @@ fn update_and_set_are_head_parsed_with_targets() {
     };
     assert!(targets.is_empty(), "an assignment form stays in the tail");
     assert!(tail_names(&stmts[0]).contains(&"v-b"));
+}
+
+#[test]
+fn widget_list_statements_are_head_parsed() {
+    for (source, count, tail) in [
+        (
+            "ENABLE UNLESS-HIDDEN b-ok v-name LABEL \"Name\" WITH FRAME f.",
+            2,
+            Some("f"),
+        ),
+        ("ENABLE ALL EXCEPT b-ok WITH FRAME f.", 0, Some("b-ok")),
+        ("DISABLE b-ok tt.name WITH FRAME f.", 2, Some("f")),
+        ("HIDE FRAME f NO-PAUSE.", 0, Some("f")),
+        ("HIDE STREAM s1 ALL.", 0, None),
+        // The expression parser takes `IN FRAME f` as part of the widget reference.
+        ("HIDE v-name IN FRAME f.", 1, None),
+        ("VIEW C-Win.", 1, None),
+        ("VIEW FRAME f IN WINDOW C-Win.", 0, Some("C-Win")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let items = match &stmts[0].kind {
+            StatementKind::Enable { items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => items,
+            other => panic!("{source}: got {other:?}"),
+        };
+        assert_eq!(items.len(), count, "{source}: {items:?}");
+        if let Some(name) = tail {
+            assert!(
+                tail_names(&stmts[0]).contains(&name),
+                "{source}: {:?}",
+                stmts[0]
+            );
+        }
+    }
+    let stmts = assert_parses_clean("DISABLE TRIGGERS FOR LOAD OF Customer.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
 }

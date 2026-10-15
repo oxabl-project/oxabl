@@ -3044,7 +3044,23 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, mode);
                 }
             }
-            StatementKind::Form { items } => {
+            StatementKind::Form { items }
+            | StatementKind::Enable { items }
+            | StatementKind::Disable { items } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Hide { stream_name, items }
+            | StatementKind::View { stream_name, items } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
                 for e in items {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
