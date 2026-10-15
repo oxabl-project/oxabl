@@ -147,7 +147,9 @@ impl FileScopes {
 
 /// Whether a statement of the read's unit at `at`, in `block`, may run after
 /// the read while the scope that ends at `bound` is open: it comes later in
-/// the text, or an iterating block inside the scope holds both.
+/// the text, or an iterating block of the scope holds both. The scope block
+/// counts when it iterates, though the record may be released at the end of
+/// each iteration: the answer errs toward a write.
 fn runs_after(
     flow: &oxabl_flow::FileFlow,
     read: &RecordRead,
