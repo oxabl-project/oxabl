@@ -41,6 +41,13 @@
 //! include defines: a `DEFINE NEW SHARED` spliced into such a file is not found.
 //! A header that defines a shared name is included by many programs, and
 //! counting each of them as a producer would make the name ambiguous.
+//!
+//! The daemon and the language server invalidate facts on the includes the
+//! expansion read or could not read. An include that was not found is not an
+//! input: creating it later, or adding an earlier include path that shadows a
+//! resolved include, does not re-extract the facts until the file itself
+//! changes. The language server also watches only `*.i` files, so an include
+//! with another extension is not seen to change.
 
 mod batch;
 mod closure;
