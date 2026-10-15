@@ -277,9 +277,11 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
   operands earn a head-parse, path-shaped ones earn an empty name list.
 
-- **`PUT`, `EXPORT` and `IMPORT` are head-parsed** into their own variants. The stream, the
-  delimiter and the item expressions are modelled; the option clauses after them
-  (`FORMAT`, `EXCEPT`, `NO-LOBS`, ...) ride on `Statement::skipped_tail`.
+- **`PUT`, `EXPORT`, `IMPORT`, `PAUSE`, `DOWN` and `UP` are head-parsed** into their own
+  variants. The stream, the delimiter, the item expressions, the `PAUSE` duration and
+  message and the `DOWN`/`UP` line count are modelled; the option clauses after them
+  (`FORMAT`, `EXCEPT`, `NO-LOBS`, `IN WINDOW`, the frame phrase, ...) ride on
+  `Statement::skipped_tail`.
   **Invariant:** an `IMPORT` target is credited as a write and every other head operand as a
   read. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
   in the tail; the form never falls back to `Skipped`.

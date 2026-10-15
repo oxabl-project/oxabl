@@ -389,8 +389,6 @@ pub(crate) fn read_control(src: &str, span: Span) -> Control {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Input {
     None,
-    /// Reads a stream or waits for a key (`IMPORT`, `PAUSE`): may raise ENDKEY.
-    Endkey,
     /// Blocks for user input: may raise ENDKEY, and makes `RETRY` real.
     Blocking,
 }
@@ -407,7 +405,6 @@ pub(crate) fn skipped_input(src: &str, span: Span) -> Input {
             | Kind::Choose,
         ) => Input::Blocking,
         Some(Kind::Insert) if t.kind(1) != Some(Kind::Into) => Input::Blocking,
-        Some(Kind::Import | Kind::Pause) => Input::Endkey,
         _ => Input::None,
     }
 }
@@ -616,7 +613,6 @@ mod tests {
         assert_eq!(i("UPDATE x."), Input::Blocking);
         assert_eq!(i("INSERT Customer."), Input::Blocking);
         assert_eq!(i("INSERT INTO t VALUES (1)."), Input::None);
-        assert_eq!(i("IMPORT x."), Input::Endkey);
         assert_eq!(i("PUT x."), Input::None);
     }
 }

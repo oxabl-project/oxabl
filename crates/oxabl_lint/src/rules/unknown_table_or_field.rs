@@ -234,6 +234,16 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
+            StatementKind::Pause { duration, message } => {
+                for e in duration.iter().chain(message) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+                if let Some(e) = lines {
+                    self.walk_expression(e);
+                }
+            }
             StatementKind::Run {
                 arguments, target, ..
             } => {

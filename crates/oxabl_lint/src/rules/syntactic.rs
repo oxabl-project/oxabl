@@ -201,6 +201,16 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_expression(v, e);
             }
         }
+        StatementKind::Pause { duration, message } => {
+            for e in duration.iter().chain(message) {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+            if let Some(e) = lines {
+                walk_expression(v, e);
+            }
+        }
         StatementKind::Run {
             target,
             arguments,

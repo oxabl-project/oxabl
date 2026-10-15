@@ -718,14 +718,20 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt_value_operands(hi));
         }
 
-        if self.check(Kind::Pause)
-            || self.check(Kind::OsDir)
+        // PAUSE / DOWN / UP — head-parsed; options stay a skipped tail.
+        if self.check(Kind::Pause) {
+            return self.parse_pause_statement();
+        }
+        if self.check(Kind::Down) || self.check(Kind::Up) {
+            return self.parse_down_up_statement();
+        }
+
+        if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
             || self.check(Kind::Enable)
             || self.check(Kind::Accumulate)
             || self.check(Kind::Accum) // abbreviation of ACCUMULATE
-            || self.check(Kind::Down)
             || self.check(Kind::Open)
             || self.check(Kind::Apply)
             || self.check(Kind::Status)
@@ -746,8 +752,6 @@ impl Parser<'_> {
             || self.check(Kind::Color)
             // READKEY [PAUSE n]. — reads next keypress from keyboard.
             || self.check(Kind::Readkey)
-            // UP n [WITH FRAME name]. — scroll up n lines in a frame.
-            || self.check(Kind::Up)
             // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
             || self.check(Kind::GetKeyValue)
             // NEXT-PROMPT field [WITH FRAME name]. — legacy UI cursor hint.
@@ -4064,6 +4068,61 @@ impl Parser<'_> {
                 delimiter,
                 items,
             }
+        };
+        Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// `PAUSE [n] [BEFORE-HIDE] [MESSAGE msg | NO-MESSAGE] [IN WINDOW h]`.
+    fn parse_pause_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume PAUSE
+        let options = |k: Kind| {
+            matches!(
+                k,
+                Kind::BeforeHide | Kind::Message | Kind::NoMessage | Kind::KwIn
+            )
+        };
+        let duration = self.parse_head_item(options);
+        let mut message = None;
+        loop {
+            if self.check(Kind::BeforeHide) || self.check(Kind::NoMessage) {
+                self.advance();
+            } else if self.check(Kind::Message) && message.is_none() {
+                self.advance();
+                message = self.parse_head_item(options);
+            } else {
+                break;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Pause { duration, message }, tail))
+    }
+
+    /// `DOWN [STREAM s] [n] [frame-phrase]`, and the same for `UP`. The stream
+    /// may also follow the line count.
+    fn parse_down_up_statement(&mut self) -> ParseResult<Statement> {
+        let up = self.check(Kind::Up);
+        self.advance(); // consume DOWN / UP
+        let mut stream_name = None;
+        let mut lines = None;
+        if let Ok(stream) = self.parse_stream_head() {
+            stream_name = stream;
+            lines = self.parse_head_item(|k| {
+                matches!(
+                    k,
+                    Kind::With | Kind::Frame | Kind::Stream | Kind::StreamHandle
+                )
+            });
+            if stream_name.is_none()
+                && let Ok(stream) = self.parse_stream_head()
+            {
+                stream_name = stream;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        let kind = if up {
+            StatementKind::Up { stream_name, lines }
+        } else {
+            StatementKind::Down { stream_name, lines }
         };
         Ok(self.stmt_with_tail(kind, tail))
     }

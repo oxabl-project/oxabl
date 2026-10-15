@@ -532,6 +532,12 @@ mod paths {
                         read(self, e);
                     }
                 }
+                SK::Pause { duration, message } => {
+                    for e in duration.iter().chain(message) {
+                        read(self, e);
+                    }
+                }
+                SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
                 SK::Import {
                     delimiter, targets, ..
                 } => {

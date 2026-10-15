@@ -3041,6 +3041,25 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, mode);
                 }
             }
+            StatementKind::Pause { duration, message } => {
+                for e in duration.iter().chain(message) {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Down { stream_name, lines }
+            | StatementKind::Up { stream_name, lines } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                if let Some(e) = lines {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
             StatementKind::Message { items, set_targets } => {
                 for e in items {
                     self.walk_expression(e, scope, AccessMode::Read);

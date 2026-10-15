@@ -343,6 +343,16 @@ impl<'a> CheckWalker<'a> {
                     self.check_expression(e, scope);
                 }
             }
+            StatementKind::Pause { duration, message } => {
+                for e in duration.iter().chain(message) {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+                if let Some(e) = lines {
+                    self.check_expression(e, scope);
+                }
+            }
 
             // ---- RUN / buffer ops ---------------------------------------
             StatementKind::Run {

@@ -1466,11 +1466,14 @@ impl<'a> Builder<'a> {
             | SK::Display { .. }
             | SK::Put { .. }
             | SK::Export { .. }
+            | SK::Down { .. }
+            | SK::Up { .. }
             | SK::StreamIo { .. }
             | SK::Publish { .. }
             | SK::Unsubscribe { .. } => Shape::plain(!self.no_error_text(s)),
-            // Reading past the end of the input raises ENDKEY.
-            SK::Import { .. } => Shape::Plain {
+            // Reading past the end of the input, or a key pressed during a
+            // pause, raises ENDKEY.
+            SK::Import { .. } | SK::Pause { .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: true,
                 waits: false,

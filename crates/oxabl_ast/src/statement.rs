@@ -250,6 +250,39 @@ pub enum StatementKind {
         targets: Vec<Expression>,
     },
 
+    /// PAUSE statement — suspends processing for a time or until a key is
+    /// pressed.
+    ///
+    /// The duration and the `MESSAGE` text are modelled; `IN WINDOW` and
+    /// anything the parser does not recognise stay in
+    /// [`Statement::skipped_tail`].
+    Pause {
+        /// Optional duration in seconds (`PAUSE 5`).
+        duration: Option<Expression>,
+        /// Optional `MESSAGE` text.
+        message: Option<Expression>,
+    },
+
+    /// DOWN statement — moves the cursor of a down frame forward.
+    ///
+    /// The stream and the line count are modelled; the frame phrase stays in
+    /// [`Statement::skipped_tail`].
+    Down {
+        /// Optional named stream (`DOWN STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional number of lines.
+        lines: Option<Expression>,
+    },
+
+    /// UP statement — moves the cursor of a down frame back. Same shape as
+    /// [`StatementKind::Down`].
+    Up {
+        /// Optional named stream (`UP STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional number of lines.
+        lines: Option<Expression>,
+    },
+
     /// DEFINE TEMP-TABLE statement.
     ///
     /// ```abl

@@ -11480,7 +11480,7 @@ fn skipped_output_to_path_harvests_nothing() {
 /// rule cannot drift, and the filter yields little or nothing there regardless.
 #[test]
 fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
-    assert!(harvest("PAUSE 1.").is_empty());
+    assert!(harvest("PAGE.").is_empty());
     // `ERROR` is identifier-capable and survives; `ON`, `UNDO` and `THROW` are
     // not. The residue is the accepted keyword-collision case from KTD5 in its
     // most harmless form: it can only exempt a variable literally named
@@ -12935,4 +12935,54 @@ fn import_stops_at_a_target_that_is_not_writable() {
     };
     assert_eq!(targets.len(), 1);
     assert_eq!(tail_names(&stmts[0]), ["v-b"]);
+}
+
+#[test]
+fn pause_is_head_parsed_with_duration_and_message() {
+    let stmts =
+        assert_parses_clean("PAUSE v-secs * 60 BEFORE-HIDE MESSAGE \"Wait \" + v-who IN WINDOW h.");
+    let StatementKind::Pause { duration, message } = &stmts[0].kind else {
+        panic!("expected Pause, got {:?}", stmts[0].kind);
+    };
+    assert!(duration.is_some());
+    assert!(message.is_some());
+    assert!(tail_names(&stmts[0]).contains(&"h"));
+
+    for source in [
+        "PAUSE.",
+        "PAUSE 0 BEFORE-HIDE.",
+        "PAUSE NO-MESSAGE.",
+        "PAUSE BEFORE-H.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Pause { message, .. } = &stmts[0].kind else {
+            panic!("{source}: expected Pause, got {:?}", stmts[0].kind);
+        };
+        assert!(message.is_none(), "{source}");
+        assert!(stmts[0].skipped_tail.is_none(), "{source}");
+    }
+}
+
+#[test]
+fn down_and_up_are_head_parsed_with_stream_and_lines() {
+    let stmts = assert_parses_clean("DOWN STREAM s1 v-n WITH FRAME f.");
+    let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Down, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(lines.is_some());
+    assert!(tail_names(&stmts[0]).contains(&"f"));
+
+    let stmts = assert_parses_clean("DOWN 1 STREAM s1.");
+    let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Down, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(lines.is_some());
+
+    let stmts = assert_parses_clean("UP WITH FRAME f.");
+    let StatementKind::Up { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Up, got {:?}", stmts[0].kind);
+    };
+    assert!(stream_name.is_none() && lines.is_none());
 }
