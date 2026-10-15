@@ -1075,3 +1075,80 @@ fn configured_root_extensions_decide_which_files_a_directory_walk_checks() {
         configured.stdout
     );
 }
+
+/// A tree whose files end every way a file can: findings, drift, both, an
+/// unjudged-symbol note, a parse error, an unreadable file and an include
+/// fragment. Enough of them that every worker gets several.
+fn mixed_tree() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let sources = [
+        CLEAN,
+        UNUSED,
+        MIS_INDENTED,
+        BOTH,
+        UNJUDGED,
+        PARSE_ERROR_AND_UNUSED,
+    ];
+    for n in 0..48 {
+        write(
+            &tmp.path().join(format!("sub{}/f{n:02}.p", n % 3)),
+            sources[n % sources.len()],
+        );
+    }
+    // Not UTF-8, so `read_to_string` fails on it.
+    fs::write(tmp.path().join("sub1/f-binary.p"), [0xff, 0xfe, 0x00]).unwrap();
+    write(&tmp.path().join("inc/frag.i"), UNUSED);
+    tmp
+}
+
+#[test]
+fn the_job_count_changes_nothing_a_run_reports() {
+    let tmp = mixed_tree();
+    let dir = tmp.path().to_str().unwrap();
+    for flags in [&[][..], &["--json"], &["--include-findings"]] {
+        let run = |jobs: &str| check([&[dir, "-j", jobs][..], flags].concat());
+        let serial = run("1");
+        assert_eq!(serial.code, Some(1), "{}", serial.stderr);
+        assert!(serial.stderr.contains("cannot read"), "{}", serial.stderr);
+        for jobs in ["2", "7", "64"] {
+            let parallel = run(jobs);
+            assert_eq!(parallel.code, serial.code, "-j {jobs} {flags:?}");
+            assert_eq!(parallel.stdout, serial.stdout, "-j {jobs} {flags:?}");
+            assert_eq!(parallel.stderr, serial.stderr, "-j {jobs} {flags:?}");
+        }
+    }
+}
+
+#[test]
+fn a_baseline_run_is_the_same_at_any_job_count() {
+    let tmp = mixed_tree();
+    let dir = tmp.path().to_str().unwrap();
+    let file = |name: &str| tmp.path().join(name).to_str().unwrap().to_string();
+    let (one, many) = (file("one.json"), file("many.json"));
+    // Same path in the report, so the two runs write to one name in turn.
+    let shared = file("baseline.json");
+
+    let record = |jobs: &str, keep: &str| {
+        let run = check([dir, "--baseline", &shared, "--update-baseline", "-j", jobs]);
+        fs::rename(&shared, keep).unwrap();
+        run
+    };
+    let (first, second) = (record("1", &one), record("16", &many));
+    assert_eq!(first.stderr, second.stderr);
+    assert_eq!(first.stdout, second.stdout);
+    assert_eq!(fs::read(&one).unwrap(), fs::read(&many).unwrap());
+
+    fs::copy(&one, &shared).unwrap();
+    let serial = check([dir, "--json", "--baseline", &shared, "-j", "1"]);
+    let parallel = check([dir, "--json", "--baseline", &shared, "-j", "16"]);
+    assert_eq!(serial.stdout, parallel.stdout);
+    assert_eq!(serial.stderr, parallel.stderr);
+    assert_eq!(serial.code, parallel.code);
+}
+
+#[test]
+fn zero_jobs_is_a_usage_error() {
+    let (_tmp, file) = project("a.p", CLEAN);
+    let run = check([file.to_str().unwrap(), "-j", "0"]);
+    assert_eq!(run.code, Some(2), "{}", run.stderr);
+}
