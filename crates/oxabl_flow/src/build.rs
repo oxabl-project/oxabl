@@ -1470,6 +1470,7 @@ impl<'a> Builder<'a> {
             | SK::Export { .. }
             | SK::Down { .. }
             | SK::Form { .. }
+            | SK::Apply { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }

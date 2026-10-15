@@ -245,8 +245,15 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
-            StatementKind::Pause { duration, message } => {
-                for e in duration.iter().chain(message) {
+            StatementKind::Pause {
+                duration: a,
+                message: b,
+            }
+            | StatementKind::Apply {
+                event: a,
+                target: b,
+            } => {
+                for e in a.iter().chain(b) {
                     self.walk_expression(e);
                 }
             }

@@ -354,8 +354,15 @@ impl<'a> CheckWalker<'a> {
                     self.check_expression(e, scope);
                 }
             }
-            StatementKind::Pause { duration, message } => {
-                for e in duration.iter().chain(message) {
+            StatementKind::Pause {
+                duration: a,
+                message: b,
+            }
+            | StatementKind::Apply {
+                event: a,
+                target: b,
+            } => {
+                for e in a.iter().chain(b) {
                     self.check_expression(e, scope);
                 }
             }

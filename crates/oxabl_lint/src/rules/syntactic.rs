@@ -212,8 +212,15 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_expression(v, e);
             }
         }
-        StatementKind::Pause { duration, message } => {
-            for e in duration.iter().chain(message) {
+        StatementKind::Pause {
+            duration: a,
+            message: b,
+        }
+        | StatementKind::Apply {
+            event: a,
+            target: b,
+        } => {
+            for e in a.iter().chain(b) {
                 walk_expression(v, e);
             }
         }

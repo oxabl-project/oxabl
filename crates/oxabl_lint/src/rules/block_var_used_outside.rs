@@ -538,8 +538,15 @@ mod paths {
                         read(self, e);
                     }
                 }
-                SK::Pause { duration, message } => {
-                    for e in duration.iter().chain(message) {
+                SK::Pause {
+                    duration: a,
+                    message: b,
+                }
+                | SK::Apply {
+                    event: a,
+                    target: b,
+                } => {
+                    for e in a.iter().chain(b) {
                         read(self, e);
                     }
                 }

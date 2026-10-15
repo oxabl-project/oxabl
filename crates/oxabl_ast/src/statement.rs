@@ -306,6 +306,17 @@ pub enum StatementKind {
         targets: Vec<Expression>,
     },
 
+    /// APPLY statement — sends an event to a widget or procedure.
+    ///
+    /// The event and target expressions are modelled; a target that is not an
+    /// expression (`FRAME f`, `BROWSE b`) stays in [`Statement::skipped_tail`].
+    Apply {
+        /// The event, usually a string literal. `None` only when it does not parse.
+        event: Option<Expression>,
+        /// The `TO` target.
+        target: Option<Expression>,
+    },
+
     /// ENABLE statement — enables widgets for input.
     ///
     /// The widgets (fields, variables, buttons, ...) are modelled with their

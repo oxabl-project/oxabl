@@ -11462,8 +11462,8 @@ fn skipped_harvest_keeps_spaced_division_operands() {
 /// String literals are not identifier-shaped, so the event name drops out while
 /// the widget and frame names survive.
 #[test]
-fn skipped_apply_harvests_widget_and_frame_not_the_event_string() {
-    let names = harvest(r#"APPLY "CHOOSE" TO btn-ok IN FRAME f-main."#);
+fn skipped_wait_for_harvests_widget_and_frame_not_the_event_string() {
+    let names = harvest(r#"WAIT-FOR "CHOOSE" OF btn-ok IN FRAME f-main."#);
     assert!(names.contains(&"btn-ok".to_string()), "got {names:?}");
     assert!(names.contains(&"f-main".to_string()), "got {names:?}");
     assert!(!names.iter().any(|n| n.contains("CHOOSE")), "got {names:?}");
@@ -13098,4 +13098,30 @@ fn widget_list_statements_are_head_parsed() {
     }
     let stmts = assert_parses_clean("DISABLE TRIGGERS FOR LOAD OF Customer.");
     assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
+}
+
+#[test]
+fn apply_is_head_parsed_with_event_and_target() {
+    for (source, has_target, tail) in [
+        ("APPLY \"entry\" TO v-name IN FRAME f.", true, None),
+        ("APPLY \"close\" TO THIS-PROCEDURE.", true, None),
+        ("APPLY v-event TO h-proc.", true, None),
+        ("APPLY (LASTKEY).", false, None),
+        (
+            "APPLY \"choose\" TO BROWSE br-cust.",
+            false,
+            Some("br-cust"),
+        ),
+        ("APPLY \"go\" TO FRAME f.", false, Some("f")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Apply { event, target } = &stmts[0].kind else {
+            panic!("{source}: expected Apply, got {:?}", stmts[0].kind);
+        };
+        assert!(event.is_some(), "{source}");
+        assert_eq!(target.is_some(), has_target, "{source}");
+        if let Some(name) = tail {
+            assert!(tail_names(&stmts[0]).contains(&name), "{source}");
+        }
+    }
 }

@@ -720,6 +720,11 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt_value_operands(hi));
         }
 
+        // APPLY event [TO widget] — head-parsed; options stay a skipped tail.
+        if self.check(Kind::Apply) {
+            return self.parse_apply_statement();
+        }
+
         // PAUSE / DOWN / UP — head-parsed; options stay a skipped tail.
         if self.check(Kind::Pause) {
             return self.parse_pause_statement();
@@ -734,7 +739,6 @@ impl Parser<'_> {
             || self.check(Kind::Accumulate)
             || self.check(Kind::Accum) // abbreviation of ACCUMULATE
             || self.check(Kind::Open)
-            || self.check(Kind::Apply)
             || self.check(Kind::Status)
             || self.check(Kind::Get)
             || self.check(Kind::Clear)
@@ -4110,6 +4114,24 @@ impl Parser<'_> {
         let items = self.parse_frame_items(false);
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+    }
+
+    /// `APPLY event [TO widget]`. A target that is not an expression (`FRAME f`,
+    /// `BROWSE b`) stays in the skipped tail.
+    fn parse_apply_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume APPLY
+        let event = self.parse_head_item(|k| k == Kind::To);
+        let mut target = None;
+        if event.is_some() && self.check(Kind::To) {
+            let to = self.current;
+            self.advance();
+            target = self.parse_head_item(|k| matches!(k, Kind::Frame | Kind::Browse));
+            if target.is_none() {
+                self.current = to;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Apply { event, target }, tail))
     }
 
     /// `ENABLE` / `DISABLE` `[UNLESS-HIDDEN] {ALL | widget [format-phrase] ...}
