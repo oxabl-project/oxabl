@@ -111,6 +111,45 @@ impl<T: Copy> ByName<T> {
     }
 }
 
+/// The table of a buffer, for a search that takes exact field names only.
+#[derive(Debug, Clone, Copy)]
+enum TableSlot {
+    /// A schema table, by its dense id in [`ExactFields`].
+    Schema(u32),
+    /// A temp-table definition (index into `Collected::temp_tables`).
+    Temp(u32),
+    /// A table the file and the schema do not show: it may have any field.
+    Unknown,
+}
+
+/// The tables of buffers, and for each field name the schema tables and the
+/// temp-tables that have it, made as the tables are met.
+#[derive(Default)]
+struct ExactFields<'a> {
+    of_buffer: Vec<Option<TableSlot>>,
+    ids: FxHashMap<*const oxabl_schema::Table, u32>,
+    fields: FxHashMap<&'a str, SmallVec<[u32; 2]>>,
+    /// Built on first use, from every temp-table of the file.
+    temp_fields: Option<FxHashMap<&'a str, SmallVec<[u32; 2]>>>,
+}
+
+impl<'a> ExactFields<'a> {
+    /// The id of `table`, indexing its fields when it is new.
+    fn table_id(&mut self, table: &'a oxabl_schema::Table) -> u32 {
+        let next = self.ids.len() as u32;
+        let id = *self.ids.entry(table as *const _).or_insert(next);
+        if id == next {
+            for f in &table.fields {
+                let ids = self.fields.entry(f.name.as_ref()).or_default();
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        id
+    }
+}
+
 pub(crate) fn resolve(c: &Collected, flow: &FileFlow, schema: Option<&Schema>) -> Resolved {
     let mut r = Resolver::new(c, flow, schema);
     r.run();
@@ -127,6 +166,8 @@ struct Resolver<'a> {
     /// Schema tables by folded name, and their fields by folded word.
     tables: RefCell<FxHashMap<String, Option<&'a oxabl_schema::Table>>>,
     fields: RefCell<FxHashMap<String, FxHashMap<String, Has>>>,
+    /// The exact field names of the schema tables of buffers.
+    exact: RefCell<ExactFields<'a>>,
     /// The buffer made for each `DefBuffer`.
     of_def: Vec<Option<BufferId>>,
     /// Default buffers by folded table name and owner.
@@ -138,6 +179,8 @@ struct Resolver<'a> {
     /// The buffer a bare field falls back to, per word and unit.
     memo: ByName<Option<BufferId>>,
     named: Vec<BufferId>,
+    /// The buffers of `named` that each unit can see.
+    named_in: Vec<Option<Vec<BufferId>>>,
     out: Resolved,
 }
 
@@ -165,12 +208,14 @@ impl<'a> Resolver<'a> {
             variables,
             tables: RefCell::default(),
             fields: RefCell::default(),
+            exact: RefCell::default(),
             of_def: vec![None; c.buffers.len()],
             defaults: ByName::default(),
             temp_table_of: FxHashMap::default(),
             raw: vec![None; c.refs.len()],
             memo: ByName::default(),
             named: Vec::new(),
+            named_in: Vec::new(),
             out: Resolved::default(),
         }
     }
@@ -468,15 +513,7 @@ impl<'a> Resolver<'a> {
         if let Some(hit) = self.memo.get(word, r.unit) {
             return hit;
         }
-        let named: SmallVec<[BufferId; 8]> = self
-            .named
-            .iter()
-            .copied()
-            .filter(|&b| self.visible(self.out.buffers[b.index()].owner, r.unit))
-            .collect();
-        // An abbreviation counts only against a record phrase or an
-        // enclosing record block, never against every buffer of the file.
-        let (hit, keep) = match self.level(word, true, &named, &[], r.unit) {
+        let (hit, keep) = match self.named_level(word, r.unit) {
             Level::Hit(b) => (Some(b), true),
             Level::Ambiguous(bs) => (self.ambiguous(&bs, r), false),
             Level::Maybe(bs) => (self.maybe(&bs, r), false),
@@ -493,6 +530,28 @@ impl<'a> Resolver<'a> {
             self.memo.insert_first(word, r.unit, hit);
         }
         hit
+    }
+
+    /// The search of every buffer the file names that `unit` can see, for a
+    /// bare field.
+    fn named_level(&mut self, word: &str, unit: UnitId) -> Level {
+        if self.named_in.len() <= unit.index() {
+            self.named_in.resize(unit.index() + 1, None);
+        }
+        let named = match self.named_in[unit.index()].take() {
+            Some(named) => named,
+            None => self
+                .named
+                .iter()
+                .copied()
+                .filter(|&b| self.visible(self.out.buffers[b.index()].owner, unit))
+                .collect(),
+        };
+        // An abbreviation counts only against a record phrase or an
+        // enclosing record block, never against every buffer of the file.
+        let level = self.level(word, true, &named, &[], unit);
+        self.named_in[unit.index()] = Some(named);
+        level
     }
 
     fn ambiguous(&mut self, bs: &[BufferId], r: &RawRef) -> Option<BufferId> {
@@ -536,8 +595,46 @@ impl<'a> Resolver<'a> {
         let mut exact: SmallVec<[BufferId; 2]> = SmallVec::new();
         let mut prefix: SmallVec<[BufferId; 2]> = SmallVec::new();
         let mut maybe: SmallVec<[BufferId; 2]> = SmallVec::new();
+        // Exact names only: each table's answer comes from the indexes of
+        // field names, read once for the word. A folded word has no
+        // uppercase letter; another one takes the general search.
+        let indexed = exact_only && !word.bytes().any(|c| c.is_ascii_uppercase());
+        let temp_with = if indexed {
+            for &b in candidates {
+                self.slot(b);
+            }
+            let index = self.exact.borrow();
+            let temp = candidates
+                .iter()
+                .any(|b| matches!(index.of_buffer[b.index()], Some(TableSlot::Temp(_))));
+            drop(index);
+            if temp {
+                self.temp_tables_with(word)
+            } else {
+                SmallVec::new()
+            }
+        } else {
+            SmallVec::new()
+        };
+        let index = self.exact.borrow();
+        let schema_with = match index.fields.get(word) {
+            Some(ids) if indexed => ids.as_slice(),
+            _ => &[],
+        };
         for &b in candidates {
-            let list = match self.has_field(b, word) {
+            let has = if indexed {
+                match index.of_buffer[b.index()].expect("every candidate has a slot") {
+                    TableSlot::Schema(id) if schema_with.contains(&id) => Has::Exact,
+                    TableSlot::Schema(_) => Has::No,
+                    TableSlot::Temp(t) => {
+                        self.temp_table_has_exact(t as usize, word, &temp_with, 0)
+                    }
+                    TableSlot::Unknown => Has::Maybe,
+                }
+            } else {
+                self.has_field(b, word)
+            };
+            let list = match has {
                 Has::Exact => &mut exact,
                 Has::Prefix if exact_only => continue,
                 Has::Prefix => &mut prefix,
@@ -638,6 +735,79 @@ impl<'a> Resolver<'a> {
             .or_default()
             .insert(word.to_string(), has);
         has
+    }
+
+    /// Note the table of buffer `b`, for [`level`](Self::level) with exact
+    /// names only: as [`has_field`](Self::has_field) finds it.
+    fn slot(&self, b: BufferId) {
+        if self
+            .exact
+            .borrow()
+            .of_buffer
+            .get(b.index())
+            .is_some_and(Option::is_some)
+        {
+            return;
+        }
+        let slot = match &self.out.buffers[b.index()].table {
+            Table::Database(name) => match self.schema_table(&fold(name)) {
+                Some(t) => TableSlot::Schema(self.exact.borrow_mut().table_id(t)),
+                None => TableSlot::Unknown,
+            },
+            Table::Unknown(_) => TableSlot::Unknown,
+            Table::TempTable { name, .. } => {
+                let tt = self.temp_table_of.get(&b).copied().or_else(|| {
+                    self.c
+                        .temp_tables
+                        .iter()
+                        .position(|t| t.name.eq_ignore_ascii_case(name))
+                });
+                tt.map_or(TableSlot::Unknown, |t| TableSlot::Temp(t as u32))
+            }
+        };
+        let mut exact = self.exact.borrow_mut();
+        if exact.of_buffer.len() <= b.index() {
+            exact.of_buffer.resize(b.index() + 1, None);
+        }
+        exact.of_buffer[b.index()] = Some(slot);
+    }
+
+    /// The temp-tables that have a field named `word`.
+    fn temp_tables_with(&self, word: &str) -> SmallVec<[u32; 2]> {
+        let mut exact = self.exact.borrow_mut();
+        let c = self.c;
+        let index = exact.temp_fields.get_or_insert_with(|| {
+            let mut index: FxHashMap<&'a str, SmallVec<[u32; 2]>> = FxHashMap::default();
+            for (t, tt) in c.temp_tables.iter().enumerate() {
+                for f in &tt.fields {
+                    let ts = index.entry(f.as_str()).or_default();
+                    if !ts.contains(&(t as u32)) {
+                        ts.push(t as u32);
+                    }
+                }
+            }
+            index
+        });
+        index.get(word).cloned().unwrap_or_default()
+    }
+
+    /// [`temp_table_has_field`](Self::temp_table_has_field), with the
+    /// temp-tables that have `word` given.
+    fn temp_table_has_exact(&self, t: usize, word: &str, with: &[u32], depth: u8) -> Has {
+        if with.contains(&(t as u32)) {
+            return Has::Exact;
+        }
+        let tt = &self.c.temp_tables[t];
+        let Some(like) = &tt.like else {
+            return Has::No;
+        };
+        if depth > 8 {
+            return Has::No;
+        }
+        if let Some(other) = self.temp_table_in(like, tt.unit) {
+            return self.temp_table_has_exact(other, word, with, depth + 1);
+        }
+        self.schema_has_field(like, word)
     }
 
     fn temp_table_has_field(&self, t: usize, word: &str, depth: u8) -> Has {
