@@ -422,13 +422,17 @@ impl Schema {
     /// Case-insensitive id lookup. This schema's own tables win; the built-in
     /// metaschema is consulted only on a miss, and only when enabled.
     pub fn table_id(&self, name: &OxablAtom) -> Option<TableId> {
+        if self.metaschema {
+            self.table_id_with_metaschema(name)
+        } else {
+            self.own_table_id(name)
+        }
+    }
+
+    fn table_id_with_metaschema(&self, name: &OxablAtom) -> Option<TableId> {
         if let Some(id) = self.tables.get(name) {
             return Some(*id);
         }
-        if !self.metaschema {
-            return None;
-        }
-        // The catalog schema never has the flag set, so this cannot recurse.
         let builtin = crate::metaschema::metaschema();
         builtin
             .tables
@@ -444,11 +448,26 @@ impl Schema {
     /// Only schema tables take abbreviations; a temp-table or buffer name must
     /// be written in full. `name` is expected to be case-folded.
     pub fn resolve_table(&self, name: &OxablAtom) -> Option<TableId> {
-        if let Some(id) = self.table_id(name) {
+        self.resolve_table_inner(name, self.metaschema)
+    }
+
+    /// Resolve an explicit record name or abbreviation with the metaschema
+    /// available, even when no application schema is loaded.
+    pub fn resolve_table_with_metaschema(&self, name: &OxablAtom) -> Option<TableId> {
+        self.resolve_table_inner(name, true)
+    }
+
+    fn resolve_table_inner(&self, name: &OxablAtom, metaschema: bool) -> Option<TableId> {
+        let exact = if metaschema {
+            self.table_id_with_metaschema(name)
+        } else {
+            self.own_table_id(name)
+        };
+        if let Some(id) = exact {
             return Some(id);
         }
         let mut hits = self.prefix_matches(name.as_ref());
-        if self.metaschema {
+        if metaschema {
             hits = hits.merge(
                 crate::metaschema::metaschema()
                     .prefix_matches(name.as_ref())

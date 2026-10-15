@@ -377,6 +377,11 @@ keyword_type = "Statement"
 name = "FINALLY"
 keyword_type = "Statement"
 
+# STOP is unreserved; no abbreviation
+[[add]]
+name = "STOP"
+keyword_type = "Statement"
+
 # =============================================================================
 # OO-ABL KEYWORDS
 # Object-oriented ABL constructs — all unreserved, no abbreviations

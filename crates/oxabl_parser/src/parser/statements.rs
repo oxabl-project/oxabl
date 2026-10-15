@@ -131,8 +131,10 @@ impl Parser<'_> {
             return false;
         }
         let mut depth = 0usize;
-        let mut i = self.current + 1;
-        while let Some(t) = self.tokens.get(i) {
+        let mut tokens = self.tokens[self.current + 1..]
+            .iter()
+            .filter(|t| t.kind != Kind::Comment);
+        for t in tokens.by_ref() {
             match t.kind {
                 Kind::LeftParen => depth += 1,
                 Kind::RightParen => {
@@ -144,11 +146,10 @@ impl Parser<'_> {
                 Kind::Eof => return false,
                 _ => {}
             }
-            i += 1;
         }
-        let after = self.tokens.get(i + 1).map(|t| t.kind);
+        let after = tokens.next().map(|t| t.kind);
         let next = if after == Some(Kind::NoError) {
-            self.tokens.get(i + 2).map(|t| t.kind)
+            tokens.next().map(|t| t.kind)
         } else {
             after
         };
@@ -197,8 +198,6 @@ impl Parser<'_> {
         // Check the colon first: it fails for the vast majority of statements
         // (e.g. `ASSIGN x = ...` where position +1 is the variable name, not
         // a colon), avoiding the more expensive `can_be_identifier` call.
-        // Use peek_nth_non_comment(3) to skip over inline comments between ':' and the block
-        // keyword (e.g. `LABEL: /* comment */\n DO:` has a Comment at peek_at(2)).
         if self.check_at(1, Kind::Colon)
             && Self::can_be_identifier(self.peek().kind)
             && self.block_keyword_follows_label_colon()
@@ -287,6 +286,14 @@ impl Parser<'_> {
         if self.check(Kind::Quit) {
             self.advance();
             self.expect_period("Expected '.' after QUIT")?;
+            return Ok(self.stmt(StatementKind::Empty));
+        }
+
+        // STOP — raises the STOP condition; no operands. Unreserved, so a variable
+        // named `stop` still falls through to the expression path.
+        if self.check(Kind::Stop) && self.check_at(1, Kind::Period) {
+            self.advance();
+            self.advance();
             return Ok(self.stmt(StatementKind::Empty));
         }
 
@@ -6214,7 +6221,7 @@ impl Parser<'_> {
                 && Self::can_be_identifier(self.peek_at(1).kind)
             {
                 let sep_end = self.token_at(self.current).end;
-                let next_start = self.token_at(self.current + 1).start;
+                let next_start = self.peek_at(1).start;
                 if self.source[sep_end..next_start].contains('\n') {
                     break;
                 }
@@ -7688,10 +7695,7 @@ impl Parser<'_> {
             let next_tok = self.peek_at(1);
             let next_kind = next_tok.kind;
             let same_line = !self.source[period_end..next_tok.start].contains('\n');
-            if same_line
-                && next_kind != Kind::Comment
-                && (next_kind == Kind::Identifier || Self::can_be_identifier(next_kind))
-            {
+            if same_line && (next_kind == Kind::Identifier || Self::can_be_identifier(next_kind)) {
                 self.advance(); // consume period
                 let second = self.parse_identifier()?;
                 let name = format!("{}.{}", first.name, second.name);
