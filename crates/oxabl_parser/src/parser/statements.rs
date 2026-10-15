@@ -2829,7 +2829,7 @@ impl Parser<'_> {
         while self.check(Kind::On) {
             self.advance(); // consume ON
             // the condition (ERROR, ENDKEY, STOP, QUIT: keyword or identifier)
-            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
+            if !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Comma) {
                 self.advance();
             }
             if self.check(Kind::Undo) {

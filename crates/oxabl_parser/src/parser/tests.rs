@@ -13102,3 +13102,23 @@ fn temp_table_like_takes_a_database_qualified_table() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn block_headers_cut_at_the_end_of_the_file_do_not_panic() {
+    for source in [
+        "DO ON",
+        "DO ON ERROR",
+        "DO ON ERROR UNDO",
+        "DO ON ERROR UNDO,",
+        "REPEAT TRANSACTION ON",
+        "DO FOR customer TRANSACTION ON",
+        "DO TRANSACTION",
+        "REPEAT FOR",
+        "DO FOR sports.",
+        "FOR EACH customer ON",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(!program.errors.is_empty(), "{source}");
+    }
+}
