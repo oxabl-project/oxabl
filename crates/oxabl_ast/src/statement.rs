@@ -295,11 +295,14 @@ pub enum StatementKind {
     ///
     /// The targets are modelled, with their format options consumed; constants
     /// and `^` are passed over. The list ends at the first token that is not a
-    /// target or a literal option, and the rest, the frame phrase and any
-    /// `EDITING` block stay in [`Statement::skipped_tail`].
+    /// target or an option the parser models, and the rest, the frame phrase and
+    /// any `EDITING` block stay in [`Statement::skipped_tail`].
     Update {
         /// Fields, variables or records read and written, in source order.
         targets: Vec<Expression>,
+        /// Non-literal expressions of the format options (`VALIDATE`, `WHEN`,
+        /// `AT`, ...), read, in source order.
+        options: Vec<Expression>,
     },
 
     /// SET statement — prompts for fields and variables and assigns the input.
@@ -307,6 +310,8 @@ pub enum StatementKind {
     Set {
         /// Fields, variables or records written, in source order.
         targets: Vec<Expression>,
+        /// Non-literal expressions of the format options, read, in source order.
+        options: Vec<Expression>,
     },
 
     /// APPLY statement — sends an event to a widget or procedure.

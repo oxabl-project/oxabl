@@ -13045,7 +13045,7 @@ fn update_and_set_are_head_parsed_with_targets() {
     let source = "UPDATE UNLESS-HIDDEN v-a AUTO-RETURN LABEL \"A\" HELP \"h\" ^ \"note\" AT 5 tt.b v-c[2] GO-ON(F1) WITH FRAME f EDITING: v-x = 1. END.";
     let stmts = assert_parses_clean(source);
     assert_eq!(stmts.len(), 1, "{stmts:?}");
-    let StatementKind::Update { targets } = &stmts[0].kind else {
+    let StatementKind::Update { targets, .. } = &stmts[0].kind else {
         panic!("expected Update, got {:?}", stmts[0].kind);
     };
     assert_eq!(targets.len(), 3, "{targets:?}");
@@ -13053,7 +13053,7 @@ fn update_and_set_are_head_parsed_with_targets() {
     assert!(tail.contains(&"f") && tail.contains(&"v-x"), "{tail:?}");
 
     let stmts = assert_parses_clean("SET v-a = v-b + 1.");
-    let StatementKind::Set { targets } = &stmts[0].kind else {
+    let StatementKind::Set { targets, .. } = &stmts[0].kind else {
         panic!("expected Set, got {:?}", stmts[0].kind);
     };
     assert!(targets.is_empty(), "an assignment form stays in the tail");
@@ -13381,5 +13381,50 @@ fn comment_lookahead_preserves_statement_newlines() {
         let stmts = assert_parses_clean(source);
         assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
         assert!(matches!(stmts[1].kind, StatementKind::Message { .. }));
+    }
+}
+
+#[test]
+fn update_and_set_keep_the_expressions_of_their_format_options() {
+    for source in [
+        "UPDATE v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "UPDATE v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+        "SET v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "SET v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let (StatementKind::Update { targets, options } | StatementKind::Set { targets, options }) =
+            &stmts[0].kind
+        else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        assert_eq!(targets.len(), 1, "{source}: {targets:?}");
+        assert_eq!(options.len(), 1, "{source}: {options:?}");
+        assert!(tail_names(&stmts[0]).contains(&"f"), "{source}");
+    }
+
+    let stmts =
+        assert_parses_clean("UPDATE v-a VALIDATE(v-a > 0, \"bad\") v-b WHEN v-a = 1 WITH FRAME f.");
+    let StatementKind::Update { targets, options } = &stmts[0].kind else {
+        panic!("expected Update, got {:?}", stmts[0].kind);
+    };
+    assert_eq!((targets.len(), options.len()), (2, 2), "{stmts:?}");
+}
+
+#[test]
+fn form_and_enable_keep_the_expressions_of_their_format_options() {
+    for source in [
+        "FORM v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "FORM v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+        "ENABLE v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "ENABLE v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let (StatementKind::Form { items, .. } | StatementKind::Enable { items }) = &stmts[0].kind
+        else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        assert_eq!(items.len(), 2, "{source}: {items:?}");
+        assert!(tail_names(&stmts[0]).contains(&"f"), "{source}");
     }
 }

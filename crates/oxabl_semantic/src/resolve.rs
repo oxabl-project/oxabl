@@ -3104,14 +3104,20 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
-            StatementKind::Update { targets } => {
+            StatementKind::Update { targets, options } => {
                 for e in targets {
                     self.walk_expression(e, scope, AccessMode::ReadWrite);
                 }
+                for e in options {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
             }
-            StatementKind::Set { targets } => {
+            StatementKind::Set { targets, options } => {
                 for e in targets {
                     self.walk_expression(e, scope, AccessMode::Write);
+                }
+                for e in options {
+                    self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
             StatementKind::Pause {

@@ -552,9 +552,12 @@ mod paths {
                     }
                 }
                 SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
-                SK::Update { targets } | SK::Set { targets } => {
+                SK::Update { targets, options } | SK::Set { targets, options } => {
                     for e in targets {
                         self.target(e, id);
+                    }
+                    for e in options {
+                        read(self, e);
                     }
                 }
                 SK::Import {

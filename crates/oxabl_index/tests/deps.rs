@@ -861,3 +861,35 @@ fn a_table_named_by_raw_transfer_underline_or_current_changed_is_an_edge() {
         assert_eq!(table_edges(source), ["customer"], "{source}");
     }
 }
+
+#[test]
+fn a_table_inside_a_format_option_expression_is_an_edge() {
+    let mut missing = Vec::new();
+    for source in [
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         UPDATE v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         SET v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         FORM v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         PROMPT-FOR v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         ENABLE v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         UPDATE v WHEN CAN-FIND(Customer WHERE Customer.CustNum = v) WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         SET v WHEN CAN-FIND(Customer WHERE Customer.CustNum = v) WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         FORM v WHEN CAN-FIND(Customer WHERE Customer.CustNum = v) WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         DISPLAY v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         DEFINE FRAME f v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\").",
+    ] {
+        if table_edges(source) != ["customer"] {
+            missing.push(source);
+        }
+    }
+    assert!(missing.is_empty(), "no table edge for: {missing:#?}");
+}

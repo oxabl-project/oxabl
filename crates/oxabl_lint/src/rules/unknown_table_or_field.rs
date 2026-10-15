@@ -241,8 +241,9 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
-            StatementKind::Update { targets } | StatementKind::Set { targets } => {
-                for e in targets {
+            StatementKind::Update { targets, options }
+            | StatementKind::Set { targets, options } => {
+                for e in targets.iter().chain(options) {
                     self.walk_expression(e);
                 }
             }
