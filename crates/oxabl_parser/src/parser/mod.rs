@@ -1341,6 +1341,14 @@ impl<'a> Parser<'a> {
                     | Kind::Text
                     | Kind::Rectangle
                     | Kind::Size
+                    // Format-phrase item options (unreserved; stay valid names)
+                    | Kind::SizeChars
+                    | Kind::SizePixels
+                    | Kind::Row
+                    | Kind::Column
+                    | Kind::Bgcolor
+                    | Kind::Fgcolor
+                    | Kind::NoTabStop
                     // UI/display keywords used as procedure/method names or frame attribute names
                     | Kind::Header
                     // Frame and Browse can appear as attribute names after ':' (e.g. frame1:frame)
