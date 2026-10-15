@@ -12783,6 +12783,28 @@ fn object_and_widget_stay_usable_as_names() {
 }
 
 #[test]
+fn choose_is_a_skipped_statement_and_still_a_name() {
+    let stmts = parse_clean("CHOOSE FIELD c AUTO-RETURN WITH FRAME f.\nCHOOSE ROW b.\n");
+    assert_eq!(stmts.len(), 2);
+    for s in &stmts {
+        assert!(
+            matches!(s.kind, StatementKind::Skipped { .. }),
+            "{:?}",
+            s.kind
+        );
+    }
+    for source in [
+        "DEFINE VARIABLE choose AS INTEGER NO-UNDO.",
+        "choose = 1.",
+        "ON CHOOSE OF b DO:\nEND.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
 fn aggregate_words_and_file_stay_usable_as_names() {
     for source in [
         "DEFINE VARIABLE total AS DECIMAL NO-UNDO.",
