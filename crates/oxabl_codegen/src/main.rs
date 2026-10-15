@@ -826,32 +826,21 @@ pub fn generate_keyword_match(
         );
     }
 
-    // Group matches by string length for two-level dispatch.
-    // Outer match on length produces a compact jump table; inner matches per
-    // length bucket are small enough to stay in L1 instruction cache.
-    let mut length_to_matches: HashMap<usize, Vec<(String, String)>> = HashMap::new();
-    for (match_str, kind) in &match_to_kind {
-        length_to_matches
-            .entry(match_str.len())
+    // Dispatch on length and the first byte before comparing spellings.
+    let mut buckets = std::collections::BTreeMap::<(usize, u8), Vec<_>>::new();
+    for (spelling, kind) in &match_to_kind {
+        buckets
+            .entry((spelling.len(), spelling.as_bytes()[0]))
             .or_default()
-            .push((match_str.clone(), kind.clone()));
+            .push((spelling, kind));
     }
-
-    // Sort lengths for consistent output
-    let mut lengths: Vec<_> = length_to_matches.keys().cloned().collect();
-    lengths.sort();
-
-    output.push_str("    match lower.len() {\n");
-
-    for length in lengths {
-        let mut matches = length_to_matches.remove(&length).unwrap();
-        matches.sort_by(|a, b| a.0.cmp(&b.0));
-
-        output.push_str(&format!("        {} => match lower {{\n", length));
-        for (match_str, kind) in &matches {
+    output.push_str("    match (lower.len(), buf[0]) {\n");
+    for ((length, first), mut entries) in buckets {
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        output.push_str(&format!("        ({length}, {first}) => match lower {{\n"));
+        for (spelling, kind) in entries {
             output.push_str(&format!(
-                "            \"{}\" => Some(Kind::{}),\n",
-                match_str, kind
+                "            \"{spelling}\" => Some(Kind::{kind}),\n"
             ));
         }
         output.push_str("            _ => None,\n");

@@ -1355,15 +1355,31 @@ pub fn analyze_from_expanded(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
 ) -> (Semantic, bool) {
+    let timing = std::env::var_os("OXABL_EDGE_PROFILE").map(|_| std::time::Instant::now());
     let tokens = tokenize(&expanded.text);
+    let lexed = timing.map(|t| t.elapsed());
     let mut parser = Parser::new(&tokens, &expanded.text);
     let program = parser.parse_program();
+    let parsed = timing.map(|t| t.elapsed());
     let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
         .with_index(index)
         .with_source_context(source_context);
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file_untyped(&program.statements, &ctx);
-    (sem, !program.errors.is_empty())
+    let recovered = !program.errors.is_empty();
+    let analyzed = timing.map(|t| t.elapsed());
+    drop(program);
+    drop(tokens);
+    if let Some(t) = timing {
+        eprintln!(
+            "PHASE lex={} parse={} semantic={} drop={}",
+            lexed.unwrap().as_nanos(),
+            (parsed.unwrap() - lexed.unwrap()).as_nanos(),
+            (analyzed.unwrap() - parsed.unwrap()).as_nanos(),
+            (t.elapsed() - analyzed.unwrap()).as_nanos()
+        );
+    }
+    (sem, recovered)
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,

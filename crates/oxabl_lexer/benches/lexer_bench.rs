@@ -35,6 +35,12 @@ fn lexer_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "numeric", "bench_lexer_numeric.abl");
     bench_fixture(&mut group, "preprocessor", "bench_lexer_preprocessor.abl");
 
+    let identifiers = "DEFINE VARIABLE customer-account AS INTEGER NO-UNDO.\ncustomer-account = customer-account + 1.\n".repeat(100);
+    group.throughput(Throughput::Bytes(identifiers.len() as u64));
+    group.bench_function("repeated_identifiers", |b| {
+        b.iter(|| tokenize(black_box(&identifiers)))
+    });
+
     group.finish();
 }
 

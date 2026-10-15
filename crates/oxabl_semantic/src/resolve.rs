@@ -6471,6 +6471,20 @@ pub(crate) fn is_implicit_lang_class(folded: &str) -> bool {
     )
 }
 
+// Retain common folded atoms between roots without entering the shared intern
+// table on every reference. A collision replaces one slot; equality uses bytes.
+#[derive(Clone)]
+struct FoldedAtom {
+    bytes: [u8; 64],
+    len: usize,
+    atom: OxablAtom,
+}
+
+thread_local! {
+    static FOLDED: std::cell::RefCell<Vec<Option<FoldedAtom>>> =
+        std::cell::RefCell::new(vec![None; 1024]);
+}
+
 /// Case-fold and intern an identifier. Shared with [`crate::index`], whose
 /// keys must fold identically to the symbol table's names.
 pub(crate) fn fold_atom(s: &str) -> OxablAtom {
@@ -6483,7 +6497,25 @@ pub(crate) fn fold_atom(s: &str) -> OxablAtom {
         }
         // SAFETY: ASCII lowercasing preserves UTF-8; source was UTF-8.
         let folded = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };
-        OxablAtom::from(folded)
+        use std::hash::{Hash, Hasher};
+        let mut hash = rustc_hash::FxHasher::default();
+        folded.hash(&mut hash);
+        let slot = hash.finish() as usize % 1024;
+        FOLDED.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(entry) = &cache[slot]
+                && entry.bytes[..entry.len] == *folded.as_bytes()
+            {
+                return entry.atom.clone();
+            }
+            let atom = OxablAtom::from(folded);
+            cache[slot] = Some(FoldedAtom {
+                bytes: buf,
+                len: bytes.len(),
+                atom: atom.clone(),
+            });
+            atom
+        })
     } else {
         OxablAtom::from(s.to_ascii_lowercase())
     }
@@ -10780,5 +10812,34 @@ mod preproc_arm_tests {
     fn duplicate_method_inside_one_preproc_arm_still_fires() {
         let src = "CLASS Foo:\n&IF DEFINED(F) <> 0 &THEN\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ENDIF\nEND CLASS.\n";
         assert_eq!(sem0001_messages(src).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod folded_atom_tests {
+    use super::fold_atom;
+    use oxabl_lexer::oxabl_atom::OxablAtom;
+
+    #[test]
+    fn memoized_folding_matches_interning_after_collisions_and_across_threads() {
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for round in 0..2 {
+                        for i in 0..5000 {
+                            let name = format!("Variable-{i}-Round-{round}");
+                            assert_eq!(
+                                fold_atom(&name),
+                                OxablAtom::from(name.to_ascii_lowercase())
+                            );
+                            assert_eq!(fold_atom(&name.to_uppercase()), fold_atom(&name));
+                        }
+                    }
+                    for name in ["", "INTEGER", "École", &"A".repeat(64), &"A".repeat(65)] {
+                        assert_eq!(fold_atom(name), OxablAtom::from(name.to_ascii_lowercase()));
+                    }
+                });
+            }
+        });
     }
 }
