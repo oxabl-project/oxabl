@@ -701,6 +701,15 @@ read against the code:
 A finding in an include that does not parse alone is reported at each `{...}` site: one widely
 included fragment gave 1,131 of the 1,164 use-site findings of LK001 in the first corpus.
 
+After the review fixes (the screen form of `ASSIGN`, `written` by blocks rather than text order,
+the lock phrase that unexpanded text may hide, the CAN-FIND message), the counts are LK001 5,323
+and 466 (1,173 at use sites in the first corpus), the others unchanged. In the first corpus, 7
+LK001 findings in includes checked alone moved to 9 use sites: each `CAN-FIND` there has a `{1}`
+or `{&name}` after its table, which the include alone cannot read and its includers give a value.
+The help changed for 29 and 5 LK001 findings, from a lock suggestion to none: most have a write in
+another routine of a scope raised across routines (`unit-order`). No write that only the loop
+rule or the screen form of `ASSIGN` sees changed a finding on these corpora.
+
 ### 7.8 The transaction rules (M3)
 
 TX001 to TX005 (`strict.transactions`, preview, warning) select findings from the same
