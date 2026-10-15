@@ -10,8 +10,8 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use crate::PreprocVarTable;
 use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment};
 use crate::span_tree::{
-    BranchDirective, PreprocessedFile, SkippedBranch, SkippedInclude, SpanNode, TextLoss,
-    TextLossKind, UnreadableInclude, UnresolvedInclude,
+    BranchDirective, PreprocessedFile, SkippedBranch, SkippedInclude, SkippedText, SpanNode,
+    TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
 use crate::var_table::BaseVars;
 
@@ -93,7 +93,7 @@ impl ComputedName {
 
 /// Maximum include depth to prevent runaway recursion from very deep (but
 /// non-cyclic) include chains.
-const MAX_INCLUDE_DEPTH: usize = 64;
+pub const MAX_INCLUDE_DEPTH: usize = 64;
 
 impl<'fs> Preprocessor<'fs> {
     pub fn new(fs: &'fs dyn FileSystem, include_paths: &'fs [PathBuf]) -> Self {
@@ -156,6 +156,7 @@ impl<'fs> Preprocessor<'fs> {
             unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
             skipped_includes: Vec::new(),
+            skipped_text: Vec::new(),
             text_losses: Vec::new(),
             line_starts: HashMap::new(),
             expanding_vars: Vec::new(),
@@ -187,6 +188,7 @@ impl<'fs> Preprocessor<'fs> {
         );
         processed.unreadable_includes = ctx.unreadable_includes;
         processed.skipped_includes = ctx.skipped_includes;
+        processed.skipped_text = ctx.skipped_text;
         processed.text_losses = ctx.text_losses;
         Ok(processed)
     }
@@ -251,6 +253,8 @@ struct ProcessContext<'a> {
     unreadable_includes: Vec<UnreadableInclude>,
     /// Include references written in branches that were not taken.
     skipped_includes: Vec<SkippedInclude>,
+    /// Stretches of text in branches that were not taken.
+    skipped_text: Vec<SkippedText>,
     /// Places where text was dropped or a branch was decided on a guess.
     text_losses: Vec<TextLoss>,
     /// Byte offset of each line start, built on first use per source for
@@ -316,6 +320,9 @@ impl ProcessContext<'_> {
         // End of the last skipped include reference, so one nested in its
         // arguments is not listed.
         let mut skipped_until: usize = 0;
+
+        // Start of the current stretch of text in a branch that is not taken.
+        let mut skipped_from: usize = 0;
 
         while i < len {
             // Inside a block comment: only track `/*` / `*/` to keep depth.
@@ -425,6 +432,15 @@ impl ProcessContext<'_> {
                                 continue;
                             }
                             DirectiveKind::If { condition } => {
+                                if !emitting {
+                                    self.note_skipped_text(
+                                        file,
+                                        source,
+                                        skipped_from,
+                                        i,
+                                        &if_stack,
+                                    );
+                                }
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
@@ -459,10 +475,20 @@ impl ProcessContext<'_> {
                                 });
                                 emitting = emitting && cond_result;
                                 i = directive.end;
+                                skipped_from = i;
                                 chunk_start = i as u32;
                                 continue;
                             }
                             DirectiveKind::ElseIf { condition } => {
+                                if !emitting {
+                                    self.note_skipped_text(
+                                        file,
+                                        source,
+                                        skipped_from,
+                                        i,
+                                        &if_stack,
+                                    );
+                                }
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
@@ -498,10 +524,20 @@ impl ProcessContext<'_> {
                                 }
                                 emitting = if_stack.iter().all(|s| s.emitting);
                                 i = directive.end;
+                                skipped_from = i;
                                 chunk_start = i as u32;
                                 continue;
                             }
                             DirectiveKind::Else => {
+                                if !emitting {
+                                    self.note_skipped_text(
+                                        file,
+                                        source,
+                                        skipped_from,
+                                        i,
+                                        &if_stack,
+                                    );
+                                }
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
@@ -516,10 +552,20 @@ impl ProcessContext<'_> {
                                 }
                                 emitting = if_stack.iter().all(|s| s.emitting);
                                 i = directive.end;
+                                skipped_from = i;
                                 chunk_start = i as u32;
                                 continue;
                             }
                             DirectiveKind::EndIf => {
+                                if !emitting {
+                                    self.note_skipped_text(
+                                        file,
+                                        source,
+                                        skipped_from,
+                                        i,
+                                        &if_stack,
+                                    );
+                                }
                                 // Emit the chunk from the *previous* emitting state
                                 // (the &ENDIF itself should not appear in output).
                                 // Do not skip to EOL — trailing code after mid-line
@@ -534,6 +580,7 @@ impl ProcessContext<'_> {
                                 if_stack.pop();
                                 emitting = if_stack.iter().all(|s| s.emitting);
                                 i = directive.end;
+                                skipped_from = i;
                                 chunk_start = i as u32;
                                 continue;
                             }
@@ -776,6 +823,9 @@ impl ProcessContext<'_> {
 
         // Emit trailing chunk
         let emitting = if_stack.iter().all(|s| s.emitting);
+        if !emitting {
+            self.note_skipped_text(file, source, skipped_from, len, &if_stack);
+        }
         if emitting && (len as u32) > chunk_start {
             nodes.push(SpanNode::Chunk {
                 file,
@@ -807,6 +857,35 @@ impl ProcessContext<'_> {
         nodes
     }
 
+    /// List the text in `[start, end)` of `source`, inside a branch that is not
+    /// taken. A stretch of whitespace alone is not listed.
+    fn note_skipped_text(
+        &mut self,
+        file: FileId,
+        source: &str,
+        start: usize,
+        end: usize,
+        if_stack: &[IfState],
+    ) {
+        if source
+            .get(start..end)
+            .is_none_or(|text| text.trim_ascii().is_empty())
+        {
+            return;
+        }
+        self.skipped_text.push(SkippedText {
+            site: FileSpan {
+                file,
+                span: Span {
+                    start: start as u32,
+                    end: end as u32,
+                },
+            },
+            via: self.site_stack.clone(),
+            branches: skipped_branches(if_stack),
+        });
+    }
+
     /// List the include reference at `open` of `source`, written in a branch that
     /// is not taken. Returns where the reference ends, `None` when `{` does not
     /// start one that closes.
@@ -835,13 +914,7 @@ impl ProcessContext<'_> {
                 },
             },
             via: self.site_stack.clone(),
-            branches: if_stack
-                .iter()
-                .map(|state| SkippedBranch {
-                    directive: state.directive,
-                    condition: state.condition.clone(),
-                })
-                .collect(),
+            branches: skipped_branches(if_stack),
             computed_name,
         });
         Some(close)
@@ -2095,6 +2168,17 @@ fn parse_include_name(inner: &str) -> String {
         .position(|b| b.is_ascii_whitespace() || *b == b'&')
         .unwrap_or(trimmed.len());
     trimmed[..end].to_string()
+}
+
+/// The enclosing branches of `if_stack`, outermost first.
+fn skipped_branches(if_stack: &[IfState]) -> Vec<SkippedBranch> {
+    if_stack
+        .iter()
+        .map(|state| SkippedBranch {
+            directive: state.directive,
+            condition: state.condition.clone(),
+        })
+        .collect()
 }
 
 /// The include name of `inner`, the text between `{` and `}`, as written.
@@ -5446,5 +5530,86 @@ DEFINE VARIABLE ghProp AS HANDLE NO-UNDO.
             "&IF FALSE &THEN\n{&var} {1}\n/* {a.i} */\n// {b.i}\nMESSAGE \"{c.i}\".\n&ENDIF\n",
         );
         assert!(got.is_empty(), "{got:?}");
+    }
+
+    /// The text and innermost branch of each skipped stretch of `source`.
+    fn skipped_text(files: &[(&str, &str)], source: &str) -> Vec<(String, BranchDirective, usize)> {
+        let fs = make_fs(files);
+        let paths = vec![PathBuf::from("/inc")];
+        let result = Preprocessor::new(&fs, &paths)
+            .process(FileId::new(1), source)
+            .unwrap();
+        result
+            .skipped_text
+            .iter()
+            .map(|skip| {
+                let text = result.source(skip.site.file).unwrap();
+                let text = &text[skip.site.span.start as usize..skip.site.span.end as usize];
+                let innermost = skip.branches.last().unwrap().directive;
+                (text.trim().to_string(), innermost, skip.branches.len())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_text_of_each_not_taken_branch_is_listed_without_its_directives() {
+        let got = skipped_text(
+            &[],
+            "&IF FALSE &THEN\nRUN a.p.\n&ELSEIF TRUE &THEN\nRUN b.p.\n&ELSE\nRUN c.p.\n&ENDIF\n",
+        );
+        assert_eq!(
+            got,
+            [
+                ("RUN a.p.".to_string(), BranchDirective::If, 1),
+                ("RUN c.p.".to_string(), BranchDirective::Else, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nested_branch_splits_the_stretch_at_each_directive() {
+        let got = skipped_text(
+            &[],
+            "&IF FALSE &THEN\nRUN a.p.\n&IF TRUE &THEN\nRUN b.p.\n&ENDIF\nRUN c.p.\n&ENDIF\nRUN d.p.\n",
+        );
+        assert_eq!(
+            got,
+            [
+                ("RUN a.p.".to_string(), BranchDirective::If, 1),
+                ("RUN b.p.".to_string(), BranchDirective::If, 2),
+                ("RUN c.p.".to_string(), BranchDirective::If, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn whitespace_alone_and_taken_text_are_not_listed() {
+        let got = skipped_text(&[], "&IF FALSE &THEN\n  \n&ELSE\nRUN a.p.\n&ENDIF\n");
+        assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn skipped_text_in_an_include_keeps_its_own_file_and_the_chain() {
+        let fs = make_fs(&[("/inc/outer.i", "&IF FALSE &THEN\nNEW a.B().\n&ENDIF\n")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let result = Preprocessor::new(&fs, &paths)
+            .process(FileId::new(1), "{outer.i}\n")
+            .unwrap();
+        let [skip] = result.skipped_text.as_slice() else {
+            panic!("got {:?}", result.skipped_text);
+        };
+        assert_ne!(skip.site.file, FileId::new(1));
+        assert_eq!(skip.via.len(), 1);
+        let text = result.source(skip.site.file).unwrap();
+        assert_eq!(
+            text[skip.site.span.start as usize..skip.site.span.end as usize].trim(),
+            "NEW a.B()."
+        );
+    }
+
+    #[test]
+    fn an_unclosed_not_taken_branch_lists_its_text_to_the_end() {
+        let got = skipped_text(&[], "&IF FALSE &THEN\nRUN a.p.\n");
+        assert_eq!(got, [("RUN a.p.".to_string(), BranchDirective::If, 1)]);
     }
 }

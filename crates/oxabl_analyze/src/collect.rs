@@ -41,7 +41,8 @@ use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
-    Preprocessor, SkippedInclude, SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude,
+    Preprocessor, SkippedInclude, SkippedText, SpanNode, TextLoss, UnreadableInclude,
+    UnresolvedInclude,
 };
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -345,6 +346,10 @@ pub struct ExpandedFile {
     /// Include references, at any depth, written in a branch that was not taken.
     /// Never expanded.
     skipped_includes: Vec<SkippedInclude>,
+    /// Stretches of text, at any depth, in a branch that was not taken.
+    skipped_text: Vec<SkippedText>,
+    /// The text of each file that holds a stretch of `skipped_text`.
+    skipped_sources: Vec<(FileId, Arc<str>)>,
     /// Places, at any depth, where the preprocessor dropped text or decided a
     /// branch without the facts to decide it.
     text_losses: Vec<TextLoss>,
@@ -405,6 +410,21 @@ impl ExpandedFile {
     /// an included file carries the chain of sites that reached it.
     pub fn skipped_includes(&self) -> &[SkippedInclude] {
         &self.skipped_includes
+    }
+
+    /// Stretches of text, at any depth, inside a branch the preprocessor did not
+    /// take. Read each one with [`Self::skipped_text_of`].
+    pub fn skipped_text(&self) -> &[SkippedText] {
+        &self.skipped_text
+    }
+
+    /// The bytes of `skipped`, one of [`Self::skipped_text`].
+    pub fn skipped_text_of(&self, skipped: &SkippedText) -> Option<&str> {
+        let (_, source) = self
+            .skipped_sources
+            .iter()
+            .find(|(file, _)| *file == skipped.site.file)?;
+        source.get(skipped.site.span.start as usize..skipped.site.span.end as usize)
     }
 
     /// Where the preprocessor dropped text or chose a branch on a guess: an
@@ -671,6 +691,8 @@ pub fn expand_source_with(
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
             skipped_includes: Vec::new(),
+            skipped_text: Vec::new(),
+            skipped_sources: Vec::new(),
             text_losses: Vec::new(),
             root,
         });
@@ -765,6 +787,15 @@ pub fn expand_source_with(
                     },
                 )
                 .collect();
+            let mut skipped_sources: Vec<(FileId, Arc<str>)> = Vec::new();
+            for skipped in &pf.skipped_text {
+                let file = skipped.site.file;
+                if !skipped_sources.iter().any(|(id, _)| *id == file)
+                    && let Some(source) = pf.source(file)
+                {
+                    skipped_sources.push((file, Arc::clone(source)));
+                }
+            }
             Ok(ExpandedFile {
                 text: pf.to_text().to_string(),
                 chunks,
@@ -779,6 +810,8 @@ pub fn expand_source_with(
                 nested_unresolved_includes,
                 unreadable_includes,
                 skipped_includes: pf.skipped_includes.clone(),
+                skipped_text: pf.skipped_text.clone(),
+                skipped_sources,
                 text_losses: pf.text_losses.clone(),
                 root,
             })
@@ -1471,6 +1504,8 @@ mod tests {
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
             skipped_includes: Vec::new(),
+            skipped_text: Vec::new(),
+            skipped_sources: Vec::new(),
             text_losses: Vec::new(),
             root: ROOT,
         }

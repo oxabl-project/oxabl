@@ -90,11 +90,15 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, BranchKind, ConditionalBranch, ConditionalInclude, DirectIncludeInput, EdgeInputs,
-    IncludeOriginInput, NestedUnresolvedIncludeInput, SharedProducers, UnreadableIncludeInput,
-    UnresolvedIncludeInput, build_edge_set,
+    BatchIndex, BranchKind, ConditionalBranch, ConditionalInclude, ConditionalIncludeName,
+    ConditionalReference, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
+    NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers, UnreadableIncludeInput,
+    UnresolvedIncludeInput, WrittenReference, build_edge_set, conditional_include_closure,
+    written_imports, written_references,
 };
-use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
+use oxabl_semantic::{
+    IndexAnswer, IndexName, LocateKind, Located, Semantic, SourceContext, WorkspaceIndex,
+};
 use oxabl_workspace::{FileSystem, is_include_fragment};
 
 use crate::{PipelineConfig, ROOT_FILE_ID};
@@ -451,6 +455,8 @@ pub struct LintPipeline<'a> {
     index: RunIndex<'a>,
     /// The file being analysed, when the client knows which one that is.
     file: Option<PathBuf>,
+    /// Whether an edge set carries the closure of its conditional includes.
+    conditional_closure: bool,
 }
 
 /// Where a handle's index lives: owned by the handle that built it, borrowed
@@ -499,6 +505,7 @@ impl<'a> LintPipeline<'a> {
                     .with_preprocessor(&config.preprocessor),
             )),
             file: None,
+            conditional_closure: false,
         }
     }
 
@@ -509,6 +516,16 @@ impl<'a> LintPipeline<'a> {
     #[must_use]
     pub fn with_preprocess(mut self, preprocess: bool) -> Self {
         self.preprocess = preprocess;
+        self
+    }
+
+    /// Make each edge set carry what its conditional includes would read
+    /// ([`DependencyEdges::conditional_include_closure`](oxabl_index::DependencyEdges::conditional_include_closure)).
+    /// Off by default: it reads and expands every conditional include's target
+    /// once per file.
+    #[must_use]
+    pub fn with_conditional_include_closure(mut self, enabled: bool) -> Self {
+        self.conditional_closure = enabled;
         self
     }
 
@@ -650,6 +667,7 @@ impl<'a> LintPipeline<'a> {
                 RunIndex::External(index) => RunIndex::External(*index),
             },
             file: Some(path.into()),
+            conditional_closure: self.conditional_closure,
         }
     }
 
@@ -836,21 +854,21 @@ impl<'a> LintPipeline<'a> {
                 name: skipped.name.clone(),
                 span: (skipped.site.file == ROOT_FILE_ID).then_some(skipped.site.span),
                 include_site: chain_site(&skipped.via),
-                branches: skipped
-                    .branches
-                    .iter()
-                    .map(|branch| ConditionalBranch {
-                        kind: match branch.directive {
-                            BranchDirective::If => BranchKind::If,
-                            BranchDirective::ElseIf => BranchKind::ElseIf,
-                            BranchDirective::Else => BranchKind::Else,
-                        },
-                        condition: branch.condition.clone(),
-                    })
-                    .collect(),
+                branches: conditional_branches(&skipped.branches),
                 computed_name: skipped.computed_name,
             })
             .collect();
+        let references = self.conditional_references(expanded);
+        let closure = self.conditional_closure.then(|| {
+            let names: Vec<ConditionalIncludeName<'_>> = conditional
+                .iter()
+                .map(|c| ConditionalIncludeName {
+                    name: c.name.as_str(),
+                    computed_name: c.computed_name,
+                })
+                .collect();
+            conditional_include_closure(&names, &self.index_includes())
+        });
 
         let edges = build_edge_set(&EdgeInputs {
             semantic,
@@ -866,7 +884,70 @@ impl<'a> LintPipeline<'a> {
             resolve_span: &resolve_span,
             include_site: &include_site,
         });
-        Ok(edges.with_conditional_includes(conditional))
+        let edges = edges
+            .with_conditional_includes(conditional)
+            .with_conditional_references(references);
+        Ok(match closure {
+            Some(closure) => edges.with_conditional_include_closure(closure),
+            None => edges,
+        })
+    }
+
+    /// The class and program names written in the branches the expansion did not
+    /// take, resolved through this handle's index.
+    fn conditional_references(&self, expanded: &ExpandedFile) -> Vec<ConditionalReference> {
+        if expanded.skipped_text().is_empty() {
+            return Vec::new();
+        }
+        let mut imports: Option<Vec<String>> = None;
+        let mut out = Vec::new();
+        self.with_run_index(|index| {
+            for skipped in expanded.skipped_text() {
+                let Some(text) = expanded.skipped_text_of(skipped) else {
+                    continue;
+                };
+                let in_root = skipped.site.file == ROOT_FILE_ID;
+                let include_site = if in_root {
+                    None
+                } else {
+                    skipped
+                        .via
+                        .first()
+                        .filter(|site| site.file == ROOT_FILE_ID)
+                        .map(|site| site.span)
+                };
+                let mut branches = None;
+                for written in written_references(text) {
+                    let target = match written.kind {
+                        EdgeKind::ProgramReference => resolve_program(index, &written.name),
+                        _ => {
+                            let imports =
+                                imports.get_or_insert_with(|| written_imports(&expanded.text));
+                            resolve_class(index, imports, &written.name)
+                        }
+                    };
+                    if target.is_none() && !keeps_unresolved(&written) {
+                        continue;
+                    }
+                    let start = skipped.site.span.start;
+                    out.push(ConditionalReference {
+                        kind: written.kind,
+                        syntax: written.syntax,
+                        target,
+                        span: in_root.then_some(oxabl_ast::Span {
+                            start: start + written.span.start,
+                            end: start + written.span.end,
+                        }),
+                        include_site,
+                        branches: branches
+                            .get_or_insert_with(|| conditional_branches(&skipped.branches))
+                            .clone(),
+                        name: written.name,
+                    });
+                }
+            }
+        });
+        out
     }
 
     /// Run `with` against this handle's index, viewed as the file being analysed.
@@ -1085,6 +1166,83 @@ impl<'a> LintPipeline<'a> {
             Err(panic) => LintResult::failed(panic),
         }
     }
+}
+
+/// The enclosing branches of a skipped reference, as the edge set names them.
+fn conditional_branches(branches: &[oxabl_analyze::SkippedBranch]) -> Vec<ConditionalBranch> {
+    branches
+        .iter()
+        .map(|branch| ConditionalBranch {
+            kind: match branch.directive {
+                BranchDirective::If => BranchKind::If,
+                BranchDirective::ElseIf => BranchKind::ElseIf,
+                BranchDirective::Else => BranchKind::Else,
+            },
+            condition: branch.condition.clone(),
+        })
+        .collect()
+}
+
+/// Whether a skipped reference that resolves to no file is still listed: its
+/// syntax names only a class, or it is a `RUN` target written as a file.
+fn keeps_unresolved(written: &WrittenReference) -> bool {
+    match written.syntax {
+        ReferenceSyntax::Run => written.name.contains(['.', '/', '\\']),
+        syntax => syntax.names_only_a_class(),
+    }
+}
+
+/// The file a `RUN` target in skipped text names.
+fn resolve_program(index: &dyn WorkspaceIndex, name: &str) -> Option<EdgeTarget> {
+    let name = IndexName::new(name);
+    let file = match index.program(&name) {
+        IndexAnswer::Found(file) => file,
+        IndexAnswer::Unusable => match index.located(LocateKind::Program, &name) {
+            Located::In(file) => file,
+            Located::Nowhere | Located::Itself => return None,
+        },
+        IndexAnswer::NotFound | IndexAnswer::Unknowable => return None,
+    };
+    Some(EdgeTarget::IndexedFile { file, name })
+}
+
+/// The file a class name in skipped text names, tried as the AVM would: a
+/// dotted name as written, then the file's explicit imports, its package
+/// imports, and the bare name.
+fn resolve_class(index: &dyn WorkspaceIndex, imports: &[String], raw: &str) -> Option<EdgeTarget> {
+    let dotted = raw.contains('.');
+    let explicit = imports.iter().filter(|import| {
+        !dotted
+            && !import.ends_with(".*")
+            && import
+                .rsplit('.')
+                .next()
+                .is_some_and(|simple| simple.eq_ignore_ascii_case(raw))
+    });
+    let packages = imports
+        .iter()
+        .filter_map(|import| import.strip_suffix('*'))
+        .filter(|_| !dotted);
+    let candidates = dotted
+        .then(|| raw.to_string())
+        .into_iter()
+        .chain(explicit.cloned())
+        .chain(packages.map(|prefix| format!("{prefix}{raw}")))
+        .chain((!dotted).then(|| raw.to_string()));
+    for candidate in candidates {
+        let name = IndexName::new(&candidate);
+        let file = match index.class(&name) {
+            IndexAnswer::Found(descriptor) => descriptor.file,
+            IndexAnswer::Unusable => match index.located(LocateKind::Class, &name) {
+                Located::In(file) => file,
+                Located::Nowhere | Located::Itself => return None,
+            },
+            IndexAnswer::NotFound => continue,
+            IndexAnswer::Unknowable => return None,
+        };
+        return Some(EdgeTarget::IndexedFile { file, name });
+    }
+    None
 }
 
 /// Lower the confidence of the context-free findings of an include fragment

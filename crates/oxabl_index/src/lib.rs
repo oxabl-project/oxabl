@@ -38,6 +38,7 @@
 //! predefined names (`{&OPSYS}` and friends).
 
 mod batch;
+mod closure;
 mod deps;
 mod facts;
 mod producers;
@@ -48,16 +49,19 @@ mod producers;
 // that policy to be written twice, which is precisely the drift R7 exists to
 // prevent.
 pub mod search;
+mod written;
 
 pub use batch::{BatchIndex, ExcludingFile};
+pub use closure::{ConditionalIncludeName, conditional_include_closure};
 pub use deps::{
-    BranchKind, Completeness, ConditionalBranch, ConditionalInclude, DegradedReason,
-    DependencyEdge, DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget,
-    IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
-    UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
+    BranchKind, Completeness, ConditionalBranch, ConditionalInclude, ConditionalIncludeClosure,
+    ConditionalReference, DegradedReason, DependencyEdge, DependencyEdges, DirectIncludeInput,
+    EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput,
+    UnreadableIncludeInput, UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
 pub use producers::{SharedProducers, definitions_in};
+pub use written::{ReferenceSyntax, WrittenReference, written_imports, written_references};
 
 use std::io;
 use std::path::{Path, PathBuf};
