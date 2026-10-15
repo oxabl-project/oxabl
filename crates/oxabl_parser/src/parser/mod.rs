@@ -289,7 +289,7 @@ impl<'a> Parser<'a> {
         // count sizes the list without reallocating large statements as it
         // grows. Nested statements make it an overestimate; the slack is
         // released below.
-        let estimate = self.tokens[self.current..]
+        let estimate = self.tokens[self.current.min(self.tokens.len())..]
             .iter()
             .filter(|t| t.kind == Kind::Period)
             .take(Self::PRESIZED_STATEMENTS)
@@ -646,7 +646,7 @@ impl<'a> Parser<'a> {
     /// the name after it; a period followed by whitespace ends the statement, so
     /// `DISPLAY x WITH FRAME f. y = 1.` is two statements.
     fn period_is_field_access(&self) -> bool {
-        let period_end = self.tokens[self.current].end;
+        let period_end = self.token_at(self.current).end;
         self.tokens
             .get(self.current + 1)
             .is_some_and(|t| t.start == period_end && Self::can_be_identifier(t.kind))
@@ -903,7 +903,7 @@ impl<'a> Parser<'a> {
             if self.at_end() {
                 break;
             }
-            let next = &self.tokens[self.current];
+            let next = self.token_at(self.current);
             if next.start != name_end {
                 break;
             }
@@ -917,12 +917,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The token at `index`, or the EOF token that ends the stream when `index`
+    /// is past it, so no lookahead near the end of a file can index out of
+    /// bounds.
+    #[inline]
+    fn token_at(&self, index: usize) -> &Token {
+        &self.tokens[index.min(self.tokens.len() - 1)]
+    }
+
     pub fn peek(&self) -> &Token {
-        &self.tokens[self.current]
+        self.token_at(self.current)
     }
 
     pub fn advance(&mut self) -> &Token {
-        let token = &self.tokens[self.current];
+        let tokens = self.tokens;
+        let token = &tokens[self.current.min(tokens.len() - 1)];
         self.current += 1;
         if self.has_comments {
             self.skip_comments();
@@ -935,29 +944,23 @@ impl<'a> Parser<'a> {
         // The EOF sentinel at the end of the stream is never Comment, so we
         // always stop before going out of bounds.
         let len = self.tokens.len();
-        while self.current < len && self.tokens[self.current].kind == Kind::Comment {
+        while self.current < len && self.token_at(self.current).kind == Kind::Comment {
             self.current += 1;
         }
     }
 
     pub fn check(&self, kind: Kind) -> bool {
-        self.tokens
-            .get(self.current)
-            .is_some_and(|t| t.kind == kind)
+        self.peek().kind == kind
     }
 
     /// Check if the token at `current + offset` has the given kind.
-    /// Safe because the token slice always ends with Kind::Eof.
     fn check_at(&self, offset: usize, kind: Kind) -> bool {
-        self.tokens
-            .get(self.current + offset)
-            .is_some_and(|t| t.kind == kind)
+        self.peek_at(offset).kind == kind
     }
 
-    /// Peek at the token `offset` positions ahead of current.
-    /// Safe because the token slice always ends with Kind::Eof.
+    /// Peek at the token `offset` positions ahead of current, or the EOF token.
     fn peek_at(&self, offset: usize) -> &Token {
-        &self.tokens[self.current + offset]
+        self.token_at(self.current + offset)
     }
 
     /// Peek at the nth non-comment token ahead of current (1-based: n=1 means the next token).
@@ -966,7 +969,7 @@ impl<'a> Parser<'a> {
         let mut count = 0;
         let mut i = self.current;
         loop {
-            let t = &self.tokens[i];
+            let t = self.token_at(i);
             if t.kind != Kind::Comment {
                 count += 1;
                 if count == n {
@@ -1459,7 +1462,7 @@ impl<'a> Parser<'a> {
         // Consume .qualifier parts (same-line only — the period must not be a statement terminator)
         while self.check(Kind::Period) {
             // Peek past the period to see if there's an identifier on the same line
-            let period_end = self.tokens[self.current].end;
+            let period_end = self.token_at(self.current).end;
             let next_idx = self.current + 1;
             if let Some(next_tok) = self.tokens.get(next_idx) {
                 if Self::can_be_identifier(next_tok.kind)
@@ -1505,7 +1508,7 @@ impl<'a> Parser<'a> {
 
         // Consume .qualifier parts (same-line only)
         while self.check(Kind::Period) {
-            let period_end = self.tokens[self.current].end;
+            let period_end = self.token_at(self.current).end;
             let next_idx = self.current + 1;
             if let Some(next_tok) = self.tokens.get(next_idx) {
                 if Self::is_word_kind(next_tok.kind)
@@ -1552,7 +1555,7 @@ impl<'a> Parser<'a> {
         // `b-{&preproc}-suffix` (where the lexer splits on `{`) are
         // consumed as a single identifier.
         loop {
-            let next = &self.tokens[self.current];
+            let next = self.token_at(self.current);
             if next.start != end {
                 break;
             }
@@ -1620,7 +1623,7 @@ impl<'a> Parser<'a> {
     /// span never absorbs a trailing comment. Returns `0` if nothing has been
     /// consumed (only reachable before any dispatch token).
     fn prev_end(&self) -> u32 {
-        let mut i = self.current;
+        let mut i = self.current.min(self.tokens.len());
         while i > 0 {
             i -= 1;
             if self.tokens[i].kind != Kind::Comment {

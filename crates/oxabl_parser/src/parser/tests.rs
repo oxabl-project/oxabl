@@ -12653,3 +12653,53 @@ fn seek_statement_parses_with_end_operand() {
         StatementKind::Skipped { .. }
     ));
 }
+
+#[test]
+fn a_statement_cut_short_at_the_end_of_the_file_does_not_panic() {
+    for source in [
+        "DO TRANSACTION ON ",
+        "IF LOCKED",
+        "IF LOCKED ",
+        "CATCH e AS",
+        "CATCH e AS ",
+        "x = NEW",
+        "FIND FIRST t NO-LOCK NO-ERROR. IF AVAILABLE",
+        "DO ON ERROR UNDO, LEAVE ON",
+    ] {
+        let tokens = tokenize(source);
+        let _ = Parser::new(&tokens, source).parse_program();
+    }
+}
+
+/// Every prefix of each file parses without a panic: a buffer being typed is
+/// cut at any byte.
+#[test]
+fn no_prefix_of_a_representative_file_panics() {
+    let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources");
+    for name in [
+        "bench_parser_control_flow.abl",
+        "bench_parser_datasets.abl",
+        "bench_parser_declarations.abl",
+        "bench_parser_expressions.abl",
+        "bench_parser_oo_abl.abl",
+        "bench_parser_procs_funcs.abl",
+        "bench_parser_skipped_forms.abl",
+        "bench_parser_temp_tables.abl",
+        "bench_lint_class.abl",
+        "bench_lint_procedural.abl",
+    ] {
+        let text = std::fs::read_to_string(resources.join(name)).expect("fixture");
+        for end in (0..=text.len()).filter(|&end| text.is_char_boundary(end)) {
+            let source = &text[..end];
+            let parsed = std::panic::catch_unwind(|| {
+                let tokens = tokenize(source);
+                let _ = Parser::new(&tokens, source).parse_program();
+            });
+            assert!(
+                parsed.is_ok(),
+                "{name} cut at byte {end} panics; the prefix ends with {:?}",
+                &source[source.len().saturating_sub(40)..]
+            );
+        }
+    }
+}

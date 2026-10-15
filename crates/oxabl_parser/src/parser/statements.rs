@@ -224,9 +224,9 @@ impl Parser<'_> {
                 Kind::Do | Kind::Repeat | Kind::KwFor
             )
         {
-            let start = self.tokens[self.current].start;
+            let start = self.token_at(self.current).start;
             self.advance(); // consume integer part
-            let end = self.tokens[self.current - 1].end;
+            let end = self.token_at(self.current - 1).end;
             let name_start = start;
             let ident_tok = self.advance().clone(); // consume identifier part
             let name = format!(
@@ -1323,7 +1323,10 @@ impl Parser<'_> {
                 Kind::ViewAs | Kind::Size => {
                     // AppBuilder-style declarations put NO-UNDO after the UI options.
                     let (lo, hi) = self.skip_to_statement_end();
-                    no_undo |= self.tokens[lo..hi].iter().any(|t| t.kind == Kind::NoUndo);
+                    no_undo |= self
+                        .tokens
+                        .get(lo..hi)
+                        .is_some_and(|tokens| tokens.iter().any(|t| t.kind == Kind::NoUndo));
                     let tail = self.skipped_tail((lo, hi));
                     return Ok(self.stmt_with_tail(
                         StatementKind::VariableDeclaration {
@@ -2503,7 +2506,7 @@ impl Parser<'_> {
 
             // Consume any directly-adjacent preprop/identifier parts (e.g. i-j-{&sale-type})
             loop {
-                let next = &self.tokens[self.current];
+                let next = self.token_at(self.current);
                 if next.start != var_end {
                     break;
                 }
@@ -2552,7 +2555,7 @@ impl Parser<'_> {
                         let mut name_end = self.advance().end;
                         // Consume directly-adjacent parts of compound names.
                         loop {
-                            let next = &self.tokens[self.current];
+                            let next = self.token_at(self.current);
                             if next.start != name_end {
                                 break;
                             }
@@ -2742,7 +2745,7 @@ impl Parser<'_> {
             let mut var_end = self.advance().end;
             // Consume any directly-adjacent compound name parts.
             loop {
-                let next = &self.tokens[self.current];
+                let next = self.token_at(self.current);
                 if next.start != var_end {
                     break;
                 }
@@ -3454,7 +3457,7 @@ impl Parser<'_> {
         // Only consume if the next token is a plain identifier or can_be_identifier, and it's on
         // the same line. Block keywords like END/WHEN/THEN must not be consumed here.
         if self.check(Kind::Period) {
-            let period_end = self.tokens[self.current].end;
+            let period_end = self.token_at(self.current).end;
             let next_idx = self.current + 1;
             if let Some(next_tok) = self.tokens.get(next_idx) {
                 let nk = next_tok.kind;
@@ -3912,7 +3915,7 @@ impl Parser<'_> {
 
         loop {
             if self.check(Kind::Colon) {
-                let colon_end = self.tokens[self.current].end;
+                let colon_end = self.token_at(self.current).end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
                     Self::can_be_identifier(t.kind)
                         && !self.source[colon_end..t.start].contains('\n')
@@ -4461,7 +4464,7 @@ impl Parser<'_> {
             self.advance(); // ','
             self.advance(); // identifier
         }
-        let end = self.tokens[self.current - 1].end as u32;
+        let end = self.token_at(self.current - 1).end as u32;
         let text = self.source[start as usize..end as usize].to_string();
         self.spanned_expr(
             start,
@@ -4747,7 +4750,7 @@ impl Parser<'_> {
                 break;
             }
         }
-        let end = self.tokens[self.current - 1].end;
+        let end = self.token_at(self.current - 1).end;
         let error_type = self.source[start..end].to_string();
 
         self.expect_kind(Kind::Colon, "Expected ':' after CATCH type")?;
@@ -5688,7 +5691,7 @@ impl Parser<'_> {
             // (no newline in the source between the period end and the next token start).
             // This distinguishes "Progress.Lang.Class." (Class on same line = name segment)
             // from "HarmonizationCode.\nclass" (class on next line = statement terminator).
-            let period_end = self.tokens[self.current].end;
+            let period_end = self.token_at(self.current).end;
             let next_token_start = self.peek_at(1).start;
             let same_line = !self.source[period_end..next_token_start].contains('\n');
             let is_name_segment = same_line
@@ -5773,8 +5776,8 @@ impl Parser<'_> {
             while (self.check(Kind::Colon) || self.check(Kind::Period))
                 && Self::can_be_identifier(self.peek_at(1).kind)
             {
-                let sep_end = self.tokens[self.current].end;
-                let next_start = self.tokens[self.current + 1].start;
+                let sep_end = self.token_at(self.current).end;
+                let next_start = self.token_at(self.current + 1).start;
                 if self.source[sep_end..next_start].contains('\n') {
                     break;
                 }
@@ -5920,7 +5923,7 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
         if Self::can_be_identifier(self.peek().kind) {
-            let token = &self.tokens[self.current];
+            let token = self.token_at(self.current);
             let text = self.source[token.start..token.end].to_ascii_lowercase();
             if matches!(text.as_str(), "object") {
                 self.advance(); // consume OBJECT
@@ -5964,7 +5967,7 @@ impl Parser<'_> {
         // RELEASE OBJECT handle [NO-ERROR]. — release a COM/OO object
         // RELEASE EXTERNAL PROCEDURE "name". — release a loaded external procedure
         if Self::can_be_identifier(self.peek().kind) {
-            let tok = &self.tokens[self.current];
+            let tok = self.token_at(self.current);
             let text = self.source[tok.start..tok.end].to_ascii_lowercase();
             if text == "object" {
                 self.advance(); // consume OBJECT
@@ -6380,7 +6383,7 @@ impl Parser<'_> {
         // inside VALIDATE expressions (e.g. t-pc-center.company) are not mistaken for
         // the terminating period.
         let tail = self.skip_tail_to_statement_end();
-        let raw_end = self.tokens[self.current - 1].start as u32;
+        let raw_end = self.token_at(self.current - 1).start as u32;
         let raw_span = Span {
             start: raw_start,
             end: raw_end,
@@ -7202,7 +7205,7 @@ impl Parser<'_> {
         // token on the next line which would be a statement terminator).
         // This distinguishes `Customer.Name` from `Customer.` (statement terminator).
         if self.check(Kind::Period) {
-            let period_end = self.tokens[self.current].end;
+            let period_end = self.token_at(self.current).end;
             let next_tok = self.peek_at(1);
             let next_kind = next_tok.kind;
             let same_line = !self.source[period_end..next_tok.start].contains('\n');
