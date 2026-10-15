@@ -237,7 +237,7 @@ pub fn analyze_tokens(
     schema: Option<&Schema>,
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
-    let flow = oxabl_flow::build_file_with(program, source, &options.flow);
+    let flow = oxabl_flow::build_file_tokens(program, source, tokens, &options.flow);
     let collected = collect::collect(program, source, tokens, &flow, options);
     let mut file_unknown: Vec<Unknown> = Vec::new();
     if options.parse_recovered {
