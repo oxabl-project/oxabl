@@ -252,6 +252,18 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
+            StatementKind::Export {
+                delimiter, items, ..
+            }
+            | StatementKind::Import {
+                delimiter,
+                targets: items,
+                ..
+            } => {
+                for e in delimiter.iter().chain(items) {
+                    self.walk_expression(e);
+                }
+            }
             // An import of a class no configured path supplies. Its own id and
             // `name_span` are what let the diagnostic underline the imported name
             // rather than the whole statement.

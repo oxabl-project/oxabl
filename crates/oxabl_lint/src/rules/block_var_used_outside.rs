@@ -525,6 +525,23 @@ mod paths {
                         read(self, e);
                     }
                 }
+                SK::Export {
+                    delimiter, items, ..
+                } => {
+                    for e in delimiter.iter().chain(items) {
+                        read(self, e);
+                    }
+                }
+                SK::Import {
+                    delimiter, targets, ..
+                } => {
+                    if let Some(e) = delimiter {
+                        read(self, e);
+                    }
+                    for e in targets {
+                        self.target(e, id);
+                    }
+                }
                 SK::Publish {
                     event_name,
                     from_handle,

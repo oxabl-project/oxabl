@@ -1465,9 +1465,17 @@ impl<'a> Builder<'a> {
             | SK::Assign { .. }
             | SK::Display { .. }
             | SK::Put { .. }
+            | SK::Export { .. }
             | SK::StreamIo { .. }
             | SK::Publish { .. }
             | SK::Unsubscribe { .. } => Shape::plain(!self.no_error_text(s)),
+            // Reading past the end of the input raises ENDKEY.
+            SK::Import { .. } => Shape::Plain {
+                raises: !self.no_error_text(s),
+                endkey: true,
+                waits: false,
+                opaque: None,
+            },
             SK::Message { set_targets, .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: !set_targets.is_empty(),

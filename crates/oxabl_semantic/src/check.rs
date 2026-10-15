@@ -331,6 +331,18 @@ impl<'a> CheckWalker<'a> {
                     self.check_expression(e, scope);
                 }
             }
+            StatementKind::Export {
+                delimiter, items, ..
+            }
+            | StatementKind::Import {
+                delimiter,
+                targets: items,
+                ..
+            } => {
+                for e in delimiter.iter().chain(items) {
+                    self.check_expression(e, scope);
+                }
+            }
 
             // ---- RUN / buffer ops ---------------------------------------
             StatementKind::Run {

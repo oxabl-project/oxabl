@@ -221,6 +221,35 @@ pub enum StatementKind {
         items: Vec<Expression>,
     },
 
+    /// EXPORT statement — writes values to a stream in delimited form.
+    ///
+    /// Only the head is modelled: the stream, the delimiter and the leading item
+    /// expressions (a record operand parses as an identifier). `EXCEPT`,
+    /// `NO-LOBS` and anything after them stay in [`Statement::skipped_tail`].
+    Export {
+        /// Optional named stream (`EXPORT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional `DELIMITER` character expression.
+        delimiter: Option<Expression>,
+        /// Values or records read, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// IMPORT statement — reads delimited values from a stream into fields,
+    /// variables or a record.
+    ///
+    /// Only the head is modelled: the stream, the delimiter and the targets. A
+    /// `^` placeholder is dropped. `EXCEPT`, `NO-LOBS`, `NO-ERROR` and anything
+    /// after them stay in [`Statement::skipped_tail`].
+    Import {
+        /// Optional named stream (`IMPORT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional `DELIMITER` character expression.
+        delimiter: Option<Expression>,
+        /// Fields, variables or records written, in source order.
+        targets: Vec<Expression>,
+    },
+
     /// DEFINE TEMP-TABLE statement.
     ///
     /// ```abl

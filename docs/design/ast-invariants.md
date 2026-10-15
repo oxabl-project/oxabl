@@ -220,8 +220,8 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 
 - Around thirty statement forms are matched by their leading keyword and then skipped
   wholesale by one of the four skip helpers (`skip_to_period`, `skip_to_statement_end`,
-  `skip_to_statement_end_editing_aware`, `skip_to_statement_end_triggers_aware`): `PUT`,
-  `EXPORT`, `UPDATE`, `SET`, `ENABLE`, `DISABLE`, `APPLY`, embedded SQL, and the rest.
+  `skip_to_statement_end_editing_aware`, `skip_to_statement_end_triggers_aware`):
+  `UPDATE`, `SET`, `ENABLE`, `DISABLE`, `APPLY`, embedded SQL, and the rest.
 - **Invariant:** these emit `Statement::Skipped`, never `Empty`. The distinction is
   load-bearing — these forms carry real variable traffic in both directions, so a consumer
   that reasons about whether a variable was touched must not read them as "nothing happened".
@@ -276,6 +276,13 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   **Invariant:** a form whose operands are paths or literals gets its harvest deleted rather
   than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
   operands earn a head-parse, path-shaped ones earn an empty name list.
+
+- **`PUT`, `EXPORT` and `IMPORT` are head-parsed** into their own variants. The stream, the
+  delimiter and the item expressions are modelled; the option clauses after them
+  (`FORMAT`, `EXCEPT`, `NO-LOBS`, ...) ride on `Statement::skipped_tail`.
+  **Invariant:** an `IMPORT` target is credited as a write and every other head operand as a
+  read. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
+  in the tail; the form never falls back to `Skipped`.
 
 **`Statement::skipped_tail` — a modelled statement discarded a trailing range.**
 `DISPLAY … WITH FRAME f TITLE x`, `RETURN ERROR expr`, the `VIEW-AS` tail of a `DEFINE

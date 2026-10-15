@@ -19,8 +19,8 @@
 //! Which write forms reach this rule is a deliberately audited list, because a
 //! form arriving unexamined is a false positive waiting to happen. Reported:
 //! plain assignment (including an array element), an `ASSIGN` pair,
-//! `MESSAGE ... UPDATE`/`SET` targets, `RUN ... PERSISTENT`/`ASYNCHRONOUS SET`
-//! handles, `BUFFER-COMPARE ... SAVE RESULT IN`, and `CREATE <widget> h`. Each
+//! `MESSAGE ... UPDATE`/`SET` targets, `IMPORT` targets,
+//! `RUN ... PERSISTENT`/`ASYNCHRONOUS SET` handles, `BUFFER-COMPARE ... SAVE RESULT IN`, and `CREATE <widget> h`. Each
 //! reports at its own write site, including one inside an `ON` trigger body. A
 //! stored value nobody consumes is a real finding however it was stored, so the
 //! message speaks of the value rather than of a computation. Targets with no
@@ -219,6 +219,11 @@ impl Visitor<'_> {
             StatementKind::Message { set_targets, .. } => {
                 for target in set_targets {
                     self.record_ident(target);
+                }
+            }
+            StatementKind::Import { targets, .. } => {
+                for target in targets {
+                    self.record_target(target);
                 }
             }
             StatementKind::Run {

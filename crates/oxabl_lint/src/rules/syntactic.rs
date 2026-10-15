@@ -189,6 +189,18 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_expression(v, e);
             }
         }
+        StatementKind::Export {
+            delimiter, items, ..
+        }
+        | StatementKind::Import {
+            delimiter,
+            targets: items,
+            ..
+        } => {
+            for e in delimiter.iter().chain(items) {
+                walk_expression(v, e);
+            }
+        }
         StatementKind::Run {
             target,
             arguments,

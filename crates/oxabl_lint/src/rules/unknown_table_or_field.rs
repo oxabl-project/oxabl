@@ -222,6 +222,18 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
+            StatementKind::Export {
+                delimiter, items, ..
+            }
+            | StatementKind::Import {
+                delimiter,
+                targets: items,
+                ..
+            } => {
+                for e in delimiter.iter().chain(items) {
+                    self.walk_expression(e);
+                }
+            }
             StatementKind::Run {
                 arguments, target, ..
             } => {

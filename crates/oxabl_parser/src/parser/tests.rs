@@ -11427,12 +11427,12 @@ fn skipped_form_harvests_the_variable_not_the_keyword() {
     assert_eq!(harvest("FORM v-total."), vec!["v-total"]);
 }
 
-/// `EXPORT` consumes its own keyword before skipping, where `FORM` does not.
+/// `UNIX` consumes its own keyword before skipping, where `FORM` does not.
 /// Anchoring the range on the statement's first token normalizes both shapes,
 /// so the harvest looks the same from the outside.
 #[test]
-fn skipped_export_drops_the_field_half_of_a_qualified_name() {
-    assert_eq!(harvest("EXPORT vendor.vend-number."), vec!["vendor"]);
+fn skipped_unix_drops_the_field_half_of_a_qualified_name() {
+    assert_eq!(harvest("UNIX vendor.vend-number."), vec!["vendor"]);
 }
 
 /// The broad `can_be_identifier` classifier admits unreserved option keywords
@@ -11550,7 +11550,7 @@ fn skipped_span_covers_the_whole_statement() {
 #[test]
 fn skipped_ordinary_form_is_not_a_table_candidate() {
     assert!(!marks_tables("FORM v-total."));
-    assert!(!marks_tables("EXPORT vendor.vend-number."));
+    assert!(!marks_tables("UNDERLINE vendor.vend-number."));
 }
 
 /// `DEFINE QUERY q FOR tt.` names its backing table, so its harvest is offered
@@ -12585,7 +12585,7 @@ fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
 
 #[test]
 fn harvest_drops_a_dynamic_buffer_field() {
-    assert_eq!(harvest("EXPORT hbuf::company."), vec!["hbuf"]);
+    assert_eq!(harvest("UNDERLINE hbuf::company."), vec!["hbuf"]);
 }
 
 #[test]
@@ -12868,4 +12868,71 @@ fn input_from_os_dir_takes_a_path_expression() {
             source_expr.kind
         );
     }
+}
+
+#[test]
+fn export_is_head_parsed_with_stream_delimiter_and_items() {
+    let stmts = assert_parses_clean(
+        "EXPORT STREAM s1 DELIMITER \",\" tt.a v-b + 1 tt EXCEPT tt.c NO-LOBS.",
+    );
+    let StatementKind::Export {
+        stream_name,
+        delimiter,
+        items,
+    } = &stmts[0].kind
+    else {
+        panic!("expected Export, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(delimiter.is_some());
+    assert_eq!(items.len(), 3);
+    assert_eq!(tail_names(&stmts[0]), ["tt"]);
+}
+
+#[test]
+fn import_is_head_parsed_with_targets_and_drops_a_caret() {
+    let stmts = assert_parses_clean("IMPORT STREAM s1 ^ v-a ^ tt.b v-c[2] NO-ERROR.");
+    let StatementKind::Import {
+        stream_name,
+        targets,
+        ..
+    } = &stmts[0].kind
+    else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(targets.len(), 3);
+
+    let stmts = assert_parses_clean("IMPORT UNFORMATTED v-line.");
+    let StatementKind::Import { targets, .. } = &stmts[0].kind else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1);
+}
+
+#[test]
+fn export_and_import_with_a_stream_handle_keep_the_rest_as_a_tail() {
+    for source in ["EXPORT STREAM-HANDLE h v-a.", "IMPORT STREAM-HANDLE h v-a."] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(
+                stmts[0].kind,
+                StatementKind::Export { ref items, .. } | StatementKind::Import { targets: ref items, .. }
+                    if items.is_empty()
+            ),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+        assert_eq!(tail_names(&stmts[0]), ["h", "v-a"], "{source}");
+    }
+}
+
+#[test]
+fn import_stops_at_a_target_that_is_not_writable() {
+    let stmts = assert_parses_clean("IMPORT v-a \"x\" v-b.");
+    let StatementKind::Import { targets, .. } = &stmts[0].kind else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1);
+    assert_eq!(tail_names(&stmts[0]), ["v-b"]);
 }

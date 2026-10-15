@@ -427,13 +427,9 @@ impl Parser<'_> {
             return self.parse_message_statement();
         }
 
-        // EXPORT statement: EXPORT [STREAM stream-name] [DELIMITER char] [SKIP [n]] expr... .
-        if self.check(Kind::Export) {
-            self.advance(); // consume EXPORT
-            // Use skip_to_statement_end so field-access dots (e.g. vendor.vend-number) are not
-            // mistaken for the statement-terminating period.
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+        // EXPORT / IMPORT — head-parsed; options stay a skipped tail.
+        if self.check(Kind::Export) || self.check(Kind::Import) {
+            return self.parse_export_import_statement();
         }
 
         // DOS / UNIX / VMS statements: launch the OS command interpreter.
@@ -723,7 +719,6 @@ impl Parser<'_> {
         }
 
         if self.check(Kind::Pause)
-            || self.check(Kind::Import)
             || self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
@@ -3963,6 +3958,114 @@ impl Parser<'_> {
         }
 
         Ok(expr)
+    }
+
+    /// `[STREAM s]` at the head of a stream statement. `Err(())` when the stream
+    /// is not a plain name (`STREAM-HANDLE h`, `STREAM 2dstream`), with the
+    /// cursor left on it: the caller then keeps the rest as the skipped tail.
+    fn parse_stream_head(&mut self) -> Result<Option<Identifier>, ()> {
+        if self.check(Kind::StreamHandle) {
+            return Err(());
+        }
+        if !self.check(Kind::Stream) {
+            return Ok(None);
+        }
+        let mark = self.current;
+        self.advance();
+        match self.parse_identifier() {
+            Ok(name) => Ok(Some(name)),
+            Err(_) => {
+                self.current = mark;
+                Err(())
+            }
+        }
+    }
+
+    /// One expression of a head-parsed item list, unless the cursor is at the
+    /// statement end or at a token `stop` accepts. An expression that does not
+    /// parse yields `None` with the cursor left before it.
+    fn parse_head_item(&mut self, stop: impl Fn(Kind) -> bool) -> Option<Expression> {
+        if self.check(Kind::Period) || self.at_end() || stop(self.peek().kind) {
+            return None;
+        }
+        let mark = self.current;
+        match self.parse_expression() {
+            Ok(e) if self.current > mark => Some(e),
+            _ => {
+                self.current = mark;
+                None
+            }
+        }
+    }
+
+    /// `EXPORT [STREAM s] [DELIMITER c] item ...` and
+    /// `IMPORT [STREAM s] [DELIMITER c | UNFORMATTED] {target | ^} ...`. Items are
+    /// parsed up to `EXCEPT`, `NO-LOBS` or `NO-ERROR`; the rest is the skipped tail.
+    fn parse_export_import_statement(&mut self) -> ParseResult<Statement> {
+        let import = self.check(Kind::Import);
+        self.advance(); // consume EXPORT / IMPORT
+
+        let mut stream_name = None;
+        let mut delimiter = None;
+        let mut items = Vec::new();
+        if let Ok(stream) = self.parse_stream_head() {
+            stream_name = stream;
+            if self.check(Kind::Delimiter) {
+                self.advance();
+                let mark = self.current;
+                match self.parse_expression() {
+                    Ok(e) => delimiter = Some(e),
+                    Err(_) => self.current = mark,
+                }
+            } else if import && self.check(Kind::Unformatted) {
+                self.advance();
+            }
+            if delimiter.is_some() || !self.check(Kind::Delimiter) {
+                let stop = |k: Kind| matches!(k, Kind::Except | Kind::NoLobs | Kind::NoError);
+                if import {
+                    loop {
+                        if self.check(Kind::Caret) {
+                            self.advance();
+                            continue;
+                        }
+                        let mark = self.current;
+                        let Some(target) = self.parse_head_item(stop) else {
+                            break;
+                        };
+                        if !matches!(
+                            target.kind,
+                            ExpressionKind::Identifier(_)
+                                | ExpressionKind::FieldAccess { .. }
+                                | ExpressionKind::ArrayAccess { .. }
+                        ) {
+                            self.current = mark;
+                            break;
+                        }
+                        items.push(target);
+                    }
+                } else {
+                    while let Some(item) = self.parse_head_item(stop) {
+                        items.push(item);
+                    }
+                }
+            }
+        }
+
+        let tail = self.skip_tail_to_statement_end();
+        let kind = if import {
+            StatementKind::Import {
+                stream_name,
+                delimiter,
+                targets: items,
+            }
+        } else {
+            StatementKind::Export {
+                stream_name,
+                delimiter,
+                items,
+            }
+        };
+        Ok(self.stmt_with_tail(kind, tail))
     }
 
     // Parse DISPLAY statement

@@ -269,11 +269,22 @@ END PROCEDURE.
 
 #[test]
 fn a_write_inside_a_skipped_statement_is_unknown_not_dead() {
-    // `UPDATE`, `SET`, `PROMPT-FOR` and `IMPORT` are not modelled: their targets
-    // are written, but the rule cannot tell, so it stays silent.
-    for form in ["UPDATE v-x.", "SET v-x.", "PROMPT-FOR v-x.", "IMPORT v-x."] {
+    // `UPDATE`, `SET` and `PROMPT-FOR` are not modelled: their targets are
+    // written, but the rule cannot tell, so it stays silent.
+    for form in ["UPDATE v-x.", "SET v-x.", "PROMPT-FOR v-x."] {
         let src = format!("DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nv-x = 1.\n{form}\n");
         let found = dead_store_lines(&src);
         assert!(found.is_empty(), "{form}: {found:?}");
     }
+}
+
+#[test]
+fn an_import_target_is_a_write() {
+    let src = "DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\nIMPORT UNFORMATTED v-x NO-ERROR.\n";
+    let found = dead_store_lines(src);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 2, "{found:?}");
+
+    let src = "DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\nIMPORT STREAM s ^ v-x.\nMESSAGE v-x.\n";
+    assert!(dead_store_lines(src).is_empty());
 }

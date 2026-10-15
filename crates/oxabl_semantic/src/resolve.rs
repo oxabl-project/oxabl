@@ -3011,6 +3011,36 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
+            StatementKind::Export {
+                stream_name,
+                delimiter,
+                items,
+            }
+            | StatementKind::Import {
+                stream_name,
+                delimiter,
+                targets: items,
+            } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                if let Some(d) = delimiter {
+                    self.walk_expression(d, scope, AccessMode::Read);
+                }
+                let mode = if matches!(stmt.kind, StatementKind::Import { .. }) {
+                    AccessMode::Write
+                } else {
+                    AccessMode::Read
+                };
+                for e in items {
+                    self.walk_expression(e, scope, mode);
+                }
+            }
             StatementKind::Message { items, set_targets } => {
                 for e in items {
                     self.walk_expression(e, scope, AccessMode::Read);
