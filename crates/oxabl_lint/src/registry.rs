@@ -7,13 +7,15 @@ use std::sync::OnceLock;
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, LintRuleRef, LintSeverityMap, Severity};
 use oxabl_handles::FileHandles;
+use oxabl_scope::FileScopes;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
     CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
-    LINT0005, LINT0006, TX006, assigned_but_never_read, block_var_used_outside,
-    delete_not_in_finally, dynamic_invoke, handle_not_deleted, memptr_not_freed, missing_no_undo,
-    missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
+    LINT0005, LINT0006, LK001, LK002, LK003, TX006, assigned_but_never_read,
+    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
+    handle_not_deleted, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
+    missing_no_undo, missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
     type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
 use crate::shared::RunShared;
@@ -165,10 +167,16 @@ pub type RuleFn = fn(&[Statement], &Semantic, &AnalysisContext) -> Vec<Diagnosti
 /// ([`oxabl_handles`]) and nothing else of the analysis.
 pub type HandlesFn = fn(&FileHandles, &AnalysisContext) -> Vec<Diagnostic>;
 
+/// The signature of a rule that reads the buffer scopes, transaction blocks
+/// and record locks of the file ([`oxabl_scope`]), with the statements they
+/// were found in.
+pub type ScopesFn = fn(&FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
+
 #[derive(Debug, Clone, Copy)]
 enum Body {
     Plain(RuleFn),
     Handles(HandlesFn),
+    Scopes(ScopesFn),
 }
 
 /// A [`Rule`] made of metadata and a plain function — how every built-in rule
@@ -196,6 +204,15 @@ impl FnRule {
             body: Body::Handles(check),
         }
     }
+
+    /// Pair `meta` with a query over the file's buffer scopes, transactions
+    /// and locks. One registry run analyses the file once for every such rule.
+    pub const fn over_scopes(meta: RuleMeta, check: ScopesFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::Scopes(check),
+        }
+    }
 }
 
 impl Rule for FnRule {
@@ -217,6 +234,7 @@ impl Rule for FnRule {
         match self.body {
             Body::Plain(run) => run(program, sem, ctx),
             Body::Handles(check) => check(shared.handles(program, ctx.source), ctx),
+            Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
         }
     }
 }
@@ -409,6 +427,30 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         missing_widget_pool::DEFAULT_SEVERITY,
         missing_widget_pool::check,
     ),
+    scopes_rule(
+        LK001,
+        default_lock::NAME,
+        default_lock::GROUP,
+        default_lock::DESCRIPTION,
+        default_lock::DEFAULT_SEVERITY,
+        default_lock::check,
+    ),
+    scopes_rule(
+        LK002,
+        lock_outlives_transaction::NAME,
+        lock_outlives_transaction::GROUP,
+        lock_outlives_transaction::DESCRIPTION,
+        lock_outlives_transaction::DEFAULT_SEVERITY,
+        lock_outlives_transaction::check,
+    ),
+    scopes_rule(
+        LK003,
+        lock_upgrade_in_loop::NAME,
+        lock_upgrade_in_loop::GROUP,
+        lock_upgrade_in_loop::DESCRIPTION,
+        lock_upgrade_in_loop::DEFAULT_SEVERITY,
+        lock_upgrade_in_loop::check,
+    ),
 ];
 
 /// A syntactic strict rule: context-free, and in preview until its
@@ -441,6 +483,26 @@ const fn handles_rule(
     check: HandlesFn,
 ) -> FnRule {
     FnRule::over_handles(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free()
+            .reported_at_use_site(),
+        check,
+    )
+}
+
+/// A strict rule over buffer scopes, transactions and locks: routed like
+/// [`handles_rule`], because its answer can depend on the includer.
+const fn scopes_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    check: ScopesFn,
+) -> FnRule {
+    FnRule::over_scopes(
         RuleMeta::new(code, name, group, description)
             .with_default_severity(severity)
             .with_stability(Stability::Preview)

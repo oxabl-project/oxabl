@@ -4,6 +4,8 @@ use std::cell::OnceCell;
 
 use oxabl_ast::Statement;
 use oxabl_handles::FileHandles;
+use oxabl_scope::{FileScopes, ScopeOptions};
+use oxabl_semantic::AnalysisContext;
 
 /// What the rules of one [`Registry::run_where`](crate::Registry::run_where)
 /// share. Each fact is computed on first use, so a run that enables no rule
@@ -11,6 +13,7 @@ use oxabl_handles::FileHandles;
 #[derive(Default)]
 pub struct RunShared {
     handles: OnceCell<FileHandles>,
+    scopes: OnceCell<FileScopes>,
 }
 
 impl RunShared {
@@ -20,4 +23,21 @@ impl RunShared {
         self.handles
             .get_or_init(|| oxabl_handles::analyze_file(program, source))
     }
+
+    /// The buffer scopes, transaction blocks and record reads of the file,
+    /// analysed once against the context's schema (none when it is not
+    /// loaded).
+    pub fn scopes(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileScopes {
+        self.scopes.get_or_init(|| analyze_scopes(program, ctx))
+    }
+}
+
+/// [`oxabl_scope::analyze_file_with`] under `ctx`.
+pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> FileScopes {
+    let options = ScopeOptions {
+        parse_recovered: ctx.parse_recovered,
+        ..ScopeOptions::default()
+    };
+    let schema = ctx.schema_loaded.then_some(ctx.schema);
+    oxabl_scope::analyze_file_with(program, ctx.source, schema, &options)
 }
