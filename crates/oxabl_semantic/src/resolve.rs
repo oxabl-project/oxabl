@@ -1048,10 +1048,8 @@ impl<'a> Walker<'a> {
         self.schema_table_id(table).map(RecordSource::Schema)
     }
 
-    /// Case-insensitive schema lookup of a table-name identifier, which may be
-    /// a unique abbreviation of the table name. Returns `None` when the table
-    /// is absent from the schema (or no schema is loaded — an empty schema
-    /// yields `None` here by construction).
+    /// Case-insensitive lookup of a table name or unique abbreviation in the
+    /// application schema and built-in metaschema.
     ///
     /// A record phrase may qualify the table with the database it lives in —
     /// `sports.Customer`, `dictdb._file` — and the parser hands that through
@@ -1060,10 +1058,12 @@ impl<'a> Walker<'a> {
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
         self.ctx
             .schema
-            .resolve_table(&fold_atom(&table.name))
+            .resolve_table_with_metaschema(&fold_atom(&table.name))
             .or_else(|| {
                 let bare = strip_db_qualifier(&table.name)?;
-                self.ctx.schema.resolve_table(&fold_atom(bare))
+                self.ctx
+                    .schema
+                    .resolve_table_with_metaschema(&fold_atom(bare))
             })
     }
 

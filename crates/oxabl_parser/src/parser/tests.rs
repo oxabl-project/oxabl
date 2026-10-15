@@ -13276,3 +13276,110 @@ fn define_frame_declares_its_frame_fields() {
         ]
     );
 }
+
+#[test]
+fn stop_statement_and_variable() {
+    let source = "STOP. DEFINE VARIABLE stop AS INTEGER NO-UNDO. stop = 1. MESSAGE stop.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert!(matches!(program.statements[0].kind, StatementKind::Empty));
+    assert_eq!(program.statements.len(), 4);
+    assert!(matches!(
+        program.statements[2].kind,
+        StatementKind::Assignment { .. }
+    ));
+}
+
+#[test]
+fn comments_between_statement_keywords() {
+    for source in [
+        "OUTPUT /* c */ CLOSE.",
+        "INPUT /* c */ CLOSE.",
+        "INPUT-OUTPUT /* c */ CLOSE.",
+        "DEFINE /* c */ VARIABLE n AS INTEGER NO-UNDO.",
+        "DEFINE /* c */ NEW /* c */ SHARED VARIABLE n AS INTEGER NO-UNDO.",
+        "DEFINE /* c */ PARAMETER /* c */ BUFFER b FOR Customer.",
+        "lbl /* c */ : /* c */ DO: END.",
+        "VAR /* c */ INTEGER /* c */ n.",
+        "VAR /* c */ CLASS /* c */ Example /* c */ n.",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        assert!(
+            !matches!(
+                program.statements[0].kind,
+                StatementKind::ExpressionStatement(_)
+            ),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn comment_lookahead_preserves_run_target_boundaries() {
+    for (source, target) in [
+        ("RUN task/* c */.p.", "task"),
+        ("RUN task./* c */p.", "task"),
+        ("RUN ./task.p /* c */ NO-ERROR.", "./task.p"),
+        ("RUN task/* c */(1).", "task"),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect(source);
+        let StatementKind::Run {
+            target: RunTarget::Literal { name, .. },
+            ..
+        } = stmt.kind
+        else {
+            panic!("{source}: {:?}", stmt.kind);
+        };
+        assert_eq!(name, target, "{source}");
+    }
+}
+
+#[test]
+fn comment_lookahead_keeps_method_calls_and_adjacency() {
+    let source = "CLASS C: METHOD PUBLIC VOID Display(x AS INTEGER): END METHOD. METHOD PUBLIC VOID Run1(): Display(1) /* c */ . Display(1) /* c */ NO-ERROR /* c */ . DISPLAY/* c */(1) WITH FRAME f. END METHOD. END CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    assert_eq!(body.len(), 3);
+    assert!(matches!(
+        body[0].kind,
+        StatementKind::ExpressionStatement(_)
+    ));
+    assert!(matches!(
+        body[1].kind,
+        StatementKind::ExpressionStatement(_)
+    ));
+    assert!(matches!(body[2].kind, StatementKind::Display { .. }));
+}
+
+#[test]
+fn lookahead_counts_non_comment_tokens_and_preserves_positions() {
+    let source = "OUTPUT/* one *//* two */CLOSE/* three */.";
+    let tokens = tokenize(source);
+    let parser = Parser::new(&tokens, source);
+    assert_eq!(parser.peek_at(0).kind, Kind::Output);
+    assert_eq!(parser.peek_at(1).kind, Kind::Close);
+    assert_eq!(parser.peek_at(2).kind, Kind::Period);
+    assert_eq!(parser.peek_at(3).kind, Kind::Eof);
+    assert_eq!(parser.peek_at(30).kind, Kind::Eof);
+    assert_ne!(parser.peek_at(0).end, parser.peek_at(1).start);
+    assert_eq!(parser.peek_at(1).start, source.find("CLOSE").unwrap());
+}
+
+#[test]
+fn comment_lookahead_preserves_statement_newlines() {
+    for source in [
+        "CREATE TEMP-TABLE h./* c */\nMESSAGE 1.",
+        "USING Example.Type./* c */\nMESSAGE 1.",
+        "@Example./* c */\nMESSAGE 1.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        assert!(matches!(stmts[1].kind, StatementKind::Message { .. }));
+    }
+}

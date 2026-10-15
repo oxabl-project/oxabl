@@ -574,6 +574,7 @@ fn main() {
             "static",
             "status",
             "stdcall",
+            "stop",
             "stream",
             "stream-handle",
             "stream-io",

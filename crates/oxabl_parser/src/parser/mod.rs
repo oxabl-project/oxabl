@@ -959,11 +959,15 @@ impl<'a> Parser<'a> {
     }
 
     /// Peek at the token `offset` positions ahead of current, or the EOF token.
+    /// Comment tokens do not count, so `OUTPUT /* c */ CLOSE` reads as `OUTPUT CLOSE`.
     fn peek_at(&self, offset: usize) -> &Token {
+        if self.has_comments && offset > 0 {
+            return self.peek_nth_non_comment(offset + 1);
+        }
         self.token_at(self.current + offset)
     }
 
-    /// Peek at the nth non-comment token ahead of current (1-based: n=1 means the next token).
+    /// Peek at the nth non-comment token from current (1-based: n=1 is the current token).
     /// Used when the token stream may contain comment tokens between meaningful tokens.
     fn peek_nth_non_comment(&self, n: usize) -> &Token {
         let mut count = 0;
@@ -1095,6 +1099,7 @@ impl<'a> Parser<'a> {
                     | Kind::Function
                     | Kind::Catch
                     | Kind::Finally
+                    | Kind::Stop
                     | Kind::Run
                     | Kind::Display
                     | Kind::Message
