@@ -221,6 +221,158 @@ pub enum StatementKind {
         items: Vec<Expression>,
     },
 
+    /// EXPORT statement — writes values to a stream in delimited form.
+    ///
+    /// Only the head is modelled: the stream, the delimiter and the leading item
+    /// expressions (a record operand parses as an identifier). `EXCEPT`,
+    /// `NO-LOBS` and anything after them stay in [`Statement::skipped_tail`].
+    Export {
+        /// Optional named stream (`EXPORT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional `DELIMITER` character expression.
+        delimiter: Option<Expression>,
+        /// Values or records read, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// IMPORT statement — reads delimited values from a stream into fields,
+    /// variables or a record.
+    ///
+    /// Only the head is modelled: the stream, the delimiter and the targets. A
+    /// `^` placeholder is dropped. `EXCEPT`, `NO-LOBS`, `NO-ERROR` and anything
+    /// after them stay in [`Statement::skipped_tail`].
+    Import {
+        /// Optional named stream (`IMPORT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional `DELIMITER` character expression.
+        delimiter: Option<Expression>,
+        /// Fields, variables or records written, in source order.
+        targets: Vec<Expression>,
+    },
+
+    /// PAUSE statement — suspends processing for a time or until a key is
+    /// pressed.
+    ///
+    /// The duration and the `MESSAGE` text are modelled; `IN WINDOW` and
+    /// anything the parser does not recognise stay in
+    /// [`Statement::skipped_tail`].
+    Pause {
+        /// Optional duration in seconds (`PAUSE 5`).
+        duration: Option<Expression>,
+        /// Optional `MESSAGE` text.
+        message: Option<Expression>,
+    },
+
+    /// DOWN statement — moves the cursor of a down frame forward.
+    ///
+    /// The stream and the line count are modelled; the frame phrase stays in
+    /// [`Statement::skipped_tail`].
+    Down {
+        /// Optional named stream (`DOWN STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional number of lines.
+        lines: Option<Expression>,
+    },
+
+    /// FORM statement — lays out the fields and constants of a frame.
+    ///
+    /// The items of the form and of its `HEADER` / `BACKGROUND` sections are
+    /// modelled as expressions, and their format options (`FORMAT`, `LABEL`,
+    /// `AT`, ...) are consumed. The list ends at the first token that does not
+    /// start an item; that token, `EXCEPT`, the frame phrase and anything after
+    /// stay in [`Statement::skipped_tail`].
+    Form {
+        /// Items in source order, including `AT` and `SKIP` operands that are
+        /// not literals.
+        items: Vec<Expression>,
+    },
+
+    /// UPDATE statement — displays fields and variables and lets the user
+    /// change them.
+    ///
+    /// The targets are modelled, with their format options consumed; constants
+    /// and `^` are passed over. The list ends at the first token that is not a
+    /// target or a literal option, and the rest, the frame phrase and any
+    /// `EDITING` block stay in [`Statement::skipped_tail`].
+    Update {
+        /// Fields, variables or records read and written, in source order.
+        targets: Vec<Expression>,
+    },
+
+    /// SET statement — prompts for fields and variables and assigns the input.
+    /// Same shape as [`StatementKind::Update`].
+    Set {
+        /// Fields, variables or records written, in source order.
+        targets: Vec<Expression>,
+    },
+
+    /// APPLY statement — sends an event to a widget or procedure.
+    ///
+    /// The event and target expressions are modelled; a target that is not an
+    /// expression (`FRAME f`, `BROWSE b`) stays in [`Statement::skipped_tail`].
+    Apply {
+        /// The event, usually a string literal. `None` only when it does not parse.
+        event: Option<Expression>,
+        /// The `TO` target.
+        target: Option<Expression>,
+    },
+
+    /// WAIT-FOR statement — blocks until an event occurs on a widget.
+    ///
+    /// The widgets of each `OF` list are modelled; event names are not symbols
+    /// and are dropped. `FRAME f`, `FOCUS`, `PAUSE` and a form without `OF`
+    /// stay in [`Statement::skipped_tail`].
+    WaitFor {
+        /// Widgets and handles waited on, in source order.
+        widgets: Vec<Expression>,
+    },
+
+    /// ENABLE statement — enables widgets for input.
+    ///
+    /// The widgets (fields, variables, buttons, ...) are modelled with their
+    /// format options consumed. `ALL`, the frame phrase and anything the parser
+    /// does not recognise stay in [`Statement::skipped_tail`].
+    Enable {
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// DISABLE statement — disables widgets for input. Same shape as
+    /// [`StatementKind::Enable`]; `DISABLE TRIGGERS` is not this statement.
+    Disable {
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// HIDE statement — hides widgets.
+    ///
+    /// The stream and the widgets named are modelled. `FRAME f`, `MESSAGE`,
+    /// `ALL`, `IN FRAME f`, `IN WINDOW w` and `NO-PAUSE` stay in
+    /// [`Statement::skipped_tail`].
+    Hide {
+        /// Optional named stream (`HIDE STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// VIEW statement — shows widgets. Same shape as [`StatementKind::Hide`].
+    View {
+        /// Optional named stream (`VIEW STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// UP statement — moves the cursor of a down frame back. Same shape as
+    /// [`StatementKind::Down`].
+    Up {
+        /// Optional named stream (`UP STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional number of lines.
+        lines: Option<Expression>,
+    },
+
     /// DEFINE TEMP-TABLE statement.
     ///
     /// ```abl
@@ -527,6 +679,11 @@ pub enum StatementKind {
     /// DEFINE FRAME frame-name ... .
     /// Simplified: captures name and raw span of unparsed content for formatter round-tripping.
     DefineFrame { name: Identifier, raw_span: Span },
+
+    /// DEFINE BUTTON / BROWSE / RECTANGLE / IMAGE / MENU / SUB-MENU — a static
+    /// widget definition. Only the widget name is modelled; the rest of the
+    /// statement stays in [`Statement::skipped_tail`].
+    DefineWidget { name: Identifier },
 
     /// DEFINE DATASET statement.
     ///

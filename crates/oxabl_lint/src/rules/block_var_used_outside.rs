@@ -520,9 +520,51 @@ mod paths {
                         }
                     }
                 }
-                SK::Message { items, .. } | SK::Put { items, .. } => {
+                SK::Message { items, .. }
+                | SK::Put { items, .. }
+                | SK::Form { items }
+                | SK::Enable { items }
+                | SK::WaitFor { widgets: items }
+                | SK::Disable { items }
+                | SK::Hide { items, .. }
+                | SK::View { items, .. } => {
                     for e in items {
                         read(self, e);
+                    }
+                }
+                SK::Export {
+                    delimiter, items, ..
+                } => {
+                    for e in delimiter.iter().chain(items) {
+                        read(self, e);
+                    }
+                }
+                SK::Pause {
+                    duration: a,
+                    message: b,
+                }
+                | SK::Apply {
+                    event: a,
+                    target: b,
+                } => {
+                    for e in a.iter().chain(b) {
+                        read(self, e);
+                    }
+                }
+                SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
+                SK::Update { targets } | SK::Set { targets } => {
+                    for e in targets {
+                        self.target(e, id);
+                    }
+                }
+                SK::Import {
+                    delimiter, targets, ..
+                } => {
+                    if let Some(e) = delimiter {
+                        read(self, e);
+                    }
+                    for e in targets {
+                        self.target(e, id);
                     }
                 }
                 SK::Publish {

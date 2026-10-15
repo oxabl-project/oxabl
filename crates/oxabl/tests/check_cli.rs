@@ -38,9 +38,9 @@ const CLEAN: &str = "MESSAGE \"hi\".\n";
 const MIS_INDENTED: &str = "DO:\nMESSAGE \"x\".\nEND.\n";
 /// Mis-indented *and* holding an unused variable: one finding in each channel.
 const BOTH: &str = "DO:\nDEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nEND.\n";
-/// `FORM` is recognized but unmodelled, so the count-gated rules go blind on
+/// `UNDERLINE` is recognized but unmodelled, so the count-gated rules go blind on
 /// `v-total` — a coverage note, not a finding.
-const UNJUDGED: &str = "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\nFORM v-total.\n";
+const UNJUDGED: &str = "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\nUNDERLINE v-total.\n";
 /// A hard `PARSE001` *and* a lint finding, so a run can be asked which channel
 /// a suppression flag actually silenced.
 const PARSE_ERROR_AND_UNUSED: &str = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n@ @ @\n";

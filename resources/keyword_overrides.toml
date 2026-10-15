@@ -877,3 +877,20 @@ keyword_type = "System"
 name = "HOST-BYTE-ORDER"
 reserved = true
 keyword_type = "System"
+
+# BEFORE-HIDE is listed with a space in the reserved index ("BEFORE HIDE"), which
+# the lexer never sees. PAUSE ... BEFORE-HIDE dispatches on the hyphenated form.
+[[remove]]
+name = "before hide"
+
+[[add]]
+name = "BEFORE-HIDE"
+reserved = true
+min_abbreviation = "BEFORE-H"
+keyword_type = "Option"
+
+# UPDATE / SET / ENABLE / DISABLE UNLESS-HIDDEN: the head parse of UPDATE and
+# SET must not read it as a target name.
+[[add]]
+name = "UNLESS-HIDDEN"
+keyword_type = "Option"

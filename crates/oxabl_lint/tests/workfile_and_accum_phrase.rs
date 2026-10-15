@@ -141,3 +141,27 @@ fn trigger_procedure_buffers_of_an_unknown_table_are_not_declared() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn export_pause_and_down_read_their_operands() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE VARIABLE w AS CHARACTER NO-UNDO.\nDEFINE STREAM s.\nv = 1.\nw = \"x\".\nEXPORT STREAM s DELIMITER w v.\nPAUSE v MESSAGE w.\nDOWN STREAM s v.\n";
+    assert_silent(src);
+    for src in ["EXPORT nope.\n", "PAUSE nope.\n", "DOWN nope.\n"] {
+        let diags = lint(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("nope")),
+            "{src}: {diags:#?}"
+        );
+    }
+}
+
+#[test]
+fn form_reads_its_items_and_a_widget_definition_declares_the_widget() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE BUTTON b-ok LABEL \"OK\".\nv = 1.\nFORM HEADER \"Total:\" AT 1 v FORMAT \">>9\" SKIP(1) b-ok WITH FRAME f.\nDISPLAY b-ok WITH FRAME f.\n";
+    assert_silent(src);
+    let diags = lint("FORM nope WITH FRAME f.\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}

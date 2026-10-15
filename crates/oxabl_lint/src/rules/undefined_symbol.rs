@@ -247,8 +247,49 @@ impl Visitor<'_> {
                     }
                 }
             }
-            StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
+            StatementKind::Message { items, .. }
+            | StatementKind::Put { items, .. }
+            | StatementKind::Form { items }
+            | StatementKind::Enable { items }
+            | StatementKind::WaitFor { widgets: items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => {
                 for e in items {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Export {
+                delimiter, items, ..
+            }
+            | StatementKind::Import {
+                delimiter,
+                targets: items,
+                ..
+            } => {
+                for e in delimiter.iter().chain(items) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Update { targets } | StatementKind::Set { targets } => {
+                for e in targets {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Pause {
+                duration: a,
+                message: b,
+            }
+            | StatementKind::Apply {
+                event: a,
+                target: b,
+            } => {
+                for e in a.iter().chain(b) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+                if let Some(e) = lines {
                     self.walk_expression(e);
                 }
             }
@@ -367,6 +408,7 @@ impl Visitor<'_> {
             | StatementKind::DefineDataSource { .. }
             | StatementKind::DefineStream { .. }
             | StatementKind::DefineFrame { .. }
+            | StatementKind::DefineWidget { .. }
             | StatementKind::PreprocDefine { .. }
             | StatementKind::PreprocUndefine { .. }
             | StatementKind::TriggerProcedure { .. }

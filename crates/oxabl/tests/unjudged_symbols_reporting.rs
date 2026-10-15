@@ -48,7 +48,7 @@ fn analyze(source: &str, format: &str) -> (String, String) {
 
 const ONE_SKIPPED: &str = "\
 DEFINE VARIABLE v-total AS INTEGER NO-UNDO.
-FORM v-total.
+UNDERLINE v-total.
 ";
 
 const NO_SKIPPED: &str = "\

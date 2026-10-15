@@ -389,8 +389,6 @@ pub(crate) fn read_control(src: &str, span: Span) -> Control {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Input {
     None,
-    /// Reads a stream or waits for a key (`IMPORT`, `PAUSE`): may raise ENDKEY.
-    Endkey,
     /// Blocks for user input: may raise ENDKEY, and makes `RETRY` real.
     Blocking,
 }
@@ -398,23 +396,10 @@ pub(crate) enum Input {
 pub(crate) fn skipped_input(src: &str, span: Span) -> Input {
     let t = Toks::new(src, span, 2);
     match t.kind(0) {
-        Some(
-            Kind::Update
-            | Kind::Set
-            | Kind::PromptFor
-            | Kind::WaitFor
-            | Kind::Readkey
-            | Kind::Choose,
-        ) => Input::Blocking,
+        Some(Kind::PromptFor | Kind::Readkey | Kind::Choose) => Input::Blocking,
         Some(Kind::Insert) if t.kind(1) != Some(Kind::Into) => Input::Blocking,
-        Some(Kind::Import | Kind::Pause) => Input::Endkey,
         _ => Input::None,
     }
-}
-
-/// Whether a skipped statement is `WAIT-FOR`, which the user can interrupt.
-pub(crate) fn skipped_waits(src: &str, span: Span) -> bool {
-    Toks::new(src, span, 1).kind(0) == Some(Kind::WaitFor)
 }
 
 /// Whether the statement text ends in `NO-ERROR` (before the period). For
@@ -613,10 +598,9 @@ mod tests {
     #[test]
     fn input_statements() {
         let i = |s: &str| skipped_input(s, span(s));
-        assert_eq!(i("UPDATE x."), Input::Blocking);
+        assert_eq!(i("PROMPT-FOR x."), Input::Blocking);
         assert_eq!(i("INSERT Customer."), Input::Blocking);
         assert_eq!(i("INSERT INTO t VALUES (1)."), Input::None);
-        assert_eq!(i("IMPORT x."), Input::Endkey);
         assert_eq!(i("PUT x."), Input::None);
     }
 }

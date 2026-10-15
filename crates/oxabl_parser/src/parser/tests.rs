@@ -11421,18 +11421,18 @@ fn classify_comment_defensive_brace_branch_is_excluded() {
 // ---------------------------------------------------------------------------
 
 /// The dispatch keyword is the range's first token and is dropped
-/// unconditionally, so `PUT` does not harvest itself.
+/// unconditionally, so `UNDERLINE` does not harvest itself.
 #[test]
-fn skipped_form_harvests_the_variable_not_the_keyword() {
-    assert_eq!(harvest("FORM v-total."), vec!["v-total"]);
+fn skipped_underline_harvests_the_variable_not_the_keyword() {
+    assert_eq!(harvest("UNDERLINE v-total."), vec!["v-total"]);
 }
 
-/// `EXPORT` consumes its own keyword before skipping, where `FORM` does not.
+/// `UNIX` consumes its own keyword before skipping, where `UNDERLINE` does not.
 /// Anchoring the range on the statement's first token normalizes both shapes,
 /// so the harvest looks the same from the outside.
 #[test]
-fn skipped_export_drops_the_field_half_of_a_qualified_name() {
-    assert_eq!(harvest("EXPORT vendor.vend-number."), vec!["vendor"]);
+fn skipped_unix_drops_the_field_half_of_a_qualified_name() {
+    assert_eq!(harvest("UNIX vendor.vend-number."), vec!["vendor"]);
 }
 
 /// The broad `can_be_identifier` classifier admits unreserved option keywords
@@ -11444,7 +11444,7 @@ fn skipped_export_drops_the_field_half_of_a_qualified_name() {
 #[test]
 fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
     assert_eq!(
-        harvest(r#"FORM v-total FORMAT ">>9"."#),
+        harvest(r#"UNDERLINE v-total FORMAT ">>9"."#),
         vec!["v-total", "FORMAT"]
     );
 }
@@ -11454,16 +11454,16 @@ fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
 #[test]
 fn skipped_harvest_keeps_spaced_division_operands() {
     assert_eq!(
-        harvest("FORM v-total / v-count."),
+        harvest("UNDERLINE v-total / v-count."),
         vec!["v-total", "v-count"]
     );
 }
 
-/// String literals are not identifier-shaped, so the event name drops out while
+/// String literals are not identifier-shaped, so the string drops out while
 /// the widget and frame names survive.
 #[test]
-fn skipped_apply_harvests_widget_and_frame_not_the_event_string() {
-    let names = harvest(r#"APPLY "CHOOSE" TO btn-ok IN FRAME f-main."#);
+fn skipped_color_harvests_widget_and_frame_not_the_string() {
+    let names = harvest(r#"COLOR DISPLAY "CHOOSE" btn-ok WITH FRAME f-main."#);
     assert!(names.contains(&"btn-ok".to_string()), "got {names:?}");
     assert!(names.contains(&"f-main".to_string()), "got {names:?}");
     assert!(!names.iter().any(|n| n.contains("CHOOSE")), "got {names:?}");
@@ -11480,7 +11480,7 @@ fn skipped_output_to_path_harvests_nothing() {
 /// rule cannot drift, and the filter yields little or nothing there regardless.
 #[test]
 fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
-    assert!(harvest("PAUSE 1.").is_empty());
+    assert!(harvest("PAGE.").is_empty());
     // `ERROR` is identifier-capable and survives; `ON`, `UNDO` and `THROW` are
     // not. The residue is the accepted keyword-collision case from KTD5 in its
     // most harmless form: it can only exempt a variable literally named
@@ -11494,7 +11494,7 @@ fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
 /// period *and a space*, so the adjacency filter does not eat it.
 #[test]
 fn skipped_editing_block_names_survive_the_harvest() {
-    let names = harvest("UPDATE v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
+    let names = harvest("PROMPT-FOR v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
     assert!(names.contains(&"v-name".to_string()), "got {names:?}");
     assert!(names.contains(&"v-x".to_string()), "got {names:?}");
     assert!(names.contains(&"v-y".to_string()), "got {names:?}");
@@ -11505,7 +11505,7 @@ fn skipped_editing_block_names_survive_the_harvest() {
 /// anchor the outer harvest range would start at the last inner statement.
 #[test]
 fn skipped_editing_block_does_not_clobber_the_outer_harvest_anchor() {
-    let names = harvest("UPDATE v-first WITH FRAME f-main EDITING: v-x = 1. END.");
+    let names = harvest("PROMPT-FOR v-first WITH FRAME f-main EDITING: v-x = 1. END.");
     assert_eq!(
         names.first().map(String::as_str),
         Some("v-first"),
@@ -11549,8 +11549,8 @@ fn skipped_span_covers_the_whole_statement() {
 /// the roughly thirty #128 dispatch sites are unchanged in behavior and cost.
 #[test]
 fn skipped_ordinary_form_is_not_a_table_candidate() {
-    assert!(!marks_tables("FORM v-total."));
-    assert!(!marks_tables("EXPORT vendor.vend-number."));
+    assert!(!marks_tables("UNDERLINE v-total."));
+    assert!(!marks_tables("UNDERLINE vendor.vend-number."));
 }
 
 /// `DEFINE QUERY q FOR tt.` names its backing table, so its harvest is offered
@@ -12585,7 +12585,7 @@ fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
 
 #[test]
 fn harvest_drops_a_dynamic_buffer_field() {
-    assert_eq!(harvest("EXPORT hbuf::company."), vec!["hbuf"]);
+    assert_eq!(harvest("UNDERLINE hbuf::company."), vec!["hbuf"]);
 }
 
 #[test]
@@ -12867,5 +12867,289 @@ fn input_from_os_dir_takes_a_path_expression() {
             "{source}: {:?}",
             source_expr.kind
         );
+    }
+}
+
+#[test]
+fn export_is_head_parsed_with_stream_delimiter_and_items() {
+    let stmts = assert_parses_clean(
+        "EXPORT STREAM s1 DELIMITER \",\" tt.a v-b + 1 tt EXCEPT tt.c NO-LOBS.",
+    );
+    let StatementKind::Export {
+        stream_name,
+        delimiter,
+        items,
+    } = &stmts[0].kind
+    else {
+        panic!("expected Export, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(delimiter.is_some());
+    assert_eq!(items.len(), 3);
+    assert_eq!(tail_names(&stmts[0]), ["tt"]);
+}
+
+#[test]
+fn import_is_head_parsed_with_targets_and_drops_a_caret() {
+    let stmts = assert_parses_clean("IMPORT STREAM s1 ^ v-a ^ tt.b v-c[2] NO-ERROR.");
+    let StatementKind::Import {
+        stream_name,
+        targets,
+        ..
+    } = &stmts[0].kind
+    else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(targets.len(), 3);
+
+    let stmts = assert_parses_clean("IMPORT UNFORMATTED v-line.");
+    let StatementKind::Import { targets, .. } = &stmts[0].kind else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1);
+}
+
+#[test]
+fn export_and_import_with_a_stream_handle_keep_the_rest_as_a_tail() {
+    for source in ["EXPORT STREAM-HANDLE h v-a.", "IMPORT STREAM-HANDLE h v-a."] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(
+                stmts[0].kind,
+                StatementKind::Export { ref items, .. } | StatementKind::Import { targets: ref items, .. }
+                    if items.is_empty()
+            ),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+        assert_eq!(tail_names(&stmts[0]), ["h", "v-a"], "{source}");
+    }
+}
+
+#[test]
+fn import_stops_at_a_target_that_is_not_writable() {
+    let stmts = assert_parses_clean("IMPORT v-a \"x\" v-b.");
+    let StatementKind::Import { targets, .. } = &stmts[0].kind else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1);
+    assert_eq!(tail_names(&stmts[0]), ["v-b"]);
+}
+
+#[test]
+fn pause_is_head_parsed_with_duration_and_message() {
+    let stmts =
+        assert_parses_clean("PAUSE v-secs * 60 BEFORE-HIDE MESSAGE \"Wait \" + v-who IN WINDOW h.");
+    let StatementKind::Pause { duration, message } = &stmts[0].kind else {
+        panic!("expected Pause, got {:?}", stmts[0].kind);
+    };
+    assert!(duration.is_some());
+    assert!(message.is_some());
+    assert!(tail_names(&stmts[0]).contains(&"h"));
+
+    for source in [
+        "PAUSE.",
+        "PAUSE 0 BEFORE-HIDE.",
+        "PAUSE NO-MESSAGE.",
+        "PAUSE BEFORE-H.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Pause { message, .. } = &stmts[0].kind else {
+            panic!("{source}: expected Pause, got {:?}", stmts[0].kind);
+        };
+        assert!(message.is_none(), "{source}");
+        assert!(stmts[0].skipped_tail.is_none(), "{source}");
+    }
+}
+
+#[test]
+fn down_and_up_are_head_parsed_with_stream_and_lines() {
+    let stmts = assert_parses_clean("DOWN STREAM s1 v-n WITH FRAME f.");
+    let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Down, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(lines.is_some());
+    assert!(tail_names(&stmts[0]).contains(&"f"));
+
+    let stmts = assert_parses_clean("DOWN 1 STREAM s1.");
+    let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Down, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(lines.is_some());
+
+    let stmts = assert_parses_clean("UP WITH FRAME f.");
+    let StatementKind::Up { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Up, got {:?}", stmts[0].kind);
+    };
+    assert!(stream_name.is_none() && lines.is_none());
+}
+
+#[test]
+fn form_is_head_parsed_with_items_and_format_options() {
+    let source = "FORM HEADER\n  \"Page:\" AT 64 PAGE-NUMBER(s1) FORMAT \">>9\":U\n  v-user AT 1 + v-col\n  /* note */ tt.name LABEL \"Name\" COLON 20 SKIP(1)\n  STRING(TIME, \"HH:MM\") NO-LABEL TO 30\n  WITH FRAME f-hdr PAGE-TOP v-width.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::Form { items } = &stmts[0].kind else {
+        panic!("expected Form, got {:?}", stmts[0].kind);
+    };
+    // "Page:", PAGE-NUMBER(s1), v-user, 1 + v-col, tt.name, STRING(...).
+    assert_eq!(items.len(), 6, "{items:?}");
+    assert!(tail_names(&stmts[0]).contains(&"v-width"));
+    assert!(!tail_names(&stmts[0]).contains(&"v-user"));
+}
+
+#[test]
+fn form_leaves_unmodelled_item_options_to_the_tail() {
+    for (source, modelled, tail) in [
+        // A name followed by a number is an option the lexer does not classify.
+        ("FORM v-a BGCOLOR 3 v-b.", 1, "v-b"),
+        ("FORM v-a AT ROW 2 COL 5 v-b.", 1, "v-b"),
+        ("FORM v-a AT v-col v-b.", 1, "v-b"),
+        // A frame-only variable is a declaration, not a reference.
+        ("FORM v-a v-new AS CHARACTER v-b.", 1, "v-new"),
+        ("FORM v-a VIEW-AS FILL-IN v-b WITH FRAME f.", 1, "v-b"),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Form { items } = &stmts[0].kind else {
+            panic!("{source}: expected Form, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(items.len(), modelled, "{source}: {items:?}");
+        assert!(tail_names(&stmts[0]).contains(&tail), "{source}");
+    }
+}
+
+#[test]
+fn a_widget_definition_declares_its_name() {
+    for (source, name) in [
+        ("DEFINE BUTTON b-ok LABEL \"OK\" AUTO-GO.", "b-ok"),
+        (
+            "DEF BROWSE br-cust QUERY q DISPLAY Customer.Name WITH 5 DOWN.",
+            "br-cust",
+        ),
+        (
+            "DEFINE RECTANGLE RECT-1 EDGE-PIXELS 2 SIZE 10 BY 2.",
+            "RECT-1",
+        ),
+        ("DEFINE NEW SHARED MENU m-main MENUBAR.", "m-main"),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::DefineWidget { name: got } = &stmts[0].kind else {
+            panic!("{source}: expected DefineWidget, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(got.name, name, "{source}");
+    }
+}
+
+#[test]
+fn update_and_set_are_head_parsed_with_targets() {
+    let source = "UPDATE UNLESS-HIDDEN v-a AUTO-RETURN LABEL \"A\" HELP \"h\" ^ \"note\" AT 5 tt.b v-c[2] GO-ON(F1) WITH FRAME f EDITING: v-x = 1. END.";
+    let stmts = assert_parses_clean(source);
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    let StatementKind::Update { targets } = &stmts[0].kind else {
+        panic!("expected Update, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 3, "{targets:?}");
+    let tail = tail_names(&stmts[0]);
+    assert!(tail.contains(&"f") && tail.contains(&"v-x"), "{tail:?}");
+
+    let stmts = assert_parses_clean("SET v-a = v-b + 1.");
+    let StatementKind::Set { targets } = &stmts[0].kind else {
+        panic!("expected Set, got {:?}", stmts[0].kind);
+    };
+    assert!(targets.is_empty(), "an assignment form stays in the tail");
+    assert!(tail_names(&stmts[0]).contains(&"v-b"));
+}
+
+#[test]
+fn widget_list_statements_are_head_parsed() {
+    for (source, count, tail) in [
+        (
+            "ENABLE UNLESS-HIDDEN b-ok v-name LABEL \"Name\" WITH FRAME f.",
+            2,
+            Some("f"),
+        ),
+        ("ENABLE ALL EXCEPT b-ok WITH FRAME f.", 0, Some("b-ok")),
+        ("DISABLE b-ok tt.name WITH FRAME f.", 2, Some("f")),
+        ("HIDE FRAME f NO-PAUSE.", 0, Some("f")),
+        ("HIDE STREAM s1 ALL.", 0, None),
+        // The expression parser takes `IN FRAME f` as part of the widget reference.
+        ("HIDE v-name IN FRAME f.", 1, None),
+        ("VIEW C-Win.", 1, None),
+        ("VIEW FRAME f IN WINDOW C-Win.", 0, Some("C-Win")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let items = match &stmts[0].kind {
+            StatementKind::Enable { items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => items,
+            other => panic!("{source}: got {other:?}"),
+        };
+        assert_eq!(items.len(), count, "{source}: {items:?}");
+        if let Some(name) = tail {
+            assert!(
+                tail_names(&stmts[0]).contains(&name),
+                "{source}: {:?}",
+                stmts[0]
+            );
+        }
+    }
+    let stmts = assert_parses_clean("DISABLE TRIGGERS FOR LOAD OF Customer.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
+}
+
+#[test]
+fn apply_is_head_parsed_with_event_and_target() {
+    for (source, has_target, tail) in [
+        ("APPLY \"entry\" TO v-name IN FRAME f.", true, None),
+        ("APPLY \"close\" TO THIS-PROCEDURE.", true, None),
+        ("APPLY v-event TO h-proc.", true, None),
+        ("APPLY (LASTKEY).", false, None),
+        (
+            "APPLY \"choose\" TO BROWSE br-cust.",
+            false,
+            Some("br-cust"),
+        ),
+        ("APPLY \"go\" TO FRAME f.", false, Some("f")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Apply { event, target } = &stmts[0].kind else {
+            panic!("{source}: expected Apply, got {:?}", stmts[0].kind);
+        };
+        assert!(event.is_some(), "{source}");
+        assert_eq!(target.is_some(), has_target, "{source}");
+        if let Some(name) = tail {
+            assert!(tail_names(&stmts[0]).contains(&name), "{source}");
+        }
+    }
+}
+
+#[test]
+fn wait_for_is_head_parsed_with_the_widgets() {
+    for (source, count, tail) in [
+        ("WAIT-FOR CLOSE OF THIS-PROCEDURE.", 1, None),
+        (
+            "WAIT-FOR \"close\":U OF THIS-PROCEDURE, CURRENT-WINDOW.",
+            2,
+            None,
+        ),
+        (
+            "WAIT-FOR ENTER, TAB OF v-name IN FRAME f OR CHOOSE OF b-ok FOCUS v-name.",
+            2,
+            Some("v-name"),
+        ),
+        ("WAIT-FOR GO OF FRAME f.", 0, Some("f")),
+        ("WAIT-FOR frm:ShowDialog().", 0, Some("frm")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::WaitFor { widgets } = &stmts[0].kind else {
+            panic!("{source}: expected WaitFor, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(widgets.len(), count, "{source}: {widgets:?}");
+        if let Some(name) = tail {
+            assert!(tail_names(&stmts[0]).contains(&name), "{source}");
+        }
     }
 }

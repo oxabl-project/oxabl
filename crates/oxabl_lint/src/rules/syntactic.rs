@@ -184,8 +184,49 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_opt(v, item.when_condition.as_ref());
             }
         }
-        StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
+        StatementKind::Message { items, .. }
+        | StatementKind::Put { items, .. }
+        | StatementKind::Form { items }
+        | StatementKind::Enable { items }
+        | StatementKind::WaitFor { widgets: items }
+        | StatementKind::Disable { items }
+        | StatementKind::Hide { items, .. }
+        | StatementKind::View { items, .. } => {
             for e in items {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Export {
+            delimiter, items, ..
+        }
+        | StatementKind::Import {
+            delimiter,
+            targets: items,
+            ..
+        } => {
+            for e in delimiter.iter().chain(items) {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Update { targets } | StatementKind::Set { targets } => {
+            for e in targets {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Pause {
+            duration: a,
+            message: b,
+        }
+        | StatementKind::Apply {
+            event: a,
+            target: b,
+        } => {
+            for e in a.iter().chain(b) {
+                walk_expression(v, e);
+            }
+        }
+        StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+            if let Some(e) = lines {
                 walk_expression(v, e);
             }
         }
@@ -260,6 +301,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         | StatementKind::DefineDataSource { .. }
         | StatementKind::DefineStream { .. }
         | StatementKind::DefineFrame { .. }
+        | StatementKind::DefineWidget { .. }
         | StatementKind::DefineEvent { .. }
         | StatementKind::PreprocDefine { .. }
         | StatementKind::PreprocUndefine { .. }

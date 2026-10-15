@@ -63,20 +63,16 @@ DEF NEW SHARED BUTTON btn LABEL \"x\".
     let diags = check(run, src);
     assert_eq!(
         flagged(src, &diags),
-        [
-            "DEFINE NEW SHARED QUERY",
-            "DEFINE SHARED BROWSE",
-            "DEFINE NEW GLOBAL SHARED MENU",
-            "DEF NEW SHARED BUTTON",
-        ]
+        // A widget definition is modelled far enough to underline its name.
+        ["DEFINE NEW SHARED QUERY", "b1", "m1", "btn"]
     );
     assert_eq!(
         messages(src),
         [
             "`NEW SHARED` query is shared state",
-            "`SHARED` browse is shared state",
-            "`NEW GLOBAL SHARED` menu is shared state",
-            "`NEW SHARED` button is shared state",
+            "`SHARED` browse `b1` is shared state",
+            "`NEW GLOBAL SHARED` menu `m1` is shared state",
+            "`NEW SHARED` button `btn` is shared state",
         ]
     );
 }

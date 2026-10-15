@@ -338,6 +338,7 @@ fn is_unit_stmt(s: &Statement) -> bool {
 fn contains_input(stmts: &[Statement], src: &str) -> bool {
     stmts.iter().any(|s| match &s.kind {
         SK::Skipped { .. } => tokens::skipped_input(src, s.span) == Input::Blocking,
+        SK::Update { .. } | SK::Set { .. } | SK::WaitFor { .. } => true,
         SK::Message { set_targets, .. } => !set_targets.is_empty(),
         _ if is_unit_stmt(s) => false,
         _ => child_lists(s).iter().any(|l| contains_input(l, src)),
@@ -1426,6 +1427,7 @@ impl<'a> Builder<'a> {
             | SK::DefineBuffer { .. }
             | SK::DefineStream { .. }
             | SK::DefineFrame { .. }
+            | SK::DefineWidget { .. }
             | SK::DefineDataset { .. }
             | SK::DefineDataSource { .. }
             | SK::DefineEvent { .. }
@@ -1465,9 +1467,34 @@ impl<'a> Builder<'a> {
             | SK::Assign { .. }
             | SK::Display { .. }
             | SK::Put { .. }
+            | SK::Export { .. }
+            | SK::Down { .. }
+            | SK::Form { .. }
+            | SK::Apply { .. }
+            | SK::Enable { .. }
+            | SK::Disable { .. }
+            | SK::Hide { .. }
+            | SK::View { .. }
+            | SK::Up { .. }
             | SK::StreamIo { .. }
             | SK::Publish { .. }
             | SK::Unsubscribe { .. } => Shape::plain(!self.no_error_text(s)),
+            // Reading past the end of the input, a key pressed during a pause
+            // or user input raises ENDKEY. WAIT-FOR can also be interrupted.
+            SK::Import { .. } | SK::Pause { .. } | SK::Update { .. } | SK::Set { .. } => {
+                Shape::Plain {
+                    raises: !self.no_error_text(s),
+                    endkey: true,
+                    waits: false,
+                    opaque: None,
+                }
+            }
+            SK::WaitFor { .. } => Shape::Plain {
+                raises: !self.no_error_text(s),
+                endkey: true,
+                waits: true,
+                opaque: None,
+            },
             SK::Message { set_targets, .. } => Shape::Plain {
                 raises: !self.no_error_text(s),
                 endkey: !set_targets.is_empty(),
@@ -1508,7 +1535,7 @@ impl<'a> Builder<'a> {
                 _ => Shape::Plain {
                     raises: !self.no_error_text(s),
                     endkey: tokens::skipped_input(self.src, s.span) != Input::None,
-                    waits: tokens::skipped_waits(self.src, s.span),
+                    waits: false,
                     opaque: Some(OpaqueReason::SkippedStatement),
                 },
             },

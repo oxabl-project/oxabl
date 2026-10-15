@@ -350,6 +350,10 @@ impl<'a> Lexer<'a> {
                 '@' => {
                     return Kind::At;
                 }
+                // '^' skips a field in IMPORT and PROMPT-FOR.
+                '^' => {
+                    return Kind::Caret;
+                }
                 // Tilde (~) is ABL's line-continuation character.
                 // Inside &SCOPED-DEFINE / &GLOBAL-DEFINE: skip ~ and \n without ending directive.
                 // Outside directives: also skip ~ followed by \n as a line continuation.

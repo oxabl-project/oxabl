@@ -3299,14 +3299,14 @@ pub const FIXTURES: &[ParityFixture] = &[
             target: "orders.tax-util",
         })],
     },
-    // A constructor inside `EXPORT` is a class and nothing else, so a miss is a
-    // gap.
+    // A constructor inside `ACCUMULATE` is a class and nothing else, so a miss is
+    // a gap.
     class_site_row! {
-        name: "class_site_export_new",
+        name: "class_site_accumulate_new",
         root_file: "report.p",
         siblings: CALC_BASE_SIBLING,
         resolutions: SILENT,
-        source: "EXPORT DELIMITER \",\" NEW orders.calc-base():calc-total().\n",
+        source: "ACCUMULATE NEW orders.calc-base():calc-total() (TOTAL).\n",
         diagnostics: &[],
         needs: &[],
         target: "orders.calc-base",
@@ -3321,7 +3321,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         resolutions: SILENT,
         source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
                  MESSAGE VALID-OBJECT(v-calc).\n\
-                 EXPORT mystery.helper:run().\n",
+                 ACCUMULATE mystery.helper:run() (TOTAL).\n",
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],

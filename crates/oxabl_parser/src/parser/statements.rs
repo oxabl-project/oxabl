@@ -17,8 +17,8 @@ use oxabl_ast::{
     TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
     XmlSerializeOptions,
 };
-use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
+use oxabl_lexer::{Kind, is_callable_kind};
 use smallvec::SmallVec;
 
 use super::{ParseError, ParseResult, Parser};
@@ -427,13 +427,9 @@ impl Parser<'_> {
             return self.parse_message_statement();
         }
 
-        // EXPORT statement: EXPORT [STREAM stream-name] [DELIMITER char] [SKIP [n]] expr... .
-        if self.check(Kind::Export) {
-            self.advance(); // consume EXPORT
-            // Use skip_to_statement_end so field-access dots (e.g. vendor.vend-number) are not
-            // mistaken for the statement-terminating period.
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+        // EXPORT / IMPORT — head-parsed; options stay a skipped tail.
+        if self.check(Kind::Export) || self.check(Kind::Import) {
+            return self.parse_export_import_statement();
         }
 
         // DOS / UNIX / VMS statements: launch the OS command interpreter.
@@ -665,29 +661,31 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
-        // FORM ... — legacy UI form definition, skip to statement end.
-        // Uses skip_to_statement_end() to skip over .field-access in form items.
+        // FORM ... — head-parsed; the frame phrase stays a skipped tail.
         if self.check(Kind::Form) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_form_statement();
         }
 
-        // VIEW [STREAM s] FRAME f — UI frame display statement, skip to statement end.
-        if self.check(Kind::View) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+        // VIEW / HIDE / ENABLE / DISABLE — head-parsed widget lists; frames and
+        // options stay a skipped tail. DISABLE TRIGGERS is a different statement.
+        if self.check(Kind::View)
+            || self.check(Kind::Hide)
+            || self.check(Kind::Enable)
+            || (self.check(Kind::Disable) && self.peek_nth_non_comment(2).kind != Kind::Triggers)
+        {
+            return self.parse_widget_list_statement();
         }
 
-        // HIDE [STREAM s] FRAME f [NO-PAUSE] — UI hide statement, skip to statement end.
-        if self.check(Kind::Hide) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+        // UPDATE / SET — head-parsed; the frame phrase and EDITING block stay a
+        // skipped tail.
+        if self.check(Kind::Update) || self.check(Kind::Set) {
+            return self.parse_update_set_statement();
         }
 
-        // UPDATE / SET / PROMPT-FOR — may contain an EDITING: ... END. sub-block.
+        // PROMPT-FOR — may contain an EDITING: ... END. sub-block.
         // Skip tokens until a statement-ending period, but if we encounter EDITING:
         // along the way, parse the editing block body before consuming the outer END.
-        if self.check(Kind::Update) || self.check(Kind::Set) || self.check(Kind::PromptFor) {
+        if self.check(Kind::PromptFor) {
             let (_, hi) = self.skip_to_statement_end_editing_aware();
             return Ok(self.skipped_stmt(hi));
         }
@@ -722,21 +720,33 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt_value_operands(hi));
         }
 
-        if self.check(Kind::Pause)
-            || self.check(Kind::Import)
-            || self.check(Kind::OsDir)
+        // WAIT-FOR events OF widgets [OR ...] — head-parsed; options stay a skipped tail.
+        if self.check(Kind::WaitFor) {
+            return self.parse_wait_for_statement();
+        }
+
+        // APPLY event [TO widget] — head-parsed; options stay a skipped tail.
+        if self.check(Kind::Apply) {
+            return self.parse_apply_statement();
+        }
+
+        // PAUSE / DOWN / UP — head-parsed; options stay a skipped tail.
+        if self.check(Kind::Pause) {
+            return self.parse_pause_statement();
+        }
+        if self.check(Kind::Down) || self.check(Kind::Up) {
+            return self.parse_down_up_statement();
+        }
+
+        if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
-            || self.check(Kind::Enable)
             || self.check(Kind::Accumulate)
             || self.check(Kind::Accum) // abbreviation of ACCUMULATE
-            || self.check(Kind::Down)
             || self.check(Kind::Open)
-            || self.check(Kind::Apply)
             || self.check(Kind::Status)
             || self.check(Kind::Get)
             || self.check(Kind::Clear)
-            || self.check(Kind::Hide)
             // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             || self.check(Kind::Format)
             || self.check(Kind::Form)
@@ -745,14 +755,10 @@ impl Parser<'_> {
             // CONNECT/DISCONNECT — database connection management statements.
             || self.check(Kind::Connect)
             || self.check(Kind::Disconnect)
-            // WAIT-FOR event OF widget. — ABL UI event loop.
-            || self.check(Kind::WaitFor)
             // COLOR statement — terminal color settings (e.g. COLOR DISPLAY NORMAL ... WITH FRAME name.)
             || self.check(Kind::Color)
             // READKEY [PAUSE n]. — reads next keypress from keyboard.
             || self.check(Kind::Readkey)
-            // UP n [WITH FRAME name]. — scroll up n lines in a frame.
-            || self.check(Kind::Up)
             // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
             || self.check(Kind::GetKeyValue)
             // NEXT-PROMPT field [WITH FRAME name]. — legacy UI cursor hint.
@@ -1216,8 +1222,15 @@ impl Parser<'_> {
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
-        // etc. that are not separately handled. Skip the whole DEFINE statement.
+        // etc. that are not separately handled. The widget name is declared; the
+        // rest of the statement is a skipped tail.
         if self.check(Kind::Browse) || self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
+            if Self::can_be_identifier(self.peek_nth_non_comment(2).kind) {
+                self.advance(); // consume the widget type
+                let name = self.parse_identifier()?;
+                let tail = self.skip_tail_to_statement_end();
+                return Ok(self.stmt_with_tail(StatementKind::DefineWidget { name }, tail));
+            }
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
@@ -3963,6 +3976,404 @@ impl Parser<'_> {
         }
 
         Ok(expr)
+    }
+
+    /// `[STREAM s]` at the head of a stream statement. `Err(())` when the stream
+    /// is not a plain name (`STREAM-HANDLE h`, `STREAM 2dstream`), with the
+    /// cursor left on it: the caller then keeps the rest as the skipped tail.
+    fn parse_stream_head(&mut self) -> Result<Option<Identifier>, ()> {
+        if self.check(Kind::StreamHandle) {
+            return Err(());
+        }
+        if !self.check(Kind::Stream) {
+            return Ok(None);
+        }
+        let mark = self.current;
+        self.advance();
+        match self.parse_identifier() {
+            Ok(name) => Ok(Some(name)),
+            Err(_) => {
+                self.current = mark;
+                Err(())
+            }
+        }
+    }
+
+    /// One expression of a head-parsed item list, unless the cursor is at the
+    /// statement end or at a token `stop` accepts. An expression that does not
+    /// parse yields `None` with the cursor left before it.
+    fn parse_head_item(&mut self, stop: impl Fn(Kind) -> bool) -> Option<Expression> {
+        if self.check(Kind::Period) || self.at_end() || stop(self.peek().kind) {
+            return None;
+        }
+        let mark = self.current;
+        match self.parse_expression() {
+            Ok(e) if self.current > mark => Some(e),
+            _ => {
+                self.current = mark;
+                None
+            }
+        }
+    }
+
+    /// `EXPORT [STREAM s] [DELIMITER c] item ...` and
+    /// `IMPORT [STREAM s] [DELIMITER c | UNFORMATTED] {target | ^} ...`. Items are
+    /// parsed up to `EXCEPT`, `NO-LOBS` or `NO-ERROR`; the rest is the skipped tail.
+    fn parse_export_import_statement(&mut self) -> ParseResult<Statement> {
+        let import = self.check(Kind::Import);
+        self.advance(); // consume EXPORT / IMPORT
+
+        let mut stream_name = None;
+        let mut delimiter = None;
+        let mut items = Vec::new();
+        if let Ok(stream) = self.parse_stream_head() {
+            stream_name = stream;
+            if self.check(Kind::Delimiter) {
+                self.advance();
+                let mark = self.current;
+                match self.parse_expression() {
+                    Ok(e) => delimiter = Some(e),
+                    Err(_) => self.current = mark,
+                }
+            } else if import && self.check(Kind::Unformatted) {
+                self.advance();
+            }
+            if delimiter.is_some() || !self.check(Kind::Delimiter) {
+                let stop = |k: Kind| matches!(k, Kind::Except | Kind::NoLobs | Kind::NoError);
+                if import {
+                    loop {
+                        if self.check(Kind::Caret) {
+                            self.advance();
+                            continue;
+                        }
+                        let mark = self.current;
+                        let Some(target) = self.parse_head_item(stop) else {
+                            break;
+                        };
+                        if !matches!(
+                            target.kind,
+                            ExpressionKind::Identifier(_)
+                                | ExpressionKind::FieldAccess { .. }
+                                | ExpressionKind::ArrayAccess { .. }
+                        ) {
+                            self.current = mark;
+                            break;
+                        }
+                        items.push(target);
+                    }
+                } else {
+                    while let Some(item) = self.parse_head_item(stop) {
+                        items.push(item);
+                    }
+                }
+            }
+        }
+
+        let tail = self.skip_tail_to_statement_end();
+        let kind = if import {
+            StatementKind::Import {
+                stream_name,
+                delimiter,
+                targets: items,
+            }
+        } else {
+            StatementKind::Export {
+                stream_name,
+                delimiter,
+                items,
+            }
+        };
+        Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// `PAUSE [n] [BEFORE-HIDE] [MESSAGE msg | NO-MESSAGE] [IN WINDOW h]`.
+    fn parse_pause_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume PAUSE
+        let options = |k: Kind| {
+            matches!(
+                k,
+                Kind::BeforeHide | Kind::Message | Kind::NoMessage | Kind::KwIn
+            )
+        };
+        let duration = self.parse_head_item(options);
+        let mut message = None;
+        loop {
+            if self.check(Kind::BeforeHide) || self.check(Kind::NoMessage) {
+                self.advance();
+            } else if self.check(Kind::Message) && message.is_none() {
+                self.advance();
+                message = self.parse_head_item(options);
+            } else {
+                break;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Pause { duration, message }, tail))
+    }
+
+    /// `FORM [item ...] [{HEADER | BACKGROUND} item ...] [EXCEPT ...] [frame-phrase]`.
+    fn parse_form_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume FORM
+        let items = self.parse_frame_items(false);
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+    }
+
+    /// `WAIT-FOR event-list OF widget-list [OR event-list OF widget-list]...`.
+    /// Event names are not symbols and are dropped; `FRAME f`, `FOCUS`, `PAUSE`
+    /// and a form without `OF` (`WAIT-FOR obj:ShowDialog()`) stay in the skipped tail.
+    fn parse_wait_for_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume WAIT-FOR
+        let mut widgets = Vec::new();
+        'lists: loop {
+            let events = self.current;
+            while !self.check(Kind::Of) {
+                if self.at_end() || self.check(Kind::Period) || self.check(Kind::LeftParen) {
+                    self.current = events;
+                    break 'lists;
+                }
+                self.advance();
+            }
+            self.advance(); // consume OF
+            loop {
+                if matches!(self.peek().kind, Kind::Frame | Kind::Browse | Kind::Period) {
+                    break 'lists;
+                }
+                let mark = self.current;
+                match self.parse_comparison() {
+                    Ok(e) if self.current > mark => widgets.push(e),
+                    _ => {
+                        self.current = mark;
+                        break 'lists;
+                    }
+                }
+                if !self.check(Kind::Comma) {
+                    break;
+                }
+                self.advance();
+            }
+            if !self.check(Kind::Or) {
+                break;
+            }
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::WaitFor { widgets }, tail))
+    }
+
+    /// `APPLY event [TO widget]`. A target that is not an expression (`FRAME f`,
+    /// `BROWSE b`) stays in the skipped tail.
+    fn parse_apply_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume APPLY
+        let event = self.parse_head_item(|k| k == Kind::To);
+        let mut target = None;
+        if event.is_some() && self.check(Kind::To) {
+            let to = self.current;
+            self.advance();
+            target = self.parse_head_item(|k| matches!(k, Kind::Frame | Kind::Browse));
+            if target.is_none() {
+                self.current = to;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Apply { event, target }, tail))
+    }
+
+    /// `ENABLE` / `DISABLE` `[UNLESS-HIDDEN] {ALL | widget [format-phrase] ...}
+    /// [frame-phrase]` and `HIDE` / `VIEW` `[STREAM s] [widget ...]`. `ALL`,
+    /// `FRAME f`, `MESSAGE`, `IN FRAME f` and `IN WINDOW w` end the list.
+    fn parse_widget_list_statement(&mut self) -> ParseResult<Statement> {
+        let verb = self.peek().kind;
+        self.advance(); // consume the verb
+        let mut stream_name = None;
+        let mut items = Vec::new();
+        let head = if matches!(verb, Kind::Hide | Kind::View) {
+            self.parse_stream_head().map(|s| stream_name = s)
+        } else {
+            if self.check(Kind::UnlessHidden) {
+                self.advance();
+            }
+            Ok(())
+        };
+        if head.is_ok() {
+            items = self.parse_frame_items(false);
+        }
+        let tail = self.skip_tail_to_statement_end();
+        let kind = match verb {
+            Kind::Hide => StatementKind::Hide { stream_name, items },
+            Kind::View => StatementKind::View { stream_name, items },
+            Kind::Enable => StatementKind::Enable { items },
+            _ => StatementKind::Disable { items },
+        };
+        Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// `UPDATE` / `SET` `[UNLESS-HIDDEN] {field [format-phrase] | ^ | constant}... [frame-phrase]
+    /// [EDITING: ... END]`. The editing block is part of the skipped tail.
+    fn parse_update_set_statement(&mut self) -> ParseResult<Statement> {
+        let update = self.check(Kind::Update);
+        self.advance(); // consume UPDATE / SET
+        if self.check(Kind::UnlessHidden) {
+            self.advance();
+        }
+        let targets = self.parse_frame_items(true);
+        let range = self.skip_to_statement_end_editing_aware();
+        let tail = self.skipped_tail(range);
+        let kind = if update {
+            StatementKind::Update { targets }
+        } else {
+            StatementKind::Set { targets }
+        };
+        Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// The items of a FORM, UPDATE or SET list, each with its format options.
+    /// The list ends at the first token that does not start an item. With
+    /// `targets`, only fields, variables and records are items (constants and
+    /// `^` are passed over), and an option operand that is not a literal ends
+    /// the list.
+    fn parse_frame_items(&mut self, targets: bool) -> Vec<Expression> {
+        let mut items = Vec::new();
+        'items: loop {
+            if !targets && (self.check(Kind::Header) || self.check(Kind::Background)) {
+                self.advance();
+                continue;
+            }
+            if targets && self.check(Kind::Caret) {
+                self.advance();
+                continue;
+            }
+            if self.check(Kind::Skip) || self.check(Kind::Space) {
+                let mark = self.current;
+                self.advance();
+                if self.check(Kind::LeftParen) {
+                    match self.parse_head_item(|_| false) {
+                        Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
+                        Some(e) if !targets => items.push(e),
+                        _ => {
+                            self.current = mark;
+                            break;
+                        }
+                    }
+                } else if self.check(Kind::IntegerLiteral) {
+                    self.advance();
+                }
+                continue;
+            }
+            if !self.starts_form_item() {
+                break;
+            }
+            let mark = self.current;
+            let Some(item) = self.parse_head_item(|_| false) else {
+                break;
+            };
+            // `name AS type` and `name LIKE field` declare a frame-only variable.
+            if self.check(Kind::KwAs) || self.check(Kind::Like) {
+                self.current = mark;
+                break;
+            }
+            match item.kind {
+                ExpressionKind::Literal(_) if targets => {}
+                ExpressionKind::Identifier(_)
+                | ExpressionKind::FieldAccess { .. }
+                | ExpressionKind::ArrayAccess { .. } => items.push(item),
+                _ if targets => {
+                    self.current = mark;
+                    break;
+                }
+                _ => items.push(item),
+            }
+            loop {
+                match self.peek().kind {
+                    Kind::Format | Kind::Form | Kind::Label | Kind::ColumnLabel | Kind::Help => {
+                        self.advance();
+                        self.skip_format_value();
+                    }
+                    Kind::At => {
+                        // `AT ROW r COLUMN c` and `AT X x Y y` are not modelled.
+                        if self.peek_nth_non_comment(2).kind == Kind::Identifier {
+                            break 'items;
+                        }
+                        let at = self.current;
+                        self.advance();
+                        match self.parse_head_item(|_| false) {
+                            Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
+                            Some(e) if !targets => items.push(e),
+                            _ => {
+                                self.current = at;
+                                break 'items;
+                            }
+                        }
+                    }
+                    Kind::To | Kind::Colon
+                        if matches!(
+                            self.peek_nth_non_comment(2).kind,
+                            Kind::IntegerLiteral | Kind::DecimalLiteral
+                        ) =>
+                    {
+                        self.advance();
+                        self.advance();
+                    }
+                    Kind::NoLabels
+                    | Kind::NoAttrSpace
+                    | Kind::AutoReturn
+                    | Kind::Deblank
+                    | Kind::Blank => {
+                        self.advance();
+                    }
+                    _ => break,
+                }
+            }
+        }
+        items
+    }
+
+    /// Whether the cursor starts a FORM item. A name followed by a number is an
+    /// option the lexer does not classify (`BGCOLOR 3`, `ROW 2`), not an item.
+    fn starts_form_item(&self) -> bool {
+        match self.peek().kind {
+            Kind::StringLiteral
+            | Kind::IntegerLiteral
+            | Kind::DecimalLiteral
+            | Kind::Question
+            | Kind::LeftParen
+            | Kind::Minus => true,
+            k if is_callable_kind(k) => !matches!(
+                self.peek_nth_non_comment(2).kind,
+                Kind::IntegerLiteral | Kind::DecimalLiteral
+            ),
+            _ => false,
+        }
+    }
+
+    /// `DOWN [STREAM s] [n] [frame-phrase]`, and the same for `UP`. The stream
+    /// may also follow the line count.
+    fn parse_down_up_statement(&mut self) -> ParseResult<Statement> {
+        let up = self.check(Kind::Up);
+        self.advance(); // consume DOWN / UP
+        let mut stream_name = None;
+        let mut lines = None;
+        if let Ok(stream) = self.parse_stream_head() {
+            stream_name = stream;
+            lines = self.parse_head_item(|k| {
+                matches!(
+                    k,
+                    Kind::With | Kind::Frame | Kind::Stream | Kind::StreamHandle
+                )
+            });
+            if stream_name.is_none()
+                && let Ok(stream) = self.parse_stream_head()
+            {
+                stream_name = stream;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        let kind = if up {
+            StatementKind::Up { stream_name, lines }
+        } else {
+            StatementKind::Down { stream_name, lines }
+        };
+        Ok(self.stmt_with_tail(kind, tail))
     }
 
     // Parse DISPLAY statement

@@ -328,6 +328,9 @@ impl<'a> Walker<'a> {
             StatementKind::DefineFrame { name, .. } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
             }
+            StatementKind::DefineWidget { name } => {
+                self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
+            }
             StatementKind::DefineEvent {
                 access,
                 is_static,
@@ -2594,7 +2597,7 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
             }
-            StatementKind::DefineStream { .. } => {}
+            StatementKind::DefineStream { .. } | StatementKind::DefineWidget { .. } => {}
             StatementKind::DefineFrame { raw_span, .. } => {
                 self.note_unmodelled_text(*raw_span, scope);
             }
@@ -3008,6 +3011,94 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
                 for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Export {
+                stream_name,
+                delimiter,
+                items,
+            }
+            | StatementKind::Import {
+                stream_name,
+                delimiter,
+                targets: items,
+            } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                if let Some(d) = delimiter {
+                    self.walk_expression(d, scope, AccessMode::Read);
+                }
+                let mode = if matches!(stmt.kind, StatementKind::Import { .. }) {
+                    AccessMode::Write
+                } else {
+                    AccessMode::Read
+                };
+                for e in items {
+                    self.walk_expression(e, scope, mode);
+                }
+            }
+            StatementKind::Form { items }
+            | StatementKind::Enable { items }
+            | StatementKind::WaitFor { widgets: items }
+            | StatementKind::Disable { items } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Hide { stream_name, items }
+            | StatementKind::View { stream_name, items } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Update { targets } => {
+                for e in targets {
+                    self.walk_expression(e, scope, AccessMode::ReadWrite);
+                }
+            }
+            StatementKind::Set { targets } => {
+                for e in targets {
+                    self.walk_expression(e, scope, AccessMode::Write);
+                }
+            }
+            StatementKind::Pause {
+                duration: a,
+                message: b,
+            }
+            | StatementKind::Apply {
+                event: a,
+                target: b,
+            } => {
+                for e in a.iter().chain(b) {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Down { stream_name, lines }
+            | StatementKind::Up { stream_name, lines } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                if let Some(e) = lines {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }

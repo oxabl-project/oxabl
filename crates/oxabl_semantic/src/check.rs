@@ -88,7 +88,7 @@ impl<'a> CheckWalker<'a> {
             StatementKind::DefineDataset { .. } => {}
             StatementKind::DefineDataSource { .. } => {}
             StatementKind::DefineStream { .. } => {}
-            StatementKind::DefineFrame { .. } => {}
+            StatementKind::DefineFrame { .. } | StatementKind::DefineWidget { .. } => {}
             StatementKind::DefineEvent { parameters, .. } => {
                 let s = self
                     .find_child_scope(scope, stmt, ScopeKind::Method)
@@ -326,8 +326,49 @@ impl<'a> CheckWalker<'a> {
                     }
                 }
             }
-            StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
+            StatementKind::Message { items, .. }
+            | StatementKind::Put { items, .. }
+            | StatementKind::Form { items }
+            | StatementKind::Enable { items }
+            | StatementKind::WaitFor { widgets: items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => {
                 for e in items {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Export {
+                delimiter, items, ..
+            }
+            | StatementKind::Import {
+                delimiter,
+                targets: items,
+                ..
+            } => {
+                for e in delimiter.iter().chain(items) {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Update { targets } | StatementKind::Set { targets } => {
+                for e in targets {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Pause {
+                duration: a,
+                message: b,
+            }
+            | StatementKind::Apply {
+                event: a,
+                target: b,
+            } => {
+                for e in a.iter().chain(b) {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+                if let Some(e) = lines {
                     self.check_expression(e, scope);
                 }
             }

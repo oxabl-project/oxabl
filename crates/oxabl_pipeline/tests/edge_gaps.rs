@@ -210,7 +210,7 @@ fn an_unmodelled_statement_naming_a_class_is_an_edge_or_degrades_the_set() {
     assert!(found.completeness().is_complete());
 
     let lost = pipeline
-        .edge_set("EXPORT orders.nothere:two().\n")
+        .edge_set("ACCUMULATE orders.nothere:two() (TOTAL).\n")
         .expect("edge set");
     assert_eq!(lost.of_kind(EdgeKind::ClassReference).count(), 0);
     assert_eq!(
@@ -1073,7 +1073,7 @@ fn a_generic_types_arguments_follow_the_files_imports() {
 #[test]
 fn a_generic_new_in_an_unmodelled_statement_names_its_arguments() {
     for statement in [
-        "EXPORT NEW Progress.Collections.List<{}>().",
+        "ACCUMULATE NEW Progress.Collections.List<{}>() (TOTAL).",
         "PUT UNFORMATTED NEW Progress.Collections.List<{}>():ToString() SKIP.",
     ] {
         let (targets, _) = generic_rows(&statement.replace("{}", "pkg.Thing"));
