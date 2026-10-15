@@ -377,6 +377,11 @@ keyword_type = "Statement"
 name = "FINALLY"
 keyword_type = "Statement"
 
+# STOP is unreserved; no abbreviation
+[[add]]
+name = "STOP"
+keyword_type = "Statement"
+
 # =============================================================================
 # OO-ABL KEYWORDS
 # Object-oriented ABL constructs — all unreserved, no abbreviations
@@ -432,6 +437,32 @@ keyword_type = "Option"
 [[add]]
 name = "PACKAGE-PRIVATE"
 keyword_type = "Option"
+
+[[add]]
+name = "PACKAGE-PROTECTED"
+keyword_type = "Option"
+
+# EXTERNAL procedure options
+[[add]]
+name = "ORDINAL"
+keyword_type = "Option"
+
+[[add]]
+name = "CDECL"
+keyword_type = "Option"
+
+[[add]]
+name = "PASCAL"
+keyword_type = "Option"
+
+[[add]]
+name = "STDCALL"
+keyword_type = "Option"
+
+# Unreserved statement keyword the parser dispatches on
+[[add]]
+name = "RAW-TRANSFER"
+keyword_type = "Statement"
 
 # Member qualifiers
 [[add]]
@@ -822,6 +853,56 @@ min_abbreviation = "COMP"
 [[add]]
 name = "NO-APPLY"
 reserved = false
+keyword_type = "Option"
+
+# =============================================================================
+# TYPE-OF
+# Unreserved built-in function whose second argument names a type; the
+# dependency scan of not-taken &IF text dispatches on it.
+# =============================================================================
+
+[[add]]
+name = "TYPE-OF"
+keyword_type = "Function"
+
+# =============================================================================
+# BYTE-ORDER CONSTANTS
+# The reserved-keyword file lists BIG-ENDIAN and HOST-BYTE-ORDER with spaces,
+# so the hyphenated spelling real code uses never matched. Replace them with
+# the hyphenated forms (LITTLE-ENDIAN is already correct).
+# =============================================================================
+
+[[remove]]
+name = "big endian"
+
+[[remove]]
+name = "host byte order"
+
+[[add]]
+name = "BIG-ENDIAN"
+reserved = true
+keyword_type = "System"
+
+[[add]]
+name = "HOST-BYTE-ORDER"
+reserved = true
+keyword_type = "System"
+
+# BEFORE-HIDE is listed with a space in the reserved index ("BEFORE HIDE"), which
+# the lexer never sees. PAUSE ... BEFORE-HIDE dispatches on the hyphenated form.
+[[remove]]
+name = "before hide"
+
+[[add]]
+name = "BEFORE-HIDE"
+reserved = true
+min_abbreviation = "BEFORE-H"
+keyword_type = "Option"
+
+# UPDATE / SET / ENABLE / DISABLE UNLESS-HIDDEN: the head parse of UPDATE and
+# SET must not read it as a target name.
+[[add]]
+name = "UNLESS-HIDDEN"
 keyword_type = "Option"
 
 # =============================================================================

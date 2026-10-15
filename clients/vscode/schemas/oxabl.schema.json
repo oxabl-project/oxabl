@@ -235,9 +235,40 @@
       },
       "type": "object"
     },
+    "SourceEncoding": {
+      "description": "The character encoding of ABL source files on disk (`[workspace.sources].encoding`).\n\nEvery encoding decodes to the same Unicode text in memory; spans and offsets the tools report are byte offsets into that text.",
+      "oneOf": [
+        {
+          "description": "UTF-8. A file with invalid UTF-8 cannot be read.",
+          "enum": [
+            "utf-8"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "ISO 8859-1 (Latin-1): every byte is the code point of the same value.",
+          "enum": [
+            "iso-8859-1"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Windows code page 1252. Every byte decodes; the five bytes the code page leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) become the C1 control of the same value.",
+          "enum": [
+            "windows-1252"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "SourcesConfig": {
       "description": "The `[workspace.sources]` section.",
       "properties": {
+        "case_insensitive_lookup": {
+          "default": false,
+          "description": "When a class or `RUN` target is not found under the spelling the source used or its lower-case fold, look for a file whose path matches ignoring case. Default `false`.\n\nMeant for a case-sensitive filesystem holding a tree written for a case-insensitive one (`RUN Sub/Prog.p` stored as `sub/prog.p`). It lists directories on every miss, so it costs more than the default lookup. Two distinct matches still leave the name unresolved.",
+          "type": "boolean"
+        },
         "directories": {
           "default": [],
           "description": "Directories to walk for ABL *root* files — `.p`, `.w`, `.cls`, and `.v`, matched case-insensitively. `.i` is deliberately not among them: an include fragment is never a root, and `is_root_file` is the one policy that decides.",
@@ -246,9 +277,49 @@
           },
           "type": "array"
         },
+        "encoding": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SourceEncoding"
+            }
+          ],
+          "description": "The character encoding of source files: `\"utf-8\"` (the default), `\"iso-8859-1\"` or `\"windows-1252\"`.\n\nIt applies to every file read from disk: roots, include files, classes and `.df` schema files, and `oxabl format` writes a file back in the same encoding. A UTF-8 byte order mark always means UTF-8 and is removed, whatever this says. `\"utf-8\"` rejects a file with invalid UTF-8; see `fallback_encoding`."
+        },
+        "fallback_encoding": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceEncoding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The encoding to use for a file that is not valid UTF-8. Unset by default, so such a file cannot be read.\n\nFor a tree that mixes UTF-8 files and single-byte ones. It only matters when `encoding` is `\"utf-8\"`: a single-byte encoding decodes every file."
+        },
         "include_paths": {
           "default": [],
           "description": "Include search paths, searched in order (PROPATH equivalent).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root_extensions": {
+          "default": [
+            "p",
+            "w",
+            "cls",
+            "v"
+          ],
+          "description": "Extensions that make a file an ABL *root* when a directory is walked, written without the dot and matched case-insensitively. Default `[\"p\", \"w\", \"cls\", \"v\"]`.\n\nUse it for shop conventions such as `.pp` or `.cgi`. It decides which files `oxabl check` and the other directory walks pick up; a file named on the command line is always accepted. A leading dot is ignored. An entry that is empty, holds a path separator, or is `i` is dropped with a warning: an include fragment is never a root. The list replaces the default, so keep the defaults you still need.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root_relative_include_paths": {
+          "default": [],
+          "description": "Search paths resolved against the directory of each root file and searched before `include_paths`, in order. Default empty.\n\nFor a shop that compiles each program with its own directory, or fixed subdirectories of it, first on the PROPATH: `[\".\", \"rf\"]` searches `<dir>` and `<dir>/rf` for a root in `<dir>`. Includes, classes and `RUN` targets are all searched this way; an indexed class or program reads its own includes with the paths of its own directory.",
           "items": {
             "type": "string"
           },

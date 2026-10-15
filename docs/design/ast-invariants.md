@@ -220,8 +220,8 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 
 - Around thirty statement forms are matched by their leading keyword and then skipped
   wholesale by one of the four skip helpers (`skip_to_period`, `skip_to_statement_end`,
-  `skip_to_statement_end_editing_aware`, `skip_to_statement_end_triggers_aware`): `PUT`,
-  `EXPORT`, `UPDATE`, `SET`, `ENABLE`, `DISABLE`, `APPLY`, embedded SQL, and the rest.
+  `skip_to_statement_end_editing_aware`, `skip_to_statement_end_triggers_aware`):
+  `PROMPT-FOR`, `COPY-LOB`, `REPOSITION`, `COLOR`, embedded SQL, and the rest.
 - **Invariant:** these emit `Statement::Skipped`, never `Empty`. The distinction is
   load-bearing — these forms carry real variable traffic in both directions, so a consumer
   that reasons about whether a variable was touched must not read them as "nothing happened".
@@ -289,6 +289,50 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   **Invariant:** a form whose operands are paths or literals gets its harvest deleted rather
   than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
   operands earn a head-parse, path-shaped ones earn an empty name list.
+
+- **`PUT`, `EXPORT`, `IMPORT`, `PAUSE`, `DOWN`, `UP`, `FORM`, `UPDATE`, `SET`, `ENABLE`,
+  `DISABLE`, `HIDE`, `VIEW`, `APPLY` and `WAIT-FOR` are head-parsed** into their own
+  variants. The stream, the delimiter, the item expressions, the `PAUSE` duration
+  and message and the `DOWN`/`UP` line count are modelled; the option clauses after them
+  (`FORMAT`, `EXCEPT`, `NO-LOBS`, `IN WINDOW`, the frame phrase, ...) ride on
+  `Statement::skipped_tail`. A `FORM` item list ends at the first token that does not
+  start an item (`VIEW-AS`, `AT ROW`, an unclassified option such as `BGCOLOR 3`), so an
+  option the parser does not know is never read as a name. A `FORM` item `name AS type`
+  or `name LIKE field` declares a frame field: it goes to `fields`, not `items`, and the
+  list goes on. In the other forms it still ends the list.
+  **Invariant:** an `IMPORT` or `SET` target is credited as a write, an `UPDATE` target as
+  a read and a write, and every other head operand as a read. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
+  in the tail; the form never falls back to `Skipped`.
+
+- **Frame fields are declarations.** The `name AS type` / `name LIKE field` items of a
+  `FORM` and of a `DEFINE FRAME` body are `FrameField`s in the variant's `fields`. The
+  rest of a `DEFINE FRAME` body stays unparsed. The semantic layer declares each one as a
+  variable, scoped like `DEFINE VARIABLE`, unless a variable of that name is already in
+  scope.
+
+- **Static widget definitions declare their name.** `DEFINE BUTTON`, `BROWSE`,
+  `RECTANGLE`, `IMAGE`, `MENU` and `SUB-MENU` parse to `StatementKind::DefineWidget`, and
+  the name is declared in the value namespace as a `SymbolKind::Widget`, so a `FORM` or
+  `DISPLAY` item naming the widget resolves. The rest of the definition is a skipped tail.
+
+**`Statement::skipped_tail` — a modelled statement discarded a trailing range.**
+`DISPLAY … WITH FRAME f TITLE x`, `RETURN ERROR expr`, the `VIEW-AS` tail of a `DEFINE
+VARIABLE`, `RUN` trailing content, `ASSIGN FRAME f`, `FUNCTION … IN super`, `DEFINE
+STREAM`/`DEFINE FRAME` options and the stream-I/O option tails keep their real
+`StatementKind`. The identifiers of the range they skipped ride on the wrapper, not the
+kind.
+
+- **Invariant:** the field is `None` unless the lexical filter kept at least one name, and
+  it never changes which `StatementKind` a form produces.
+- **Invariant:** the names get the same treatment as a `Skipped` node's — a silent,
+  non-counting lookup that can only mark a symbol as unjudgeable. They never produce a
+  `references` entry, so they cannot reach LINT0001 or LINT0003, and they are not offered to
+  the table namespaces.
+- The tail's class-shaped runs (`name:member`, `NEW name(`) are offered to the class lookup,
+  as a `Skipped` node's are, from the first harvested name to the statement's end. A run that
+  resolves is a dependency edge; one that cannot be told from a handle or a field degrades
+  the edge set.
+- The field is excluded from `PartialEq`, like `id` and `span`.
 
 ## 9. Property body distinguishes absence from emptiness
 

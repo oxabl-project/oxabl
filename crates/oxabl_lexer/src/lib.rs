@@ -112,6 +112,15 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
+        let rest = self.chars.as_str();
+        let count = rest
+            .as_bytes()
+            .iter()
+            .take_while(|&&b| {
+                matches!(b, b' ' | b'\t' | b'\r') || (b == b'\n' && !self.in_directive)
+            })
+            .count();
+        self.chars = rest[count..].chars();
         while let Some(c) = self.peek() {
             match c {
                 ' ' | '\t' | '\r' => {
@@ -350,6 +359,10 @@ impl<'a> Lexer<'a> {
                 '@' => {
                     return Kind::At;
                 }
+                // '^' skips a field in IMPORT and PROMPT-FOR.
+                '^' => {
+                    return Kind::Caret;
+                }
                 // Tilde (~) is ABL's line-continuation character.
                 // Inside &SCOPED-DEFINE / &GLOBAL-DEFINE: skip ~ and \n without ending directive.
                 // Outside directives: also skip ~ followed by \n as a line continuation.
@@ -454,9 +467,7 @@ impl<'a> Lexer<'a> {
                     } else {
                         end - 1 // strip closing quote only
                     };
-                value = TokenValue::String(OxablAtom::from(
-                    self.source[start + 1..content_end].to_string(),
-                ));
+                value = TokenValue::String(OxablAtom::from(&self.source[start + 1..content_end]));
             }
             Kind::KwTrue => value = TokenValue::Boolean(true),
             Kind::KwFalse => value = TokenValue::Boolean(false),
@@ -567,25 +578,23 @@ impl<'a> Lexer<'a> {
         // compilation and get flagged later on in the parser.
         // It should still match "my-var1" though.
         let mut escaped = self.source.as_bytes().get(start) == Some(&b'\\');
-        loop {
-            if matches!(
-                self.peek(),
-                Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
-            ) {
-                self.advance();
-            } else if self.peek() == Some('\\')
-                && matches!(
-                    self.chars.clone().nth(1),
-                    Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
-                )
+        let rest = self.chars.as_str();
+        let bytes = rest.as_bytes();
+        let word_byte = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'#' | b'$');
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            if word_byte(bytes[consumed]) {
+                consumed += 1;
+            } else if bytes[consumed] == b'\\'
+                && bytes.get(consumed + 1).is_some_and(|&b| word_byte(b))
             {
-                self.advance(); // backslash
-                self.advance(); // escaped word character
+                consumed += 2;
                 escaped = true;
             } else {
                 break;
             }
         }
+        self.chars = rest[consumed..].chars();
 
         // NOW we have the full word
         let raw = &self.source[start..self.offset()];
@@ -936,6 +945,56 @@ mod tests {
         // Non-functions must not be.
         assert!(!is_builtin_function("frobnicate"));
         assert!(!is_builtin_function("define"));
+    }
+
+    #[test]
+    fn pseudo_functions_and_constants_are_registered() {
+        // Assignable pseudo-functions, the byte-order constants, the `INPUT FROM`
+        // source and the record-buffer test, none of which is a plain
+        // `<NAME> function` entry in the index.
+        for name in [
+            "fix-codepage",
+            "set-size",
+            "set-byte-order",
+            "set-pointer-value",
+            "put-bits",
+            "put-byte",
+            "put-bytes",
+            "put-double",
+            "put-float",
+            "put-int64",
+            "put-long",
+            "put-short",
+            "put-string",
+            "put-unsigned-long",
+            "put-unsigned-short",
+            "overlay",
+            "entry",
+            "substring",
+            "length",
+            "extent",
+            "big-endian",
+            "little-endian",
+            "host-byte-order",
+            "os-dir",
+            "new",
+            "widget-h",
+        ] {
+            assert!(is_builtin_function(name), "`{name}` should be a built-in");
+        }
+    }
+
+    #[test]
+    fn byte_order_constants_lex_as_keywords() {
+        for (source, kind) in [
+            ("BIG-ENDIAN", Kind::BigEndian),
+            ("LITTLE-ENDIAN", Kind::LittleEndian),
+            ("HOST-BYTE-ORDER", Kind::HostByteOrder),
+            ("OS-DIR", Kind::OsDir),
+        ] {
+            let tokens = collect_tokens(source);
+            assert_eq!(tokens[0].kind, kind, "{source}");
+        }
     }
 
     #[test]
@@ -2403,6 +2462,27 @@ mod iterator_tests {
         let first_two: Vec<Token> = Lexer::new("MESSAGE \"x\". DISPLAY y.").take(2).collect();
         assert_eq!(first_two.len(), 2);
         assert_eq!(first_two[0].kind, tokenize("MESSAGE \"x\".")[0].kind);
+    }
+}
+
+#[cfg(test)]
+mod byte_scan_tests {
+    use super::*;
+
+    #[test]
+    fn byte_scans_stop_at_unicode_and_keep_escaped_identifier_spans() {
+        let source = " \t\r\nname_1-$# \\na\\me éword\n&SCOPED-DEFINE v one\nNO LOCK\n";
+        let tokens = tokenize(source);
+        let authored: Vec<_> = tokens
+            .iter()
+            .map(|t| (t.kind, &source[t.start..t.end]))
+            .collect();
+        assert_eq!(authored[0], (Kind::Identifier, "name_1-$#"));
+        assert_eq!(authored[1], (Kind::Identifier, "\\na\\me"));
+        assert_eq!(tokens[1].value, TokenValue::String("name".into()));
+        assert!(authored.contains(&(Kind::PreprocEnd, "\n")));
+        assert!(authored.contains(&(Kind::NoLock, "NO LOCK")));
+        assert_eq!(tokens, Lexer::new(source).collect::<Vec<_>>());
     }
 }
 

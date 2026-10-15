@@ -234,7 +234,7 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
         }
         // By convention a persistent procedure deletes itself on CLOSE.
         SK::Apply {
-            event,
+            event: Some(event),
             target: Some(target),
         } => {
             if let (EK::Literal(Literal::String(e)), Some(var)) = (&event.kind, identity_of(target))
@@ -362,7 +362,23 @@ pub(crate) fn effects<'a>(s: &'a Statement, src: &str) -> Effects<'a> {
             Some((to, no_error)) => out.push(Effect::CopyLob { to, no_error }),
             None => out.push(Effect::Skipped(names)),
         },
+        // An event of a waited-on object can run code that frees it
+        // (`ON CLOSE OF THIS-PROCEDURE DO: DELETE PROCEDURE ...`).
+        SK::WaitFor { widgets } => {
+            for var in widgets.iter().filter_map(var_of) {
+                out.push(Effect::Opaque {
+                    var,
+                    reason: OpaqueReason::SkippedStatement,
+                });
+            }
+        }
         _ => {}
+    }
+    // The names a head-parsed statement's skipped tail passed over.
+    if let Some(tail) = &s.skipped_tail
+        && !tail.names.is_empty()
+    {
+        out.push(Effect::Skipped(&tail.names));
     }
     out
 }

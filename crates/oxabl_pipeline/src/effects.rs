@@ -167,12 +167,26 @@ impl LintPipeline<'_> {
         expansion: &Expansion,
         known: &[PathBuf],
     ) -> WorkspaceEffects {
+        self.summaries_from(self.file().map(|root| (root, expansion)), known)
+    }
+
+    /// Build the summaries of `known` and the programs they reach, every file
+    /// read from disk. A batch run builds this once and hands it to each of its
+    /// handles with [`with_effect_summaries`](Self::with_effect_summaries).
+    pub fn build_workspace_effect_summaries(&self, known: &[PathBuf]) -> WorkspaceEffects {
+        self.summaries_from(None, known)
+    }
+
+    fn summaries_from(
+        &self,
+        root: Option<(&Path, &Expansion)>,
+        known: &[PathBuf],
+    ) -> WorkspaceEffects {
         let config = self.config();
         let index = BatchIndex::new(self.file_system(), &config.include_paths)
             .with_run_extensions(&config.run_extensions)
             .with_preprocessor(&config.preprocessor);
-        let root = self.file().unwrap_or(Path::new(""));
-        let mut paths = vec![root.to_path_buf()];
+        let mut paths: Vec<PathBuf> = root.map(|(p, _)| p.to_path_buf()).into_iter().collect();
         paths.extend(
             known
                 .iter()
@@ -191,7 +205,7 @@ impl LintPipeline<'_> {
             }
             by_path.insert(path.clone(), None);
             let item = oxabl_common::catch_panic(|| {
-                if path == key(root) {
+                if let Some((_, expansion)) = root.filter(|(r, _)| path == key(r)) {
                     direct(self, &path, expansion)
                 } else {
                     self.file_system().read(&path).ok().and_then(|text| {

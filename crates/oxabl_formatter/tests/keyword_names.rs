@@ -203,7 +203,7 @@ CLASS pkg2.Client INHERITS Server IMPLEMENTS pkg.IFoo, Socket, Image:
   METHOD PUBLIC VOID Go(INPUT o AS Progress.Lang.Object):
     DEFINE VARIABLE s AS Server NO-UNDO.
     s = CAST(o, Server).
-    IF Type-Of(o, Socket) THEN MESSAGE \"x\".
+    IF TYPE-OF(o, Socket) THEN MESSAGE \"x\".
     MESSAGE Get-Class(Image):TypeName.
     s = Dynamic-Cast(o, Menu).
     s = NEW Server().
@@ -217,7 +217,7 @@ class pkg2.Client inherits Server implements pkg.IFoo, Socket, Image:
   method public void Go(input o as Progress.Lang.Object):
     define variable s as Server no-undo.
     s = cast(o, Server).
-    if Type-Of(o, Socket) then message \"x\".
+    if type-of(o, Socket) then message \"x\".
     message Get-Class(Image):TypeName.
     s = Dynamic-Cast(o, Menu).
     s = new Server().

@@ -210,7 +210,7 @@ fn an_unmodelled_statement_naming_a_class_is_an_edge_or_degrades_the_set() {
     assert!(found.completeness().is_complete());
 
     let lost = pipeline
-        .edge_set("EXPORT orders.nothere:two().\n")
+        .edge_set("ACCUMULATE orders.nothere:two() (TOTAL).\n")
         .expect("edge set");
     assert_eq!(lost.of_kind(EdgeKind::ClassReference).count(), 0);
     assert_eq!(
@@ -309,6 +309,86 @@ fn an_unparsable_class_target_is_an_edge_to_the_located_file() {
     assert_eq!(
         edges.unresolved()[0].reason,
         UnresolvedReason::PresentButUnusable
+    );
+}
+
+#[test]
+fn a_class_built_from_includes_is_an_edge_and_leaves_no_row() {
+    // The two shapes a class takes its declaration from includes in: a header
+    // named by an include's define with the body in another include, and a
+    // file that is nothing but a directive and an include of another class
+    // file.
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/orders/names.i"),
+        "&GLOBAL-DEFINE fullName orders.base\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/body.i"),
+        "METHOD PUBLIC INTEGER calc-total():\n  RETURN 0.\nEND METHOD.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/base.cls"),
+        "{orders/names.i}\nCLASS {&fullName}:\n{orders/body.i}\nEND CLASS.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/shared.cls"),
+        "&IF DEFINED(web) = 0 &THEN\nCLASS orders.shared:\n&ELSE\nCLASS orders.web:\n&ENDIF\n\
+         {orders/body.i}\nEND CLASS.\n",
+    );
+    fs.insert(
+        PathBuf::from("/proj/orders/web.cls"),
+        "&SCOPED-DEFINE web yes\n{orders/shared.cls}\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+
+    for parent in ["orders.base", "orders.web"] {
+        let edges = run
+            .with_file("/proj/orders/child.cls")
+            .edge_set(&format!(
+                "CLASS orders.child INHERITS {parent}:\n  METHOD PUBLIC VOID go():\n    \
+                 MESSAGE calc-total().\n  END METHOD.\nEND CLASS.\n"
+            ))
+            .expect("edge set");
+        assert_eq!(
+            edges.of_kind(EdgeKind::ClassReference).count(),
+            1,
+            "{parent}: got {:?}",
+            edges.edges()
+        );
+        assert!(
+            edges.unresolved().is_empty(),
+            "{parent}: got {:?}",
+            edges.unresolved()
+        );
+    }
+}
+
+#[test]
+fn a_recovered_parse_or_a_missing_nested_include_degrades_the_set() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(PathBuf::from("/proj/sub.p"), "MESSAGE 1.\n");
+    fs.insert(PathBuf::from("/proj/outer.i"), "{inner.i}\n");
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+
+    let broken = run
+        .with_file("/proj/broken.p")
+        .edge_set("DEFINE VARIABLE i AS INTEGER NO-UNDO.\ni = 1 +.\nRUN sub.p.\n")
+        .expect("edge set");
+    assert_eq!(
+        broken.completeness().reasons(),
+        [DegradedReason::ParseRecovered]
+    );
+
+    let nested = run
+        .with_file("/proj/nested.p")
+        .edge_set("{outer.i}\nRUN sub.p.\n")
+        .expect("edge set");
+    assert_eq!(
+        nested.completeness().reasons(),
+        [DegradedReason::UnresolvedInclude]
     );
 }
 
@@ -802,15 +882,23 @@ fn an_explicit_using_of_a_shipped_class_beside_a_wildcard_records_nothing() {
 
 /// The unresolved rows of a child of `pkg.Mid`, whose source is `mid`.
 /// `usings.i` imports `lib.*`, `usingx.i` imports `lib.Base`, and `lib.Base` and
-/// `lib.AppError` exist.
+/// `lib.AppError` exist. Both includes also include a file that does not exist,
+/// so the index cannot expand them and the imports stay unseen.
 fn rows_under_a_parent(mid: &str) -> Vec<(String, UnresolvedReason)> {
+    rows_under_a_parent_with(mid, "{site-usings.i}\n")
+}
+
+/// [`rows_under_a_parent`], with `tail` after the import in each include.
+fn rows_under_a_parent_with(mid: &str, tail: &str) -> Vec<(String, UnresolvedReason)> {
+    let usings = format!("USING lib.*.\n{tail}");
+    let usingx = format!("USING lib.Base.\n{tail}");
     let (_, rows) = class_rows(
         "Child.cls",
         "CLASS Child INHERITS pkg.Mid:\nMETHOD PUBLIC VOID m():\n  Hello().\nEND METHOD.\nEND CLASS.\n",
         &[
             ("pkg/Mid.cls", mid),
-            ("usings.i", "USING lib.*.\n"),
-            ("usingx.i", "USING lib.Base.\n"),
+            ("usings.i", &usings),
+            ("usingx.i", &usingx),
             ("lib/Base.cls", "CLASS lib.Base:\nEND CLASS.\n"),
             ("lib/AppError.cls", "CLASS lib.AppError:\nEND CLASS.\n"),
         ],
@@ -840,6 +928,17 @@ fn a_using_of_class_or_interface_does_not_hide_a_later_include() {
                 .any(|row| row == &("base".to_string(), UnresolvedReason::Unknowable)),
             "head {head:?}: got {rows:?}"
         );
+    }
+}
+
+#[test]
+fn an_include_the_index_can_expand_answers_for_a_parents_header() {
+    for include in ["usings.i", "usingx.i"] {
+        let rows = rows_under_a_parent_with(
+            &format!("{{{include}}}\nCLASS pkg.Mid INHERITS Base:\nEND CLASS.\n"),
+            "",
+        );
+        assert!(rows.is_empty(), "{include}: got {rows:?}");
     }
 }
 
@@ -974,7 +1073,7 @@ fn a_generic_types_arguments_follow_the_files_imports() {
 #[test]
 fn a_generic_new_in_an_unmodelled_statement_names_its_arguments() {
     for statement in [
-        "EXPORT NEW Progress.Collections.List<{}>().",
+        "ACCUMULATE NEW Progress.Collections.List<{}>() (TOTAL).",
         "PUT UNFORMATTED NEW Progress.Collections.List<{}>():ToString() SKIP.",
     ] {
         let (targets, _) = generic_rows(&statement.replace("{}", "pkg.Thing"));
@@ -1109,4 +1208,161 @@ fn an_indexed_class_names_its_parent_through_its_own_using() {
         "got {:?}",
         edges.unresolved()
     );
+}
+
+/// The edge set of `source` as `/proj/main.p`, beside `files`.
+fn edges_beside(source: &str, files: &[(&str, &str)]) -> oxabl_pipeline::DependencyEdges {
+    let mut fs = InMemoryFileSystem::new();
+    for (path, text) in files {
+        fs.insert(PathBuf::from(format!("/proj/{path}")), *text);
+    }
+    let config = config("/proj");
+    LintPipeline::new(&config, &fs)
+        .with_file("/proj/main.p")
+        .edge_set(source)
+        .expect("edge set")
+}
+
+fn text_at(source: &str, span: Option<oxabl_ast::Span>) -> &str {
+    let span = span.expect("a site");
+    &source[span.start as usize..span.end as usize]
+}
+
+#[test]
+fn an_include_in_a_not_taken_branch_is_a_conditional_include_not_an_edge() {
+    let source = "&IF DEFINED(nope) &THEN\n{b.i &PASS}\n&ENDIF\n";
+    let edges = edges_beside(source, &[("b.i", "MESSAGE 1.\n")]);
+
+    assert!(edges.edges().is_empty(), "{:?}", edges.edges());
+    assert!(edges.unresolved().is_empty());
+    assert!(edges.completeness().is_complete());
+    let [conditional] = edges.conditional_includes() else {
+        panic!("got {:?}", edges.conditional_includes());
+    };
+    assert_eq!(conditional.name, "b.i");
+    assert_eq!(text_at(source, conditional.span), "{b.i &PASS}");
+    assert_eq!(conditional.include_site, None);
+    assert!(!conditional.computed_name);
+    assert_eq!(conditional.branches.len(), 1);
+    assert_eq!(conditional.branches[0].kind, oxabl_pipeline::BranchKind::If);
+    assert_eq!(conditional.branches[0].condition, "DEFINED(nope)");
+}
+
+#[test]
+fn every_not_taken_branch_of_a_chain_and_a_nested_one_is_listed_in_order() {
+    let source = "\
+&IF TRUE &THEN
+&IF FALSE &THEN
+{inner.i}
+&ENDIF
+&ELSEIF FALSE &THEN
+{middle.i}
+&ELSE
+{last.i}
+&ENDIF
+";
+    let edges = edges_beside(source, &[]);
+    let names: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| (c.name.as_str(), c.branches.len()))
+        .collect();
+    assert_eq!(names, [("inner.i", 2), ("middle.i", 1), ("last.i", 1)]);
+}
+
+#[test]
+fn a_not_taken_branch_in_a_taken_include_is_placed_by_the_chain_that_reached_it() {
+    let source = "MESSAGE 1.\n{outer.i}\n";
+    let edges = edges_beside(
+        source,
+        &[("outer.i", "&IF FALSE &THEN\n{deep.i}\n&ENDIF\n")],
+    );
+
+    let [conditional] = edges.conditional_includes() else {
+        panic!("got {:?}", edges.conditional_includes());
+    };
+    assert_eq!(conditional.name, "deep.i");
+    assert_eq!(conditional.span, None);
+    assert_eq!(text_at(source, conditional.include_site), "{outer.i}");
+    assert!(
+        edges
+            .of_kind(EdgeKind::DirectInclude)
+            .any(|e| e.target.key().ends_with("outer.i"))
+    );
+}
+
+#[test]
+fn a_not_taken_include_name_with_a_reference_is_computed_and_left_as_written() {
+    let source = "&IF FALSE &THEN\n{gl/{&dir}/g.i &PASS}\n{gl/{1}.i}\n&ENDIF\n";
+    let edges = edges_beside(source, &[]);
+    let got: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| (c.name.as_str(), c.computed_name))
+        .collect();
+    assert_eq!(got, [("gl/{&dir}/g.i", true), ("gl/{1}.i", true)]);
+}
+
+#[test]
+fn an_include_reached_from_two_sites_lists_its_not_taken_reference_per_site() {
+    let source = "{a.i}\n{a.i}\n";
+    let edges = edges_beside(source, &[("a.i", "&IF FALSE &THEN\n{deep.i}\n&ENDIF\n")]);
+    // Two root sites reached it: one row for each, none repeated.
+    let sites: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| c.include_site.map(|s| s.start))
+        .collect();
+    assert_eq!(sites.len(), 2);
+    assert_ne!(sites[0], sites[1]);
+}
+
+#[test]
+fn a_class_in_the_skipped_tail_of_a_modelled_statement_is_an_edge_or_degrades_the_set() {
+    let mut fs = InMemoryFileSystem::new();
+    fs.insert(
+        PathBuf::from("/proj/app/text/Quote.cls"),
+        "CLASS app.text.Quote:\n  METHOD PUBLIC STATIC CHARACTER shell(p AS CHARACTER):\n    RETURN p.\n  END METHOD.\nEND CLASS.\n",
+    );
+    let config = config("/proj");
+    let run = LintPipeline::new(&config, &fs);
+    let pipeline = run.with_file("/proj/main.p");
+
+    // The command's operands after the first, an output line whose output macro
+    // is not defined, and one whose static accesses are the only expressions.
+    for source in [
+        "DEFINE STREAM s.\nDEFINE VARIABLE c AS CHARACTER NO-UNDO.\nINPUT STREAM s THROUGH VALUE(\"cmd\") VALUE(app.text.Quote:shell(c)) NO-ECHO.\n",
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n{&out} \"<td>\" app.text.Quote:shell(c) \"</td>\":U.\n",
+        "{&out} '~{ \"a\": \"' app.text.Quote:shell(\"x\") app.text.Quote:shell(\"y\") '\" }'.\n",
+    ] {
+        let edges = pipeline.edge_set(source).expect("edge set");
+        let classes: Vec<_> = edges
+            .of_kind(EdgeKind::ClassReference)
+            .map(|e| e.target.key().to_string())
+            .collect();
+        assert_eq!(classes, ["app.text.quote"], "{source}");
+        assert!(edges.completeness().is_complete(), "{source}");
+    }
+
+    let lost = pipeline
+        .edge_set("{&out} \"<td>\" app.text.Nothere:shell(\"x\") \"</td>\".\n")
+        .expect("edge set");
+    assert_eq!(lost.of_kind(EdgeKind::ClassReference).count(), 0);
+    assert_eq!(
+        lost.completeness().reasons(),
+        [DegradedReason::UnmodelledStatement]
+    );
+
+    // A handle's attribute in a tail is not a class, and leaves the set complete.
+    let handle = pipeline
+        .edge_set("DEFINE VARIABLE h AS HANDLE NO-UNDO.\n{&out} \"<td>\" h:name \"</td>\".\n")
+        .expect("edge set");
+    assert_eq!(handle.of_kind(EdgeKind::ClassReference).count(), 0);
+    assert!(handle.completeness().is_complete());
+
+    // Nor is a frame named by a path.
+    let frame = pipeline
+        .edge_set("ASSIGN FRAME app/lock:WIDTH-CHARS = BROWSE b:WIDTH-CHARS.\n")
+        .expect("edge set");
+    assert!(frame.completeness().is_complete());
 }

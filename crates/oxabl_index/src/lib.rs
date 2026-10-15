@@ -23,21 +23,38 @@
 //! on stale results. Cancellation propagates, exactly as it does through the
 //! deliberately unguarded `LintPipeline::expand`/`collect`.
 //!
-//! No include expansion. A referenced file is indexed as written; a declaration
-//! that only exists after an `{include}` splice is invisible to the index. That
-//! is the conservative direction — a missing fact yields a missing link, which
-//! by the R11 firewall produces no finding.
+//! Include expansion only when the text as written does not answer. A
+//! referenced file is indexed as written first; a declaration that only exists
+//! after an `{include}` splice is invisible there. That is the conservative
+//! direction — a missing fact yields a missing link, which by the R11 firewall
+//! produces no finding.
 //!
-//! One exception, for a file whose text as written does not parse or names a
-//! class with a `{&name}` reference: the file's *own* preprocessor directives are
-//! applied, with no file read, and the result is used when no include is left
-//! unexpanded. Facts then depend on the one file's text and on the configured
-//! predefined names (`{&OPSYS}` and friends), which is what both caches need.
+//! The exception is a file whose text as written does not parse, names a class
+//! with a `{&name}` reference, or is nothing but includes and directives. That
+//! file is preprocessed, reading its includes through [`IncludeContext`], and the
+//! result is used when it parses and every include was read. Facts then depend on
+//! the file's text, on the includes read ([`index_file_with_includes`] names
+//! them, so an incremental cache can invalidate on them), and on the configured
+//! predefined names (`{&OPSYS}` and friends).
+//!
+//! So a file with code of its own does not produce a `SHARED` name that only an
+//! include defines: a `DEFINE NEW SHARED` spliced into such a file is not found.
+//! A header that defines a shared name is included by many programs, and
+//! counting each of them as a producer would make the name ambiguous.
+//!
+//! The daemon and the language server invalidate facts on the includes the
+//! expansion read or could not read. An include that was not found is not an
+//! input: creating it later, or adding an earlier include path that shadows a
+//! resolved include, does not re-extract the facts until the file itself
+//! changes. The language server also watches only `*.i` files, so an include
+//! with another extension is not seen to change.
 
 mod batch;
 pub mod calls;
+mod closure;
 mod deps;
 mod facts;
+mod producers;
 // Public because a second cache lives outside this crate: the language server's
 // salsa-backed index does its own memoization but must use the *same*
 // name-to-path policy — two spellings tried in order, exactly one match, `.i`
@@ -45,28 +62,39 @@ mod facts;
 // that policy to be written twice, which is precisely the drift R7 exists to
 // prevent.
 pub mod search;
+mod written;
 
 pub use batch::{BatchIndex, ExcludingFile};
+pub use closure::{
+    ClosureTarget, ConditionalIncludeName, conditional_include_closure,
+    conditional_include_closure_with,
+};
 pub use deps::{
-    Completeness, DegradedReason, DependencyEdge, DependencyEdges, DirectIncludeInput, EdgeInputs,
-    EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
-    UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
+    BranchKind, ClosureReference, Completeness, ConditionalBranch, ConditionalInclude,
+    ConditionalIncludeClosure, ConditionalReference, DegradedReason, DependencyEdge,
+    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
+    NestedUnresolvedIncludeInput, UnreadableIncludeInput, UnresolvedIncludeInput,
+    UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
+pub use producers::{SharedProducers, definitions_in};
+pub use written::{ReferenceSyntax, WrittenReference, written_imports, written_references};
 
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use oxabl_ast::{AccessModifier, DataType, Statement, StatementKind};
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
-use oxabl_preprocessor::Preprocessor;
+use oxabl_preprocessor::{PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, ImportContext, IndexName, IndexedFileId,
     MemberDescriptor, MemberType, ResolvedType, ScopeId, SymbolFlags, SymbolKind, declare_pass,
 };
-use oxabl_workspace::{InMemoryFileSystem, PreprocessorConfig};
+use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 /// The [`FileId`] the declare pass is run under while indexing.
 ///
@@ -75,6 +103,74 @@ use oxabl_workspace::{InMemoryFileSystem, PreprocessorConfig};
 /// this id never reaches a rendered span. It exists because
 /// [`AnalysisContext`] requires one.
 const INDEXED_FILE: FileId = FileId::new(1);
+
+/// Where an indexed file's `{include}` references are read from, and the
+/// environment its directives are applied under.
+#[derive(Clone, Copy)]
+pub struct IncludeContext<'a> {
+    pub fs: &'a dyn FileSystem,
+    pub include_paths: &'a [PathBuf],
+    /// Paths resolved against the directory of the file being indexed and searched
+    /// before `include_paths`; see [`search::root_include_paths`].
+    pub root_relative_paths: &'a [PathBuf],
+    /// Answers the AVM's predefined names (`{&OPSYS}` and friends).
+    pub predefined: &'a PreprocessorConfig,
+}
+
+impl<'a> IncludeContext<'a> {
+    /// A context that reads no include: only the file's own directives apply.
+    pub fn in_file(predefined: &'a PreprocessorConfig) -> Self {
+        IncludeContext {
+            fs: &NoFiles,
+            include_paths: &[],
+            root_relative_paths: &[],
+            predefined,
+        }
+    }
+
+    /// The search paths of the file at `file`: the root-relative paths against
+    /// its directory, then the include paths.
+    pub fn paths_for(&self, file: &Path) -> std::borrow::Cow<'a, [PathBuf]> {
+        if self.root_relative_paths.is_empty() {
+            return std::borrow::Cow::Borrowed(self.include_paths);
+        }
+        std::borrow::Cow::Owned(search::root_include_paths(
+            file,
+            self.root_relative_paths,
+            self.include_paths,
+        ))
+    }
+}
+
+/// [`index_file`] for the file at `path`, its includes read with the search
+/// paths of its own directory.
+pub fn index_file_at(
+    file: IndexedFileId,
+    path: &Path,
+    source: &str,
+    includes: &IncludeContext<'_>,
+) -> (FileFacts, Vec<PathBuf>) {
+    let paths = includes.paths_for(path);
+    let includes = IncludeContext {
+        include_paths: &paths,
+        root_relative_paths: &[],
+        ..*includes
+    };
+    index_file_with_includes(file, source, &includes)
+}
+
+/// A filesystem with nothing in it.
+struct NoFiles;
+
+impl FileSystem for NoFiles {
+    fn read(&self, _path: &Path) -> Result<Arc<str>, io::Error> {
+        Err(io::ErrorKind::NotFound.into())
+    }
+
+    fn exists(&self, _path: &Path) -> bool {
+        false
+    }
+}
 
 /// Extract the facts `source` contributes to the index, under the identity
 /// `file`.
@@ -89,20 +185,67 @@ const INDEXED_FILE: FileId = FileId::new(1);
 /// it mis-attributes symbols across the program graph, while a missing fact just
 /// leaves a name unresolved and silent.
 ///
-/// `predefined` answers the AVM's predefined names (`{&OPSYS}` and friends) when
-/// the fallback applies the file's own directives, so a directive-chosen
-/// declaration follows the configured environment.
+/// When the text as written does not answer, the file is preprocessed through
+/// `includes` and indexed again; see the module docs.
 ///
 /// Not guarded against panics, on purpose — see the module docs.
-pub fn index_file(file: IndexedFileId, source: &str, predefined: &PreprocessorConfig) -> FileFacts {
-    let facts = index_parsed(file, source);
-    if facts.parsed && !names_a_reference(&facts) {
-        return facts;
+pub fn index_file(file: IndexedFileId, source: &str, includes: &IncludeContext<'_>) -> FileFacts {
+    index_file_with_includes(file, source, includes).0
+}
+
+/// [`index_file`], with the include files the facts were read through.
+///
+/// The paths are every include the expansion read or tried to read, lexically
+/// normalized, sorted, and empty when the file was not expanded. An edit to any
+/// of them can change the facts, including from unusable to usable.
+pub fn index_file_with_includes(
+    file: IndexedFileId,
+    source: &str,
+    includes: &IncludeContext<'_>,
+) -> (FileFacts, Vec<PathBuf>) {
+    let (facts, built_from_includes) = index_parsed(file, source);
+    if facts.parsed && !names_a_reference(&facts) && !built_from_includes {
+        return (facts, Vec::new());
     }
-    match expand_in_file(source, predefined).map(|expanded| index_parsed(file, &expanded)) {
-        Some(expanded) if expanded.parsed => expanded,
-        _ => facts,
+    let Some(expansion) = expand(source, includes) else {
+        return (facts, Vec::new());
+    };
+    let read = included_paths(&expansion.processed);
+    match expansion.text.map(|text| index_parsed(file, &text).0) {
+        Some(expanded) if expanded.parsed => (expanded, read),
+        _ => (facts, read),
     }
+}
+
+/// Whether [`index_file`] may read the facts of `source` from its expanded text:
+/// a superset of the files it expands, found with a parse and no declare pass.
+pub(crate) fn may_be_expanded(source: &str) -> bool {
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    !program.is_ok()
+        || only_includes(&program.statements)
+        || program.statements.iter().any(|stmt| {
+            matches!(
+                stmt.kind,
+                StatementKind::Class { .. } | StatementKind::Interface { .. }
+            )
+        })
+}
+
+/// The expanded text of `source`, the file at `path`, with its includes read as
+/// [`index_file_at`] reads them, or `None` when the expansion does not settle.
+pub(crate) fn expanded_text_at(
+    path: &Path,
+    source: &str,
+    includes: &IncludeContext<'_>,
+) -> Option<String> {
+    let paths = includes.paths_for(path);
+    let includes = IncludeContext {
+        include_paths: &paths,
+        root_relative_paths: &[],
+        ..*includes
+    };
+    expand(source, &includes)?.text
 }
 
 /// Whether a class header in `facts` is spelled with an unexpanded `{&name}`
@@ -119,37 +262,75 @@ fn names_a_reference(facts: &FileFacts) -> bool {
     })
 }
 
-/// `source` with its own preprocessor directives applied and every `{include}`
-/// left unresolved.
+/// One preprocessor run over an indexed file.
+struct Expansion {
+    processed: PreprocessedFile,
+    /// The expanded text, or `None` when the run did not settle it.
+    text: Option<String>,
+}
+
+/// `source` with its directives applied and its includes read through
+/// `includes`.
 ///
-/// The fallback for a file whose raw text does not parse because the
-/// declaration is built from `&GLOBAL-DEFINE` names (`CLASS {&fullName}:`).
-/// No file is read, so the result depends on `source` alone, which is what keeps
-/// a memoizing cache's invalidation honest. `None` when the directives alone do
-/// not settle the text: a class whose header or body comes from an `{include}`
-/// stays unusable.
-fn expand_in_file(source: &str, predefined: &PreprocessorConfig) -> Option<String> {
-    let fs = InMemoryFileSystem::new();
-    let processed = Preprocessor::new(&fs, &[])
-        .with_predefined(predefined)
+/// The fallback for a file whose declaration is built from `&GLOBAL-DEFINE`
+/// names (`CLASS {&fullName}:`) or spliced in from an `{include}`. `None` when
+/// the preprocessor failed outright.
+fn expand(source: &str, includes: &IncludeContext<'_>) -> Option<Expansion> {
+    let processed = Preprocessor::new(includes.fs, includes.include_paths)
+        .with_predefined(includes.predefined)
         .process(INDEXED_FILE, source)
         .ok()?;
-    // Any include left unexpanded could have defined a name a later `&IF` reads,
-    // so the branches taken, and the facts read off them, would be a guess.
+    // An include left unexpanded could have declared part of the class or
+    // defined a name a later `&IF` reads, so the facts would be a guess.
     let guessed = !processed.diagnostics.is_empty()
         || !processed.unresolved_includes.is_empty()
         || !processed.unreadable_includes.is_empty();
-    (!guessed).then(|| processed.to_text().to_string())
+    let text = (!guessed).then(|| processed.to_text().to_string());
+    Some(Expansion { processed, text })
+}
+
+/// Every include file the run read or failed to read, normalized and sorted.
+fn included_paths(processed: &PreprocessedFile) -> Vec<PathBuf> {
+    fn walk(nodes: &[SpanNode], out: &mut Vec<PathBuf>) {
+        for node in nodes {
+            if let SpanNode::Include { path, children, .. } = node {
+                if let Some(path) = path {
+                    out.push(search::normalize_lexically(path));
+                }
+                walk(children, out);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    walk(&processed.tree, &mut paths);
+    paths.extend(
+        processed
+            .unreadable_includes
+            .iter()
+            .map(|include| search::normalize_lexically(&include.path)),
+    );
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 /// The facts of `source` as written, or the unparseable record if it parses
-/// with recovered errors.
-fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
+/// with recovered errors, and whether its includes may hold part of what it
+/// declares: the text is nothing but includes and directives, or it declares a
+/// class or interface and names an include anywhere.
+fn index_parsed(file: IndexedFileId, source: &str) -> (FileFacts, bool) {
     let tokens = oxabl_lexer::tokenize(source);
     let program = Parser::new(&tokens, source).parse_program();
     if !program.is_ok() {
-        return FileFacts::unparseable(file);
+        return (FileFacts::unparseable(file), false);
     }
+    let built_from_includes = only_includes(&program.statements)
+        || (program.statements.iter().any(|stmt| {
+            matches!(
+                stmt.kind,
+                StatementKind::Class { .. } | StatementKind::Interface { .. }
+            )
+        }) && tokens.iter().any(|t| t.kind == Kind::IncludeReference));
 
     // The declare pass is the same machinery a client runs over the file it is
     // analyzing, which is what keeps an indexed declaration and a local one from
@@ -189,7 +370,7 @@ fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
         imports = imports.with_unseen_imports();
     }
 
-    FileFacts {
+    let facts = FileFacts {
         file,
         parsed: true,
         classes: declared_classes(file, &program.statements, &Arc::new(imports))
@@ -199,7 +380,38 @@ fn index_parsed(file: IndexedFileId, source: &str) -> FileFacts {
         procedures,
         functions,
         shared_definitions,
+    };
+    (facts, built_from_includes)
+}
+
+/// Whether `statements` are includes and directives, with at least one include:
+/// a file whose code all comes from what it includes.
+fn only_includes(statements: &[Statement]) -> bool {
+    fn walk(statements: &[Statement], includes: &mut bool) -> bool {
+        statements.iter().all(|stmt| match &stmt.kind {
+            StatementKind::IncludeReference { .. } | StatementKind::IncludeArgReference { .. } => {
+                *includes = true;
+                true
+            }
+            StatementKind::PreprocDefine { .. }
+            | StatementKind::PreprocUndefine { .. }
+            | StatementKind::PreprocMessage { .. } => true,
+            StatementKind::PreprocIf(branches) => {
+                walk(&branches.then_branch, includes)
+                    && branches
+                        .elseif_branches
+                        .iter()
+                        .all(|(_, branch)| walk(branch, includes))
+                    && branches
+                        .else_branch
+                        .as_ref()
+                        .is_none_or(|branch| walk(branch, includes))
+            }
+            _ => false,
+        })
     }
+    let mut includes = false;
+    walk(statements, &mut includes) && includes
 }
 
 /// Whether an `{include}` stands ahead of the first class or interface header
@@ -498,7 +710,11 @@ mod tests {
     const FILE: IndexedFileId = IndexedFileId::new(7);
 
     fn index_file(file: IndexedFileId, source: &str) -> FileFacts {
-        super::index_file(file, source, &PreprocessorConfig::default())
+        super::index_file(
+            file,
+            source,
+            &IncludeContext::in_file(&PreprocessorConfig::default()),
+        )
     }
 
     fn portable(ty: ResolvedType) -> MemberType {
@@ -550,6 +766,102 @@ mod tests {
              CLASS orders.built INHERITS orders.old:\n&ENDIF\nEND CLASS.\n",
         );
         assert!(facts.class(&IndexName::new("orders.built")).is_none());
+    }
+
+    fn index_through(
+        source: &str,
+        includes: &[(&str, &str)],
+    ) -> (FileFacts, Vec<std::path::PathBuf>) {
+        let mut fs = oxabl_workspace::InMemoryFileSystem::new();
+        for (path, text) in includes {
+            fs.insert(std::path::PathBuf::from(path), *text);
+        }
+        let predefined = PreprocessorConfig::default();
+        let include_paths = [std::path::PathBuf::from("/src")];
+        super::index_file_with_includes(
+            FILE,
+            source,
+            &IncludeContext {
+                fs: &fs,
+                include_paths: &include_paths,
+                root_relative_paths: &[],
+                predefined: &predefined,
+            },
+        )
+    }
+
+    const BODY: (&str, &str) = (
+        "/src/body.i",
+        "METHOD PUBLIC INTEGER calc-total():\n    RETURN 0.\nEND METHOD.\n",
+    );
+
+    fn member_names(facts: &FileFacts, class: &str) -> Vec<String> {
+        facts
+            .class(&IndexName::new(class))
+            .expect("the class is indexed")
+            .members
+            .iter()
+            .map(|m| m.name.as_str().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_class_whose_body_comes_from_an_include_is_indexed_through_it() {
+        let (facts, read) = index_through("CLASS orders.built:\n{body.i}\nEND CLASS.\n", &[BODY]);
+        assert_eq!(member_names(&facts, "orders.built"), ["calc-total"]);
+        assert_eq!(read, [std::path::PathBuf::from("/src/body.i")]);
+    }
+
+    #[test]
+    fn a_class_named_by_an_includes_define_is_indexed_under_that_name() {
+        let (facts, read) = index_through(
+            "{names.i}\nCLASS {&fullName}:\n{body.i}\nEND CLASS.\n",
+            &[
+                ("/src/names.i", "&GLOBAL-DEFINE fullName orders.built\n"),
+                BODY,
+            ],
+        );
+        assert_eq!(member_names(&facts, "orders.built"), ["calc-total"]);
+        assert_eq!(read.len(), 2);
+    }
+
+    #[test]
+    fn a_file_that_is_only_includes_declares_what_they_declare() {
+        let (facts, read) = index_through(
+            "&SCOPED-DEFINE web yes\n{shared.cls}\n",
+            &[
+                (
+                    "/src/shared.cls",
+                    "&IF DEFINED(web) = 0 &THEN\nCLASS orders.shared:\n&ELSE\n\
+                     CLASS orders.web:\n&ENDIF\n{body.i}\nEND CLASS.\n",
+                ),
+                BODY,
+            ],
+        );
+        assert_eq!(member_names(&facts, "orders.web"), ["calc-total"]);
+        assert!(facts.class(&IndexName::new("orders.shared")).is_none());
+        assert_eq!(read.len(), 2);
+    }
+
+    #[test]
+    fn a_class_with_an_include_that_is_missing_keeps_its_text_as_written() {
+        let (facts, read) = index_through(
+            "CLASS orders.built:\n{body.i}\n{gone.i}\nEND CLASS.\n",
+            &[BODY],
+        );
+        assert!(member_names(&facts, "orders.built").is_empty());
+        assert_eq!(
+            read,
+            [std::path::PathBuf::from("/src/body.i")],
+            "an edit to the include that was read can still change the facts"
+        );
+    }
+
+    #[test]
+    fn a_file_that_answers_as_written_reads_no_include() {
+        let (facts, read) = index_through("{body.i}\nPROCEDURE p:\nEND PROCEDURE.\n", &[BODY]);
+        assert_eq!(facts.procedures, [IndexName::new("p")]);
+        assert!(read.is_empty());
     }
 
     #[test]

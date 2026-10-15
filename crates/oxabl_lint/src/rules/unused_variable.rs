@@ -29,8 +29,8 @@
 //! `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`, and this rule declines to
 //! fire for a symbol so marked.
 //!
-//! Two gaps remain: skipped *tails* inside modelled statements (#134), and
-//! keyword collisions — the harvest keeps unreserved option keywords as
+//! The skipped tail of a modelled statement is marked the same way. One gap
+//! remains: keyword collisions — the harvest keeps unreserved option keywords as
 //! candidate names, so a variable named after one may be exempted when it should
 //! not be. The suppression is also per-symbol and file-wide rather than
 //! per-site. `assigned-but-never-read` (LINT0006) carries the full note; it is a

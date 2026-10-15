@@ -34,14 +34,16 @@
 //! `FileSystem` through them is a change with its own blast radius. Keeping the
 //! I/O in the thin outer layer leaves that for another day.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    LintConfig, PreprocessorConfig, RealFileSystem, WorkspaceConfig, default_run_extensions,
-    find_workspace_root, normalize_run_extensions,
+    EncodedFileSystem, LintConfig, PreprocessorConfig, SourceDecoding, WorkspaceConfig,
+    default_root_extensions, default_run_extensions, find_workspace_root,
+    normalize_root_extensions, normalize_run_extensions,
 };
 
 /// A non-fatal problem hit while resolving configuration.
@@ -85,6 +87,11 @@ pub enum ConfigWarning {
     /// warning a bare `RUN` name would simply stop linking.
     RunExtension(String),
 
+    /// A `[workspace.sources].root_extensions` entry that cannot name a root
+    /// (empty, holding a path separator, or `i`: an include fragment is never a
+    /// root). The entry is dropped.
+    RootExtension(String),
+
     /// A `[workspace.lint]` entry that cannot take effect: a rule or group name
     /// the rule registry does not know, a toggle of the always-on `default`
     /// group, or an override pattern that is not a valid glob. The entry is
@@ -101,6 +108,10 @@ impl std::fmt::Display for ConfigWarning {
             ConfigWarning::RunExtension(entry) => write!(
                 f,
                 "run_extensions: ignoring `{entry}`, which cannot be a file extension"
+            ),
+            ConfigWarning::RootExtension(entry) => write!(
+                f,
+                "root_extensions: ignoring `{entry}`, which cannot be a root file extension"
             ),
             ConfigWarning::Lint(msg) => write!(f, "lint: {msg}"),
         }
@@ -141,6 +152,12 @@ pub struct PipelineConfig {
     /// Absolute include search directories, first-match-wins, duplicate-free.
     pub include_paths: Vec<PathBuf>,
 
+    /// Search directories resolved against each root file's directory and
+    /// searched before [`include_paths`](Self::include_paths)
+    /// (`[workspace.sources].root_relative_include_paths`), as written. Default
+    /// empty. See [`include_paths_for`](Self::include_paths_for).
+    pub root_relative_include_paths: Vec<PathBuf>,
+
     /// Lint settings lowered from `[workspace.lint]`: rule severities, group
     /// toggles and per-directory overrides anchored at the workspace root.
     /// [`LintPipeline`](crate::LintPipeline) resolves them per file.
@@ -172,6 +189,19 @@ pub struct PipelineConfig {
     /// Extensions an extensionless `RUN` target is tried with, in order and
     /// without the dot (`[workspace.sources].run_extensions`). Default `p`, `w`.
     pub run_extensions: Vec<String>,
+
+    /// Resolve classes and `RUN` targets ignoring case when the exact spellings
+    /// miss (`[workspace.sources].case_insensitive_lookup`). Default `false`.
+    pub case_insensitive_lookup: bool,
+
+    /// How source files read from disk become text
+    /// (`[workspace.sources].encoding` and `fallback_encoding`). Default UTF-8.
+    /// [`file_system`](Self::file_system) builds the filesystem that honours it.
+    pub decoding: SourceDecoding,
+
+    /// Extensions that make a file in a walked directory an ABL root, without the
+    /// dot (`[workspace.sources].root_extensions`). Default `p`, `w`, `cls`, `v`.
+    pub root_extensions: Vec<String>,
 }
 
 impl Default for PipelineConfig {
@@ -188,17 +218,49 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         PipelineConfig {
             include_paths: Vec::new(),
+            root_relative_include_paths: Vec::new(),
             lint_severities: LintConfig::default().to_severity_map(),
             style: StyleGuide::default_base(),
             schema: Schema::empty(),
             schema_loaded: false,
             preprocessor: PreprocessorConfig::default(),
             run_extensions: default_run_extensions(),
+            case_insensitive_lookup: false,
+            decoding: SourceDecoding::default(),
+            root_extensions: default_root_extensions(),
         }
     }
 }
 
 impl PipelineConfig {
+    /// The disk filesystem for this configuration: every file it reads is decoded
+    /// as [`decoding`](Self::decoding).
+    pub fn file_system(&self) -> EncodedFileSystem {
+        EncodedFileSystem::new(self.decoding)
+    }
+
+    /// The search paths of the file at `file`: each root-relative path resolved
+    /// against its directory, then [`include_paths`](Self::include_paths), each
+    /// once. The include paths alone with no file or no root-relative path.
+    pub fn include_paths_for(&self, file: Option<&Path>) -> Cow<'_, [PathBuf]> {
+        match file {
+            Some(file) if !self.root_relative_include_paths.is_empty() => {
+                Cow::Owned(oxabl_index::search::root_include_paths(
+                    file,
+                    &self.root_relative_include_paths,
+                    &self.include_paths,
+                ))
+            }
+            _ => Cow::Borrowed(&self.include_paths),
+        }
+    }
+
+    /// Whether any file has a search path: an include path or a root-relative
+    /// one.
+    pub fn searches_any_path(&self) -> bool {
+        !self.include_paths.is_empty() || !self.root_relative_include_paths.is_empty()
+    }
+
     /// Resolve configuration for a run anchored at `anchor`, which may be the
     /// file or the directory the client was pointed at — both resolve
     /// identically, since a file anchor starts the ancestor walk at its parent.
@@ -359,6 +421,15 @@ fn derive(
             .map(ConfigWarning::RunExtension),
     );
     let run_extensions = run_extensions.extensions;
+    let root_extensions = normalize_root_extensions(&config.workspace.sources.root_extensions);
+    warnings.extend(
+        root_extensions
+            .rejected
+            .into_iter()
+            .map(ConfigWarning::RootExtension),
+    );
+    let root_extensions = root_extensions.extensions;
+    let decoding = config.workspace.sources.decoding();
 
     let schema_path = match schema_loading {
         SchemaLoading::Load => overrides.schema_path.as_ref(),
@@ -368,12 +439,20 @@ fn derive(
             return (
                 PipelineConfig {
                     include_paths,
+                    root_relative_include_paths: config
+                        .workspace
+                        .sources
+                        .root_relative_include_paths
+                        .clone(),
                     lint_severities,
                     style,
                     schema: Schema::empty(),
                     schema_loaded: false,
                     preprocessor,
                     run_extensions,
+                    case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
+                    decoding,
+                    root_extensions,
                 },
                 warnings,
             );
@@ -412,7 +491,7 @@ fn derive(
         if preprocessor.databases.is_none() {
             preprocessor.inferred_databases = Some(logical_database_names(&files));
         }
-        let (schema, diags) = SchemaLoader::load_files(&files, &RealFileSystem);
+        let (schema, diags) = SchemaLoader::load_files(&files, &EncodedFileSystem::new(decoding));
         warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
         (schema, true)
     };
@@ -420,12 +499,20 @@ fn derive(
     (
         PipelineConfig {
             include_paths,
+            root_relative_include_paths: config
+                .workspace
+                .sources
+                .root_relative_include_paths
+                .clone(),
             lint_severities,
             style,
             schema,
             schema_loaded,
             preprocessor,
             run_extensions,
+            case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
+            decoding,
+            root_extensions,
         },
         warnings,
     )
@@ -1272,6 +1359,58 @@ mod tests {
     }
 
     #[test]
+    fn the_source_encoding_reaches_the_config_and_the_schema_files() {
+        use oxabl_workspace::SourceEncoding;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("ledger.df"),
+            b"ADD TABLE \"cust\"\n  DESCRIPTION \"caf\xe9\"\nADD FIELD \"id\" OF \"cust\" AS integer\n",
+        )
+        .unwrap();
+        let toml = |sources: &str| {
+            format!(
+                "[workspace]\nname = \"p\"\n[workspace.sources]\n{sources}\
+                 [workspace.schema]\nfiles = [\"ledger.df\"]\n"
+            )
+        };
+
+        fs::write(root.join("oxabl.toml"), toml("")).unwrap();
+        let (config, warnings) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+        assert_eq!(config.decoding, SourceDecoding::default());
+        assert!(!warnings.is_empty(), "invalid UTF-8 is a schema warning");
+        assert!(config.schema.is_empty());
+
+        fs::write(
+            root.join("oxabl.toml"),
+            toml("encoding = \"windows-1252\"\n"),
+        )
+        .unwrap();
+        let (config, warnings) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+        assert_eq!(config.decoding.encoding, SourceEncoding::Windows1252);
+        assert_eq!(warnings, []);
+        assert!(!config.schema.is_empty());
+    }
+
+    #[test]
+    fn root_extensions_are_normalized_and_a_bad_entry_warns() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("oxabl.toml"),
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\nroot_extensions = [\".p\", \"i\", \"pp\"]\n",
+        )
+        .unwrap();
+        let (config, warnings) = PipelineConfig::resolve(tmp.path(), &ConfigOverrides::default());
+        assert_eq!(config.root_extensions, ["p", "pp"]);
+        assert_eq!(warnings, [ConfigWarning::RootExtension("i".to_string())]);
+        assert_eq!(
+            PipelineConfig::default().root_extensions,
+            ["p", "w", "cls", "v"]
+        );
+    }
+
+    #[test]
     fn run_extensions_are_normalized_and_a_bad_entry_warns() {
         let parsed = WorkspaceConfig::from_toml(
             "[workspace]\nname = \"p\"\n\
@@ -1323,5 +1462,56 @@ mod tests {
     fn config_warning_renders_readably() {
         let w = ConfigWarning::Config("failed to parse oxabl.toml: boom".to_string());
         assert_eq!(w.to_string(), "failed to parse oxabl.toml: boom");
+    }
+
+    #[test]
+    fn root_relative_paths_come_first_resolved_against_the_files_directory() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.sources]\ninclude_paths = [\"inc\", \"app/rf\"]\n\
+             root_relative_include_paths = [\".\", \"rf\"]\n",
+        );
+        let (config, _) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+        assert_eq!(
+            config.root_relative_include_paths,
+            [".", "rf"].map(PathBuf::from)
+        );
+        assert_eq!(
+            config.include_paths,
+            [root.join("inc"), root.join("app/rf")]
+        );
+
+        let file = root.join("app/main.p");
+        assert_eq!(
+            config.include_paths_for(Some(&file)).into_owned(),
+            [root.join("app"), root.join("app/rf"), root.join("inc")]
+        );
+        assert_eq!(
+            config.include_paths_for(None).into_owned(),
+            config.include_paths
+        );
+        assert!(config.searches_any_path());
+    }
+
+    #[test]
+    fn without_root_relative_paths_every_file_searches_the_include_paths() {
+        let config = PipelineConfig {
+            include_paths: vec![PathBuf::from("/inc")],
+            ..PipelineConfig::default()
+        };
+        assert!(matches!(
+            config.include_paths_for(Some(Path::new("/app/main.p"))),
+            Cow::Borrowed(paths) if paths == [PathBuf::from("/inc")]
+        ));
+        let none = PipelineConfig {
+            root_relative_include_paths: vec![PathBuf::from(".")],
+            ..PipelineConfig::default()
+        };
+        assert!(none.searches_any_path());
+        assert!(!PipelineConfig::default().searches_any_path());
     }
 }

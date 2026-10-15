@@ -2,10 +2,10 @@ use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CommentKind, CreateTarget, CreateTargetKind,
     DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind, ExpressionKind,
-    FindType, HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId, OnAction,
-    OnKind, ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
-    StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral,
-    UsingSource, WhenBranch, WidgetQualifier,
+    FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId,
+    OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, SortDirection, Span,
+    StatementKind, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource,
+    UnknownLiteral, UsingSource, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -8396,7 +8396,7 @@ fn define_frame_with_content() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("should parse");
     match stmt.kind {
-        StatementKind::DefineFrame { name, raw_span } => {
+        StatementKind::DefineFrame { name, raw_span, .. } => {
             assert_eq!(name.name, "cust-frame");
             // raw_span should cover content between name and period
             let raw_text = &source[raw_span.start as usize..raw_span.end as usize];
@@ -11468,18 +11468,18 @@ fn classify_comment_defensive_brace_branch_is_excluded() {
 // ---------------------------------------------------------------------------
 
 /// The dispatch keyword is the range's first token and is dropped
-/// unconditionally, so `PUT` does not harvest itself.
+/// unconditionally, so `UNDERLINE` does not harvest itself.
 #[test]
-fn skipped_put_harvests_the_variable_not_the_keyword() {
-    assert_eq!(harvest("PUT v-total."), vec!["v-total"]);
+fn skipped_underline_harvests_the_variable_not_the_keyword() {
+    assert_eq!(harvest("UNDERLINE v-total."), vec!["v-total"]);
 }
 
-/// `EXPORT` consumes its own keyword before skipping, where `PUT` does not.
+/// `UNIX` consumes its own keyword before skipping, where `UNDERLINE` does not.
 /// Anchoring the range on the statement's first token normalizes both shapes,
 /// so the harvest looks the same from the outside.
 #[test]
-fn skipped_export_drops_the_field_half_of_a_qualified_name() {
-    assert_eq!(harvest("EXPORT vendor.vend-number."), vec!["vendor"]);
+fn skipped_unix_drops_the_field_half_of_a_qualified_name() {
+    assert_eq!(harvest("UNIX vendor.vend-number."), vec!["vendor"]);
 }
 
 /// The broad `can_be_identifier` classifier admits unreserved option keywords
@@ -11491,7 +11491,7 @@ fn skipped_export_drops_the_field_half_of_a_qualified_name() {
 #[test]
 fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
     assert_eq!(
-        harvest(r#"PUT v-total FORMAT ">>9"."#),
+        harvest(r#"UNDERLINE v-total FORMAT ">>9"."#),
         vec!["v-total", "FORMAT"]
     );
 }
@@ -11501,9 +11501,19 @@ fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
 #[test]
 fn skipped_harvest_keeps_spaced_division_operands() {
     assert_eq!(
-        harvest("PUT v-total / v-count."),
+        harvest("UNDERLINE v-total / v-count."),
         vec!["v-total", "v-count"]
     );
+}
+
+/// String literals are not identifier-shaped, so the string drops out while
+/// the widget and frame names survive.
+#[test]
+fn skipped_color_harvests_widget_and_frame_not_the_string() {
+    let names = harvest(r#"COLOR DISPLAY "CHOOSE" btn-ok WITH FRAME f-main."#);
+    assert!(names.contains(&"btn-ok".to_string()), "got {names:?}");
+    assert!(names.contains(&"f-main".to_string()), "got {names:?}");
+    assert!(!names.iter().any(|n| n.contains("CHOOSE")), "got {names:?}");
 }
 
 /// Every component of an absolute path is byte-adjacent to a preceding `/` or
@@ -11517,7 +11527,7 @@ fn skipped_output_to_path_harvests_nothing() {
 /// rule cannot drift, and the filter yields little or nothing there regardless.
 #[test]
 fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
-    assert!(harvest("PAUSE 1.").is_empty());
+    assert!(harvest("PAGE.").is_empty());
     // `ERROR` is identifier-capable and survives; `ON`, `UNDO` and `THROW` are
     // not. The residue is the accepted keyword-collision case from KTD5 in its
     // most harmless form: it can only exempt a variable literally named
@@ -11531,7 +11541,7 @@ fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
 /// period *and a space*, so the adjacency filter does not eat it.
 #[test]
 fn skipped_editing_block_names_survive_the_harvest() {
-    let names = harvest("UPDATE v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
+    let names = harvest("PROMPT-FOR v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
     assert!(names.contains(&"v-name".to_string()), "got {names:?}");
     assert!(names.contains(&"v-x".to_string()), "got {names:?}");
     assert!(names.contains(&"v-y".to_string()), "got {names:?}");
@@ -11542,7 +11552,7 @@ fn skipped_editing_block_names_survive_the_harvest() {
 /// anchor the outer harvest range would start at the last inner statement.
 #[test]
 fn skipped_editing_block_does_not_clobber_the_outer_harvest_anchor() {
-    let names = harvest("UPDATE v-first WITH FRAME f-main EDITING: v-x = 1. END.");
+    let names = harvest("PROMPT-FOR v-first WITH FRAME f-main EDITING: v-x = 1. END.");
     assert_eq!(
         names.first().map(String::as_str),
         Some("v-first"),
@@ -11586,8 +11596,8 @@ fn skipped_span_covers_the_whole_statement() {
 /// the roughly thirty #128 dispatch sites are unchanged in behavior and cost.
 #[test]
 fn skipped_ordinary_form_is_not_a_table_candidate() {
-    assert!(!marks_tables("PUT v-total."));
-    assert!(!marks_tables("EXPORT vendor.vend-number."));
+    assert!(!marks_tables("UNDERLINE v-total."));
+    assert!(!marks_tables("UNDERLINE vendor.vend-number."));
 }
 
 /// `DEFINE QUERY q FOR tt.` names its backing table, so its harvest is offered
@@ -12290,6 +12300,1183 @@ fn unresolved_include_in_call_argument_position_does_not_break_the_list() {
     let mut parser = Parser::new(&tokens, &text);
     let program = parser.parse_program();
     assert!(program.is_ok(), "got {:?}", program.first_error());
+}
+
+/// Statement and option keywords sampled as member names.
+const KEYWORD_MEMBER_NAMES: &[&str] = &[
+    "Fetch", "Delete", "Find", "Create", "Release", "Run", "Display", "Message", "Return", "Do",
+    "If", "For", "Repeat", "Case", "End", "When", "Else", "Then", "Null", "Open", "Close", "Get",
+    "Set", "Update", "Insert", "Input", "Output", "Define", "Assign", "Leave", "Next", "Quit",
+    "Apply", "Enable", "Disable", "Export", "Import", "Put", "Read", "Trigger", "Using", "Where",
+    "Wait-For", "Disp",
+];
+
+fn assert_parses_clean(source: &str) -> Vec<Statement> {
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+    program.statements
+}
+
+#[test]
+fn a_keyword_is_a_method_name_after_a_colon() {
+    for kw in KEYWORD_MEMBER_NAMES {
+        let source = format!("r = o:{kw}(a).");
+        let stmts = assert_parses_clean(&source);
+        let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+            panic!("{source}: expected assignment, got {:?}", stmts[0].kind);
+        };
+        let ExpressionKind::MethodCall { method, .. } = &value.kind else {
+            panic!("{source}: expected a method call, got {:?}", value.kind);
+        };
+        assert_eq!(method.name, *kw, "{source}");
+    }
+}
+
+#[test]
+fn a_keyword_is_a_property_name_after_a_colon() {
+    for kw in KEYWORD_MEMBER_NAMES {
+        let source = format!("r = o:{kw}.");
+        let stmts = assert_parses_clean(&source);
+        let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+            panic!("{source}: expected assignment, got {:?}", stmts[0].kind);
+        };
+        let ExpressionKind::MemberAccess { member, .. } = &value.kind else {
+            panic!("{source}: expected member access, got {:?}", value.kind);
+        };
+        assert_eq!(member.name, *kw, "{source}");
+    }
+}
+
+#[test]
+fn a_keyword_member_parses_in_statement_condition_and_chain_positions() {
+    for kw in KEYWORD_MEMBER_NAMES {
+        for source in [
+            format!("o:{kw}(a)."),
+            format!("o:{kw} = 1."),
+            format!("MESSAGE o:{kw}(a)."),
+            format!("IF o:{kw} THEN MESSAGE \"x\"."),
+            format!("r = o:First():{kw}(a):Last()."),
+            format!("r = NEW Foo():{kw}(a):{kw}."),
+            format!("r = Foo:{kw}(a)."),
+        ] {
+            assert_parses_clean(&source);
+        }
+    }
+}
+
+#[test]
+fn a_colon_followed_by_a_space_and_a_keyword_still_ends_the_block_header() {
+    let source = "\
+FOR EACH t WHERE t.a = x: DISPLAY t.a. END.
+CASE x: WHEN 1 THEN MESSAGE \"one\". OTHERWISE MESSAGE \"other\". END CASE.
+";
+    assert_parses_clean(source);
+}
+
+#[test]
+fn a_block_keyword_member_at_statement_start_is_not_a_label() {
+    for source in ["o:Do(a).", "o:Do.", "o:For = 1.", "o:Repeat(1, 2)."] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            !matches!(stmts[0].kind, StatementKind::Label { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
+
+#[test]
+fn a_label_directly_against_its_block_keyword_is_still_a_label() {
+    for source in [
+        "lbl:DO: MESSAGE \"x\". END.",
+        "lbl: REPEAT: LEAVE lbl. END.",
+        "lbl:FOR EACH t: DISPLAY t.a. END.",
+        "lbl:\nDO.\n  MESSAGE \"x\".\nEND.",
+        "lbl :\nREPEAT .\n  LEAVE lbl.\nEND.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Label { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
+
+#[test]
+fn an_override_property_with_a_computed_getter_is_a_property_statement() {
+    for source in [
+        "DEFINE PROTECTED OVERRIDE PROPERTY P AS CHARACTER NO-UNDO\n  GET():\n    RETURN \"x\".\n  END GET.",
+        "DEFINE OVERRIDE PROTECTED PROPERTY P AS CHARACTER NO-UNDO GET.",
+        "DEFINE PUBLIC OVERRIDE PROPERTY P AS INTEGER NO-UNDO GET. SET.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        assert!(
+            matches!(program.statements[0].kind, StatementKind::Property { .. }),
+            "{source}: {:?}",
+            program.statements[0].kind
+        );
+    }
+}
+
+#[test]
+fn new_as_the_last_token_does_not_panic() {
+    for source in [
+        "DO ON ERROR UNDO, THROW NEW",
+        "x = new",
+        "IF NEW",
+        "y = NEW pkg.",
+    ] {
+        let _ = Parser::new(&tokenize(source), source).parse_program();
+    }
+}
+
+#[test]
+fn a_do_block_accepts_transaction_after_its_on_phrases() {
+    for colon in [":", "\n  :"] {
+        let source = format!(
+            "PROCEDURE p:\n  DO ON ERROR UNDO main, LEAVE main ON STOP UNDO main, LEAVE main TRANSACTION{colon}\n    MESSAGE \"x\".\n  END.\nEND PROCEDURE.\nMESSAGE \"after\"."
+        );
+        let stmts = assert_parses_clean(&source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        let StatementKind::Procedure { body, .. } = &stmts[0].kind else {
+            panic!("expected a procedure, got {:?}", stmts[0].kind);
+        };
+        let StatementKind::Do { transaction, .. } = &body[0].kind else {
+            panic!("expected DO, got {:?}", body[0].kind);
+        };
+        assert!(*transaction, "{source}");
+    }
+}
+
+#[test]
+fn a_method_accepts_the_package_protected_access_modifier() {
+    for source in [
+        "METHOD PACKAGE-PROTECTED VOID m():\nEND METHOD.",
+        "METHOD PACKAGE-PRIVATE VOID m():\nEND METHOD.",
+        "METHOD STATIC PACKAGE-PROTECTED INTEGER m():\n  RETURN 1.\nEND METHOD.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Method { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+    let stmts = assert_parses_clean("METHOD PACKAGE-PROTECTED VOID m():\nEND METHOD.");
+    let StatementKind::Method { access, .. } = &stmts[0].kind else {
+        unreachable!()
+    };
+    assert_eq!(*access, AccessModifier::PackageProtected);
+}
+
+#[test]
+fn an_external_procedure_accepts_its_options_in_any_order() {
+    for options in [
+        "ORDINAL 5",
+        "CDECL",
+        "PASCAL",
+        "STDCALL",
+        "PERSISTENT",
+        "THREAD-SAFE",
+        "CDECL ORDINAL 5",
+        "ORDINAL 5 CDECL",
+        "ORDINAL 5 STDCALL PERSISTENT",
+        "PERSISTENT THREAD-SAFE PASCAL ORDINAL 12",
+        "THREAD-SAFE ORDINAL {&ord} CDECL",
+    ] {
+        let source = format!(
+            "PROCEDURE p EXTERNAL \"lib.so\" {options}:\n  DEFINE INPUT PARAMETER x AS LONG.\nEND PROCEDURE.\nMESSAGE \"after\"."
+        );
+        let stmts = assert_parses_clean(&source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        let StatementKind::Procedure {
+            body, is_prototype, ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected a procedure, got {:?}", stmts[0].kind);
+        };
+        assert!(*is_prototype, "{source}");
+        assert_eq!(body.len(), 1, "{source}");
+    }
+}
+
+#[test]
+fn an_option_keyword_of_an_external_procedure_is_still_a_name() {
+    let source = "DEFINE VARIABLE ordinal AS INTEGER NO-UNDO.\nDEFINE VARIABLE cdecl AS INTEGER NO-UNDO.\nDEFINE VARIABLE pascal AS INTEGER NO-UNDO.\nDEFINE VARIABLE stdcall AS INTEGER NO-UNDO.\nordinal = cdecl + pascal * stdcall.\nMESSAGE ordinal cdecl pascal stdcall.";
+    assert_parses_clean(source);
+}
+
+fn statements_in_first_method(stmts: &[Statement]) -> &[Statement] {
+    let StatementKind::Class { body, .. } = &stmts[0].kind else {
+        panic!("expected a class, got {:?}", stmts[0].kind);
+    };
+    body.iter()
+        .find_map(|s| match &s.kind {
+            StatementKind::Method { name, body, .. } if name.name == "Run1" => {
+                Some(body.as_slice())
+            }
+            _ => None,
+        })
+        .expect("method Run1")
+}
+
+#[test]
+fn a_receiverless_call_to_a_method_named_like_a_statement_is_a_call() {
+    for name in ["Release", "Delete", "Create", "Display"] {
+        let source = format!(
+            "CLASS C:\n  METHOD PUBLIC VOID {name}(x AS INTEGER):\n  END METHOD.\n  METHOD PUBLIC VOID Run1():\n    {name}(1).\n    {name}(1) NO-ERROR.\n  END METHOD.\nEND CLASS."
+        );
+        let stmts = assert_parses_clean(&source);
+        let body = statements_in_first_method(&stmts);
+        assert_eq!(body.len(), 2, "{source}: {body:?}");
+        for stmt in body {
+            let StatementKind::ExpressionStatement(expr) = &stmt.kind else {
+                panic!("{name}: expected a call statement, got {:?}", stmt.kind);
+            };
+            assert!(
+                matches!(
+                    expr.kind,
+                    ExpressionKind::FunctionCall { .. } | ExpressionKind::MethodCall { .. }
+                ),
+                "{name}: {:?}",
+                expr.kind
+            );
+        }
+    }
+}
+
+#[test]
+fn a_method_declared_after_its_call_still_makes_the_word_a_call() {
+    let source = "CLASS C:\n  METHOD PUBLIC VOID Run1():\n    Release(1).\n  END METHOD.\n  METHOD PRIVATE VOID Release(x AS INTEGER):\n  END METHOD.\nEND CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    assert!(
+        matches!(body[0].kind, StatementKind::ExpressionStatement(_)),
+        "{:?}",
+        body[0].kind
+    );
+}
+
+#[test]
+fn a_statement_keyword_without_a_declared_method_keeps_its_statement_reading() {
+    let source = "CLASS C:\n  METHOD PUBLIC VOID Run1():\n    DISPLAY(x) WITH FRAME f.\n  END METHOD.\n  METHOD PUBLIC VOID Other():\n  END METHOD.\nEND CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    assert!(
+        !matches!(body[0].kind, StatementKind::ExpressionStatement(_)),
+        "{:?}",
+        body[0].kind
+    );
+}
+
+#[test]
+fn a_statement_keyword_with_a_space_before_the_paren_keeps_its_statement_reading() {
+    let source = "CLASS C:\n  METHOD PUBLIC VOID Display(x AS INTEGER):\n  END METHOD.\n  METHOD PUBLIC VOID Run1():\n    DISPLAY (1) WITH FRAME f.\n    DISPLAY(1) WITH FRAME f.\n  END METHOD.\nEND CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    for stmt in body {
+        assert!(
+            !matches!(stmt.kind, StatementKind::ExpressionStatement(_)),
+            "{:?}",
+            stmt.kind
+        );
+    }
+}
+
+fn tail_names(stmt: &Statement) -> Vec<&str> {
+    stmt.skipped_tail
+        .as_ref()
+        .map(|t| t.names.iter().map(|n| n.name.as_str()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_skipped_tail_keeps_the_names_it_passed_over() {
+    let stmts = assert_parses_clean("DISPLAY a WITH FRAME f TITLE \"x\" + v-title + tbl.fld.");
+    assert!(matches!(stmts[0].kind, StatementKind::Display { .. }));
+    // `fld` is byte-adjacent to a `.`, so only the qualifier survives.
+    let names = tail_names(&stmts[0]);
+    assert!(
+        names.contains(&"v-title") && names.contains(&"tbl"),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"fld"), "{names:?}");
+}
+
+#[test]
+fn a_statement_with_no_skipped_identifiers_carries_no_tail() {
+    let stmts = assert_parses_clean("DISPLAY a.\nDEFINE STREAM s.\n");
+    assert!(stmts.iter().all(|s| s.skipped_tail.is_none()));
+}
+
+#[test]
+fn a_skipped_tail_does_not_include_modelled_tokens() {
+    let stmts = assert_parses_clean("RUN p.p (INPUT a) NO-ERROR v-extra ).");
+    assert!(matches!(stmts[0].kind, StatementKind::Run { .. }));
+    assert_eq!(tail_names(&stmts[0]), ["v-extra"]);
+}
+
+#[test]
+fn a_function_forward_declaration_in_super_keeps_its_tail() {
+    let stmts = assert_parses_clean("FUNCTION f RETURNS INTEGER (INPUT a AS INTEGER) IN h-super.");
+    assert!(matches!(stmts[0].kind, StatementKind::Function { .. }));
+    assert_eq!(tail_names(&stmts[0]), ["h-super"]);
+}
+
+#[test]
+fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
+    let stmts = assert_parses_clean("ASSIGN a = 1 v-target.");
+    assert!(matches!(stmts[0].kind, StatementKind::Assign { .. }));
+    assert_eq!(tail_names(&stmts[0]), ["v-target"]);
+}
+
+#[test]
+fn harvest_drops_a_dynamic_buffer_field() {
+    assert_eq!(harvest("UNDERLINE hbuf::company."), vec!["hbuf"]);
+}
+
+#[test]
+fn put_is_head_parsed_with_stream_and_items() {
+    let source = "PUT STREAM s1 UNFORMATTED a \"x\" SKIP b + 1 FORMAT \"x(5)\" AT 10 tail-var.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let stmt = &program.statements[0];
+    let StatementKind::Put { stream_name, items } = &stmt.kind else {
+        panic!("expected Put, got {:?}", stmt.kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(items.len(), 3);
+    let tail = stmt.skipped_tail.as_ref().expect("options stay a tail");
+    assert!(tail.names.iter().any(|n| n.name == "tail-var"));
+}
+
+#[test]
+fn os_file_statements_harvest_only_value_operands() {
+    let source = "OS-DELETE VALUE(path-var) SAVE silent.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    let StatementKind::Skipped { names, .. } = &program.statements[0].kind else {
+        panic!("expected Skipped");
+    };
+    let got: Vec<_> = names.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(got, ["path-var"]);
+
+    let source = "OS-CREATE-DIR some-dir.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    let StatementKind::Skipped { names, .. } = &program.statements[0].kind else {
+        panic!("expected Skipped");
+    };
+    assert!(names.is_empty());
+}
+
+#[test]
+fn put_dynamic_function_item_is_an_expression() {
+    let source = "PUT UNFORMATTED DYNAMIC-FUNCTION(\"f\") SKIP.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    let StatementKind::Put { items, .. } = &program.statements[0].kind else {
+        panic!("expected Put, got {:?}", program.statements[0].kind);
+    };
+    assert_eq!(items.len(), 1, "{:?}", program.statements[0]);
+}
+
+#[test]
+fn put_with_a_non_identifier_stream_name_still_parses() {
+    let source = "PUT STREAM 2dstream UNFORMATTED apage.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let stmt = &program.statements[0];
+    assert!(matches!(stmt.kind, StatementKind::Put { .. }));
+    let tail = stmt.skipped_tail.as_ref().expect("names kept as a tail");
+    assert!(tail.names.iter().any(|n| n.name == "apage"));
+}
+
+#[test]
+fn seek_statement_parses_with_end_operand() {
+    let source = "SEEK OUTPUT TO END.\nSEEK STREAM s TO 0.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 2);
+    assert!(matches!(
+        program.statements[0].kind,
+        StatementKind::Skipped { .. }
+    ));
+}
+
+#[test]
+fn a_statement_cut_short_at_the_end_of_the_file_does_not_panic() {
+    for source in [
+        "DO TRANSACTION ON ",
+        "IF LOCKED",
+        "IF LOCKED ",
+        "CATCH e AS",
+        "CATCH e AS ",
+        "x = NEW",
+        "FIND FIRST t NO-LOCK NO-ERROR. IF AVAILABLE",
+        "DO ON ERROR UNDO, LEAVE ON",
+    ] {
+        let tokens = tokenize(source);
+        let _ = Parser::new(&tokens, source).parse_program();
+    }
+}
+
+/// Every prefix of each file parses without a panic: a buffer being typed is
+/// cut at any byte.
+#[test]
+fn no_prefix_of_a_representative_file_panics() {
+    let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources");
+    for name in [
+        "bench_parser_control_flow.abl",
+        "bench_parser_datasets.abl",
+        "bench_parser_declarations.abl",
+        "bench_parser_expressions.abl",
+        "bench_parser_oo_abl.abl",
+        "bench_parser_procs_funcs.abl",
+        "bench_parser_skipped_forms.abl",
+        "bench_parser_temp_tables.abl",
+        "bench_lint_class.abl",
+        "bench_lint_procedural.abl",
+    ] {
+        let text = std::fs::read_to_string(resources.join(name)).expect("fixture");
+        for end in (0..=text.len()).filter(|&end| text.is_char_boundary(end)) {
+            let source = &text[..end];
+            let parsed = std::panic::catch_unwind(|| {
+                let tokens = tokenize(source);
+                let _ = Parser::new(&tokens, source).parse_program();
+            });
+            assert!(
+                parsed.is_ok(),
+                "{name} cut at byte {end} panics; the prefix ends with {:?}",
+                &source[source.len().saturating_sub(40)..]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_keyword_against_a_block_header_colon_still_ends_the_header() {
+    for source in [
+        "CASE x:WHEN 1 THEN MESSAGE \"one\". OTHERWISE MESSAGE \"other\". END CASE.",
+        "CASE x:WHEN \"a\" OR WHEN \"b\" THEN MESSAGE \"ab\". END CASE.",
+        "CASE x: WHEN 1 THEN MESSAGE \"one\". END CASE.",
+        "CASE o:Value:WHEN 1 THEN MESSAGE \"one\". END CASE.",
+        "CASE x:OTHERWISE MESSAGE \"other\". END CASE.",
+        "CASE x:OTHERWISE DO: MESSAGE \"other\". END. END CASE.",
+        "FOR EACH t WHERE t.a = x:DISPLAY t.a. END.",
+        "FOR EACH t WHERE t.a = x:DELETE t. END.",
+        "FOR EACH t BY t.a DESCENDING:DISPLAY t.a. END.",
+        "DO WHILE x:IF x THEN LEAVE. END.",
+        "DO WHILE x:LEAVE. END.",
+        "REPEAT WHILE x < 3:ASSIGN x = x + 1. END.",
+        "DO i = 1 TO n:IF i > 1 THEN LEAVE. END.",
+        "IF x THEN DO:MESSAGE \"x\". END.",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn a_keyword_member_is_still_read_before_what_can_follow_a_member() {
+    for source in [
+        "r = o:When.",
+        "r = o:Otherwise(1).",
+        "r = o:Display + 1.",
+        "IF o:Display AND o:When THEN MESSAGE \"x\".",
+        "DISPLAY o:Display FORMAT \"x(8)\" WITH FRAME f.",
+        "r = MAXIMUM(o:Display, o:When).",
+        "r = o:When[1].",
+        "o:Display = 2.",
+        "r = IF a THEN o:When ELSE 0.",
+        "CASE o:When:WHEN 1 THEN MESSAGE \"one\". END CASE.",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn a_do_block_takes_while_transaction_and_on_phrases_in_any_order() {
+    for source in [
+        "DO ON ERROR UNDO, LEAVE ON ENDKEY UNDO, LEAVE TRANSACTION WHILE i < 3:\n  i = i + 1.\nEND.",
+        "DO TRANSACTION WHILE i < 3 ON ERROR UNDO, LEAVE:\n  i = i + 1.\nEND.",
+        "DO WHILE i < 3 TRANSACTION ON ERROR UNDO, LEAVE:\n  i = i + 1.\nEND.",
+        "DO WHILE i < 3 ON ERROR UNDO, LEAVE TRANSACTION:\n  i = i + 1.\nEND.",
+        "DO ON ERROR UNDO, RETRY TRANSACTION WHILE i < 3:\n  i = i + 1.\nEND.",
+        "DO i = 1 TO 3 TRANSACTION ON ERROR UNDO, THROW:\n  MESSAGE i.\nEND.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Do {
+            transaction,
+            while_condition,
+            to,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected DO, got {:?}", stmts[0].kind);
+        };
+        assert!(*transaction, "{source}");
+        assert!(while_condition.is_some() || to.is_some(), "{source}");
+    }
+}
+
+#[test]
+fn override_and_abstract_on_a_property_come_in_either_order() {
+    for source in [
+        "DEFINE PUBLIC ABSTRACT OVERRIDE PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+        "DEFINE PUBLIC OVERRIDE ABSTRACT PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+        "DEFINE OVERRIDE PUBLIC ABSTRACT PROPERTY P AS CHARACTER NO-UNDO GET. SET.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 1, "{source}");
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Property { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
+
+#[test]
+fn raw_transfer_and_underline_are_unmodelled_statements_and_raw_transfer_is_still_a_name() {
+    for source in [
+        "RAW-TRANSFER BUFFER Customer TO BUFFER tt NO-ERROR.",
+        "RAW-TRANSFER Customer TO tt.",
+        "UNDERLINE Customer.Name WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+    assert_parses_clean("DEFINE VARIABLE raw-transfer AS INTEGER NO-UNDO.\nraw-transfer = 1.");
+}
+
+#[test]
+fn new_with_a_parenthesised_buffer_is_a_function_call() {
+    let stmts = assert_parses_clean("l = NEW(customer).");
+    let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+        panic!("expected assignment, got {:?}", stmts[0].kind);
+    };
+    let ExpressionKind::FunctionCall { name, arguments } = &value.kind else {
+        panic!("expected a call, got {:?}", value.kind);
+    };
+    assert_eq!(name.name, "NEW");
+    assert_eq!(arguments.len(), 1);
+}
+
+#[test]
+fn new_with_a_class_name_is_still_an_instantiation() {
+    let stmts = assert_parses_clean("o = NEW Foo(1).");
+    let StatementKind::Assignment { value, .. } = &stmts[0].kind else {
+        panic!("expected assignment, got {:?}", stmts[0].kind);
+    };
+    assert!(matches!(value.kind, ExpressionKind::New { .. }));
+}
+
+#[test]
+fn byte_order_constants_are_expressions() {
+    for source in [
+        "SET-BYTE-ORDER(m) = BIG-ENDIAN.",
+        "SET-BYTE-ORDER(m) = LITTLE-ENDIAN.",
+        "SET-BYTE-ORDER(m) = HOST-BYTE-ORDER.",
+        "i = HOST-BYTE-ORDER.",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn overlay_is_a_target_and_a_value() {
+    for source in [
+        "OVERLAY(s, 1, 3) = \"abc\".",
+        "OVERLAY(s, 1, 3, \"CHARACTER\") = \"abc\".",
+        "s = OVERLAY(s, 1, 3).",
+    ] {
+        assert_parses_clean(source);
+    }
+}
+
+#[test]
+fn input_from_os_dir_takes_a_path_expression() {
+    for source in [
+        "INPUT FROM OS-DIR(\".\").",
+        "INPUT STREAM s FROM OS-DIR(cDir + \"/x\") NO-ECHO.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::StreamIo {
+            operation: StreamOperation::From(source_expr),
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected INPUT FROM, got {:?}", stmts[0].kind);
+        };
+        assert!(
+            matches!(&source_expr.kind, ExpressionKind::FunctionCall { name, .. } if name.name.eq_ignore_ascii_case("os-dir")),
+            "{source}: {:?}",
+            source_expr.kind
+        );
+    }
+}
+
+#[test]
+fn export_is_head_parsed_with_stream_delimiter_and_items() {
+    let stmts = assert_parses_clean(
+        "EXPORT STREAM s1 DELIMITER \",\" tt.a v-b + 1 tt EXCEPT tt.c NO-LOBS.",
+    );
+    let StatementKind::Export {
+        stream_name,
+        delimiter,
+        items,
+    } = &stmts[0].kind
+    else {
+        panic!("expected Export, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(delimiter.is_some());
+    assert_eq!(items.len(), 3);
+    assert_eq!(tail_names(&stmts[0]), ["tt"]);
+}
+
+#[test]
+fn import_is_head_parsed_with_targets_and_drops_a_caret() {
+    let stmts = assert_parses_clean("IMPORT STREAM s1 ^ v-a ^ tt.b v-c[2] NO-ERROR.");
+    let StatementKind::Import {
+        stream_name,
+        targets,
+        ..
+    } = &stmts[0].kind
+    else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(targets.len(), 3);
+
+    let stmts = assert_parses_clean("IMPORT UNFORMATTED v-line.");
+    let StatementKind::Import { targets, .. } = &stmts[0].kind else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1);
+}
+
+#[test]
+fn export_and_import_with_a_stream_handle_keep_the_rest_as_a_tail() {
+    for source in ["EXPORT STREAM-HANDLE h v-a.", "IMPORT STREAM-HANDLE h v-a."] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(
+                stmts[0].kind,
+                StatementKind::Export { ref items, .. } | StatementKind::Import { targets: ref items, .. }
+                    if items.is_empty()
+            ),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+        assert_eq!(tail_names(&stmts[0]), ["h", "v-a"], "{source}");
+    }
+}
+
+#[test]
+fn import_stops_at_a_target_that_is_not_writable() {
+    let stmts = assert_parses_clean("IMPORT v-a \"x\" v-b.");
+    let StatementKind::Import { targets, .. } = &stmts[0].kind else {
+        panic!("expected Import, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1);
+    assert_eq!(tail_names(&stmts[0]), ["v-b"]);
+}
+
+#[test]
+fn pause_is_head_parsed_with_duration_and_message() {
+    let stmts =
+        assert_parses_clean("PAUSE v-secs * 60 BEFORE-HIDE MESSAGE \"Wait \" + v-who IN WINDOW h.");
+    let StatementKind::Pause { duration, message } = &stmts[0].kind else {
+        panic!("expected Pause, got {:?}", stmts[0].kind);
+    };
+    assert!(duration.is_some());
+    assert!(message.is_some());
+    assert!(tail_names(&stmts[0]).contains(&"h"));
+
+    for source in [
+        "PAUSE.",
+        "PAUSE 0 BEFORE-HIDE.",
+        "PAUSE NO-MESSAGE.",
+        "PAUSE BEFORE-H.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Pause { message, .. } = &stmts[0].kind else {
+            panic!("{source}: expected Pause, got {:?}", stmts[0].kind);
+        };
+        assert!(message.is_none(), "{source}");
+        assert!(stmts[0].skipped_tail.is_none(), "{source}");
+    }
+}
+
+#[test]
+fn down_and_up_are_head_parsed_with_stream_and_lines() {
+    let stmts = assert_parses_clean("DOWN STREAM s1 v-n WITH FRAME f.");
+    let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Down, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(lines.is_some());
+    assert!(tail_names(&stmts[0]).contains(&"f"));
+
+    let stmts = assert_parses_clean("DOWN 1 STREAM s1.");
+    let StatementKind::Down { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Down, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert!(lines.is_some());
+
+    let stmts = assert_parses_clean("UP WITH FRAME f.");
+    let StatementKind::Up { stream_name, lines } = &stmts[0].kind else {
+        panic!("expected Up, got {:?}", stmts[0].kind);
+    };
+    assert!(stream_name.is_none() && lines.is_none());
+}
+
+#[test]
+fn form_is_head_parsed_with_items_and_format_options() {
+    let source = "FORM HEADER\n  \"Page:\" AT 64 PAGE-NUMBER(s1) FORMAT \">>9\":U\n  v-user AT 1 + v-col\n  /* note */ tt.name LABEL \"Name\" COLON 20 SKIP(1)\n  STRING(TIME, \"HH:MM\") NO-LABEL TO 30\n  WITH FRAME f-hdr PAGE-TOP v-width.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::Form { items, .. } = &stmts[0].kind else {
+        panic!("expected Form, got {:?}", stmts[0].kind);
+    };
+    // "Page:", PAGE-NUMBER(s1), v-user, 1 + v-col, tt.name, STRING(...).
+    assert_eq!(items.len(), 6, "{items:?}");
+    assert!(tail_names(&stmts[0]).contains(&"v-width"));
+    assert!(!tail_names(&stmts[0]).contains(&"v-user"));
+}
+
+#[test]
+fn form_leaves_unmodelled_item_options_to_the_tail() {
+    for (source, modelled, tail) in [
+        // A name followed by a number is an option the lexer does not classify.
+        ("FORM v-a BGCOLOR 3 v-b.", 1, "v-b"),
+        ("FORM v-a AT ROW 2 COL 5 v-b.", 1, "v-b"),
+        ("FORM v-a AT v-col v-b.", 1, "v-b"),
+        ("FORM v-a VIEW-AS FILL-IN v-b WITH FRAME f.", 1, "v-b"),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Form { items, .. } = &stmts[0].kind else {
+            panic!("{source}: expected Form, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(items.len(), modelled, "{source}: {items:?}");
+        assert!(tail_names(&stmts[0]).contains(&tail), "{source}");
+    }
+}
+
+#[test]
+fn a_widget_definition_declares_its_name() {
+    for (source, name) in [
+        ("DEFINE BUTTON b-ok LABEL \"OK\" AUTO-GO.", "b-ok"),
+        (
+            "DEF BROWSE br-cust QUERY q DISPLAY Customer.Name WITH 5 DOWN.",
+            "br-cust",
+        ),
+        (
+            "DEFINE RECTANGLE RECT-1 EDGE-PIXELS 2 SIZE 10 BY 2.",
+            "RECT-1",
+        ),
+        ("DEFINE NEW SHARED MENU m-main MENUBAR.", "m-main"),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::DefineWidget { name: got } = &stmts[0].kind else {
+            panic!("{source}: expected DefineWidget, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(got.name, name, "{source}");
+    }
+}
+
+#[test]
+fn update_and_set_are_head_parsed_with_targets() {
+    let source = "UPDATE UNLESS-HIDDEN v-a AUTO-RETURN LABEL \"A\" HELP \"h\" ^ \"note\" AT 5 tt.b v-c[2] GO-ON(F1) WITH FRAME f EDITING: v-x = 1. END.";
+    let stmts = assert_parses_clean(source);
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    let StatementKind::Update { targets, .. } = &stmts[0].kind else {
+        panic!("expected Update, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 3, "{targets:?}");
+    let tail = tail_names(&stmts[0]);
+    assert!(tail.contains(&"f") && tail.contains(&"v-x"), "{tail:?}");
+
+    let stmts = assert_parses_clean("SET v-a = v-b + 1.");
+    let StatementKind::Set { targets, .. } = &stmts[0].kind else {
+        panic!("expected Set, got {:?}", stmts[0].kind);
+    };
+    assert!(targets.is_empty(), "an assignment form stays in the tail");
+    assert!(tail_names(&stmts[0]).contains(&"v-b"));
+}
+
+#[test]
+fn widget_list_statements_are_head_parsed() {
+    for (source, count, tail) in [
+        (
+            "ENABLE UNLESS-HIDDEN b-ok v-name LABEL \"Name\" WITH FRAME f.",
+            2,
+            Some("f"),
+        ),
+        ("ENABLE ALL EXCEPT b-ok WITH FRAME f.", 0, Some("b-ok")),
+        ("DISABLE b-ok tt.name WITH FRAME f.", 2, Some("f")),
+        ("HIDE FRAME f NO-PAUSE.", 0, Some("f")),
+        ("HIDE STREAM s1 ALL.", 0, None),
+        // The expression parser takes `IN FRAME f` as part of the widget reference.
+        ("HIDE v-name IN FRAME f.", 1, None),
+        ("VIEW C-Win.", 1, None),
+        ("VIEW FRAME f IN WINDOW C-Win.", 0, Some("C-Win")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let items = match &stmts[0].kind {
+            StatementKind::Enable { items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => items,
+            other => panic!("{source}: got {other:?}"),
+        };
+        assert_eq!(items.len(), count, "{source}: {items:?}");
+        if let Some(name) = tail {
+            assert!(
+                tail_names(&stmts[0]).contains(&name),
+                "{source}: {:?}",
+                stmts[0]
+            );
+        }
+    }
+    let stmts = assert_parses_clean("DISABLE TRIGGERS FOR LOAD OF Customer.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
+}
+
+#[test]
+fn apply_is_head_parsed_with_event_and_target() {
+    for (source, has_target, tail) in [
+        ("APPLY \"entry\" TO v-name IN FRAME f.", true, None),
+        ("APPLY \"close\" TO THIS-PROCEDURE.", true, None),
+        ("APPLY v-event TO h-proc.", true, None),
+        ("APPLY (LASTKEY).", false, None),
+        (
+            "APPLY \"choose\" TO BROWSE br-cust.",
+            false,
+            Some("br-cust"),
+        ),
+        ("APPLY \"go\" TO FRAME f.", false, Some("f")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Apply { event, target } = &stmts[0].kind else {
+            panic!("{source}: expected Apply, got {:?}", stmts[0].kind);
+        };
+        assert!(event.is_some(), "{source}");
+        assert_eq!(target.is_some(), has_target, "{source}");
+        if let Some(name) = tail {
+            assert!(tail_names(&stmts[0]).contains(&name), "{source}");
+        }
+    }
+}
+
+#[test]
+fn wait_for_is_head_parsed_with_the_widgets() {
+    for (source, count, tail) in [
+        ("WAIT-FOR CLOSE OF THIS-PROCEDURE.", 1, None),
+        (
+            "WAIT-FOR \"close\":U OF THIS-PROCEDURE, CURRENT-WINDOW.",
+            2,
+            None,
+        ),
+        (
+            "WAIT-FOR ENTER, TAB OF v-name IN FRAME f OR CHOOSE OF b-ok FOCUS v-name.",
+            2,
+            Some("v-name"),
+        ),
+        ("WAIT-FOR GO OF FRAME f.", 0, Some("f")),
+        ("WAIT-FOR frm:ShowDialog().", 0, Some("frm")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::WaitFor { widgets } = &stmts[0].kind else {
+            panic!("{source}: expected WaitFor, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(widgets.len(), count, "{source}: {widgets:?}");
+        if let Some(name) = tail {
+            assert!(tail_names(&stmts[0]).contains(&name), "{source}");
+        }
+    }
+}
+
+#[test]
+fn define_buffer_for_a_database_qualified_table_keeps_the_whole_name() {
+    for source in [
+        "DEFINE BUFFER b FOR sports.Customer.",
+        "DEFINE BUFFER b FOR sports.Customer .",
+        "DEFINE BUFFER b FOR sports.Customer PRESELECT.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 1, "{source}: {stmts:?}");
+        let StatementKind::DefineBuffer {
+            target: BufferTarget::Table(t),
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected DefineBuffer, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(t.name, "sports.Customer", "{source}");
+    }
+}
+
+#[test]
+fn buffer_parameters_and_like_take_a_database_qualified_table() {
+    let buffer_target = |stmt: &Statement| match &stmt.kind {
+        StatementKind::DefineParameter {
+            param_type: ParameterType::Buffer { target, .. },
+            ..
+        } => target.name.clone(),
+        other => panic!("expected a buffer parameter, got {other:?}"),
+    };
+    for source in [
+        "DEFINE PARAMETER BUFFER b FOR sports.Customer.",
+        "DEFINE INPUT PARAMETER BUFFER b FOR sports.Customer.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 1, "{source}: {stmts:?}");
+        assert_eq!(buffer_target(&stmts[0]), "sports.Customer", "{source}");
+    }
+
+    let source = "FUNCTION f RETURNS LOGICAL (BUFFER b FOR sports.Customer):\nEND FUNCTION.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::Function { body, .. } = &stmts[0].kind else {
+        panic!("expected Function, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(buffer_target(&body[0]), "sports.Customer");
+
+    let source = "DEFINE TEMP-TABLE tt NO-UNDO LIKE sports.Customer.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::DefineTempTable { like_table, .. } = &stmts[0].kind else {
+        panic!("expected DefineTempTable, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(
+        like_table.as_ref().map(|t| t.name.as_str()),
+        Some("sports.Customer")
+    );
+}
+
+fn frame_field_names(fields: &[FrameField]) -> Vec<(&str, String)> {
+    fields
+        .iter()
+        .map(|f| {
+            let ty = match &f.type_source {
+                TypeSource::Explicit(dt) => format!("{dt:?}"),
+                TypeSource::Like { source } => format!("like {}", source.name),
+            };
+            (f.name.name.as_str(), ty)
+        })
+        .collect()
+}
+
+#[test]
+fn form_declares_frame_fields_and_keeps_parsing_items() {
+    let source = "FORM v-a v-new AS CHARACTER FORMAT \"x(8)\" v-b\n  v-qty LIKE sports.Item.Qty LABEL \"Qty\" v-c\n  WITH FRAME f.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::Form { items, fields } = &stmts[0].kind else {
+        panic!("expected Form, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(items.len(), 3, "v-a, v-b, v-c: {items:?}");
+    assert_eq!(
+        frame_field_names(fields),
+        vec![
+            ("v-new", "Character".to_string()),
+            ("v-qty", "like sports.Item.Qty".to_string()),
+        ]
+    );
+    let tail = tail_names(&stmts[0]);
+    assert!(
+        !tail.contains(&"v-new") && !tail.contains(&"v-c"),
+        "{tail:?}"
+    );
+}
+
+#[test]
+fn update_and_enable_do_not_declare_frame_fields() {
+    for source in [
+        "UPDATE v-a v-new AS CHARACTER v-b.",
+        "ENABLE v-a v-new AS CHARACTER v-b.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            tail_names(&stmts[0]).contains(&"v-new"),
+            "{source}: {:?}",
+            stmts[0]
+        );
+    }
+}
+
+#[test]
+fn define_frame_declares_its_frame_fields() {
+    let source = "DEFINE FRAME f-main\n  \"Order:\" VIEW-AS TEXT AT ROW 1 COL 1\n  v-order AS CHARACTER FORMAT \"x(20)\" VIEW-AS FILL-IN SIZE 20 BY 1 AT ROW 1 COL 8\n  v-count AS INTEGER EXTENT 3\n  v-desc LIKE Item.Desc VIEW-AS EDITOR SIZE 30 BY 2\n  Customer.Name AT ROW 3 COL 1 v-known\n  WITH NO-LABELS SIZE 40 BY 6.";
+    let stmts = assert_parses_clean(source);
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    let StatementKind::DefineFrame { name, fields, .. } = &stmts[0].kind else {
+        panic!("expected DefineFrame, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(name.name, "f-main");
+    assert_eq!(
+        frame_field_names(fields),
+        vec![
+            ("v-order", "Character".to_string()),
+            ("v-count", "Integer".to_string()),
+            ("v-desc", "like Item.Desc".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn stop_statement_and_variable() {
+    let source = "STOP. DEFINE VARIABLE stop AS INTEGER NO-UNDO. stop = 1. MESSAGE stop.";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert!(matches!(program.statements[0].kind, StatementKind::Empty));
+    assert_eq!(program.statements.len(), 4);
+    assert!(matches!(
+        program.statements[2].kind,
+        StatementKind::Assignment { .. }
+    ));
+}
+
+#[test]
+fn comments_between_statement_keywords() {
+    for source in [
+        "OUTPUT /* c */ CLOSE.",
+        "INPUT /* c */ CLOSE.",
+        "INPUT-OUTPUT /* c */ CLOSE.",
+        "DEFINE /* c */ VARIABLE n AS INTEGER NO-UNDO.",
+        "DEFINE /* c */ NEW /* c */ SHARED VARIABLE n AS INTEGER NO-UNDO.",
+        "DEFINE /* c */ PARAMETER /* c */ BUFFER b FOR Customer.",
+        "lbl /* c */ : /* c */ DO: END.",
+        "VAR /* c */ INTEGER /* c */ n.",
+        "VAR /* c */ CLASS /* c */ Example /* c */ n.",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
+        assert_eq!(program.statements.len(), 1, "{source}");
+        assert!(
+            !matches!(
+                program.statements[0].kind,
+                StatementKind::ExpressionStatement(_)
+            ),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn comment_lookahead_preserves_run_target_boundaries() {
+    for (source, target) in [
+        ("RUN task/* c */.p.", "task"),
+        ("RUN task./* c */p.", "task"),
+        ("RUN ./task.p /* c */ NO-ERROR.", "./task.p"),
+        ("RUN task/* c */(1).", "task"),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect(source);
+        let StatementKind::Run {
+            target: RunTarget::Literal { name, .. },
+            ..
+        } = stmt.kind
+        else {
+            panic!("{source}: {:?}", stmt.kind);
+        };
+        assert_eq!(name, target, "{source}");
+    }
+}
+
+#[test]
+fn comment_lookahead_keeps_method_calls_and_adjacency() {
+    let source = "CLASS C: METHOD PUBLIC VOID Display(x AS INTEGER): END METHOD. METHOD PUBLIC VOID Run1(): Display(1) /* c */ . Display(1) /* c */ NO-ERROR /* c */ . DISPLAY/* c */(1) WITH FRAME f. END METHOD. END CLASS.";
+    let stmts = assert_parses_clean(source);
+    let body = statements_in_first_method(&stmts);
+    assert_eq!(body.len(), 3);
+    assert!(matches!(
+        body[0].kind,
+        StatementKind::ExpressionStatement(_)
+    ));
+    assert!(matches!(
+        body[1].kind,
+        StatementKind::ExpressionStatement(_)
+    ));
+    assert!(matches!(body[2].kind, StatementKind::Display { .. }));
+}
+
+#[test]
+fn lookahead_counts_non_comment_tokens_and_preserves_positions() {
+    let source = "OUTPUT/* one *//* two */CLOSE/* three */.";
+    let tokens = tokenize(source);
+    let parser = Parser::new(&tokens, source);
+    assert_eq!(parser.peek_at(0).kind, Kind::Output);
+    assert_eq!(parser.peek_at(1).kind, Kind::Close);
+    assert_eq!(parser.peek_at(2).kind, Kind::Period);
+    assert_eq!(parser.peek_at(3).kind, Kind::Eof);
+    assert_eq!(parser.peek_at(30).kind, Kind::Eof);
+    assert_ne!(parser.peek_at(0).end, parser.peek_at(1).start);
+    assert_eq!(parser.peek_at(1).start, source.find("CLOSE").unwrap());
+}
+
+#[test]
+fn comment_lookahead_preserves_statement_newlines() {
+    for source in [
+        "CREATE TEMP-TABLE h./* c */\nMESSAGE 1.",
+        "USING Example.Type./* c */\nMESSAGE 1.",
+        "@Example./* c */\nMESSAGE 1.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 2, "{source}: {stmts:?}");
+        assert!(matches!(stmts[1].kind, StatementKind::Message { .. }));
+    }
+}
+
+#[test]
+fn update_and_set_keep_the_expressions_of_their_format_options() {
+    for source in [
+        "UPDATE v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "UPDATE v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+        "SET v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "SET v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let (StatementKind::Update { targets, options } | StatementKind::Set { targets, options }) =
+            &stmts[0].kind
+        else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        assert_eq!(targets.len(), 1, "{source}: {targets:?}");
+        assert_eq!(options.len(), 1, "{source}: {options:?}");
+        assert!(tail_names(&stmts[0]).contains(&"f"), "{source}");
+    }
+
+    let stmts =
+        assert_parses_clean("UPDATE v-a VALIDATE(v-a > 0, \"bad\") v-b WHEN v-a = 1 WITH FRAME f.");
+    let StatementKind::Update { targets, options } = &stmts[0].kind else {
+        panic!("expected Update, got {:?}", stmts[0].kind);
+    };
+    assert_eq!((targets.len(), options.len()), (2, 2), "{stmts:?}");
+}
+
+#[test]
+fn form_and_enable_keep_the_expressions_of_their_format_options() {
+    for source in [
+        "FORM v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "FORM v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+        "ENABLE v-a VALIDATE(CAN-FIND(Customer WHERE Customer.Num = v-a), \"bad\") WITH FRAME f.",
+        "ENABLE v-a WHEN CAN-FIND(Customer WHERE Customer.Num = v-a) WITH FRAME f.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        let (StatementKind::Form { items, .. } | StatementKind::Enable { items }) = &stmts[0].kind
+        else {
+            panic!("{source}: got {:?}", stmts[0].kind);
+        };
+        assert_eq!(items.len(), 2, "{source}: {items:?}");
+        assert!(tail_names(&stmts[0]).contains(&"f"), "{source}");
+    }
 }
 
 // =============================================================================

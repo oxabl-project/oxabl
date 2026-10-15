@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use oxabl_ast::Span;
 use oxabl_common::{FileId, VirtualSpan};
 use oxabl_index::{
-    BatchIndex, Completeness, DegradedReason, DependencyEdges, DirectIncludeInput, EdgeInputs,
-    EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
-    UnresolvedIncludeInput, build_edge_set,
+    BatchIndex, BranchKind, Completeness, ConditionalBranch, ConditionalInclude, DegradedReason,
+    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
+    NestedUnresolvedIncludeInput, UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
 };
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
@@ -709,4 +709,187 @@ fn an_absent_run_target_row_keeps_the_whole_written_name() {
         assert_eq!(rows[0].name, target.to_lowercase(), "{target}");
         assert_eq!(rows[0].reason, UnresolvedReason::AbsentFromWorkspace);
     }
+}
+
+fn conditional(name: &str, at: Option<u32>) -> ConditionalInclude {
+    ConditionalInclude {
+        name: name.to_string(),
+        span: at.map(|start| Span {
+            start,
+            end: start + 5,
+        }),
+        include_site: None,
+        branches: vec![ConditionalBranch {
+            kind: BranchKind::If,
+            condition: "FALSE".to_string(),
+        }],
+        computed_name: false,
+    }
+}
+
+#[test]
+fn conditional_includes_are_never_edges_and_come_back_ordered_and_once() {
+    let edges = DependencyEdges::default().with_conditional_includes(vec![
+        conditional("b.i", Some(20)),
+        conditional("a.i", Some(10)),
+        conditional("b.i", Some(20)),
+        conditional("c.i", None),
+    ]);
+
+    let got: Vec<_> = edges
+        .conditional_includes()
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(got, ["a.i", "b.i", "c.i"]);
+    assert!(edges.edges().is_empty());
+    assert!(edges.unresolved().is_empty());
+    assert!(edges.is_empty());
+    assert!(edges.completeness().is_complete());
+}
+
+#[test]
+fn a_set_without_conditional_includes_compares_equal_to_the_default() {
+    assert!(DependencyEdges::default().conditional_includes().is_empty());
+    assert_eq!(
+        DependencyEdges::default().with_conditional_includes(Vec::new()),
+        DependencyEdges::default()
+    );
+}
+
+/// The schema-table edges of `source`, analysed against the `Customer` schema.
+fn table_edges(source: &str) -> Vec<String> {
+    let schema = customer_schema();
+    let semantic = analyse(source, &schema, &NullIndex);
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+    targets(EdgeKind::SchemaTable, &edges)
+}
+
+#[test]
+fn a_table_named_only_as_a_record_is_an_edge() {
+    for source in [
+        "FIND FIRST Customer NO-LOCK.",
+        "FIND LAST Customer.",
+        "FIND NEXT Customer.",
+        "FIND PREV Customer.",
+        "FIND CURRENT Customer.",
+        "FIND Customer 1.",
+        "FIND sports.Customer 1.",
+        "FIND FIRST Customer USE-INDEX k NO-LOCK NO-ERROR.",
+        "FIND FIRST ttOrder OF Customer.",
+        "CREATE Customer.",
+        "DELETE Customer.",
+        "RELEASE Customer.",
+        "VALIDATE Customer.",
+        "BUFFER-COPY Customer TO Customer.",
+        "BUFFER-COMPARE Customer TO Customer.",
+        "DEFINE QUERY q FOR Customer.",
+        "OPEN QUERY q FOR EACH Customer.",
+        "OPEN QUERY q PRESELECT EACH Customer.",
+        "FOR EACH ttOrder OF Customer: END.",
+        "FOR EACH ttOrder NO-LOCK, EACH Customer NO-LOCK: END.",
+        "FOR EACH ttOrder, FIRST Customer WHERE Customer.CustNum = 1: END.",
+        "DO FOR Customer: END.",
+        "REPEAT PRESELECT EACH Customer: END.",
+        "MESSAGE CAN-FIND(ttOrder OF Customer).",
+        "DEFINE TEMP-TABLE tt NO-UNDO LIKE Customer.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD x LIKE Customer.Name.",
+        "DEFINE WORK-TABLE wt LIKE Customer.",
+        "DEFINE VARIABLE v LIKE Customer.Name NO-UNDO.",
+        "DEFINE VARIABLE v LIKE sports.Customer.Name NO-UNDO.",
+        "DEFINE INPUT PARAMETER p LIKE Customer.Name NO-UNDO.",
+        "FUNCTION f RETURNS LOGICAL (BUFFER fb FOR Customer): RETURN TRUE. END FUNCTION.",
+        "FUNCTION f RETURNS LOGICAL (BUFFER fb FOR Customer) FORWARD.",
+        "FUNCTION f RETURNS LOGICAL (INPUT p LIKE Customer.Name) FORWARD.",
+        "UPDATE Customer.",
+        "SET Customer.",
+        "PROMPT-FOR Customer.",
+        "INSERT Customer.",
+        "IMPORT Customer.",
+        "EXPORT Customer.",
+        "ENABLE Customer WITH FRAME f.",
+        "PUT Customer.Name.",
+        "DISABLE TRIGGERS FOR LOAD OF Customer.",
+        "ON WRITE OF Customer DO: END.",
+        "ON ASSIGN OF Customer.Name DO: END.",
+        "TRIGGER PROCEDURE FOR WRITE OF Customer.",
+        "TRIGGER PROCEDURE FOR ASSIGN OF Customer.Name.",
+        "DEFINE FRAME f Customer.Name.",
+        "DEFINE QUERY q FOR Customer. DEFINE BROWSE br QUERY q DISPLAY Customer.Name WITH 5 DOWN.",
+        "DEFINE DATA-SOURCE ds FOR Customer.",
+    ] {
+        assert_eq!(table_edges(source), ["customer"], "{source}");
+    }
+}
+
+#[test]
+fn a_local_name_or_a_bare_field_names_no_table() {
+    for source in [
+        "DEFINE TEMP-TABLE Customer NO-UNDO FIELD x AS INTEGER. FIND FIRST Customer.",
+        "DEFINE VARIABLE Customer AS INTEGER NO-UNDO. UPDATE Customer.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER. DEFINE VARIABLE v LIKE tt.f NO-UNDO.",
+        "DEFINE VARIABLE v LIKE Name NO-UNDO.",
+        "FIND FIRST ttOrder NO-LOCK.",
+        "DO TRANSACTION: END.",
+    ] {
+        assert!(table_edges(source).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn a_dynamic_buffer_field_named_like_a_table_is_no_edge() {
+    for source in [
+        "DEFINE VARIABLE h AS HANDLE NO-UNDO. PUT h::Customer.",
+        "DEFINE VARIABLE h AS HANDLE NO-UNDO. DEFINE TEMP-TABLE tt NO-UNDO FIELD x AS INTEGER. \
+         FOR EACH tt, EACH ttOrder WHERE ttOrder.x = h::Customer: END.",
+    ] {
+        assert!(table_edges(source).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn a_table_named_by_raw_transfer_underline_or_current_changed_is_an_edge() {
+    for source in [
+        "RAW-TRANSFER Customer TO Customer.",
+        "RAW-TRANSFER BUFFER Customer TO BUFFER Customer.",
+        "UNDERLINE Customer.Name.",
+        "UNDERLINE Customer.Name WITH FRAME f.",
+        "MESSAGE CURRENT-CHANGED Customer.",
+        "MESSAGE CURRENT-CHANGED(Customer).",
+        "IF CURRENT-CHANGED Customer THEN MESSAGE 1.",
+    ] {
+        assert_eq!(table_edges(source), ["customer"], "{source}");
+    }
+}
+
+#[test]
+fn a_table_inside_a_format_option_expression_is_an_edge() {
+    let mut missing = Vec::new();
+    for source in [
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         UPDATE v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         SET v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         FORM v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         PROMPT-FOR v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         ENABLE v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         UPDATE v WHEN CAN-FIND(Customer WHERE Customer.CustNum = v) WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         SET v WHEN CAN-FIND(Customer WHERE Customer.CustNum = v) WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         FORM v WHEN CAN-FIND(Customer WHERE Customer.CustNum = v) WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         DISPLAY v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\") WITH FRAME f.",
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO. \
+         DEFINE FRAME f v VALIDATE(CAN-FIND(Customer WHERE Customer.CustNum = v), \"bad\").",
+    ] {
+        if table_edges(source) != ["customer"] {
+            missing.push(source);
+        }
+    }
+    assert!(missing.is_empty(), "no table edge for: {missing:#?}");
 }

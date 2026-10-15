@@ -267,7 +267,7 @@ impl Parser<'_> {
         // Exception: string literals may have `:U` or `:T` character-type qualifiers — consume them.
         if matches!(expr.kind, ExpressionKind::Literal(_)) {
             if self.check(Kind::Colon) {
-                let colon_end = self.tokens[self.current].end;
+                let colon_end = self.token_at(self.current).end;
                 if let Some(next) = self.tokens.get(self.current + 1)
                     && next.start == colon_end
                     && matches!(next.kind, Kind::Identifier)
@@ -292,10 +292,10 @@ impl Parser<'_> {
                 // This avoids consuming ':' in block delimiters like "CASE x:" or "DO:"
                 // and block-headers like "FOR EACH ... cond:".
                 // DoubleColon (::) is ABL's dynamic buffer field access operator.
-                let colon_end = self.tokens[self.current].end;
+                let colon_end = self.token_at(self.current).end;
                 let next_is_member = self.tokens.get(self.current + 1).is_some_and(|t| {
-                    Self::can_be_member_name(t.kind)
-                        && !self.source[colon_end..t.start].contains('\n')
+                    !self.source[colon_end..t.start].contains('\n')
+                        && self.is_member_name(self.current + 1, colon_end)
                 });
                 if !next_is_member {
                     break;
@@ -320,10 +320,10 @@ impl Parser<'_> {
         // Postfix left-nesting: the node spans from the object's start through
         // the closing `)`/member token (ast-invariants §5).
         let lo = object.span.start;
-        self.advance(); // consumes ':'
+        let colon_end = self.advance().end; // consumes ':'
 
         // Expect identifier after ':'
-        if !Self::can_be_member_name(self.peek().kind) {
+        if !self.is_member_name(self.current, colon_end) {
             return Err(ParseError {
                 message: format!(
                     "Expected identifier after ':', found {:?}",
@@ -506,7 +506,7 @@ impl Parser<'_> {
         // before an identifier is a statement terminator, not a field access separator.
         // This prevents "p. var" (space after period) from being mis-parsed as "p.var".
         // Any word-like token qualifies, so a keyword segment such as `pkg.Color` is a name.
-        let period_end = self.tokens[self.current].end;
+        let period_end = self.token_at(self.current).end;
         self.tokens.get(self.current + 1).is_some_and(|t| {
             (Self::can_be_identifier(t.kind) || Self::is_word_kind(t.kind)) && t.start == period_end
         })
@@ -648,7 +648,7 @@ impl Parser<'_> {
             // Extend with directly-adjacent parts (identifiers, preprops, or
             // hyphen-separated word suffixes like `{&preproc}-control`).
             loop {
-                let next = &self.tokens[self.current];
+                let next = self.token_at(self.current);
                 if next.start != compound_end {
                     break;
                 }
@@ -776,11 +776,29 @@ impl Parser<'_> {
 
         // NEW ClassName(args) — object instantiation.
         // Class names may be dotted: NEW oe.wsdeco(company, gs-userid).
+        // `NEW(buffer)` is the record-buffer test; a class name never starts with '('.
+        if self.check(Kind::New) && self.peek_at(1).kind == Kind::LeftParen {
+            let token = self.advance().clone();
+            let name = Identifier {
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+                name: self.source[token.start..token.end].to_string(),
+            };
+            return self.parse_function_call(name);
+        }
         if self.check(Kind::New) {
             self.advance(); // consume NEW
 
             // Parse dotted class name (e.g., "oe.wsdeco", "api.text", "Progress.Lang.Error").
             // Use is_word_kind() so keyword-named namespaces/types (e.g. api.text) are accepted.
+            if !Self::is_word_kind(self.peek().kind) {
+                return Err(ParseError {
+                    message: "Expected class name after NEW".to_string(),
+                    span: self.current_span(),
+                });
+            }
             let start = self.peek().start;
             self.advance(); // consume first name component
             while self.check(Kind::Period)
@@ -792,7 +810,7 @@ impl Parser<'_> {
                 self.advance(); // consume '.'
                 self.advance(); // consume next component
             }
-            let end = self.tokens[self.current - 1].end;
+            let end = self.token_at(self.current - 1).end;
             let class_name = self.source[start..end].to_string();
 
             // Optional generic type args — `NEW List<String>(...)`.
@@ -1071,7 +1089,11 @@ impl Parser<'_> {
         // ABL allows both parenthesized and bare forms, e.g.:
         //   IF AVAILABLE order THEN ...
         //   IF AVAILABLE(order) THEN ...
-        if self.check(Kind::Available) || self.check(Kind::Ambiguous) {
+        // CURRENT-CHANGED takes its record the same way.
+        if self.check(Kind::Available)
+            || self.check(Kind::Ambiguous)
+            || self.check(Kind::CurrentChanged)
+        {
             let token = self.advance().clone();
             let name = Identifier {
                 span: Span {
@@ -1127,7 +1149,7 @@ impl Parser<'_> {
             // are consumed whole. Without this, the adjacent preprop is left as
             // the next token and the postfix `:member` access is never parsed.
             loop {
-                let next = &self.tokens[self.current];
+                let next = self.token_at(self.current);
                 if next.start != end {
                     break;
                 }
@@ -1263,7 +1285,7 @@ impl Parser<'_> {
             // identifier{&suffix} compound: e.g. b-{&line-buffer} (direct adjacency only).
             // Also handles adjacent hyphen-word: e.g. b-{&preproc}-suffix.
             loop {
-                let next = &self.tokens[self.current];
+                let next = self.token_at(self.current);
                 if next.start != end {
                     break;
                 }

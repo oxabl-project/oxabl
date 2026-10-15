@@ -19,19 +19,20 @@
 //! Which write forms reach this rule is a deliberately audited list, because a
 //! form arriving unexamined is a false positive waiting to happen. Reported:
 //! plain assignment (including an array element), an `ASSIGN` pair,
-//! `MESSAGE ... UPDATE`/`SET` targets, `RUN ... PERSISTENT`/`ASYNCHRONOUS SET`
-//! handles, `BUFFER-COMPARE ... SAVE RESULT IN`, and `CREATE <widget> h`. Each
+//! `MESSAGE ... UPDATE`/`SET` targets, `IMPORT` and `SET` statement targets,
+//! `RUN ... PERSISTENT`/`ASYNCHRONOUS SET` handles,
+//! `BUFFER-COMPARE ... SAVE RESULT IN`, and `CREATE <widget> h`. Each
 //! reports at its own write site, including one inside an `ON` trigger body. A
 //! stored value nobody consumes is a real finding however it was stored, so the
 //! message speaks of the value rather than of a computation. Targets with no
 //! `NodeId` (the `MESSAGE`, `BUFFER-COMPARE` and `CREATE` names) resolve by
 //! spelling in the scope the walk is in. A candidate whose write the walk cannot
 //! locate still reports, at its declaration. Unreachable by
-//! construction and therefore not special-cased: `DO i = 1 TO n` and
-//! `INPUT-OUTPUT` arguments (credited `ReadWrite`, so they always carry a read);
-//! `BUFFER-COPY` / `CREATE <buffer>` targets and field writes (Buffer, Table and
-//! Field symbols are not candidates); and `SET` / `UPDATE` / `PROMPT-FOR` /
-//! `GET-KEY-VALUE` / bare `ASSIGN <field>` / `obj:PROP =` / `INITIAL`, none of
+//! construction and therefore not special-cased: `DO i = 1 TO n`,
+//! `INPUT-OUTPUT` arguments and `UPDATE` targets (credited `ReadWrite`, so they
+//! always carry a read); `BUFFER-COPY` / `CREATE <buffer>` targets and field
+//! writes (Buffer, Table and Field symbols are not candidates); and `PROMPT-FOR`
+//! / `GET-KEY-VALUE` / bare `ASSIGN <field>` / `obj:PROP =` / `INITIAL`, none of
 //! which the resolve pass credits as a write at all.
 //!
 //! # Unmodelled statements: what is credited, and what still is not
@@ -61,15 +62,13 @@
 //! counts stay exact: the flag says "these counts are incomplete", it does not
 //! fabricate an access.
 //!
-//! Two gaps remain, and one property of the fix is worth knowing:
+//! A modelled statement that discards a trailing region (`DISPLAY … WITH FRAME f
+//! TITLE x`, `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing content, …) offers the
+//! identifiers of that region on `Statement::skipped_tail`, and the resolve pass
+//! marks them the same way.
 //!
-//! - **Skipped tails inside *modelled* statements.** Around a dozen sites parse
-//!   a real statement and then discard a trailing region that can contain
-//!   genuine reads — `DISPLAY … WITH FRAME f` options (which routinely hold
-//!   `title "x" + table.field`), `DEFINE VARIABLE … VIEW-AS`, `RUN` trailing
-//!   content, `ASSIGN FRAME f`, `FUNCTION … IN super`, and the stream-I/O option
-//!   tails. Same root cause, but the statement node is already occupied, so the
-//!   payload shape used here does not transfer. Tracked by #134.
+//! One gap remains, and one property of the fix is worth knowing:
+//!
 //! - **Keyword collisions.** The harvest keeps unreserved option keywords
 //!   (`VALUE`, `FORMAT`, `LABEL`, `FRAME`, `TITLE`, …) as candidate names,
 //!   because ABL lexes a user's variable named `value` as `Kind::Value` and the
@@ -221,6 +220,11 @@ impl Visitor<'_> {
             StatementKind::Message { set_targets, .. } => {
                 for target in set_targets {
                     self.record_ident(target);
+                }
+            }
+            StatementKind::Import { targets, .. } | StatementKind::Set { targets, .. } => {
+                for target in targets {
+                    self.record_target(target);
                 }
             }
             StatementKind::Run {

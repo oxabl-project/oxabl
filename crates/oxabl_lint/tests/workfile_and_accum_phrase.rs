@@ -60,3 +60,108 @@ fn accum_aggregate_by_phrase_is_not_an_identifier() {
          END.\n",
     );
 }
+
+#[test]
+fn put_reads_and_undefined_names() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE STREAM s.\nv = 1.\nPUT STREAM s UNFORMATTED v SKIP.\n";
+    assert_silent(src);
+    let diags = lint("PUT UNFORMATTED nope SKIP.\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}
+
+#[test]
+fn stream_operand_functions_take_a_stream() {
+    assert_silent(
+        "DEFINE STREAM s.\nDEFINE VARIABLE n AS INTEGER NO-UNDO.\n\
+         n = PAGE-NUMBER(s) + LINE-COUNTER(s) + PAGE-SIZE(s) + SEEK(s).\nMESSAGE n.\n",
+    );
+    // A stream declared out of sight is left unjudged.
+    assert_silent("DEFINE VARIABLE n AS INTEGER NO-UNDO.\nn = PAGE-NUMBER(unseen).\nMESSAGE n.\n");
+}
+
+#[test]
+fn a_variable_before_a_parenthesised_item_is_not_a_call() {
+    assert_silent(
+        "DEFINE VARIABLE x AS INTEGER NO-UNDO.\nDEFINE VARIABLE d AS CHARACTER NO-UNDO.\n\
+         x = 1.\nd = \",\".\n\
+         PUT UNFORMATTED x (x + 1) d SKIP.\nMESSAGE x (x + 1) d.\nDISPLAY x (x + 1) d.\n",
+    );
+    let diags = lint("MESSAGE nope (1).\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}
+
+#[test]
+fn upper_and_lower_are_built_in() {
+    assert_silent(
+        "DEFINE VARIABLE s AS CHARACTER NO-UNDO.\ns = \"a\".\nMESSAGE UPPER(s) LOWER(s).\n",
+    );
+}
+
+#[test]
+fn user_is_the_userid_abbreviation() {
+    assert_silent("DEFINE VARIABLE u AS CHARACTER NO-UNDO.\nu = USER(\"db\").\nMESSAGE u.\n");
+}
+
+#[test]
+fn seek_statement_does_not_derail_the_following_put() {
+    assert_silent(
+        "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\nv = \"x\".\nOUTPUT TO VALUE(\"f\") APPEND.\nSEEK OUTPUT TO END.\nPUT UNFORMATTED (v + \"n\").\n",
+    );
+}
+
+#[test]
+fn trigger_procedure_old_and_new_buffers_are_declared() {
+    assert_silent(
+        "TRIGGER PROCEDURE FOR WRITE OF po-line NEW BUFFER nb OLD BUFFER ob.\n\
+         IF po-line.cost NE ob.cost THEN MESSAGE ob.po-number nb.cost.\n\
+         PUT UNFORMATTED ob.cost nb.cost.\n",
+    );
+}
+
+#[test]
+fn trigger_procedure_buffers_of_an_unknown_table_are_not_declared() {
+    let diags = lint(
+        "TRIGGER PROCEDURE FOR WRITE OF no-such-table NEW BUFFER nb.\n\
+         MESSAGE nb.bogus.\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.0 == "LINT0001" && d.message.contains("nb")),
+        "{:#?}",
+        diags
+            .iter()
+            .map(|d| format!("{}: {}", d.code.0, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn export_pause_and_down_read_their_operands() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE VARIABLE w AS CHARACTER NO-UNDO.\nDEFINE STREAM s.\nv = 1.\nw = \"x\".\nEXPORT STREAM s DELIMITER w v.\nPAUSE v MESSAGE w.\nDOWN STREAM s v.\n";
+    assert_silent(src);
+    for src in ["EXPORT nope.\n", "PAUSE nope.\n", "DOWN nope.\n"] {
+        let diags = lint(src);
+        assert!(
+            diags.iter().any(|d| d.message.contains("nope")),
+            "{src}: {diags:#?}"
+        );
+    }
+}
+
+#[test]
+fn form_reads_its_items_and_a_widget_definition_declares_the_widget() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE BUTTON b-ok LABEL \"OK\".\nv = 1.\nFORM HEADER \"Total:\" AT 1 v FORMAT \">>9\" SKIP(1) b-ok WITH FRAME f.\nDISPLAY b-ok WITH FRAME f.\n";
+    assert_silent(src);
+    let diags = lint("FORM nope WITH FRAME f.\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}

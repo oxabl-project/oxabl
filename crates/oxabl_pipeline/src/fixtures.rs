@@ -3299,14 +3299,14 @@ pub const FIXTURES: &[ParityFixture] = &[
             target: "orders.tax-util",
         })],
     },
-    // A constructor inside `EXPORT` is a class and nothing else, so a miss is a
-    // gap.
+    // A constructor inside `ACCUMULATE` is a class and nothing else, so a miss is
+    // a gap.
     class_site_row! {
-        name: "class_site_export_new",
+        name: "class_site_accumulate_new",
         root_file: "report.p",
         siblings: CALC_BASE_SIBLING,
         resolutions: SILENT,
-        source: "EXPORT DELIMITER \",\" NEW orders.calc-base():calc-total().\n",
+        source: "ACCUMULATE NEW orders.calc-base():calc-total() (TOTAL).\n",
         diagnostics: &[],
         needs: &[],
         target: "orders.calc-base",
@@ -3321,7 +3321,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         resolutions: SILENT,
         source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
                  MESSAGE VALID-OBJECT(v-calc).\n\
-                 PUT UNFORMATTED mystery.helper:run() SKIP.\n",
+                 ACCUMULATE mystery.helper:run() (TOTAL).\n",
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
@@ -4079,7 +4079,7 @@ pub const FIXTURES: &[ParityFixture] = &[
             }),
         ],
     },
-    // A parent whose imports may come from an include the index does not read:
+    // A parent whose imports may come from an include the index cannot find:
     // what its own parent is cannot be told, so it is unknowable, not absent.
     ParityFixture {
         name: "class_chain_parent_imports_in_include",
@@ -4209,6 +4209,101 @@ pub const FIXTURES: &[ParityFixture] = &[
             }),
         ],
     },
+    // Statements that name a schema table only as a record, never through a
+    // field: each depends on its table as surely as a field access does. One
+    // table per form, so a form that loses its edge fails the row.
+    ParityFixture {
+        name: "edges_record_only_tables",
+        root_file: "main.p",
+        siblings: &[],
+        resolutions: &[],
+        source: "FIND FIRST _File NO-LOCK.\n\
+                 FIND LAST _Field NO-LOCK NO-ERROR.\n\
+                 CREATE _User.\n\
+                 DELETE _Sequence.\n\
+                 RELEASE _Db.\n\
+                 VALIDATE _View.\n\
+                 DEFINE QUERY q-area FOR _Area.\n\
+                 OPEN QUERY q-area FOR EACH _AreaExtent NO-LOCK.\n\
+                 DEFINE TEMP-TABLE tt-index NO-UNDO LIKE _Index.\n\
+                 DEFINE VARIABLE v-seq LIKE _Codepage._Codepage-Name NO-UNDO.\n\
+                 FOR EACH _File-Trig NO-LOCK, EACH _Field-Trig NO-LOCK:\n\
+                 END.\n\
+                 DO FOR _Collation:\n\
+                 END.\n\
+                 FIND FIRST _Index-Field OF _StorageObject NO-LOCK NO-ERROR.\n\
+                 EXPORT _Word-rule.\n\
+                 MESSAGE v-seq.\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::Schema],
+        edges: &[
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_area",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_areaextent",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_codepage",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_collation",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_db",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_field",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_field-trig",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_file",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_file-trig",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_index",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_index-field",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_sequence",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_storageobject",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_user",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_view",
+            }),
+            EdgeExpectation::Always(ExpectedEdge {
+                via: "schema_table",
+                target: "_word-rule",
+            }),
+        ],
+    },
 ];
 
 /// The rows whose edge set must report itself degraded, and for what. Every other
@@ -4247,10 +4342,6 @@ const DEGRADED_FIXTURES: &[(&str, Degraded)] = &[
     (
         "edges_recovered_parse",
         Degraded(&["parse_recovered"], &["parse_recovered"]),
-    ),
-    (
-        "edges_put_static_receiver",
-        Degraded(&[], &["unmodelled_statement"]),
     ),
     (
         "edges_unmodelled_statement_unattributed",

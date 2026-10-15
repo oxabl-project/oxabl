@@ -11,12 +11,15 @@
 //! either. This crate must never depend on salsa (KTD6/KTD11), so the graph is
 //! built once per pass and a client that wants it kept warm holds it.
 //!
-//! # The pass is sequential
+//! # Parallel passes own one index per worker
 //!
-//! One file at a time, in the order the caller supplied. There is no parallelism
-//! anywhere in oxabl, and a salsa database is `Send` but not `Sync`, so
-//! `WorkspaceIndex` carries no `Sync` bound to parallelise behind. Measure the
-//! cost; do not add threads here.
+//! [`ReverseGraph::build`] analyses one file at a time over the caller's run
+//! handle. [`ReverseGraph::build_with`] spreads the files over worker threads,
+//! each with its own run handle and so its own index: `WorkspaceIndex` carries no
+//! `Sync` bound, and one shared index would serialise the workers on its lock.
+//! An edge set does not depend on which files its index saw before, and an index
+//! file id is turned into a path on the worker whose index minted it, so the
+//! merged graph is the serial one.
 //!
 //! # Failure is per file
 //!
@@ -40,6 +43,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use oxabl_analyze::{
     DependencyEdgeRow, DependencySection, LookupSpanRow, UnresolvedEdgeRow, unresolved_reason_str,
@@ -262,7 +266,23 @@ impl NameShape {
     }
 }
 
+/// One file's contribution to the graph, every edge target already named.
+///
+/// Named where the file was analysed, because an index file id means something
+/// only to the index that minted it.
+struct FilePart {
+    file: PathBuf,
+    outcome: Result<NamedEdges, String>,
+}
+
+struct NamedEdges {
+    edges: DependencyEdges,
+    /// One per edge, in order. `None` for an edge whose target cannot be named.
+    subjects: Vec<Option<Subject>>,
+}
+
 /// The whole workspace's edges, inverted.
+#[derive(Debug, PartialEq)]
 pub struct ReverseGraph {
     /// Subject → the files that depend on it.
     dependents: HashMap<Subject, Vec<Dependent>>,
@@ -370,20 +390,88 @@ impl ReverseGraph {
     /// `oxabl_workspace`, and a graph that walked the filesystem itself could not
     /// be asked about a subset.
     pub fn build(pipeline: &LintPipeline<'_>, files: &[PathBuf]) -> Self {
-        Self::build_with(pipeline, files, |_, _, _| {})
+        let mut graph = Self::empty(pipeline, files);
+        for path in files {
+            let (part, _) = Self::analyse(pipeline, path, &|_, _, _| ());
+            graph.absorb(part);
+        }
+        graph.sort();
+        graph
     }
 
-    /// Build the graph and inspect each successful file analysis once.
+    /// Build the graph on `jobs` threads and inspect each successful file
+    /// analysis once.
+    ///
+    /// `run` makes one **run** handle per worker, configured as the caller would
+    /// configure the one handle [`build`](Self::build) takes. Each worker reuses
+    /// its handle, and so its index, for every file it analyses. With `jobs` at 1
+    /// the pass runs on the calling thread. The graph is the same for any `jobs`.
     ///
     /// `inspect` is for workspace products derived from the same pass, such as the
     /// daemon's symbol-search rows. It avoids a second parse and semantic run per
-    /// file while keeping graph ownership in this layer.
-    pub fn build_with(
-        pipeline: &LintPipeline<'_>,
+    /// file while keeping graph ownership in this layer. Its results come back in
+    /// `files` order, one per file analysed; a file that failed has none. It runs
+    /// on the workers, in no particular order.
+    pub fn build_with<'a, T: Send>(
         files: &[PathBuf],
-        mut inspect: impl FnMut(&Path, &crate::Expansion, &crate::LintResult),
-    ) -> Self {
-        let mut graph = ReverseGraph {
+        jobs: usize,
+        run: impl Fn() -> LintPipeline<'a> + Sync,
+        inspect: impl Fn(&Path, &crate::Expansion, &crate::LintResult) -> T + Sync,
+    ) -> (Self, Vec<T>) {
+        let jobs = jobs.clamp(1, files.len().max(1));
+        let mut inspected = Vec::new();
+        if jobs == 1 {
+            let pipeline = run();
+            let mut graph = Self::empty(&pipeline, files);
+            for path in files {
+                let (part, output) = Self::analyse(&pipeline, path, &inspect);
+                graph.absorb(part);
+                inspected.extend(output);
+            }
+            graph.sort();
+            return (graph, inspected);
+        }
+
+        let next = AtomicUsize::new(0);
+        let mut parts: Vec<(usize, FilePart, Option<T>)> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..jobs)
+                .map(|_| {
+                    let (next, run, inspect) = (&next, &run, &inspect);
+                    scope.spawn(move || {
+                        let pipeline = run();
+                        let mut mine = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(path) = files.get(i) else { break };
+                            let (part, output) = Self::analyse(&pipeline, path, inspect);
+                            mine.push((i, part, output));
+                        }
+                        mine
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| match worker.join() {
+                    Ok(mine) => mine,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                })
+                .collect()
+        });
+        // Absorbed in `files` order, as the serial pass absorbs them.
+        parts.sort_unstable_by_key(|(i, _, _)| *i);
+        let mut graph = Self::empty(&run(), files);
+        for (_, part, output) in parts {
+            graph.absorb(part);
+            inspected.extend(output);
+        }
+        graph.sort();
+        (graph, inspected)
+    }
+
+    /// A graph over `files` with nothing absorbed yet.
+    fn empty(pipeline: &LintPipeline<'_>, files: &[PathBuf]) -> Self {
+        ReverseGraph {
             dependents: HashMap::new(),
             unresolved_by_name: HashMap::new(),
             unanalysed: Vec::new(),
@@ -398,51 +486,60 @@ impl ReverseGraph {
                 .iter()
                 .map(|root| normalize_lexically(root))
                 .collect(),
-        };
-
-        for path in files {
-            let normalised = normalize_lexically(path);
-            let source = match pipeline.file_system().read(path) {
-                Ok(source) => source,
-                Err(error) => {
-                    graph.unanalysed.push(Unanalysed {
-                        file: normalised,
-                        reason: format!("unreadable: {error}"),
-                    });
-                    continue;
-                }
-            };
-
-            let file_pipeline = pipeline.with_file(path.clone());
-            let edges = match file_pipeline.edge_set_with(&source, |expansion, result| {
-                inspect(&normalised, expansion, result);
-            }) {
-                Ok(edges) => edges,
-                Err(reason) => {
-                    graph.unanalysed.push(Unanalysed {
-                        file: normalised,
-                        reason,
-                    });
-                    continue;
-                }
-            };
-            graph.absorb(&normalised, &edges, pipeline);
         }
-
-        graph.sort();
-        graph
     }
 
-    /// Invert one file's edge set into the graph.
-    fn absorb(&mut self, dependent: &Path, edges: &DependencyEdges, pipeline: &LintPipeline<'_>) {
+    /// Analyse one file through `pipeline` and name its edge targets.
+    fn analyse<T>(
+        pipeline: &LintPipeline<'_>,
+        path: &Path,
+        inspect: &impl Fn(&Path, &crate::Expansion, &crate::LintResult) -> T,
+    ) -> (FilePart, Option<T>) {
+        let file = normalize_lexically(path);
+        let source = match pipeline.file_system().read(path) {
+            Ok(source) => source,
+            Err(error) => {
+                let outcome = Err(format!("unreadable: {error}"));
+                return (FilePart { file, outcome }, None);
+            }
+        };
+
+        let mut inspected = None;
+        let file_pipeline = pipeline.with_file(path);
+        let outcome = file_pipeline
+            .edge_set_with(&source, |expansion, result| {
+                inspected = Some(inspect(&file, expansion, result));
+            })
+            .map(|edges| NamedEdges {
+                subjects: edges
+                    .edges()
+                    .iter()
+                    .map(|edge| Self::subject_of(&edge.target, pipeline))
+                    .collect(),
+                edges,
+            });
+        (FilePart { file, outcome }, inspected)
+    }
+
+    /// Invert one file's named edge set into the graph.
+    fn absorb(&mut self, part: FilePart) {
+        let FilePart { file, outcome } = part;
+        let NamedEdges { edges, subjects } = match outcome {
+            Ok(named) => named,
+            Err(reason) => {
+                self.unanalysed.push(Unanalysed { file, reason });
+                return;
+            }
+        };
+        let dependent = file.as_path();
         if !edges.completeness().is_complete() {
             self.degraded.push(Degraded {
                 file: dependent.to_path_buf(),
                 reasons: edges.completeness().reasons().to_vec(),
             });
         }
-        for edge in edges.edges() {
-            let Some(subject) = self.subject_of(&edge.target, pipeline) else {
+        for (edge, subject) in edges.edges().iter().zip(subjects) {
+            let Some(subject) = subject else {
                 // Recorded, not dropped. The pass promises never to present a
                 // failure as "depends on nothing", and an edge that vanished here
                 // would do exactly that while moving no number a reader could see.
@@ -479,7 +576,7 @@ impl ReverseGraph {
     /// run answering from a foreign index (the language server's cache) yields no
     /// path here. `None` drops the edge rather than guessing at a file, which is
     /// why a whole-workspace pass owns its own batch index.
-    fn subject_of(&self, target: &EdgeTarget, pipeline: &LintPipeline<'_>) -> Option<Subject> {
+    fn subject_of(target: &EdgeTarget, pipeline: &LintPipeline<'_>) -> Option<Subject> {
         match target {
             EdgeTarget::IncludePath(path) => Some(Subject::file(path)),
             EdgeTarget::IndexedFile { file, .. } => pipeline.indexed_path(*file).map(Subject::file),

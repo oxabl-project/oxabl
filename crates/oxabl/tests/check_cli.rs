@@ -38,9 +38,9 @@ const CLEAN: &str = "MESSAGE \"hi\".\n";
 const MIS_INDENTED: &str = "DO:\nMESSAGE \"x\".\nEND.\n";
 /// Mis-indented *and* holding an unused variable: one finding in each channel.
 const BOTH: &str = "DO:\nDEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nEND.\n";
-/// `PUT` is recognized but unmodelled, so the count-gated rules go blind on
+/// `UNDERLINE` is recognized but unmodelled, so the count-gated rules go blind on
 /// `v-total` — a coverage note, not a finding.
-const UNJUDGED: &str = "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\nPUT v-total.\n";
+const UNJUDGED: &str = "DEFINE VARIABLE v-total AS INTEGER NO-UNDO.\nUNDERLINE v-total.\n";
 /// A hard `PARSE001` *and* a lint finding, so a run can be asked which channel
 /// a suppression flag actually silenced.
 const PARSE_ERROR_AND_UNUSED: &str = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n@ @ @\n";
@@ -1048,4 +1048,107 @@ fn an_overflowing_integer_literal_leaves_stdout_parseable_as_json() {
         .collect();
     assert_eq!(parse_errors.len(), 1, "{}", run.stdout);
     assert_eq!(parse_errors[0]["start"]["line"], 3);
+}
+
+#[test]
+fn configured_root_extensions_decide_which_files_a_directory_walk_checks() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("shop.pp"), UNUSED);
+    write(&tmp.path().join("plain.p"), CLEAN);
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"shop\"\n",
+    );
+
+    let default = check(["--no-format", tmp.path().to_str().unwrap()]);
+    assert_eq!(default.code, Some(0), "{}", default.stderr);
+
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"shop\"\n[workspace.sources]\nroot_extensions = [\"p\", \"pp\"]\n",
+    );
+    let configured = check(["--no-format", tmp.path().to_str().unwrap()]);
+    assert_eq!(configured.code, Some(1), "{}", configured.stderr);
+    assert!(
+        configured.stdout.contains("shop.pp"),
+        "{}",
+        configured.stdout
+    );
+}
+
+/// A tree whose files end every way a file can: findings, drift, both, an
+/// unjudged-symbol note, a parse error, an unreadable file and an include
+/// fragment. Enough of them that every worker gets several.
+fn mixed_tree() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let sources = [
+        CLEAN,
+        UNUSED,
+        MIS_INDENTED,
+        BOTH,
+        UNJUDGED,
+        PARSE_ERROR_AND_UNUSED,
+    ];
+    for n in 0..48 {
+        write(
+            &tmp.path().join(format!("sub{}/f{n:02}.p", n % 3)),
+            sources[n % sources.len()],
+        );
+    }
+    // Not UTF-8, so `read_to_string` fails on it.
+    fs::write(tmp.path().join("sub1/f-binary.p"), [0xff, 0xfe, 0x00]).unwrap();
+    write(&tmp.path().join("inc/frag.i"), UNUSED);
+    tmp
+}
+
+#[test]
+fn the_job_count_changes_nothing_a_run_reports() {
+    let tmp = mixed_tree();
+    let dir = tmp.path().to_str().unwrap();
+    for flags in [&[][..], &["--json"], &["--include-findings"]] {
+        let run = |jobs: &str| check([&[dir, "-j", jobs][..], flags].concat());
+        let serial = run("1");
+        assert_eq!(serial.code, Some(1), "{}", serial.stderr);
+        assert!(serial.stderr.contains("cannot read"), "{}", serial.stderr);
+        for jobs in ["2", "7", "64"] {
+            let parallel = run(jobs);
+            assert_eq!(parallel.code, serial.code, "-j {jobs} {flags:?}");
+            assert_eq!(parallel.stdout, serial.stdout, "-j {jobs} {flags:?}");
+            assert_eq!(parallel.stderr, serial.stderr, "-j {jobs} {flags:?}");
+        }
+    }
+}
+
+#[test]
+fn a_baseline_run_is_the_same_at_any_job_count() {
+    let tmp = mixed_tree();
+    let dir = tmp.path().to_str().unwrap();
+    let file = |name: &str| tmp.path().join(name).to_str().unwrap().to_string();
+    let (one, many) = (file("one.json"), file("many.json"));
+    // Same path in the report, so the two runs write to one name in turn.
+    let shared = file("baseline.json");
+
+    let record = |jobs: &str, keep: &str| {
+        let run = check([dir, "--baseline", &shared, "--update-baseline", "-j", jobs]);
+        fs::rename(&shared, keep).unwrap();
+        run
+    };
+    let (first, second) = (record("1", &one), record("16", &many));
+    assert_eq!(first.stderr, second.stderr);
+    assert_eq!(first.stdout, second.stdout);
+    assert_eq!(fs::read(&one).unwrap(), fs::read(&many).unwrap());
+
+    fs::copy(&one, &shared).unwrap();
+    let serial = check([dir, "--json", "--baseline", &shared, "-j", "1"]);
+    let parallel = check([dir, "--json", "--baseline", &shared, "-j", "16"]);
+    assert_eq!(serial.stdout, parallel.stdout);
+    assert_eq!(serial.stderr, parallel.stderr);
+    assert_eq!(serial.code, parallel.code);
+}
+
+#[test]
+fn zero_jobs_is_a_usage_error() {
+    let (_tmp, file) = project("a.p", CLEAN);
+    let run = check([file.to_str().unwrap(), "-j", "0"]);
+    assert_eq!(run.code, Some(2), "{}", run.stderr);
 }

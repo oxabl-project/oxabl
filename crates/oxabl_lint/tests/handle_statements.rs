@@ -306,7 +306,7 @@ SET-BYTE-ORDER(mp) = 1.
 FIX-CODEPAGE(lc) = \"UTF-8\".
 h = WIDGET-H(\"1024\").
 s = LOWER(UPPER(s)).
-MESSAGE h s GET-SIZE(mp).
+MESSAGE h s GET-SIZE(mp) LENGTH(lc).
 ",
     );
 }

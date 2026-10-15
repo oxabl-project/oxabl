@@ -501,7 +501,24 @@ impl<'a> Collector<'a> {
                 at: *span,
                 scopes: true,
             }),
-            SK::Skipped { .. } => self.skipped(s, unit, block, enclosing),
+            // Statements the parser head-parses but whose options it skips are
+            // read from their tokens, like a skipped statement.
+            SK::Skipped { .. }
+            | SK::Update { .. }
+            | SK::Set { .. }
+            | SK::Import { .. }
+            | SK::Export { .. }
+            | SK::Put { .. }
+            | SK::Form { .. }
+            | SK::DefineWidget { .. }
+            | SK::Enable { .. }
+            | SK::Disable { .. }
+            | SK::Hide { .. }
+            | SK::View { .. }
+            | SK::Pause { .. }
+            | SK::Down { .. }
+            | SK::Up { .. }
+            | SK::WaitFor { .. } => self.skipped(s, unit, block, enclosing),
             SK::Find { buffer, .. } => {
                 let context = self.context(enclosing);
                 let lock = self.lock_in(s.span, Some(buffer.span));

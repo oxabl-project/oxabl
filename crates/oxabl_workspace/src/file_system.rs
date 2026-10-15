@@ -3,6 +3,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::encoding::SourceDecoding;
+
 /// Abstraction over file I/O so that every component that reads files
 /// (preprocessor, workspace scanner, LSP document sync) can be tested
 /// hermetically with [`InMemoryFileSystem`].
@@ -39,21 +41,123 @@ pub trait FileSystem: Send + Sync {
         }
         None
     }
+
+    /// Every existing file under `dir` whose path below `dir` equals `relative`
+    /// when each component is compared ignoring ASCII case. The returned paths
+    /// carry the on-disk spelling.
+    ///
+    /// The default finds nothing, which is right for a filesystem that is
+    /// already case-insensitive or one that cannot list directories. Callers
+    /// reach for it only after an exact lookup missed, and only when the
+    /// workspace opted in.
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        let _ = (dir, relative);
+        Vec::new()
+    }
+
+    /// This filesystem reading with `decoding`, or `None` when its source of
+    /// text has no encoding to configure (the default).
+    ///
+    /// A long-lived client that holds a filesystem and re-resolves
+    /// `oxabl.toml` calls it to carry a changed `encoding` over.
+    fn with_decoding(&self, decoding: SourceDecoding) -> Option<Arc<dyn FileSystem>> {
+        let _ = decoding;
+        None
+    }
 }
 
-/// [`FileSystem`] implementation that reads from the real filesystem.
+/// Components of `relative` as text; `None` when one is not a plain name.
+fn plain_components(relative: &Path) -> Option<Vec<&std::ffi::OsStr>> {
+    relative
+        .components()
+        .map(|c| match c {
+            std::path::Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect()
+}
+
+/// [`FileSystem`] implementation that reads UTF-8 from the real filesystem. A
+/// leading byte order mark is removed. For another encoding use
+/// [`EncodedFileSystem`].
 #[derive(Debug, Default)]
 pub struct RealFileSystem;
 
 impl FileSystem for RealFileSystem {
     fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
-        let content = std::fs::read_to_string(path)?;
-        Ok(Arc::from(content))
+        EncodedFileSystem::default().read(path)
     }
 
     fn exists(&self, path: &Path) -> bool {
         path.exists()
     }
+
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        find_on_disk_ignoring_case(dir, relative)
+    }
+
+    fn with_decoding(&self, decoding: SourceDecoding) -> Option<Arc<dyn FileSystem>> {
+        Some(Arc::new(EncodedFileSystem::new(decoding)))
+    }
+}
+
+/// [`FileSystem`] implementation that reads from the real filesystem and decodes
+/// each file as the configured [`SourceDecoding`]
+/// (`[workspace.sources].encoding`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EncodedFileSystem {
+    decoding: SourceDecoding,
+}
+
+impl EncodedFileSystem {
+    pub fn new(decoding: SourceDecoding) -> Self {
+        EncodedFileSystem { decoding }
+    }
+}
+
+impl FileSystem for EncodedFileSystem {
+    fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+        let source = self.decoding.read_file(path)?;
+        Ok(Arc::from(source.text))
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        find_on_disk_ignoring_case(dir, relative)
+    }
+
+    fn with_decoding(&self, decoding: SourceDecoding) -> Option<Arc<dyn FileSystem>> {
+        Some(Arc::new(EncodedFileSystem::new(decoding)))
+    }
+}
+
+fn find_on_disk_ignoring_case(dir: &Path, relative: &Path) -> Vec<PathBuf> {
+    let Some(parts) = plain_components(relative) else {
+        return Vec::new();
+    };
+    let mut level = vec![dir.to_path_buf()];
+    for part in parts {
+        let mut next = Vec::new();
+        for parent in &level {
+            let Ok(entries) = std::fs::read_dir(parent) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if entry.file_name().eq_ignore_ascii_case(part) {
+                    next.push(entry.path());
+                }
+            }
+        }
+        if next.is_empty() {
+            return next;
+        }
+        level = next;
+    }
+    level.sort();
+    level
 }
 
 /// [`FileSystem`] implementation backed by an in-memory `HashMap`.
@@ -92,11 +196,67 @@ impl FileSystem for InMemoryFileSystem {
     fn exists(&self, path: &Path) -> bool {
         self.files.contains_key(path)
     }
+
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        let Some(parts) = plain_components(relative) else {
+            return Vec::new();
+        };
+        let mut found: Vec<PathBuf> = self
+            .files
+            .keys()
+            .filter(|path| {
+                let Ok(below) = path.strip_prefix(dir) else {
+                    return false;
+                };
+                let mut actual = below.components();
+                parts.iter().all(|part| {
+                    matches!(actual.next(), Some(std::path::Component::Normal(a)) if a.eq_ignore_ascii_case(part))
+                }) && actual.next().is_none()
+            })
+            .cloned()
+            .collect();
+        found.sort();
+        found
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_file_system_is_strict_utf8_and_drops_a_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let bom = dir.path().join("bom.p");
+        std::fs::write(&bom, b"\xef\xbb\xbfMESSAGE 'caf\xc3\xa9'.").unwrap();
+        assert_eq!(&*RealFileSystem.read(&bom).unwrap(), "MESSAGE 'caf\u{e9}'.");
+
+        let latin = dir.path().join("latin.p");
+        std::fs::write(&latin, b"MESSAGE 'caf\xe9'.").unwrap();
+        let err = RealFileSystem.read(&latin).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn encoded_file_system_decodes_a_single_byte_file() {
+        use crate::{SourceDecoding, SourceEncoding};
+        let dir = tempfile::tempdir().unwrap();
+        let latin = dir.path().join("latin.p");
+        std::fs::write(&latin, b"MESSAGE '\x93caf\xe9\x94'.").unwrap();
+        let fs = EncodedFileSystem::new(SourceDecoding::new(SourceEncoding::Windows1252, None));
+        assert_eq!(
+            &*fs.read(&latin).unwrap(),
+            "MESSAGE '\u{201c}caf\u{e9}\u{201d}'."
+        );
+    }
+
+    #[test]
+    fn with_decoding_upgrades_the_disk_filesystems_only() {
+        use crate::{SourceDecoding, SourceEncoding};
+        let decoding = SourceDecoding::new(SourceEncoding::Windows1252, None);
+        assert!(RealFileSystem.with_decoding(decoding).is_some());
+        assert!(InMemoryFileSystem::new().with_decoding(decoding).is_none());
+    }
 
     #[test]
     fn in_memory_read_existing() {
@@ -158,5 +318,43 @@ mod tests {
 
         let content = fs.read(Path::new("/a.p")).unwrap();
         assert_eq!(&*content, "new");
+    }
+
+    #[test]
+    fn find_ignoring_case_matches_every_component_on_a_real_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/prog.p"), "").unwrap();
+        let fs = RealFileSystem;
+        assert_eq!(
+            fs.find_ignoring_case(dir.path(), Path::new("Sub/Prog.p")),
+            [dir.path().join("sub/prog.p")]
+        );
+        assert!(
+            fs.find_ignoring_case(dir.path(), Path::new("Sub/Other.p"))
+                .is_empty()
+        );
+        assert!(
+            fs.find_ignoring_case(dir.path(), Path::new("../x.p"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn find_ignoring_case_default_finds_nothing() {
+        struct Plain;
+        impl FileSystem for Plain {
+            fn read(&self, _: &Path) -> Result<Arc<str>, io::Error> {
+                Err(io::ErrorKind::NotFound.into())
+            }
+            fn exists(&self, _: &Path) -> bool {
+                true
+            }
+        }
+        assert!(
+            Plain
+                .find_ignoring_case(Path::new("/"), Path::new("a.p"))
+                .is_empty()
+        );
     }
 }

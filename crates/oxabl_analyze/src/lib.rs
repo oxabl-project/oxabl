@@ -65,14 +65,17 @@ mod collect;
 
 pub use collect::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    IncludeFinding, IncludeOrigin, RuleSelection, collect_diagnostics, collect_from_expanded,
+    IncludeFinding, IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic, IncludeStep,
+    RuleSelection, analyze_from_expanded, collect_diagnostics, collect_from_expanded,
     collect_from_expanded_selecting, collect_from_expanded_with_source_context,
     collect_from_expanded_with_summaries, collect_with_model, expand_source, expand_source_with,
     is_loud,
 };
 // Re-exported so a consumer of an expansion need not also depend on the
 // preprocessor just to name the unresolved-include rows the expansion carries.
-pub use oxabl_preprocessor::UnresolvedInclude;
+pub use oxabl_preprocessor::{
+    BranchDirective, SkippedBranch, SkippedInclude, SkippedText, UnresolvedInclude,
+};
 
 use oxabl_ast::{NodeId, Statement};
 use oxabl_common::{Diagnostic, Severity};
@@ -627,6 +630,7 @@ fn symbol_origin(sem: &Semantic, id: SymbolId, sym: &oxabl_semantic::Symbol) -> 
         | SymbolKind::Parameter
         | SymbolKind::Stream
         | SymbolKind::Frame
+        | SymbolKind::Widget
         | SymbolKind::Event
         | SymbolKind::BuiltIn
         | SymbolKind::Dataset
@@ -973,6 +977,7 @@ fn symbol_kind_str(k: SymbolKind) -> &'static str {
         SymbolKind::Buffer => "buffer",
         SymbolKind::Stream => "stream",
         SymbolKind::Frame => "frame",
+        SymbolKind::Widget => "widget",
         SymbolKind::Event => "event",
         SymbolKind::Procedure => "procedure",
         SymbolKind::Function => "function",

@@ -282,6 +282,52 @@ fn a_parent_change_on_disk_recomputes_the_open_child() {
     assert!(handle.join().unwrap().unwrap());
 }
 
+/// A parent whose method comes from an include: the include changes on disk, and
+/// the open child is recomputed against the parent's new shape.
+#[test]
+fn an_include_the_parent_is_built_from_recomputes_the_open_child() {
+    let tmp = workspace(&[
+        (
+            "orders/calc-base.cls",
+            "CLASS orders.calc-base:\n{orders/calc-body.i}\nEND CLASS.",
+        ),
+        (
+            "orders/calc-body.i",
+            "METHOD PUBLIC INTEGER calc-total():\n    RETURN 0.\nEND METHOD.\n",
+        ),
+        ("orders/child.cls", CHILD),
+    ]);
+    let root = tmp.path();
+    let body = root.join("orders/calc-body.i");
+
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+    handshake(&client, root);
+
+    let uri = file_uri(&root.join("orders/child.cls"));
+    open(&client, &uri, CHILD);
+    let first = recv_publish(&client, Duration::from_secs(2)).unwrap();
+    assert!(
+        !has_lint(&first, "LINT0001"),
+        "the inherited call resolves through the parent's include: {:?}",
+        first.diagnostics
+    );
+
+    std::fs::write(&body, "").unwrap();
+    watched_change(&client, &body);
+
+    let after = recv_publish_for(&client, &uri, Duration::from_secs(2))
+        .expect("an edit to the include must recompute the dependent buffer");
+    assert!(
+        has_lint(&after, "LINT0001"),
+        "the recomputed set must reflect the include's new text: {:?}",
+        after.diagnostics
+    );
+
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
+}
+
 /// Two open buffers sharing one parent are both recomputed when it changes — the
 /// dependency graph fans out, it does not stop at whichever buffer asked first.
 #[test]

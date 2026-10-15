@@ -750,8 +750,14 @@ impl Session {
     /// bump.
     pub fn install_config(&mut self, pipeline: PipelineConfig) {
         let previous = self.db.config().clone();
+        // A filesystem that reads disk follows the configured source encoding; a
+        // client's own filesystem stays as it supplied it.
+        let fs = previous
+            .fs
+            .with_decoding(pipeline.decoding)
+            .unwrap_or_else(|| Arc::clone(&previous.fs));
         self.db.set_config(AnalysisConfig {
-            fs: Arc::clone(&previous.fs),
+            fs,
             pipeline: Arc::new(pipeline),
             preprocess: previous.preprocess,
             index: Arc::clone(&previous.index),
@@ -770,12 +776,11 @@ impl Session {
         self.workspace = None;
     }
 
-    /// Carry the installed `[workspace.preprocessor]` to the registered index inputs.
+    /// Carry the installed `[workspace.preprocessor]` and include paths to the
+    /// registered index inputs.
     fn sync_index_preprocessor(&mut self) {
         let config = self.db.config().clone();
-        config
-            .index
-            .set_preprocessor(&mut self.db, &config.pipeline.preprocessor);
+        config.index.set_environment(&mut self.db, &config.pipeline);
     }
 
     /// Bump the schema revision, invalidating every buffer's diagnostics.
@@ -1129,6 +1134,26 @@ mod tests {
 
         session.install_config(configured("WIN32"));
         assert_eq!(mid_parent(&session), "pkg.winbase");
+    }
+
+    #[test]
+    fn a_reinstalled_config_carries_the_source_encoding_to_the_disk_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("latin.i");
+        std::fs::write(&file, b"/* caf\xe9 */").unwrap();
+        let mut session = Session::new(dir.path());
+        assert!(session.database().config().fs.read(&file).is_err());
+
+        let pipeline = PipelineConfig {
+            decoding: oxabl_workspace::SourceDecoding::new(
+                oxabl_workspace::SourceEncoding::Windows1252,
+                None,
+            ),
+            ..PipelineConfig::default()
+        };
+        session.install_config(pipeline);
+        let text = session.database().config().fs.read(&file).unwrap();
+        assert_eq!(&*text, "/* caf\u{e9} */");
     }
 
     /// A computation that is current and produced an answer.

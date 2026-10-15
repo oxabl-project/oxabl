@@ -151,6 +151,16 @@ own root. Since M1, a directory walk does that for the context-free strict rules
   reported as `PREPROC007` at the outermost `{...}` in the root file that led to it, with the
   note "reached through this include" (`nested_unresolved_include_diagnostics`). It is reported
   once per root site and missing name. The reason is that such a gap hides symbols from the includer's own analysis.
+- **Kept as data, shown on request.** The pipeline keeps the semantic and lint findings that sit
+  in an include in `CollectedDiagnostics::include_origin` (`IncludeOriginDiagnostic` in
+  `crates/oxabl_analyze/src/collect.rs`), apart from the root-origin `diagnostics`. Each row has the
+  include's physical path, a span in the include's own bytes, and the include chain of the root that
+  produced it. It is a finding about one root after expansion, so "unused" means unused in that
+  root. Rows are never in `diagnostics` and never in two rows. One file that a root expands several
+  times gives one row per distinct finding (same path, span, code, severity, message), listing each
+  expansion. A finding in `{&name}` or `{N}` substitution text has no physical file and is not kept.
+  Parse errors in an include are not kept. `oxabl check --include-findings` shows the rows; a plain
+  run does not.
 - **Use-site coordinates already exist.** `ExpandedFile::resolve_include_site`
   (`collect.rs`) maps any expanded span to the root-level `{...}` that brought it in, at any
   depth. The dependency section uses it for `include_site` on every edge row

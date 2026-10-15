@@ -41,6 +41,7 @@ DO count = 1 TO 10:
 END.
 
 MESSAGE total count.
+PUT UNFORMATTED total " " count SKIP.
 "#;
 
 /// Recognized-but-unmodelled statement forms (`StatementKind::Skipped`). The
@@ -57,9 +58,9 @@ DEFINE VARIABLE lv-line AS CHARACTER NO-UNDO.
 DEFINE VARIABLE lv-flag AS LOGICAL NO-UNDO.
 DEFINE VARIABLE lv-key AS CHARACTER NO-UNDO.
 
-PUT lv-total.
-PUT UNFORMATTED lv-name SKIP.
-PUT lv-total FORMAT ">>>,>>9" SKIP.
+UNDERLINE lv-total.
+COLOR DISPLAY NORMAL lv-name WITH FRAME f-detail.
+FORM lv-total FORMAT ">>>,>>9" WITH FRAME f-detail.
 EXPORT lv-name lv-city lv-total.
 EXPORT DELIMITER "," lv-line lv-flag.
 ENABLE lv-name lv-city WITH FRAME f-detail.
@@ -74,10 +75,20 @@ IMPORT DELIMITER "," lv-name lv-city lv-total.
 ACCUMULATE lv-total (TOTAL).
 NEXT-PROMPT lv-name WITH FRAME f-detail.
 CLEAR FRAME f-detail.
-PUT lv-total lv-count lv-name lv-city.
+UNDERLINE lv-total lv-count lv-name lv-city.
 EXPORT lv-name lv-city lv-total lv-count lv-line lv-flag lv-key.
 ENABLE lv-name lv-city WITH FRAME f-detail.
 UPDATE lv-name lv-city WITH FRAME f-detail.
+"#;
+
+const BUILTIN_CLASSES: &str = r#"
+USING OpenEdge.Core.*.
+DEFINE VARIABLE text AS String NO-UNDO.
+DEFINE VARIABLE error-object AS Progress.Lang.AppError NO-UNDO.
+text = NEW String().
+error-object = NEW Progress.Lang.AppError().
+MESSAGE Progress.Lang.Class:GetClass("OpenEdge.Core.String").
+MESSAGE OpenEdge.Net.URI:Decode("example").
 "#;
 
 fn parse_program(source: &str) -> Vec<oxabl_ast::Statement> {
@@ -161,6 +172,7 @@ fn semantic_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "tiny", TINY);
     bench_fixture(&mut group, "medium", MEDIUM);
     bench_fixture(&mut group, "skipped", SKIPPED);
+    bench_fixture(&mut group, "builtin_classes", BUILTIN_CLASSES);
     group.finish();
 
     // Schema-loaded resolve bench: exercises the field-lookup hot path

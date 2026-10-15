@@ -247,8 +247,45 @@ impl Visitor<'_> {
                     }
                 }
             }
-            StatementKind::Message { items, .. } => {
+            StatementKind::Message { items, .. }
+            | StatementKind::Put { items, .. }
+            | StatementKind::Form { items, .. }
+            | StatementKind::Enable { items }
+            | StatementKind::WaitFor { widgets: items }
+            | StatementKind::Disable { items }
+            | StatementKind::Hide { items, .. }
+            | StatementKind::View { items, .. } => {
                 for e in items {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Export {
+                delimiter, items, ..
+            }
+            | StatementKind::Import {
+                delimiter,
+                targets: items,
+                ..
+            } => {
+                for e in delimiter.iter().chain(items) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Update { targets, options } | StatementKind::Set { targets, options } => {
+                for e in targets.iter().chain(options) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Pause {
+                duration: a,
+                message: b,
+            } => {
+                for e in a.iter().chain(b) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+                if let Some(e) = lines {
                     self.walk_expression(e);
                 }
             }
@@ -285,7 +322,7 @@ impl Visitor<'_> {
             }
             // A bare name may be a static widget or frame, which is not a symbol.
             StatementKind::Apply { event, target } => {
-                for e in std::iter::once(event).chain(target) {
+                for e in event.iter().chain(target) {
                     if !matches!(e.kind, ExpressionKind::Identifier(_)) {
                         self.walk_expression(e);
                     }
@@ -425,6 +462,7 @@ impl Visitor<'_> {
             | StatementKind::DefineDataSource { .. }
             | StatementKind::DefineStream { .. }
             | StatementKind::DefineFrame { .. }
+            | StatementKind::DefineWidget { .. }
             | StatementKind::PreprocDefine { .. }
             | StatementKind::PreprocUndefine { .. }
             | StatementKind::TriggerProcedure { .. }

@@ -425,3 +425,57 @@ fn a_metaschema_table_is_not_a_user_table_for_emptiness_purposes() {
     assert!(Schema::empty().is_empty());
     assert!(!schema_from_df(APP_DF).is_empty());
 }
+
+#[test]
+fn unqualified_metaschema_fields_in_record_phrase() {
+    let source = "FOR EACH _connect NO-LOCK WHERE _connect-usr GE 0: MESSAGE _connect-name. END.";
+    for schema in [schema_from_df(APP_DF), Schema::empty()] {
+        let stmts = parse(source);
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let sem = analyze_file(&stmts, &ctx);
+        let diags = lint_file(&stmts, &sem, &ctx);
+        assert!(diags.is_empty(), "loaded={}: {diags:#?}", ctx.schema_loaded);
+        for name in ["_connect-usr", "_connect-name"] {
+            assert!(
+                sem.references.iter().any(|(_, r)| {
+                    matches!(r, oxabl_semantic::Resolution::Resolved(sym)
+                    if sem.symbols.get(*sym).name.as_ref() == name)
+                }),
+                "{name} must resolve with loaded={}",
+                ctx.schema_loaded
+            );
+        }
+    }
+}
+
+#[test]
+fn bare_metaschema_fields_require_the_correct_record() {
+    for schema in [Schema::empty(), schema_from_df(APP_DF)] {
+        for source in [
+            "MESSAGE _connect-usr.",
+            "FOR EACH _connect: MESSAGE _field-name. END.",
+        ] {
+            let stmts = parse(source);
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+            let sem = analyze_file(&stmts, &ctx);
+            let diags = lint_file(&stmts, &sem, &ctx);
+            assert_eq!(codes(&diags), vec![LINT0001], "{source}: {diags:#?}");
+        }
+    }
+}
+
+#[test]
+fn user_record_fields_win_over_bare_metaschema_fields() {
+    let schema = schema_from_df(
+        "ADD TABLE \"_connect\"\nADD FIELD \"local-only\" OF \"_connect\" AS integer\n",
+    );
+    assert!(
+        lint_with(
+            "FOR EACH _connect WHERE local-only GE 0: MESSAGE local-only. END.",
+            &schema
+        )
+        .is_empty()
+    );
+    let diags = lint_with("FOR EACH _connect WHERE _connect-usr GE 0: END.", &schema);
+    assert_eq!(codes(&diags), vec![LINT0001]);
+}

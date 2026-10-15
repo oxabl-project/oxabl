@@ -112,3 +112,10 @@ do lv-i = 1 to 10:
 end.
 
 return.
+
+/* Statement lookahead skips comments but keeps byte positions. */
+OUTPUT /* stream */ CLOSE.
+INPUT /* stream */ CLOSE.
+DO ON STOP UNDO, LEAVE:
+    STOP /* condition */ .
+END.

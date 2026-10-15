@@ -66,6 +66,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_common::Diagnostic;
@@ -218,11 +219,19 @@ fn is_zero(n: &usize) -> bool {
 }
 
 /// One `check` run's use of a baseline file.
+///
+/// Shared by the run's worker threads: the file and its entries are read-only,
+/// and the counts every file adds to sit behind one lock.
 pub struct Run {
     file: PathBuf,
     update: bool,
     root: PathBuf,
     baseline: Baseline,
+    tally: Mutex<Tally>,
+}
+
+#[derive(Default)]
+struct Tally {
     checked: HashSet<String>,
     current: Vec<Entry>,
     new: usize,
@@ -256,11 +265,7 @@ impl Run {
             update,
             root,
             baseline,
-            checked: HashSet::new(),
-            current: Vec::new(),
-            new: 0,
-            baselined: 0,
-            outside_root: 0,
+            tally: Mutex::new(Tally::default()),
         })
     }
 
@@ -269,46 +274,54 @@ impl Run {
     /// finding is about to be recorded. A file outside the root has no
     /// baseline path, so all its findings are kept and none is recorded.
     pub fn filter(
-        &mut self,
+        &self,
         file: &Path,
         source: &str,
         mut reported: CollectedDiagnostics,
     ) -> CollectedDiagnostics {
         let Some(path) = relative_path(&self.root, file) else {
-            self.outside_root += reported.diagnostics.len();
+            self.tally().outside_root += reported.diagnostics.len();
             return reported;
         };
         let entries = fingerprint(&path, source, reported.all().map(|c| &c.diagnostic));
         let mut keep = entries.iter().map(|e| !self.baseline.contains(e));
         reported.diagnostics.retain(|_| keep.next().unwrap_or(true));
         let new = reported.diagnostics.len();
-        self.new += new;
-        self.baselined += entries.len() - new;
-        self.checked.insert(path);
-        self.current.extend(entries);
+        {
+            let mut tally = self.tally();
+            tally.new += new;
+            tally.baselined += entries.len() - new;
+            tally.checked.insert(path);
+            tally.current.extend(entries);
+        }
         if self.update {
             reported.diagnostics.clear();
         }
         reported
     }
 
+    fn tally(&self) -> std::sync::MutexGuard<'_, Tally> {
+        self.tally.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Finish the run: count stale entries and, with `--update-baseline`,
     /// write the file.
     pub fn finish(self, lint_collected: bool) -> Result<Report, String> {
-        let found: HashSet<Key> = self.current.iter().map(Entry::key).collect();
-        let stale = lint_collected.then(|| self.baseline.stale(&self.checked, &found));
+        let tally = self.tally.into_inner().unwrap_or_else(|e| e.into_inner());
+        let found: HashSet<Key> = tally.current.iter().map(Entry::key).collect();
+        let stale = lint_collected.then(|| self.baseline.stale(&tally.checked, &found));
         if self.update {
-            let updated = self.baseline.updated(&self.checked, &self.current);
+            let updated = self.baseline.updated(&tally.checked, &tally.current);
             std::fs::write(&self.file, updated.render())
                 .map_err(|e| format!("cannot write baseline {}: {e}", self.file.display()))?;
         }
         Ok(Report {
             path: self.file.display().to_string(),
-            new: self.new,
-            baselined: self.baselined,
+            new: tally.new,
+            baselined: tally.baselined,
             stale,
             updated: self.update,
-            outside_root: self.outside_root,
+            outside_root: tally.outside_root,
         })
     }
 }

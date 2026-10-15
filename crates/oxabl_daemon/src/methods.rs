@@ -47,7 +47,7 @@ use oxabl_daemon_protocol::{
 };
 use oxabl_pipeline::{EdgeKind, Expansion, LintPipeline, LintResult, ReverseGraph};
 use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
-use oxabl_workspace::{FileSystem, RealFileSystem, discover_path};
+use oxabl_workspace::{EncodedFileSystem, FileSystem, discover_path_in};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
 use crate::session::{
@@ -174,10 +174,7 @@ fn cross_file_refusal(root: &Path) -> Option<String> {
         root,
         &oxabl_pipeline::ConfigOverrides::default(),
     );
-    config
-        .include_paths
-        .is_empty()
-        .then(|| NO_INCLUDE_CONFIGURATION.to_string())
+    (!config.searches_any_path()).then(|| NO_INCLUDE_CONFIGURATION.to_string())
 }
 
 /// What a refused cross-file question says: what was refused, why, and the remedy.
@@ -780,17 +777,28 @@ fn build_workspace(
     progress: &WorkspaceProgress,
 ) -> Result<WorkspaceSnapshot, MethodError> {
     let started = Instant::now();
-    let files = discover_path(root).map_err(MethodError::internal)?;
-    progress.set_total(files.len());
     let (config, _warnings) =
         oxabl_pipeline::PipelineConfig::resolve(root, &oxabl_pipeline::ConfigOverrides::default());
-    let fs = OverlayFileSystem { overlay };
-    let pipeline = LintPipeline::new(&config, &fs).with_known_files(&files);
+    let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
+    progress.set_total(files.len());
+    let fs = OverlayFileSystem {
+        overlay,
+        disk: config.file_system(),
+    };
+    let jobs = std::thread::available_parallelism().map_or(1, usize::from);
+    let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(&files, jobs);
+    let (graph, file_rows) = ReverseGraph::build_with(
+        &files,
+        jobs,
+        || LintPipeline::new(&config, &fs).with_shared_producers(&producers),
+        |path, expansion, result| {
+            let rows = collect_symbols(path, expansion, result, &fs);
+            progress.advance();
+            rows
+        },
+    );
     let mut symbols = file_symbols(&files);
-    let graph = ReverseGraph::build_with(&pipeline, &files, |path, expansion, result| {
-        collect_symbols(path, expansion, result, &fs, &mut symbols);
-        progress.advance();
-    });
+    symbols.extend(file_rows.into_iter().flatten());
     symbols.extend(table_symbols(&config));
     symbols.sort_by(|left, right| left.id.cmp(&right.id));
     symbols.dedup_by(|left, right| left.id == right.id);
@@ -818,6 +826,7 @@ fn build_workspace(
 
 struct OverlayFileSystem {
     overlay: HashMap<PathBuf, Arc<str>>,
+    disk: EncodedFileSystem,
 }
 
 impl FileSystem for OverlayFileSystem {
@@ -826,11 +835,11 @@ impl FileSystem for OverlayFileSystem {
             .get(path)
             .cloned()
             .map(Ok)
-            .unwrap_or_else(|| RealFileSystem.read(path))
+            .unwrap_or_else(|| self.disk.read(path))
     }
 
     fn exists(&self, path: &Path) -> bool {
-        self.overlay.contains_key(path) || RealFileSystem.exists(path)
+        self.overlay.contains_key(path) || self.disk.exists(path)
     }
 }
 
@@ -839,12 +848,12 @@ fn collect_symbols(
     expansion: &Expansion,
     result: &LintResult,
     fs: &dyn FileSystem,
-    rows: &mut Vec<SymbolRow>,
-) {
+) -> Vec<SymbolRow> {
+    let mut rows = Vec::new();
     let (Some(expanded), Some(semantic), Ok(source)) =
         (expansion.expanded(), result.semantic(), fs.read(path))
     else {
-        return;
+        return rows;
     };
     for (id, symbol) in semantic.symbols.iter() {
         if symbol.declaration == NodeId::DUMMY {
@@ -885,6 +894,7 @@ fn collect_symbols(
             },
         });
     }
+    rows
 }
 
 fn file_symbols(files: &[PathBuf]) -> Vec<SymbolRow> {
@@ -1049,7 +1059,8 @@ fn added_since_pass(workspace: &WorkspaceSnapshot) -> AddedFiles {
     let counted = match walk.last_ran {
         Some(last) if last.elapsed() < ADDED_FILE_WALK_INTERVAL => walk.last_count,
         _ => {
-            let Ok(files) = discover_path(&workspace.root) else {
+            let Ok(files) = discover_path_in(&workspace.root, &workspace.config.root_extensions)
+            else {
                 // Left un-timestamped on purpose, so the next poll retries rather
                 // than reusing an answer this one never got.
                 return AddedFiles::Uncountable;

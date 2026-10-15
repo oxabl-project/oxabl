@@ -82,18 +82,25 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use oxabl_analyze::{
-    CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    RuleSelection, UnresolvedInclude, collect_from_expanded_with_summaries, expand_source_with,
+    BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
+    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, UnresolvedInclude, analyze_from_expanded,
+    collect_from_expanded_with_summaries, expand_source_with,
 };
 
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, DirectIncludeInput, EdgeInputs, IncludeOriginInput, NestedUnresolvedIncludeInput,
-    UnreadableIncludeInput, UnresolvedIncludeInput, build_edge_set,
+    BatchIndex, BranchKind, ClosureReference, ClosureTarget, ConditionalBranch, ConditionalInclude,
+    ConditionalIncludeName, ConditionalReference, DirectIncludeInput, EdgeInputs, EdgeKind,
+    EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers,
+    UnreadableIncludeInput, UnresolvedIncludeInput, WrittenReference, build_edge_set,
+    conditional_include_closure_with, written_imports, written_references,
 };
-use oxabl_semantic::{Semantic, SourceContext, WorkspaceIndex};
+use oxabl_semantic::{
+    IndexAnswer, IndexName, LocateKind, Located, Semantic, SourceContext, UnresolvedReason,
+    WorkspaceIndex,
+};
 use oxabl_workspace::{FileSystem, is_include_fragment};
 
 use crate::{PipelineConfig, ROOT_FILE_ID};
@@ -298,6 +305,18 @@ impl LintResult {
         }
     }
 
+    /// The semantic and lint findings that sit in an include, each with the
+    /// include chain of this run's root that produced it. Empty on a failed run.
+    ///
+    /// They are results for **this root after expansion**, kept apart from
+    /// [`all`](Self::all) so a client that renders only root-origin findings
+    /// is unchanged. A declaration unused here can be read by another root that
+    /// includes the same file. See [`IncludeOriginDiagnostic`] for the
+    /// repeated-expansion policy.
+    pub fn include_origin(&self) -> &[IncludeOriginDiagnostic] {
+        &self.diagnostics().include_origin
+    }
+
     /// Every diagnostic, in pipeline order.
     pub fn all(&self) -> impl Iterator<Item = &CollectedDiagnostic> {
         self.diagnostics().all()
@@ -434,6 +453,8 @@ pub struct LintPipeline<'a> {
     index: RunIndex<'a>,
     /// The file being analysed, when the client knows which one that is.
     file: Option<PathBuf>,
+    /// Whether an edge set carries the closure of its conditional includes.
+    conditional_closure: bool,
     /// What each include file shows when it is run alone, shared by the
     /// handles of one run (see [`report_include_findings`]).
     ///
@@ -484,10 +505,13 @@ impl<'a> LintPipeline<'a> {
             // be unconditional rather than another thing a client can forget.
             index: RunIndex::Owned(Box::new(
                 BatchIndex::new(fs, &config.include_paths)
+                    .with_root_relative_paths(&config.root_relative_include_paths)
                     .with_run_extensions(&config.run_extensions)
+                    .with_case_insensitive_lookup(config.case_insensitive_lookup)
                     .with_preprocessor(&config.preprocessor),
             )),
             file: None,
+            conditional_closure: false,
             include_runs: Arc::default(),
             summaries: Arc::default(),
             known_files: &[],
@@ -504,15 +528,28 @@ impl<'a> LintPipeline<'a> {
         self
     }
 
+    /// Make each edge set carry what its conditional includes would read, and
+    /// the class and program names their targets write
+    /// ([`DependencyEdges::conditional_include_closure`](oxabl_index::DependencyEdges::conditional_include_closure)).
+    /// Off by default: it reads, expands and analyses every conditional
+    /// include's target once per file.
+    #[must_use]
+    pub fn with_conditional_include_closure(mut self, enabled: bool) -> Self {
+        self.conditional_closure = enabled;
+        self
+    }
+
     /// Tell the run's index which files this run already knows it will read.
     ///
     /// Only one cross-file question needs it: a `SHARED` name maps onto no path,
-    /// so `shared_producer` can answer only from files the run has already
-    /// indexed, and nothing pulls a producer in unless some file happens to `RUN`
-    /// it. A walk already enumerated every file it is about to read, so handing
-    /// that list over makes the producer link work on the command line without a
-    /// directory scan or a whole-workspace walk — the list is the walk's own, and
-    /// the index reads from it lazily, on the first `SHARED` lookup.
+    /// so `shared_producer` can answer only from these files and from the files
+    /// the analysed file's own lookups reached, in practice a program it `RUN`s.
+    /// Never from what the run reached for other files, so one file's edges do
+    /// not depend on which files the pipeline analysed before it. A walk already
+    /// enumerated every file it is about to read, so handing that list over makes
+    /// the producer link work on the command line without a directory scan or a
+    /// whole-workspace walk — the list is the walk's own, and the index reads
+    /// from it lazily, on the first `SHARED` lookup.
     ///
     /// A client with no such list (the language server, the browser) does not
     /// call this and behaves exactly as before. Apply it to the **run** handle,
@@ -535,6 +572,65 @@ impl<'a> LintPipeline<'a> {
             RunIndex::External(index) => RunIndex::External(index),
         };
         self
+    }
+
+    /// Answer this run's `SHARED` producer questions from a map built once for
+    /// the whole file set, instead of scanning that set in this run's own index.
+    ///
+    /// A client that analyses on several threads has one run handle per thread,
+    /// because the index is not `Sync`. [`with_known_files`](Self::with_known_files)
+    /// on each makes every thread scan the whole file set. Build the map once with
+    /// [`shared_producers`](Self::shared_producers), then give every thread's
+    /// handle a borrow of it. The answers are the same as the seeded ones.
+    ///
+    /// A file in the set that is nothing but includes and directives produces
+    /// what its includes define. A file with code of its own produces only what
+    /// its text as written defines: a `DEFINE NEW SHARED` it gets from an include
+    /// is not found, and a consumer of that name gets no edge to it.
+    ///
+    /// Apply to the **run** handle, before any lookup.
+    #[must_use]
+    pub fn with_shared_producers(mut self, producers: &'a SharedProducers) -> Self {
+        self.index = match self.index {
+            RunIndex::Owned(index) => {
+                RunIndex::Owned(Box::new((*index).with_shared_producers(producers)))
+            }
+            // As `with_known_files`: only the run handle owns an index to change,
+            // and a supplied index owns its own file set.
+            RunIndex::Shared(index) => RunIndex::Shared(index),
+            RunIndex::External(index) => RunIndex::External(index),
+        };
+        self
+    }
+
+    /// Scan `files` for the `SHARED` names they produce, under this run's
+    /// preprocessor configuration. The map is `Sync`: build it once and pass it to
+    /// every run handle with [`with_shared_producers`](Self::with_shared_producers).
+    ///
+    /// Reads every file once. A client that scans on several threads can do the
+    /// per-file work itself with [`oxabl_index::definitions_in`] over
+    /// [`index_includes`](Self::index_includes) and join the results with
+    /// [`SharedProducers::from_definitions`].
+    pub fn shared_producers(&self, files: &[PathBuf]) -> SharedProducers {
+        SharedProducers::build(files, &self.index_includes())
+    }
+
+    /// [`shared_producers`](Self::shared_producers) scanned on `threads` threads.
+    /// The map is the same for any thread count.
+    pub fn shared_producers_parallel(&self, files: &[PathBuf], threads: usize) -> SharedProducers {
+        SharedProducers::build_parallel(files, &self.index_includes(), threads)
+    }
+
+    /// Where the index reads an indexed file and the includes it is expanded
+    /// through: this run's filesystem, include paths and preprocessor
+    /// configuration.
+    pub fn index_includes(&self) -> oxabl_index::IncludeContext<'_> {
+        oxabl_index::IncludeContext {
+            fs: self.fs,
+            include_paths: &self.config.include_paths,
+            root_relative_paths: &self.config.root_relative_include_paths,
+            predefined: &self.config.preprocessor,
+        }
     }
 
     /// Answer this run's cross-file questions from `index` instead of building a
@@ -594,6 +690,7 @@ impl<'a> LintPipeline<'a> {
                 RunIndex::External(index) => RunIndex::External(*index),
             },
             file: Some(path.into()),
+            conditional_closure: self.conditional_closure,
             include_runs: Arc::clone(&self.include_runs),
             summaries: Arc::clone(&self.summaries),
             known_files: self.known_files,
@@ -691,6 +788,23 @@ impl<'a> LintPipeline<'a> {
 
     /// The typed dependency edge set for `source`, analysed as this handle's file.
     ///
+    /// Runs the preprocessor and the semantic analysis and no lint rule, since an
+    /// edge needs the model and nothing a rule reports; see
+    /// [`analyze`](Self::analyze). Of the edge kinds, a
+    /// [`SharedProducer`](oxabl_index::EdgeKind::SharedProducer) edge is complete
+    /// only when the run's index knows the files that can produce the name: seed
+    /// it with [`with_known_files`](Self::with_known_files) or
+    /// [`with_shared_producers`](Self::with_shared_producers). An unseeded index
+    /// answers only from the files this file's own lookups reached, such as a
+    /// program it `RUN`s. Either way the edge set does not depend on which files
+    /// the run analysed before.
+    ///
+    /// A producer that is nothing but includes and directives is found through
+    /// them. A producer with code of its own is judged by its text as written, so
+    /// a `DEFINE NEW SHARED` it gets only from an include gives no edge, and the
+    /// edge set's [`Completeness`](oxabl_index::Completeness) does not record that
+    /// gap.
+    ///
     /// The whole-workspace reverse pass calls this per file. Guarded, unlike
     /// [`expand`](Self::expand) and [`collect`](Self::collect): one unparseable or
     /// panicking file out of fourteen thousand must cost that file's edges and
@@ -713,7 +827,9 @@ impl<'a> LintPipeline<'a> {
     ///
     /// The callback runs inside the per-file panic guard. This lets the daemon
     /// collect searchable declarations without analysing every workspace file a
-    /// second time, while one bad file still costs only that file's rows.
+    /// second time, while one bad file still costs only that file's rows. The
+    /// result it receives is [`analyze`](Self::analyze)'s: the model, and no lint
+    /// finding.
     pub fn edge_set_with(
         &self,
         source: &str,
@@ -721,7 +837,7 @@ impl<'a> LintPipeline<'a> {
     ) -> Result<oxabl_index::DependencyEdges, String> {
         let outcome = catch_panic(|| {
             let expansion = self.expand(source);
-            let result = self.collect(&expansion);
+            let result = self.analyze(&expansion);
             let edges = self.edges_of(&expansion, &result)?;
             inspect(&expansion, &result);
             Ok(edges)
@@ -813,7 +929,41 @@ impl<'a> LintPipeline<'a> {
             })
         };
 
-        Ok(build_edge_set(&EdgeInputs {
+        // A skipped include written in the root has a site in the root's bytes; one
+        // in an include is placed by the chain that reached it.
+        let conditional: Vec<ConditionalInclude> = expanded
+            .skipped_includes()
+            .iter()
+            .map(|skipped| ConditionalInclude {
+                name: skipped.name.clone(),
+                span: (skipped.site.file == ROOT_FILE_ID).then_some(skipped.site.span),
+                include_site: chain_site(&skipped.via),
+                branches: conditional_branches(&skipped.branches),
+                computed_name: skipped.computed_name,
+            })
+            .collect();
+        let references = self.conditional_references(expanded);
+        let closure = self.conditional_closure.then(|| {
+            let names: Vec<ConditionalIncludeName<'_>> = conditional
+                .iter()
+                .map(|c| ConditionalIncludeName {
+                    name: c.name.as_str(),
+                    computed_name: c.computed_name,
+                })
+                .collect();
+            let includes = self.index_includes();
+            let paths = self.config.include_paths_for(self.file());
+            let includes = oxabl_index::IncludeContext {
+                include_paths: &paths,
+                root_relative_paths: &[],
+                ..includes
+            };
+            conditional_include_closure_with(&names, &includes, &mut |target| {
+                self.closure_references(target, &paths)
+            })
+        });
+
+        let edges = build_edge_set(&EdgeInputs {
             semantic,
             schema: &self.config.schema,
             direct_includes: &direct,
@@ -826,7 +976,149 @@ impl<'a> LintPipeline<'a> {
             preprocessor_loss: !expanded.text_losses().is_empty(),
             resolve_span: &resolve_span,
             include_site: &include_site,
-        }))
+        });
+        let edges = edges
+            .with_conditional_includes(conditional)
+            .with_conditional_references(references);
+        Ok(match closure {
+            Some(closure) => edges.with_conditional_include_closure(closure),
+            None => edges,
+        })
+    }
+
+    /// The class and program names written in the branches the expansion did not
+    /// take, resolved through this handle's index.
+    fn conditional_references(&self, expanded: &ExpandedFile) -> Vec<ConditionalReference> {
+        if expanded.skipped_text().is_empty() {
+            return Vec::new();
+        }
+        let mut imports: Option<Vec<String>> = None;
+        let mut out = Vec::new();
+        self.with_run_index(|index| {
+            for skipped in expanded.skipped_text() {
+                let Some(text) = expanded.skipped_text_of(skipped) else {
+                    continue;
+                };
+                let in_root = skipped.site.file == ROOT_FILE_ID;
+                let include_site = if in_root {
+                    None
+                } else {
+                    skipped
+                        .via
+                        .first()
+                        .filter(|site| site.file == ROOT_FILE_ID)
+                        .map(|site| site.span)
+                };
+                let mut branches = None;
+                for written in written_references(text) {
+                    let target = match written.kind {
+                        EdgeKind::ProgramReference => resolve_program(index, &written.name),
+                        _ => {
+                            let imports =
+                                imports.get_or_insert_with(|| written_imports(&expanded.text));
+                            resolve_class(index, imports, &written.name)
+                        }
+                    };
+                    if target.is_none() && !keeps_unresolved(&written) {
+                        continue;
+                    }
+                    let start = skipped.site.span.start;
+                    out.push(ConditionalReference {
+                        kind: written.kind,
+                        syntax: written.syntax,
+                        target,
+                        span: in_root.then_some(oxabl_ast::Span {
+                            start: start + written.span.start,
+                            end: start + written.span.end,
+                        }),
+                        include_site,
+                        branches: branches
+                            .get_or_insert_with(|| conditional_branches(&skipped.branches))
+                            .clone(),
+                        name: written.name,
+                    });
+                }
+            }
+        });
+        out
+    }
+
+    /// The class and program names a conditional include's target writes, from
+    /// its expansion on its own under `include_paths`: the edges an analysis of
+    /// the taken text finds, as a fragment, and the names written in the
+    /// branches it did not take.
+    ///
+    /// Resolved through this handle's index, so a name of the file being
+    /// analysed is not listed, as it is never an edge of its own.
+    fn closure_references(
+        &self,
+        target: ClosureTarget<'_>,
+        include_paths: &[PathBuf],
+    ) -> Vec<ClosureReference> {
+        let Ok(expanded) = expand_source_with(
+            ROOT_FILE_ID,
+            Some(target.name),
+            target.source,
+            self.fs,
+            include_paths,
+            &self.config.preprocessor,
+            true,
+        ) else {
+            return Vec::new();
+        };
+        let (semantic, parse_recovered) = self.with_run_index(|index| {
+            analyze_from_expanded(
+                &expanded,
+                &self.config.schema,
+                self.config.schema_loaded,
+                index,
+                SourceContext::IncludeFragment,
+            )
+        });
+        let no_site = |_: oxabl_common::VirtualSpan| None;
+        let edges = build_edge_set(&EdgeInputs {
+            semantic: &semantic,
+            schema: &self.config.schema,
+            direct_includes: &[],
+            transitive_includes: &[],
+            include_origins: &[],
+            unresolved_includes: &[],
+            nested_unresolved_includes: &[],
+            unreadable_includes: &[],
+            parse_recovered,
+            preprocessor_loss: false,
+            resolve_span: &no_site,
+            include_site: &no_site,
+        });
+        let names =
+            |kind: EdgeKind| matches!(kind, EdgeKind::ClassReference | EdgeKind::ProgramReference);
+        let mut out: Vec<ClosureReference> = edges
+            .edges()
+            .iter()
+            .filter(|edge| names(edge.kind))
+            .map(|edge| {
+                ClosureReference::new(
+                    edge.kind,
+                    false,
+                    edge.target.key().to_string(),
+                    Some(edge.target.clone()),
+                )
+            })
+            .collect();
+        out.extend(
+            edges
+                .unresolved()
+                .iter()
+                // A located file that could not be used is an edge already.
+                .filter(|row| names(row.kind) && row.reason != UnresolvedReason::PresentButUnusable)
+                .map(|row| ClosureReference::new(row.kind, false, row.name.clone(), None)),
+        );
+        out.extend(
+            self.conditional_references(&expanded)
+                .into_iter()
+                .map(|r| ClosureReference::new(r.kind, true, r.name, r.target)),
+        );
+        out
     }
 
     /// Run `with` against this handle's index, viewed as the file being analysed.
@@ -867,7 +1159,7 @@ impl<'a> LintPipeline<'a> {
                 self.file().and_then(Path::to_str),
                 source,
                 self.fs,
-                &self.config.include_paths,
+                &self.config.include_paths_for(self.file()),
                 &self.config.preprocessor,
                 self.preprocess,
             ),
@@ -881,6 +1173,42 @@ impl<'a> LintPipeline<'a> {
     /// [`expand`](Self::expand).
     pub fn collect(&self, expansion: &Expansion) -> LintResult {
         self.collect_selecting(expansion, RuleSelection::All)
+    }
+
+    /// Phase two without the findings: parse and analyze an [`Expansion`] into a
+    /// [`LintResult`] that holds the semantic model and the parse state, with no
+    /// lint rule run and no diagnostic collected.
+    ///
+    /// For a client that reads the model alone, such as the dependency edge set
+    /// ([`edge_set`](Self::edge_set)). The model is the one
+    /// [`collect`](Self::collect) builds, except that no expression has a type:
+    /// the type-check pass is skipped, and an edge does not read it.
+    /// [`LintResult::all`] is empty, whatever the source holds, so do not read it
+    /// as "no findings".
+    ///
+    /// **Unguarded on purpose** (KTD6), like [`collect`](Self::collect).
+    pub fn analyze(&self, expansion: &Expansion) -> LintResult {
+        let dependency_paths = expansion.dependency_paths().to_vec();
+        let Ok(expanded) = &expansion.inner else {
+            return LintResult::computed(None, CollectedDiagnostics::default(), dependency_paths);
+        };
+        let source_context = if self.file().is_some_and(is_include_fragment) {
+            SourceContext::IncludeFragment
+        } else {
+            SourceContext::CompilationUnit
+        };
+        let (semantic, parse_recovered) = self.with_run_index(|index| {
+            analyze_from_expanded(
+                expanded,
+                &self.config.schema,
+                self.config.schema_loaded,
+                index,
+                source_context,
+            )
+        });
+        let mut diagnostics = CollectedDiagnostics::new(Vec::new());
+        diagnostics.parse_recovered = parse_recovered;
+        LintResult::computed(Some(Box::new(semantic)), diagnostics, dependency_paths)
     }
 
     /// Whether any context-free rule is enabled for this handle's file.
@@ -1013,6 +1341,83 @@ impl<'a> LintPipeline<'a> {
             Err(panic) => LintResult::failed(panic),
         }
     }
+}
+
+/// The enclosing branches of a skipped reference, as the edge set names them.
+fn conditional_branches(branches: &[oxabl_analyze::SkippedBranch]) -> Vec<ConditionalBranch> {
+    branches
+        .iter()
+        .map(|branch| ConditionalBranch {
+            kind: match branch.directive {
+                BranchDirective::If => BranchKind::If,
+                BranchDirective::ElseIf => BranchKind::ElseIf,
+                BranchDirective::Else => BranchKind::Else,
+            },
+            condition: branch.condition.clone(),
+        })
+        .collect()
+}
+
+/// Whether a skipped reference that resolves to no file is still listed: its
+/// syntax names only a class, or it is a `RUN` target written as a file.
+fn keeps_unresolved(written: &WrittenReference) -> bool {
+    match written.syntax {
+        ReferenceSyntax::Run => written.name.contains(['.', '/', '\\']),
+        syntax => syntax.names_only_a_class(),
+    }
+}
+
+/// The file a `RUN` target in skipped text names.
+fn resolve_program(index: &dyn WorkspaceIndex, name: &str) -> Option<EdgeTarget> {
+    let name = IndexName::new(name);
+    let file = match index.program(&name) {
+        IndexAnswer::Found(file) => file,
+        IndexAnswer::Unusable => match index.located(LocateKind::Program, &name) {
+            Located::In(file) => file,
+            Located::Nowhere | Located::Itself => return None,
+        },
+        IndexAnswer::NotFound | IndexAnswer::Unknowable => return None,
+    };
+    Some(EdgeTarget::IndexedFile { file, name })
+}
+
+/// The file a class name in skipped text names, tried as the AVM would: a
+/// dotted name as written, then the file's explicit imports, its package
+/// imports, and the bare name.
+fn resolve_class(index: &dyn WorkspaceIndex, imports: &[String], raw: &str) -> Option<EdgeTarget> {
+    let dotted = raw.contains('.');
+    let explicit = imports.iter().filter(|import| {
+        !dotted
+            && !import.ends_with(".*")
+            && import
+                .rsplit('.')
+                .next()
+                .is_some_and(|simple| simple.eq_ignore_ascii_case(raw))
+    });
+    let packages = imports
+        .iter()
+        .filter_map(|import| import.strip_suffix('*'))
+        .filter(|_| !dotted);
+    let candidates = dotted
+        .then(|| raw.to_string())
+        .into_iter()
+        .chain(explicit.cloned())
+        .chain(packages.map(|prefix| format!("{prefix}{raw}")))
+        .chain((!dotted).then(|| raw.to_string()));
+    for candidate in candidates {
+        let name = IndexName::new(&candidate);
+        let file = match index.class(&name) {
+            IndexAnswer::Found(descriptor) => descriptor.file,
+            IndexAnswer::Unusable => match index.located(LocateKind::Class, &name) {
+                Located::In(file) => file,
+                Located::Nowhere | Located::Itself => return None,
+            },
+            IndexAnswer::NotFound => continue,
+            IndexAnswer::Unknowable => return None,
+        };
+        return Some(EdgeTarget::IndexedFile { file, name });
+    }
+    None
 }
 
 /// An include file's text, and the `(rule, anchor start, anchor end)` of the

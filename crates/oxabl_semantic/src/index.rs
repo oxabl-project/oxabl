@@ -615,11 +615,12 @@ impl MemberDescriptor {
     /// package, and the index does not model packages, so the conservative
     /// answer avoids synthesizing a member a later access-check rule would
     /// have to report as a violation on an already-resolved reference.
+    /// `PackageProtected` also reaches subclasses, so it answers `true`.
     #[inline]
     pub fn inherited_by_subclass(&self) -> bool {
         matches!(
             self.access,
-            AccessModifier::Public | AccessModifier::Protected
+            AccessModifier::Public | AccessModifier::Protected | AccessModifier::PackageProtected
         )
     }
 }
@@ -893,6 +894,7 @@ mod tests {
         assert!(member(AccessModifier::Protected).inherited_by_subclass());
         assert!(!member(AccessModifier::Private).inherited_by_subclass());
         assert!(!member(AccessModifier::PackagePrivate).inherited_by_subclass());
+        assert!(member(AccessModifier::PackageProtected).inherited_by_subclass());
     }
 
     #[test]

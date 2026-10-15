@@ -10,7 +10,7 @@
 //! (`AVAILABLE` -> `AVAIL`, ...) are registered under every legal
 //! prefix, not just the full name.
 
-/// Sorted, ASCII-lowercased names of all built-in ABL functions (347 entries).
+/// Sorted, ASCII-lowercased names of all built-in ABL functions (355 entries).
 pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "abs",
     "abso",
@@ -35,6 +35,7 @@ pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "available",
     "base64-decode",
     "base64-encode",
+    "big-endian",
     "box",
     "buffer-group-id",
     "buffer-group-name",
@@ -152,6 +153,7 @@ pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "hash-code",
     "hex-decode",
     "hex-encode",
+    "host-byte-order",
     "if...then...else",
     "index",
     "input",
@@ -204,6 +206,7 @@ pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "list-query-attrs",
     "list-set-attrs",
     "list-widgets",
+    "little-endian",
     "locked",
     "log",
     "logi",
@@ -228,6 +231,7 @@ pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "minimum",
     "month",
     "mtime",
+    "new",
     "next-value",
     "normalize",
     "now",
@@ -240,10 +244,12 @@ pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "num-entries",
     "num-results",
     "opsys",
+    "os-dir",
     "os-drive",
     "os-drives",
     "os-error",
     "os-getenv",
+    "overlay",
     "page-num",
     "page-numb",
     "page-numbe",
@@ -346,6 +352,8 @@ pub static BUILTIN_FUNCTIONS: &[&str] = &[
     "type-of",
     "unbox",
     "upper",
+    "user",
+    "useri",
     "userid",
     "valid-event",
     "valid-handle",

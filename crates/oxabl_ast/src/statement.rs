@@ -24,11 +24,11 @@ pub struct PreprocIf<T> {
 const _: () = assert!(std::mem::size_of::<StatementKind>() <= 720);
 
 // Lock the `Statement` wrapper size deliberately (KTD4). The wrapper adds a
-// `NodeId` (4 bytes) and a `Span` (8 bytes) on top of `StatementKind`; padding
-// keeps the total at `size_of::<StatementKind>() + 16`. Bump the bound
-// deliberately if the wrapper legitimately grows.
+// `NodeId` (4 bytes), a `Span` (8 bytes) and the one-pointer `skipped_tail` on
+// top of `StatementKind`, padded to alignment. Bump the bound deliberately if
+// the wrapper legitimately grows.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<Statement>() <= 720 + 16);
+const _: () = assert!(std::mem::size_of::<Statement>() <= 720 + 24);
 
 /// A statement in ABL — an executable unit that performs an action.
 /// All statements are terminated by a period.
@@ -209,6 +209,178 @@ pub enum StatementKind {
         items: Vec<Expression>,
         /// Variables bound by SET or UPDATE clauses.
         set_targets: Vec<Identifier>,
+    },
+
+    /// PUT statement — writes values to a stream.
+    ///
+    /// Only the head is modelled: the stream and the leading value expressions.
+    /// Option clauses (`AT`, `TO`, `FORMAT`, ...) and anything after them stay
+    /// in [`Statement::skipped_tail`].
+    Put {
+        /// Optional named stream (`PUT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Value expressions written, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// EXPORT statement — writes values to a stream in delimited form.
+    ///
+    /// Only the head is modelled: the stream, the delimiter and the leading item
+    /// expressions (a record operand parses as an identifier). `EXCEPT`,
+    /// `NO-LOBS` and anything after them stay in [`Statement::skipped_tail`].
+    Export {
+        /// Optional named stream (`EXPORT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional `DELIMITER` character expression.
+        delimiter: Option<Expression>,
+        /// Values or records read, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// IMPORT statement — reads delimited values from a stream into fields,
+    /// variables or a record.
+    ///
+    /// Only the head is modelled: the stream, the delimiter and the targets. A
+    /// `^` placeholder is dropped. `EXCEPT`, `NO-LOBS`, `NO-ERROR` and anything
+    /// after them stay in [`Statement::skipped_tail`].
+    Import {
+        /// Optional named stream (`IMPORT STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional `DELIMITER` character expression.
+        delimiter: Option<Expression>,
+        /// Fields, variables or records written, in source order.
+        targets: Vec<Expression>,
+    },
+
+    /// PAUSE statement — suspends processing for a time or until a key is
+    /// pressed.
+    ///
+    /// The duration and the `MESSAGE` text are modelled; `IN WINDOW` and
+    /// anything the parser does not recognise stay in
+    /// [`Statement::skipped_tail`].
+    Pause {
+        /// Optional duration in seconds (`PAUSE 5`).
+        duration: Option<Expression>,
+        /// Optional `MESSAGE` text.
+        message: Option<Expression>,
+    },
+
+    /// DOWN statement — moves the cursor of a down frame forward.
+    ///
+    /// The stream and the line count are modelled; the frame phrase stays in
+    /// [`Statement::skipped_tail`].
+    Down {
+        /// Optional named stream (`DOWN STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional number of lines.
+        lines: Option<Expression>,
+    },
+
+    /// FORM statement — lays out the fields and constants of a frame.
+    ///
+    /// The items of the form and of its `HEADER` / `BACKGROUND` sections are
+    /// modelled as expressions, and their format options (`FORMAT`, `LABEL`,
+    /// `AT`, ...) are consumed. The list ends at the first token that does not
+    /// start an item; that token, `EXCEPT`, the frame phrase and anything after
+    /// stay in [`Statement::skipped_tail`].
+    Form {
+        /// Items in source order, including `AT` and `SKIP` operands that are
+        /// not literals.
+        items: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than read one. They are not in `items`.
+        fields: Vec<FrameField>,
+    },
+
+    /// UPDATE statement — displays fields and variables and lets the user
+    /// change them.
+    ///
+    /// The targets are modelled, with their format options consumed; constants
+    /// and `^` are passed over. The list ends at the first token that is not a
+    /// target or an option the parser models, and the rest, the frame phrase and
+    /// any `EDITING` block stay in [`Statement::skipped_tail`].
+    Update {
+        /// Fields, variables or records read and written, in source order.
+        targets: Vec<Expression>,
+        /// Non-literal expressions of the format options (`VALIDATE`, `WHEN`,
+        /// `AT`, ...), read, in source order.
+        options: Vec<Expression>,
+    },
+
+    /// SET statement — prompts for fields and variables and assigns the input.
+    /// Same shape as [`StatementKind::Update`].
+    Set {
+        /// Fields, variables or records written, in source order.
+        targets: Vec<Expression>,
+        /// Non-literal expressions of the format options, read, in source order.
+        options: Vec<Expression>,
+    },
+
+    /// APPLY statement — sends an event to a widget or procedure.
+    ///
+    /// The event and target expressions are modelled; a target that is not an
+    /// expression (`FRAME f`, `BROWSE b`) stays in [`Statement::skipped_tail`].
+    Apply {
+        /// The event, usually a string literal. `None` only when it does not parse.
+        event: Option<Expression>,
+        /// The `TO` target.
+        target: Option<Expression>,
+    },
+
+    /// WAIT-FOR statement — blocks until an event occurs on a widget.
+    ///
+    /// The widgets of each `OF` list are modelled; event names are not symbols
+    /// and are dropped. `FRAME f`, `FOCUS`, `PAUSE` and a form without `OF`
+    /// stay in [`Statement::skipped_tail`].
+    WaitFor {
+        /// Widgets and handles waited on, in source order.
+        widgets: Vec<Expression>,
+    },
+
+    /// ENABLE statement — enables widgets for input.
+    ///
+    /// The widgets (fields, variables, buttons, ...) are modelled with their
+    /// format options consumed. `ALL`, the frame phrase and anything the parser
+    /// does not recognise stay in [`Statement::skipped_tail`].
+    Enable {
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// DISABLE statement — disables widgets for input. Same shape as
+    /// [`StatementKind::Enable`]; `DISABLE TRIGGERS` is not this statement.
+    Disable {
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// HIDE statement — hides widgets.
+    ///
+    /// The stream and the widgets named are modelled. `FRAME f`, `MESSAGE`,
+    /// `ALL`, `IN FRAME f`, `IN WINDOW w` and `NO-PAUSE` stay in
+    /// [`Statement::skipped_tail`].
+    Hide {
+        /// Optional named stream (`HIDE STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// VIEW statement — shows widgets. Same shape as [`StatementKind::Hide`].
+    View {
+        /// Optional named stream (`VIEW STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Widgets named, in source order.
+        items: Vec<Expression>,
+    },
+
+    /// UP statement — moves the cursor of a down frame back. Same shape as
+    /// [`StatementKind::Down`].
+    Up {
+        /// Optional named stream (`UP STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Optional number of lines.
+        lines: Option<Expression>,
     },
 
     /// DEFINE TEMP-TABLE statement.
@@ -504,15 +676,6 @@ pub enum StatementKind {
     /// `RELEASE OBJECT com-handle [NO-ERROR].` — release a COM object.
     ReleaseObject { target: Expression, no_error: bool },
 
-    /// `APPLY event [TO widget-or-procedure-handle].`
-    ///
-    /// Only the forms whose target is a plain expression are modelled; a target
-    /// qualified with `IN FRAME` or a widget-type keyword stays a [`Self::Skipped`].
-    Apply {
-        event: Expression,
-        target: Option<Expression>,
-    },
-
     /// VALIDATE buffer-name [NO-ERROR].
     Validate { buffer: Identifier, no_error: bool },
 
@@ -554,7 +717,17 @@ pub enum StatementKind {
 
     /// DEFINE FRAME frame-name ... .
     /// Simplified: captures name and raw span of unparsed content for formatter round-tripping.
-    DefineFrame { name: Identifier, raw_span: Span },
+    DefineFrame {
+        name: Identifier,
+        raw_span: Span,
+        /// The `name AS type` / `name LIKE field` items of the frame.
+        fields: Vec<FrameField>,
+    },
+
+    /// DEFINE BUTTON / BROWSE / RECTANGLE / IMAGE / MENU / SUB-MENU — a static
+    /// widget definition. Only the widget name is modelled; the rest of the
+    /// statement stays in [`Statement::skipped_tail`].
+    DefineWidget { name: Identifier },
 
     /// DEFINE DATASET statement.
     ///
@@ -708,7 +881,9 @@ pub enum StatementKind {
     /// deliberately broad — ABL lexes a variable named `value` as a keyword kind,
     /// so option keywords are kept as candidate names and the semantic pass's
     /// non-diagnostic lookup is the real filter. Over-inclusion can only silence
-    /// a diagnostic, never invent one.
+    /// a diagnostic, never invent one. Under a loaded schema, a name that is a
+    /// schema table and nothing local also gives the file a dependency on that
+    /// table, so an over-inclusive name can add a dependency edge.
     ///
     /// `may_reference_tables` is a narrow marker, `false` for every ordinary
     /// unmodelled form. `true` means the form is one whose grammar names a table
@@ -768,6 +943,24 @@ pub struct Statement {
     /// parser stamps a real span. Excluded from `PartialEq`
     /// (`docs/design/ast-invariants.md` §1).
     pub span: Span,
+    /// Identifier-shaped tokens of a trailing range the parser skipped without
+    /// modelling, on a statement that is itself modelled (`DISPLAY ... WITH
+    /// FRAME f TITLE x`, `RETURN ERROR msg`, the `VIEW-AS` tail of a `DEFINE
+    /// VARIABLE`, ...). `None` when nothing was skipped or the range held no
+    /// identifier. [`StatementKind::Skipped`] is the equivalent for a statement
+    /// that is skipped whole.
+    ///
+    /// Filtered lexically, exactly as [`StatementKind::Skipped::names`] is, and
+    /// meant only for the semantic pass's best-effort lookup: a name here can
+    /// silence a diagnostic, never raise one. Excluded from `PartialEq`.
+    pub skipped_tail: Option<Box<SkippedTail>>,
+}
+
+/// The identifiers of a [`Statement::skipped_tail`]. A named struct so the field
+/// is one pointer wide: `Statement` is the element type of every block body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedTail {
+    pub names: Vec<Identifier>,
 }
 
 impl Statement {
@@ -782,6 +975,7 @@ impl Statement {
             id: NodeId::DUMMY,
             kind,
             span: Span::DUMMY,
+            skipped_tail: None,
         }
     }
 
@@ -790,7 +984,12 @@ impl Statement {
     /// Used by the parser; external callers should prefer [`Statement::new`].
     #[inline]
     pub fn with_id(id: NodeId, span: Span, kind: StatementKind) -> Self {
-        Statement { id, kind, span }
+        Statement {
+            id,
+            kind,
+            span,
+            skipped_tail: None,
+        }
     }
 }
 
@@ -829,6 +1028,7 @@ pub enum AccessModifier {
     Private,
     Protected,
     PackagePrivate,
+    PackageProtected,
 }
 
 /// A class name between the angle brackets of a generic type: `pkg.Thing` in
@@ -1019,6 +1219,14 @@ pub enum TypeSource {
     Explicit(DataType),
     /// Inherited type: `... LIKE Customer.CustNum`
     Like { source: Identifier },
+}
+
+/// A frame field that a FORM or DEFINE FRAME item declares as a variable:
+/// `name AS type` or `name LIKE field`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameField {
+    pub name: Identifier,
+    pub type_source: TypeSource,
 }
 
 /// A field definition in a DEFINE TEMP-TABLE statement.

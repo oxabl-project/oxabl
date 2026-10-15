@@ -387,6 +387,17 @@ pub struct SourcesConfig {
     #[serde(default)]
     pub include_paths: Vec<PathBuf>,
 
+    /// Search paths resolved against the directory of each root file and
+    /// searched before `include_paths`, in order. Default empty.
+    ///
+    /// For a shop that compiles each program with its own directory, or fixed
+    /// subdirectories of it, first on the PROPATH: `[".", "rf"]` searches
+    /// `<dir>` and `<dir>/rf` for a root in `<dir>`. Includes, classes and `RUN`
+    /// targets are all searched this way; an indexed class or program reads its
+    /// own includes with the paths of its own directory.
+    #[serde(default)]
+    pub root_relative_include_paths: Vec<PathBuf>,
+
     /// Extensions tried, in order, for a `RUN` target written without one
     /// (`RUN post-order`), written without the dot. Default `["p", "w"]`.
     ///
@@ -399,6 +410,65 @@ pub struct SourcesConfig {
     /// bare name at all.
     #[serde(default = "default_run_extensions")]
     pub run_extensions: Vec<String>,
+
+    /// When a class or `RUN` target is not found under the spelling the source
+    /// used or its lower-case fold, look for a file whose path matches ignoring
+    /// case. Default `false`.
+    ///
+    /// Meant for a case-sensitive filesystem holding a tree written for a
+    /// case-insensitive one (`RUN Sub/Prog.p` stored as `sub/prog.p`). It lists
+    /// directories on every miss, so it costs more than the default lookup. Two
+    /// distinct matches still leave the name unresolved.
+    #[serde(default)]
+    pub case_insensitive_lookup: bool,
+
+    /// The character encoding of source files: `"utf-8"` (the default),
+    /// `"iso-8859-1"` or `"windows-1252"`.
+    ///
+    /// It applies to every file read from disk: roots, include files, classes and
+    /// `.df` schema files, and `oxabl format` writes a file back in the same
+    /// encoding. A UTF-8 byte order mark always means UTF-8 and is removed,
+    /// whatever this says. `"utf-8"` rejects a file with invalid UTF-8; see
+    /// `fallback_encoding`.
+    #[serde(default)]
+    pub encoding: crate::SourceEncoding,
+
+    /// The encoding to use for a file that is not valid UTF-8. Unset by default,
+    /// so such a file cannot be read.
+    ///
+    /// For a tree that mixes UTF-8 files and single-byte ones. It only matters
+    /// when `encoding` is `"utf-8"`: a single-byte encoding decodes every file.
+    #[serde(default)]
+    pub fallback_encoding: Option<crate::SourceEncoding>,
+
+    /// Extensions that make a file an ABL *root* when a directory is walked,
+    /// written without the dot and matched case-insensitively. Default
+    /// `["p", "w", "cls", "v"]`.
+    ///
+    /// Use it for shop conventions such as `.pp` or `.cgi`. It decides which files
+    /// `oxabl check` and the other directory walks pick up; a file named on the
+    /// command line is always accepted. A leading dot is ignored. An entry that is
+    /// empty, holds a path separator, or is `i` is dropped with a warning: an
+    /// include fragment is never a root. The list replaces the default, so keep
+    /// the defaults you still need.
+    #[serde(default = "default_root_extensions")]
+    pub root_extensions: Vec<String>,
+}
+
+impl SourcesConfig {
+    /// How file bytes become text under this section's `encoding` and
+    /// `fallback_encoding`.
+    pub fn decoding(&self) -> crate::SourceDecoding {
+        crate::SourceDecoding::new(self.encoding, self.fallback_encoding)
+    }
+}
+
+/// The extensions that make a walked file an ABL root.
+pub fn default_root_extensions() -> Vec<String> {
+    crate::ROOT_EXTENSIONS
+        .iter()
+        .map(|ext| (*ext).to_string())
+        .collect()
 }
 
 /// The extensions an extensionless `RUN` target is tried with.
@@ -446,12 +516,42 @@ pub fn normalize_run_extensions(entries: &[String]) -> RunExtensions {
     }
 }
 
+/// Normalize a `root_extensions` list: each entry through
+/// [`normalize_run_extension`], repeats (ignoring case) dropped, and `i` rejected
+/// because an include fragment is never a root.
+pub fn normalize_root_extensions(entries: &[String]) -> RunExtensions {
+    let mut extensions: Vec<String> = Vec::new();
+    let mut rejected = Vec::new();
+    for entry in entries {
+        match normalize_run_extension(entry) {
+            Some(extension) if !extension.eq_ignore_ascii_case("i") => {
+                if !extensions
+                    .iter()
+                    .any(|seen| seen.eq_ignore_ascii_case(extension))
+                {
+                    extensions.push(extension.to_string());
+                }
+            }
+            _ => rejected.push(entry.clone()),
+        }
+    }
+    RunExtensions {
+        extensions,
+        rejected,
+    }
+}
+
 impl Default for SourcesConfig {
     fn default() -> Self {
         SourcesConfig {
             directories: Vec::new(),
             include_paths: Vec::new(),
+            root_relative_include_paths: Vec::new(),
             run_extensions: default_run_extensions(),
+            case_insensitive_lookup: false,
+            encoding: crate::SourceEncoding::default(),
+            fallback_encoding: None,
+            root_extensions: default_root_extensions(),
         }
     }
 }
@@ -618,6 +718,34 @@ proversion = "12.8"
         assert_eq!(pp.window_system, "TTY");
         assert!(!pp.batch_mode);
         assert_eq!(pp.proversion.as_deref(), Some("12.8"));
+    }
+
+    #[test]
+    fn encoding_defaults_to_utf8_and_names_a_single_byte_one() {
+        use crate::SourceEncoding;
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        let sources = config.workspace.sources;
+        assert_eq!(sources.encoding, SourceEncoding::Utf8);
+        assert_eq!(sources.fallback_encoding, None);
+
+        let toml = "[workspace]\nname = \"p\"\n[workspace.sources]\n\
+                    encoding = \"windows-1252\"\nfallback_encoding = \"iso-8859-1\"\n";
+        let sources = WorkspaceConfig::from_toml(toml).unwrap().workspace.sources;
+        assert_eq!(sources.encoding, SourceEncoding::Windows1252);
+        assert_eq!(sources.fallback_encoding, Some(SourceEncoding::Iso8859_1));
+
+        let bad = "[workspace]\nname = \"p\"\n[workspace.sources]\nencoding = \"ebcdic\"\n";
+        assert!(WorkspaceConfig::from_toml(bad).is_err());
+    }
+
+    #[test]
+    fn case_insensitive_lookup_defaults_off_and_can_be_enabled() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert!(!config.workspace.sources.case_insensitive_lookup);
+        let toml =
+            "[workspace]\nname = \"p\"\n[workspace.sources]\ncase_insensitive_lookup = true\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert!(config.workspace.sources.case_insensitive_lookup);
     }
 
     #[test]
@@ -831,5 +959,48 @@ name = "bad"
 "#;
         let err = WorkspaceConfig::from_toml(toml).unwrap_err();
         assert!(err.contains("failed to parse oxabl.toml"));
+    }
+
+    #[test]
+    fn root_extensions_default_and_override() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert_eq!(
+            config.workspace.sources.root_extensions,
+            ["p", "w", "cls", "v"]
+        );
+
+        let toml =
+            "[workspace]\nname = \"p\"\n[workspace.sources]\nroot_extensions = [\"p\", \".pp\"]\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert_eq!(config.workspace.sources.root_extensions, ["p", ".pp"]);
+    }
+
+    #[test]
+    fn root_extensions_are_normalized_and_include_is_rejected() {
+        let list: Vec<String> = [".pp", "PP", "i", ".I", "", "a/b"]
+            .iter()
+            .map(|e| e.to_string())
+            .collect();
+        let normalized = normalize_root_extensions(&list);
+        assert_eq!(normalized.extensions, ["pp"]);
+        assert_eq!(normalized.rejected, ["i", ".I", "", "a/b"]);
+    }
+
+    #[test]
+    fn root_relative_include_paths_default_empty_and_parse_as_a_list() {
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        assert!(
+            config
+                .workspace
+                .sources
+                .root_relative_include_paths
+                .is_empty()
+        );
+        let toml = "[workspace]\nname = \"p\"\n[workspace.sources]\nroot_relative_include_paths = [\".\", \"rf\"]\n";
+        let config = WorkspaceConfig::from_toml(toml).unwrap();
+        assert_eq!(
+            config.workspace.sources.root_relative_include_paths,
+            [PathBuf::from("."), PathBuf::from("rf")]
+        );
     }
 }

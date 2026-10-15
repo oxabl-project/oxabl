@@ -5,6 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+mod builtin_class_table;
+mod progress_docs;
+
 // Target file paths relative to workspace root
 const KIND_RS_PATH: &str = "crates/oxabl_lexer/src/kind.rs";
 const BUILD_RS_PATH: &str = "crates/oxabl_lexer/build.rs";
@@ -372,7 +375,14 @@ pub fn parse_builtin_functions(path: &Path) -> Vec<String> {
 
     fn walk(entries: &[JsonEntry], names: &mut HashSet<String>) {
         for entry in entries {
-            if let Some(name) = entry.title.trim().strip_suffix(" function") {
+            // `NEW function (classes)` carries a parenthesised qualifier after
+            // the word "function"; drop it so the title ends in " function".
+            let title = entry.title.trim();
+            let stem = title
+                .split_once(" function (")
+                .map(|(stem, _)| format!("{stem} function"));
+            let title = stem.as_deref().unwrap_or(title);
+            if let Some(name) = title.strip_suffix(" function") {
                 let name = name.trim();
                 // ABL identifiers never contain whitespace, so a multi-word
                 // stem (e.g. "DEFINED preprocessor function", "NOT ENTERED
@@ -816,32 +826,21 @@ pub fn generate_keyword_match(
         );
     }
 
-    // Group matches by string length for two-level dispatch.
-    // Outer match on length produces a compact jump table; inner matches per
-    // length bucket are small enough to stay in L1 instruction cache.
-    let mut length_to_matches: HashMap<usize, Vec<(String, String)>> = HashMap::new();
-    for (match_str, kind) in &match_to_kind {
-        length_to_matches
-            .entry(match_str.len())
+    // Dispatch on length and the first byte before comparing spellings.
+    let mut buckets = std::collections::BTreeMap::<(usize, u8), Vec<_>>::new();
+    for (spelling, kind) in &match_to_kind {
+        buckets
+            .entry((spelling.len(), spelling.as_bytes()[0]))
             .or_default()
-            .push((match_str.clone(), kind.clone()));
+            .push((spelling, kind));
     }
-
-    // Sort lengths for consistent output
-    let mut lengths: Vec<_> = length_to_matches.keys().cloned().collect();
-    lengths.sort();
-
-    output.push_str("    match lower.len() {\n");
-
-    for length in lengths {
-        let mut matches = length_to_matches.remove(&length).unwrap();
-        matches.sort_by(|a, b| a.0.cmp(&b.0));
-
-        output.push_str(&format!("        {} => match lower {{\n", length));
-        for (match_str, kind) in &matches {
+    output.push_str("    match (lower.len(), buf[0]) {\n");
+    for ((length, first), mut entries) in buckets {
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        output.push_str(&format!("        ({length}, {first}) => match lower {{\n"));
+        for (spelling, kind) in entries {
             output.push_str(&format!(
-                "            \"{}\" => Some(Kind::{}),\n",
-                match_str, kind
+                "            \"{spelling}\" => Some(Kind::{kind}),\n"
             ));
         }
         output.push_str("            _ => None,\n");
@@ -977,6 +976,7 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
         ("substitute", "subst"),
         ("truncate", "trunc"),
         ("widget-handle", "widget-h"),
+        ("userid", "user"),
     ];
     for &(full, abbrev) in UNRESERVED_FUNCTION_ABBREVS {
         if !builtin_upper.contains(full.to_uppercase().as_str()) {
@@ -1000,9 +1000,16 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
     // Functions that real code calls but the function index does not list: the
     // settable MEMPTR and codepage forms (`SET-SIZE(m) = 16`) and the case
     // conversions. Registered by hand like VALUE.
+    // OS-DIR is the `INPUT FROM OS-DIR(path)` source; the byte-order names are
+    // the constants `SET-BYTE-ORDER(m) = BIG-ENDIAN` takes.
     const UNINDEXED_FUNCTIONS: &[&str] = &[
+        "big-endian",
         "fix-codepage",
+        "host-byte-order",
+        "little-endian",
         "lower",
+        "os-dir",
+        "overlay",
         "put-bits",
         "put-byte",
         "put-bytes",
@@ -1132,6 +1139,19 @@ pub fn generate_formatter_spelling_rs(keywords: &[Keyword]) -> String {
 }
 
 /// Write generated content to a file
+/// Compile the checked-in built-in class index into the semantic crate's table.
+fn write_builtin_class_table() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let content = builtin_class_table::read_index(&root.join(builtin_class_table::JSON_PATH))
+        .and_then(|index| builtin_class_table::generate(&index))
+        .unwrap_or_else(|e| {
+            eprintln!("builtin-class-table: {e}");
+            std::process::exit(1);
+        });
+    write_generated_file(builtin_class_table::TABLE_RS_PATH, &content)
+        .expect("Failed to write builtin_classes.rs");
+}
+
 fn write_generated_file(relative_path: &str, content: &str) -> std::io::Result<()> {
     // Resolve path relative to workspace root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1250,6 +1270,14 @@ fn main() {
             write_generated_file(FORMATTER_SPELLING_PATH, &content)
                 .expect("Failed to write keyword_spelling.rs");
         }
+        "builtin-class-table" => write_builtin_class_table(),
+        "builtin-classes" => {
+            let rest = args.iter().skip(2).cloned().collect::<Vec<_>>();
+            if let Err(e) = progress_docs::run_builtin_classes(&rest) {
+                eprintln!("builtin-classes: {e}");
+                std::process::exit(1);
+            }
+        }
         "all" | "" => {
             // Default: write all generated files
             let kind_content = generate_kind_rs(&keywords, &alternates);
@@ -1267,6 +1295,8 @@ fn main() {
             write_generated_file(BUILTINS_RS_PATH, &builtins_content)
                 .expect("Failed to write builtins.rs");
 
+            write_builtin_class_table();
+
             eprintln!("\nAll files regenerated successfully.");
         }
         "match" => {
@@ -1282,7 +1312,14 @@ fn main() {
             eprintln!("  atoms    - Write build.rs (atom list)");
             eprintln!("  callable - Write callable.rs (is_callable_kind function)");
             eprintln!("  builtins - Write builtins.rs (built-in function registry)");
+            eprintln!("  builtin-class-table - Write the semantic crate's built-in class table");
+            eprintln!("      from resources/progress_builtin_classes.json");
             eprintln!("  summary  - Show statistics without writing files");
+            eprintln!("  builtin-classes - Crawl the Progress ABL reference docs and write");
+            eprintln!("      resources/progress_builtin_classes.json (merged from the API");
+            eprintln!("      reference and ABL Reference bundles)");
+            eprintln!("      Options: --bundle <id[,id...]> --refresh --catalog-only --limit <n>");
+            eprintln!("                --names <a,b,c> --no-member-details --out <path>");
             std::process::exit(1);
         }
     }

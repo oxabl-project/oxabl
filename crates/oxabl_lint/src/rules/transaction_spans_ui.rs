@@ -127,7 +127,8 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
 
 /// A statement that may wait for the user.
 enum Candidate {
-    /// A statement the parser skips.
+    /// A statement the parser skips, or head-parses without its options
+    /// (`UPDATE`, `SET`, `WAIT-FOR`, `PAUSE`): read from its tokens.
     Skipped,
     /// `MESSAGE`, with `SET` or `UPDATE` targets or none.
     Message { set: bool },
@@ -152,7 +153,11 @@ fn candidates(program: &[Statement]) -> Vec<(Span, Candidate)> {
     impl Visitor for Candidates {
         fn statement(&mut self, stmt: &Statement) -> bool {
             let candidate = match &stmt.kind {
-                StatementKind::Skipped { .. } => Candidate::Skipped,
+                StatementKind::Skipped { .. }
+                | StatementKind::Update { .. }
+                | StatementKind::Set { .. }
+                | StatementKind::WaitFor { .. }
+                | StatementKind::Pause { .. } => Candidate::Skipped,
                 StatementKind::Message { set_targets, .. } => Candidate::Message {
                     set: !set_targets.is_empty(),
                 },
@@ -177,7 +182,7 @@ fn tokens(source: &str, span: Span) -> Vec<Token> {
         .collect()
 }
 
-/// Whether a statement the parser skips waits for the user.
+/// Whether a statement read from its tokens waits for the user.
 fn skipped_waits(toks: &[Token]) -> bool {
     let has = |k: Kind| toks.iter().any(|t| t.kind == k);
     match toks.first().map(|t| t.kind) {

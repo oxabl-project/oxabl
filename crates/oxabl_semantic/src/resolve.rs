@@ -27,17 +27,19 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind,
+    AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, FrameField,
     HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
     RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeArguments,
     TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
+use oxabl_lexer::is_builtin_function;
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
+use crate::builtin_classes::{BuiltinClass, builtin_class};
 use crate::index::ImportCandidate;
 use crate::symbol::RecordSource;
 use crate::{
@@ -324,8 +326,13 @@ impl<'a> Walker<'a> {
             StatementKind::DefineStream { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Streams, SymbolKind::Stream);
             }
-            StatementKind::DefineFrame { name, .. } => {
+            StatementKind::DefineFrame { name, fields, .. } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
+                self.declare_frame_fields(stmt, scope, fields);
+            }
+            StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
+            StatementKind::DefineWidget { name } => {
+                self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
             }
             StatementKind::DefineEvent {
                 access,
@@ -752,12 +759,27 @@ impl<'a> Walker<'a> {
                     }
                 }
             }
-            StatementKind::TriggerProcedure { .. } => {
+            StatementKind::TriggerProcedure {
+                target,
+                referencing,
+                ..
+            } => {
                 // Opens an implicit trigger-procedure scope for the file
                 // body that follows. Currently just records the scope
                 // without lifting the subsequent statements into it —
                 // parse-level ordering already nests them.
                 let _ = self.tree.push(ScopeKind::TriggerProcedure, scope, stmt.id);
+                // `NEW BUFFER n` / `OLD BUFFER n` are buffers of the target table.
+                // A target that does not resolve declares neither, so a use of
+                // one still reports the unknown name.
+                if let Some(source) = self.record_source_of(target, scope) {
+                    for alias in [&referencing.new_buffer, &referencing.old_buffer]
+                        .into_iter()
+                        .flatten()
+                    {
+                        self.declare_buffer(stmt, scope, alias, SymbolFlags::empty(), Some(source));
+                    }
+                }
             }
 
             // ---- PreprocIf: walk both branches so declarations in either
@@ -842,6 +864,25 @@ impl<'a> Walker<'a> {
             && let Some(id) = sym
         {
             self.symbols.record_block_defined(id, block_scope);
+        }
+    }
+
+    /// Declare the variables that `name AS type` / `name LIKE field` frame
+    /// items define, scoped like `DEFINE VARIABLE`. An item whose name already
+    /// names a variable in scope uses that variable rather than declaring one,
+    /// as the same field in a second frame does.
+    fn declare_frame_fields(&mut self, stmt: &Statement, scope: ScopeId, fields: &[FrameField]) {
+        for field in fields {
+            let atom = fold_atom(&field.name.name);
+            if self
+                .tree
+                .resolve(scope, NamespaceId::Values, &atom)
+                .is_some_and(|sym| self.symbols.get(sym).kind != SymbolKind::BuiltIn)
+            {
+                continue;
+            }
+            let flags = SymbolFlags::empty();
+            self.declare_variable(stmt, scope, &field.name, &field.type_source, None, flags);
         }
     }
 
@@ -1022,9 +1063,8 @@ impl<'a> Walker<'a> {
         self.schema_table_id(table).map(RecordSource::Schema)
     }
 
-    /// Case-insensitive schema lookup of a table-name identifier. Returns
-    /// `None` when the table is absent from the schema (or no schema is
-    /// loaded — an empty schema yields `None` here by construction).
+    /// Case-insensitive lookup of a table name or unique abbreviation in the
+    /// application schema and built-in metaschema.
     ///
     /// A record phrase may qualify the table with the database it lives in —
     /// `sports.Customer`, `dictdb._file` — and the parser hands that through
@@ -1033,10 +1073,12 @@ impl<'a> Walker<'a> {
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
         self.ctx
             .schema
-            .table_id(&fold_atom(&table.name))
+            .resolve_table_with_metaschema(&fold_atom(&table.name))
             .or_else(|| {
                 let bare = strip_db_qualifier(&table.name)?;
-                self.ctx.schema.table_id(&fold_atom(bare))
+                self.ctx
+                    .schema
+                    .resolve_table_with_metaschema(&fold_atom(bare))
             })
     }
 
@@ -1603,6 +1645,9 @@ enum TypeLookup {
     Indexed(SymbolId),
     /// Supplied by an explicitly external source such as `FROM ASSEMBLY`.
     External,
+    /// A documented built-in type. The AVM supplies it, so it is no
+    /// dependency and no gap, and a reference to it stays `External`.
+    Builtin(&'static BuiltinClass),
     /// An index is attached and no candidate spelling matched a class.
     NotFound,
     /// A file that would declare the class was located and could not be used.
@@ -1611,8 +1656,8 @@ enum TypeLookup {
     Unusable,
     /// The index declined to choose between candidates.
     Unknowable,
-    /// No index is attached, so nothing was looked at. Callers keep today's
-    /// answer — [`UnresolvedReason::External`] — on this one.
+    /// No index is attached and no built-in matched. The workspace is unknown,
+    /// so callers use [`UnresolvedReason::External`].
     NotLooked,
 }
 
@@ -1729,17 +1774,15 @@ impl<'a> ResolveWalker<'a> {
 
     /// Write side of the cross-file state, created on first use.
     ///
-    /// Every call site sits behind an `ctx.index_loaded` gate, so this allocates
-    /// only on a run that has an index to resolve against. Returning `&mut`
-    /// rather than an `Option` is what keeps the call sites readable; the price
+    /// Imports also use this state when only built-in types are available.
+    /// Returning `&mut` rather than an `Option` keeps the call sites readable; the price
     /// is that it borrows all of `self`, so a site that also needs
     /// `self.symbols` must scope the borrow (see [`Self::lookup_inherited`]).
     fn cross_file_mut(&mut self) -> &mut CrossFileState {
         self.cross_file.get_or_insert_with(Default::default)
     }
 
-    /// The file's `USING` imports — empty when no index is attached, because
-    /// nothing collected them.
+    /// The file's `USING` imports.
     ///
     /// Shared rather than borrowed because the searches that read it need
     /// `&mut self` to mint symbols while they iterate.
@@ -1750,14 +1793,7 @@ impl<'a> ResolveWalker<'a> {
 
     /// Record the file's `USING` imports before anything tries to resolve a
     /// type name through them.
-    ///
-    /// A no-op without an index, which is what keeps a single-file run at
-    /// exactly its current cost — there is nothing an import could be resolved
-    /// *against*.
     fn collect_using_imports(&mut self, program: &[Statement]) {
-        if !self.ctx.index_loaded {
-            return;
-        }
         let imports = ImportContext::from_statements(program);
         if !imports.is_empty() {
             self.cross_file_mut().imports = Arc::new(imports);
@@ -1804,7 +1840,8 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::External
+                    TypeLookup::Builtin(_)
+                    | TypeLookup::External
                     | TypeLookup::NotFound
                     | TypeLookup::Unusable
                     | TypeLookup::Unknowable
@@ -1865,10 +1902,11 @@ impl<'a> ResolveWalker<'a> {
     /// the class-typed-declaration pre-pass looks the class up in the scope tree
     /// to decide whether it is foreign at all.
     fn resolve_type_in_workspace(&mut self, raw: &str, use_span: VirtualSpan) -> TypeLookup {
-        // The one gate: with no index attached nothing was looked at, so every
-        // caller keeps the answer it has today.
         if !self.ctx.index_loaded {
-            return TypeLookup::NotLooked;
+            return match self.search_type_in_workspace(raw, use_span) {
+                TypeLookup::NotFound => TypeLookup::NotLooked,
+                answer => answer,
+            };
         }
         // The as-written spelling, *not* `fold_atom(raw)`. Every candidate this
         // memo caches an answer for is derived from `raw` verbatim and looked up
@@ -1935,6 +1973,9 @@ impl<'a> ResolveWalker<'a> {
             }
             if let Some(answer) = self.try_indexed_class(&name, use_span) {
                 return answer;
+            }
+            if let Some(class) = builtin_class(name.as_atom()) {
+                return TypeLookup::Builtin(class);
             }
         }
         TypeLookup::NotFound
@@ -2022,6 +2063,9 @@ impl<'a> ResolveWalker<'a> {
     /// `Some` is an answer the search must stop on.
     fn try_indexed_class(&mut self, name: &IndexName, use_span: VirtualSpan) -> Option<TypeLookup> {
         // Copied out so no borrow of `self` is held across the synthesis below.
+        if !self.ctx.index_loaded {
+            return None;
+        }
         let index = self.ctx.index;
         match index.class(name) {
             IndexAnswer::Found(descriptor) => Some(TypeLookup::Indexed(self.indexed_class_symbol(
@@ -2072,7 +2116,10 @@ impl<'a> ResolveWalker<'a> {
                 (name, ClassLookup::Unusable)
             }
             TypeLookup::Unknowable => (self.class_miss_key(raw), ClassLookup::Unknowable),
-            TypeLookup::Local(_) | TypeLookup::External | TypeLookup::NotLooked => return,
+            TypeLookup::Local(_)
+            | TypeLookup::Builtin(_)
+            | TypeLookup::External
+            | TypeLookup::NotLooked => return,
         };
         self.symbols.record_class_lookup(&name, outcome);
         self.symbols.record_class_site(&name, site);
@@ -2265,7 +2312,8 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::External
+                    TypeLookup::Builtin(_)
+                    | TypeLookup::External
                     | TypeLookup::NotFound
                     | TypeLookup::Unusable
                     | TypeLookup::Unknowable
@@ -2302,6 +2350,7 @@ impl<'a> ResolveWalker<'a> {
                         // which is what it has today, and a member access
                         // through it stays unresolved.
                         TypeLookup::Local(_)
+                        | TypeLookup::Builtin(_)
                         | TypeLookup::External
                         | TypeLookup::NotFound
                         | TypeLookup::Unusable
@@ -2508,6 +2557,18 @@ impl<'a> ResolveWalker<'a> {
     }
 
     fn walk_statement(&mut self, stmt: &Statement, scope: ScopeId) {
+        if let Some(tail) = &stmt.skipped_tail {
+            self.credit_unmodelled_names(&tail.names, scope);
+            // A tail runs to the statement's end, and a class-shaped run in it
+            // starts with a harvested name, so the first name bounds the scan.
+            if let Some(first) = tail.names.first() {
+                let span = Span {
+                    start: first.span.start,
+                    end: stmt.span.end,
+                };
+                self.note_unmodelled_class_runs(span, scope);
+            }
+        }
         match &stmt.kind {
             // ---- Declarations with initializers --------------------------
             StatementKind::VariableDeclaration {
@@ -2516,8 +2577,11 @@ impl<'a> ResolveWalker<'a> {
                 initial_value,
                 ..
             } => {
-                if let TypeSource::Explicit(dt) = type_source {
-                    self.note_data_type(dt, scope, identifier_span(name));
+                match type_source {
+                    TypeSource::Explicit(dt) => {
+                        self.note_data_type(dt, scope, identifier_span(name))
+                    }
+                    TypeSource::Like { source } => self.note_like_source(source, scope, false),
                 }
                 if let Some(e) = initial_value {
                     self.walk_expression(e, scope, AccessMode::Read);
@@ -2535,13 +2599,25 @@ impl<'a> ResolveWalker<'a> {
                         type_source: TypeSource::Explicit(dt),
                         ..
                     } => self.note_data_type(dt, scope, identifier_span(name)),
+                    ParameterType::Variable {
+                        type_source: TypeSource::Like { source },
+                        ..
+                    } => self.note_like_source(source, scope, false),
                     _ => {}
                 }
             }
-            StatementKind::DefineTempTable { fields, .. } => {
+            StatementKind::DefineTempTable {
+                like_table, fields, ..
+            } => {
+                if let Some(table) = like_table {
+                    self.note_like_source(table, scope, true);
+                }
                 for f in fields {
-                    if let TypeSource::Explicit(dt) = &f.type_source {
-                        self.note_data_type(dt, scope, identifier_span(&f.name));
+                    match &f.type_source {
+                        TypeSource::Explicit(dt) => {
+                            self.note_data_type(dt, scope, identifier_span(&f.name))
+                        }
+                        TypeSource::Like { source } => self.note_like_source(source, scope, false),
                     }
                     if let Some(init) = &f.initial_value {
                         for e in init {
@@ -2555,9 +2631,23 @@ impl<'a> ResolveWalker<'a> {
                 self.credit_buffer_target(name, t, scope);
             }
             StatementKind::DefineDataset { .. } => {}
-            StatementKind::DefineDataSource { .. } => {}
-            StatementKind::DefineStream { .. } => {}
-            StatementKind::DefineFrame { .. } => {}
+            StatementKind::DefineDataSource { source_buffers, .. } => {
+                for buffer in source_buffers {
+                    self.resolve_record_ident(
+                        &buffer.name,
+                        scope,
+                        &[NamespaceId::Buffers, NamespaceId::Tables],
+                        AccessMode::Read,
+                    );
+                }
+            }
+            StatementKind::DefineStream { .. } | StatementKind::DefineWidget { .. } => {}
+            StatementKind::DefineFrame {
+                raw_span, fields, ..
+            } => {
+                self.note_unmodelled_text(*raw_span, scope);
+                self.note_frame_field_sources(fields, scope);
+            }
             StatementKind::DefineEvent { parameters, .. } => {
                 if let Some(ev) = self.find_child_scope(scope, stmt.id, ScopeKind::Method) {
                     self.walk_block(parameters, ev);
@@ -2603,17 +2693,23 @@ impl<'a> ResolveWalker<'a> {
                 // A prototype has no scope to bind them in, but the compiler
                 // resolves their types all the same.
                 for param in prototype_parameters {
-                    if let StatementKind::DefineParameter {
-                        param_type:
-                            ParameterType::Variable {
-                                name,
-                                type_source: TypeSource::Explicit(dt),
-                                ..
-                            },
-                        ..
-                    } = &param.kind
-                    {
-                        self.note_data_type(dt, scope, identifier_span(name));
+                    let StatementKind::DefineParameter { param_type, .. } = &param.kind else {
+                        continue;
+                    };
+                    match param_type {
+                        ParameterType::Variable {
+                            name,
+                            type_source: TypeSource::Explicit(dt),
+                            ..
+                        } => self.note_data_type(dt, scope, identifier_span(name)),
+                        ParameterType::Variable {
+                            type_source: TypeSource::Like { source },
+                            ..
+                        } => self.note_like_source(source, scope, false),
+                        ParameterType::Buffer { target, .. } => {
+                            self.note_like_source(target, scope, true)
+                        }
+                        ParameterType::Handle { .. } => {}
                     }
                 }
                 if let Some(fs) = self.find_child_scope(scope, stmt.id, ScopeKind::Function) {
@@ -2699,6 +2795,7 @@ impl<'a> ResolveWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt.id, ScopeKind::Block)
                     .unwrap_or(scope);
+                self.note_block_records(stmt.span, bs);
                 if let Some(counter) = loop_var {
                     // The loop assigns the counter its initial value and
                     // reads/compares it each iteration — resolve it as a use
@@ -2737,6 +2834,7 @@ impl<'a> ResolveWalker<'a> {
                 let bs = self
                     .find_child_scope(scope, stmt.id, ScopeKind::Block)
                     .unwrap_or(scope);
+                self.note_block_records(stmt.span, bs);
                 if let Some(e) = while_condition {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
@@ -2765,7 +2863,7 @@ impl<'a> ResolveWalker<'a> {
                     AccessMode::Read,
                 );
                 if let Some(of) = of_relation {
-                    self.resolve_statement_ident(
+                    self.resolve_record_ident(
                         of,
                         bs,
                         &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -2778,6 +2876,15 @@ impl<'a> ResolveWalker<'a> {
                 for e in on_actions {
                     self.walk_expression(e, bs, AccessMode::Read);
                 }
+                // The joined records after the first are not in the AST.
+                let first_end = [Some(buffer.span), of_relation.as_ref().map(|of| of.span)]
+                    .into_iter()
+                    .flatten()
+                    .map(|span| span.end)
+                    .chain(where_clause.as_ref().map(|w| w.span.end))
+                    .max()
+                    .unwrap_or(stmt.span.start);
+                self.note_unmodelled_text(after(stmt.span, first_end), bs);
                 self.walk_block(body, bs);
             }
             StatementKind::Find {
@@ -2786,7 +2893,7 @@ impl<'a> ResolveWalker<'a> {
                 where_clause,
                 ..
             } => {
-                self.resolve_statement_ident(
+                self.resolve_record_ident(
                     buffer,
                     scope,
                     &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -2798,6 +2905,19 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(w) = where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
+                // The `OF` table, between the record and its key or `WHERE`, is
+                // not in the AST.
+                let end = key_value
+                    .as_ref()
+                    .or(where_clause.as_ref())
+                    .map_or(stmt.span.end, |e| e.span.start);
+                self.note_unmodelled_text(
+                    Span {
+                        start: buffer.span.end,
+                        end,
+                    },
+                    scope,
+                );
             }
             StatementKind::If {
                 condition,
@@ -2849,6 +2969,9 @@ impl<'a> ResolveWalker<'a> {
                         }
                     }
                 }
+                if let OnKind::DbEvent { target, .. } = kind {
+                    self.note_trigger_table(target, scope);
+                }
                 match kind {
                     OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action
                     {
@@ -2872,7 +2995,9 @@ impl<'a> ResolveWalker<'a> {
                     OnKind::KeyRemap { .. } => {}
                 }
             }
-            StatementKind::TriggerProcedure { .. } => {}
+            StatementKind::TriggerProcedure { target, .. } => {
+                self.note_trigger_table(target, scope)
+            }
             StatementKind::PreprocIf(pif) => {
                 self.walk_expression(&pif.condition, scope, AccessMode::Read);
                 self.walk_block(&pif.then_branch, scope);
@@ -2940,6 +3065,114 @@ impl<'a> ResolveWalker<'a> {
                         &[NamespaceId::Frames],
                         AccessMode::Read,
                     );
+                }
+            }
+            StatementKind::Put { stream_name, items } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Export {
+                stream_name,
+                delimiter,
+                items,
+            }
+            | StatementKind::Import {
+                stream_name,
+                delimiter,
+                targets: items,
+            } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                if let Some(d) = delimiter {
+                    self.walk_expression(d, scope, AccessMode::Read);
+                }
+                let mode = if matches!(stmt.kind, StatementKind::Import { .. }) {
+                    AccessMode::Write
+                } else {
+                    AccessMode::Read
+                };
+                for e in items {
+                    self.walk_expression(e, scope, mode);
+                }
+            }
+            StatementKind::Form { items, fields } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+                self.note_frame_field_sources(fields, scope);
+            }
+            StatementKind::Enable { items }
+            | StatementKind::WaitFor { widgets: items }
+            | StatementKind::Disable { items } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Hide { stream_name, items }
+            | StatementKind::View { stream_name, items } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Update { targets, options } => {
+                for e in targets {
+                    self.walk_expression(e, scope, AccessMode::ReadWrite);
+                }
+                for e in options {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Set { targets, options } => {
+                for e in targets {
+                    self.walk_expression(e, scope, AccessMode::Write);
+                }
+                for e in options {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Pause {
+                duration: a,
+                message: b,
+            } => {
+                for e in a.iter().chain(b) {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Down { stream_name, lines }
+            | StatementKind::Up { stream_name, lines } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                if let Some(e) = lines {
+                    self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
             StatementKind::Message { items, set_targets } => {
@@ -3044,15 +3277,14 @@ impl<'a> ResolveWalker<'a> {
                 self.walk_expression(target, scope, AccessMode::Read);
             }
             StatementKind::Apply { event, target } => {
-                self.walk_lenient_operand(event, scope);
-                if let Some(t) = target {
-                    self.walk_lenient_operand(t, scope);
+                for e in event.iter().chain(target) {
+                    self.walk_lenient_operand(e, scope);
                 }
             }
             StatementKind::Delete { buffer, .. }
             | StatementKind::Release { buffer, .. }
             | StatementKind::Validate { buffer, .. } => {
-                self.resolve_statement_ident(
+                self.resolve_record_ident(
                     buffer,
                     scope,
                     &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -3065,13 +3297,8 @@ impl<'a> ResolveWalker<'a> {
                 assignments,
                 ..
             } => {
-                self.resolve_statement_ident(
-                    source,
-                    scope,
-                    &[NamespaceId::Buffers],
-                    AccessMode::Read,
-                );
-                self.resolve_statement_ident(
+                self.resolve_record_ident(source, scope, &[NamespaceId::Buffers], AccessMode::Read);
+                self.resolve_record_ident(
                     target,
                     scope,
                     &[NamespaceId::Buffers],
@@ -3088,18 +3315,8 @@ impl<'a> ResolveWalker<'a> {
                 result_var,
                 ..
             } => {
-                self.resolve_statement_ident(
-                    source,
-                    scope,
-                    &[NamespaceId::Buffers],
-                    AccessMode::Read,
-                );
-                self.resolve_statement_ident(
-                    target,
-                    scope,
-                    &[NamespaceId::Buffers],
-                    AccessMode::Read,
-                );
+                self.resolve_record_ident(source, scope, &[NamespaceId::Buffers], AccessMode::Read);
+                self.resolve_record_ident(target, scope, &[NamespaceId::Buffers], AccessMode::Read);
                 if let Some(rv) = result_var {
                     self.resolve_statement_ident(
                         rv,
@@ -3111,7 +3328,7 @@ impl<'a> ResolveWalker<'a> {
             }
             StatementKind::Create { target, .. } => match target {
                 CreateTarget::Name(n) => {
-                    self.resolve_statement_ident(
+                    self.resolve_record_ident(
                         n,
                         scope,
                         &[NamespaceId::Buffers, NamespaceId::Tables],
@@ -3263,6 +3480,7 @@ impl<'a> ResolveWalker<'a> {
                 if *may_reference_tables {
                     self.credit_unmodelled_table_names(names, scope);
                 }
+                self.note_unmodelled_schema_tables(names, scope);
                 self.note_unmodelled_class_runs(stmt.span, scope);
             }
         }
@@ -3320,13 +3538,49 @@ impl<'a> ResolveWalker<'a> {
                 // Functions and Procedures share a call surface in expression
                 // position (internal procedure calls surface as function
                 // calls syntactically).
-                self.resolve_expr_ident(
-                    name,
-                    expr.id,
-                    scope,
-                    &[NamespaceId::Functions, NamespaceId::Procedures],
-                    AccessMode::Read,
-                );
+                //
+                // In an item list (`PUT x (y)`, `MESSAGE x (y)`) a variable
+                // followed by a parenthesised expression parses as a call. When
+                // the name is no function but a value in scope, it is that value
+                // and the parenthesised expression is the next item.
+                let namespaces: &[NamespaceId] = if !is_builtin_function(&name.name)
+                    && self
+                        .lookup_statement_ident(
+                            name,
+                            scope,
+                            &[NamespaceId::Functions, NamespaceId::Procedures],
+                        )
+                        .is_none()
+                    && self
+                        .lookup_statement_ident(name, scope, &[NamespaceId::Values])
+                        .is_some()
+                {
+                    &[NamespaceId::Values]
+                } else {
+                    &[NamespaceId::Functions, NamespaceId::Procedures]
+                };
+                self.resolve_expr_ident(name, expr.id, scope, namespaces, AccessMode::Read);
+                // The operand of `PAGE-NUMBER(s)` and its siblings is a stream
+                // name, not a value. It resolves in the stream namespace, and an
+                // unknown stream (declared in an unseen include) stays unjudged.
+                if is_stream_operand_function(&name.name)
+                    && let [arg] = arguments.as_slice()
+                    && let ExpressionKind::Identifier(stream) = &arg.kind
+                {
+                    if self
+                        .lookup_statement_ident(stream, scope, &[NamespaceId::Streams])
+                        .is_some()
+                    {
+                        self.resolve_expr_ident(
+                            stream,
+                            arg.id,
+                            scope,
+                            &[NamespaceId::Streams],
+                            AccessMode::Read,
+                        );
+                    }
+                    return;
+                }
                 let sequence = crate::sequence_operand(name, arguments);
                 if let Some(op) = &sequence {
                     self.resolve_sequence_operand(op);
@@ -3343,12 +3597,24 @@ impl<'a> ResolveWalker<'a> {
                 // The arguments of `NEXT-VALUE` / `CURRENT-VALUE` are a sequence
                 // name and a logical database name, neither a symbol.
                 if !sequence.is_some_and(|op| op.is_static) {
-                    for a in arguments {
+                    // `SET-SIZE(m) = 16` and its siblings assign through a
+                    // function call: the target operand takes the access the
+                    // assignment makes, not a read.
+                    let target = (mode != AccessMode::Read)
+                        .then(|| pseudo_function_target(&name.name))
+                        .flatten();
+                    for (i, a) in arguments.iter().enumerate() {
                         match &type_name {
                             Some((id, raw)) if *id == a.id => {
                                 self.resolve_type_operand(a, raw, scope);
                             }
-                            _ => self.walk_expression(a, scope, AccessMode::Read),
+                            _ => {
+                                let arg_mode = match target {
+                                    Some((index, access)) if index == i => access,
+                                    _ => AccessMode::Read,
+                                };
+                                self.walk_expression(a, scope, arg_mode);
+                            }
                         }
                     }
                 }
@@ -3460,7 +3726,7 @@ impl<'a> ResolveWalker<'a> {
                             },
                         );
                     }
-                    TypeLookup::External => {
+                    TypeLookup::Builtin(_) | TypeLookup::External => {
                         self.references.insert(
                             expr.id,
                             Resolution::Unresolved {
@@ -3490,6 +3756,16 @@ impl<'a> ResolveWalker<'a> {
                 if let Some(w) = where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
+                let end = where_clause
+                    .as_ref()
+                    .map_or(expr.span.end, |w| w.span.start);
+                self.note_unmodelled_text(
+                    Span {
+                        start: buffer.span.end,
+                        end,
+                    },
+                    scope,
+                );
             }
 
             ExpressionKind::IncludeReference { .. }
@@ -3658,6 +3934,16 @@ impl<'a> ResolveWalker<'a> {
                     .insert(expr_id, Resolution::Unresolved { name: atom, reason });
                 return;
             }
+            // An abbreviated table name, tried last so that any field of a
+            // record in scope wins over it.
+            if self.ctx.schema_loaded
+                && let Some(tid) = self.ctx.schema.resolve_table(&atom)
+            {
+                let bsym = self.synth_table_buffer_symbol(tid, &atom, id);
+                self.references.insert(expr_id, Resolution::Resolved(bsym));
+                self.bump_count(bsym, mode);
+                return;
+            }
         }
         self.references.insert(
             expr_id,
@@ -3774,13 +4060,18 @@ impl<'a> ResolveWalker<'a> {
                 // a fact about the workspace, not a missing capability — unless there
                 // were no paths to look on, which `absent_reason` handles.
                 None => Resolution::Unresolved {
-                    reason: self.absent_type_reason(type_name, name.as_atom()),
+                    reason: if builtin_class(type_name).is_some() {
+                        UnresolvedReason::External
+                    } else {
+                        self.absent_type_reason(type_name, name.as_atom())
+                    },
                     name: name.as_atom().clone(),
                 },
                 // `try_indexed_class` answers with these two states only; the arms
                 // exist so a third would be a compile error rather than a silent
                 // fall-through.
                 Some(TypeLookup::Local(_))
+                | Some(TypeLookup::Builtin(_))
                 | Some(TypeLookup::External)
                 | Some(TypeLookup::NotFound)
                 | Some(TypeLookup::NotLooked) => {
@@ -4214,9 +4505,7 @@ impl<'a> ResolveWalker<'a> {
     /// segment this file declares as a buffer, table or value is a field of it
     /// whether or not the field resolved, and is never a package.
     fn try_dotted_receiver_type(&mut self, expr: &Expression, scope: ScopeId) {
-        if !self.ctx.index_loaded
-            || matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
-        {
+        if matches!(self.references.get(expr.id), Some(Resolution::Resolved(_))) {
             return;
         }
         let Some(raw) = dotted_name(expr) else {
@@ -4230,11 +4519,15 @@ impl<'a> ResolveWalker<'a> {
         ]
         .iter()
         .any(|ns| self.tree.resolve(scope, *ns, &first).is_some())
+            || (self.ctx.schema_loaded && self.ctx.schema.table_id(&first).is_some())
         {
             return;
         }
         let span = VirtualSpan::new(expr.span.start, expr.span.end);
         let lookup = self.resolve_receiver_type(expr.id, &raw, scope, span);
+        if matches!(lookup, TypeLookup::Builtin(_)) || is_system_namespace(&fold_atom(&raw)) {
+            self.soften_package_receiver(expr);
+        }
         if lookup == TypeLookup::NotFound
             && (!self.ctx.schema_loaded || self.receiver_is_no_class(&raw, scope))
         {
@@ -4318,9 +4611,6 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         use_span: VirtualSpan,
     ) -> TypeLookup {
-        if !self.ctx.index_loaded {
-            return TypeLookup::NotLooked;
-        }
         if let Some(sym) = self
             .tree
             .resolve(scope, NamespaceId::Types, &fold_atom(raw))
@@ -4511,6 +4801,27 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
+    /// Field resolution can revisit earlier links. Soften the complete package
+    /// path only after the receiver's final lookup has identified it.
+    fn soften_package_receiver(&mut self, expr: &Expression) {
+        if let ExpressionKind::FieldAccess { qualifier, .. } = &expr.kind {
+            self.soften_package_receiver(qualifier);
+        }
+        if let Some(Resolution::Unresolved {
+            name,
+            reason: UnresolvedReason::NotInScope | UnresolvedReason::NoSchema,
+        }) = self.references.get(expr.id).cloned()
+        {
+            self.references.insert(
+                expr.id,
+                Resolution::Unresolved {
+                    name,
+                    reason: UnresolvedReason::External,
+                },
+            );
+        }
+    }
+
     fn soften_unresolved_to_external(&mut self, expr_id: NodeId) {
         if let Some(Resolution::Unresolved {
             name,
@@ -4552,10 +4863,12 @@ impl<'a> ResolveWalker<'a> {
                 name: atom,
                 reason: UnresolvedReason::Unknowable,
             },
-            TypeLookup::External | TypeLookup::NotLooked => Resolution::Unresolved {
-                name: atom,
-                reason: UnresolvedReason::External,
-            },
+            TypeLookup::Builtin(_) | TypeLookup::External | TypeLookup::NotLooked => {
+                Resolution::Unresolved {
+                    name: atom,
+                    reason: UnresolvedReason::External,
+                }
+            }
         };
         self.references.insert(operand.id, resolution);
     }
@@ -4585,11 +4898,166 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         namespaces: &[NamespaceId],
         mode: AccessMode,
+    ) -> Option<SymbolId> {
+        let sym = self.lookup_statement_ident(id, scope, namespaces)?;
+        self.bump_count(sym, mode);
+        if self.track_block_vars {
+            self.note_block_var_use(sym, scope, mode);
+        }
+        Some(sym)
+    }
+
+    /// Resolve a name the statement uses as a record: `FIND`, `CREATE`,
+    /// `DELETE`, `BUFFER-COPY` and the other forms that name a buffer and
+    /// nothing else.
+    ///
+    /// A local buffer or temp-table wins. Otherwise a schema table binds its
+    /// default buffer, as the same name does in an expression, so the file
+    /// depends on the table even when it never names one of its fields.
+    fn resolve_record_ident(
+        &mut self,
+        id: &Identifier,
+        scope: ScopeId,
+        namespaces: &[NamespaceId],
+        mode: AccessMode,
     ) {
-        if let Some(sym) = self.lookup_statement_ident(id, scope, namespaces) {
+        if self
+            .resolve_statement_ident(id, scope, namespaces, mode)
+            .is_none()
+            && let Some(sym) = self.schema_default_buffer(id)
+        {
             self.bump_count(sym, mode);
-            if self.track_block_vars {
-                self.note_block_var_use(sym, scope, mode);
+        }
+    }
+
+    /// The synthesized default buffer of the schema table `id` names, or `None`
+    /// when no schema is loaded or it names no table.
+    ///
+    /// The caller has already found no local buffer or table of that name.
+    fn schema_default_buffer(&mut self, id: &Identifier) -> Option<SymbolId> {
+        if !self.ctx.schema_loaded {
+            return None;
+        }
+        let schema = self.ctx.schema;
+        let (tid, atom) = [Some(id.name.as_str()), strip_db_qualifier(&id.name)]
+            .into_iter()
+            .flatten()
+            .map(fold_atom)
+            .find_map(|atom| Some((schema.resolve_table(&atom)?, atom)))?;
+        Some(self.synth_table_buffer_symbol(tid, &atom, id))
+    }
+
+    /// Note the table a declaration copies with `LIKE`: the table of
+    /// `LIKE table.field` or `LIKE db.table.field`, or the table itself when
+    /// `whole_table` (`DEFINE TEMP-TABLE tt LIKE table`).
+    ///
+    /// No read is credited: the declaration takes the table's shape and does
+    /// not touch a record. A bare `LIKE field` names no table, and a qualifier
+    /// that is a local buffer or temp-table is that symbol's own dependency.
+    fn note_like_source(&mut self, source: &Identifier, scope: ScopeId, whole_table: bool) {
+        let table = if whole_table {
+            source.clone()
+        } else {
+            let Some((qualifier, _field)) = source.name.rsplit_once('.') else {
+                return;
+            };
+            Identifier {
+                span: Span {
+                    start: source.span.start,
+                    end: source.span.start + qualifier.len() as u32,
+                },
+                name: qualifier.to_string(),
+            }
+        };
+        if self
+            .lookup_statement_ident(&table, scope, &[NamespaceId::Buffers, NamespaceId::Tables])
+            .is_none()
+        {
+            self.schema_default_buffer(&table);
+        }
+    }
+
+    /// Note the tables the `LIKE` frame fields copy.
+    fn note_frame_field_sources(&mut self, fields: &[FrameField], scope: ScopeId) {
+        for field in fields {
+            if let TypeSource::Like { source } = &field.type_source {
+                self.note_like_source(source, scope, false);
+            }
+        }
+    }
+
+    /// Note the table a database trigger names: `ON WRITE OF table`, or the
+    /// table of `ON ASSIGN OF table.field`.
+    fn note_trigger_table(&mut self, target: &Identifier, scope: ScopeId) {
+        let namespaces = [NamespaceId::Buffers, NamespaceId::Tables];
+        if self
+            .lookup_statement_ident(target, scope, &namespaces)
+            .is_some()
+            || self.schema_default_buffer(target).is_some()
+        {
+            return;
+        }
+        self.note_like_source(target, scope, false);
+    }
+
+    /// [`Self::note_unmodelled_schema_tables`] over the names in source text
+    /// the parser passed over. See [`unmodelled_names`].
+    fn note_unmodelled_text(&mut self, span: Span, scope: ScopeId) {
+        if !self.ctx.schema_loaded {
+            return;
+        }
+        let names = unmodelled_names(self.ctx.source, span);
+        self.note_unmodelled_schema_tables(&names, scope);
+    }
+
+    /// The records of `DO FOR`, `DO PRESELECT`, `REPEAT FOR` and
+    /// `REPEAT PRESELECT`, which are not in the AST. Only a block whose
+    /// keyword is followed by `FOR` or `PRESELECT` is lexed past that token.
+    fn note_block_records(&mut self, span: Span, scope: ScopeId) {
+        use oxabl_lexer::Kind;
+        if !self.ctx.schema_loaded {
+            return;
+        }
+        let Some(text) = self.ctx.source.get(span.start as usize..span.end as usize) else {
+            return;
+        };
+        let mut tokens = oxabl_lexer::Lexer::new(text).peekable();
+        tokens.next(); // DO or REPEAT
+        tokens.next_if(|t| t.kind == Kind::Transaction);
+        if tokens
+            .next_if(|t| matches!(t.kind, Kind::KwFor | Kind::Preselect))
+            .is_none()
+        {
+            return;
+        }
+        let names = header_names(tokens, text, span.start);
+        self.note_unmodelled_schema_tables(&names, scope);
+    }
+
+    /// Bind every harvested name of an unmodelled statement that is a schema
+    /// table and nothing local to its default buffer.
+    ///
+    /// The harvest keeps the qualifier of `table.field`, so this sees both a
+    /// record (`UPDATE customer`) and a field (`PUT customer.name`). No read
+    /// is credited: the statement is not modelled, so neither is its access.
+    fn note_unmodelled_schema_tables(&mut self, names: &[Identifier], scope: ScopeId) {
+        if !self.ctx.schema_loaded {
+            return;
+        }
+        for id in names {
+            let local = self
+                .lookup_statement_ident(
+                    id,
+                    scope,
+                    &[
+                        NamespaceId::Values,
+                        NamespaceId::Buffers,
+                        NamespaceId::Tables,
+                    ],
+                )
+                .is_some();
+            if !local {
+                self.schema_default_buffer(id);
             }
         }
     }
@@ -4659,10 +5127,10 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
-    /// Offer the class-shaped runs of a recognized-but-unmodelled statement to the
-    /// class lookup: `NEW name(...)` and a `name:` member access. The statement
-    /// has no expressions to walk, so without this a class it names would give
-    /// neither an edge nor a row.
+    /// Offer the class-shaped runs of a recognized-but-unmodelled statement, or of
+    /// a modelled statement's skipped tail, to the class lookup: `NEW name(...)`
+    /// and a `name:` member access. The skipped text has no expressions to walk,
+    /// so without this a class it names would give neither an edge nor a row.
     ///
     /// A run that is a class is recorded like any other naming site. One that
     /// cannot be told from a handle or a table field is recorded as unattributed,
@@ -4706,7 +5174,7 @@ impl<'a> ResolveWalker<'a> {
                 lookup @ (TypeLookup::Indexed(_) | TypeLookup::Unusable) => {
                     self.note_class_site(name, lookup, site)
                 }
-                TypeLookup::Local(_) | TypeLookup::External => {}
+                TypeLookup::Local(_) | TypeLookup::Builtin(_) | TypeLookup::External => {}
                 TypeLookup::NotFound if self.receiver_is_no_class(name, scope) => {}
                 TypeLookup::NotFound | TypeLookup::Unknowable | TypeLookup::NotLooked => {
                     self.symbols.record_unattributed_unmodelled_use(site)
@@ -4796,7 +5264,7 @@ impl<'a> ResolveWalker<'a> {
                 // references were a double false positive (LINT0001 on the
                 // qualifier *and* LINT0003 on the field).
                 if self.ctx.schema_loaded
-                    && let Some(tid) = self.ctx.schema.table_id(&qatom)
+                    && let Some(tid) = self.ctx.schema.resolve_table(&qatom)
                 {
                     let bsym = self.synth_table_buffer_symbol(tid, &qatom, qid);
                     self.references
@@ -4905,7 +5373,7 @@ impl<'a> ResolveWalker<'a> {
         }
 
         let table_atom = fold_atom(&table.name);
-        let Some(tid) = self.ctx.schema.table_id(&table_atom) else {
+        let Some(tid) = self.ctx.schema.resolve_table(&table_atom) else {
             return false;
         };
 
@@ -5488,6 +5956,12 @@ impl<'a> ResolveWalker<'a> {
         if let Some(sym) = self.synth_buffers.get(&tid) {
             return *sym;
         }
+        // The table's own name, not an abbreviation the use site wrote.
+        let table_atom = self
+            .ctx
+            .schema
+            .get_by_id(tid)
+            .map_or(table_atom, |t| &t.name);
         let sym = self.symbols.insert(Symbol {
             // The one deviation from the convention, and the reason this helper
             // exists: the link is what makes field accesses through the default
@@ -5576,6 +6050,67 @@ fn strip_db_qualifier(name: &str) -> Option<&str> {
         return None;
     }
     Some(table)
+}
+
+/// The plain identifiers in `span` of `source`, up to a `:` or `.` that opens
+/// a block or ends the statement, minus those right after a `.`, `:` or `::`,
+/// so `customer.name` gives `customer` and `hbuf::name` gives `hbuf`.
+///
+/// For text the parser passes over: a `DEFINE FRAME` body, and the record
+/// phrases of a `FOR EACH` join, a `FIND ... OF` or a `CAN-FIND ... OF` that
+/// the AST does not keep. Callers pass the narrowest span they can, since
+/// lexing here costs as much per token as the file's own lexing.
+fn unmodelled_names(source: &str, span: Span) -> Vec<Identifier> {
+    let Some(text) = source.get(span.start as usize..span.end as usize) else {
+        return Vec::new();
+    };
+    header_names(oxabl_lexer::Lexer::new(text).peekable(), text, span.start)
+}
+
+/// [`unmodelled_names`] over the rest of `tokens`, lexed from `text`, which
+/// starts at `base` in the buffer.
+fn header_names(
+    mut tokens: std::iter::Peekable<oxabl_lexer::Lexer<'_>>,
+    text: &str,
+    base: u32,
+) -> Vec<Identifier> {
+    use oxabl_lexer::Kind;
+    let mut names = Vec::new();
+    let mut previous: Option<(Kind, usize)> = None;
+    while let Some(token) = tokens.next() {
+        if token.kind == Kind::Eof {
+            break;
+        }
+        if matches!(token.kind, Kind::Colon | Kind::Period)
+            && !tokens
+                .peek()
+                .is_some_and(|next| next.start == token.end && next.kind != Kind::Eof)
+        {
+            break;
+        }
+        let after_qualifier = previous.is_some_and(|(kind, end)| {
+            end == token.start && matches!(kind, Kind::Colon | Kind::DoubleColon | Kind::Period)
+        });
+        if token.kind == Kind::Identifier && !after_qualifier {
+            names.push(Identifier {
+                span: Span {
+                    start: base + token.start as u32,
+                    end: base + token.end as u32,
+                },
+                name: text[token.start..token.end].to_string(),
+            });
+        }
+        previous = Some((token.kind, token.end));
+    }
+    names
+}
+
+/// The part of `span` from `start` on, or an empty span when `start` is past it.
+fn after(span: Span, start: u32) -> Span {
+    Span {
+        start: start.clamp(span.start, span.end),
+        end: span.end,
+    }
 }
 
 fn identifier_span(id: &Identifier) -> VirtualSpan {
@@ -5694,13 +6229,18 @@ fn class_shaped_runs(text: &str) -> Vec<ClassShapedRun> {
         let after_member = i > 0
             && matches!(tokens[i - 1].kind, Kind::Colon | Kind::Period)
             && tokens[i - 1].end == start;
+        // `dir/name:attr` is a path segment, such as a frame named by a path.
+        let in_path = i > 1
+            && tokens[i - 1].kind == Kind::Slash
+            && tokens[i - 1].end == start
+            && tokens[i - 2].end == tokens[i - 1].start;
         let after_new = i > 0 && tokens[i - 1].kind == Kind::New;
         let is_receiver = tokens
             .get(next)
             .is_some_and(|t| t.kind == Kind::Colon && t.start == end);
         let is_constructor =
             after_new && tokens.get(next).is_some_and(|t| t.kind == Kind::LeftParen);
-        if !after_member && (is_constructor || is_receiver) {
+        if !after_member && !in_path && (is_constructor || is_receiver) {
             runs.push(ClassShapedRun {
                 name: start..end,
                 is_constructor,
@@ -5817,6 +6357,50 @@ fn names_after_widget_keywords(source: &str) -> FxHashSet<OxablAtom> {
     names
 }
 
+/// The operand a pseudo-function assigns through, and how the assignment
+/// accesses it: `(argument index, access)`.
+///
+/// `PUT-BYTE(m, 1) = 65` only stores into `m`; `SUBSTRING(s, 1, 2) = "ab"` keeps
+/// the rest of `s`, so it reads and writes. `None` for a name that is not an
+/// assignable pseudo-function.
+fn pseudo_function_target(name: &str) -> Option<(usize, AccessMode)> {
+    const WRITE: &[&str] = &[
+        "fix-codepage",
+        "set-size",
+        "set-byte-order",
+        "set-pointer-value",
+        "put-bits",
+        "put-byte",
+        "put-bytes",
+        "put-double",
+        "put-float",
+        "put-int64",
+        "put-long",
+        "put-short",
+        "put-string",
+        "put-unsigned-long",
+        "put-unsigned-short",
+    ];
+    const READ_WRITE: &[&str] = &["substring", "substr", "overlay", "length", "extent", "raw"];
+    let is = |names: &[&str]| names.iter().any(|f| name.eq_ignore_ascii_case(f));
+    if is(WRITE) {
+        Some((0, AccessMode::Write))
+    } else if is(READ_WRITE) {
+        Some((0, AccessMode::ReadWrite))
+    } else if name.eq_ignore_ascii_case("entry") {
+        Some((1, AccessMode::ReadWrite))
+    } else {
+        None
+    }
+}
+
+/// Built-ins whose single operand names a stream.
+fn is_stream_operand_function(name: &str) -> bool {
+    ["page-number", "line-counter", "page-size", "seek"]
+        .iter()
+        .any(|f| name.eq_ignore_ascii_case(f))
+}
+
 /// The argument of a `CAST`, `TYPE-OF` or `GET-CLASS` call that names a type.
 /// The parser models all three as ordinary calls, so the operand arrives as a
 /// value expression.
@@ -5859,7 +6443,8 @@ fn member_reachable(member: &MemberDescriptor, role: MemberRole) -> bool {
             AccessModifier::Public => true,
             AccessModifier::Protected
             | AccessModifier::Private
-            | AccessModifier::PackagePrivate => false,
+            | AccessModifier::PackagePrivate
+            | AccessModifier::PackageProtected => false,
         },
     }
 }
@@ -5870,6 +6455,9 @@ fn access_flag(access: AccessModifier) -> SymbolFlags {
         AccessModifier::Private => SymbolFlags::PRIVATE,
         AccessModifier::Protected => SymbolFlags::PROTECTED,
         AccessModifier::PackagePrivate => SymbolFlags::PACKAGE_PRIVATE,
+        AccessModifier::PackageProtected => {
+            SymbolFlags::PACKAGE_PRIVATE.union(SymbolFlags::PROTECTED)
+        }
     }
 }
 
@@ -5992,6 +6580,20 @@ pub(crate) fn is_implicit_lang_class(folded: &str) -> bool {
     )
 }
 
+// Retain common folded atoms between roots without entering the shared intern
+// table on every reference. A collision replaces one slot; equality uses bytes.
+#[derive(Clone)]
+struct FoldedAtom {
+    bytes: [u8; 64],
+    len: usize,
+    atom: OxablAtom,
+}
+
+thread_local! {
+    static FOLDED: std::cell::RefCell<Vec<Option<FoldedAtom>>> =
+        std::cell::RefCell::new(vec![None; 1024]);
+}
+
 /// Case-fold and intern an identifier. Shared with [`crate::index`], whose
 /// keys must fold identically to the symbol table's names.
 pub(crate) fn fold_atom(s: &str) -> OxablAtom {
@@ -6004,7 +6606,25 @@ pub(crate) fn fold_atom(s: &str) -> OxablAtom {
         }
         // SAFETY: ASCII lowercasing preserves UTF-8; source was UTF-8.
         let folded = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };
-        OxablAtom::from(folded)
+        use std::hash::{Hash, Hasher};
+        let mut hash = rustc_hash::FxHasher::default();
+        folded.hash(&mut hash);
+        let slot = hash.finish() as usize % 1024;
+        FOLDED.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(entry) = &cache[slot]
+                && entry.bytes[..entry.len] == *folded.as_bytes()
+            {
+                return entry.atom.clone();
+            }
+            let atom = OxablAtom::from(folded);
+            cache[slot] = Some(FoldedAtom {
+                bytes: buf,
+                len: bytes.len(),
+                atom: atom.clone(),
+            });
+            atom
+        })
     } else {
         OxablAtom::from(s.to_ascii_lowercase())
     }
@@ -6384,6 +7004,7 @@ mod tests {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineFrame {
             name: id("f1"),
             raw_span: Span { start: 0, end: 0 },
+            fields: Vec::new(),
         })]);
         let s = find_symbol(&tree, &symbols, NamespaceId::Frames, "f1").unwrap();
         assert_eq!(s.kind, SymbolKind::Frame);
@@ -10103,6 +10724,80 @@ mod class_site_guard_tests {
     }
 
     #[test]
+    fn builtin_lookup_uses_imports_even_without_an_index() {
+        let source = "USING OpenEdge.Core.*.\n";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let schema = Schema::empty();
+        for indexed in [false, true] {
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+            let ctx = if indexed {
+                ctx.with_index(&EmptyIndex)
+            } else {
+                ctx
+            };
+            let (tree, mut symbols, _, _) = declare_pass(&program.statements, &ctx);
+            let mut walker = ResolveWalker::new(&ctx, &tree, &mut symbols, &program.statements);
+            walker.collect_using_imports(&program.statements);
+            for raw in [
+                "String",
+                "Progress.Lang.AppError",
+                "Progress.IO.InputStream",
+                "pRoGrEsS.LaNg.SoapFaultError",
+                "Progress.Collections.HashMap<CHARACTER,INTEGER>",
+                "Progress.Data.DataType",
+                "Progress.Lang.Error",
+            ] {
+                assert!(
+                    matches!(
+                        walker.resolve_type_name(raw, ScopeId::ROOT, VirtualSpan::new(0, 1)),
+                        TypeLookup::Builtin(_)
+                    ),
+                    "indexed={indexed}: {raw}"
+                );
+            }
+            assert_eq!(
+                walker.resolve_type_name("myapp.Absent", ScopeId::ROOT, VirtualSpan::new(0, 1)),
+                if indexed {
+                    TypeLookup::NotFound
+                } else {
+                    TypeLookup::NotLooked
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn imported_builtin_constructors_are_external_without_dependency_sites() {
+        for indexed in [false, true] {
+            let source = "USING Ccs.Common.*.\nMESSAGE NEW Application().\n";
+            let tokens = oxabl_lexer::tokenize(source);
+            let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+            assert!(program.errors.is_empty(), "{:?}", program.errors);
+            let schema = Schema::empty();
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+            let ctx = if indexed {
+                ctx.with_index(&EmptyIndex)
+            } else {
+                ctx
+            };
+            let sem = crate::analyze_file(&program.statements, &ctx);
+            assert!(sem.symbols.class_sites().is_empty());
+            assert_eq!(sem.symbols.class_lookups().count(), 0);
+            assert!(
+                sem.references.iter().any(|(_, resolution)| matches!(
+                    resolution,
+                    Resolution::Unresolved { reason: UnresolvedReason::External, name }
+                        if name.as_ref() == "application"
+                )),
+                "{:?}",
+                sem.references
+            );
+        }
+    }
+
+    #[test]
     fn a_receiver_bound_as_a_frame_is_no_missing_class() {
         assert_eq!(
             recorded_class_names("USING orders.*.\nDEFINE FRAME f-main.\nf-main:HIDDEN = YES.\n"),
@@ -10248,5 +10943,34 @@ mod preproc_arm_tests {
     fn duplicate_method_inside_one_preproc_arm_still_fires() {
         let src = "CLASS Foo:\n&IF DEFINED(F) <> 0 &THEN\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\nMETHOD PUBLIC VOID Bar():\nEND METHOD.\n&ENDIF\nEND CLASS.\n";
         assert_eq!(sem0001_messages(src).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod folded_atom_tests {
+    use super::fold_atom;
+    use oxabl_lexer::oxabl_atom::OxablAtom;
+
+    #[test]
+    fn memoized_folding_matches_interning_after_collisions_and_across_threads() {
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for round in 0..2 {
+                        for i in 0..5000 {
+                            let name = format!("Variable-{i}-Round-{round}");
+                            assert_eq!(
+                                fold_atom(&name),
+                                OxablAtom::from(name.to_ascii_lowercase())
+                            );
+                            assert_eq!(fold_atom(&name.to_uppercase()), fold_atom(&name));
+                        }
+                    }
+                    for name in ["", "INTEGER", "École", &"A".repeat(64), &"A".repeat(65)] {
+                        assert_eq!(fold_atom(name), OxablAtom::from(name.to_ascii_lowercase()));
+                    }
+                });
+            }
+        });
     }
 }

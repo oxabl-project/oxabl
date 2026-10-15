@@ -465,9 +465,9 @@ pub mod style {
 /// re-export would be invisible to the browser client.
 pub mod pipeline {
     pub use oxabl_pipeline::{
-        ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, LintPipeline,
-        LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID, position,
-        resolve_from_config,
+        ConfigOverrides, ConfigWarning, Expansion, FormatOutcome, FormatPipeline, IncludeContext,
+        LintPipeline, LintResult, NotFormatted, NotFormattedKind, PipelineConfig, ROOT_FILE_ID,
+        SharedProducers, definitions_in, position, resolve_from_config,
     };
 }
 
@@ -489,8 +489,10 @@ pub mod pipeline {
 /// policy.
 pub mod workspace {
     pub use oxabl_workspace::{
-        FileSystem, InMemoryFileSystem, LintConfig, LintOverride, LintRuleSettings, LintSeverity,
-        PreprocessorConfig, ROOT_EXTENSIONS, RealFileSystem, RejectedLintPattern, Workspace,
-        WorkspaceConfig, discover_path, find_workspace_root, is_root_file, walk_directory,
+        DecodedSource, EncodedFileSystem, FileSystem, InMemoryFileSystem, LintConfig, LintOverride,
+        LintRuleSettings, LintSeverity, PreprocessorConfig, ROOT_EXTENSIONS, RealFileSystem,
+        RejectedLintPattern, SourceDecoding, SourceEncoding, Workspace, WorkspaceConfig,
+        discover_path, discover_path_in, find_workspace_root, is_root_file, is_root_file_in,
+        walk_directory, walk_directory_in,
     };
 }
