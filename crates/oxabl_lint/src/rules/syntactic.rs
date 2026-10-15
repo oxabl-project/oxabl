@@ -184,7 +184,9 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_opt(v, item.when_condition.as_ref());
             }
         }
-        StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
+        StatementKind::Message { items, .. }
+        | StatementKind::Put { items, .. }
+        | StatementKind::Form { items } => {
             for e in items {
                 walk_expression(v, e);
             }
@@ -282,6 +284,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         | StatementKind::DefineDataSource { .. }
         | StatementKind::DefineStream { .. }
         | StatementKind::DefineFrame { .. }
+        | StatementKind::DefineWidget { .. }
         | StatementKind::DefineEvent { .. }
         | StatementKind::PreprocDefine { .. }
         | StatementKind::PreprocUndefine { .. }

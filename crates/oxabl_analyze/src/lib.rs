@@ -629,6 +629,7 @@ fn symbol_origin(sem: &Semantic, id: SymbolId, sym: &oxabl_semantic::Symbol) -> 
         | SymbolKind::Parameter
         | SymbolKind::Stream
         | SymbolKind::Frame
+        | SymbolKind::Widget
         | SymbolKind::Event
         | SymbolKind::BuiltIn
         | SymbolKind::Dataset
@@ -975,6 +976,7 @@ fn symbol_kind_str(k: SymbolKind) -> &'static str {
         SymbolKind::Buffer => "buffer",
         SymbolKind::Stream => "stream",
         SymbolKind::Frame => "frame",
+        SymbolKind::Widget => "widget",
         SymbolKind::Event => "event",
         SymbolKind::Procedure => "procedure",
         SymbolKind::Function => "function",

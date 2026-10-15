@@ -17,8 +17,8 @@ use oxabl_ast::{
     TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
     XmlSerializeOptions,
 };
-use oxabl_lexer::Kind;
 use oxabl_lexer::TokenValue;
+use oxabl_lexer::{Kind, is_callable_kind};
 use smallvec::SmallVec;
 
 use super::{ParseError, ParseResult, Parser};
@@ -661,11 +661,9 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
-        // FORM ... — legacy UI form definition, skip to statement end.
-        // Uses skip_to_statement_end() to skip over .field-access in form items.
+        // FORM ... — head-parsed; the frame phrase stays a skipped tail.
         if self.check(Kind::Form) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_form_statement();
         }
 
         // VIEW [STREAM s] FRAME f — UI frame display statement, skip to statement end.
@@ -1215,8 +1213,15 @@ impl Parser<'_> {
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
-        // etc. that are not separately handled. Skip the whole DEFINE statement.
+        // etc. that are not separately handled. The widget name is declared; the
+        // rest of the statement is a skipped tail.
         if self.check(Kind::Browse) || self.check(Kind::Rectangle) || self.check(Kind::Identifier) {
+            if Self::can_be_identifier(self.peek_nth_non_comment(2).kind) {
+                self.advance(); // consume the widget type
+                let name = self.parse_identifier()?;
+                let tail = self.skip_tail_to_statement_end();
+                return Ok(self.stmt_with_tail(StatementKind::DefineWidget { name }, tail));
+            }
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
@@ -4095,6 +4100,105 @@ impl Parser<'_> {
         }
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Pause { duration, message }, tail))
+    }
+
+    /// `FORM [item ...] [{HEADER | BACKGROUND} item ...] [EXCEPT ...] [frame-phrase]`.
+    fn parse_form_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume FORM
+        let mut items = Vec::new();
+        'items: loop {
+            if self.check(Kind::Header) || self.check(Kind::Background) {
+                self.advance();
+                continue;
+            }
+            if self.check(Kind::Skip) || self.check(Kind::Space) {
+                self.advance();
+                if self.check(Kind::LeftParen) {
+                    match self.parse_head_item(|_| false) {
+                        Some(e) => Self::push_unless_literal(&mut items, e),
+                        None => break,
+                    }
+                } else if self.check(Kind::IntegerLiteral) {
+                    self.advance();
+                }
+                continue;
+            }
+            if !self.starts_form_item() {
+                break;
+            }
+            let mark = self.current;
+            let Some(item) = self.parse_head_item(|_| false) else {
+                break;
+            };
+            // `name AS type` and `name LIKE field` declare a frame-only variable.
+            if self.check(Kind::KwAs) || self.check(Kind::Like) {
+                self.current = mark;
+                break;
+            }
+            items.push(item);
+            loop {
+                match self.peek().kind {
+                    Kind::Format | Kind::Form | Kind::Label | Kind::ColumnLabel | Kind::Help => {
+                        self.advance();
+                        self.skip_format_value();
+                    }
+                    Kind::At => {
+                        // `AT ROW r COLUMN c` and `AT X x Y y` are not modelled.
+                        if self.peek_nth_non_comment(2).kind == Kind::Identifier {
+                            break 'items;
+                        }
+                        let at = self.current;
+                        self.advance();
+                        match self.parse_head_item(|_| false) {
+                            Some(e) => Self::push_unless_literal(&mut items, e),
+                            None => {
+                                self.current = at;
+                                break 'items;
+                            }
+                        }
+                    }
+                    Kind::To | Kind::Colon
+                        if matches!(
+                            self.peek_nth_non_comment(2).kind,
+                            Kind::IntegerLiteral | Kind::DecimalLiteral
+                        ) =>
+                    {
+                        self.advance();
+                        self.advance();
+                    }
+                    Kind::NoLabels | Kind::NoAttrSpace => {
+                        self.advance();
+                    }
+                    _ => break,
+                }
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Form { items }, tail))
+    }
+
+    /// Whether the cursor starts a FORM item. A name followed by a number is an
+    /// option the lexer does not classify (`BGCOLOR 3`, `ROW 2`), not an item.
+    fn starts_form_item(&self) -> bool {
+        match self.peek().kind {
+            Kind::StringLiteral
+            | Kind::IntegerLiteral
+            | Kind::DecimalLiteral
+            | Kind::Question
+            | Kind::LeftParen
+            | Kind::Minus => true,
+            k if is_callable_kind(k) => !matches!(
+                self.peek_nth_non_comment(2).kind,
+                Kind::IntegerLiteral | Kind::DecimalLiteral
+            ),
+            _ => false,
+        }
+    }
+
+    fn push_unless_literal(items: &mut Vec<Expression>, e: Expression) {
+        if !matches!(e.kind, ExpressionKind::Literal(_)) {
+            items.push(e);
+        }
     }
 
     /// `DOWN [STREAM s] [n] [frame-phrase]`, and the same for `UP`. The stream

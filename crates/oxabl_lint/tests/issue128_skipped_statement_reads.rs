@@ -172,7 +172,7 @@ fn ae3_fixture_is_non_vacuous() {
 /// LINT0001 reads.
 #[test]
 fn ae4_unresolvable_harvested_name_stays_silent() {
-    let src = "FORM some-name-that-does-not-exist.\n";
+    let src = "ENABLE some-name-that-does-not-exist.\n";
     let diags = lint_all(src, LintSeverityMap::new());
     assert!(
         of_code(&diags, LINT0001).is_empty(),
@@ -333,7 +333,7 @@ fn r14_not_every_declared_variable_carries_the_flag() {
 fn lint0001_output_is_unchanged_around_skipped_statements() {
     let src = "\
 DEFINE VARIABLE v-known AS INTEGER NO-UNDO.
-FORM v-ghost-in-skip.
+ENABLE v-ghost-in-skip.
 v-known = v-ghost-in-expression.
 ";
     let diags = lint_all(src, LintSeverityMap::new());

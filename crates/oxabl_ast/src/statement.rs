@@ -274,6 +274,19 @@ pub enum StatementKind {
         lines: Option<Expression>,
     },
 
+    /// FORM statement — lays out the fields and constants of a frame.
+    ///
+    /// The items of the form and of its `HEADER` / `BACKGROUND` sections are
+    /// modelled as expressions, and their format options (`FORMAT`, `LABEL`,
+    /// `AT`, ...) are consumed. The list ends at the first token that does not
+    /// start an item; that token, `EXCEPT`, the frame phrase and anything after
+    /// stay in [`Statement::skipped_tail`].
+    Form {
+        /// Items in source order, including `AT` and `SKIP` operands that are
+        /// not literals.
+        items: Vec<Expression>,
+    },
+
     /// UP statement — moves the cursor of a down frame back. Same shape as
     /// [`StatementKind::Down`].
     Up {
@@ -589,6 +602,11 @@ pub enum StatementKind {
     /// DEFINE FRAME frame-name ... .
     /// Simplified: captures name and raw span of unparsed content for formatter round-tripping.
     DefineFrame { name: Identifier, raw_span: Span },
+
+    /// DEFINE BUTTON / BROWSE / RECTANGLE / IMAGE / MENU / SUB-MENU — a static
+    /// widget definition. Only the widget name is modelled; the rest of the
+    /// statement stays in [`Statement::skipped_tail`].
+    DefineWidget { name: Identifier },
 
     /// DEFINE DATASET statement.
     ///

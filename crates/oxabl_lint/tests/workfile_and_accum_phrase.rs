@@ -154,3 +154,14 @@ fn export_pause_and_down_read_their_operands() {
         );
     }
 }
+
+#[test]
+fn form_reads_its_items_and_a_widget_definition_declares_the_widget() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE BUTTON b-ok LABEL \"OK\".\nv = 1.\nFORM HEADER \"Total:\" AT 1 v FORMAT \">>9\" SKIP(1) b-ok WITH FRAME f.\nDISPLAY b-ok WITH FRAME f.\n";
+    assert_silent(src);
+    let diags = lint("FORM nope WITH FRAME f.\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}

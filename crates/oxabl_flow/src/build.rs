@@ -1426,6 +1426,7 @@ impl<'a> Builder<'a> {
             | SK::DefineBuffer { .. }
             | SK::DefineStream { .. }
             | SK::DefineFrame { .. }
+            | SK::DefineWidget { .. }
             | SK::DefineDataset { .. }
             | SK::DefineDataSource { .. }
             | SK::DefineEvent { .. }
@@ -1467,6 +1468,7 @@ impl<'a> Builder<'a> {
             | SK::Put { .. }
             | SK::Export { .. }
             | SK::Down { .. }
+            | SK::Form { .. }
             | SK::Up { .. }
             | SK::StreamIo { .. }
             | SK::Publish { .. }

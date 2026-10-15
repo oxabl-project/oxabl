@@ -88,7 +88,7 @@ impl<'a> CheckWalker<'a> {
             StatementKind::DefineDataset { .. } => {}
             StatementKind::DefineDataSource { .. } => {}
             StatementKind::DefineStream { .. } => {}
-            StatementKind::DefineFrame { .. } => {}
+            StatementKind::DefineFrame { .. } | StatementKind::DefineWidget { .. } => {}
             StatementKind::DefineEvent { parameters, .. } => {
                 let s = self
                     .find_child_scope(scope, stmt, ScopeKind::Method)
@@ -326,7 +326,9 @@ impl<'a> CheckWalker<'a> {
                     }
                 }
             }
-            StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
+            StatementKind::Message { items, .. }
+            | StatementKind::Put { items, .. }
+            | StatementKind::Form { items } => {
                 for e in items {
                     self.check_expression(e, scope);
                 }

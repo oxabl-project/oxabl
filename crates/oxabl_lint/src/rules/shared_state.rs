@@ -244,7 +244,9 @@ impl Visitor for SharedDefinitions<'_> {
                 *is_shared,
                 *is_new_global_shared,
             ),
-            StatementKind::DefineStream { name } | StatementKind::DefineFrame { name, .. } => {
+            StatementKind::DefineStream { name }
+            | StatementKind::DefineFrame { name, .. }
+            | StatementKind::DefineWidget { name } => {
                 self.report_from_tokens(stmt, Some((&name.name, name.span)));
             }
             StatementKind::Skipped { .. } => self.report_from_tokens(stmt, None),

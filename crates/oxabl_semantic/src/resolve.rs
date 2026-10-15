@@ -328,6 +328,9 @@ impl<'a> Walker<'a> {
             StatementKind::DefineFrame { name, .. } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
             }
+            StatementKind::DefineWidget { name } => {
+                self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
+            }
             StatementKind::DefineEvent {
                 access,
                 is_static,
@@ -2594,7 +2597,7 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
             }
-            StatementKind::DefineStream { .. } => {}
+            StatementKind::DefineStream { .. } | StatementKind::DefineWidget { .. } => {}
             StatementKind::DefineFrame { raw_span, .. } => {
                 self.note_unmodelled_text(*raw_span, scope);
             }
@@ -3039,6 +3042,11 @@ impl<'a> ResolveWalker<'a> {
                 };
                 for e in items {
                     self.walk_expression(e, scope, mode);
+                }
+            }
+            StatementKind::Form { items } => {
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
             StatementKind::Pause { duration, message } => {

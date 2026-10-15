@@ -277,14 +277,22 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   than head-parsed. That is the second of the two shapes #136 chooses between: symbol-shaped
   operands earn a head-parse, path-shaped ones earn an empty name list.
 
-- **`PUT`, `EXPORT`, `IMPORT`, `PAUSE`, `DOWN` and `UP` are head-parsed** into their own
-  variants. The stream, the delimiter, the item expressions, the `PAUSE` duration and
-  message and the `DOWN`/`UP` line count are modelled; the option clauses after them
+- **`PUT`, `EXPORT`, `IMPORT`, `PAUSE`, `DOWN`, `UP` and `FORM` are head-parsed** into
+  their own variants. The stream, the delimiter, the item expressions, the `PAUSE` duration
+  and message and the `DOWN`/`UP` line count are modelled; the option clauses after them
   (`FORMAT`, `EXCEPT`, `NO-LOBS`, `IN WINDOW`, the frame phrase, ...) ride on
-  `Statement::skipped_tail`.
+  `Statement::skipped_tail`. A `FORM` item list ends at the first token that does not
+  start an item (`VIEW-AS`, `AT ROW`, an unclassified option such as `BGCOLOR 3`, a
+  `name AS type` declaration), so an option the parser does not know is never read as a
+  name.
   **Invariant:** an `IMPORT` target is credited as a write and every other head operand as a
   read. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
   in the tail; the form never falls back to `Skipped`.
+
+- **Static widget definitions declare their name.** `DEFINE BUTTON`, `BROWSE`,
+  `RECTANGLE`, `IMAGE`, `MENU` and `SUB-MENU` parse to `StatementKind::DefineWidget`, and
+  the name is declared in the value namespace as a `SymbolKind::Widget`, so a `FORM` or
+  `DISPLAY` item naming the widget resolves. The rest of the definition is a skipped tail.
 
 **`Statement::skipped_tail` — a modelled statement discarded a trailing range.**
 `DISPLAY … WITH FRAME f TITLE x`, `RETURN ERROR expr`, the `VIEW-AS` tail of a `DEFINE

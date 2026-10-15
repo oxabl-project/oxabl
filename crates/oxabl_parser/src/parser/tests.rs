@@ -11421,13 +11421,13 @@ fn classify_comment_defensive_brace_branch_is_excluded() {
 // ---------------------------------------------------------------------------
 
 /// The dispatch keyword is the range's first token and is dropped
-/// unconditionally, so `PUT` does not harvest itself.
+/// unconditionally, so `ENABLE` does not harvest itself.
 #[test]
-fn skipped_form_harvests_the_variable_not_the_keyword() {
-    assert_eq!(harvest("FORM v-total."), vec!["v-total"]);
+fn skipped_enable_harvests_the_variable_not_the_keyword() {
+    assert_eq!(harvest("ENABLE v-total."), vec!["v-total"]);
 }
 
-/// `UNIX` consumes its own keyword before skipping, where `FORM` does not.
+/// `UNIX` consumes its own keyword before skipping, where `ENABLE` does not.
 /// Anchoring the range on the statement's first token normalizes both shapes,
 /// so the harvest looks the same from the outside.
 #[test]
@@ -11444,7 +11444,7 @@ fn skipped_unix_drops_the_field_half_of_a_qualified_name() {
 #[test]
 fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
     assert_eq!(
-        harvest(r#"FORM v-total FORMAT ">>9"."#),
+        harvest(r#"ENABLE v-total FORMAT ">>9"."#),
         vec!["v-total", "FORMAT"]
     );
 }
@@ -11454,7 +11454,7 @@ fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
 #[test]
 fn skipped_harvest_keeps_spaced_division_operands() {
     assert_eq!(
-        harvest("FORM v-total / v-count."),
+        harvest("ENABLE v-total / v-count."),
         vec!["v-total", "v-count"]
     );
 }
@@ -11549,7 +11549,7 @@ fn skipped_span_covers_the_whole_statement() {
 /// the roughly thirty #128 dispatch sites are unchanged in behavior and cost.
 #[test]
 fn skipped_ordinary_form_is_not_a_table_candidate() {
-    assert!(!marks_tables("FORM v-total."));
+    assert!(!marks_tables("ENABLE v-total."));
     assert!(!marks_tables("UNDERLINE vendor.vend-number."));
 }
 
@@ -12985,4 +12985,59 @@ fn down_and_up_are_head_parsed_with_stream_and_lines() {
         panic!("expected Up, got {:?}", stmts[0].kind);
     };
     assert!(stream_name.is_none() && lines.is_none());
+}
+
+#[test]
+fn form_is_head_parsed_with_items_and_format_options() {
+    let source = "FORM HEADER\n  \"Page:\" AT 64 PAGE-NUMBER(s1) FORMAT \">>9\":U\n  v-user AT 1 + v-col\n  /* note */ tt.name LABEL \"Name\" COLON 20 SKIP(1)\n  STRING(TIME, \"HH:MM\") NO-LABEL TO 30\n  WITH FRAME f-hdr PAGE-TOP v-width.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::Form { items } = &stmts[0].kind else {
+        panic!("expected Form, got {:?}", stmts[0].kind);
+    };
+    // "Page:", PAGE-NUMBER(s1), v-user, 1 + v-col, tt.name, STRING(...).
+    assert_eq!(items.len(), 6, "{items:?}");
+    assert!(tail_names(&stmts[0]).contains(&"v-width"));
+    assert!(!tail_names(&stmts[0]).contains(&"v-user"));
+}
+
+#[test]
+fn form_leaves_unmodelled_item_options_to_the_tail() {
+    for (source, modelled, tail) in [
+        // A name followed by a number is an option the lexer does not classify.
+        ("FORM v-a BGCOLOR 3 v-b.", 1, "v-b"),
+        ("FORM v-a AT ROW 2 COL 5 v-b.", 1, "v-b"),
+        ("FORM v-a AT v-col v-b.", 1, "v-b"),
+        // A frame-only variable is a declaration, not a reference.
+        ("FORM v-a v-new AS CHARACTER v-b.", 1, "v-new"),
+        ("FORM v-a VIEW-AS FILL-IN v-b WITH FRAME f.", 1, "v-b"),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Form { items } = &stmts[0].kind else {
+            panic!("{source}: expected Form, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(items.len(), modelled, "{source}: {items:?}");
+        assert!(tail_names(&stmts[0]).contains(&tail), "{source}");
+    }
+}
+
+#[test]
+fn a_widget_definition_declares_its_name() {
+    for (source, name) in [
+        ("DEFINE BUTTON b-ok LABEL \"OK\" AUTO-GO.", "b-ok"),
+        (
+            "DEF BROWSE br-cust QUERY q DISPLAY Customer.Name WITH 5 DOWN.",
+            "br-cust",
+        ),
+        (
+            "DEFINE RECTANGLE RECT-1 EDGE-PIXELS 2 SIZE 10 BY 2.",
+            "RECT-1",
+        ),
+        ("DEFINE NEW SHARED MENU m-main MENUBAR.", "m-main"),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::DefineWidget { name: got } = &stmts[0].kind else {
+            panic!("{source}: expected DefineWidget, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(got.name, name, "{source}");
+    }
 }

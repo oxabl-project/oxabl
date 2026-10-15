@@ -49,6 +49,8 @@ pub enum SymbolKind {
     Buffer,
     Stream,
     Frame,
+    /// A static widget (`DEFINE BUTTON`, `DEFINE BROWSE`, ...).
+    Widget,
     Event,
     Procedure,
     Function,

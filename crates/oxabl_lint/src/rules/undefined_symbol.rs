@@ -247,7 +247,9 @@ impl Visitor<'_> {
                     }
                 }
             }
-            StatementKind::Message { items, .. } | StatementKind::Put { items, .. } => {
+            StatementKind::Message { items, .. }
+            | StatementKind::Put { items, .. }
+            | StatementKind::Form { items } => {
                 for e in items {
                     self.walk_expression(e);
                 }
@@ -389,6 +391,7 @@ impl Visitor<'_> {
             | StatementKind::DefineDataSource { .. }
             | StatementKind::DefineStream { .. }
             | StatementKind::DefineFrame { .. }
+            | StatementKind::DefineWidget { .. }
             | StatementKind::PreprocDefine { .. }
             | StatementKind::PreprocUndefine { .. }
             | StatementKind::TriggerProcedure { .. }
