@@ -39,6 +39,7 @@ use oxabl_schema::{FieldResolution, SchemaRevision, TableId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
+use crate::builtin_classes::{BuiltinClass, builtin_class};
 use crate::index::ImportCandidate;
 use crate::symbol::RecordSource;
 use crate::{
@@ -1630,6 +1631,9 @@ enum TypeLookup {
     Indexed(SymbolId),
     /// Supplied by an explicitly external source such as `FROM ASSEMBLY`.
     External,
+    /// A documented built-in type. The AVM supplies it, so it is no
+    /// dependency and no gap, and a reference to it stays `External`.
+    Builtin(&'static BuiltinClass),
     /// An index is attached and no candidate spelling matched a class.
     NotFound,
     /// A file that would declare the class was located and could not be used.
@@ -1638,8 +1642,8 @@ enum TypeLookup {
     Unusable,
     /// The index declined to choose between candidates.
     Unknowable,
-    /// No index is attached, so nothing was looked at. Callers keep today's
-    /// answer — [`UnresolvedReason::External`] — on this one.
+    /// No index is attached and no built-in matched. The workspace is unknown,
+    /// so callers use [`UnresolvedReason::External`].
     NotLooked,
 }
 
@@ -1756,17 +1760,15 @@ impl<'a> ResolveWalker<'a> {
 
     /// Write side of the cross-file state, created on first use.
     ///
-    /// Every call site sits behind an `ctx.index_loaded` gate, so this allocates
-    /// only on a run that has an index to resolve against. Returning `&mut`
-    /// rather than an `Option` is what keeps the call sites readable; the price
+    /// Imports also use this state when only built-in types are available.
+    /// Returning `&mut` rather than an `Option` keeps the call sites readable; the price
     /// is that it borrows all of `self`, so a site that also needs
     /// `self.symbols` must scope the borrow (see [`Self::lookup_inherited`]).
     fn cross_file_mut(&mut self) -> &mut CrossFileState {
         self.cross_file.get_or_insert_with(Default::default)
     }
 
-    /// The file's `USING` imports — empty when no index is attached, because
-    /// nothing collected them.
+    /// The file's `USING` imports.
     ///
     /// Shared rather than borrowed because the searches that read it need
     /// `&mut self` to mint symbols while they iterate.
@@ -1777,14 +1779,7 @@ impl<'a> ResolveWalker<'a> {
 
     /// Record the file's `USING` imports before anything tries to resolve a
     /// type name through them.
-    ///
-    /// A no-op without an index, which is what keeps a single-file run at
-    /// exactly its current cost — there is nothing an import could be resolved
-    /// *against*.
     fn collect_using_imports(&mut self, program: &[Statement]) {
-        if !self.ctx.index_loaded {
-            return;
-        }
         let imports = ImportContext::from_statements(program);
         if !imports.is_empty() {
             self.cross_file_mut().imports = Arc::new(imports);
@@ -1831,7 +1826,8 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::External
+                    TypeLookup::Builtin(_)
+                    | TypeLookup::External
                     | TypeLookup::NotFound
                     | TypeLookup::Unusable
                     | TypeLookup::Unknowable
@@ -1892,10 +1888,11 @@ impl<'a> ResolveWalker<'a> {
     /// the class-typed-declaration pre-pass looks the class up in the scope tree
     /// to decide whether it is foreign at all.
     fn resolve_type_in_workspace(&mut self, raw: &str, use_span: VirtualSpan) -> TypeLookup {
-        // The one gate: with no index attached nothing was looked at, so every
-        // caller keeps the answer it has today.
         if !self.ctx.index_loaded {
-            return TypeLookup::NotLooked;
+            return match self.search_type_in_workspace(raw, use_span) {
+                TypeLookup::NotFound => TypeLookup::NotLooked,
+                answer => answer,
+            };
         }
         // The as-written spelling, *not* `fold_atom(raw)`. Every candidate this
         // memo caches an answer for is derived from `raw` verbatim and looked up
@@ -1962,6 +1959,9 @@ impl<'a> ResolveWalker<'a> {
             }
             if let Some(answer) = self.try_indexed_class(&name, use_span) {
                 return answer;
+            }
+            if let Some(class) = builtin_class(name.as_atom()) {
+                return TypeLookup::Builtin(class);
             }
         }
         TypeLookup::NotFound
@@ -2049,6 +2049,9 @@ impl<'a> ResolveWalker<'a> {
     /// `Some` is an answer the search must stop on.
     fn try_indexed_class(&mut self, name: &IndexName, use_span: VirtualSpan) -> Option<TypeLookup> {
         // Copied out so no borrow of `self` is held across the synthesis below.
+        if !self.ctx.index_loaded {
+            return None;
+        }
         let index = self.ctx.index;
         match index.class(name) {
             IndexAnswer::Found(descriptor) => Some(TypeLookup::Indexed(self.indexed_class_symbol(
@@ -2099,7 +2102,10 @@ impl<'a> ResolveWalker<'a> {
                 (name, ClassLookup::Unusable)
             }
             TypeLookup::Unknowable => (self.class_miss_key(raw), ClassLookup::Unknowable),
-            TypeLookup::Local(_) | TypeLookup::External | TypeLookup::NotLooked => return,
+            TypeLookup::Local(_)
+            | TypeLookup::Builtin(_)
+            | TypeLookup::External
+            | TypeLookup::NotLooked => return,
         };
         self.symbols.record_class_lookup(&name, outcome);
         self.symbols.record_class_site(&name, site);
@@ -2292,7 +2298,8 @@ impl<'a> ResolveWalker<'a> {
                             resolved.push(parent);
                         }
                     }
-                    TypeLookup::External
+                    TypeLookup::Builtin(_)
+                    | TypeLookup::External
                     | TypeLookup::NotFound
                     | TypeLookup::Unusable
                     | TypeLookup::Unknowable
@@ -2329,6 +2336,7 @@ impl<'a> ResolveWalker<'a> {
                         // which is what it has today, and a member access
                         // through it stays unresolved.
                         TypeLookup::Local(_)
+                        | TypeLookup::Builtin(_)
                         | TypeLookup::External
                         | TypeLookup::NotFound
                         | TypeLookup::Unusable
@@ -3622,7 +3630,7 @@ impl<'a> ResolveWalker<'a> {
                             },
                         );
                     }
-                    TypeLookup::External => {
+                    TypeLookup::Builtin(_) | TypeLookup::External => {
                         self.references.insert(
                             expr.id,
                             Resolution::Unresolved {
@@ -3956,13 +3964,18 @@ impl<'a> ResolveWalker<'a> {
                 // a fact about the workspace, not a missing capability — unless there
                 // were no paths to look on, which `absent_reason` handles.
                 None => Resolution::Unresolved {
-                    reason: self.absent_type_reason(type_name, name.as_atom()),
+                    reason: if builtin_class(type_name).is_some() {
+                        UnresolvedReason::External
+                    } else {
+                        self.absent_type_reason(type_name, name.as_atom())
+                    },
                     name: name.as_atom().clone(),
                 },
                 // `try_indexed_class` answers with these two states only; the arms
                 // exist so a third would be a compile error rather than a silent
                 // fall-through.
                 Some(TypeLookup::Local(_))
+                | Some(TypeLookup::Builtin(_))
                 | Some(TypeLookup::External)
                 | Some(TypeLookup::NotFound)
                 | Some(TypeLookup::NotLooked) => {
@@ -4396,9 +4409,7 @@ impl<'a> ResolveWalker<'a> {
     /// segment this file declares as a buffer, table or value is a field of it
     /// whether or not the field resolved, and is never a package.
     fn try_dotted_receiver_type(&mut self, expr: &Expression, scope: ScopeId) {
-        if !self.ctx.index_loaded
-            || matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
-        {
+        if matches!(self.references.get(expr.id), Some(Resolution::Resolved(_))) {
             return;
         }
         let Some(raw) = dotted_name(expr) else {
@@ -4412,11 +4423,15 @@ impl<'a> ResolveWalker<'a> {
         ]
         .iter()
         .any(|ns| self.tree.resolve(scope, *ns, &first).is_some())
+            || (self.ctx.schema_loaded && self.ctx.schema.table_id(&first).is_some())
         {
             return;
         }
         let span = VirtualSpan::new(expr.span.start, expr.span.end);
         let lookup = self.resolve_receiver_type(expr.id, &raw, scope, span);
+        if matches!(lookup, TypeLookup::Builtin(_)) || is_system_namespace(&fold_atom(&raw)) {
+            self.soften_package_receiver(expr);
+        }
         if lookup == TypeLookup::NotFound
             && (!self.ctx.schema_loaded || self.receiver_is_no_class(&raw, scope))
         {
@@ -4500,9 +4515,6 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         use_span: VirtualSpan,
     ) -> TypeLookup {
-        if !self.ctx.index_loaded {
-            return TypeLookup::NotLooked;
-        }
         if let Some(sym) = self
             .tree
             .resolve(scope, NamespaceId::Types, &fold_atom(raw))
@@ -4693,6 +4705,27 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
+    /// Field resolution can revisit earlier links. Soften the complete package
+    /// path only after the receiver's final lookup has identified it.
+    fn soften_package_receiver(&mut self, expr: &Expression) {
+        if let ExpressionKind::FieldAccess { qualifier, .. } = &expr.kind {
+            self.soften_package_receiver(qualifier);
+        }
+        if let Some(Resolution::Unresolved {
+            name,
+            reason: UnresolvedReason::NotInScope | UnresolvedReason::NoSchema,
+        }) = self.references.get(expr.id).cloned()
+        {
+            self.references.insert(
+                expr.id,
+                Resolution::Unresolved {
+                    name,
+                    reason: UnresolvedReason::External,
+                },
+            );
+        }
+    }
+
     fn soften_unresolved_to_external(&mut self, expr_id: NodeId) {
         if let Some(Resolution::Unresolved {
             name,
@@ -4734,10 +4767,12 @@ impl<'a> ResolveWalker<'a> {
                 name: atom,
                 reason: UnresolvedReason::Unknowable,
             },
-            TypeLookup::External | TypeLookup::NotLooked => Resolution::Unresolved {
-                name: atom,
-                reason: UnresolvedReason::External,
-            },
+            TypeLookup::Builtin(_) | TypeLookup::External | TypeLookup::NotLooked => {
+                Resolution::Unresolved {
+                    name: atom,
+                    reason: UnresolvedReason::External,
+                }
+            }
         };
         self.references.insert(operand.id, resolution);
     }
@@ -5030,7 +5065,7 @@ impl<'a> ResolveWalker<'a> {
                 lookup @ (TypeLookup::Indexed(_) | TypeLookup::Unusable) => {
                     self.note_class_site(name, lookup, site)
                 }
-                TypeLookup::Local(_) | TypeLookup::External => {}
+                TypeLookup::Local(_) | TypeLookup::Builtin(_) | TypeLookup::External => {}
                 TypeLookup::NotFound if self.receiver_is_no_class(name, scope) => {}
                 TypeLookup::NotFound | TypeLookup::Unknowable | TypeLookup::NotLooked => {
                     self.symbols.record_unattributed_unmodelled_use(site)
@@ -10523,6 +10558,80 @@ mod class_site_guard_tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn builtin_lookup_uses_imports_even_without_an_index() {
+        let source = "USING OpenEdge.Core.*.\n";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let schema = Schema::empty();
+        for indexed in [false, true] {
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+            let ctx = if indexed {
+                ctx.with_index(&EmptyIndex)
+            } else {
+                ctx
+            };
+            let (tree, mut symbols, _, _) = declare_pass(&program.statements, &ctx);
+            let mut walker = ResolveWalker::new(&ctx, &tree, &mut symbols, &program.statements);
+            walker.collect_using_imports(&program.statements);
+            for raw in [
+                "String",
+                "Progress.Lang.AppError",
+                "Progress.IO.InputStream",
+                "pRoGrEsS.LaNg.SoapFaultError",
+                "Progress.Collections.HashMap<CHARACTER,INTEGER>",
+                "Progress.Data.DataType",
+                "Progress.Lang.Error",
+            ] {
+                assert!(
+                    matches!(
+                        walker.resolve_type_name(raw, ScopeId::ROOT, VirtualSpan::new(0, 1)),
+                        TypeLookup::Builtin(_)
+                    ),
+                    "indexed={indexed}: {raw}"
+                );
+            }
+            assert_eq!(
+                walker.resolve_type_name("myapp.Absent", ScopeId::ROOT, VirtualSpan::new(0, 1)),
+                if indexed {
+                    TypeLookup::NotFound
+                } else {
+                    TypeLookup::NotLooked
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn imported_builtin_constructors_are_external_without_dependency_sites() {
+        for indexed in [false, true] {
+            let source = "USING Ccs.Common.*.\nMESSAGE NEW Application().\n";
+            let tokens = oxabl_lexer::tokenize(source);
+            let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+            assert!(program.errors.is_empty(), "{:?}", program.errors);
+            let schema = Schema::empty();
+            let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+            let ctx = if indexed {
+                ctx.with_index(&EmptyIndex)
+            } else {
+                ctx
+            };
+            let sem = crate::analyze_file(&program.statements, &ctx);
+            assert!(sem.symbols.class_sites().is_empty());
+            assert_eq!(sem.symbols.class_lookups().count(), 0);
+            assert!(
+                sem.references.iter().any(|(_, resolution)| matches!(
+                    resolution,
+                    Resolution::Unresolved { reason: UnresolvedReason::External, name }
+                        if name.as_ref() == "application"
+                )),
+                "{:?}",
+                sem.references
+            );
+        }
     }
 
     #[test]

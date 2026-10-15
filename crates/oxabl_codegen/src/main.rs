@@ -5,6 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+mod builtin_class_table;
+mod progress_docs;
+
 // Target file paths relative to workspace root
 const KIND_RS_PATH: &str = "crates/oxabl_lexer/src/kind.rs";
 const BUILD_RS_PATH: &str = "crates/oxabl_lexer/build.rs";
@@ -1147,6 +1150,19 @@ pub fn generate_formatter_spelling_rs(keywords: &[Keyword]) -> String {
 }
 
 /// Write generated content to a file
+/// Compile the checked-in built-in class index into the semantic crate's table.
+fn write_builtin_class_table() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let content = builtin_class_table::read_index(&root.join(builtin_class_table::JSON_PATH))
+        .and_then(|index| builtin_class_table::generate(&index))
+        .unwrap_or_else(|e| {
+            eprintln!("builtin-class-table: {e}");
+            std::process::exit(1);
+        });
+    write_generated_file(builtin_class_table::TABLE_RS_PATH, &content)
+        .expect("Failed to write builtin_classes.rs");
+}
+
 fn write_generated_file(relative_path: &str, content: &str) -> std::io::Result<()> {
     // Resolve path relative to workspace root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1265,6 +1281,14 @@ fn main() {
             write_generated_file(FORMATTER_SPELLING_PATH, &content)
                 .expect("Failed to write keyword_spelling.rs");
         }
+        "builtin-class-table" => write_builtin_class_table(),
+        "builtin-classes" => {
+            let rest = args.iter().skip(2).cloned().collect::<Vec<_>>();
+            if let Err(e) = progress_docs::run_builtin_classes(&rest) {
+                eprintln!("builtin-classes: {e}");
+                std::process::exit(1);
+            }
+        }
         "all" | "" => {
             // Default: write all generated files
             let kind_content = generate_kind_rs(&keywords, &alternates);
@@ -1282,6 +1306,8 @@ fn main() {
             write_generated_file(BUILTINS_RS_PATH, &builtins_content)
                 .expect("Failed to write builtins.rs");
 
+            write_builtin_class_table();
+
             eprintln!("\nAll files regenerated successfully.");
         }
         "match" => {
@@ -1297,7 +1323,14 @@ fn main() {
             eprintln!("  atoms    - Write build.rs (atom list)");
             eprintln!("  callable - Write callable.rs (is_callable_kind function)");
             eprintln!("  builtins - Write builtins.rs (built-in function registry)");
+            eprintln!("  builtin-class-table - Write the semantic crate's built-in class table");
+            eprintln!("      from resources/progress_builtin_classes.json");
             eprintln!("  summary  - Show statistics without writing files");
+            eprintln!("  builtin-classes - Crawl the Progress ABL reference docs and write");
+            eprintln!("      resources/progress_builtin_classes.json (merged from the API");
+            eprintln!("      reference and ABL Reference bundles)");
+            eprintln!("      Options: --bundle <id[,id...]> --refresh --catalog-only --limit <n>");
+            eprintln!("                --names <a,b,c> --no-member-details --out <path>");
             std::process::exit(1);
         }
     }
