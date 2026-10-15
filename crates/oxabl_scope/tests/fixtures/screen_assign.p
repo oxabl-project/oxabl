@@ -35,3 +35,8 @@ PROCEDURE pairs-only:
   FIND FIRST bItem NO-LOCK.
   ASSIGN x = bItem.ItemNum WHEN bItem.Price > 0.
 END PROCEDURE.
+
+PROCEDURE sum-pairs:
+  FIND FIRST Customer.
+  ASSIGN x x = x + 1 + x Customer.Name.
+END PROCEDURE.

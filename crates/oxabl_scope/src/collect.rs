@@ -759,7 +759,7 @@ impl<'a> Collector<'a> {
                 Some(
                     Kind::Not
                         | Kind::Minus
-                        | Kind::Plus
+                        | Kind::Add
                         | Kind::Available
                         | Kind::Locked
                         | Kind::Ambiguous
@@ -802,7 +802,7 @@ impl<'a> Collector<'a> {
                     | Kind::LessThanOrEqual
                     | Kind::GreaterThanOrEqual
                     | Kind::NotEqual
-                    | Kind::Plus
+                    | Kind::Add
                     | Kind::Minus
                     | Kind::Star
                     | Kind::Slash
@@ -2047,7 +2047,7 @@ fn operand_before(kind: Kind) -> bool {
             | Kind::LessThanOrEqual
             | Kind::GreaterThanOrEqual
             | Kind::NotEqual
-            | Kind::Plus
+            | Kind::Add
             | Kind::Minus
             | Kind::Star
             | Kind::Slash

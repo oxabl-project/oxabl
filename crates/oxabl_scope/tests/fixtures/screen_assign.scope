@@ -12,12 +12,14 @@ unit u5 procedure mixed
   b0 procedure @27 tx=implicit(assign @30 bCust) buffers=bCust
 unit u6 procedure pairs-only
   b0 procedure @33 buffers=bItem
+unit u7 procedure sum-pairs
+  b0 procedure @39 tx=implicit(assign @41 Customer)
 buffer bCust defined db:Customer owner=u5 @28 refs=3
   scope u5/b0 free @29 refs=3
 buffer bItem defined db:Item owner=u6 @34 refs=3
   scope u6/b0 free @35 refs=3
-buffer Customer default db:Customer owner=u0 refs=4
-  scope u0/b0 raised @6 refs=4
+buffer Customer default db:Customer owner=u0 refs=6
+  scope u0/b0 raised @6 refs=6
 buffer Order default db:Order owner=u0 refs=5
   scope u0/b0 raised @12 refs=5
 buffer Item default db:Item owner=u0 refs=3
@@ -30,3 +32,4 @@ read find Item @18 u3/b0 lock=default(share-lock) written
 read find OrderLine @23 u4/b0 lock=default(share-lock) written
 read find bCust @29 u5/b0 lock=default(share-lock) written
 read find bItem @35 u6/b0 lock=no-lock
+read find Customer @40 u7/b0 lock=default(share-lock) written
