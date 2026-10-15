@@ -402,7 +402,6 @@ pub enum Kind {
     AutoReturn,
     BeforeHide,
     Between,
-    BigEndian,
     KwBreak,
     By,
     CanDo,
@@ -490,7 +489,6 @@ pub enum Kind {
     Group,
     Having,
     Header,
-    HostByteOrder,
     KwIf,
     KwIn,
     Indicator,
@@ -607,6 +605,8 @@ pub enum Kind {
     XrefXml,
     Yes,
     Preprop,
+    BigEndian,
+    HostByteOrder,
 
     // Include file references (added by codegen, not from keyword sources)
     /// Include file reference: {file.i}, {file.i args}, {file.i &name=value}
@@ -1272,7 +1272,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "auto-retur" => Some(Kind::AutoReturn),
             "background" => Some(Kind::Background),
             "before hid" => Some(Kind::BeforeHide),
-            "big endian" => Some(Kind::BigEndian),
+            "big-endian" => Some(Kind::BigEndian),
             "case sensi" => Some(Kind::CaseSensitive),
             "case-sensi" => Some(Kind::CaseSensitive),
             "column lab" => Some(Kind::ColumnLabel),
@@ -1566,7 +1566,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "event procedure" => Some(Kind::EventProcedure),
             "event-procedure" => Some(Kind::EventProcedure),
             "get file offset" => Some(Kind::GetFileOffset),
-            "host byte order" => Some(Kind::HostByteOrder),
+            "host-byte-order" => Some(Kind::HostByteOrder),
             "like-sequential" => Some(Kind::LikeSequential),
             "package-private" => Some(Kind::PackagePrivate),
             "parent-id-field" => Some(Kind::ParentIdField),

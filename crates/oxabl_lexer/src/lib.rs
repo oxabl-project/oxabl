@@ -939,6 +939,56 @@ mod tests {
     }
 
     #[test]
+    fn pseudo_functions_and_constants_are_registered() {
+        // Assignable pseudo-functions, the byte-order constants, the `INPUT FROM`
+        // source and the record-buffer test, none of which is a plain
+        // `<NAME> function` entry in the index.
+        for name in [
+            "fix-codepage",
+            "set-size",
+            "set-byte-order",
+            "set-pointer-value",
+            "put-bits",
+            "put-byte",
+            "put-bytes",
+            "put-double",
+            "put-float",
+            "put-int64",
+            "put-long",
+            "put-short",
+            "put-string",
+            "put-unsigned-long",
+            "put-unsigned-short",
+            "overlay",
+            "entry",
+            "substring",
+            "length",
+            "extent",
+            "big-endian",
+            "little-endian",
+            "host-byte-order",
+            "os-dir",
+            "new",
+            "widget-h",
+        ] {
+            assert!(is_builtin_function(name), "`{name}` should be a built-in");
+        }
+    }
+
+    #[test]
+    fn byte_order_constants_lex_as_keywords() {
+        for (source, kind) in [
+            ("BIG-ENDIAN", Kind::BigEndian),
+            ("LITTLE-ENDIAN", Kind::LittleEndian),
+            ("HOST-BYTE-ORDER", Kind::HostByteOrder),
+            ("OS-DIR", Kind::OsDir),
+        ] {
+            let tokens = collect_tokens(source);
+            assert_eq!(tokens[0].kind, kind, "{source}");
+        }
+    }
+
+    #[test]
     fn builtin_functions_slice_is_sorted() {
         // `is_builtin_function` relies on `binary_search`, which requires the
         // generated slice to be sorted with no duplicates.
