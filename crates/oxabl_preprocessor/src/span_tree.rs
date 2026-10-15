@@ -227,6 +227,16 @@ impl PreprocessedFile {
     /// A reference lies between the text before and after it in its file;
     /// in a file with no text next to it, where that file's text starts.
     pub fn elided_offsets(&self) -> Vec<u32> {
+        self.placed(|_| true)
+    }
+
+    /// [`Self::elided_offsets`] for the [`ElidedKind::Include`] references
+    /// only: text the compiler may see between the statements around them.
+    pub fn elided_include_offsets(&self) -> Vec<u32> {
+        self.placed(|e| e.kind == ElidedKind::Include)
+    }
+
+    fn placed(&self, keep: impl Fn(&ElidedReference) -> bool) -> Vec<u32> {
         if self.elided.is_empty() {
             return Vec::new();
         }
@@ -255,6 +265,7 @@ impl PreprocessedFile {
             .elided
             .iter()
             .zip(&walk.found)
+            .filter(|(e, _)| keep(e))
             .map(|(e, found)| {
                 found
                     .or_else(|| {

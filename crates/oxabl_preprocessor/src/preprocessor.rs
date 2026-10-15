@@ -5207,6 +5207,13 @@ DEFINE VARIABLE ghProp AS HANDLE NO-UNDO.
         let kinds: Vec<ElidedKind> = result.elided.iter().map(|e| e.kind).collect();
         assert_eq!(kinds, [ElidedKind::Include, ElidedKind::Name]);
         assert_eq!(elided_at(&result), ["FIND c ", "FIND c .\nFIND d "]);
+        let text = result.to_text();
+        let includes: Vec<&str> = result
+            .elided_include_offsets()
+            .iter()
+            .map(|&o| &text[..o as usize])
+            .collect();
+        assert_eq!(includes, ["FIND c "]);
     }
 
     #[test]

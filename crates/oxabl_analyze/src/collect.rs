@@ -299,6 +299,9 @@ pub struct ExpandedFile {
     /// Offsets in `text` where the expansion replaced a reference with no
     /// text, sorted.
     elided_offsets: Vec<u32>,
+    /// The offsets of `elided_offsets` that are includes that did not
+    /// arrive, sorted.
+    elided_include_offsets: Vec<u32>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -365,6 +368,12 @@ impl ExpandedFile {
     /// not known.
     pub fn elided_offsets(&self) -> &[u32] {
         &self.elided_offsets
+    }
+
+    /// The offsets of [`Self::elided_offsets`] where an include did not
+    /// arrive. Sorted. Statements the include held may sit there.
+    pub fn elided_include_offsets(&self) -> &[u32] {
+        &self.elided_include_offsets
     }
 
     /// Map a span in the **expanded** buffer back to the root file's own bytes.
@@ -608,6 +617,7 @@ pub fn expand_source_with(
             unreadable_includes: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
+            elided_include_offsets: Vec::new(),
             root,
         });
     }
@@ -714,6 +724,7 @@ pub fn expand_source_with(
                 unreadable_includes,
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
+                elided_include_offsets: pf.elided_include_offsets(),
                 root,
             })
         }
@@ -1122,7 +1133,8 @@ pub fn collect_from_expanded_selecting(
         .with_source_context(source_context)
         .with_parse_recovered(out.parse_recovered)
         .with_tokens(&tokens)
-        .with_elided(expanded.elided_offsets());
+        .with_elided(expanded.elided_offsets())
+        .with_elided_includes(expanded.elided_include_offsets());
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 
@@ -1339,6 +1351,7 @@ mod tests {
             unreadable_includes: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
+            elided_include_offsets: Vec::new(),
             root: ROOT,
         }
     }
@@ -1678,6 +1691,88 @@ mod tests {
             lk001("&SCOPED-DEFINE lock NO-LOCK\nFIND FIRST Customer {&lock}.\n"),
             0
         );
+    }
+
+    // A missing include between statements may write or release the record:
+    // LK001 suggests no lock, and LK002 stays quiet. A file that has no such
+    // include is judged as before.
+    #[test]
+    fn a_missing_include_between_statements_hides_a_write_from_the_lock_rules() {
+        let mut map = LintSeverityMap::new();
+        map.base_mut().enable_group("strict.locks");
+        let schema = customer_schema();
+        let run = |src: &str| {
+            let fs = InMemoryFileSystem::new();
+            collect_diagnostics(ROOT, src, &fs, &[], &schema, true, &map, true)
+        };
+        let lk001_help = |src: &str| {
+            let out = run(src);
+            let d = out.all().find(|d| d.diagnostic.code.0 == "LK001");
+            d.and_then(|d| d.diagnostic.help.clone())
+                .unwrap_or_default()
+        };
+        let lk002 = |src: &str| codes(&run(src)).iter().filter(|c| **c == "LK002").count();
+
+        let read = "DO FOR Customer:\n  FIND FIRST Customer WHERE Customer.CustNum = 1.\n";
+        let tail = "  MESSAGE Customer.Name.\nEND.\n";
+        assert!(lk001_help(&format!("{read}  MESSAGE \"a\".\n{tail}")).contains("add `NO-LOCK`"));
+        let hidden = lk001_help(&format!("{read}  {{missing.i}}\n{tail}"));
+        assert!(!hidden.contains("NO-LOCK"), "{hidden}");
+        let before = lk001_help(&format!(
+            "DO FOR Customer:\n  {{missing.i}}\n{}{tail}",
+            &read[17..]
+        ));
+        assert!(before.contains("add `NO-LOCK`"), "{before}");
+        assert!(hidden.contains("Write the lock phrase"), "{hidden}");
+
+        let tx =
+            "DO TRANSACTION:\n  FIND FIRST Customer WHERE Customer.CustNum = 1 EXCLUSIVE-LOCK.\n";
+        assert_eq!(
+            lk002(&format!("{tx}  MESSAGE \"a\".\nEND.\nMESSAGE \"b\".\n")),
+            1
+        );
+        assert_eq!(
+            lk002(&format!("{tx}  {{missing.i}}\nEND.\nMESSAGE \"b\".\n")),
+            0
+        );
+        assert_eq!(
+            lk002(&format!(
+                "DO TRANSACTION:\n  {{missing.i}}\n{}  MESSAGE \"a\".\nEND.\nMESSAGE \"b\".\n",
+                &tx[16..]
+            )),
+            1
+        );
+    }
+
+    // `c = {&none}` followed by a line `d = "x".` reads as `c = (d = "x")`
+    // once the name expands to nothing: LINT0004 does not judge text that
+    // joined across the gap, and still judges the same text when it is there.
+    #[test]
+    fn lint0004_skips_an_assignment_that_an_elided_reference_joins() {
+        let schema = Schema::empty();
+        let lint0004 = |src: &str| {
+            let fs = InMemoryFileSystem::new();
+            let out = collect_diagnostics(
+                ROOT,
+                src,
+                &fs,
+                &[],
+                &schema,
+                false,
+                &LintSeverityMap::new(),
+                true,
+            );
+            codes(&out).iter().filter(|c| **c == "LINT0004").count()
+        };
+        let decls =
+            "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nDEFINE VARIABLE d AS CHARACTER NO-UNDO.\n";
+        assert_eq!(lint0004(&format!("{decls}c = d = \"x\".\n")), 1);
+        assert_eq!(lint0004(&format!("{decls}c = {{&none}}\nd = \"x\".\n")), 0);
+        assert_eq!(
+            lint0004(&format!("{decls}ASSIGN\n  c = {{&none}}\n  d = \"x\".\n")),
+            0
+        );
+        assert_eq!(lint0004(&format!("{decls}c = d = \"x\".\n{{&none}}\n")), 1);
     }
 
     // Loud filter: an unresolvable include surfaces PREPROC007 as a Preproc

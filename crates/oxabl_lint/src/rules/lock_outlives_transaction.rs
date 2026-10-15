@@ -43,7 +43,8 @@
 //! Not reported:
 //!
 //! - a transaction whose last read into the buffer is `NO-LOCK`, or that
-//!   releases or deletes the record after its last read;
+//!   releases or deletes the record after its last read, or holds an include
+//!   that did not arrive after its last read (the include may release it);
 //! - a transaction whose last read into the buffer is the record phrase of a
 //!   `FOR EACH` or a `PRESELECT`: whether the buffer still holds a record after
 //!   the last iteration is not decided;
@@ -138,13 +139,14 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
         }
         group.push(read);
     }
+    let skipped = super::scope_widened::skipped_statements(program);
     let mut diags = Vec::new();
     for key in order {
         let (b, unit_id, tx) = key;
         let reads = &groups[&key];
         let buffer = scopes.buffer(b);
         let unit = scopes.unit(unit_id);
-        if let Some(d) = finding(scopes, program, ctx, buffer, unit, tx, reads) {
+        if let Some(d) = finding(scopes, &skipped, ctx, buffer, unit, tx, reads) {
             diags.push(d);
         }
     }
@@ -153,7 +155,7 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
 
 fn finding(
     scopes: &FileScopes,
-    program: &[Statement],
+    skipped: &[Span],
     ctx: &AnalysisContext,
     buffer: &Buffer,
     unit: &UnitScopes,
@@ -189,7 +191,9 @@ fn finding(
     } else if scope.block == tx || !block_within(unit, scope.block, tx) {
         return None;
     }
-    if released_after(ctx.source, tx_span, last.at.start, &buffer.name) {
+    if released_after(ctx.source, tx_span, last.at.start, &buffer.name)
+        || include_after(ctx.elided_includes, tx_span, last.at.end)
+    {
         return None;
     }
     if !cross_unit
@@ -220,7 +224,7 @@ fn finding(
             name = buffer.name,
         )
     };
-    if super::scope_widened::reports(scopes, program, ctx, buffer, scope) {
+    if super::scope_widened::reports(scopes, skipped, ctx, buffer, scope) {
         help.push_str(
             " A reference outside the block raises the buffer's scope; scope-widened (TX005) \
              reports such references.",
@@ -345,6 +349,13 @@ fn released_after(source: &str, tx: Span, after: u32, name: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether an include that did not arrive lies in `tx` after `after`: it may
+/// release or delete the record.
+fn include_after(includes: &[u32], tx: Span, after: u32) -> bool {
+    let from = includes.partition_point(|&o| o < after.max(tx.start));
+    includes.get(from).is_some_and(|&o| o < tx.end)
 }
 
 /// Whether a statement runs between `from` and `to` other than the `END` of

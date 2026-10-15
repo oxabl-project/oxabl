@@ -15,8 +15,9 @@
 //!
 //! A `CAN-FIND` keeps no record, so it holds no lock after it. Its
 //! `SHARE-LOCK` costs a wait instead: while another session holds the record
-//! with `EXCLUSIVE-LOCK`, the `CAN-FIND` waits for it. `NO-LOCK` gives the
-//! same answer without the wait.
+//! with `EXCLUSIVE-LOCK`, the `CAN-FIND` waits for it. `NO-LOCK` answers
+//! without the wait, but may see a change that another session has not
+//! committed.
 //!
 //! ```abl
 //! FIND FIRST Customer WHERE Customer.CustNum = 1.
@@ -129,7 +130,8 @@ pub fn check(
 fn help(scopes: &FileScopes, read: &RecordRead) -> String {
     if read.kind == ReadKind::CanFind {
         return "A `CAN-FIND` keeps no record, so it needs no lock: add `NO-LOCK`, and it \
-                answers without waiting for a record another session is changing."
+                answers without waiting, but may see a change that another session has not \
+                committed."
             .to_string();
     }
     let buffer = read.buffer.map(|b| scopes.buffer(b));

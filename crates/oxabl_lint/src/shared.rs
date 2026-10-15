@@ -38,6 +38,7 @@ pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> Fi
     let options = ScopeOptions {
         parse_recovered: ctx.parse_recovered,
         elided: ctx.elided,
+        elided_includes: ctx.elided_includes,
         fragment: ctx.source_context.is_include_fragment(),
         ..ScopeOptions::default()
     };

@@ -129,14 +129,14 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
 /// Whether [`check`] reports `scope` of `buffer`, in a file it judges.
 pub(crate) fn reports(
     scopes: &FileScopes,
-    program: &[Statement],
+    skipped: &[Span],
     ctx: &AnalysisContext,
     buffer: &Buffer,
     scope: &Scope,
 ) -> bool {
     scope.kind == ScopeKind::Raised
         && judged_buffer(buffer)
-        && !in_skipped(&skipped_statements(program), scope)
+        && !in_skipped(skipped, scope)
         && finding(scopes, ctx, buffer, scope).is_some()
 }
 
@@ -244,7 +244,7 @@ fn in_header(source: &str, unit: &UnitScopes, block: BlockId, at: Span) -> bool 
 
 /// The statements the parser skips. A reference in one is a free reference by
 /// an inferred rule (S3): `DISABLE TRIGGERS FOR LOAD OF t` names a table.
-fn skipped_statements(program: &[Statement]) -> Vec<Span> {
+pub(crate) fn skipped_statements(program: &[Statement]) -> Vec<Span> {
     struct Skipped(Vec<Span>);
     impl Visitor for Skipped {
         fn statement(&mut self, stmt: &Statement) -> bool {
