@@ -920,11 +920,12 @@ impl<'a> Parser<'a> {
     /// The token at `index`, or the EOF token that ends the stream when `index`
     /// is past it, so no lookahead near the end of a file can index out of
     /// bounds.
-    #[inline]
+    #[inline(always)]
     fn token_at(&self, index: usize) -> &Token {
         &self.tokens[index.min(self.tokens.len() - 1)]
     }
 
+    #[inline(always)]
     pub fn peek(&self) -> &Token {
         self.token_at(self.current)
     }
@@ -949,11 +950,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[inline(always)]
     pub fn check(&self, kind: Kind) -> bool {
         self.peek().kind == kind
     }
 
     /// Check if the token at `current + offset` has the given kind.
+    #[inline]
     fn check_at(&self, offset: usize, kind: Kind) -> bool {
         self.peek_at(offset).kind == kind
     }
