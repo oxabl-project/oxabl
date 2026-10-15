@@ -1,0 +1,3 @@
+PROCEDURE included:
+  FIND FIRST customer NO-LOCK NO-ERROR.
+END PROCEDURE.

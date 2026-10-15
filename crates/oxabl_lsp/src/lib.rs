@@ -3,7 +3,7 @@
 //!
 //! v1 is a diagnostics-and-formatting server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`. It advertises nothing else (R2).
+//! `textDocument/formatting`. Strict database rules can also enable effect code lenses.
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -17,6 +17,7 @@
 //! `oxabl_daemon::db` and [`debounce`].
 
 pub mod capabilities;
+mod code_lens;
 pub mod debounce;
 pub mod diagnostics;
 pub mod document;
@@ -349,7 +350,7 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
 fn serve_initialized(
     connection: &Connection,
     debounce_window: std::time::Duration,
-    encoding: PositionEncodingKind,
+    options: code_lens::Options,
     workspace_root: Option<PathBuf>,
     session_root: PathBuf,
     host: SessionHost,
@@ -357,7 +358,7 @@ fn serve_initialized(
 ) -> Result<bool> {
     let mut server = Server::new(
         connection,
-        encoding,
+        options,
         debounce_window,
         workspace_root,
         session_root,
@@ -380,7 +381,7 @@ fn serve_initialized(
 /// Also returns the client's declared **workspace root**, when it declared one.
 /// That is what lets the server's watch and its configuration cover a *project*
 /// rather than whichever directory happened to hold the first opened document.
-fn handshake(connection: &Connection) -> Result<(PositionEncodingKind, Option<PathBuf>)> {
+fn handshake(connection: &Connection) -> Result<(code_lens::Options, Option<PathBuf>)> {
     let (id, params) = connection
         .initialize_start()
         .context("LSP initialize_start")?;
@@ -391,14 +392,30 @@ fn finish_handshake(
     connection: &Connection,
     id: RequestId,
     params: serde_json::Value,
-) -> Result<(PositionEncodingKind, Option<PathBuf>)> {
+) -> Result<(code_lens::Options, Option<PathBuf>)> {
     let init: InitializeParams =
         serde_json::from_value(params).context("deserializing InitializeParams")?;
 
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
+    let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let mut capabilities = server_capabilities(encoding);
+    if options.supported
+        && !options.dynamic
+        && workspace_root.as_ref().is_some_and(|root| {
+            let (config, _) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+            let fs = oxabl_workspace::RealFileSystem;
+            oxabl_pipeline::LintPipeline::new(&config, &fs)
+                .with_file(root)
+                .effect_lenses_enabled()
+        })
+    {
+        capabilities.code_lens_provider = Some(lsp_types::CodeLensOptions {
+            resolve_provider: Some(false),
+        });
+    }
     let result = InitializeResult {
-        capabilities: server_capabilities(encoding.clone()),
+        capabilities,
         server_info: Some(ServerInfo {
             name: "oxabl-lsp".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -407,7 +424,7 @@ fn finish_handshake(
     connection
         .initialize_finish(id, serde_json::to_value(result)?)
         .context("LSP initialize_finish")?;
-    Ok((encoding, workspace_root))
+    Ok((options, workspace_root))
 }
 
 /// The workspace root the client declared, if any.
@@ -466,6 +483,7 @@ struct Server<'c> {
     formatter: FormatPipeline,
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
+    lenses: code_lens::LensCache,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
 }
@@ -496,7 +514,7 @@ struct ComputeResult {
 impl<'c> Server<'c> {
     fn new(
         connection: &'c Connection,
-        encoding: PositionEncodingKind,
+        options: code_lens::Options,
         debounce_window: std::time::Duration,
         workspace_root: Option<PathBuf>,
         session_root: PathBuf,
@@ -505,7 +523,7 @@ impl<'c> Server<'c> {
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         Server {
             connection,
-            encoding,
+            encoding: options.encoding.clone(),
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -514,6 +532,7 @@ impl<'c> Server<'c> {
             workspace_root,
             formatter,
             dependencies: HashMap::new(),
+            lenses: code_lens::LensCache::new(options),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
         }
     }
@@ -534,6 +553,7 @@ impl<'c> Server<'c> {
         let conn_rx = self.connection.receiver.clone();
         let (result_tx, result_rx) = crossbeam_channel::unbounded::<ComputeResult>();
 
+        let (lens_tx, lens_rx) = crossbeam_channel::unbounded();
         let mut shutdown_received = false;
         loop {
             // Size the timeout to the nearest pending debounce deadline.
@@ -552,6 +572,8 @@ impl<'c> Server<'c> {
                             if req.method == "shutdown" {
                                 shutdown_received = true;
                                 self.respond(Response::new_ok(req.id, serde_json::Value::Null))?;
+                            } else if req.method == "textDocument/codeLens" {
+                                self.handle_code_lens(req, &lens_tx)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
                             } else {
@@ -569,6 +591,14 @@ impl<'c> Server<'c> {
                             self.handle_notification(not);
                         }
                         Message::Response(_) => {}
+                    }
+                }
+                recv(lens_rx) -> res => {
+                    if let Ok(res) = res && self.lenses.complete(res) {
+                        self.connection.sender.send(Message::Request(Request::new(
+                            self.lenses.request_id(),
+                            "workspace/codeLens/refresh".into(), serde_json::Value::Null,
+                        )))?;
                     }
                 }
                 recv(result_rx) -> res => {
@@ -674,6 +704,16 @@ impl<'c> Server<'c> {
     /// and schedule a debounced recompute (R13). Unknown notifications are
     /// ignored (per LSP, servers must not error on them).
     fn handle_notification(&mut self, not: Notification) {
+        if matches!(
+            not.method.as_str(),
+            "textDocument/didOpen"
+                | "textDocument/didChange"
+                | "textDocument/didSave"
+                | "textDocument/didClose"
+                | "workspace/didChangeWatchedFiles"
+        ) {
+            self.lenses.invalidate();
+        }
         match not.method.as_str() {
             DidOpenTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
@@ -759,6 +799,7 @@ impl<'c> Server<'c> {
             }
             _ => {}
         }
+        self.update_lens_registration();
     }
 
     /// Resolve configuration from the first opened document **that has a
@@ -1294,7 +1335,12 @@ mod tests {
     fn server(connection: &Connection) -> Server<'_> {
         Server::new(
             connection,
-            PositionEncodingKind::UTF8,
+            code_lens::Options {
+                encoding: PositionEncodingKind::UTF8,
+                supported: false,
+                dynamic: false,
+                refresh: false,
+            },
             std::time::Duration::from_millis(10),
             None,
             anchor_or_current_dir(None),

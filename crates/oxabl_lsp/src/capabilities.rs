@@ -6,7 +6,8 @@
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (hover, completion, pull
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
-//! don't have.
+//! don't have. The handshake adds effect code lenses only for supporting clients
+//! whose workspace enables strict database rules. Dynamic clients register per file.
 
 use lsp_types::{
     ClientCapabilities, OneOf, PositionEncodingKind, ServerCapabilities,
@@ -121,6 +122,7 @@ mod tests {
         // …but range formatting is not (whole-file engine, no region concept).
         assert!(caps.document_range_formatting_provider.is_none());
         // No other feature is advertised.
+        assert!(caps.code_lens_provider.is_none());
         assert!(caps.hover_provider.is_none());
         assert!(caps.completion_provider.is_none());
         assert!(caps.definition_provider.is_none());
