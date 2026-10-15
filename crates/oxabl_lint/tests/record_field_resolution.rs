@@ -403,3 +403,123 @@ DISPLAY code.
         "an ambiguous field must not bind either buffer"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Abbreviated table names
+// ---------------------------------------------------------------------------
+
+const ABBREV_DF: &str = r#"
+ADD TABLE "shipments"
+ADD FIELD "ship-num" OF "shipments" AS integer
+ADD FIELD "carrier" OF "shipments" AS character
+
+ADD TABLE "ship-via"
+ADD FIELD "via-code" OF "ship-via" AS character
+
+ADD TABLE "orders"
+ADD FIELD "order-num" OF "orders" AS integer
+"#;
+
+fn lint_abbrev(source: &str) -> (Semantic, Vec<Diagnostic>) {
+    analyze(source, &schema_from_df(ABBREV_DF))
+}
+
+#[test]
+fn an_abbreviated_table_name_resolves_in_record_phrases_and_qualifiers() {
+    let src = "DEFINE VARIABLE n AS INTEGER NO-UNDO.
+FIND FIRST shipment WHERE shipment.ship-num > 0 NO-LOCK NO-ERROR.
+IF AVAILABLE shipment THEN n = shipment.ship-num.
+FOR EACH shipm NO-LOCK:
+    DISPLAY shipm.carrier carrier.
+END.
+IF CAN-FIND(FIRST ord WHERE ord.order-num = n) THEN MESSAGE n.
+DISPLAY sports.shipment.carrier.
+";
+    let (sem, diags) = lint_abbrev(src);
+    assert!(diags.is_empty(), "expected no findings, got: {diags:#?}");
+    assert_eq!(
+        field_types(&sem, "carrier"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Character)); 3]
+    );
+    // The default buffer carries the table's own name, whatever the spelling.
+    assert!(!resolutions(&sem, "shipments").is_empty());
+    assert!(resolutions(&sem, "shipment").is_empty());
+}
+
+#[test]
+fn a_buffer_and_a_variable_can_be_defined_for_an_abbreviated_table() {
+    let src = "DEFINE BUFFER b FOR shipment.
+DEFINE VARIABLE c LIKE shipment.carrier NO-UNDO.
+FIND FIRST b NO-LOCK NO-ERROR.
+c = b.carrier.
+MESSAGE c.
+";
+    let (sem, diags) = lint_abbrev(src);
+    assert!(diags.is_empty(), "expected no findings, got: {diags:#?}");
+    assert_eq!(
+        field_types(&sem, "carrier"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Character))]
+    );
+}
+
+#[test]
+fn a_temp_table_can_be_like_an_abbreviated_table() {
+    let src = "DEFINE TEMP-TABLE tt NO-UNDO LIKE shipment.
+FIND FIRST tt NO-ERROR.
+MESSAGE ship-num.
+";
+    let (sem, diags) = lint_abbrev(src);
+    assert!(diags.is_empty(), "expected no findings, got: {diags:#?}");
+    assert_eq!(
+        field_types(&sem, "ship-num"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Integer))]
+    );
+}
+
+#[test]
+fn an_unknown_field_through_an_abbreviated_table_is_still_reported() {
+    let (_, diags) = lint_abbrev("DISPLAY shipment.no-such-field.\n");
+    assert_eq!(
+        messages(&diags, LINT0003),
+        vec!["unknown field `no-such-field`".to_string()]
+    );
+    assert!(messages(&diags, LINT0001).is_empty(), "got: {diags:#?}");
+}
+
+#[test]
+fn a_prefix_of_two_tables_is_not_an_abbreviation() {
+    let (_, diags) = lint_abbrev("FIND FIRST ship NO-ERROR.\nDISPLAY ship.carrier.\n");
+    assert!(
+        messages(&diags, LINT0001).contains(&"undefined symbol `ship`".to_string()),
+        "got: {diags:#?}"
+    );
+}
+
+#[test]
+fn temp_table_and_buffer_names_are_never_abbreviated() {
+    let src = "DEFINE TEMP-TABLE tt-lines NO-UNDO FIELD qty AS INTEGER.
+DEFINE BUFFER b-lines FOR tt-lines.
+DISPLAY tt-line.qty b-line.qty.
+";
+    let (_, diags) = lint_abbrev(src);
+    let undefined = messages(&diags, LINT0001);
+    assert!(
+        undefined.contains(&"undefined symbol `tt-line`".to_string())
+            && undefined.contains(&"undefined symbol `b-line`".to_string()),
+        "got: {diags:#?}"
+    );
+}
+
+#[test]
+fn a_field_of_a_record_in_scope_beats_an_abbreviated_table() {
+    let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD ord AS INTEGER.
+FIND FIRST tt NO-ERROR.
+MESSAGE ord.
+";
+    let (sem, diags) = lint_abbrev(src);
+    assert!(diags.is_empty(), "expected no findings, got: {diags:#?}");
+    assert_eq!(
+        field_types(&sem, "ord"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Integer))]
+    );
+}

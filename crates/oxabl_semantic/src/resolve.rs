@@ -1027,9 +1027,10 @@ impl<'a> Walker<'a> {
         self.schema_table_id(table).map(RecordSource::Schema)
     }
 
-    /// Case-insensitive schema lookup of a table-name identifier. Returns
-    /// `None` when the table is absent from the schema (or no schema is
-    /// loaded — an empty schema yields `None` here by construction).
+    /// Case-insensitive schema lookup of a table-name identifier, which may be
+    /// a unique abbreviation of the table name. Returns `None` when the table
+    /// is absent from the schema (or no schema is loaded — an empty schema
+    /// yields `None` here by construction).
     ///
     /// A record phrase may qualify the table with the database it lives in —
     /// `sports.Customer`, `dictdb._file` — and the parser hands that through
@@ -1038,10 +1039,10 @@ impl<'a> Walker<'a> {
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
         self.ctx
             .schema
-            .table_id(&fold_atom(&table.name))
+            .resolve_table(&fold_atom(&table.name))
             .or_else(|| {
                 let bare = strip_db_qualifier(&table.name)?;
-                self.ctx.schema.table_id(&fold_atom(bare))
+                self.ctx.schema.resolve_table(&fold_atom(bare))
             })
     }
 
@@ -3800,6 +3801,16 @@ impl<'a> ResolveWalker<'a> {
                     .insert(expr_id, Resolution::Unresolved { name: atom, reason });
                 return;
             }
+            // An abbreviated table name, tried last so that any field of a
+            // record in scope wins over it.
+            if self.ctx.schema_loaded
+                && let Some(tid) = self.ctx.schema.resolve_table(&atom)
+            {
+                let bsym = self.synth_table_buffer_symbol(tid, &atom, id);
+                self.references.insert(expr_id, Resolution::Resolved(bsym));
+                self.bump_count(bsym, mode);
+                return;
+            }
         }
         self.references.insert(
             expr_id,
@@ -4759,7 +4770,7 @@ impl<'a> ResolveWalker<'a> {
             .into_iter()
             .flatten()
             .map(fold_atom)
-            .find_map(|atom| Some((schema.table_id(&atom)?, atom)))?;
+            .find_map(|atom| Some((schema.resolve_table(&atom)?, atom)))?;
         Some(self.synth_table_buffer_symbol(tid, &atom, id))
     }
 
@@ -5071,7 +5082,7 @@ impl<'a> ResolveWalker<'a> {
                 // references were a double false positive (LINT0001 on the
                 // qualifier *and* LINT0003 on the field).
                 if self.ctx.schema_loaded
-                    && let Some(tid) = self.ctx.schema.table_id(&qatom)
+                    && let Some(tid) = self.ctx.schema.resolve_table(&qatom)
                 {
                     let bsym = self.synth_table_buffer_symbol(tid, &qatom, qid);
                     self.references
@@ -5180,7 +5191,7 @@ impl<'a> ResolveWalker<'a> {
         }
 
         let table_atom = fold_atom(&table.name);
-        let Some(tid) = self.ctx.schema.table_id(&table_atom) else {
+        let Some(tid) = self.ctx.schema.resolve_table(&table_atom) else {
             return false;
         };
 
@@ -5763,6 +5774,12 @@ impl<'a> ResolveWalker<'a> {
         if let Some(sym) = self.synth_buffers.get(&tid) {
             return *sym;
         }
+        // The table's own name, not an abbreviation the use site wrote.
+        let table_atom = self
+            .ctx
+            .schema
+            .get_by_id(tid)
+            .map_or(table_atom, |t| &t.name);
         let sym = self.symbols.insert(Symbol {
             // The one deviation from the convention, and the reason this helper
             // exists: the link is what makes field accesses through the default

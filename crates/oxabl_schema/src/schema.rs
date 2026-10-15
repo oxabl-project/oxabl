@@ -299,6 +299,8 @@ pub struct Schema {
     revision: SchemaRevision,
     tables: FxHashMap<OxablAtom, TableId>,
     arena: Vec<Table>,
+    /// This schema's own tables, sorted by name, for prefix lookup.
+    by_name: Vec<TableId>,
     sequences: Vec<Sequence>,
     sequence_index: FxHashMap<OxablAtom, usize>,
     /// Whether lookups fall through to the built-in OpenEdge metaschema.
@@ -316,6 +318,7 @@ impl Schema {
             revision: SchemaRevision::new(0),
             tables: FxHashMap::default(),
             arena: Vec::new(),
+            by_name: Vec::new(),
             sequences: Vec::new(),
             sequence_index: FxHashMap::default(),
             metaschema: false,
@@ -433,6 +436,46 @@ impl Schema {
             .map(|id| TableId::builtin(id.index() as u32))
     }
 
+    /// Resolve a (possibly abbreviated) table name, ABL-style: an exact
+    /// (case-insensitive) match wins, else a leading abbreviation that matches
+    /// exactly one table. An abbreviation that matches two or more tables is
+    /// not legal and gives `None`.
+    ///
+    /// Only schema tables take abbreviations; a temp-table or buffer name must
+    /// be written in full. `name` is expected to be case-folded.
+    pub fn resolve_table(&self, name: &OxablAtom) -> Option<TableId> {
+        if let Some(id) = self.table_id(name) {
+            return Some(id);
+        }
+        let mut hits = self.prefix_matches(name.as_ref());
+        if self.metaschema {
+            hits = hits.merge(
+                crate::metaschema::metaschema()
+                    .prefix_matches(name.as_ref())
+                    .map(|id| TableId::builtin(id.index() as u32)),
+            );
+        }
+        match hits {
+            PrefixMatch::One(id) => Some(id),
+            PrefixMatch::None | PrefixMatch::Many => None,
+        }
+    }
+
+    /// The tables of this schema's own arena whose name starts with `prefix`.
+    fn prefix_matches(&self, prefix: &str) -> PrefixMatch {
+        let start = self
+            .by_name
+            .partition_point(|id| self.arena[id.index()].name.as_ref() < prefix);
+        let mut it = self.by_name[start..]
+            .iter()
+            .take_while(|id| self.arena[id.index()].name.starts_with(prefix));
+        match (it.next(), it.next()) {
+            (Some(&id), None) => PrefixMatch::One(id),
+            (Some(_), Some(_)) => PrefixMatch::Many,
+            _ => PrefixMatch::None,
+        }
+    }
+
     pub fn tables(&self) -> impl Iterator<Item = (TableId, &Table)> {
         self.arena
             .iter()
@@ -446,6 +489,10 @@ impl Schema {
 
     pub(crate) fn insert_table(&mut self, table: Table) -> TableId {
         let id = TableId::new(self.arena.len() as u32);
+        let at = self
+            .by_name
+            .partition_point(|i| self.arena[i.index()].name.as_ref() < table.name.as_ref());
+        self.by_name.insert(at, id);
         self.tables.insert(table.name.clone(), id);
         self.arena.push(table);
         id
@@ -476,6 +523,30 @@ impl Schema {
     pub(crate) fn table_mut(&mut self, id: TableId) -> &mut Table {
         assert!(!id.is_builtin(), "the built-in catalog is immutable");
         &mut self.arena[id.index()]
+    }
+}
+
+/// How many tables a name prefix matches, keeping the table when it is one.
+#[derive(Debug, Clone, Copy)]
+enum PrefixMatch {
+    None,
+    One(TableId),
+    Many,
+}
+
+impl PrefixMatch {
+    fn map(self, f: impl FnOnce(TableId) -> TableId) -> Self {
+        match self {
+            PrefixMatch::One(id) => PrefixMatch::One(f(id)),
+            other => other,
+        }
+    }
+
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (PrefixMatch::None, m) | (m, PrefixMatch::None) => m,
+            _ => PrefixMatch::Many,
+        }
     }
 }
 
@@ -679,5 +750,45 @@ mod tests {
             t.resolve_field(&fold_atom("nonexistent")),
             FieldResolution::NotFound
         );
+    }
+
+    #[test]
+    fn resolve_table_takes_an_exact_name_or_a_unique_abbreviation() {
+        let mut s = Schema::empty();
+        let receipts = s.insert_table(new_table("Receipts"));
+        let order = s.insert_table(new_table("order"));
+        let orders = s.insert_table(new_table("orders"));
+        s.insert_table(new_table("rec-line"));
+
+        assert_eq!(s.resolve_table(&fold_atom("RECEIPTS")), Some(receipts));
+        assert_eq!(s.resolve_table(&fold_atom("receipt")), Some(receipts));
+        assert_eq!(s.resolve_table(&fold_atom("rece")), Some(receipts));
+        // An exact name beats the longer table it is a prefix of.
+        assert_eq!(s.resolve_table(&fold_atom("order")), Some(order));
+        assert_eq!(s.resolve_table(&fold_atom("orders")), Some(orders));
+        // A prefix of two tables is not an abbreviation.
+        assert_eq!(s.resolve_table(&fold_atom("rec")), None);
+        assert_eq!(s.resolve_table(&fold_atom("ord")), None);
+        assert_eq!(s.resolve_table(&fold_atom("receiptsx")), None);
+        // The exact lookup stays exact.
+        assert_eq!(s.table_id(&fold_atom("receipt")), None);
+    }
+
+    #[test]
+    fn resolve_table_counts_catalog_tables_as_candidates() {
+        let mut s = Schema::empty();
+        s.insert_table(new_table("customer"));
+        assert_eq!(s.resolve_table(&fold_atom("_areast")), None);
+        s.enable_metaschema();
+        let status = s
+            .table_id(&fold_atom("_areastatus"))
+            .expect("catalog table");
+        assert_eq!(s.resolve_table(&fold_atom("_areast")), Some(status));
+        assert_eq!(
+            s.resolve_table(&fold_atom("_fil")),
+            None,
+            "_file, _filelist"
+        );
+        assert!(s.resolve_table(&fold_atom("cust")).is_some());
     }
 }
