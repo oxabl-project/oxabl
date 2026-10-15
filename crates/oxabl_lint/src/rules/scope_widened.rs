@@ -110,19 +110,11 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     let skipped = skipped_statements(program);
     let mut diags = Vec::new();
     for buffer in scopes.buffers() {
-        if !matches!(buffer.table, Table::Database(_))
-            || !matches!(buffer.kind, BufferKind::Default | BufferKind::Defined)
-        {
-            continue;
-        }
-        let Some(seen) = buffer.scopes() else {
+        let Some(seen) = buffer.scopes().filter(|_| judged_buffer(buffer)) else {
             continue;
         };
         for scope in seen {
-            if skipped
-                .iter()
-                .any(|s| s.start <= scope.at.start && scope.at.end <= s.end)
-            {
+            if in_skipped(&skipped, scope) {
                 continue;
             }
             if let Some(d) = finding(scopes, ctx, buffer, scope) {
@@ -132,6 +124,31 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
     }
     diags.sort_by_key(|d| d.span.span.start);
     diags
+}
+
+/// Whether [`check`] reports `scope` of `buffer`, in a file it judges.
+pub(crate) fn reports(
+    scopes: &FileScopes,
+    program: &[Statement],
+    ctx: &AnalysisContext,
+    buffer: &Buffer,
+    scope: &Scope,
+) -> bool {
+    scope.kind == ScopeKind::Raised
+        && judged_buffer(buffer)
+        && !in_skipped(&skipped_statements(program), scope)
+        && finding(scopes, ctx, buffer, scope).is_some()
+}
+
+fn judged_buffer(buffer: &Buffer) -> bool {
+    matches!(buffer.table, Table::Database(_))
+        && matches!(buffer.kind, BufferKind::Default | BufferKind::Defined)
+}
+
+fn in_skipped(skipped: &[Span], scope: &Scope) -> bool {
+    skipped
+        .iter()
+        .any(|s| s.start <= scope.at.start && scope.at.end <= s.end)
 }
 
 fn finding(

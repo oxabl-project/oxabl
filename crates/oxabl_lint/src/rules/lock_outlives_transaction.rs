@@ -115,11 +115,7 @@ pub fn run(
 }
 
 /// The findings over an analysed file.
-pub fn check(
-    scopes: &FileScopes,
-    _program: &[Statement],
-    ctx: &AnalysisContext,
-) -> Vec<Diagnostic> {
+pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) -> Vec<Diagnostic> {
     if not_judged(scopes) || is_class(scopes) {
         return Vec::new();
     }
@@ -148,7 +144,7 @@ pub fn check(
         let reads = &groups[&key];
         let buffer = scopes.buffer(b);
         let unit = scopes.unit(unit_id);
-        if let Some(d) = finding(scopes, ctx, buffer, unit, tx, reads) {
+        if let Some(d) = finding(scopes, program, ctx, buffer, unit, tx, reads) {
             diags.push(d);
         }
     }
@@ -157,6 +153,7 @@ pub fn check(
 
 fn finding(
     scopes: &FileScopes,
+    program: &[Statement],
     ctx: &AnalysisContext,
     buffer: &Buffer,
     unit: &UnitScopes,
@@ -223,7 +220,7 @@ fn finding(
             name = buffer.name,
         )
     };
-    if scope.kind == ScopeKind::Raised {
+    if super::scope_widened::reports(scopes, program, ctx, buffer, scope) {
         help.push_str(
             " A reference outside the block raises the buffer's scope; scope-widened (TX005) \
              reports such references.",

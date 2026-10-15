@@ -748,7 +748,7 @@ Common to the five rules:
 **Overlap with LK002.** A raised scope that keeps a record locked after a transaction gives both
 a TX005 finding, at the reference that raises the scope, and an LK002 finding, at the read in the
 transaction. Both are kept: one shows the cause, the other the lock. The help of LK002 names TX005
-when the scope is raised, and the help of TX005 names LK002.
+when TX005 reports the raise, and the help of TX005 names LK002.
 
 **Overlap with LK003.** The fix LK003 suggests, `FOR EACH ... EXCLUSIVE-LOCK`, makes the block a
 transaction block implicitly, which TX001 reports. The fixed example of LK003 therefore adds
