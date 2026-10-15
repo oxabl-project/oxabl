@@ -36,6 +36,11 @@
 //! the file's text, on the includes read ([`index_file_with_includes`] names
 //! them, so an incremental cache can invalidate on them), and on the configured
 //! predefined names (`{&OPSYS}` and friends).
+//!
+//! So a file with code of its own does not produce a `SHARED` name that only an
+//! include defines: a `DEFINE NEW SHARED` spliced into such a file is not found.
+//! A header that defines a shared name is included by many programs, and
+//! counting each of them as a producer would make the name ambiguous.
 
 mod batch;
 mod closure;
@@ -198,6 +203,37 @@ pub fn index_file_with_includes(
         Some(expanded) if expanded.parsed => (expanded, read),
         _ => (facts, read),
     }
+}
+
+/// Whether [`index_file`] may read the facts of `source` from its expanded text:
+/// a superset of the files it expands, found with a parse and no declare pass.
+pub(crate) fn may_be_expanded(source: &str) -> bool {
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    !program.is_ok()
+        || only_includes(&program.statements)
+        || program.statements.iter().any(|stmt| {
+            matches!(
+                stmt.kind,
+                StatementKind::Class { .. } | StatementKind::Interface { .. }
+            )
+        })
+}
+
+/// The expanded text of `source`, the file at `path`, with its includes read as
+/// [`index_file_at`] reads them, or `None` when the expansion does not settle.
+pub(crate) fn expanded_text_at(
+    path: &Path,
+    source: &str,
+    includes: &IncludeContext<'_>,
+) -> Option<String> {
+    let paths = includes.paths_for(path);
+    let includes = IncludeContext {
+        include_paths: &paths,
+        root_relative_paths: &[],
+        ..*includes
+    };
+    expand(source, &includes)?.text
 }
 
 /// Whether a class header in `facts` is spelled with an unexpanded `{&name}`
