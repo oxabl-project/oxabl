@@ -1,0 +1,14 @@
+unit u0 main
+  widget @7 leaks holder=hWin pool=unscoped
+    free delete-widget @20
+    leak exit-return @8 abnormal via raise(error)@8 path 7>8
+  widget @8 escapes holder=hFrame pool=unscoped
+    free delete-widget @20
+    escape widget-parent @8
+  widget @10 escapes holder=hButton pool=unscoped
+    escape widget-parent @10
+  widget @16 leaks holder=hText pool=unscoped
+    escape widget-parent @17
+    leak exit-return @17 abnormal via raise(error)@17 path 16>17
+  widget @18 leaks holder=hLoose pool=unscoped
+    leak exit-return @20 normal path 18>20

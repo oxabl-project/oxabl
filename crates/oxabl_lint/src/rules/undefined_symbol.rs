@@ -197,8 +197,8 @@ impl Visitor<'_> {
             StatementKind::On { kind } => match kind {
                 OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action {
                     OnAction::Block(body) => self.walk_statement(body),
-                    OnAction::PersistentRun { arguments, .. } => {
-                        for a in arguments {
+                    OnAction::PersistentRun { in_handle, arguments, .. } => {
+                        for a in in_handle.iter().chain(arguments) {
                             self.walk_expression(a);
                         }
                     }
@@ -266,7 +266,31 @@ impl Visitor<'_> {
             // The operand is a real expression now, so an undeclared handle in it is
             // an undefined symbol like any other — the reference this form used to
             // pass over.
-            StatementKind::DeleteObject { target, .. } => self.walk_expression(target),
+            StatementKind::DeleteObject {
+                target,
+                extra_targets,
+                ..
+            } => {
+                self.walk_expression(target);
+                for e in extra_targets {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::ReleaseObject { target, .. } => self.walk_expression(target),
+            StatementKind::CreateWidgetPool { name, .. }
+            | StatementKind::DeleteWidgetPool { name, .. } => {
+                if let Some(e) = name {
+                    self.walk_expression(e);
+                }
+            }
+            // A bare name may be a static widget or frame, which is not a symbol.
+            StatementKind::Apply { event, target } => {
+                for e in std::iter::once(event).chain(target) {
+                    if !matches!(e.kind, ExpressionKind::Identifier(_)) {
+                        self.walk_expression(e);
+                    }
+                }
+            }
             StatementKind::Run {
                 target,
                 arguments,
@@ -353,10 +377,44 @@ impl Visitor<'_> {
                 StreamOperation::Close => {}
             },
             StatementKind::Create { target, .. } => {
-                if let oxabl_ast::CreateTarget::Handle { widget_pool, .. } = target
-                    && let Some(e) = widget_pool
+                if let oxabl_ast::CreateTarget::Handle {
+                    handle,
+                    widget_pool,
+                    class,
+                    assignments,
+                    triggers,
+                    connect,
+                    for_table,
+                    ..
+                } = target
                 {
-                    self.walk_expression(e);
+                    self.walk_expression(handle);
+                    // A bare name may be a table, which is not a symbol.
+                    if let Some(t) = for_table
+                        && !matches!(t.kind, ExpressionKind::Identifier(_))
+                    {
+                        self.walk_expression(t);
+                    }
+                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                        self.walk_expression(e);
+                    }
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                        self.walk_expression(file);
+                    }
+                    for a in assignments {
+                        self.walk_expression(&a.value);
+                    }
+                    for t in triggers {
+                        match &t.action {
+                            OnAction::Block(body) => self.walk_statement(body),
+                            OnAction::PersistentRun { in_handle, arguments, .. } => {
+                                for a in in_handle.iter().chain(arguments) {
+                                    self.walk_expression(a);
+                                }
+                            }
+                            OnAction::Revert => {}
+                        }
+                    }
                 }
             }
 
@@ -695,6 +753,7 @@ mod tests {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
             is_prototype: false,
+            is_external: false,
         });
         let diags = analyze_and_lint(vec![var_decl("outer", DataType::Integer), proc]);
         assert!(diags.is_empty());
@@ -720,6 +779,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![method],
         })]);
         assert_eq!(diags.len(), 1);

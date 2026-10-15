@@ -94,6 +94,8 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - `crates/oxabl_parser` - Parser for ABL source code (actively developed)
 - `crates/oxabl_common` - Shared utilities including `SourceMap` and the `catch_panic` guard
 - `crates/oxabl_codegen` - Code generation tool for lexer keywords
+- `crates/oxabl_flow` - Control-flow graphs per unit with ABL block semantics, plus a dataflow solver
+- `crates/oxabl_handles` - Lifetimes of dynamic objects per unit (create, free and escape sites, leaking paths), read by the `strict.handles` rules
 
 (Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_semantic`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
 

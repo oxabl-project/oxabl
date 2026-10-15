@@ -1,0 +1,15 @@
+unit u1 function retDefault
+  temp-table @5 escapes holder=hOut pool=unscoped
+    escape derived-handle @6
+unit u2 procedure outBuffer
+  temp-table @12 escapes holder=hTt pool=unscoped
+    escape derived-handle @13
+unit u3 procedure retMethod
+  dataset @18 escapes holder=hDs pool=unscoped
+    escape derived-handle @19
+unit u4 procedure localUse
+  temp-table @26 leaks holder=hTt pool=unscoped
+    leak exit-return @27 normal path 26>27
+unit u5 procedure notHandle
+  query @33 leaks holder=hQ pool=unscoped
+    leak exit-return @34 normal path 33>34

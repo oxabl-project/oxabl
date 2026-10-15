@@ -1,0 +1,5 @@
+unit u0 main
+  query @5 freed holder=hKept pool=unscoped
+    free delete-object @8
+  query @11 freed holder=hLeft pool=unscoped
+    free delete-object @14

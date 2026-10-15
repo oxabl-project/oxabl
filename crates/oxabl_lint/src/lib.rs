@@ -45,6 +45,15 @@
 //! | CL002 | [`dynamic_invoke`]          | `strict.calls`        | `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `DYNAMIC-PROPERTY`, `CREATE CALL` |
 //! | CL005 | [`shared_state`]            | `strict.calls`        | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
 //! | TX006 | [`missing_no_undo`]         | `strict.transactions` | variable, parameter, temp-table or property without `NO-UNDO` |
+//! | HD001 | [`handle_not_deleted`]      | `strict.handles`      | a dynamic object that some path loses without a delete    |
+//! | HD002 | [`delete_not_in_finally`]   | `strict.handles`      | a delete that an error before it skips                    |
+//! | HD003 | [`persistent_procedure_leak`] | `strict.handles`    | `RUN ... PERSISTENT SET h` that nothing deletes           |
+//! | HD004 | [`memptr_not_freed`]        | `strict.handles`      | `SET-SIZE(m) = n` with no `SET-SIZE(m) = 0`               |
+//! | HD005 | [`missing_widget_pool`]     | `strict.handles`      | dynamic objects with no widget pool scoped to the procedure |
+//!
+//! The `HD` rules read one analysis of the file's dynamic objects
+//! (`oxabl_handles`), made once per [`Registry::run_where`] through
+//! [`RunShared`] and only when one of them is enabled.
 //!
 //! A finding that sits in an include file is dropped when the includer is
 //! linted. A context-free rule reports it once, in the include file itself,
@@ -62,17 +71,20 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 pub mod fragment;
 mod registry;
 mod rules;
+mod shared;
 
 pub use registry::{
-    BUILTIN_GROUPS, BUILTIN_RULES, FnRule, Registry, RegistryError, Rule, RuleFn, RuleGroup,
-    RuleMeta, Stability, groups,
+    BUILTIN_GROUPS, BUILTIN_RULES, FnRule, HandlesFn, Registry, RegistryError, Rule, RuleFn,
+    RuleGroup, RuleMeta, Stability, groups,
 };
 pub use rules::{
-    CL001, CL002, CL005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, TX006,
-    assigned_but_never_read, block_var_used_outside, dynamic_invoke, missing_no_undo, run_value,
-    shared_state, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
-    unused_variable,
+    CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
+    LINT0005, LINT0006, TX006, assigned_but_never_read, block_var_used_outside,
+    delete_not_in_finally, dynamic_invoke, handle_not_deleted, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
+    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
+pub use shared::RunShared;
 
 /// Run every built-in rule that `ctx.lint_severities` enables over `program`
 /// + `sem` and return the combined diagnostics, in registry order.

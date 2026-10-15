@@ -5,8 +5,13 @@
 
 pub mod assigned_but_never_read;
 pub mod block_var_used_outside;
+pub mod delete_not_in_finally;
 pub mod dynamic_invoke;
+pub mod handle_not_deleted;
+pub mod memptr_not_freed;
 pub mod missing_no_undo;
+pub mod missing_widget_pool;
+pub mod persistent_procedure_leak;
 pub mod run_value;
 pub mod shared_state;
 pub mod type_mismatch_assignment;
@@ -15,6 +20,8 @@ pub mod unknown_table_or_field;
 pub mod unused_symbol_shared;
 pub mod unused_variable;
 
+// Wording and anchoring for the handle rules.
+mod handle_support;
 // Walk and source helpers for the syntactic strict rules.
 mod syntactic;
 
@@ -39,3 +46,14 @@ pub const CL002: &str = "CL002";
 pub const CL005: &str = "CL005";
 /// Diagnostic code for `missing-no-undo` (TX006).
 pub const TX006: &str = "TX006";
+
+/// Diagnostic code for `handle-not-deleted` (HD001).
+pub const HD001: &str = "HD001";
+/// Diagnostic code for `delete-not-in-finally` (HD002).
+pub const HD002: &str = "HD002";
+/// Diagnostic code for `persistent-procedure-leak` (HD003).
+pub const HD003: &str = "HD003";
+/// Diagnostic code for `memptr-not-freed` (HD004).
+pub const HD004: &str = "HD004";
+/// Diagnostic code for `missing-widget-pool` (HD005).
+pub const HD005: &str = "HD005";

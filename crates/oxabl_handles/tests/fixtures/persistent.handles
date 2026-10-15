@@ -1,0 +1,11 @@
+unit u0 main
+  persistent-procedure @4 leaks holder=hProc
+    free delete-procedure @6
+    leak exit-return @5 abnormal via raise(error)@5 path 4>5
+  persistent-procedure @8 uncaptured
+  persistent-procedure @10 leaks holder=hKept
+    leak exit-return @11 abnormal via raise(error)@11 path 10>11
+    leak overwrite @14 normal path 10>11>14
+  persistent-procedure @14 unknown holder=hKept
+    opaque destroy-call @15
+    leak exit-return @15 normal path 14>15

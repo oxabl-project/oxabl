@@ -57,10 +57,10 @@
 //!
 //! # Gating a fix
 //!
-//! No rule has an autofix yet. When one is added, it must ask [`autofixable`]
-//! for the diagnostic first, and skip the fix when it answers `false`. The
-//! answer is carried in the `help` text, so it survives every client and the
-//! baseline. Replace [`autofixable`] with a typed field when a diagnostic gains
+//! No rule has an autofix yet. When one is added, list it in `AUTOFIX_RULES`.
+//! The fix must ask [`autofixable`] for the diagnostic first, and skip the fix
+//! when it answers `false`. The answer is carried in the `help` text, so it
+//! survives every client and the baseline. Replace [`autofixable`] with a typed field when a diagnostic gains
 //! one; it is the only reader.
 
 use std::ops::Range;
@@ -74,6 +74,20 @@ use crate::missing_no_undo::{self, SHARED_HELP};
 /// The sentence that ends the help of a lower-confidence finding.
 pub const INCLUDER_NOTE: &str = "This statement depends on the including file (a `{...}` \
      reference or an `&IF`), which was not seen. Check each includer before you change it.";
+
+/// The sentence that ends the help of a handle finding in an include that the
+/// includer may resolve: it may delete the object later, or scope a widget
+/// pool.
+pub const FRAGMENT_NOTE: &str = "This file is an include. The including file, which was not \
+     seen, may delete the object or provide the widget pool. Check each includer before you \
+     change it.";
+
+/// The sentence that ends the help of a finding that sits in an include but is
+/// reported at the `{...}` site in the includer, because the include alone
+/// cannot show it.
+pub const USE_SITE_NOTE: &str = "This finding is in an include. The include does not show it \
+     when it is checked alone, because the object is created, named or freed in the including \
+     file. Check the include and each includer before you change it.";
 
 /// Answers what only the file system and the expansion know: whether an
 /// argument-less `{file.i}` can change with the includer.
@@ -689,14 +703,41 @@ pub const MAYBE_SHARED_HELP: &str = "If an includer makes this definition `SHARE
      to the `NEW SHARED` producer and to every `SHARED` consumer; changing one side alone makes \
      the definitions disagree. If none does, add `NO-UNDO` to the definition.";
 
+/// `d`, a finding anchored in an include, as a finding at the `{...}` site in
+/// the includer. `location` names the include file and line. The message says
+/// where the anchor is, and the help ends with [`USE_SITE_NOTE`].
+pub fn at_use_site(mut d: Diagnostic, location: &str) -> Diagnostic {
+    d.message = format!(
+        "{} (in {location}, reached through this include)",
+        d.message
+    );
+    d.help = Some(match d.help.take() {
+        Some(help) => format!("{help} {USE_SITE_NOTE}"),
+        None => USE_SITE_NOTE.to_string(),
+    });
+    d
+}
+
+/// The rules that have an autofix. None has one yet.
+const AUTOFIX_RULES: &[&str] = &[];
+
 /// Whether an autofix may change the code for `d`.
 ///
-/// `false` for a finding that [`lower_confidence`] changed, and for a TX006
-/// finding on a `SHARED` definition, whose fix is in other files.
+/// `false` for a rule that has no fix, for a finding that [`lower_confidence`]
+/// or [`at_use_site`] changed, and for a TX006 finding on a `SHARED`
+/// definition, whose fix is in other files.
 pub fn autofixable(d: &Diagnostic) -> bool {
-    !d.help
-        .as_deref()
-        .is_some_and(|help| help == SHARED_HELP || help.ends_with(INCLUDER_NOTE))
+    autofixable_among(d, AUTOFIX_RULES)
+}
+
+fn autofixable_among(d: &Diagnostic, fixable: &[&str]) -> bool {
+    fixable.contains(&d.code.0)
+        && !d.help.as_deref().is_some_and(|help| {
+            help == SHARED_HELP
+                || help.ends_with(INCLUDER_NOTE)
+                || help.ends_with(FRAGMENT_NOTE)
+                || help.ends_with(USE_SITE_NOTE)
+        })
 }
 
 #[cfg(test)]
@@ -1005,7 +1046,7 @@ DEFINE VARIABLE b AS INTEGER.
         for help in [SHARED_HELP, missing_no_undo::HELP] {
             let lowered = lower_confidence(d(help), with);
             assert_eq!(lowered.help, Some(format!("{help} {INCLUDER_NOTE}")));
-            assert!(!autofixable(&lowered));
+            assert!(!autofixable_among(&lowered, &["TX006"]));
         }
     }
 
@@ -1115,8 +1156,9 @@ h:PREPARE-STRING.
             d
         };
         let with = |slot| Dependence { slot };
-        assert!(autofixable(&d("TX006", Some(missing_no_undo::HELP))));
-        assert!(!autofixable(&d("TX006", Some(SHARED_HELP))));
+        let fixable = |d: &Diagnostic| autofixable_among(d, &["TX006"]);
+        assert!(fixable(&d("TX006", Some(missing_no_undo::HELP))));
+        assert!(!fixable(&d("TX006", Some(SHARED_HELP))));
 
         let help = |slot, before: &str| {
             lower_confidence(d("TX006", Some(before)), with(slot))
@@ -1147,7 +1189,7 @@ h:PREPARE-STRING.
         }
         for slot in [Slot::LiteralShared, Slot::Reference, Slot::Plain] {
             let lowered = lower_confidence(d("TX006", None), with(slot));
-            assert!(!autofixable(&lowered));
+            assert!(!autofixable_among(&lowered, &["TX006"]));
         }
 
         let other = lower_confidence(d("CL001", Some("Use a literal.")), with(Slot::Plain));
@@ -1162,5 +1204,49 @@ h:PREPARE-STRING.
                 .as_deref(),
             Some(INCLUDER_NOTE)
         );
+    }
+
+    #[test]
+    fn only_a_rule_with_a_fix_is_autofixable() {
+        let finding = |code: &'static str| {
+            Diagnostic::warning(
+                code,
+                "m".to_string(),
+                oxabl_common::FileSpan::from((
+                    oxabl_common::FileId::UNKNOWN,
+                    Span { start: 0, end: 0 },
+                )),
+            )
+        };
+        // No rule has a fix today, so none is autofixable.
+        for rule in crate::Registry::builtin_shared().rules() {
+            assert!(
+                !autofixable(&finding(rule.meta().code)),
+                "{}",
+                rule.meta().code
+            );
+        }
+        // A listed rule is, until a note says the code is not the whole story.
+        assert!(autofixable_among(&finding("HD001"), &["HD001"]));
+        let lowered = at_use_site(finding("HD001"), "a.i:3");
+        assert!(!autofixable_among(&lowered, &["HD001"]));
+    }
+
+    #[test]
+    fn a_use_site_finding_names_its_include() {
+        let d = at_use_site(
+            Diagnostic::warning(
+                "HD002",
+                "msg".to_string(),
+                oxabl_common::FileSpan::from((
+                    oxabl_common::FileId::UNKNOWN,
+                    Span { start: 0, end: 0 },
+                )),
+            )
+            .with_help("Fix it.".to_string()),
+            "free.i:1",
+        );
+        assert_eq!(d.message, "msg (in free.i:1, reached through this include)");
+        assert_eq!(d.help, Some(format!("Fix it. {USE_SITE_NOTE}")));
     }
 }

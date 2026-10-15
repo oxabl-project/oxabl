@@ -472,6 +472,7 @@ impl<'a> Walker<'a> {
                 name,
                 body,
                 is_prototype,
+                ..
             } => {
                 self.declare(
                     stmt,
@@ -526,6 +527,7 @@ impl<'a> Walker<'a> {
                 is_abstract,
                 is_final,
                 body,
+                ..
             } => {
                 let flags = flag_if(*is_abstract, SymbolFlags::ABSTRACT)
                     | flag_if(*is_final, SymbolFlags::FINAL);
@@ -736,6 +738,18 @@ impl<'a> Walker<'a> {
                         }
                     }
                     OnKind::KeyRemap { .. } => {}
+                }
+            }
+            // A widget create's TRIGGERS phrase: one scope for all its trigger bodies.
+            StatementKind::Create {
+                target: CreateTarget::Handle { triggers, .. },
+                ..
+            } if !triggers.is_empty() => {
+                let ts = self.tree.push(ScopeKind::Trigger, scope, stmt.id);
+                for trigger in triggers {
+                    if let oxabl_ast::OnAction::Block(body) = &trigger.action {
+                        self.walk_statement(body, ts);
+                    }
                 }
             }
             StatementKind::TriggerProcedure { .. } => {
@@ -1302,7 +1316,7 @@ pub fn resolve_pass(
         ctx.schema.revision(),
         "resolve_pass must run against the same schema revision declare_pass saw"
     );
-    let mut walker = ResolveWalker::new(ctx, tree, symbols);
+    let mut walker = ResolveWalker::new(ctx, tree, symbols, program);
     // Only the block-var-used-outside analysis (LINT0005) reads per-reference
     // scope, and only for hoisted variables. Skip that work wholesale when the
     // declare pass hoisted none — the common case — in O(1).
@@ -1676,13 +1690,16 @@ impl<'a> ResolveWalker<'a> {
         ctx: &'a AnalysisContext<'a>,
         tree: &'a ScopeTree,
         symbols: &'a mut SymbolTable,
+        program: &[Statement],
     ) -> Self {
         ResolveWalker {
             ctx,
             tree,
             symbols,
-            references: NodeIndexVec::new(),
-            types: NodeIndexVec::new(),
+            // Sized once: check_pass types nearly every expression, and a
+            // table grown as higher ids appear reallocates on the way.
+            references: NodeIndexVec::for_program(program),
+            types: NodeIndexVec::for_program(program),
             diagnostics: Vec::new(),
             counts: FxHashMap::default(),
             block_var_outside: FxHashMap::default(),
@@ -2817,23 +2834,44 @@ impl<'a> ResolveWalker<'a> {
             }
 
             // ---- Trigger / preprocessor ---------------------------------
-            StatementKind::On { kind } => match kind {
-                OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action {
-                    OnAction::Block(body) => {
-                        let ts = self
-                            .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
-                            .unwrap_or(scope);
-                        self.walk_statement(body, ts);
-                    }
-                    OnAction::PersistentRun { arguments, .. } => {
-                        for arg in arguments {
-                            self.walk_expression(arg, scope, AccessMode::Read);
+            StatementKind::On { kind } => {
+                if let OnKind::UiEvent { clauses, .. } = kind {
+                    // A trigger target is a read; a name that is no value (a
+                    // frame field or static widget) stays silent.
+                    for clause in clauses {
+                        for widget in &clause.widgets {
+                            self.resolve_statement_ident(
+                                &widget.name,
+                                scope,
+                                &[NamespaceId::Values],
+                                AccessMode::Read,
+                            );
                         }
                     }
-                    OnAction::Revert => {}
-                },
-                OnKind::KeyRemap { .. } => {}
-            },
+                }
+                match kind {
+                    OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action
+                    {
+                        OnAction::Block(body) => {
+                            let ts = self
+                                .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
+                                .unwrap_or(scope);
+                            self.walk_statement(body, ts);
+                        }
+                        OnAction::PersistentRun {
+                            in_handle,
+                            arguments,
+                            ..
+                        } => {
+                            for arg in in_handle.iter().chain(arguments) {
+                                self.walk_expression(arg, scope, AccessMode::Read);
+                            }
+                        }
+                        OnAction::Revert => {}
+                    },
+                    OnKind::KeyRemap { .. } => {}
+                }
+            }
             StatementKind::TriggerProcedure { .. } => {}
             StatementKind::PreprocIf(pif) => {
                 self.walk_expression(&pif.condition, scope, AccessMode::Read);
@@ -2986,8 +3024,30 @@ impl<'a> ResolveWalker<'a> {
             // head-parsing the form: skipping it harvested every identifier it
             // passed over and marked them touched-by-something-unmodelled, which
             // silenced the count-gated rules for the rest of the file.
-            StatementKind::DeleteObject { target, .. } => {
+            StatementKind::DeleteObject {
+                target,
+                extra_targets,
+                ..
+            } => {
                 self.walk_expression(target, scope, AccessMode::Read);
+                for t in extra_targets {
+                    self.walk_expression(t, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::CreateWidgetPool { name, .. }
+            | StatementKind::DeleteWidgetPool { name, .. } => {
+                if let Some(n) = name {
+                    self.walk_expression(n, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::ReleaseObject { target, .. } => {
+                self.walk_expression(target, scope, AccessMode::Read);
+            }
+            StatementKind::Apply { event, target } => {
+                self.walk_lenient_operand(event, scope);
+                if let Some(t) = target {
+                    self.walk_lenient_operand(t, scope);
+                }
             }
             StatementKind::Delete { buffer, .. }
             | StatementKind::Release { buffer, .. }
@@ -3061,16 +3121,56 @@ impl<'a> ResolveWalker<'a> {
                 CreateTarget::Handle {
                     handle,
                     widget_pool,
+                    class,
+                    assignments,
+                    triggers,
+                    connect,
+                    for_table,
                     ..
                 } => {
-                    self.resolve_statement_ident(
-                        handle,
-                        scope,
-                        &[NamespaceId::Values],
-                        AccessMode::Write,
-                    );
-                    if let Some(wp) = widget_pool {
-                        self.walk_expression(wp, scope, AccessMode::Read);
+                    // Under a FRAME or PARENT the widget tree owns the widget, so
+                    // the handle needs no later read.
+                    let owned = assignments.iter().any(|a| {
+                        a.attribute.name.eq_ignore_ascii_case("FRAME")
+                            || a.attribute.name.eq_ignore_ascii_case("PARENT")
+                    });
+                    let mode = if owned {
+                        AccessMode::ReadWrite
+                    } else {
+                        AccessMode::Write
+                    };
+                    self.walk_expression(handle, scope, mode);
+                    if let Some(t) = for_table {
+                        self.walk_lenient_operand(t, scope);
+                    }
+                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                        self.walk_expression(e, scope, AccessMode::Read);
+                    }
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                        self.walk_expression(file, scope, AccessMode::Read);
+                    }
+                    for a in assignments {
+                        self.walk_expression(&a.value, scope, AccessMode::Read);
+                    }
+                    if !triggers.is_empty() {
+                        let ts = self
+                            .find_child_scope(scope, stmt.id, ScopeKind::Trigger)
+                            .unwrap_or(scope);
+                        for trigger in triggers {
+                            match &trigger.action {
+                                OnAction::Block(body) => self.walk_statement(body, ts),
+                                OnAction::PersistentRun {
+                                    in_handle,
+                                    arguments,
+                                    ..
+                                } => {
+                                    for arg in in_handle.iter().chain(arguments) {
+                                        self.walk_expression(arg, scope, AccessMode::Read);
+                                    }
+                                }
+                                OnAction::Revert => {}
+                            }
+                        }
                     }
                 }
             },
@@ -4458,6 +4558,19 @@ impl<'a> ResolveWalker<'a> {
             },
         };
         self.references.insert(operand.id, resolution);
+    }
+
+    /// Read an operand whose bare name may not be a variable: a static widget,
+    /// frame or browse (`APPLY "CHOOSE" TO btnOk`) or a table (`CREATE BUFFER h
+    /// FOR TABLE Customer`). A bare name that does not resolve is not an error;
+    /// anything compound resolves as an expression.
+    fn walk_lenient_operand(&mut self, e: &Expression, scope: ScopeId) {
+        match &e.kind {
+            ExpressionKind::Identifier(id) => {
+                self.resolve_statement_ident(id, scope, &[NamespaceId::Values], AccessMode::Read);
+            }
+            _ => self.walk_expression(e, scope, AccessMode::Read),
+        }
     }
 
     /// Resolve an `Identifier` in a **statement** position (buffer name in
@@ -6295,6 +6408,7 @@ mod tests {
             name: id("doThing"),
             body: vec![var_stmt("local", DataType::Integer)],
             is_prototype: false,
+            is_external: false,
         })]);
         assert!(diags.is_empty());
         let proc = find_symbol(&tree, &symbols, NamespaceId::Procedures, "doThing").unwrap();
@@ -6332,6 +6446,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![],
         })]);
         let c = find_symbol(&tree, &symbols, NamespaceId::Types, "Foo").unwrap();
@@ -6347,6 +6462,7 @@ mod tests {
             implements: vec![],
             is_abstract: true,
             is_final: true,
+            use_widget_pool: false,
             body: vec![],
         })]);
         let c = find_symbol(&tree, &symbols, NamespaceId::Types, "Base").unwrap();
@@ -6373,6 +6489,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -6395,6 +6512,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Constructor {
                 access: AccessModifier::Public,
                 parameters: vec![],
@@ -6412,6 +6530,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Destructor { body: vec![] })],
         })]);
         assert!(tree.iter().any(|(_, s)| s.kind == ScopeKind::Destructor));
@@ -6646,11 +6765,13 @@ mod tests {
                 name: id("a"),
                 body: vec![a_block],
                 is_prototype: false,
+                is_external: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("b"),
                 body: vec![b_block],
                 is_prototype: false,
+                is_external: false,
             }),
         ]);
         assert!(
@@ -6696,11 +6817,13 @@ mod tests {
                 name: id("p"),
                 body: vec![],
                 is_prototype: false,
+                is_external: false,
             }),
             stmt(StatementKind::Procedure {
                 name: id("p"),
                 body: vec![],
                 is_prototype: false,
+                is_external: false,
             }),
         ]);
         assert_eq!(diags.len(), 1);
@@ -6921,6 +7044,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
                     access: AccessModifier::Private,
@@ -6958,6 +7082,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![
                 stmt(StatementKind::Method {
                     access: AccessModifier::Public,
@@ -7314,6 +7439,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -7355,6 +7481,7 @@ mod tests {
             implements: vec![],
             is_abstract: true,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -7385,6 +7512,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Method {
                 access: AccessModifier::Public,
                 is_static: false,
@@ -7415,6 +7543,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![stmt(StatementKind::Property {
                 access: AccessModifier::Public,
                 is_static: true,
@@ -7939,6 +8068,7 @@ mod tests {
                 implements: vec![],
                 is_abstract: false,
                 is_final: false,
+                use_widget_pool: false,
                 body: vec![],
             }),
             stmt_n(StatementKind::ExpressionStatement(new_expr)),
@@ -9201,6 +9331,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![pdecl],
         })];
         let (_t, _s, _r, types) = run_full(&stmts);
@@ -9238,6 +9369,7 @@ mod tests {
                 implements: vec![],
                 is_abstract: false,
                 is_final: false,
+                use_widget_pool: false,
                 body: vec![],
             }),
             var_stmt_n("svc", DataType::Class("Foo".into())),
@@ -9374,6 +9506,7 @@ mod tests {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(body_use))],
             is_prototype: false,
+            is_external: false,
         });
         let stmts = vec![var_stmt_n("outer", DataType::Integer), proc];
         let (_t, _s, refs, _) = run_full(&stmts);
@@ -9407,6 +9540,7 @@ mod tests {
             implements: vec![],
             is_abstract: false,
             is_final: false,
+            use_widget_pool: false,
             body: vec![method],
         })];
         let (_t, _s, refs, _) = run_full(&stmts);
@@ -9501,6 +9635,7 @@ mod tests {
             name: id("p"),
             body: vec![stmt_n(StatementKind::ExpressionStatement(use_s))],
             is_prototype: false,
+            is_external: false,
         });
         let stmts = vec![proc];
         let (_t, symbols, refs, _) = run_full(&stmts);

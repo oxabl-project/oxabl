@@ -77,3 +77,5 @@ serde_json = "1"
 walkdir = "2"
 # The `flow_corpus` example only; the CLI does not build CFGs yet.
 oxabl_flow = { path = "../oxabl_flow", version = "0.2.0" }
+# The `handles_corpus` example only.
+oxabl_handles = { path = "../oxabl_handles", version = "0.1.0" }

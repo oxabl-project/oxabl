@@ -1,0 +1,12 @@
+unit u0 main
+  pool @3 unnamed
+  query @4 pool-freed holder=hMain pool=unit
+unit u1 procedure in-file-pool
+  query @8 pool-freed holder=hQuery pool=file
+unit u2 procedure in-named-pool
+  pool @13 "work"
+  query @14 freed holder=hQuery pool="work"
+    free delete-widget-pool @15
+unit u3 procedure in-foreign-pool
+  query @20 escapes holder=hQuery pool=foreign "elsewhere"
+    escape foreign-pool @20

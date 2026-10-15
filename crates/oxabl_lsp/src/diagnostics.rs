@@ -82,10 +82,7 @@ mod tests {
     }
 
     fn set(items: Vec<CollectedDiagnostic>) -> CollectedDiagnostics {
-        CollectedDiagnostics {
-            diagnostics: items,
-            ..Default::default()
-        }
+        CollectedDiagnostics::new(items)
     }
 
     #[test]

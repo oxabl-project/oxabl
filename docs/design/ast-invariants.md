@@ -82,6 +82,9 @@ Both `Statement` and `Expression` carry a stable `NodeId` as of Phase 1
 - `NodeIdAllocator::new()` starts allocation at `NodeId(1)` and is monotonic: `alloc()`
   yields dense, unique, contiguous ids. The `Parser` owns one allocator per parse, shared by
   statement and expression allocation so the id space is a single dense range.
+- Ids are post-order: `Parser::stmt(kind)` and `Parser::expr(kind)` allocate after the `kind`
+  (and so every child) is built. The last top-level statement therefore holds the highest id
+  in the tree, and `NodeIndexVec::for_program` sizes the semantic side tables from it once.
 - `Statement { id, kind }` and `Expression { id, kind }` are wrapper structs; the original
   enums are `StatementKind` and `ExpressionKind`. `Statement::new(kind)` / `Expression::new(kind)`
   construct with `id = NodeId::DUMMY` for tests; the parser uses the `&mut self` helpers
@@ -263,8 +266,21 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   statement whose one operand is perfectly parseable.
   **Invariant:** `target` is resolved like any other expression, so the handle it names is
   credited an ordinary `read_count`, and no name in the statement is marked. Note the
-  asymmetry this removes: `DELETE PROCEDURE`, `DELETE WIDGET`, and `DELETE SERVER` already
-  fell through to a real `Delete` node — only the `OBJECT` spelling skipped.
+  asymmetry this removes: `DELETE PROCEDURE`, `DELETE WIDGET`, and `DELETE SERVER` used to
+  fall through to a record `Delete` node — only the `OBJECT` spelling skipped.
+
+- **The handle-lifetime statements are head-parsed too.** `DELETE OBJECT | PROCEDURE |
+  WIDGET | SERVER` all become `DeleteObject { kind, target, extra_targets, .. }`
+  (`extra_targets` holds the further handles of `DELETE WIDGET h1 h2`). `CREATE` of every
+  dynamic-object and widget type becomes `Create { target: CreateTarget::Handle { .. } }` with
+  `handle` an `Expression`, plus `class` (`VALUE(expr)` or a COM class literal), the widget
+  `ASSIGN` pairs, the `TRIGGERS` phrase and the COM `CONNECT` clause. `CREATE`/`DELETE
+  WIDGET-POOL`, `RELEASE OBJECT` and `APPLY` have their own variants.
+  **Invariant:** a `CREATE` whose tail does not parse falls back to `Skipped` from the first
+  token after `CREATE`, so it never swallows the next statement. A widget `TRIGGERS` body is a
+  deferred trigger: semantic walks it in a `Trigger` scope, `oxabl_flow` does not inline it.
+  `APPLY` operands are read without a miss diagnostic, because a bare name there is usually a
+  static widget or frame, not a symbol.
 
 - **`COMPILE` still emits `Skipped`, with an empty `names` list.** Its operand is a *file
   path* and its trailing words are grammar keywords, so no identifier in it is a symbol

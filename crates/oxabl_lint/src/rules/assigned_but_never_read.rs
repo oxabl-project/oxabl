@@ -237,9 +237,21 @@ impl Visitor<'_> {
                 ..
             } => self.record_ident(result),
             StatementKind::Create {
-                target: CreateTarget::Handle { handle, .. },
+                target:
+                    CreateTarget::Handle {
+                        handle, triggers, ..
+                    },
                 ..
-            } => self.record_ident(handle),
+            } => {
+                self.record_target(handle);
+                self.within(owner, ScopeKind::Trigger, |v| {
+                    for t in triggers {
+                        if let OnAction::Block(body) = &t.action {
+                            v.walk_statement(body);
+                        }
+                    }
+                });
+            }
 
             // Recurse into bodies.
             StatementKind::Procedure { body, .. } => {
@@ -597,6 +609,7 @@ mod tests {
         let stmts = vec![stmt(StatementKind::Procedure {
             name: id("p"),
             is_prototype: false,
+            is_external: false,
             body: vec![
                 stmt(StatementKind::DefineParameter {
                     direction: ParameterDirection::Output,
@@ -770,8 +783,13 @@ mod tests {
             stmt(StatementKind::Create {
                 target: CreateTarget::Handle {
                     kind: CreateTargetKind::Widget,
-                    handle: id_at("hWidget", 90),
+                    handle: ident_expr("hWidget", 90),
                     widget_pool: None,
+                    class: None,
+                    assignments: Vec::new(),
+                    triggers: Vec::new(),
+                    connect: None,
+                    for_table: None,
                 },
                 no_error: false,
             }),
@@ -797,6 +815,35 @@ mod tests {
         let diags = lint(&stmts);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].span.span.start, 60, "{diags:?}");
+    }
+
+    #[test]
+    fn fires_at_a_write_inside_a_widget_create_trigger() {
+        use oxabl_ast::{OnAction, WidgetTrigger};
+        let stmts = vec![
+            var_decl("hWidget"),
+            var_decl("x"),
+            stmt(StatementKind::Create {
+                target: CreateTarget::Handle {
+                    kind: CreateTargetKind::Widget,
+                    handle: ident_expr("hWidget", 90),
+                    widget_pool: None,
+                    class: None,
+                    assignments: Vec::new(),
+                    triggers: vec![WidgetTrigger {
+                        events: Vec::new(),
+                        action: OnAction::Block(Box::new(assign("x", 60))),
+                    }],
+                    connect: None,
+                    for_table: None,
+                },
+                no_error: false,
+            }),
+        ];
+        let diags = lint(&stmts);
+        let at: Vec<_> = diags.iter().map(|d| d.span.span.start).collect();
+        assert!(at.contains(&60), "{diags:?}");
+        assert!(!at.contains(&0), "{diags:?}");
     }
 
     #[test]

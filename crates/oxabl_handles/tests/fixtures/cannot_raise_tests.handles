@@ -1,0 +1,7 @@
+unit u1 procedure plainTests
+  query @7 freed holder=hQ pool=unscoped
+    free delete-object @17
+unit u2 procedure raisingTests
+  query @24 leaks holder=hQ pool=unscoped
+    free delete-object @26
+    leak exit-return @25 abnormal via raise(error)@25 path 24>25

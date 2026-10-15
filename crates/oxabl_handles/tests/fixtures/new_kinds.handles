@@ -1,0 +1,26 @@
+unit u0 main
+  x-document @13 leaks holder=hDoc pool=unscoped
+    free delete-object @25
+    leak exit-return @14 abnormal via raise(error)@14 path 13>14
+  x-noderef @14 escapes holder=hNode pool=foreign "xml"
+    escape foreign-pool @14
+  sax-reader @15 leaks holder=hSax pool=unscoped
+    free delete-object @26
+    leak exit-return @16 abnormal via raise(error)@16 path 15>16
+  socket @16 leaks holder=hSocket
+    free delete-object @27
+    leak exit-return @17 abnormal via raise(error)@17 path 16>17
+  server @17 leaks holder=hServer
+    free delete-object @28
+    leak exit-return @18 abnormal via raise(error)@18 path 17>18
+  client-principal @18 leaks holder=hPrincipal pool=unscoped
+    leak exit-return @29 normal path 18>19>20>21>22>23>25>26>27>28>29
+  automation @19 leaks holder=chExcel
+    free release-object @29
+    leak exit-return @20 abnormal via raise(error)@20 path 19>20
+  dynamic @20 leaks holder=hAny
+    leak exit-return @29 normal path 20>21>22>23>25>26>27>28>29
+  query @21 escapes pool=unscoped
+    escape array-element @21
+  query @23 escapes pool=unscoped
+    escape field @23

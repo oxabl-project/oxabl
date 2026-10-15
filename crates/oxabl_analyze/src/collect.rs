@@ -76,7 +76,19 @@ pub struct CollectedDiagnostic {
 }
 
 /// The complete, root-resolved diagnostic set for a file.
+///
+/// Other crates cannot build it with a struct expression; use
+/// [`CollectedDiagnostics::new`].
+///
+/// ```compile_fail,E0639
+/// let _ = oxabl_analyze::CollectedDiagnostics {
+///     diagnostics: Vec::new(),
+///     parse_recovered: false,
+///     include_findings: Vec::new(),
+/// };
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CollectedDiagnostics {
     pub diagnostics: Vec<CollectedDiagnostic>,
     /// Whether the parser recovered from at least one error, wherever in the
@@ -86,9 +98,47 @@ pub struct CollectedDiagnostics {
     /// include has no root-buffer span and is dropped from that list, while the
     /// statements it skipped are gone from the model all the same.
     pub parse_recovered: bool,
+    /// Findings of a use-site rule ([`RuleMeta::use_site_in_includer`]) that sit
+    /// in an include. They are not in `diagnostics`: the includer's own run
+    /// reports one only when the include's own run cannot.
+    ///
+    /// [`RuleMeta::use_site_in_includer`]: oxabl_lint::RuleMeta::use_site_in_includer
+    pub include_findings: Vec<IncludeFinding>,
+}
+
+/// A finding whose anchor is in an include file, with where it would show.
+///
+/// ```compile_fail,E0639
+/// fn build(
+///     diagnostic: oxabl_common::Diagnostic,
+///     span: oxabl_ast::Span,
+/// ) -> oxabl_analyze::IncludeFinding {
+///     oxabl_analyze::IncludeFinding { diagnostic, path: Default::default(), span }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IncludeFinding {
+    /// The finding at the root's `{...}` site that brought the include in.
+    /// Labels that are not in the root are dropped.
+    pub diagnostic: Diagnostic,
+    /// The include file that holds the anchor.
+    pub path: PathBuf,
+    /// The anchor, in the include file's own bytes.
+    pub span: Span,
 }
 
 impl CollectedDiagnostics {
+    /// A set of `diagnostics` from a run that recovered from no parse error and
+    /// has no include findings.
+    pub const fn new(diagnostics: Vec<CollectedDiagnostic>) -> Self {
+        Self {
+            diagnostics,
+            parse_recovered: false,
+            include_findings: Vec::new(),
+        }
+    }
+
     /// Every diagnostic (all stages), in pipeline order.
     pub fn all(&self) -> impl Iterator<Item = &CollectedDiagnostic> {
         self.diagnostics.iter()
@@ -121,6 +171,11 @@ impl CollectedDiagnostics {
                 .cloned()
                 .collect(),
             parse_recovered: self.parse_recovered,
+            include_findings: if source == DiagnosticSource::Lint {
+                Vec::new()
+            } else {
+                self.include_findings.clone()
+            },
         }
     }
 }
@@ -220,6 +275,9 @@ pub struct ExpandedFile {
     /// Every include file the expansion read through a resolved include node, each
     /// once, with the root-level site of the chain that reached it.
     include_origins: Vec<IncludeOrigin>,
+    /// The path of each include file the expansion read, by the file id its
+    /// chunks carry.
+    file_paths: Vec<(u32, PathBuf)>,
     /// Include references that resolved to no file and that the root names itself:
     /// written in the root, or reached only through `{&var}` substitutions the root
     /// writes. For the second kind `site` is the substitution, in the root's own
@@ -330,6 +388,48 @@ impl ExpandedFile {
             })
             .ok()?;
         Some(self.include_regions[found].site)
+    }
+
+    /// Where a span in the **expanded** buffer lies in the include file that
+    /// wrote it: the file's path, the span in that file's own bytes, and the
+    /// `{...}` site in the root file's bytes through which it arrived.
+    ///
+    /// `None` for a span written in the root file, and for one whose text no
+    /// file on disk wrote (a `{&var}` value).
+    pub fn resolve_include_span(&self, span: Span) -> Option<(&Path, Span, Span)> {
+        let (file, real_start) = self.resolve(span.start)?;
+        if file == self.root {
+            return None;
+        }
+        let path = &self
+            .file_paths
+            .iter()
+            .find(|(known, _)| *known == file.raw())?
+            .1;
+        let chunk = self.chunk_at(span.start)?;
+        let last = span.end.saturating_sub(1).max(span.start);
+        let last = last.min(chunk.virt_start + chunk.len - 1);
+        let real_end = chunk.real_start + (last - chunk.virt_start) + 1;
+        let site = self.resolve_include_site(span)?;
+        Some((
+            path,
+            Span {
+                start: real_start,
+                end: real_end.max(real_start),
+            },
+            site,
+        ))
+    }
+
+    /// The parts of the expanded text that include files wrote, in order.
+    pub fn include_spans(&self) -> Vec<Span> {
+        self.include_regions
+            .iter()
+            .map(|r| Span {
+                start: r.virt_start,
+                end: r.virt_end,
+            })
+            .collect()
     }
 
     /// The chunk containing virtual offset `virt`, or `None` past the end of the
@@ -491,6 +591,7 @@ pub fn expand_source_with(
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
             include_origins: Vec::new(),
+            file_paths: Vec::new(),
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
@@ -549,6 +650,8 @@ pub fn expand_source_with(
                 &mut std::collections::HashSet::new(),
                 &mut include_origins,
             );
+            let mut file_paths = Vec::new();
+            collect_file_paths(&pf.tree, &mut file_paths);
             let mut substitutions = Vec::new();
             collect_substitution_sites(&pf.tree, &mut substitutions);
             // An include that failed to resolve deeper down is that file's gap to
@@ -593,6 +696,7 @@ pub fn expand_source_with(
                 dependency_paths: recorder.into_reads(),
                 direct_includes,
                 include_origins,
+                file_paths,
                 unresolved_includes,
                 nested_unresolved_includes,
                 unreadable_includes,
@@ -750,6 +854,25 @@ fn flatten_tree(
                 }
             }
         }
+    }
+}
+
+/// The file id and path of every resolved include in the tree, at any depth.
+fn collect_file_paths(nodes: &[SpanNode], out: &mut Vec<(u32, PathBuf)>) {
+    for node in nodes {
+        let SpanNode::Include { path, children, .. } = node else {
+            continue;
+        };
+        let file = children.iter().find_map(|child| match child {
+            SpanNode::Chunk { file, .. } => Some(file.raw()),
+            SpanNode::Include { .. } => None,
+        });
+        if let (Some(path), Some(file)) = (path, file)
+            && !out.iter().any(|(known, _)| *known == file)
+        {
+            out.push((file, path.clone()));
+        }
+        collect_file_paths(children, out);
     }
 }
 
@@ -978,10 +1101,13 @@ pub fn collect_from_expanded_selecting(
     // workspace or merely "we did not look". Only `schema_loaded` is assigned
     // directly: `new` infers it from an empty schema, and this path is handed the
     // caller's explicit answer, which is the whole point of the flag.
+    let include_spans = expanded.include_spans();
     let mut ctx = AnalysisContext::new(root, &expanded.text, schema)
+        .with_include_regions(&include_spans)
         .with_lint_severities(lint_severities.clone())
         .with_index(index)
-        .with_source_context(source_context);
+        .with_source_context(source_context)
+        .with_parse_recovered(out.parse_recovered);
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 
@@ -1003,7 +1129,17 @@ pub fn collect_from_expanded_selecting(
             |meta| meta.context_free,
         ),
     };
+    let registry = oxabl_lint::Registry::builtin_shared();
     for d in linted {
+        if everything
+            && registry
+                .rules()
+                .any(|rule| rule.meta().use_site_in_includer && rule.meta().code == d.code.0)
+            && let Some(found) = include_finding(&d, expanded)
+        {
+            out.include_findings.push(found);
+            continue;
+        }
         if let Some(resolved) = resolve_diagnostic(d, expanded) {
             out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
@@ -1013,6 +1149,31 @@ pub fn collect_from_expanded_selecting(
     }
 
     (Some(sem), out)
+}
+
+/// `d` as a finding at the `{...}` site of the include that holds its anchor,
+/// or `None` when its anchor is in the root file or in no file on disk.
+fn include_finding(d: &Diagnostic, expanded: &ExpandedFile) -> Option<IncludeFinding> {
+    let (path, span, site) = expanded.resolve_include_span(d.span.span)?;
+    let mut diagnostic = d.clone();
+    diagnostic.span = FileSpan {
+        file: expanded.root,
+        span: site,
+    };
+    diagnostic
+        .labels
+        .retain_mut(|label| match expanded.resolve_span(label.span.span) {
+            Some(fs) => {
+                label.span = fs;
+                true
+            }
+            None => false,
+        });
+    Some(IncludeFinding {
+        diagnostic,
+        path: path.to_path_buf(),
+        span,
+    })
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,
@@ -1157,6 +1318,7 @@ mod tests {
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
             include_origins: Vec::new(),
+            file_paths: Vec::new(),
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),

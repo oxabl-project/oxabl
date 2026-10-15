@@ -411,7 +411,28 @@ mod paths {
                     }
                 }
                 SK::ExpressionStatement(e) | SK::Throw(e) | SK::Return(Some(e)) => read(self, e),
-                SK::DeleteObject { target, .. } => read(self, target),
+                SK::DeleteObject {
+                    target,
+                    extra_targets,
+                    ..
+                } => {
+                    read(self, target);
+                    for e in extra_targets {
+                        read(self, e);
+                    }
+                }
+                SK::ReleaseObject { target, .. } => read(self, target),
+                SK::CreateWidgetPool { name, .. } | SK::DeleteWidgetPool { name, .. } => {
+                    if let Some(e) = name {
+                        read(self, e);
+                    }
+                }
+                SK::Apply { event, target } => {
+                    read(self, event);
+                    if let Some(e) = target {
+                        read(self, e);
+                    }
+                }
                 SK::PreprocMessage { expression } => read(self, expression),
                 SK::Do {
                     from,
@@ -572,17 +593,56 @@ mod paths {
                 SK::Create {
                     target:
                         CreateTarget::Handle {
-                            widget_pool: Some(e),
+                            handle,
+                            widget_pool,
+                            class,
+                            assignments,
+                            triggers,
+                            connect,
+                            for_table,
                             ..
                         },
                     ..
-                } => read(self, e),
+                } => {
+                    self.target(handle, id);
+                    if let Some(e) = for_table {
+                        read(self, e);
+                    }
+                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                        read(self, e);
+                    }
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                        read(self, file);
+                    }
+                    for a in assignments {
+                        read(self, &a.value);
+                    }
+                    for t in triggers {
+                        match &t.action {
+                            OnAction::Block(b) => self.stmt(b),
+                            OnAction::PersistentRun {
+                                in_handle,
+                                arguments,
+                                ..
+                            } => {
+                                for e in in_handle.iter().chain(arguments) {
+                                    read(self, e);
+                                }
+                            }
+                            OnAction::Revert => {}
+                        }
+                    }
+                }
                 SK::On { kind } => match kind {
                     OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action
                     {
                         OnAction::Block(b) => self.stmt(b),
-                        OnAction::PersistentRun { arguments, .. } => {
-                            for e in arguments {
+                        OnAction::PersistentRun {
+                            in_handle,
+                            arguments,
+                            ..
+                        } => {
+                            for e in in_handle.iter().chain(arguments) {
                                 read(self, e);
                             }
                         }

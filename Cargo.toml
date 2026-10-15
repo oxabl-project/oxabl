@@ -21,5 +21,6 @@ members = [
     "crates/oxabl_formatter",
     "crates/oxabl_wasm",
     "crates/oxabl_flow",
+    "crates/oxabl_handles",
 ]
 resolver = "2"

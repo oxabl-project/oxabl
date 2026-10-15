@@ -6,14 +6,17 @@ use std::sync::OnceLock;
 
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, LintRuleRef, LintSeverityMap, Severity};
+use oxabl_handles::FileHandles;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
-    CL001, CL002, CL005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, TX006,
-    assigned_but_never_read, block_var_used_outside, dynamic_invoke, missing_no_undo, run_value,
-    shared_state, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
-    unused_variable,
+    CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
+    LINT0005, LINT0006, TX006, assigned_but_never_read, block_var_used_outside,
+    delete_not_in_finally, dynamic_invoke, handle_not_deleted, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
+    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
+use crate::shared::RunShared;
 
 /// Names of the built-in rule groups.
 pub mod groups {
@@ -69,6 +72,11 @@ pub struct RuleMeta {
     /// on a statement that an includer can change is lower confidence
     /// ([`fragment`](crate::fragment)).
     pub context_free: bool,
+    /// Whether a finding anchored in an include that the include's own run
+    /// cannot produce is reported at the `{...}` site in the includer, instead
+    /// of being dropped. The rule's answer needs the includer: it creates,
+    /// names or frees an object that the include alone does not see.
+    pub use_site_in_includer: bool,
 }
 
 impl RuleMeta {
@@ -89,6 +97,7 @@ impl RuleMeta {
             stability: Stability::Stable,
             requires_compilation_unit: false,
             context_free: false,
+            use_site_in_includer: false,
         }
     }
 
@@ -110,6 +119,13 @@ impl RuleMeta {
         self
     }
 
+    /// Mark the rule's findings in an include as reportable at the use site
+    /// when the include's own run cannot produce them.
+    pub const fn reported_at_use_site(mut self) -> Self {
+        self.use_site_in_includer = true;
+        self
+    }
+
     /// Mark the rule as needing the whole compilation unit.
     pub const fn requiring_compilation_unit(mut self) -> Self {
         self.requires_compilation_unit = true;
@@ -128,23 +144,57 @@ pub trait Rule: Send + Sync {
 
     /// Run the rule over `program` and its semantic model.
     fn run(&self, program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic>;
+
+    /// [`run`](Self::run) with the facts that one registry run shares between
+    /// rules. The default ignores them.
+    fn run_shared(
+        &self,
+        program: &[Statement],
+        sem: &Semantic,
+        ctx: &AnalysisContext,
+        _shared: &RunShared,
+    ) -> Vec<Diagnostic> {
+        self.run(program, sem, ctx)
+    }
 }
 
 /// The signature of a rule written as a plain function.
 pub type RuleFn = fn(&[Statement], &Semantic, &AnalysisContext) -> Vec<Diagnostic>;
+
+/// The signature of a rule that reads the lifetimes of dynamic objects
+/// ([`oxabl_handles`]) and nothing else of the analysis.
+pub type HandlesFn = fn(&FileHandles, &AnalysisContext) -> Vec<Diagnostic>;
+
+#[derive(Debug, Clone, Copy)]
+enum Body {
+    Plain(RuleFn),
+    Handles(HandlesFn),
+}
 
 /// A [`Rule`] made of metadata and a plain function — how every built-in rule
 /// is registered.
 #[derive(Debug, Clone, Copy)]
 pub struct FnRule {
     meta: RuleMeta,
-    run: RuleFn,
+    body: Body,
 }
 
 impl FnRule {
     /// Pair `meta` with `run`.
     pub const fn new(meta: RuleMeta, run: RuleFn) -> Self {
-        FnRule { meta, run }
+        FnRule {
+            meta,
+            body: Body::Plain(run),
+        }
+    }
+
+    /// Pair `meta` with a query over the file's dynamic objects. One registry
+    /// run analyses the file once for every such rule.
+    pub const fn over_handles(meta: RuleMeta, check: HandlesFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::Handles(check),
+        }
     }
 }
 
@@ -154,7 +204,20 @@ impl Rule for FnRule {
     }
 
     fn run(&self, program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
-        (self.run)(program, sem, ctx)
+        self.run_shared(program, sem, ctx, &RunShared::default())
+    }
+
+    fn run_shared(
+        &self,
+        program: &[Statement],
+        sem: &Semantic,
+        ctx: &AnalysisContext,
+        shared: &RunShared,
+    ) -> Vec<Diagnostic> {
+        match self.body {
+            Body::Plain(run) => run(program, sem, ctx),
+            Body::Handles(check) => check(shared.handles(program, ctx.source), ctx),
+        }
     }
 }
 
@@ -306,6 +369,46 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         missing_no_undo::DEFAULT_SEVERITY,
         missing_no_undo::run,
     ),
+    handles_rule(
+        HD001,
+        handle_not_deleted::NAME,
+        handle_not_deleted::GROUP,
+        handle_not_deleted::DESCRIPTION,
+        handle_not_deleted::DEFAULT_SEVERITY,
+        handle_not_deleted::check,
+    ),
+    handles_rule(
+        HD002,
+        delete_not_in_finally::NAME,
+        delete_not_in_finally::GROUP,
+        delete_not_in_finally::DESCRIPTION,
+        delete_not_in_finally::DEFAULT_SEVERITY,
+        delete_not_in_finally::check,
+    ),
+    handles_rule(
+        HD003,
+        persistent_procedure_leak::NAME,
+        persistent_procedure_leak::GROUP,
+        persistent_procedure_leak::DESCRIPTION,
+        persistent_procedure_leak::DEFAULT_SEVERITY,
+        persistent_procedure_leak::check,
+    ),
+    handles_rule(
+        HD004,
+        memptr_not_freed::NAME,
+        memptr_not_freed::GROUP,
+        memptr_not_freed::DESCRIPTION,
+        memptr_not_freed::DEFAULT_SEVERITY,
+        memptr_not_freed::check,
+    ),
+    handles_rule(
+        HD005,
+        missing_widget_pool::NAME,
+        missing_widget_pool::GROUP,
+        missing_widget_pool::DESCRIPTION,
+        missing_widget_pool::DEFAULT_SEVERITY,
+        missing_widget_pool::check,
+    ),
 ];
 
 /// A syntactic strict rule: context-free, and in preview until its
@@ -324,6 +427,26 @@ const fn strict_rule(
             .with_stability(Stability::Preview)
             .context_free(),
         run,
+    )
+}
+
+/// A strict rule over the lifetimes of dynamic objects: context-free and in
+/// preview, like [`strict_rule`].
+const fn handles_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    check: HandlesFn,
+) -> FnRule {
+    FnRule::over_handles(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free()
+            .reported_at_use_site(),
+        check,
     )
 }
 
@@ -516,6 +639,7 @@ impl Registry {
         select: impl Fn(&RuleMeta) -> bool,
     ) -> Vec<Diagnostic> {
         let fragment = ctx.source_context.is_include_fragment();
+        let shared = RunShared::default();
         let mut out = Vec::new();
         for rule in self.rules() {
             let meta = rule.meta();
@@ -525,10 +649,14 @@ impl Registry {
             let Some(severity) = self.severity_for(rule, &ctx.lint_severities) else {
                 continue;
             };
-            out.extend(rule.run(program, sem, ctx).into_iter().map(|mut d| {
-                d.severity = severity;
-                d
-            }));
+            out.extend(
+                rule.run_shared(program, sem, ctx, &shared)
+                    .into_iter()
+                    .map(|mut d| {
+                        d.severity = severity;
+                        d
+                    }),
+            );
         }
         out
     }

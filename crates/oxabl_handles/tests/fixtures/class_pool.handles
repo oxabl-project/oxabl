@@ -1,0 +1,4 @@
+unit u1 method Work
+  query @5 pool-freed holder=hQuery pool=class
+  query @6 escapes holder=hNamed pool=foreign "elsewhere"
+    escape foreign-pool @6

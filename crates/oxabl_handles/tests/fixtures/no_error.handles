@@ -1,0 +1,20 @@
+unit u1 procedure one
+  query @3 freed holder=h1 pool=unscoped
+    free delete-object @5
+unit u2 procedure two
+  buffer @10 freed holder=h2 pool=unscoped
+    free delete-object @12
+unit u3 procedure three
+  persistent-procedure @17 freed holder=h3
+    free delete-procedure @19
+unit u4 procedure four
+  query @26 leaks holder=h4 pool=unscoped
+    free delete-object @29
+    leak exit-return @28 normal path 26>27>28
+unit u5 procedure five
+  query @35 leaks holder=h5 pool=unscoped
+    free delete-object @37
+    leak exit-return @36 normal path 35>36
+unit u6 procedure six
+  query @43 leaks holder=h6 pool=unscoped
+    leak exit-return @44 normal path 43>44

@@ -1,9 +1,9 @@
 use super::*;
 use oxabl_ast::{
     AccessModifier, BooleanLiteral, BufferTarget, CommentKind, CreateTarget, CreateTargetKind,
-    DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, ExpressionKind, FindType,
-    HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId, OnAction, OnKind,
-    ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
+    DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind, ExpressionKind,
+    FindType, HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId, OnAction,
+    OnKind, ParameterDirection, ParameterType, RunTarget, SortDirection, Span, StatementKind,
     StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral,
     UsingSource, WhenBranch, WidgetQualifier,
 };
@@ -4296,6 +4296,39 @@ END PROCEDURE.
 }
 
 #[test]
+fn procedure_external_is_marked_external() {
+    for (source, prototype, external) in [
+        (
+            "PROCEDURE Sleep EXTERNAL \"kernel32.dll\" STDCALL:\n  DEFINE INPUT PARAMETER n AS LONG.\nEND PROCEDURE.",
+            true,
+            true,
+        ),
+        (
+            "PROCEDURE work IN SUPER:\n  DEFINE INPUT PARAMETER h AS HANDLE.\nEND PROCEDURE.",
+            true,
+            false,
+        ),
+        ("PROCEDURE work IN SUPER.", true, false),
+        ("PROCEDURE work:\nEND PROCEDURE.", false, false),
+    ] {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser.parse_statement().expect(source);
+        match stmt.kind {
+            StatementKind::Procedure {
+                is_prototype,
+                is_external,
+                ..
+            } => {
+                assert_eq!(is_prototype, prototype, "{source}");
+                assert_eq!(is_external, external, "{source}");
+            }
+            _ => panic!("Expected Procedure statement: {source}"),
+        }
+    }
+}
+
+#[test]
 fn parse_procedure_in_super_period_only_empty_body() {
     let source = "PROCEDURE assignDBRow IN SUPER.";
     let tokens = tokenize(source);
@@ -6618,14 +6651,35 @@ fn parse_simple_class() {
             implements,
             is_abstract,
             is_final,
+            use_widget_pool,
             body,
         } => {
             assert_eq!(name.name, "MyClass");
+            assert!(!use_widget_pool);
             assert!(inherits.is_none());
             assert!(implements.is_empty());
             assert!(!is_abstract);
             assert!(!is_final);
             assert!(body.is_empty());
+        }
+        _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_use_widget_pool() {
+    let source = "CLASS MyClass INHERITS Base USE-WIDGET-POOL: END CLASS.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().unwrap();
+    match stmt.kind {
+        StatementKind::Class {
+            inherits,
+            use_widget_pool,
+            ..
+        } => {
+            assert_eq!(inherits.unwrap().name, "Base");
+            assert!(use_widget_pool);
         }
         _ => panic!("Expected Class statement"),
     }
@@ -7414,6 +7468,14 @@ fn parse_method_with_class_return_type() {
 // Database manipulation statements
 // =============================================================================
 
+/// The name of a plain identifier expression.
+fn expr_name(expr: &Expression) -> &str {
+    match &expr.kind {
+        ExpressionKind::Identifier(id) => &id.name,
+        other => panic!("expected an identifier, got {other:?}"),
+    }
+}
+
 #[test]
 fn parse_create_basic() {
     let source = "CREATE Customer.";
@@ -7481,7 +7543,9 @@ fn parse_delete_object_holds_the_operand_as_an_expression() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match &stmt.kind {
-        StatementKind::DeleteObject { target, no_error } => {
+        StatementKind::DeleteObject {
+            target, no_error, ..
+        } => {
             assert!(*no_error);
             assert!(matches!(&target.kind, ExpressionKind::Identifier(id) if id.name == "h"));
         }
@@ -7520,31 +7584,12 @@ fn parse_delete_object_accepts_a_complex_operand() {
 }
 
 #[test]
-fn parse_delete_other_spellings_are_unchanged() {
-    // `PROCEDURE`, `WIDGET` and `SERVER` already fell through to a real `Delete`
-    // node; only the `OBJECT` spelling skipped. And the ordinary buffer form is
-    // untouched.
-    for (source, expected) in [
-        ("DELETE PROCEDURE hproc.", "hproc"),
-        ("DELETE WIDGET hwidget.", "hwidget"),
-        ("DELETE Customer.", "Customer"),
-    ] {
-        let tokens = tokenize(source);
-        let mut parser = Parser::new(&tokens, source);
-        let stmt = parser
-            .parse_statement()
-            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
-        match &stmt.kind {
-            StatementKind::Delete { buffer, .. } => assert_eq!(buffer.name, expected),
-            other => panic!("{source}: expected Delete, got {other:?}"),
-        }
-    }
-    // `DELETE WIDGET-POOL` keeps its own shape: a `Delete` with an empty name.
-    let source = "DELETE WIDGET-POOL \"p\".";
+fn parse_delete_buffer_form_is_unchanged() {
+    let source = "DELETE Customer.";
     let tokens = tokenize(source);
     let mut parser = Parser::new(&tokens, source);
     match &parser.parse_statement().expect("statement").kind {
-        StatementKind::Delete { buffer, .. } => assert!(buffer.name.is_empty()),
+        StatementKind::Delete { buffer, .. } => assert_eq!(buffer.name, "Customer"),
         other => panic!("expected Delete, got {other:?}"),
     }
 }
@@ -9239,11 +9284,12 @@ fn parse_create_dataset() {
                     kind,
                     handle,
                     widget_pool,
+                    ..
                 },
             ..
         } => {
             assert_eq!(kind, CreateTargetKind::Dataset);
-            assert_eq!(handle.name, "hDs");
+            assert_eq!(expr_name(&handle), "hDs");
             assert!(widget_pool.is_none());
         }
         _ => panic!("Expected Create Dataset"),
@@ -9280,7 +9326,7 @@ fn parse_create_data_source() {
             ..
         } => {
             assert_eq!(kind, CreateTargetKind::DataSource);
-            assert_eq!(handle.name, "hDs");
+            assert_eq!(expr_name(&handle), "hDs");
         }
         _ => panic!("Expected Create DataSource"),
     }
@@ -9298,7 +9344,7 @@ fn parse_create_temp_table() {
             ..
         } => {
             assert_eq!(kind, CreateTargetKind::TempTable);
-            assert_eq!(handle.name, "hTt");
+            assert_eq!(expr_name(&handle), "hTt");
         }
         _ => panic!("Expected Create TempTable"),
     }
@@ -10096,6 +10142,7 @@ fn parse_on_persistent_run() {
             OnAction::PersistentRun {
                 procedure,
                 arguments,
+                ..
             } => {
                 assert_eq!(procedure.name, "myProc");
                 assert!(arguments.is_empty());
@@ -11459,16 +11506,6 @@ fn skipped_harvest_keeps_spaced_division_operands() {
     );
 }
 
-/// String literals are not identifier-shaped, so the event name drops out while
-/// the widget and frame names survive.
-#[test]
-fn skipped_apply_harvests_widget_and_frame_not_the_event_string() {
-    let names = harvest(r#"APPLY "CHOOSE" TO btn-ok IN FRAME f-main."#);
-    assert!(names.contains(&"btn-ok".to_string()), "got {names:?}");
-    assert!(names.contains(&"f-main".to_string()), "got {names:?}");
-    assert!(!names.iter().any(|n| n.contains("CHOOSE")), "got {names:?}");
-}
-
 /// Every component of an absolute path is byte-adjacent to a preceding `/` or
 /// `.`, so a redirect to a file harvests nothing at all — and allocates nothing.
 #[test]
@@ -11898,11 +11935,12 @@ fn create_call_is_a_handle_create() {
                     kind,
                     handle,
                     widget_pool,
+                    ..
                 },
             no_error,
         } => {
             assert_eq!(*kind, CreateTargetKind::Call);
-            assert_eq!(handle.name, "hCall");
+            assert_eq!(expr_name(handle), "hCall");
             assert!(widget_pool.is_some());
             assert!(*no_error);
         }
@@ -12106,6 +12144,8 @@ fn a_bare_number_is_not_a_run_target() {
     assert!(!program.errors.is_empty());
 }
 
+/// Parse `source` and require exactly the statements in `source` with no error.
+#[track_caller]
 fn parse_clean(source: &str) -> Vec<Statement> {
     let program = Parser::new(&tokenize(source), source).parse_program();
     assert!(program.errors.is_empty(), "{source}: {:?}", program.errors);
@@ -12250,4 +12290,635 @@ fn unresolved_include_in_call_argument_position_does_not_break_the_list() {
     let mut parser = Parser::new(&tokens, &text);
     let program = parser.parse_program();
     assert!(program.is_ok(), "got {:?}", program.first_error());
+}
+
+// =============================================================================
+// Handle-lifetime statements: dynamic-object CREATE, pools, DELETE, RELEASE, APPLY
+// =============================================================================
+
+/// The statement after the one under test, which a swallowing parser would lose.
+const NEXT_STMT: &str = "\nx = 1.";
+
+#[track_caller]
+fn assert_next_stmt_survives(stmts: &[Statement], source: &str) {
+    assert_eq!(stmts.len(), 2, "{source}: following statement was lost");
+    assert!(
+        matches!(stmts[1].kind, StatementKind::Assignment { .. }),
+        "{source}: got {:?}",
+        stmts[1].kind
+    );
+}
+
+#[track_caller]
+fn handle_create(stmt: &Statement) -> (&CreateTargetKind, &Expression, bool) {
+    match &stmt.kind {
+        StatementKind::Create {
+            target: CreateTarget::Handle { kind, handle, .. },
+            no_error,
+        } => (kind, handle, *no_error),
+        other => panic!("expected a handle create, got {other:?}"),
+    }
+}
+
+#[test]
+fn create_handle_types_keep_their_kind_and_handle() {
+    for (keyword, expected) in [
+        ("X-DOCUMENT", CreateTargetKind::XDocument),
+        ("X-NODEREF", CreateTargetKind::XNodeRef),
+        ("SAX-READER", CreateTargetKind::SaxReader),
+        ("SAX-WRITER", CreateTargetKind::SaxWriter),
+        ("SAX-ATTRIBUTES", CreateTargetKind::SaxAttributes),
+        ("SOCKET", CreateTargetKind::Socket),
+        ("SERVER-SOCKET", CreateTargetKind::ServerSocket),
+        ("SERVER", CreateTargetKind::Server),
+        ("SOAP-HEADER", CreateTargetKind::SoapHeader),
+        ("SOAP-HEADER-ENTRYREF", CreateTargetKind::SoapHeaderEntryRef),
+        ("CLIENT-PRINCIPAL", CreateTargetKind::ClientPrincipal),
+        ("DATASET", CreateTargetKind::Dataset),
+        ("DATA-SOURCE", CreateTargetKind::DataSource),
+        ("TEMP-TABLE", CreateTargetKind::TempTable),
+        ("BUFFER", CreateTargetKind::Buffer),
+        ("QUERY", CreateTargetKind::Query),
+        ("CALL", CreateTargetKind::Call),
+    ] {
+        for tail in [
+            "",
+            " NO-ERROR",
+            " IN WIDGET-POOL \"p\"",
+            " IN WIDGET-POOL \"p\" NO-ERROR",
+        ] {
+            let source = format!("CREATE {keyword} h{tail}.{NEXT_STMT}");
+            let stmts = parse_clean(&source);
+            assert_next_stmt_survives(&stmts, &source);
+            let (kind, handle, no_error) = handle_create(&stmts[0]);
+            assert_eq!(*kind, expected, "{source}");
+            assert_eq!(expr_name(handle), "h", "{source}");
+            assert_eq!(no_error, tail.ends_with("NO-ERROR"), "{source}");
+            match &stmts[0].kind {
+                StatementKind::Create {
+                    target: CreateTarget::Handle { widget_pool, .. },
+                    ..
+                } => assert_eq!(
+                    widget_pool.is_some(),
+                    tail.contains("WIDGET-POOL"),
+                    "{source}"
+                ),
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[test]
+fn create_widget_types_are_widget_creates() {
+    for keyword in [
+        "BROWSE",
+        "BUTTON",
+        "COMBO-BOX",
+        "CONTROL-FRAME",
+        "DIALOG-BOX",
+        "EDITOR",
+        "FILL-IN",
+        "FRAME",
+        "IMAGE",
+        "MENU",
+        "MENU-ITEM",
+        "RADIO-SET",
+        "RECTANGLE",
+        "SELECTION-LIST",
+        "SLIDER",
+        "SUB-MENU",
+        "TEXT",
+        "TOGGLE-BOX",
+        "WINDOW",
+    ] {
+        for tail in ["", " NO-ERROR", " IN WIDGET-POOL \"p\" NO-ERROR"] {
+            let source = format!("CREATE {keyword} h{tail}.{NEXT_STMT}");
+            let stmts = parse_clean(&source);
+            assert_next_stmt_survives(&stmts, &source);
+            let (kind, handle, _) = handle_create(&stmts[0]);
+            assert_eq!(*kind, CreateTargetKind::Widget, "{source}");
+            assert_eq!(expr_name(handle), "h", "{source}");
+        }
+    }
+}
+
+#[test]
+fn create_widget_keeps_its_assign_expressions() {
+    let source =
+        format!("CREATE BUTTON h ASSIGN LABEL = \"x\" ROW = iRow + 1 SENSITIVE = TRUE.{NEXT_STMT}");
+    let stmts = parse_clean(&source);
+    assert_next_stmt_survives(&stmts, &source);
+    match &stmts[0].kind {
+        StatementKind::Create {
+            target: CreateTarget::Handle { assignments, .. },
+            ..
+        } => {
+            let names: Vec<_> = assignments
+                .iter()
+                .map(|a| a.attribute.name.as_str())
+                .collect();
+            assert_eq!(names, ["LABEL", "ROW", "SENSITIVE"]);
+            assert!(matches!(assignments[1].value.kind, ExpressionKind::Add(..)));
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn create_widget_keeps_its_triggers_phrase_as_statements() {
+    let source = format!(
+        "CREATE BROWSE h IN WIDGET-POOL \"p\"\n  ASSIGN WIDTH = 10\n  TRIGGERS:\n    ON CHOOSE DO:\n      y = 2.\n    END.\n    ON ENTRY PERSISTENT RUN lib.\n  END TRIGGERS\n  NO-ERROR.{NEXT_STMT}"
+    );
+    let stmts = parse_clean(&source);
+    assert_next_stmt_survives(&stmts, &source);
+    match &stmts[0].kind {
+        StatementKind::Create {
+            target:
+                CreateTarget::Handle {
+                    widget_pool,
+                    assignments,
+                    triggers,
+                    ..
+                },
+            no_error,
+        } => {
+            assert!(widget_pool.is_some());
+            assert!(no_error);
+            assert_eq!(assignments.len(), 1);
+            assert_eq!(triggers.len(), 2);
+            assert_eq!(triggers[0].events[0].name, "CHOOSE");
+            match &triggers[0].action {
+                OnAction::Block(body) => match &body.kind {
+                    StatementKind::Do { body, .. } => assert_eq!(body.len(), 1),
+                    other => panic!("got {other:?}"),
+                },
+                other => panic!("got {other:?}"),
+            }
+            assert!(matches!(triggers[1].action, OnAction::PersistentRun { .. }));
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn create_handle_keeps_subscripts_and_member_access() {
+    for (handle_src, expected) in [
+        ("hArr[1]", "ArrayAccess"),
+        ("tt.hq", "FieldAccess"),
+        ("THIS-OBJECT:hq", "MemberAccess"),
+    ] {
+        let source = format!("CREATE QUERY {handle_src}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        let (kind, handle, _) = handle_create(&stmts[0]);
+        assert_eq!(*kind, CreateTargetKind::Query);
+        let debug = format!("{:?}", handle.kind);
+        assert!(debug.starts_with(expected), "{source}: {debug}");
+    }
+}
+
+#[test]
+fn create_value_is_a_dynamic_create_with_its_class_expression() {
+    for tail in ["", " NO-ERROR"] {
+        let source = format!("CREATE VALUE(cClass) h{tail}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        let (kind, handle, no_error) = handle_create(&stmts[0]);
+        assert_eq!(*kind, CreateTargetKind::Dynamic);
+        assert_eq!(expr_name(handle), "h");
+        assert_eq!(no_error, !tail.is_empty());
+        match &stmts[0].kind {
+            StatementKind::Create {
+                target:
+                    CreateTarget::Handle {
+                        class: Some(class), ..
+                    },
+                ..
+            } => assert_eq!(expr_name(class), "cClass"),
+            other => panic!("got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn create_com_class_literal_is_an_automation_create() {
+    for (tail, connect, file) in [
+        ("", false, false),
+        (" NO-ERROR", false, false),
+        (" CONNECT", true, false),
+        (" CONNECT TO cFile NO-ERROR", true, true),
+        (" IN WIDGET-POOL \"p\"", false, false),
+    ] {
+        let source = format!("CREATE \"Excel.Application\" chExcel{tail}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        let (kind, handle, _) = handle_create(&stmts[0]);
+        assert_eq!(*kind, CreateTargetKind::Automation, "{source}");
+        assert_eq!(expr_name(handle), "chExcel", "{source}");
+        match &stmts[0].kind {
+            StatementKind::Create {
+                target:
+                    CreateTarget::Handle {
+                        class: Some(class),
+                        connect: conn,
+                        ..
+                    },
+                ..
+            } => {
+                assert!(matches!(
+                    class.kind,
+                    ExpressionKind::Literal(Literal::String(_))
+                ));
+                assert_eq!(conn.is_some(), connect, "{source}");
+                assert_eq!(
+                    conn.as_ref().is_some_and(|c| c.file.is_some()),
+                    file,
+                    "{source}"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn create_on_a_table_named_like_a_handle_type_stays_a_record_create() {
+    for source in [
+        "CREATE image.",
+        "CREATE menu NO-ERROR.",
+        "CREATE server.",
+        "CREATE button.",
+    ] {
+        let stmts = parse_clean(&format!("{source}{NEXT_STMT}"));
+        assert_next_stmt_survives(&stmts, source);
+        assert!(
+            matches!(
+                stmts[0].kind,
+                StatementKind::Create {
+                    target: CreateTarget::Name(_),
+                    ..
+                }
+            ),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
+
+#[test]
+fn create_widget_pool_forms() {
+    for (tail, has_name, persistent, no_error) in [
+        ("", false, false, false),
+        (" PERSISTENT", false, true, false),
+        (" NO-ERROR", false, false, true),
+        (" \"p\"", true, false, false),
+        (" \"p\" PERSISTENT", true, true, false),
+        (" cPool PERSISTENT NO-ERROR", true, true, true),
+    ] {
+        let source = format!("CREATE WIDGET-POOL{tail}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        match &stmts[0].kind {
+            StatementKind::CreateWidgetPool {
+                name,
+                persistent: p,
+                no_error: n,
+            } => {
+                assert_eq!(name.is_some(), has_name, "{source}");
+                assert_eq!(*p, persistent, "{source}");
+                assert_eq!(*n, no_error, "{source}");
+            }
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn delete_widget_pool_forms() {
+    for (tail, has_name, no_error) in [
+        ("", false, false),
+        (" NO-ERROR", false, true),
+        (" \"p\"", true, false),
+        (" cPool NO-ERROR", true, true),
+    ] {
+        let source = format!("DELETE WIDGET-POOL{tail}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        match &stmts[0].kind {
+            StatementKind::DeleteWidgetPool { name, no_error: n } => {
+                assert_eq!(name.is_some(), has_name, "{source}");
+                assert_eq!(*n, no_error, "{source}");
+            }
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn delete_handle_forms_are_not_record_deletes() {
+    for (source, expected, extra) in [
+        ("DELETE OBJECT h.", DeleteObjectKind::Object, 0),
+        ("DELETE OBJECT h NO-ERROR.", DeleteObjectKind::Object, 0),
+        ("DELETE PROCEDURE h.", DeleteObjectKind::Procedure, 0),
+        (
+            "DELETE PROCEDURE h NO-ERROR.",
+            DeleteObjectKind::Procedure,
+            0,
+        ),
+        ("DELETE WIDGET h.", DeleteObjectKind::Widget, 0),
+        ("DELETE WIDGET h1 h2.", DeleteObjectKind::Widget, 1),
+        (
+            "DELETE WIDGET h1 h2 h3 NO-ERROR.",
+            DeleteObjectKind::Widget,
+            2,
+        ),
+        ("DELETE SERVER h.", DeleteObjectKind::Server, 0),
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+        match &stmts[0].kind {
+            StatementKind::DeleteObject {
+                kind,
+                target,
+                extra_targets,
+                no_error,
+            } => {
+                assert_eq!(*kind, expected, "{source}");
+                assert!(expr_name(target).starts_with('h'), "{source}");
+                assert_eq!(extra_targets.len(), extra, "{source}");
+                assert_eq!(*no_error, source.contains("NO-ERROR"), "{source}");
+            }
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn delete_of_a_table_named_like_a_handle_keyword_stays_a_record_delete() {
+    for source in [
+        "DELETE widget.",
+        "DELETE procedure.",
+        "DELETE object NO-ERROR.",
+    ] {
+        let stmts = parse_clean(&format!("{source}{NEXT_STMT}"));
+        assert_next_stmt_survives(&stmts, source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Delete { .. }),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn release_object_is_a_com_release_and_release_buffer_is_not() {
+    for (source, no_error) in [
+        ("RELEASE OBJECT chExcel.", false),
+        ("RELEASE OBJECT chExcel NO-ERROR.", true),
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+        match &stmts[0].kind {
+            StatementKind::ReleaseObject {
+                target,
+                no_error: n,
+            } => {
+                assert_eq!(expr_name(target), "chExcel");
+                assert_eq!(*n, no_error);
+            }
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+    let stmts = parse_clean("RELEASE Customer.");
+    assert!(matches!(stmts[0].kind, StatementKind::Release { .. }));
+}
+
+#[test]
+fn apply_keeps_event_and_target() {
+    for (source, has_target) in [
+        ("APPLY \"CLOSE\" TO hProc.", true),
+        ("APPLY \"CHOOSE\" TO btn-ok IN FRAME f-main.", true),
+        ("APPLY \"ENTRY\" TO SELF.", true),
+        ("APPLY cEvent.", false),
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+        match &stmts[0].kind {
+            StatementKind::Apply { target, .. } => {
+                assert_eq!(target.is_some(), has_target, "{source}")
+            }
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn unparsable_create_tail_is_skipped_without_swallowing_the_next_statement() {
+    for source in [
+        "CREATE BUTTON h ASSIGN LABEL ! = \"x\".",
+        "CREATE X-DOCUMENT h BOGUS-CLAUSE.",
+        "CREATE WIDGET-POOL \"p\" BOGUS.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn create_buffer_keeps_its_for_table_operand() {
+    for tail in [
+        "FOR TABLE \"Customer\"",
+        "FOR TABLE Customer",
+        "FOR TABLE(cName)",
+        "FOR TABLE hTt:DEFAULT-BUFFER-HANDLE IN WIDGET-POOL \"p\" NO-ERROR",
+    ] {
+        let source = format!("CREATE BUFFER h {tail}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        match &stmts[0].kind {
+            StatementKind::Create {
+                target:
+                    CreateTarget::Handle {
+                        kind: CreateTargetKind::Buffer,
+                        for_table,
+                        ..
+                    },
+                ..
+            } => assert!(for_table.is_some(), "{source}"),
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn object_and_widget_stay_usable_as_names() {
+    for source in [
+        "DEFINE VARIABLE object AS CHARACTER NO-UNDO.",
+        "DEFINE VARIABLE widget AS CHARACTER NO-UNDO.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD widget AS CHARACTER FIELD object AS INTEGER.",
+        "object = widget.",
+        "MESSAGE object widget.",
+        "x = tt.widget + h:object.",
+        "DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.",
+        "PROCEDURE object:\n  RETURN.\nEND PROCEDURE.",
+        "RUN widget.",
+        "DELETE object.",
+        "DELETE OBJECT object.",
+        "DELETE WIDGET widget.",
+        "DELETE OBJECT h:object.",
+        "RELEASE OBJECT object.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
+fn delete_and_release_object_forms_keep_their_kind() {
+    let stmts = parse_clean("DELETE OBJECT object.\nDELETE WIDGET widget.\nRELEASE OBJECT object.");
+    assert!(matches!(
+        stmts[0].kind,
+        StatementKind::DeleteObject {
+            kind: DeleteObjectKind::Object,
+            ..
+        }
+    ));
+    assert!(matches!(
+        stmts[1].kind,
+        StatementKind::DeleteObject {
+            kind: DeleteObjectKind::Widget,
+            ..
+        }
+    ));
+    assert!(matches!(stmts[2].kind, StatementKind::ReleaseObject { .. }));
+}
+
+#[test]
+fn create_buffer_accepts_buffer_name() {
+    for tail in [
+        "FOR TABLE \"x\" BUFFER-NAME \"y\"",
+        "FOR TABLE cTable BUFFER-NAME cName NO-ERROR",
+        "FOR TABLE hTt:DEFAULT-BUFFER-HANDLE BUFFER-NAME cName IN WIDGET-POOL \"p\"",
+    ] {
+        let source = format!("CREATE BUFFER h {tail}.{NEXT_STMT}");
+        let stmts = parse_clean(&source);
+        assert_next_stmt_survives(&stmts, &source);
+        match &stmts[0].kind {
+            StatementKind::Create {
+                target:
+                    CreateTarget::Handle {
+                        kind: CreateTargetKind::Buffer,
+                        for_table,
+                        assignments,
+                        ..
+                    },
+                ..
+            } => {
+                assert!(for_table.is_some(), "{source}");
+                assert_eq!(assignments.len(), 1, "{source}");
+                assert!(
+                    assignments[0]
+                        .attribute
+                        .name
+                        .eq_ignore_ascii_case("BUFFER-NAME"),
+                    "{source}"
+                );
+            }
+            other => panic!("{source}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn buffer_name_stays_usable_as_a_member_name() {
+    let source = format!("cName = hBuf:BUFFER-NAME.{NEXT_STMT}");
+    let stmts = parse_clean(&source);
+    assert_next_stmt_survives(&stmts, &source);
+}
+
+#[test]
+fn on_persistent_run_takes_in_handle_and_path_names() {
+    for (tail, name, has_in, args) in [
+        ("PERSISTENT RUN p IN THIS-PROCEDURE.", "p", true, 0),
+        ("PERSISTENT RUN p IN hLib (INPUT x).", "p", true, 1),
+        ("PERSISTENT RUN dir/file.p.", "dir/file.p", false, 0),
+        (
+            "PERSISTENT RUN dir/file.p IN hLib (x, y).",
+            "dir/file.p",
+            true,
+            2,
+        ),
+    ] {
+        let on = format!("ON CHOOSE OF btn {tail}{NEXT_STMT}");
+        let stmts = parse_clean(&on);
+        assert_next_stmt_survives(&stmts, &on);
+        match &stmts[0].kind {
+            StatementKind::On {
+                kind:
+                    OnKind::UiEvent {
+                        action:
+                            OnAction::PersistentRun {
+                                procedure,
+                                in_handle,
+                                arguments,
+                            },
+                        ..
+                    },
+            } => {
+                assert_eq!(procedure.name, name, "{on}");
+                assert_eq!(in_handle.is_some(), has_in, "{on}");
+                assert_eq!(arguments.len(), args, "{on}");
+            }
+            other => panic!("{on}: got {other:?}"),
+        }
+
+        let trig = format!(
+            "CREATE BUTTON h\n  TRIGGERS:\n    ON CHOOSE {tail}\n  END TRIGGERS.{NEXT_STMT}"
+        );
+        let stmts = parse_clean(&trig);
+        assert_next_stmt_survives(&stmts, &trig);
+        match &stmts[0].kind {
+            StatementKind::Create {
+                target: CreateTarget::Handle { triggers, .. },
+                ..
+            } => assert_eq!(triggers.len(), 1, "{trig}"),
+            other => panic!("{trig}: got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn unreserved_keywords_are_valid_class_type_names() {
+    let class = |body: &str| format!("CLASS c:\n{body}\nEND CLASS.{NEXT_STMT}");
+    for source in [
+        "DEFINE VARIABLE o AS Object NO-UNDO.".to_string(),
+        "DEFINE VARIABLE o AS OBJECT EXTENT 3 NO-UNDO.".to_string(),
+        "DEFINE VARIABLE s AS Socket NO-UNDO.".to_string(),
+        "DEFINE VARIABLE s AS Server NO-UNDO.".to_string(),
+        "DEFINE VARIABLE i AS Image NO-UNDO.".to_string(),
+        "DEFINE VARIABLE w AS Widget NO-UNDO.".to_string(),
+        "DEFINE VARIABLE o AS CLASS Object NO-UNDO.".to_string(),
+        "DEFINE VARIABLE o AS Menu.Item NO-UNDO.".to_string(),
+        class("DEFINE PRIVATE PROPERTY body AS Object GET. SET."),
+        class("METHOD PUBLIC Object Get():\n  RETURN ?.\nEND METHOD."),
+        class("METHOD PUBLIC VOID Put(INPUT pData AS OBJECT):\nEND METHOD."),
+        class("METHOD PUBLIC VOID Put(INPUT pData AS Socket):\nEND METHOD."),
+    ] {
+        let full = if source.starts_with("CLASS") {
+            source
+        } else {
+            format!("{source}{NEXT_STMT}")
+        };
+        let stmts = parse_clean(&full);
+        assert!(stmts.len() >= 2, "{full}");
+    }
 }

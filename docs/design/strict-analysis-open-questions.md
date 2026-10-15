@@ -10,7 +10,8 @@ This note answers two of the three open questions in
 [`strict-analysis-plan.md`](strict-analysis-plan.md): where annotations may appear, and where
 diagnostics inside include files are reported. The third (PROPATH and include resolution parity
 with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
-lists the block semantics that the flow graph (`oxabl_flow`) models without a reference.
+lists the block semantics that the flow graph (`oxabl_flow`) models without a reference, and
+section 6 the handle semantics that `oxabl_handles` relies on.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -114,6 +115,12 @@ in expressions.
    the same statement list. Blank lines and comments do not break the run. After preprocessing,
    the target is the first statement of an include's expansion. An annotation before an `&IF`
    targets the conditional; M6 must decide whether to look into its branches (open).
+
+**Corpus delta of H5 and H5a (verified).** Distinct normal-path leak sites fell from 1771 to 1750
+on the first corpus and from 291 to 280 on the second; none were added. Of 10 moved sites sampled,
+all 10 were false positives: 3 `CREATE ... NO-ERROR` or `RUN ... PERSISTENT SET ... NO-ERROR`
+followed by `IF ERROR-STATUS:ERROR`, and 7 freed under a `VALID-OBJECT` guard (mostly in
+`FINALLY` blocks).
 
 **Still to verify against a licensed install:** the compiler's treatment of an annotation in a
 position it does not know, the exact list of annotations it reads itself, and whether unquoted
@@ -326,6 +333,53 @@ open, how an include with several roots in one run picks its context for rules t
 context-free, and whether to follow includes reachable from the roots instead of walking `.i`
 files.
 
+### Handle rules in includes (M2)
+
+HD001 to HD005 are not context-free in the strict sense: whether an object leaks can depend on the
+includer. They are registered as context-free, so that they follow the shipped M1 route: a finding
+whose create or delete sits in an include is reported once, in the include, when the include is checked
+alone. The analysis of a root runs over the expanded text, so the root sees the create in an include
+and the delete after it together. A root's finding whose anchor sits in an include is therefore not
+dropped at once. It is routed (`RuleMeta::use_site_in_includer`, set for the five rules):
+
+- The root run keeps the finding aside, with the include file, the anchor in the include's own bytes,
+  and the root's outermost `{...}` site (`CollectedDiagnostics::include_findings`).
+- `LintPipeline::run` runs the include alone (`run_context_free`, as a walk does). If that run has the
+  same rule at the same anchor, the include reports it, and the root stays silent. This is the "never
+  both" rule of recommendation 3.
+- Otherwise the include cannot see the finding. Either it creates an object whose variable the root
+  defines (alone, the name does not resolve, so the object escapes), or it deletes or overwrites an
+  object that the root creates (alone, there is no create). The root reports it at the `{...}` site, with "(in file.i:line, reached through this include)" in the message (the path
+  is relative to the working directory when it lies below it) and
+  `oxabl_lint::fragment::USE_SITE_NOTE` at the end of the help. The finding is not autofixable. Its
+  baseline key is the includer's path, as for any other finding of the root.
+- The run of one include is made once per run handle, however many roots include it.
+- An include whose own configuration has no context-free rule on is never run alone, and its findings
+  are dropped with it. This follows the per-directory overrides: a rule that the user turned off for the
+  include is not shown at the use site.
+
+Confidence: high that the two cases of the review (a create that nothing deletes, a delete of an object
+that the root creates) are reported. Medium for the comparison: it is by rule and anchor, so a finding
+that the include shows alone with another anchor is reported twice. Limits: the include has to be
+readable through the same file system and path that the preprocessor used. The editor and the daemon
+(`collect`, the incremental path) do not run the includes, so they do not show these findings. An include
+that nobody walks (given as one file to `check`, outside the walked directory, or with another extension)
+still counts as "shown alone", so the root stays silent about a finding that the include would show.
+
+An include that is checked alone cannot see its includer. Its findings are therefore lower confidence
+in two cases, with the help ending in `oxabl_lint::fragment::FRAGMENT_NOTE` (and not autofixable):
+
+- HD001, HD003 and HD004 for an object still live at the end of the include's main block. The includer
+  may free it later.
+- HD005 always. The includer may create the widget pool.
+
+A statement that holds a reference or an `&IF` is also lowered by the shared fragment rule above.
+HD002 is not lowered: only an error path is claimed, and an includer rarely changes that.
+
+HD005 is reported once per file, on the file's own first create. A root leaves out the creates that an
+include wrote and counts only its own, so it reports even when an include creates earlier. The include
+reports its own creates (lower confidence) when it is checked.
+
 ## 4. Shared definitions and `NO-UNDO`
 
 TX006 reports a variable or temp-table defined without `NO-UNDO`, and its help used to say "add
@@ -378,3 +432,76 @@ draft, and its row says what it was.
 
 **Still to verify against a licensed install:** F5, F7 (when it settles, keep one successor) and F8 for STOP and QUIT first, because
 the readings differ in graph shape. Then F10 (destructor and trigger blocks) and F13.
+
+## 6. Handle lifetimes: the semantics `oxabl_handles` relies on
+
+`oxabl_handles` follows each dynamic object from its create over every path of its unit's flow
+graph and gives it a verdict: freed, pool-freed, escapes, leaks or unknown. The rules below are
+readings, marked as in section 5. Each has a fixture in `crates/oxabl_handles/tests/fixtures/`
+(re-bless with `OXABL_BLESS=1 cargo test -p oxabl_handles --test snapshots`), and the rule
+queries are pinned by `crates/oxabl_handles/tests/rules.rs`.
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| H1 | Class instances (`NEW`, `DYNAMIC-NEW`) are reference-counted and freed by the AVM: verdict "collected", not followed. Cycles between objects leak, and are out of scope (the plan defers them). | Recalled, high. | `create_kinds.p` |
+| H2 | Handle-based objects (`CREATE QUERY`, `BUFFER`, `TEMP-TABLE`, `DATASET`, `DATA-SOURCE`, `CALL`, X-, SAX-, SOAP-, socket and server objects, `CLIENT-PRINCIPAL`), widgets, COM objects, persistent procedures and MEMPTRs are not collected. They live until deleted, until their widget pool is deleted, or until the session ends. | Recalled, high. | `create_kinds.p` |
+| H3 | Frees: `DELETE OBJECT`, `DELETE PROCEDURE`, `DELETE WIDGET` (each handle of `DELETE WIDGET h1 h2`), `RELEASE OBJECT` (COM) and `SET-SIZE(m) = 0`. A delete that raises (an invalid handle) is still a free on its error edge. `h:HANDLE` is the same object as `h`, so `DELETE OBJECT h:HANDLE` is a free and `h2 = h:HANDLE` is an alias. A delete whose operand names a holder but is not the holder (`DELETE OBJECT WIDGET-HANDLE(STRING(h))`, `h:PARENT`) makes the object unknown (`unmapped-free`), never "no effect". | Recalled, high. | `create_kinds.p`, `frees.p`, `new_kinds.p`, `memptr.p`; `model_fixes.rs` |
+| H4 | `APPLY "CLOSE" TO hProc` frees a persistent procedure, and no other kind of object (a window or a query is not deleted by CLOSE). This is a convention, not a language rule: the procedure's `CLOSE` trigger usually runs `DELETE PROCEDURE THIS-PROCEDURE`. `RUN destroy IN h` follows the same kind of convention but shows nothing in the caller, so it makes the object unknown, not freed. The convention is read widely: any internal procedure name that starts with `destroy` (`destroyObject`, `DestroyThis`; user names, case-insensitive), and ADM's `RUN dispatch IN h ('destroy')`. | Proposed, medium. Low for the wider names and for `dispatch`. | `frees.p`, `persistent.p`, `destroy_names.p`; `model_fixes.rs` |
+| H5 | A live object's handle is valid and not unknown. Each test of a holder then has a fixed value: `VALID-HANDLE(h)`, `VALID-OBJECT(h)` and `h <> ?` are true, `h = ?` is false, `NOT` flips. An `IF` whose whole condition has a fixed value this way, through `AND`, `OR` and `NOT`, has a branch that cannot happen while `h` holds a live object: `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` frees on every path, and so does `IF h <> ? AND VALID-HANDLE(h)`. The false branch of `VALID-HANDLE(h) AND x` can happen (`x` is false), so it stays. A test of another holder is no guard. `VALID-OBJECT` is taken as a guard on handles too: real code tests procedure and widget handles with it. | Recalled, high for `VALID-HANDLE`, `<> ?` and `= ?`. Medium for `VALID-OBJECT` on a handle (the corpus uses it for cleanup of handles; its behaviour on an invalid handle is not confirmed). | `guards.p`, `guards_compound.p` |
+| H5a | After `CREATE ... NO-ERROR` or `RUN ... PERSISTENT SET h NO-ERROR`, the object may not exist. The branch of an `IF` that tests `ERROR-STATUS:ERROR` as true cannot hold the object, so a path that leaves there is no leak. This holds only when the `IF` is the next statement after the create: any other statement may change the error status. `NOT VALID-HANDLE(h)` after the create is H5. A create without `NO-ERROR` gets no such rule. | Proposed, medium. | `no_error.p` |
+| H6 | An object created without `IN WIDGET-POOL` goes into the most recent unnamed pool, else the session pool. An unnamed pool is deleted when the procedure or trigger that created it ends; one created in the main block of a persistent procedure lives until that procedure is deleted. Model: a `CREATE WIDGET-POOL.` that dominates the create in the same unit is the unit's pool; one in the main block also covers the file's other units (the file pool). The caller's pool is not knowable: "unscoped" (HD005). | Recalled, medium. | `pools.p`, `unscoped.p` |
+| H6a | A class with `USE-WIDGET-POOL` has an unnamed pool for each instance. An object a unit of the class creates without `IN WIDGET-POOL` goes there, unless a `CREATE WIDGET-POOL` of the unit dominates the create. The pool is deleted with the instance, so the object is pool-freed (placement "class"). `NEW` and static members are not told apart: a static method may use the session pool in a real run. | Proposed, low. | `class_pool.cls` |
+| H7 | A named pool is session-wide by name. `DELETE WIDGET-POOL name` deletes it, and so does the end of the procedure that created it, unless it is `PERSISTENT`. A pool name no statement of the file creates belongs to someone else: the object escapes to it. | Recalled, medium. | `pools.p` |
+| H8 | Widget pools hold handle-based objects and widgets, not persistent procedures, MEMPTRs, COM objects or class instances. Server and socket objects, and a `CREATE VALUE` whose type is not known, are taken as not pooled, so HD005 does not report them. | Recalled. Medium; low for the server, socket, X-, SAX- and SOAP- objects. | `pools.p`, `new_kinds.p` |
+| H9 | An object left in a pool this procedure deletes is freed with it, so it is not an HD001 leak, also when a loop overwrites its handle. It can still grow memory until the procedure ends. | Proposed. | `pools.p` |
+| H10 | A statement that raises does not complete: a `CREATE` that raises makes nothing, and an assignment that raises stores nothing. The assignment of a plain variable or literal to a plain variable, and `RETURN` of one, cannot raise, although the flow graph gives every assignment a raise edge. So does a test with only variable references, literals, comparisons and `AND`/`OR`/`NOT`: `IF`, `ELSE IF`, `CASE` (its `WHEN` values too), `DO WHILE`, `REPEAT WHILE`. `VALID-HANDLE(v)`, `VALID-OBJECT(v)` and `ERROR-STATUS:ERROR` read a value and do not raise, so a `FINALLY` that tests `IF VALID-HANDLE(h)` before its delete adds no raise edge. A `DO i = a TO b [BY c]` header whose bounds are variables or literals does not raise either, so an error in a loop is taken from a statement of its body, which is what HD002 names. Any other call, attribute, method, arithmetic or field in the test can raise. `h:HANDLE` counts as a plain variable. This list is for the handle walk only; `oxabl_flow` keeps the raise edges. | Proposed, high for assignments. Medium for tests (an invalid-handle read is excluded by the no-call rule, a `?` comparison on a variable is taken as safe). | `alias.p`, `escapes.p`, `cannot_raise_tests.p`, `finally.p` |
+| H11 | Overwriting the last variable that holds a live object (a new create into it, `h = ?`, an `OUTPUT` argument) loses the object there. An `OUTPUT` parameter starts at its initial value in the callee, so the old value is not seen. A create in a loop whose object is still live on the next iteration is lost at that create. | Recalled for `OUTPUT`, high. Proposed for the rest. | `loops_overwrite.p`, `alias.p` |
+| H12 | `SET-SIZE` on a MEMPTR that already has a size raises an error and frees nothing, so it does not lose the old allocation. Assigning a MEMPTR copies the pointer, not the memory, so both variables name one allocation. `COPY-LOB ... TO m` allocates `m` when the definition `m` resolves to from the unit (its own, an enclosing unit's, or a member) is `AS MEMPTR`. The parser skips the statement, so the target is read from its tokens. It is the same allocation as an earlier `SET-SIZE` or `COPY-LOB` of `m` that dominates it, not a second object. `COPY-LOB FROM m` is a use. | Recalled, medium for `SET-SIZE`. Proposed, low for `COPY-LOB`. | `memptr.p`; `model_fixes.rs` |
+| H13 | `RUN p PERSISTENT` without `SET` keeps no handle in this file (a singleton or a self-managing super procedure): verdict "uncaptured", for HD003 to treat on its own. | Proposed. | `persistent.p` |
+| H14 | An `INPUT` handle argument goes by what the callee shows. A procedure, function or method this file defines is matched by name, and its parameter by position. A method is matched only when no subclass can override it: a `PRIVATE` or `STATIC` method, or any method of a `FINAL` class. A call of any other method, or of an `ABSTRACT` one, is unknown (`callee`), because the code that runs may be a subclass's in another file; interface methods are never read. A prototype is not a definition: `PROCEDURE p IN SUPER`, `PROCEDURE p IN h` and `FUNCTION f ... IN h` / `IN SUPER` / `MAP TO` run code of another file (`PROCEDURE p EXTERNAL` is H14a). A `FUNCTION f ... FORWARD` is matched through its definition. A body whose parameter at that position is not declared `HANDLE`, `WIDGET-HANDLE`, `COM-HANDLE`, `MEMPTR` or as a table, dataset or buffer parameter (`CHARACTER`, a class, `LIKE`) is not the callee: an inherited overload may take the handle, so the object is unknown (`callee`). What the defined callee does with the parameter, or with a local variable it copies the parameter into, is read without regard to order: a free hands the object over (escape `freed-by-callee`); a store where it outlives the call (a member, an outer or shared variable, an `OUTPUT` parameter, a field, an attribute), `RETURN`, or any other escape of this list keeps it (escape `kept-by-callee`); a pass to a callee the file does not define, a skipped statement or a dynamic call that names it makes the object unknown (`callee`); otherwise the callee borrows it, a use. A pass on to another callee of the file takes that callee's fate, up to four calls deep, then unknown; a call back into a callee whose parameter is being read (recursion) adds nothing. One fate reads at most 1,000 callee bodies, then it is unknown, so callees that pass a handle to each other cost a bounded time. If the callee is not in the file (`RUN x.p`, `RUN p IN h`, a static class call), the object is unknown (`callee`): the callee may delete or keep it. Built-in functions borrow. A method call resolves by its receiver: on a variable declared `AS HANDLE` or `WIDGET-HANDLE`, a buffer, table or dataset parameter (any `TABLE`/`DATASET` form), a static buffer, temp-table, dataset, data-source or frame, a system handle, a chain of attributes from one of these, or a chain whose last link is a `...HANDLE` attribute (`BUFFER b:HANDLE`), a method that looks built in (a hyphenated name such as `SET-BUFFERS`, or `FILL`, `READ`, `WRITE`, `CONNECT`, `DISCONNECT`, `INVOKE`, `SAVE`, `LOAD`, `PARSE`, `SELECT`) borrows. A call with no receiver, on `THIS-OBJECT`, or on a variable whose declared type is this class names a method of the file, read only when the method is matched as above. Any other method call (`oRepo:Save(h)` on another class, `CAST(...)`, `SUPER:`, a name the file does not declare) is unknown. A `TABLE`, `TABLE-HANDLE`, `DATASET` or `DATASET-HANDLE` argument passes a copy, so the callee cannot free the caller's object: a borrow (the keyword is read from the text before the argument, since the parser drops it). A call with no receiver in a class may name one of the class's methods. A built-in function missing from the lexer registry is unknown too, which errs towards no report. An `INPUT-OUTPUT` argument escapes. Passing to a constructor (`NEW C(h)`), `ADD-SUPER-PROCEDURE`, `PUBLISH` and `SUBSCRIBE PROCEDURE` escapes. `ADD-BUFFER` on a query this unit creates is a use (a query does not own its buffers), and on a dataset this unit creates it is H15. On any other receiver (a parameter, a static dataset, a variable of another unit) the receiver may be a dataset, so the object is unknown (`add-buffer`; in a callee, `callee`). `SET-BUFFERS` is a use. | Proposed, medium. Recalled for queries, high. | `escapes.p`, `dataset_member.p`; `model_fixes.rs`, `callees.rs` |
+| H14a | A `PROCEDURE p EXTERNAL "lib"` prototype (a shared-library entry point) borrows every `INPUT` argument. Only `SET-SIZE(m) = 0` frees an ABL MEMPTR: a library that frees the pointer corrupts the AVM's bookkeeping, and one that keeps the pointer does not free it either. A handle reaches a library only as a `LONG` or `INT64`, not as a handle. | Recalled, medium. | `callees.rs` |
+| H15 | `hDs:ADD-BUFFER(h)` or `hDs:ADD-BUFFER(h:DEFAULT-BUFFER-HANDLE)`, where this unit creates a dataset into `hDs`, makes the dataset the owner. Whether deleting a dynamic dataset deletes the temp-tables of the buffers added to it is not confirmed. | Proposed, low. | `dataset_member.p` |
+| H16 | Storing the handle where it outlives the unit escapes it: an `OUTPUT` parameter, `RETURN`, a class member, a variable of an enclosing unit, a shared variable, a field, an array element or `EXTENT` variable, another object's attribute. The escape records whether another unit of the file frees that variable: the name must resolve to the same definition from that unit, so a local of the same name in another unit does not count; a class-level check reads it (a member no unit frees is a leak of the class). | Proposed. | `escapes.p`, `class.cls`; `model_fixes.rs` |
+| H17 | A widget put under a parent (`CREATE BUTTON h ASSIGN FRAME = f`, `PARENT = w`, or a later `h:FRAME = f`) is owned by the parent: deleting a frame or window deletes the widgets in it. The parent keeps its own owner. The deferred `TRIGGERS` bodies of a widget create are not read. | Recalled, medium. | `widgets.p` |
+| H18 | A main-block variable that another unit of the file frees by name (a cleanup procedure, a trigger) owns the object at the main block's end: escape. | Proposed. | `other_unit.p`; `model_fixes.rs` |
+| H19 | A `DELETE PROCEDURE` of a handle that walks a procedure list (`FIRST-PROCEDURE`, `NEXT-SIBLING`, ...) may delete any persistent procedure: unknown, not freed. | Proposed. | `sweep.p` |
+| H20 | A statement the parser skips that names a holder, a dynamic call with a holder as argument (`RUN VALUE`, `DYNAMIC-FUNCTION` except its `IN` handle, `DYNAMIC-INVOKE`), or an unexpanded include, while the object lives, makes a would-be leak unknown. A file whose parse was recovered gets no HD001-HD005 finding at all: recovery can close a unit early and move a free out of it, and no statement left behind names the holder. An include fragment run alone is exempt: it is partial by nature, its parse often recovers, and its findings are reported once, in the include; a gate there would move them to every includer. | Proposed. | `opaque.p`; `recovered_parse.rs`, `handles_recovered_cli.rs` |
+| H21 | A handle derived from a live object (`h:DEFAULT-BUFFER-HANDLE`, `h:HANDLE`, `h:BUFFER-HANDLE`, `h:GET-BUFFER-HANDLE(n)`, `h:TABLE-HANDLE`, also `QUERY`, `DATASET`, `PARENT`, `FRAME`, `WINDOW`; any attribute or method with `HANDLE` in its name) that reaches an escape sink (`RETURN`, an `OUTPUT` parameter, a member, an outer or shared variable, a field, an array element, another object's attribute) hands the root object over: escape `derived-handle`. The caller reaches the object through the derived handle and deletes it. A derived handle assigned to a local variable, or passed `INPUT`, is a use. Other attributes (`NUM-RESULTS`) are not derived handles. | Proposed, low. | `derived_escape.p` |
+| H22 | The walk of one object stops at 100,000 states, and the objects of one file share 600,000. Past either, the object is unknown (`too-complex`), so a generated file with many aliased holders costs a bounded time. The order is the objects' order of analysis, so a file's later objects are the ones a spent budget hits. | Proposed. | `model_fixes.rs` |
+
+Not modelled, known gaps:
+
+- A statement between a `NO-ERROR` create and the test of `ERROR-STATUS:ERROR` ends H5a, also when it
+  cannot change the status. A leak is then reported on the failed path. The test of a saved status
+  (`lErr = ERROR-STATUS:ERROR` first) is not read.
+- `UNDO` restores a variable without `NO-UNDO`, a handle variable included. Objects are not undone,
+  and the model does not restore variables either. This is safe to leave: the only effect on a
+  verdict is a miss. A transaction block that creates into a variable and then undoes the variable
+  loses the handle in a real run, while the model still sees it, so a later `IF VALID-HANDLE(h)
+  THEN DELETE OBJECT h` is taken as a free (a missed leak, not a false report). The opposite case
+  needs an old live handle overwritten inside a block that is then undone, which is rare. Modelling
+  it needs the CFG to know which edges undo which block, and the holder set to remember the value at
+  each block entry. `undo.p` pins the current verdicts.
+- Statements other than `SET-SIZE` and `COPY-LOB ... TO m` that allocate a MEMPTR.
+- A call in a statement the effect reader does not scan (`FOR EACH ... WHERE f(h)`, `DISPLAY f(h)`) is a use of `h`, not unknown.
+- `CREATE-LIKE` on a dataset, and the widget-pool option
+  of a widget's `ASSIGN` phrase.
+- A caller's widget pool. Each callee of the file is read without order or paths, and a pass on is
+  followed up to four calls deep: a free on one branch only counts as a free, and a parameter used
+  in a trigger the callee defines is not seen. A receiver typed `LIKE` another variable, a database buffer, and a member a class inherits
+  are not resolved, so their method calls are unknown.
+- More than 64 variables of one unit that hold the same object on one path.
+- Which method body runs is read from this file only (H14). A method a subclass could override is
+  unknown even when no subclass does, so a leak through it is missed. A `STATIC` method called
+  through its class name (`Svc:Work(h)`) is not matched.
+- A `VAR` with an access modifier in a class body (`VAR PRIVATE HANDLE h.`) does not parse as a
+  declaration, so that member is not resolved.
+
+**Corpus check (verified, proportions only).** Over two large real corpora, of 20 sampled objects
+that leak on a normal path, 18 looked real on reading the code (never deleted, or skipped by an
+early `RETURN` or a conditional cleanup). One was a procedure-list sweep (now H19) and one a
+`VALID-OBJECT` test on a handle. Includes multiply the raw counts: one leak in a widely included
+file is counted once per includer, so the corpus runner also counts distinct sites.
+
+**Still to verify against a licensed install:** H6 and H7 (pool scope, and the persistent
+procedure case), H8 for the less common object kinds, H11 for a MEMPTR passed `OUTPUT`, H12, and H15.

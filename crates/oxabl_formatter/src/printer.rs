@@ -426,11 +426,12 @@ pub(crate) fn print(
     // style. Edits are applied per line, right-to-left, to keep offsets valid.
     if keywords::wants_transform(style) {
         let mut edits: Vec<Vec<(usize, usize, String)>> = vec![Vec::new(); n];
-        for t in toks {
+        let is_name = keywords::name_uses(source, toks);
+        for (ti, t) in toks.iter().enumerate() {
             if t.kind == Kind::Eof {
                 break;
             }
-            if !keywords::is_transformable(t.kind) {
+            if !keywords::is_transformable(t.kind) || is_name[ti] {
                 continue;
             }
             let raw = &source[t.start..t.end];

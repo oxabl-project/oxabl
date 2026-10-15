@@ -402,3 +402,161 @@ fn the_includer_note_marks_only_what_an_includer_can_change() {
     assert_eq!(guard.len(), 1, "{guard:?}");
     assert!(!note(&guard[0].2), "{guard:?}");
 }
+
+#[test]
+fn a_handle_finding_in_an_include_is_reported_once_and_marked_lower_confidence() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &format!(
+            "[workspace]\nname = \"p\"\n{SOURCES}[workspace.lint]\nenable = [\"strict.handles\"]\n"
+        ),
+    );
+    write(
+        &dir.path().join("src/open.i"),
+        "DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.\nCREATE QUERY hQuery.\n",
+    );
+    // One includer frees the object and one leaks it; a root reports neither.
+    write(
+        &dir.path().join("src/frees.p"),
+        "{open.i}\nDELETE OBJECT hQuery.\n",
+    );
+    write(
+        &dir.path().join("src/leaks.p"),
+        "{open.i}\nMESSAGE \"x\".\n",
+    );
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    let report = json(&stdout);
+    let mut in_include: Vec<_> = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["path"].as_str().unwrap().ends_with("open.i"))
+        .collect();
+    assert_eq!(in_include.len(), 2, "{report}\n{stderr}");
+    in_include.sort_by_key(|d| d["code"].as_str().unwrap().to_string());
+    assert_eq!(in_include[0]["code"], "HD001");
+    assert_eq!(in_include[1]["code"], "HD005");
+    for d in in_include {
+        assert!(
+            d["help"]
+                .as_str()
+                .unwrap()
+                .contains("This file is an include"),
+            "{d}"
+        );
+    }
+    assert!(codes_at(&report, "frees.p").is_empty(), "{report}");
+    assert!(codes_at(&report, "leaks.p").is_empty(), "{report}");
+}
+
+const HANDLES: &str = "[workspace]\nname = \"p\"\n[workspace.sources]\ninclude_paths = [\".\", \"src\"]\n\
+     [workspace.lint]\nenable = [\"strict.handles\"]\n";
+
+/// `(line, message, help)` of the findings of `code` in `file`.
+fn rows_of(report: &serde_json::Value, file: &str, code: &str) -> Vec<(u64, String, String)> {
+    report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["path"].as_str().unwrap().ends_with(file) && d["code"] == code)
+        .map(|d| {
+            (
+                d["start"]["line"].as_u64().unwrap(),
+                d["message"].as_str().unwrap().to_string(),
+                d["help"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_create_in_an_include_that_the_includer_never_frees_is_reported_at_the_use_site() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), HANDLES);
+    write(&dir.path().join("src/mk.i"), "CREATE QUERY hq.\n");
+    write(
+        &dir.path().join("src/b.p"),
+        "DEFINE VARIABLE hq AS HANDLE NO-UNDO.\n{mk.i}\nMESSAGE \"no free\".\n",
+    );
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    let report = json(&stdout);
+    // The include alone cannot resolve `hq`, so it shows nothing.
+    assert!(codes_at(&report, "mk.i").is_empty(), "{report}");
+    let rows = rows_of(&report, "b.p", "HD001");
+    assert_eq!(rows.len(), 1, "{report}");
+    assert_eq!(rows[0].0, 2, "at the `{{mk.i}}` line");
+    assert!(rows[0].1.contains("in src/mk.i:1"), "{}", rows[0].1);
+    assert!(
+        rows[0]
+            .2
+            .ends_with("Check the include and each includer before you change it."),
+        "{}",
+        rows[0].2
+    );
+}
+
+#[test]
+fn a_free_in_an_include_of_an_object_the_includer_creates_is_reported_at_the_use_site() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), HANDLES);
+    write(&dir.path().join("src/free.i"), "DELETE OBJECT hq.\n");
+    write(
+        &dir.path().join("src/c.p"),
+        "DEFINE VARIABLE hq AS HANDLE NO-UNDO.\nCREATE QUERY hq.\n\
+         hq:QUERY-PREPARE(\"for each x\").\n{free.i}\n",
+    );
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    let report = json(&stdout);
+    assert!(codes_at(&report, "free.i").is_empty(), "{report}");
+    let rows = rows_of(&report, "c.p", "HD002");
+    assert_eq!(rows.len(), 1, "{report}");
+    assert_eq!(rows[0].0, 4, "at the `{{free.i}}` line");
+    assert!(rows[0].1.contains("in src/free.i:1"), "{}", rows[0].1);
+}
+
+#[test]
+fn a_finding_that_the_include_shows_alone_is_not_reported_again_in_the_includer() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), HANDLES);
+    write(
+        &dir.path().join("src/own.i"),
+        "DEFINE VARIABLE hq AS HANDLE NO-UNDO.\nCREATE QUERY hq.\n\
+         hq:QUERY-PREPARE(\"for each x\").\nDELETE OBJECT hq.\n",
+    );
+    write(&dir.path().join("src/a.p"), "{own.i}\n{own.i}\n");
+    write(&dir.path().join("src/b.p"), "{own.i}\n");
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    let report = json(&stdout);
+    assert_eq!(rows_of(&report, "own.i", "HD002").len(), 1, "{report}");
+    assert!(rows_of(&report, "a.p", "HD002").is_empty(), "{report}");
+    assert!(rows_of(&report, "b.p", "HD002").is_empty(), "{report}");
+}
+
+#[test]
+fn a_use_site_finding_is_baselined_under_the_includer() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), HANDLES);
+    write(&dir.path().join("src/mk.i"), "CREATE QUERY hq.\n");
+    write(
+        &dir.path().join("src/b.p"),
+        "DEFINE VARIABLE hq AS HANDLE NO-UNDO.\n{mk.i}\n",
+    );
+    let root = dir.path();
+    let (exit, _, stderr) = check(root, &[".", "--baseline", "b.json", "--update-baseline"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    let doc = json(&fs::read_to_string(root.join("b.json")).unwrap());
+    let hd: Vec<_> = doc["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["code"] == "HD001" || e["rule"] == "HD001")
+        .map(|e| e["path"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(hd, ["src/b.p"], "{doc}");
+    let (exit, _, stderr) = check(root, &[".", "--baseline", "b.json"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+}

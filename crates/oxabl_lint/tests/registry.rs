@@ -98,6 +98,16 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ("CL002", "dynamic-invoke", "strict.calls", warning),
             ("CL005", "shared-state", "strict.calls", warning),
             ("TX006", "missing-no-undo", "strict.transactions", warning),
+            ("HD001", "handle-not-deleted", "strict.handles", warning),
+            ("HD002", "delete-not-in-finally", "strict.handles", warning),
+            (
+                "HD003",
+                "persistent-procedure-leak",
+                "strict.handles",
+                warning
+            ),
+            ("HD004", "memptr-not-freed", "strict.handles", warning),
+            ("HD005", "missing-widget-pool", "strict.handles", warning),
         ]
     );
     for rule in registry.rules() {
@@ -105,6 +115,12 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
         let strict = m.group.starts_with("strict.");
         assert!(!m.description.is_empty(), "{}", m.code);
         assert_eq!(m.context_free, strict, "{}", m.code);
+        assert_eq!(
+            m.use_site_in_includer,
+            m.group == "strict.handles",
+            "{}",
+            m.code
+        );
         let stability = if strict {
             Stability::Preview
         } else {
