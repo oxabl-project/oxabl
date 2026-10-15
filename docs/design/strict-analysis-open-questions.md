@@ -969,7 +969,8 @@ a callee that writes; 1,204 and 91 a partial one; 929 and 2,213 an Unknown calle
 second corpus's silenced findings are label-printing procedures of a persistent library.
 Slice 2 now applies this test through the shared provider. With every strict group enabled,
 the second corpus gives 3,311 TX004 findings before and 2,976 after (335 removed, 10.1 %).
-All other strict findings are unchanged. These totals include fragments and include use sites.
+On the tracked files of the first corpus it gives 6,487 before and 6,149 after (338 removed,
+5.2 %). All other strict findings are unchanged. These totals include fragments and include use sites.
 Ten removed findings were read against the caller and callee source; all ten have no database
 writes, including transitive calls. `strict_corpus` measures this through the actual lint pipeline.
 
