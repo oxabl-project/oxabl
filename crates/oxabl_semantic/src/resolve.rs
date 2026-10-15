@@ -6041,9 +6041,6 @@ fn names_after_widget_keywords(source: &str) -> FxHashSet<OxablAtom> {
     names
 }
 
-/// The argument of a `CAST`, `TYPE-OF` or `GET-CLASS` call that names a type.
-/// The parser models all three as ordinary calls, so the operand arrives as a
-/// value expression.
 /// Built-ins whose single operand names a stream.
 fn is_stream_operand_function(name: &str) -> bool {
     ["page-number", "line-counter", "page-size", "seek"]
@@ -6051,6 +6048,9 @@ fn is_stream_operand_function(name: &str) -> bool {
         .any(|f| name.eq_ignore_ascii_case(f))
 }
 
+/// The argument of a `CAST`, `TYPE-OF` or `GET-CLASS` call that names a type.
+/// The parser models all three as ordinary calls, so the operand arrives as a
+/// value expression.
 fn type_operand<'e>(name: &Identifier, arguments: &'e [Expression]) -> Option<&'e Expression> {
     let callee = name.name.as_str();
     if callee.eq_ignore_ascii_case("cast") || callee.eq_ignore_ascii_case("type-of") {
