@@ -31,6 +31,9 @@ oxabl_formatter = { path = "../oxabl_formatter", version = "1.0.3" }
 oxabl_style = { path = "../oxabl_style", version = "0.2.0" }
 clap = { version = "4", features = ["derive"], optional = true }
 indicatif = { version = "0.17", optional = true }
+notify = { version = "8", optional = true }
+notify-debouncer-full = { version = "0.6", optional = true }
+ctrlc = { version = "3", optional = true }
 lsp-server = { version = "0.7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
@@ -50,6 +53,9 @@ cli = [
     "serde",
     "dep:clap",
     "dep:indicatif",
+    "dep:notify",
+    "dep:notify-debouncer-full",
+    "dep:ctrlc",
     "dep:lsp-server",
     "dep:oxabl_lsp",
     "dep:oxabl_daemon",

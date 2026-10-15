@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 mod baseline;
+mod watch;
 
 use clap::Parser as ClapParser;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -150,6 +151,15 @@ enum Cli {
         /// results are reported in file order.
         #[arg(long, short = 'j', value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
         jobs: Option<u32>,
+
+        /// Check once, then watch the tree and the include paths, and re-check
+        /// the files that changed and the files that depend on them.
+        ///
+        /// Only files whose findings changed are printed. A change to
+        /// `oxabl.toml` or a `.df` file re-checks everything. Stop with Ctrl-C
+        /// (exit 0). Not combinable with `--json` or `--baseline`.
+        #[arg(long, conflicts_with_all = ["json", "baseline"])]
+        watch: bool,
     },
     /// Walk a tree and report the parser's conformance: how many files parse,
     /// which ones fail and where, and the ranked error patterns behind the
@@ -448,24 +458,40 @@ fn main() -> ExitCode {
             update_baseline,
             include_findings,
             jobs,
-        } => run_check(
-            &path,
-            json,
-            // On by default (R19): the language server always preprocesses, and a
-            // gate that does not would report every include-declared symbol as
-            // undefined.
-            !no_preprocess,
-            &include_paths,
-            schema.as_deref(),
-            no_lint,
-            no_format,
-            baseline.as_deref().map(|file| (file, update_baseline)),
-            include_findings,
-            jobs.map_or_else(
+            watch,
+        } => {
+            let jobs = jobs.map_or_else(
                 || std::thread::available_parallelism().map_or(1, usize::from),
                 |n| n as usize,
-            ),
-        ),
+            );
+            if watch {
+                return watch::run(&watch::Options {
+                    path: &path,
+                    preprocess: !no_preprocess,
+                    include_paths: &include_paths,
+                    schema_path: schema.as_deref(),
+                    no_lint,
+                    no_format,
+                    include_findings,
+                    jobs,
+                });
+            }
+            run_check(
+                &path,
+                json,
+                // On by default (R19): the language server always preprocesses, and a
+                // gate that does not would report every include-declared symbol as
+                // undefined.
+                !no_preprocess,
+                &include_paths,
+                schema.as_deref(),
+                no_lint,
+                no_format,
+                baseline.as_deref().map(|file| (file, update_baseline)),
+                include_findings,
+                jobs,
+            )
+        }
         Cli::Conformance {
             path,
             json,
