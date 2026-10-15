@@ -3372,12 +3372,24 @@ impl<'a> ResolveWalker<'a> {
                 // The arguments of `NEXT-VALUE` / `CURRENT-VALUE` are a sequence
                 // name and a logical database name, neither a symbol.
                 if !sequence.is_some_and(|op| op.is_static) {
-                    for a in arguments {
+                    // `SET-SIZE(m) = 16` and its siblings assign through a
+                    // function call: the target operand takes the access the
+                    // assignment makes, not a read.
+                    let target = (mode != AccessMode::Read)
+                        .then(|| pseudo_function_target(&name.name))
+                        .flatten();
+                    for (i, a) in arguments.iter().enumerate() {
                         match &type_name {
                             Some((id, raw)) if *id == a.id => {
                                 self.resolve_type_operand(a, raw, scope);
                             }
-                            _ => self.walk_expression(a, scope, AccessMode::Read),
+                            _ => {
+                                let arg_mode = match target {
+                                    Some((index, access)) if index == i => access,
+                                    _ => AccessMode::Read,
+                                };
+                                self.walk_expression(a, scope, arg_mode);
+                            }
                         }
                     }
                 }
@@ -6053,6 +6065,43 @@ fn names_after_widget_keywords(source: &str) -> FxHashSet<OxablAtom> {
         }
     }
     names
+}
+
+/// The operand a pseudo-function assigns through, and how the assignment
+/// accesses it: `(argument index, access)`.
+///
+/// `PUT-BYTE(m, 1) = 65` only stores into `m`; `SUBSTRING(s, 1, 2) = "ab"` keeps
+/// the rest of `s`, so it reads and writes. `None` for a name that is not an
+/// assignable pseudo-function.
+fn pseudo_function_target(name: &str) -> Option<(usize, AccessMode)> {
+    const WRITE: &[&str] = &[
+        "fix-codepage",
+        "set-size",
+        "set-byte-order",
+        "set-pointer-value",
+        "put-bits",
+        "put-byte",
+        "put-bytes",
+        "put-double",
+        "put-float",
+        "put-int64",
+        "put-long",
+        "put-short",
+        "put-string",
+        "put-unsigned-long",
+        "put-unsigned-short",
+    ];
+    const READ_WRITE: &[&str] = &["substring", "substr", "overlay", "length", "extent", "raw"];
+    let is = |names: &[&str]| names.iter().any(|f| name.eq_ignore_ascii_case(f));
+    if is(WRITE) {
+        Some((0, AccessMode::Write))
+    } else if is(READ_WRITE) {
+        Some((0, AccessMode::ReadWrite))
+    } else if name.eq_ignore_ascii_case("entry") {
+        Some((1, AccessMode::ReadWrite))
+    } else {
+        None
+    }
 }
 
 /// Built-ins whose single operand names a stream.

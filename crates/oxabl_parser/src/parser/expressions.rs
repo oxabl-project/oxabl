@@ -776,6 +776,18 @@ impl Parser<'_> {
 
         // NEW ClassName(args) — object instantiation.
         // Class names may be dotted: NEW oe.wsdeco(company, gs-userid).
+        // `NEW(buffer)` is the record-buffer test; a class name never starts with '('.
+        if self.check(Kind::New) && self.peek_at(1).kind == Kind::LeftParen {
+            let token = self.advance().clone();
+            let name = Identifier {
+                span: Span {
+                    start: token.start as u32,
+                    end: token.end as u32,
+                },
+                name: self.source[token.start..token.end].to_string(),
+            };
+            return self.parse_function_call(name);
+        }
         if self.check(Kind::New) {
             self.advance(); // consume NEW
 

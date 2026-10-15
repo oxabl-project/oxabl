@@ -372,7 +372,14 @@ pub fn parse_builtin_functions(path: &Path) -> Vec<String> {
 
     fn walk(entries: &[JsonEntry], names: &mut HashSet<String>) {
         for entry in entries {
-            if let Some(name) = entry.title.trim().strip_suffix(" function") {
+            // `NEW function (classes)` carries a parenthesised qualifier after
+            // the word "function"; drop it so the title ends in " function".
+            let title = entry.title.trim();
+            let stem = title
+                .split_once(" function (")
+                .map(|(stem, _)| format!("{stem} function"));
+            let title = stem.as_deref().unwrap_or(title);
+            if let Some(name) = title.strip_suffix(" function") {
                 let name = name.trim();
                 // ABL identifiers never contain whitespace, so a multi-word
                 // stem (e.g. "DEFINED preprocessor function", "NOT ENTERED
@@ -1001,9 +1008,16 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
     // Functions that real code calls but the function index does not list: the
     // settable MEMPTR and codepage forms (`SET-SIZE(m) = 16`) and the case
     // conversions. Registered by hand like VALUE.
+    // OS-DIR is the `INPUT FROM OS-DIR(path)` source; the byte-order names are
+    // the constants `SET-BYTE-ORDER(m) = BIG-ENDIAN` takes.
     const UNINDEXED_FUNCTIONS: &[&str] = &[
+        "big-endian",
         "fix-codepage",
+        "host-byte-order",
+        "little-endian",
         "lower",
+        "os-dir",
+        "overlay",
         "put-bits",
         "put-byte",
         "put-bytes",

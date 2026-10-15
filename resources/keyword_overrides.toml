@@ -854,3 +854,26 @@ keyword_type = "Option"
 [[add]]
 name = "TYPE-OF"
 keyword_type = "Function"
+
+# =============================================================================
+# BYTE-ORDER CONSTANTS
+# The reserved-keyword file lists BIG-ENDIAN and HOST-BYTE-ORDER with spaces,
+# so the hyphenated spelling real code uses never matched. Replace them with
+# the hyphenated forms (LITTLE-ENDIAN is already correct).
+# =============================================================================
+
+[[remove]]
+name = "big endian"
+
+[[remove]]
+name = "host byte order"
+
+[[add]]
+name = "BIG-ENDIAN"
+reserved = true
+keyword_type = "System"
+
+[[add]]
+name = "HOST-BYTE-ORDER"
+reserved = true
+keyword_type = "System"
