@@ -1366,7 +1366,7 @@ impl<'a> Parser<'a> {
                     | Kind::Seek
                     // OVERLAY is an ABL built-in that can appear as lvalue in ASSIGN (e.g. OVERLAY(s,1,3) = "abc")
                     | Kind::Overlay
-                    // TITLE is a widget attribute name (e.g. p-widgets:title)
+                    // TITLE is a widget attribute name (e.g. h-browse:title)
                     | Kind::Title
                     // ACTIVE-WINDOW is a system handle used as widget name in ON triggers (e.g. ON HELP OF ACTIVE-WINDOW)
                     | Kind::ActiveWindow
@@ -1610,7 +1610,7 @@ impl<'a> Parser<'a> {
     /// Parses a dot-qualified class name where namespace components may be reserved keywords.
     ///
     /// ABL class files live in directories whose names often match reserved keywords
-    /// (e.g. the `do/` module produces class names like `do.wsdo800obj`).
+    /// (e.g. the `do/` module produces class names like `do.widgetobj`).
     /// Unlike `parse_qualified_identifier()`, this accepts any word-like token as the
     /// first component (via `is_word_kind()`), not just `can_be_identifier()` tokens.
     fn parse_class_qualified_name(&mut self) -> ParseResult<Identifier> {
@@ -1792,7 +1792,7 @@ impl<'a> Parser<'a> {
 
         if !self.check(Kind::RightParen) {
             loop {
-                // Include file references (e.g. {gl/global-input-func.i}) expand to
+                // Include file references (e.g. {inc/func-defs.i}) expand to
                 // a set of parameters at preprocessing time — skip them as a unit.
                 if self.check(Kind::IncludeReference) {
                     self.advance();
@@ -1819,7 +1819,7 @@ impl<'a> Parser<'a> {
                     _ => ParameterDirection::Input,
                 };
 
-                // Include reference after direction keyword (e.g. INPUT {gl/global-input-func.i})
+                // Include reference after direction keyword (e.g. INPUT {inc/func-defs.i})
                 // expands to one or more parameters at preprocessing time — skip as a unit.
                 if self.check(Kind::IncludeReference) {
                     self.advance();
@@ -2048,7 +2048,7 @@ impl<'a> Parser<'a> {
         }
         // Primitive type keywords and bare identifiers: type-only unless the
         // next token is AS/LIKE (then the current token is the parameter name).
-        // A following `.` is a class path (`forms.deco`) — also type-only.
+        // A following `.` is a class path (`forms.sample`) — also type-only.
         if Self::is_primitive_data_type_kind(k) || Self::can_be_identifier(k) {
             let next = self.peek_nth_non_comment(2);
             if next.kind == Kind::Period {
@@ -2322,7 +2322,7 @@ impl<'a> Parser<'a> {
                 return Ok(Self::class_data_type(class_name.name, arguments));
             }
             // ABL allows `AS ClassName` (without CLASS keyword) for class types.
-            // Dotted names like `forms.deco_proof_form` are class references.
+            // Dotted names like `forms.sample_form` are class references.
             Kind::Identifier => {
                 let class_name = self.parse_class_qualified_name()?;
                 let arguments = self.parse_generic_type_args();
@@ -2346,7 +2346,7 @@ impl<'a> Parser<'a> {
             }
             // Reserved keywords used as namespace prefixes in OO-ABL class names.
             // ABL class files live in directories whose names may be reserved keywords
-            // (e.g. `do.wsdo800obj` where `do` is Kind::Do). These must be followed
+            // (e.g. `do.widgetobj` where `do` is Kind::Do). These must be followed
             // by a dot to be valid class references.
             _ if Self::is_word_kind(token.kind)
                 && self

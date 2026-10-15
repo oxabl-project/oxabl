@@ -654,7 +654,7 @@ fn a_preprocessor_loss_degrades_the_set_for_its_own_reason() {
 /// Every `RUN` target shape the parser takes whole, with the file that satisfies it.
 const RUN_SHAPES: &[(&str, &str)] = &[
     ("a/b.c.p", "/src/a/b.c.p"),
-    ("comm\\expdist.p", "/src/comm/expdist.p"),
+    ("util\\export.p", "/src/util/export.p"),
     ("3rd/x.p", "/src/3rd/x.p"),
     ("./sub2.p", "/src/sub2.p"),
     ("a.b/c.p", "/src/a.b/c.p"),

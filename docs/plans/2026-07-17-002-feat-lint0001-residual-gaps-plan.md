@@ -139,10 +139,10 @@ exists, resolve normally.
 **Repro:**
 ```
 acme.security.Auth:CheckUser(INPUT uid).
-MyStatics:CurrentCompany = coId.
+AppState:CurrentUser = uId.
 ```
 
-**Today:** Leading `acme` / `MyStatics` → NotInScope.
+**Today:** Leading `acme` / `AppState` → NotInScope.
 
 **Work:** In resolve, when walking `MethodCall` / `MemberAccess`:
 

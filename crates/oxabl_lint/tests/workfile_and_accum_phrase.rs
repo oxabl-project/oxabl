@@ -42,9 +42,9 @@ fn assert_silent(source: &str) {
 fn workfile_declares_table_and_fields() {
     for kw in ["WORKFILE", "WORK-TABLE"] {
         assert_silent(&format!(
-            "DEFINE {kw} direct-ships\n  FIELD po-number LIKE po-line.po-number\n  FIELD cost LIKE po-line.cost.\n\
-             CREATE direct-ships.\nASSIGN direct-ships.po-number = 1.\n\
-             FIND FIRST direct-ships NO-ERROR.\nMESSAGE direct-ships.cost.\n"
+            "DEFINE {kw} ship-direct\n  FIELD po-number LIKE po-line.po-number\n  FIELD cost LIKE po-line.cost.\n\
+             CREATE ship-direct.\nASSIGN ship-direct.po-number = 1.\n\
+             FIND FIRST ship-direct NO-ERROR.\nMESSAGE ship-direct.cost.\n"
         ));
     }
 }

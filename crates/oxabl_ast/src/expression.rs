@@ -87,7 +87,7 @@ pub enum ExpressionKind {
     PreprocIf(Box<PreprocIf<Expression>>),
     /// Object instantiation: `NEW ClassName(args)` or `NEW package.Class(args)`
     New {
-        /// The class name, possibly dotted (e.g., "oe.wsdeco")
+        /// The class name, possibly dotted (e.g., "app.Widget")
         class_name: String,
         /// The type arguments of a generic class, as in `NEW List<pkg.Thing>()`.
         type_arguments: Option<Box<TypeArguments>>,

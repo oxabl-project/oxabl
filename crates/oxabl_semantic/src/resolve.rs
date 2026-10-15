@@ -3626,7 +3626,7 @@ impl<'a> ResolveWalker<'a> {
             } => {
                 // The receiver may be a local handle, a package-qualified type
                 // (`acme.security.Auth:Check`), or a static class name
-                // (`MyStatics:CurrentCompany`). Unresolved receivers are
+                // (`AppState:CurrentUser`). Unresolved receivers are
                 // softened to External so LINT0001 does not fire on type
                 // references the single-file model cannot see (#58 D/C).
                 self.walk_receiver(object, scope);
@@ -9131,8 +9131,7 @@ mod tests {
     #[test]
     fn field_access_abbreviated_field_resolves_via_schema() {
         // ABL abbreviation: `bCust.CustN` is an unambiguous leading substring
-        // of `CustNum`, so it must resolve (no LINT0003) with the schema type —
-        // the same class of reference as the real corpus `scr-wiper.method`.
+        // of `CustNum`, so it must resolve (no LINT0003) with the schema type.
         let schema = test_schema();
         let (stmts, _qual_id, fa_id) = buffer_customer_stmts("CustN");
         let sem = run_analyze_with_schema(&stmts, &schema);

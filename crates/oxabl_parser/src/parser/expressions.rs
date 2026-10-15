@@ -775,7 +775,7 @@ impl Parser<'_> {
         }
 
         // NEW ClassName(args) — object instantiation.
-        // Class names may be dotted: NEW oe.wsdeco(company, gs-userid).
+        // Class names may be dotted: NEW app.Widget(company, user-ref).
         // `NEW(buffer)` is the record-buffer test; a class name never starts with '('.
         if self.check(Kind::New) && self.peek_at(1).kind == Kind::LeftParen {
             let token = self.advance().clone();
@@ -791,7 +791,7 @@ impl Parser<'_> {
         if self.check(Kind::New) {
             self.advance(); // consume NEW
 
-            // Parse dotted class name (e.g., "oe.wsdeco", "api.text", "Progress.Lang.Error").
+            // Parse dotted class name (e.g., "app.Widget", "api.text", "Progress.Lang.Error").
             // Use is_word_kind() so keyword-named namespaces/types (e.g. api.text) are accepted.
             if !Self::is_word_kind(self.peek().kind) {
                 return Err(ParseError {
@@ -1127,7 +1127,7 @@ impl Parser<'_> {
         // TEMP-TABLE name[:attr] / BUFFER name[:attr] / FRAME name[:attr] / BROWSE name[:attr]
         // — handle/object reference expressions.
         // When these keywords appear in expression context followed by an identifier,
-        // consume both tokens as a compound identifier (e.g. BROWSE b-whse-p:first-column).
+        // consume both tokens as a compound identifier (e.g. BROWSE b-area-p:first-column).
         // Also handles BUFFER {&preproc} for dynamic buffer references.
         if (self.check(Kind::TempTable)
             || self.check(Kind::Buffer)
@@ -1192,7 +1192,7 @@ impl Parser<'_> {
         }
 
         // ACCUM has two forms:
-        //   Form 1: ACCUM aggregate-type [BY break-field] field  (e.g. ACCUM TOTAL amt-sale)
+        //   Form 1: ACCUM aggregate-type [BY break-field] field  (e.g. ACCUM TOTAL amt-total)
         //   Form 2: ACCUM field (aggregate-type [BY break-field]) (e.g. ACCUM qty (TOTAL BY item))
         // When not followed by '(', parse the first operand via parse_postfix so that qualified
         // fields like table.field are consumed whole.  A trailing '(' signals form 2.

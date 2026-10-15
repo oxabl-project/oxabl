@@ -18,16 +18,16 @@ root cause.
 Example call site (from a caller program):
 
 ```abl
-If sv-currency ne local-currency THEN
-    {svc/rate-calc.i
-    &currency = "sv-currency"
+If src-currency ne local-currency THEN
+    {svc/fxconv.i
+    &currency = "src-currency"
     &date     = "today"
     &exchange = "c-exchange" }
 ELSE
     ASSIGN c-exchange = 1.
 ```
 
-Include body (`svc/rate-calc.i`) — expected to expand to ~15 lines of ABL:
+Include body (`svc/fxconv.i`) — expected to expand to ~15 lines of ABL:
 
 ```abl
 If {&currency} gt " "             and
@@ -35,7 +35,7 @@ If {&currency} gt " "             and
 then do:
    Find last currency-rate where ...
    ...
-   {&exchange} = currency-rate.curr-exch-rate.
+   {&exchange} = currency-rate.fx-rate.
    ...
 End.
 Else
@@ -48,7 +48,7 @@ After preprocessing, the include expansion is empty. The parser then sees
 ```
 Error 1: 2112:14 — Unexpected token KwElse
 
-  2110 |              If sv-currency ne local-currency THEN
+  2110 |              If src-currency ne local-currency THEN
   2111 |
   2112 |              ELSE
   2113 |                  ASSIGN c-exchange = 1.
@@ -74,17 +74,17 @@ The split pattern is `[' ', '&']` — only space and `&`. `\n`, `\r`, and `\t`
 are *not* treated as delimiters. When the source is
 
 ```
-{svc/rate-calc.i
-                 &currency = "sv-currency"
+{svc/fxconv.i
+                 &currency = "src-currency"
 ```
 
 the inner content (after outer `.trim()`) is
 
 ```
-svc/rate-calc.i\n                 &currency = "sv-currency"\n …
+svc/fxconv.i\n                 &currency = "src-currency"\n …
 ```
 
-`.split([' ', '&']).next()` returns `"svc/rate-calc.i\n"` — the newline is
+`.split([' ', '&']).next()` returns `"svc/fxconv.i\n"` — the newline is
 included in the returned name. That value is then passed to
 `self.fs.resolve_include(…)`, which cannot match a real path with an embedded
 newline, so resolution fails.
@@ -125,7 +125,7 @@ if !children.is_empty() {
 }
 ```
 
-skips the push, and the whole `{svc/rate-calc.i …}` span becomes blank in the
+skips the push, and the whole `{svc/fxconv.i …}` span becomes blank in the
 preprocessed text. The user sees only the downstream parser error.
 
 ## Proposed Solution
@@ -182,7 +182,7 @@ Minimum change for this PR:
    discarding with `let _`.
 3. In `parse_file_with_preprocess`, before the parser runs, print each
    preprocessor error diagnostic using the same `ParseError` formatter so the
-   user sees e.g. `[preprocess] include file not found: 'svc/rate-calc.i'` at
+   user sees e.g. `[preprocess] include file not found: 'svc/fxconv.i'` at
    the correct line/col.
 
 This is the high-value part of the change: without it, any future name/path
@@ -205,7 +205,7 @@ resolution regression will be equally invisible.
 - [ ] `parse_include_name("file.i\r\n&arg=v")` returns `"file.i"`.
 - [ ] New end-to-end test: an include reference with the name on one line and
       args on the next expands the include body correctly (model the
-      `svc/rate-calc.i` shape).
+      `svc/fxconv.i` shape).
 - [ ] All existing `oxabl_preprocessor` tests pass unchanged.
 - [ ] `cargo fmt --check` and `cargo clippy -D warnings` pass.
 - [ ] Running `oxabl check --preprocess` against `a caller program` no longer
@@ -249,20 +249,20 @@ fn parse_include_name_crlf_terminator() {
 #[test]
 fn expand_include_multiline_args_name_on_own_line() {
     let fs = make_fs(&[(
-        "/inc/rate-calc.i",
+        "/inc/fxconv.i",
         "If {&currency} gt \" \" then {&exchange} = 1.\nElse {&exchange} = -1.",
     )]);
     let pp = Preprocessor::new(&fs, &[PathBuf::from("/inc")]);
     let source = "\
 If x ne y THEN
-    {rate-calc.i
-    &currency = \"sv-currency\"
+    {fxconv.i
+    &currency = \"src-currency\"
     &exchange = \"c-exchange\" }
 ELSE
     ASSIGN c-exchange = 1.";
     let result = pp.process(FileId::new(1), source).unwrap();
     let text = result.to_text();
-    assert!(text.contains("If sv-currency gt"),
+    assert!(text.contains("If src-currency gt"),
             "expected expanded include body, got:\n{text}");
     assert!(text.contains("c-exchange = 1"));
 }

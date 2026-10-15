@@ -186,9 +186,9 @@ fn package_qualified_static_method_is_silent() {
 
 #[test]
 fn static_class_member_receiver_is_silent() {
-    let diags = lint0001("MyStatics:CurrentCompany = coId.");
+    let diags = lint0001("AppState:CurrentUser = uId.");
     assert_eq!(diags.len(), 1, "{diags:?}");
-    assert!(diags[0].contains("coId"), "{diags:?}");
+    assert!(diags[0].contains("uId"), "{diags:?}");
 }
 
 // ---------------------------------------------------------------------

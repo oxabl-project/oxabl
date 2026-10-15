@@ -13,7 +13,7 @@ Add a CLI binary to oxabl that recursively scans a directory for ABL source file
 
 ## Problem Statement / Motivation
 
-The parser is reaching a maturity level where it can handle simple ABL files, but there's no way to measure coverage against real-world code. The organization collaborating on this project has a large legacy ABL codebase that serves as the ideal test corpus. A CLI tool that can be pointed at a directory and produce a pass/fail report will:
+The parser is reaching a maturity level where it can handle simple ABL files, but there's no way to measure coverage against real-world code. A large legacy ABL codebase is available to serve as the test corpus. A CLI tool that can be pointed at a directory and produce a pass/fail report will:
 
 1. Quantify exactly what percentage of real files the parser handles today
 2. Identify the specific constructs/patterns causing failures

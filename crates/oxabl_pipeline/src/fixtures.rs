@@ -3093,33 +3093,33 @@ pub const FIXTURES: &[ParityFixture] = &[
     // A path target followed by `PERSISTENT SET`.
     run_target_row! {
         name: "edges_run_path_persistent_set",
-        sibling: "comm/expdist.p",
+        sibling: "util/export.p",
         resolutions: &[CrossFileResolution {
-            name: "RUN comm/expdist",
+            name: "RUN util/export",
             effect: CrossFileEffect::ResolvedSilently,
         }],
         source: "DEFINE VARIABLE h-proc AS HANDLE NO-UNDO.\n\
-                 RUN comm/expdist PERSISTENT SET h-proc (1).\n\
+                 RUN util/export PERSISTENT SET h-proc (1).\n\
                  MESSAGE VALID-HANDLE(h-proc).\n",
-        target: "comm/expdist",
-        withheld: "comm/expdist",
+        target: "util/export",
+        withheld: "util/export",
         reason: "external",
     },
     // A target split over lines.
     run_target_row! {
         name: "edges_run_multiline_target",
-        sibling: "comm/expdist.p",
+        sibling: "util/export.p",
         resolutions: &[CrossFileResolution {
-            name: "RUN comm/expdist",
+            name: "RUN util/export",
             effect: CrossFileEffect::ResolvedSilently,
         }],
         source: "DEFINE VARIABLE h-proc AS HANDLE NO-UNDO.\n\
-                 RUN comm/expdist\n    \
+                 RUN util/export\n    \
                  PERSISTENT\n    \
                  SET h-proc.\n\
                  MESSAGE VALID-HANDLE(h-proc).\n",
-        target: "comm/expdist",
-        withheld: "comm/expdist",
+        target: "util/export",
+        withheld: "util/export",
         reason: "external",
     },
     // A block comment after the target.

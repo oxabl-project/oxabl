@@ -126,7 +126,7 @@ The pattern `Span { start: token.start as u32, end: token.end as u32 }` appears 
 
 ### Phase 2: Finish RUN Statement (worktree)
 
-**Worktree:** `~/code/oxabl-worktrees/feat/RUN-STATEMENT-PARSING`
+**Worktree:** `../oxabl-worktrees/feat/RUN-STATEMENT-PARSING`
 **Branch:** `feat/run-statement-parsing`
 
 #### 2.1 Extend RUN AST
@@ -215,7 +215,7 @@ Several keywords serve dual purposes — `ERROR` is both an alert-box type and a
 
 ### Phase 3: DISPLAY + MESSAGE Statements (single worktree)
 
-**Worktree:** `~/code/oxabl-worktrees/feat/DISPLAY-MESSAGE-PARSING`
+**Worktree:** `../oxabl-worktrees/feat/DISPLAY-MESSAGE-PARSING`
 **Branch:** `feat/display-message-parsing`
 
 **Goal:** Parse DISPLAY and MESSAGE statements well enough to identify variable/field references for linting. These follow the same "parse items until terminator" pattern, so they belong in one branch.
@@ -330,9 +330,9 @@ Every loop must guarantee forward progress. Consider a "fuel" counter that decre
 | 1.1 README | Phase 0 | Yes (with 1.2, 1.3) | Sub-agent |
 | 1.2 NEXT_STEPS move | Phase 0 | Yes (with 1.1, 1.3) | Sub-agent |
 | 1.3 Cargo docs | Phase 0 | Yes (with 1.1, 1.2) | Sub-agent |
-| 2 RUN statement | Phase 1 committed | No | Worktree at `~/code/oxabl-worktrees/feat/RUN-STATEMENT-PARSING` |
+| 2 RUN statement | Phase 1 committed | No | Worktree at `../oxabl-worktrees/feat/RUN-STATEMENT-PARSING` |
 | 2.5 Lexer keywords | Phase 2 merged | No | Verify/add Kind variants for DISPLAY/MESSAGE |
-| 3 DISPLAY + MESSAGE | Phase 2.5 done | No | Single worktree at `~/code/oxabl-worktrees/feat/DISPLAY-MESSAGE-PARSING` |
+| 3 DISPLAY + MESSAGE | Phase 2.5 done | No | Single worktree at `../oxabl-worktrees/feat/DISPLAY-MESSAGE-PARSING` |
 | 4 Error Recovery | Phase 3 merged | Independent | Separate plan + worktree |
 
 ## Acceptance Criteria
