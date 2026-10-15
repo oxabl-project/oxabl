@@ -4,7 +4,7 @@
 
 use oxabl_ast::{
     BufferTarget, CreateTarget, Expression, ExpressionKind as EK, NodeId, OnAction, OnKind,
-    ParameterType, RunTarget, Span, Statement, StatementKind as SK, StreamOperation,
+    ParameterType, RunTarget, Span, Statement, StatementKind as SK, StreamOperation, StreamTarget,
     TriggerReferencing,
 };
 use oxabl_flow::{BlockId, BlockKind, Cfg, FileFlow, UnitId, UnitKind};
@@ -623,11 +623,23 @@ impl<'a> Collector<'a> {
             }
             SK::StreamIo { operation, .. } => {
                 let context = self.context(enclosing);
-                // A target written without `VALUE(...)` is a file name.
+                // A bare file name, or any target written without `VALUE(...)`,
+                // names a file and no record.
                 let file: SmallVec<[Span; 1]> = match operation {
-                    StreamOperation::From(e)
-                    | StreamOperation::To { target: e, .. }
-                    | StreamOperation::Through(e)
+                    StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                        match target {
+                            StreamTarget::FileName(f) => smallvec::smallvec![f.span],
+                            StreamTarget::Expression(e)
+                                if self.tokens[self.range(e.span)]
+                                    .first()
+                                    .is_some_and(|t| t.kind != Kind::Value) =>
+                            {
+                                smallvec::smallvec![e.span]
+                            }
+                            StreamTarget::Expression(_) => SmallVec::new(),
+                        }
+                    }
+                    StreamOperation::Through(e)
                         if self.tokens[self.range(e.span)]
                             .first()
                             .is_some_and(|t| t.kind != Kind::Value) =>
