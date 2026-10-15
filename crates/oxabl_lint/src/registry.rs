@@ -6,14 +6,22 @@ use std::sync::OnceLock;
 
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, LintRuleRef, LintSeverityMap, Severity};
+use oxabl_effects::FileEffects;
+use oxabl_handles::FileHandles;
+use oxabl_scope::FileScopes;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
-    CL001, CL002, CL005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, TX006,
-    assigned_but_never_read, block_var_used_outside, dynamic_invoke, missing_no_undo, run_value,
-    shared_state, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
-    unused_variable,
+    CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
+    assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
+    dynamic_invoke, find_in_loop, handle_not_deleted, implicit_transaction,
+    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, persistent_procedure_leak, procedure_wide_transaction, run_value,
+    scope_widened, shared_state, transaction_spans_call, transaction_spans_ui,
+    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
+use crate::shared::RunShared;
 
 /// Names of the built-in rule groups.
 pub mod groups {
@@ -69,6 +77,11 @@ pub struct RuleMeta {
     /// on a statement that an includer can change is lower confidence
     /// ([`fragment`](crate::fragment)).
     pub context_free: bool,
+    /// Whether a finding anchored in an include that the include's own run
+    /// cannot produce is reported at the `{...}` site in the includer, instead
+    /// of being dropped. The rule's answer needs the includer: it creates,
+    /// names or frees an object that the include alone does not see.
+    pub use_site_in_includer: bool,
 }
 
 impl RuleMeta {
@@ -89,6 +102,7 @@ impl RuleMeta {
             stability: Stability::Stable,
             requires_compilation_unit: false,
             context_free: false,
+            use_site_in_includer: false,
         }
     }
 
@@ -110,6 +124,13 @@ impl RuleMeta {
         self
     }
 
+    /// Mark the rule's findings in an include as reportable at the use site
+    /// when the include's own run cannot produce them.
+    pub const fn reported_at_use_site(mut self) -> Self {
+        self.use_site_in_includer = true;
+        self
+    }
+
     /// Mark the rule as needing the whole compilation unit.
     pub const fn requiring_compilation_unit(mut self) -> Self {
         self.requires_compilation_unit = true;
@@ -128,23 +149,103 @@ pub trait Rule: Send + Sync {
 
     /// Run the rule over `program` and its semantic model.
     fn run(&self, program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic>;
+
+    /// Whether the rule reads the dynamic objects of the file
+    /// ([`RunShared::handles`]). The default is `false`.
+    fn reads_handles(&self) -> bool {
+        false
+    }
+
+    /// Whether the rule reads the buffer scopes of the file
+    /// ([`RunShared::scopes`]). When a rule over the dynamic objects runs
+    /// before such a rule, the run builds the CFGs of every unit once, for
+    /// both. The default is `false`.
+    fn reads_scopes(&self) -> bool {
+        false
+    }
+
+    /// [`run`](Self::run) with the facts that one registry run shares between
+    /// rules. The default ignores them.
+    fn run_shared(
+        &self,
+        program: &[Statement],
+        sem: &Semantic,
+        ctx: &AnalysisContext,
+        _shared: &RunShared,
+    ) -> Vec<Diagnostic> {
+        self.run(program, sem, ctx)
+    }
 }
 
 /// The signature of a rule written as a plain function.
 pub type RuleFn = fn(&[Statement], &Semantic, &AnalysisContext) -> Vec<Diagnostic>;
+
+/// The signature of a rule that reads the lifetimes of dynamic objects
+/// ([`oxabl_handles`]) and nothing else of the analysis.
+pub type HandlesFn = fn(&FileHandles, &AnalysisContext) -> Vec<Diagnostic>;
+
+/// The signature of a rule that reads the buffer scopes, transaction blocks
+/// and record locks of the file ([`oxabl_scope`]), with the statements they
+/// were found in.
+pub type ScopesFn = fn(&FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
+
+/// The signature of a rule that reads the database effects of the file
+/// ([`oxabl_effects`]) with the scope analysis they were made over.
+pub type EffectsFn =
+    fn(&FileEffects, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
+
+#[derive(Debug, Clone, Copy)]
+enum Body {
+    Plain(RuleFn),
+    Handles(HandlesFn),
+    Scopes(ScopesFn),
+    Effects(EffectsFn),
+    Shared(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
+}
 
 /// A [`Rule`] made of metadata and a plain function — how every built-in rule
 /// is registered.
 #[derive(Debug, Clone, Copy)]
 pub struct FnRule {
     meta: RuleMeta,
-    run: RuleFn,
+    body: Body,
 }
 
 impl FnRule {
     /// Pair `meta` with `run`.
     pub const fn new(meta: RuleMeta, run: RuleFn) -> Self {
-        FnRule { meta, run }
+        FnRule {
+            meta,
+            body: Body::Plain(run),
+        }
+    }
+
+    /// Pair `meta` with a query over the file's dynamic objects. One registry
+    /// run analyses the file once for every such rule.
+    pub const fn over_handles(meta: RuleMeta, check: HandlesFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::Handles(check),
+        }
+    }
+
+    /// Pair `meta` with a query over the file's buffer scopes, transactions
+    /// and locks. One registry run analyses the file once for every such rule.
+    pub const fn over_scopes(meta: RuleMeta, check: ScopesFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::Scopes(check),
+        }
+    }
+
+    /// Pair `meta` with a query over the file's database effects. One
+    /// registry run analyses the file once for every such rule, over the same
+    /// scope analysis the scope rules read.
+    pub const fn over_effects(meta: RuleMeta, check: EffectsFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::Effects(check),
+        }
     }
 }
 
@@ -154,7 +255,39 @@ impl Rule for FnRule {
     }
 
     fn run(&self, program: &[Statement], sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
-        (self.run)(program, sem, ctx)
+        self.run_shared(program, sem, ctx, &RunShared::default())
+    }
+
+    fn reads_handles(&self) -> bool {
+        matches!(self.body, Body::Handles(_))
+    }
+
+    fn reads_scopes(&self) -> bool {
+        matches!(
+            self.body,
+            Body::Scopes(_) | Body::Effects(_) | Body::Shared(_)
+        )
+    }
+
+    fn run_shared(
+        &self,
+        program: &[Statement],
+        sem: &Semantic,
+        ctx: &AnalysisContext,
+        shared: &RunShared,
+    ) -> Vec<Diagnostic> {
+        match self.body {
+            Body::Shared(check) => check(program, ctx, shared),
+            Body::Plain(run) => run(program, sem, ctx),
+            Body::Handles(check) => check(shared.handles(program, ctx), ctx),
+            Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
+            Body::Effects(check) => check(
+                shared.effects(program, ctx),
+                shared.scopes(program, ctx),
+                program,
+                ctx,
+            ),
+        }
     }
 }
 
@@ -306,6 +439,123 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         missing_no_undo::DEFAULT_SEVERITY,
         missing_no_undo::run,
     ),
+    handles_rule(
+        HD001,
+        handle_not_deleted::NAME,
+        handle_not_deleted::GROUP,
+        handle_not_deleted::DESCRIPTION,
+        handle_not_deleted::DEFAULT_SEVERITY,
+        handle_not_deleted::check,
+    ),
+    handles_rule(
+        HD002,
+        delete_not_in_finally::NAME,
+        delete_not_in_finally::GROUP,
+        delete_not_in_finally::DESCRIPTION,
+        delete_not_in_finally::DEFAULT_SEVERITY,
+        delete_not_in_finally::check,
+    ),
+    handles_rule(
+        HD003,
+        persistent_procedure_leak::NAME,
+        persistent_procedure_leak::GROUP,
+        persistent_procedure_leak::DESCRIPTION,
+        persistent_procedure_leak::DEFAULT_SEVERITY,
+        persistent_procedure_leak::check,
+    ),
+    handles_rule(
+        HD004,
+        memptr_not_freed::NAME,
+        memptr_not_freed::GROUP,
+        memptr_not_freed::DESCRIPTION,
+        memptr_not_freed::DEFAULT_SEVERITY,
+        memptr_not_freed::check,
+    ),
+    handles_rule(
+        HD005,
+        missing_widget_pool::NAME,
+        missing_widget_pool::GROUP,
+        missing_widget_pool::DESCRIPTION,
+        missing_widget_pool::DEFAULT_SEVERITY,
+        missing_widget_pool::check,
+    ),
+    scopes_rule(
+        LK001,
+        default_lock::NAME,
+        default_lock::GROUP,
+        default_lock::DESCRIPTION,
+        default_lock::DEFAULT_SEVERITY,
+        default_lock::check,
+    ),
+    scopes_rule(
+        LK002,
+        lock_outlives_transaction::NAME,
+        lock_outlives_transaction::GROUP,
+        lock_outlives_transaction::DESCRIPTION,
+        lock_outlives_transaction::DEFAULT_SEVERITY,
+        lock_outlives_transaction::check,
+    ),
+    scopes_rule(
+        LK003,
+        lock_upgrade_in_loop::NAME,
+        lock_upgrade_in_loop::GROUP,
+        lock_upgrade_in_loop::DESCRIPTION,
+        lock_upgrade_in_loop::DEFAULT_SEVERITY,
+        lock_upgrade_in_loop::check,
+    ),
+    scopes_rule(
+        TX001,
+        implicit_transaction::NAME,
+        implicit_transaction::GROUP,
+        implicit_transaction::DESCRIPTION,
+        implicit_transaction::DEFAULT_SEVERITY,
+        implicit_transaction::check,
+    ),
+    scopes_rule(
+        TX002,
+        procedure_wide_transaction::NAME,
+        procedure_wide_transaction::GROUP,
+        procedure_wide_transaction::DESCRIPTION,
+        procedure_wide_transaction::DEFAULT_SEVERITY,
+        procedure_wide_transaction::check,
+    ),
+    scopes_rule(
+        TX003,
+        transaction_spans_ui::NAME,
+        transaction_spans_ui::GROUP,
+        transaction_spans_ui::DESCRIPTION,
+        transaction_spans_ui::DEFAULT_SEVERITY,
+        transaction_spans_ui::check,
+    ),
+    FnRule {
+        meta: RuleMeta::new(
+            TX004,
+            transaction_spans_call::NAME,
+            transaction_spans_call::GROUP,
+            transaction_spans_call::DESCRIPTION,
+        )
+        .with_default_severity(transaction_spans_call::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        body: Body::Shared(transaction_spans_call::check_shared),
+    },
+    scopes_rule(
+        TX005,
+        scope_widened::NAME,
+        scope_widened::GROUP,
+        scope_widened::DESCRIPTION,
+        scope_widened::DEFAULT_SEVERITY,
+        scope_widened::check,
+    ),
+    effects_rule(
+        DB001,
+        find_in_loop::NAME,
+        find_in_loop::GROUP,
+        find_in_loop::DESCRIPTION,
+        find_in_loop::DEFAULT_SEVERITY,
+        find_in_loop::check,
+    ),
 ];
 
 /// A syntactic strict rule: context-free, and in preview until its
@@ -324,6 +574,65 @@ const fn strict_rule(
             .with_stability(Stability::Preview)
             .context_free(),
         run,
+    )
+}
+
+/// A strict rule over the lifetimes of dynamic objects: context-free and in
+/// preview, like [`strict_rule`].
+const fn handles_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    check: HandlesFn,
+) -> FnRule {
+    FnRule::over_handles(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free()
+            .reported_at_use_site(),
+        check,
+    )
+}
+
+/// A strict rule over buffer scopes, transactions and locks: routed like
+/// [`handles_rule`], because its answer can depend on the includer.
+const fn scopes_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    check: ScopesFn,
+) -> FnRule {
+    FnRule::over_scopes(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free()
+            .reported_at_use_site(),
+        check,
+    )
+}
+
+/// A strict rule over database effects: routed like [`scopes_rule`].
+const fn effects_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    check: EffectsFn,
+) -> FnRule {
+    FnRule::over_effects(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free()
+            .reported_at_use_site(),
+        check,
     )
 }
 
@@ -515,20 +824,50 @@ impl Registry {
         ctx: &AnalysisContext,
         select: impl Fn(&RuleMeta) -> bool,
     ) -> Vec<Diagnostic> {
+        self.run_where_shared(program, sem, ctx, select, &RunShared::default())
+    }
+
+    /// Run selected rules with caller-supplied lazy facts.
+    pub fn run_where_shared(
+        &self,
+        program: &[Statement],
+        sem: &Semantic,
+        ctx: &AnalysisContext,
+        select: impl Fn(&RuleMeta) -> bool,
+        shared: &RunShared,
+    ) -> Vec<Diagnostic> {
         let fragment = ctx.source_context.is_include_fragment();
-        let mut out = Vec::new();
-        for rule in self.rules() {
+        let enabled = |rule: &dyn Rule| {
             let meta = rule.meta();
             if !select(meta) || (fragment && meta.requires_compilation_unit) {
-                continue;
+                return None;
             }
-            let Some(severity) = self.severity_for(rule, &ctx.lint_severities) else {
+            self.severity_for(rule, &ctx.lint_severities)
+        };
+        let mut decided = false;
+        let mut out = Vec::new();
+        for (i, rule) in self.rules().enumerate() {
+            let Some(severity) = enabled(rule) else {
                 continue;
             };
-            out.extend(rule.run(program, sem, ctx).into_iter().map(|mut d| {
-                d.severity = severity;
-                d
-            }));
+            // The first rule over the dynamic objects asks whether the
+            // scopes will be analysed too.
+            if !decided && rule.reads_handles() {
+                decided = true;
+                let scopes = self
+                    .rules()
+                    .skip(i + 1)
+                    .any(|r| r.reads_scopes() && enabled(r).is_some());
+                shared.share_flow(scopes);
+            }
+            out.extend(
+                rule.run_shared(program, sem, ctx, shared)
+                    .into_iter()
+                    .map(|mut d| {
+                        d.severity = severity;
+                        d
+                    }),
+            );
         }
         out
     }

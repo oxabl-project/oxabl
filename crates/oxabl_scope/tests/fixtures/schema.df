@@ -1,0 +1,22 @@
+ADD TABLE "Customer"
+ADD FIELD "CustNum" OF "Customer" AS integer
+ADD FIELD "Name" OF "Customer" AS character
+ADD FIELD "Balance" OF "Customer" AS decimal
+ADD FIELD "Comments" OF "Customer" AS character
+
+ADD TABLE "Order"
+ADD FIELD "OrderNum" OF "Order" AS integer
+ADD FIELD "CustNum" OF "Order" AS integer
+ADD FIELD "OrderDate" OF "Order" AS date
+ADD FIELD "OrderStatus" OF "Order" AS character
+
+ADD TABLE "OrderLine"
+ADD FIELD "OrderNum" OF "OrderLine" AS integer
+ADD FIELD "LineNum" OF "OrderLine" AS integer
+ADD FIELD "ItemNum" OF "OrderLine" AS integer
+ADD FIELD "Qty" OF "OrderLine" AS integer
+
+ADD TABLE "Item"
+ADD FIELD "ItemNum" OF "Item" AS integer
+ADD FIELD "ItemName" OF "Item" AS character
+ADD FIELD "Price" OF "Item" AS decimal

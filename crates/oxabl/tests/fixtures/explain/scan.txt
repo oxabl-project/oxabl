@@ -1,0 +1,8 @@
+main.p (expanded lines)
+unit procedure scan @5
+  direct: read Customer no-lock once @6 index=CustNum (primary; tie=none; whole=true; equality=0; range=false)
+  direct: read Customer no-lock per-row @7 index=CustNum (unique-equality; tie=none; whole=false; equality=1; range=false)
+  summary: partial
+    unknown: call:dynamic
+  transitive: read Customer no-lock once
+  transitive: read Customer no-lock per-row

@@ -58,6 +58,7 @@ pub use symbol::{
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 
+use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, LintSeverityMap, VirtualSpan};
 use oxabl_schema::{Schema, SchemaRevision};
 
@@ -130,6 +131,23 @@ pub struct AnalysisContext<'a> {
     /// Whether the root is a complete compilation unit or an include fragment
     /// opened without its textual includer.
     pub source_context: SourceContext,
+    /// The parts of [`source`](Self::source) that include files wrote, sorted
+    /// and disjoint. Empty when nothing was expanded or the source is the
+    /// root's own text.
+    pub include_regions: &'a [Span],
+    /// Whether the parser recovered from an error in this file. A rule that
+    /// needs the file's statements to be where the author put them reads this.
+    pub parse_recovered: bool,
+    /// The tokens [`source`](Self::source) was parsed from, when the caller
+    /// has them; empty otherwise, and a pass that needs them lexes again.
+    pub tokens: &'a [oxabl_lexer::Token],
+    /// Offsets in [`source`](Self::source) where the preprocessor replaced a
+    /// reference with no text (an include it did not find, a `{&name}` with
+    /// no value), sorted. The compiler may see text there.
+    pub elided: &'a [u32],
+    /// The offsets of [`elided`](Self::elided) where an include did not
+    /// arrive, sorted. Statements the include held may sit there.
+    pub elided_includes: &'a [u32],
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -150,7 +168,60 @@ impl<'a> AnalysisContext<'a> {
             index_searches_paths: false,
             lint_severities: LintSeverityMap::new(),
             source_context: SourceContext::CompilationUnit,
+            include_regions: &[],
+            parse_recovered: false,
+            tokens: &[],
+            elided: &[],
+            elided_includes: &[],
         }
+    }
+
+    /// Attach the tokens the source was parsed from (builder-style).
+    pub fn with_tokens(mut self, tokens: &'a [oxabl_lexer::Token]) -> Self {
+        self.tokens = tokens;
+        self
+    }
+
+    /// Record where the preprocessor replaced a reference with no text
+    /// (builder-style). `offsets` must be sorted.
+    pub fn with_elided(mut self, offsets: &'a [u32]) -> Self {
+        self.elided = offsets;
+        self
+    }
+
+    /// Record where an include did not arrive (builder-style). `offsets` must
+    /// be sorted.
+    pub fn with_elided_includes(mut self, offsets: &'a [u32]) -> Self {
+        self.elided_includes = offsets;
+        self
+    }
+
+    /// Record that the parser recovered from an error in the file
+    /// (builder-style).
+    pub fn with_parse_recovered(mut self, recovered: bool) -> Self {
+        self.parse_recovered = recovered;
+        self
+    }
+
+    /// Record which parts of the source an include file wrote (builder-style).
+    pub fn with_include_regions(mut self, regions: &'a [Span]) -> Self {
+        self.include_regions = regions;
+        self
+    }
+
+    /// Whether `span` starts in text an include file wrote.
+    pub fn in_include(&self, span: Span) -> bool {
+        self.include_regions
+            .binary_search_by(|r| {
+                if span.start < r.start {
+                    std::cmp::Ordering::Greater
+                } else if span.start >= r.end {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .is_ok()
     }
 
     /// Attach resolved lint severity overrides to this context (builder-style).

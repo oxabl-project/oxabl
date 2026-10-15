@@ -45,6 +45,27 @@
 //! | CL002 | [`dynamic_invoke`]          | `strict.calls`        | `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `DYNAMIC-PROPERTY`, `CREATE CALL` |
 //! | CL005 | [`shared_state`]            | `strict.calls`        | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
 //! | TX006 | [`missing_no_undo`]         | `strict.transactions` | variable, parameter, temp-table or property without `NO-UNDO` |
+//! | HD001 | [`handle_not_deleted`]      | `strict.handles`      | a dynamic object that some path loses without a delete    |
+//! | HD002 | [`delete_not_in_finally`]   | `strict.handles`      | a delete that an error before it skips                    |
+//! | HD003 | [`persistent_procedure_leak`] | `strict.handles`    | `RUN ... PERSISTENT SET h` that nothing deletes           |
+//! | HD004 | [`memptr_not_freed`]        | `strict.handles`      | `SET-SIZE(m) = n` with no `SET-SIZE(m) = 0`               |
+//! | HD005 | [`missing_widget_pool`]     | `strict.handles`      | dynamic objects with no widget pool scoped to the procedure |
+//! | LK001 | [`default_lock`]            | `strict.locks`        | a database read with no lock phrase (`SHARE-LOCK`)        |
+//! | LK002 | [`lock_outlives_transaction`] | `strict.locks`      | a record still locked after its transaction, because the buffer scope is wider |
+//! | LK003 | [`lock_upgrade_in_loop`]    | `strict.locks`        | a `NO-LOCK` read upgraded to `EXCLUSIVE-LOCK` on every iteration |
+//! | TX001 | [`implicit_transaction`]    | `strict.transactions` | a block that is a transaction only because it updates the database |
+//! | TX002 | [`procedure_wide_transaction`] | `strict.transactions` | a main block that is a transaction block                |
+//! | TX003 | [`transaction_spans_ui`]    | `strict.transactions` | a statement that waits for the user inside a transaction  |
+//! | TX004 | [`transaction_spans_call`]  | `strict.transactions` | a `RUN` inside a transaction whose callee is not in the file |
+//! | TX005 | [`scope_widened`]           | `strict.transactions` | a reference that raises a `FOR` block's buffer scope to the procedure |
+//! | DB001 | [`find_in_loop`]            | `strict.access`       | a `FIND` or `CAN-FIND` that runs once per row of a record loop (N+1) |
+//!
+//! The `HD` rules read one analysis of the file's dynamic objects
+//! (`oxabl_handles`), the `LK` rules and `TX001`-`TX005` one analysis of
+//! its buffer scopes, transactions and locks (`oxabl_scope`), and the `DB`
+//! rules one analysis of its database effects (`oxabl_effects`) over the same
+//! scopes. Each is made once per [`Registry::run_where`] through [`RunShared`]
+//! and only when one of its rules is enabled.
 //!
 //! A finding that sits in an include file is dropped when the includer is
 //! linted. A context-free rule reports it once, in the include file itself,
@@ -62,17 +83,23 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 pub mod fragment;
 mod registry;
 mod rules;
+mod shared;
 
 pub use registry::{
-    BUILTIN_GROUPS, BUILTIN_RULES, FnRule, Registry, RegistryError, Rule, RuleFn, RuleGroup,
-    RuleMeta, Stability, groups,
+    BUILTIN_GROUPS, BUILTIN_RULES, EffectsFn, FnRule, HandlesFn, Registry, RegistryError, Rule,
+    RuleFn, RuleGroup, RuleMeta, ScopesFn, Stability, groups,
 };
 pub use rules::{
-    CL001, CL002, CL005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, TX006,
-    assigned_but_never_read, block_var_used_outside, dynamic_invoke, missing_no_undo, run_value,
-    shared_state, type_mismatch_assignment, undefined_symbol, unknown_table_or_field,
-    unused_variable,
+    CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
+    assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
+    dynamic_invoke, find_in_loop, handle_not_deleted, implicit_transaction,
+    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, persistent_procedure_leak, procedure_wide_transaction, run_value,
+    scope_widened, shared_state, transaction_spans_call, transaction_spans_ui,
+    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
+pub use shared::{CalleeSummaries, RunShared};
 
 /// Run every built-in rule that `ctx.lint_severities` enables over `program`
 /// + `sem` and return the combined diagnostics, in registry order.

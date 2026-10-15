@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 mod baseline;
+mod explain;
 mod watch;
 
 use clap::Parser as ClapParser;
@@ -241,6 +242,20 @@ enum Cli {
 
         /// Path to a `.df` schema file driving schema-backed resolution
         /// (field validation, field types, unknown-table/field lint).
+        #[arg(long = "schema")]
+        schema: Option<PathBuf>,
+    },
+    /// Show direct database effects and transitive summaries of each unit.
+    Explain {
+        /// ABL file, optionally followed by a one-based root line number.
+        file: String,
+        /// Output a versioned JSON document.
+        #[arg(long)]
+        json: bool,
+        /// Include search path (repeatable).
+        #[arg(long = "include-path", short = 'I')]
+        include_paths: Vec<PathBuf>,
+        /// Schema file or directory.
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
     },
@@ -517,6 +532,12 @@ fn main() -> ExitCode {
             &include_paths,
             schema.as_deref(),
         ),
+        Cli::Explain {
+            file,
+            json,
+            include_paths,
+            schema,
+        } => explain::run(&file, json, &include_paths, schema.as_deref()),
         Cli::Format {
             path,
             check,
@@ -1170,15 +1191,28 @@ fn run_check(
         }))
         .collect();
 
+    // TX004 asks for the summaries of its callees. Built once over the walk and
+    // shared, as each thread's handle would otherwise build its own.
+    let summaries = (!no_lint && lint.callee_summaries_enabled())
+        .then(|| std::sync::Arc::new(lint.build_workspace_effect_summaries(&indexed)));
+    let lint = match &summaries {
+        Some(s) => lint.with_effect_summaries(std::sync::Arc::clone(s)),
+        None => lint,
+    };
+
     let mut totals = Totals::default();
     run_ordered(
         jobs.min(tasks.len()),
         config.decoding,
         &lint,
         || {
-            LintPipeline::new(&config, &fs)
+            let handle = LintPipeline::new(&config, &fs)
                 .with_preprocess(preprocess)
-                .with_shared_producers(&producers)
+                .with_shared_producers(&producers);
+            match &summaries {
+                Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
+                None => handle,
+            }
         },
         &tasks,
         |lint, texts, task| pass.run(lint, texts, task),

@@ -1224,8 +1224,11 @@ dependencies = [
  "oxabl_common",
  "oxabl_daemon",
  "oxabl_daemon_protocol",
+ "oxabl_effects",
  "oxabl_flow",
  "oxabl_formatter",
+ "oxabl_handles",
+ "oxabl_index",
  "oxabl_lexer",
  "oxabl_lint",
  "oxabl_lsp",
@@ -1233,6 +1236,7 @@ dependencies = [
  "oxabl_pipeline",
  "oxabl_preprocessor",
  "oxabl_schema",
+ "oxabl_scope",
  "oxabl_semantic",
  "oxabl_style",
  "oxabl_workspace",
@@ -1326,6 +1330,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxabl_effects"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_flow",
+ "oxabl_index",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "oxabl_schema",
+ "oxabl_scope",
+ "rustc-hash",
+]
+
+[[package]]
 name = "oxabl_flow"
 version = "0.2.0"
 dependencies = [
@@ -1346,6 +1364,18 @@ dependencies = [
  "oxabl_lexer",
  "oxabl_parser",
  "oxabl_style",
+]
+
+[[package]]
+name = "oxabl_handles"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_flow",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]
@@ -1381,12 +1411,15 @@ dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
  "oxabl_common",
+ "oxabl_effects",
  "oxabl_flow",
+ "oxabl_handles",
  "oxabl_index",
  "oxabl_lexer",
  "oxabl_parser",
  "oxabl_preprocessor",
  "oxabl_schema",
+ "oxabl_scope",
  "oxabl_semantic",
  "oxabl_workspace",
  "rust_decimal",
@@ -1439,15 +1472,19 @@ dependencies = [
  "oxabl_analyze",
  "oxabl_ast",
  "oxabl_common",
+ "oxabl_effects",
+ "oxabl_flow",
  "oxabl_formatter",
  "oxabl_index",
  "oxabl_lexer",
  "oxabl_lint",
  "oxabl_parser",
  "oxabl_schema",
+ "oxabl_scope",
  "oxabl_semantic",
  "oxabl_style",
  "oxabl_workspace",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -1474,6 +1511,19 @@ dependencies = [
  "oxabl_workspace",
  "rustc-hash",
  "tempfile",
+]
+
+[[package]]
+name = "oxabl_scope"
+version = "0.1.0"
+dependencies = [
+ "oxabl_ast",
+ "oxabl_flow",
+ "oxabl_lexer",
+ "oxabl_parser",
+ "oxabl_schema",
+ "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]

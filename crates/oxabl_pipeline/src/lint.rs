@@ -79,11 +79,12 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
     ExpandedFile, IncludeOriginDiagnostic, RuleSelection, UnresolvedInclude, analyze_from_expanded,
-    collect_from_expanded_selecting, expand_source_with,
+    collect_from_expanded_with_summaries, expand_source_with,
 };
 
 use oxabl_common::{
@@ -297,11 +298,7 @@ impl LintResult {
     /// on a failed run — check [`failure`](Self::failure) before reading silence
     /// as cleanliness.
     pub fn diagnostics(&self) -> &CollectedDiagnostics {
-        static NONE: &CollectedDiagnostics = &CollectedDiagnostics {
-            diagnostics: Vec::new(),
-            parse_recovered: false,
-            include_origin: Vec::new(),
-        };
+        static NONE: &CollectedDiagnostics = &CollectedDiagnostics::new(Vec::new());
         match &self.outcome {
             Outcome::Computed { diagnostics, .. } => diagnostics,
             Outcome::Failed(_) => NONE,
@@ -458,6 +455,13 @@ pub struct LintPipeline<'a> {
     file: Option<PathBuf>,
     /// Whether an edge set carries the closure of its conditional includes.
     conditional_closure: bool,
+    /// What each include file shows when it is run alone, shared by the
+    /// handles of one run (see [`report_include_findings`]).
+    ///
+    /// [`report_include_findings`]: LintPipeline::report_include_findings
+    include_runs: Arc<Mutex<HashMap<PathBuf, Option<Arc<IncludeAlone>>>>>,
+    summaries: Arc<Mutex<Option<Arc<crate::WorkspaceEffects>>>>,
+    known_files: &'a [PathBuf],
 }
 
 /// Where a handle's index lives: owned by the handle that built it, borrowed
@@ -508,6 +512,9 @@ impl<'a> LintPipeline<'a> {
             )),
             file: None,
             conditional_closure: false,
+            include_runs: Arc::default(),
+            summaries: Arc::default(),
+            known_files: &[],
         }
     }
 
@@ -550,6 +557,7 @@ impl<'a> LintPipeline<'a> {
     /// index, so there is nothing left for it to seed.
     #[must_use]
     pub fn with_known_files(mut self, files: &'a [PathBuf]) -> Self {
+        self.known_files = files;
         self.index = match self.index {
             RunIndex::Owned(index) => RunIndex::Owned(Box::new((*index).seeded_with(files))),
             // A sibling does not own the index it answers from, so it cannot
@@ -683,6 +691,61 @@ impl<'a> LintPipeline<'a> {
             },
             file: Some(path.into()),
             conditional_closure: self.conditional_closure,
+            include_runs: Arc::clone(&self.include_runs),
+            summaries: Arc::clone(&self.summaries),
+            known_files: self.known_files,
+        }
+    }
+
+    /// Supply an incremental client's cached summaries.
+    pub fn with_effect_summaries(self, summaries: Arc<crate::WorkspaceEffects>) -> Self {
+        *self.summaries.lock().unwrap_or_else(|e| e.into_inner()) = Some(summaries);
+        self
+    }
+
+    /// Whether TX004 is enabled for this file. This query computes no effects.
+    pub fn callee_summaries_enabled(&self) -> bool {
+        let severities = self
+            .file()
+            .map(|p| self.config.lint_severities.for_path(p))
+            .unwrap_or_else(|| self.config.lint_severities.clone());
+        let registry = oxabl_lint::Registry::builtin_shared();
+        registry
+            .rules()
+            .any(|r| r.meta().code == "TX004" && registry.severity_for(r, &severities).is_some())
+    }
+
+    fn effect_summaries(&self, expansion: &Expansion) -> Arc<crate::WorkspaceEffects> {
+        let mut cache = self.summaries.lock().unwrap_or_else(|e| e.into_inner());
+        let path = self.file().unwrap_or(Path::new(""));
+        if cache
+            .as_ref()
+            .and_then(|s| s.file(path))
+            .is_some_and(|f| !f.matches(expansion))
+        {
+            *cache = None;
+        }
+        cache
+            .get_or_insert_with(|| {
+                Arc::new(self.build_effect_summaries(expansion, self.known_files))
+            })
+            .clone()
+    }
+
+    pub(crate) fn effect_program_path(
+        &self,
+        name: &str,
+        fallback: &BatchIndex<'_>,
+    ) -> Result<PathBuf, oxabl_index::calls::UnknownCall> {
+        use oxabl_index::calls::{ProgramAnswer, UnknownCall};
+        let index = match &self.index {
+            RunIndex::Owned(index) => &**index,
+            RunIndex::Shared(index) => *index,
+            RunIndex::External(_) => fallback,
+        };
+        match oxabl_index::calls::resolve_program(index, name) {
+            ProgramAnswer::Found(id) => index.indexed_path(id).ok_or(UnknownCall::Unusable),
+            ProgramAnswer::Unknown(reason) => Err(reason),
         }
     }
 
@@ -1143,11 +1206,8 @@ impl<'a> LintPipeline<'a> {
                 source_context,
             )
         });
-        let diagnostics = CollectedDiagnostics {
-            diagnostics: Vec::new(),
-            parse_recovered,
-            include_origin: Vec::new(),
-        };
+        let mut diagnostics = CollectedDiagnostics::new(Vec::new());
+        diagnostics.parse_recovered = parse_recovered;
         LintResult::computed(Some(Box::new(semantic)), diagnostics, dependency_paths)
     }
 
@@ -1208,8 +1268,15 @@ impl<'a> LintPipeline<'a> {
                     Some(path) => Cow::Owned(self.config.lint_severities.for_path(path)),
                     None => Cow::Borrowed(&self.config.lint_severities),
                 };
+                let summaries = self
+                    .callee_summaries_enabled()
+                    .then(|| self.effect_summaries(expansion));
+                let provider = summaries
+                    .as_ref()
+                    .and_then(|s| s.file(self.file().unwrap_or(Path::new(""))))
+                    .map(|f| f as &dyn oxabl_lint::CalleeSummaries);
                 let (semantic, diagnostics) = self.with_run_index(|index| {
-                    collect_from_expanded_selecting(
+                    collect_from_expanded_with_summaries(
                         expanded,
                         &self.config.schema,
                         self.config.schema_loaded,
@@ -1217,6 +1284,7 @@ impl<'a> LintPipeline<'a> {
                         index,
                         source_context,
                         selection,
+                        provider,
                     )
                 });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
@@ -1224,8 +1292,8 @@ impl<'a> LintPipeline<'a> {
             // Fatal preprocessing failure: no model, and the preprocessor's own
             // loud errors are the whole diagnostic set.
             Err(preproc_errors) => {
-                let diagnostics = CollectedDiagnostics {
-                    diagnostics: preproc_errors
+                let diagnostics = CollectedDiagnostics::new(
+                    preproc_errors
                         .iter()
                         .filter(|_| selection == RuleSelection::All)
                         .map(|d| CollectedDiagnostic {
@@ -1233,9 +1301,7 @@ impl<'a> LintPipeline<'a> {
                             source: DiagnosticSource::Preproc,
                         })
                         .collect(),
-                    parse_recovered: false,
-                    include_origin: Vec::new(),
-                };
+                );
                 LintResult::computed(None, diagnostics, dependency_paths)
             }
         }
@@ -1264,11 +1330,12 @@ impl<'a> LintPipeline<'a> {
         match catch_panic(|| {
             let expansion = self.expand(source);
             let result = self.collect(&expansion);
-            if self.file().is_some_and(is_include_fragment) {
+            let result = if self.file().is_some_and(is_include_fragment) {
                 lower_includer_dependent(result, source, &expansion, self.fs)
             } else {
                 result
-            }
+            };
+            self.report_include_findings(result)
         }) {
             Ok(result) => result,
             Err(panic) => LintResult::failed(panic),
@@ -1351,6 +1418,114 @@ fn resolve_class(index: &dyn WorkspaceIndex, imports: &[String], raw: &str) -> O
         return Some(EdgeTarget::IndexedFile { file, name });
     }
     None
+}
+
+/// An include file's text, and the `(rule, anchor start, anchor end)` of the
+/// findings its own run produces.
+struct IncludeAlone {
+    text: String,
+    own: Vec<(&'static str, u32, u32)>,
+}
+
+impl LintPipeline<'_> {
+    /// What the include at `path` shows when it is run alone, or `None` when
+    /// its own configuration has no context-free rule on. Run once per include
+    /// for all handles of one run.
+    fn run_include_alone(&self, path: &Path) -> Option<Arc<IncludeAlone>> {
+        if let Some(known) = self.include_runs.lock().ok()?.get(path) {
+            return known.clone();
+        }
+        let handle = self.with_file(path);
+        let alone = handle.context_free_rules_enabled().then(|| {
+            let text = self.fs.read(path).map(|t| t.to_string());
+            let own = text
+                .as_deref()
+                .map(|text| handle.run_context_free(text))
+                .map(|run| {
+                    run.all()
+                        .map(|d| {
+                            let at = d.diagnostic.span.span;
+                            (d.diagnostic.code.0, at.start, at.end)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Arc::new(IncludeAlone {
+                text: text.unwrap_or_default(),
+                own,
+            })
+        });
+        self.include_runs
+            .lock()
+            .ok()?
+            .insert(path.to_path_buf(), alone.clone());
+        alone
+    }
+
+    /// Report the findings that sit in an include at the `{...}` site, except
+    /// the ones that the include's own run reports.
+    ///
+    /// A finding of a use-site rule whose anchor is in an include is not in the
+    /// includer's diagnostics. The include is run alone, as a walk runs it. When
+    /// that run produces the finding (same rule, same anchor), the include
+    /// reports it and the includer stays silent. Otherwise the include cannot
+    /// see it (it depends on the includer, or the include does not parse
+    /// alone), and it is reported here with a lower-confidence note. An include whose
+    /// own configuration has no context-free rule on is never run, so the
+    /// finding is dropped with it.
+    fn report_include_findings(&self, mut result: LintResult) -> LintResult {
+        let Outcome::Computed { diagnostics, .. } = &mut result.outcome else {
+            return result;
+        };
+        let found = std::mem::take(&mut diagnostics.include_findings);
+        if found.is_empty() {
+            return result;
+        }
+        let cwd = std::env::current_dir().ok();
+        for finding in found {
+            let Some(alone) = self.run_include_alone(&finding.path) else {
+                continue;
+            };
+            let IncludeAlone { text, own } = &*alone;
+            let anchor = (
+                finding.diagnostic.code.0,
+                finding.span.start,
+                finding.span.end,
+            );
+            if own.contains(&anchor) {
+                continue;
+            }
+            let line = text
+                .get(..finding.span.start as usize)
+                .map_or(0, |before| before.matches('\n').count() + 1);
+            // Without `.` components, and relative to the working directory when
+            // it is below it.
+            let clean: PathBuf = finding.path.components().collect();
+            let shown = cwd
+                .as_deref()
+                .and_then(|cwd| clean.strip_prefix(cwd).ok())
+                .unwrap_or(&clean);
+            let location = if line > 0 {
+                format!("{}:{line}", shown.display())
+            } else {
+                shown.display().to_string()
+            };
+            let reported = oxabl_lint::fragment::at_use_site(finding.diagnostic, &location);
+            let duplicate = diagnostics.diagnostics.iter().any(|d| {
+                d.source == DiagnosticSource::Lint
+                    && d.diagnostic.code == reported.code
+                    && d.diagnostic.span == reported.span
+                    && d.diagnostic.message == reported.message
+            });
+            if !duplicate {
+                diagnostics.diagnostics.push(CollectedDiagnostic {
+                    diagnostic: reported,
+                    source: DiagnosticSource::Lint,
+                });
+            }
+        }
+        result
+    }
 }
 
 /// Lower the confidence of the context-free findings of an include fragment
@@ -1952,7 +2127,7 @@ RUN VALUE(z).
                         .help
                         .as_deref()
                         .is_some_and(|h| h.ends_with(oxabl_lint::fragment::INCLUDER_NOTE));
-                    assert_eq!(oxabl_lint::fragment::autofixable(&d.diagnostic), !note);
+                    assert!(!oxabl_lint::fragment::autofixable(&d.diagnostic));
                     (d.diagnostic.code.0, &src[at..at + 1], note)
                 })
                 .collect();

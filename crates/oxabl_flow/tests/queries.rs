@@ -510,6 +510,48 @@ LEAVE nowhere.
 }
 
 #[test]
+fn handle_lifetime_statements_are_modelled_not_opaque() {
+    let p = parse(
+        "\
+DEFINE VARIABLE h AS HANDLE NO-UNDO.
+CREATE X-DOCUMENT h.
+CREATE X-NODEREF h NO-ERROR.
+CREATE BUTTON h
+    TRIGGERS:
+        ON CHOOSE DO:
+            RETURN.
+        END.
+    END TRIGGERS.
+CREATE WIDGET-POOL \"p\" NO-ERROR.
+DELETE WIDGET-POOL \"p\".
+RELEASE OBJECT h NO-ERROR.
+APPLY \"CLOSE\" TO h.
+DELETE WIDGET h.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    assert!(
+        !cfg.is_opaque(),
+        "{:?}",
+        cfg.opaque_nodes().collect::<Vec<_>>()
+    );
+    let raises = |prefix: &str| {
+        let n = p.node(cfg, prefix);
+        cfg.successors(n)
+            .any(|e| e.kind == EdgeKind::Raise(Condition::Error))
+    };
+    assert!(raises("CREATE X-DOCUMENT"));
+    assert!(!raises("CREATE X-NODEREF"));
+    assert!(raises("DELETE WIDGET-POOL"));
+    assert!(!raises("CREATE WIDGET-POOL"));
+    assert!(!raises("RELEASE OBJECT"));
+    // The trigger body is a deferred trigger: its RETURN does not end the main block.
+    assert!(cfg.unreachable_stmts().is_empty());
+    assert!(!p.nodes(cfg, "DELETE WIDGET h").is_empty());
+}
+
+#[test]
 fn nodes_line_up_with_the_ast() {
     // A smoke test that node ids line up with the AST: every top-level
     // executable statement of the main block has exactly one node.

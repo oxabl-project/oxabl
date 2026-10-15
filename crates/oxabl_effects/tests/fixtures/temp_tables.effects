@@ -1,0 +1,7 @@
+unit main
+  @11 read tt:ttA find n/a once index ixK eq=1 (unique-equality)
+  @12 read tt:ttA find n/a once index ixV whole-index (primary)
+  @13 read tt:ttB find n/a once index default whole-index (primary)
+  @14 read tt:ttC find n/a once index CustNum eq=1 (unique-equality)
+  @15 read tt:ttA for n/a once index ixV whole-index (primary)
+  @16 read Customer find no-lock per-row index CustNum eq=1 (unique-equality)

@@ -176,11 +176,11 @@ keyword_type = "Statement"
 name = "exclusive lock"
 keyword_type = "Statement"
 
-# Override lock types to require exact match (no abbreviation)
-# share-lock and no-lock exist in reserved keywords, so override their abbreviations
+# NO-LOCK has no abbreviation. SHARE-LOCK abbreviates to SHARE, as the
+# reserved-keyword index says; SHARED is a keyword of its own.
 [[override]]
 name = "share-lock"
-min_abbreviation = "share-lock"
+min_abbreviation = "share"
 
 [[override]]
 name = "no-lock"
@@ -613,6 +613,11 @@ keyword_type = "Option"
 name = "WIDGET-POOL"
 keyword_type = "Option"
 
+# CLASS ... USE-WIDGET-POOL
+[[add]]
+name = "USE-WIDGET-POOL"
+keyword_type = "Option"
+
 # DEFINE PARAMETER typed variants
 [[add]]
 name = "TABLE-HANDLE"
@@ -899,3 +904,216 @@ keyword_type = "Option"
 [[add]]
 name = "UNLESS-HIDDEN"
 keyword_type = "Option"
+
+# =============================================================================
+# DYNAMIC OBJECT TYPES
+# Type keywords of CREATE <type> handle. None is in the keyword index; they
+# are unreserved, so is_identifier-capable call sites accept them as names.
+# =============================================================================
+
+[[add]]
+name = "X-DOCUMENT"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "X-NODEREF"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SAX-READER"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SAX-WRITER"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SAX-ATTRIBUTES"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SOCKET"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SERVER-SOCKET"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SERVER"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SOAP-HEADER"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SOAP-HEADER-ENTRYREF"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "CLIENT-PRINCIPAL"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "BUTTON"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "COMBO-BOX"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "CONTROL-FRAME"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "DIALOG-BOX"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "EDITOR"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "FILL-IN"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "IMAGE"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "MENU"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "MENU-ITEM"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "RADIO-SET"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SELECTION-LIST"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SLIDER"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "SUB-MENU"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "TOGGLE-BOX"
+reserved = false
+keyword_type = "Type"
+
+# =============================================================================
+# DELETE/RELEASE OBJECT TARGETS
+# Words that follow DELETE and RELEASE. Unreserved: they stay valid names.
+# =============================================================================
+
+[[add]]
+name = "OBJECT"
+reserved = false
+keyword_type = "Type"
+
+[[add]]
+name = "WIDGET"
+reserved = false
+keyword_type = "Type"
+
+# CREATE BUFFER ... BUFFER-NAME
+[[add]]
+name = "BUFFER-NAME"
+reserved = false
+keyword_type = "Option"
+
+# =============================================================================
+# AGGREGATE PHRASE AND COPY-LOB FILE
+# `qty (TOTAL)`, `COPY-LOB ... TO FILE name`. Unreserved, exact names only:
+# they stay valid names (MAXIMUM and MINIMUM are also built-in functions).
+# =============================================================================
+
+[[add]]
+name = "FILE"
+reserved = false
+keyword_type = "Option"
+
+[[add]]
+name = "TOTAL"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "COUNT"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "AVERAGE"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "MAXIMUM"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "MINIMUM"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-TOTAL"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-COUNT"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-AVERAGE"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-MAXIMUM"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-MINIMUM"
+reserved = false
+keyword_type = "Phrase"

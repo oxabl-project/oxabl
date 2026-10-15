@@ -918,6 +918,57 @@ fn expanded_text(db: &dyn AblDatabase, buffer: Buffer) -> Expansion {
     }
 }
 
+/// Read and existence dependencies of a summary graph, including search misses.
+struct SummaryFs {
+    inner: Arc<dyn FileSystem>,
+    paths: std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+}
+
+impl FileSystem for SummaryFs {
+    fn read(&self, path: &Path) -> Result<Arc<str>, std::io::Error> {
+        self.paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_path_buf());
+        self.inner.read(path)
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_path_buf());
+        self.inner.exists(path)
+    }
+}
+
+/// Cache the reachable graph per buffer revision. Solve cycles in the shared
+/// pipeline, rather than making recursive incremental queries.
+#[salsa::tracked(returns(clone), no_eq)]
+fn effect_summaries(
+    db: &dyn AblDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+) -> Arc<oxabl_pipeline::WorkspaceEffects> {
+    let _revision = schema.revision(db);
+    let _environment = db.config().index.environment(db).preprocessor(db);
+    let fs = SummaryFs {
+        inner: Arc::clone(&db.config().fs),
+        paths: Default::default(),
+    };
+    let run = LintPipeline::new(&db.config().pipeline, &fs).with_preprocess(db.config().preprocess);
+    let path = buffer.path(db).as_deref().unwrap_or(Path::new(""));
+    let handle = run.with_file(path);
+    let expansion = handle.expand(buffer.text(db));
+    let summaries = handle.build_effect_summaries(&expansion, &[]);
+    for path in fs.paths.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        let file = db.config().index.file_for(db, path);
+        let _revision = file.disk_revision(db);
+    }
+    db.unwind_if_revision_cancelled();
+    Arc::new(summaries)
+}
+
 /// Phase two: the shared pipeline's collection over the memoized expansion,
 /// yielding the full root-resolved diagnostic set. Depends on the expansion and
 /// on the schema handle's revision (so schema hot-reload invalidates, R16).
@@ -942,17 +993,15 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     // mapping to keep in step here. `into_diagnostics` takes the set rather than
     // cloning it — this runs per keystroke.
     let run = db.config().lint_pipeline();
-    match buffer.path(db).as_deref() {
-        Some(path) => run
-            .with_file(path)
-            .with_index(&index)
-            .collect(&expansion)
-            .into_diagnostics(),
-        None => run
-            .with_index(&index)
-            .collect(&expansion)
-            .into_diagnostics(),
-    }
+    let handle = run
+        .with_file(buffer.path(db).as_deref().unwrap_or(Path::new("")))
+        .with_index(&index);
+    let handle = if handle.callee_summaries_enabled() {
+        handle.with_effect_summaries(effect_summaries(db, buffer, schema))
+    } else {
+        handle
+    };
+    handle.collect(&expansion).into_diagnostics()
 }
 
 /// Compute diagnostics on a snapshot, swallowing a [`salsa::Cancelled`] unwind
@@ -1747,5 +1796,69 @@ mod tests {
         assert!(undefined(
             &compute_diagnostics(&db, buffer, schema).unwrap()
         ));
+    }
+    fn strict_config(fs: Arc<dyn FileSystem>) -> AnalysisConfig {
+        let mut config = searching_config(fs);
+        let pipeline = Arc::make_mut(&mut config.pipeline);
+        pipeline.schema = oxabl_schema::test_support::customer_schema();
+        pipeline.schema_loaded = true;
+        pipeline
+            .lint_severities
+            .base_mut()
+            .enable_group("strict.transactions");
+        config
+    }
+
+    fn tx004(db: &AnalysisDatabase, buffer: Buffer, schema: SchemaHandle) -> usize {
+        compute_diagnostics(db, buffer, schema)
+            .unwrap()
+            .all()
+            .filter(|d| d.diagnostic.code.0 == "TX004")
+            .count()
+    }
+
+    #[test]
+    fn summaries_cache_and_invalidate_transitive_callee_bodies() {
+        let fs = EditableFs::new(&[
+            ("/src/a.p", "RUN b.p."),
+            ("/src/b.p", "FIND FIRST Customer NO-LOCK."),
+        ]);
+        let mut db = AnalysisDatabase::new(strict_config(Arc::clone(&fs) as Arc<dyn FileSystem>));
+        let buffer = Buffer::new(
+            &db,
+            "DO TRANSACTION: RUN a.p. END.".into(),
+            Some("/src/main.p".into()),
+        );
+        let schema = SchemaHandle::new(&db, 0);
+        assert_eq!(tx004(&db, buffer, schema), 0);
+        let first = effect_summaries(&db, buffer, schema);
+        assert!(Arc::ptr_eq(&first, &effect_summaries(&db, buffer, schema)));
+        fs.write("/src/b.p", "CREATE Customer.");
+        assert!(bump(&mut db, "/src/b.p"));
+        assert_eq!(tx004(&db, buffer, schema), 1);
+        fs.write("/src/b.p", "FIND FIRST Customer NO-LOCK.");
+        assert!(bump(&mut db, "/src/b.p"));
+        assert_eq!(tx004(&db, buffer, schema), 0);
+    }
+
+    #[test]
+    fn summaries_invalidate_includes_and_search_misses() {
+        let fs = EditableFs::new(&[("/src/a.p", "{body.i}"), ("/src/body.i", "RUN missing.p.")]);
+        let mut db = AnalysisDatabase::new(strict_config(Arc::clone(&fs) as Arc<dyn FileSystem>));
+        let buffer = Buffer::new(
+            &db,
+            "DO TRANSACTION: RUN a.p. END.".into(),
+            Some("/src/main.p".into()),
+        );
+        let schema = SchemaHandle::new(&db, 0);
+        assert_eq!(tx004(&db, buffer, schema), 1);
+        fs.write("/src/missing.p", "FIND FIRST Customer NO-LOCK.");
+        assert!(bump(&mut db, "/src/missing.p"));
+        assert_eq!(tx004(&db, buffer, schema), 0);
+        fs.write("/src/body.i", "CREATE Customer.");
+        assert!(bump(&mut db, "/src/body.i"));
+        assert_eq!(tx004(&db, buffer, schema), 1);
+        buffer.set_text(&mut db).to("MESSAGE \"hi\".".into());
+        assert_eq!(tx004(&db, buffer, schema), 0);
     }
 }

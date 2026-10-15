@@ -1,0 +1,8 @@
+CLASS Sample.Pooled USE-WIDGET-POOL:
+    METHOD PUBLIC VOID Work():
+        DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+        DEFINE VARIABLE hNamed AS HANDLE NO-UNDO.
+        CREATE QUERY hQuery.
+        CREATE QUERY hNamed IN WIDGET-POOL "elsewhere".
+    END METHOD.
+END CLASS.

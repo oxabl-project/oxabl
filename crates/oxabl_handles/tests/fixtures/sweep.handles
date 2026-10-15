@@ -1,0 +1,4 @@
+unit u0 main
+  persistent-procedure @6 unknown holder=hProc
+    opaque procedure-sweep @12
+    leak exit-return @9 normal path 6>7>9>10

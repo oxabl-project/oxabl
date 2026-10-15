@@ -1,0 +1,12 @@
+unit u0 main
+  dataset @7 leaks holder=hDataset pool=unscoped
+    free delete-object @12
+    leak exit-return @8 abnormal via raise(error)@8 path 7>8
+  temp-table @8 leaks holder=hTable pool=unscoped
+    escape dataset-member @10
+    leak exit-return @9 abnormal via raise(error)@9 path 8>9
+  query @15 leaks holder=hQuery pool=unscoped
+    free delete-object @18
+    leak exit-return @16 abnormal via raise(error)@16 path 15>16
+  buffer @16 leaks holder=hBuffer pool=unscoped
+    leak exit-return @18 normal path 16>17>18

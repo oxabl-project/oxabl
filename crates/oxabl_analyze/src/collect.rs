@@ -83,7 +83,19 @@ pub struct CollectedDiagnostic {
 }
 
 /// The complete, root-resolved diagnostic set for a file.
+///
+/// Other crates cannot build it with a struct expression; use
+/// [`CollectedDiagnostics::new`].
+///
+/// ```compile_fail,E0639
+/// let _ = oxabl_analyze::CollectedDiagnostics {
+///     diagnostics: Vec::new(),
+///     parse_recovered: false,
+///     include_findings: Vec::new(),
+/// };
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CollectedDiagnostics {
     pub diagnostics: Vec<CollectedDiagnostic>,
     /// Whether the parser recovered from at least one error, wherever in the
@@ -98,9 +110,48 @@ pub struct CollectedDiagnostics {
     /// findings in the root's own bytes. Each is a finding about this one root
     /// after expansion; see [`IncludeOriginDiagnostic`].
     pub include_origin: Vec<IncludeOriginDiagnostic>,
+    /// Findings of a use-site rule ([`RuleMeta::use_site_in_includer`]) that sit
+    /// in an include. They are not in `diagnostics`: the includer's own run
+    /// reports one only when the include's own run cannot.
+    ///
+    /// [`RuleMeta::use_site_in_includer`]: oxabl_lint::RuleMeta::use_site_in_includer
+    pub include_findings: Vec<IncludeFinding>,
+}
+
+/// A finding whose anchor is in an include file, with where it would show.
+///
+/// ```compile_fail,E0639
+/// fn build(
+///     diagnostic: oxabl_common::Diagnostic,
+///     span: oxabl_ast::Span,
+/// ) -> oxabl_analyze::IncludeFinding {
+///     oxabl_analyze::IncludeFinding { diagnostic, path: Default::default(), span }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IncludeFinding {
+    /// The finding at the root's `{...}` site that brought the include in.
+    /// Labels that are not in the root are dropped.
+    pub diagnostic: Diagnostic,
+    /// The include file that holds the anchor.
+    pub path: PathBuf,
+    /// The anchor, in the include file's own bytes.
+    pub span: Span,
 }
 
 impl CollectedDiagnostics {
+    /// A set of `diagnostics` from a run that recovered from no parse error and
+    /// has no include findings or findings of include origin.
+    pub const fn new(diagnostics: Vec<CollectedDiagnostic>) -> Self {
+        Self {
+            diagnostics,
+            parse_recovered: false,
+            include_origin: Vec::new(),
+            include_findings: Vec::new(),
+        }
+    }
+
     /// Every diagnostic (all stages), in pipeline order.
     pub fn all(&self) -> impl Iterator<Item = &CollectedDiagnostic> {
         self.diagnostics.iter()
@@ -139,6 +190,11 @@ impl CollectedDiagnostics {
                 .filter(|d| d.source != source)
                 .cloned()
                 .collect(),
+            include_findings: if source == DiagnosticSource::Lint {
+                Vec::new()
+            } else {
+                self.include_findings.clone()
+            },
         }
     }
 }
@@ -328,6 +384,9 @@ pub struct ExpandedFile {
     /// Every include file the expansion read through a resolved include node, each
     /// once, with the root-level site of the chain that reached it.
     include_origins: Vec<IncludeOrigin>,
+    /// The path of each include file the expansion read, by the file id its
+    /// chunks carry.
+    file_paths: Vec<(u32, PathBuf)>,
     /// Include references that resolved to no file and that the root names itself:
     /// written in the root, or reached only through `{&var}` substitutions the root
     /// writes. For the second kind `site` is the substitution, in the root's own
@@ -353,6 +412,12 @@ pub struct ExpandedFile {
     /// Places, at any depth, where the preprocessor dropped text or decided a
     /// branch without the facts to decide it.
     text_losses: Vec<TextLoss>,
+    /// Offsets in `text` where the expansion replaced a reference with no
+    /// text, sorted.
+    elided_offsets: Vec<u32>,
+    /// The offsets of `elided_offsets` that are includes that did not
+    /// arrive, sorted.
+    elided_include_offsets: Vec<u32>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -435,6 +500,20 @@ impl ExpandedFile {
         &self.text_losses
     }
 
+    /// Offsets in the expanded text where a reference was replaced with no
+    /// text: an include that did not arrive, a `{&name}` with no value, a
+    /// `{N}` with no argument. Sorted. What the compiler would see there is
+    /// not known.
+    pub fn elided_offsets(&self) -> &[u32] {
+        &self.elided_offsets
+    }
+
+    /// The offsets of [`Self::elided_offsets`] where an include did not
+    /// arrive. Sorted. Statements the include held may sit there.
+    pub fn elided_include_offsets(&self) -> &[u32] {
+        &self.elided_include_offsets
+    }
+
     /// Map a span in the **expanded** buffer back to the root file's own bytes.
     ///
     /// `None` when the span originates inside an include rather than in the root
@@ -467,6 +546,48 @@ impl ExpandedFile {
             })
             .ok()?;
         Some(self.include_regions[found].site)
+    }
+
+    /// Where a span in the **expanded** buffer lies in the include file that
+    /// wrote it: the file's path, the span in that file's own bytes, and the
+    /// `{...}` site in the root file's bytes through which it arrived.
+    ///
+    /// `None` for a span written in the root file, and for one whose text no
+    /// file on disk wrote (a `{&var}` value).
+    pub fn resolve_include_span(&self, span: Span) -> Option<(&Path, Span, Span)> {
+        let (file, real_start) = self.resolve(span.start)?;
+        if file == self.root {
+            return None;
+        }
+        let path = &self
+            .file_paths
+            .iter()
+            .find(|(known, _)| *known == file.raw())?
+            .1;
+        let chunk = self.chunk_at(span.start)?;
+        let last = span.end.saturating_sub(1).max(span.start);
+        let last = last.min(chunk.virt_start + chunk.len - 1);
+        let real_end = chunk.real_start + (last - chunk.virt_start) + 1;
+        let site = self.resolve_include_site(span)?;
+        Some((
+            path,
+            Span {
+                start: real_start,
+                end: real_end.max(real_start),
+            },
+            site,
+        ))
+    }
+
+    /// The parts of the expanded text that include files wrote, in order.
+    pub fn include_spans(&self) -> Vec<Span> {
+        self.include_regions
+            .iter()
+            .map(|r| Span {
+                start: r.virt_start,
+                end: r.virt_end,
+            })
+            .collect()
     }
 
     /// The chunk containing virtual offset `virt`, or `None` past the end of the
@@ -687,6 +808,7 @@ pub fn expand_source_with(
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
             include_origins: Vec::new(),
+            file_paths: Vec::new(),
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
@@ -694,6 +816,8 @@ pub fn expand_source_with(
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
             text_losses: Vec::new(),
+            elided_offsets: Vec::new(),
+            elided_include_offsets: Vec::new(),
             root,
         });
     }
@@ -752,6 +876,8 @@ pub fn expand_source_with(
                 &mut std::collections::HashSet::new(),
                 &mut include_origins,
             );
+            let mut file_paths = Vec::new();
+            collect_file_paths(&pf.tree, &mut file_paths);
             let mut substitutions = Vec::new();
             collect_substitution_sites(&pf.tree, &mut substitutions);
             // An include that failed to resolve deeper down is that file's gap to
@@ -806,6 +932,7 @@ pub fn expand_source_with(
                 dependency_paths: recorder.into_reads(),
                 direct_includes,
                 include_origins,
+                file_paths,
                 unresolved_includes,
                 nested_unresolved_includes,
                 unreadable_includes,
@@ -813,6 +940,8 @@ pub fn expand_source_with(
                 skipped_text: pf.skipped_text.clone(),
                 skipped_sources,
                 text_losses: pf.text_losses.clone(),
+                elided_offsets: pf.elided_offsets(),
+                elided_include_offsets: pf.elided_include_offsets(),
                 root,
             })
         }
@@ -1004,6 +1133,25 @@ fn flatten_tree(
                 }
             }
         }
+    }
+}
+
+/// The file id and path of every resolved include in the tree, at any depth.
+fn collect_file_paths(nodes: &[SpanNode], out: &mut Vec<(u32, PathBuf)>) {
+    for node in nodes {
+        let SpanNode::Include { path, children, .. } = node else {
+            continue;
+        };
+        let file = children.iter().find_map(|child| match child {
+            SpanNode::Chunk { file, .. } => Some(file.raw()),
+            SpanNode::Include { .. } => None,
+        });
+        if let (Some(path), Some(file)) = (path, file)
+            && !out.iter().any(|(known, _)| *known == file)
+        {
+            out.push((file, path.clone()));
+        }
+        collect_file_paths(children, out);
     }
 }
 
@@ -1199,6 +1347,30 @@ pub fn collect_from_expanded_selecting(
     source_context: SourceContext,
     selection: RuleSelection,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    collect_from_expanded_with_summaries(
+        expanded,
+        schema,
+        schema_loaded,
+        lint_severities,
+        index,
+        source_context,
+        selection,
+        None,
+    )
+}
+
+/// Collect with callee summaries in expanded byte coordinates.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_from_expanded_with_summaries(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    selection: RuleSelection,
+    summaries: Option<&dyn oxabl_lint::CalleeSummaries>,
+) -> (Option<Semantic>, CollectedDiagnostics) {
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
     let everything = selection == RuleSelection::All;
@@ -1232,10 +1404,16 @@ pub fn collect_from_expanded_selecting(
     // workspace or merely "we did not look". Only `schema_loaded` is assigned
     // directly: `new` infers it from an empty schema, and this path is handed the
     // caller's explicit answer, which is the whole point of the flag.
+    let include_spans = expanded.include_spans();
     let mut ctx = AnalysisContext::new(root, &expanded.text, schema)
+        .with_include_regions(&include_spans)
         .with_lint_severities(lint_severities.clone())
         .with_index(index)
-        .with_source_context(source_context);
+        .with_source_context(source_context)
+        .with_parse_recovered(out.parse_recovered)
+        .with_tokens(&tokens)
+        .with_elided(expanded.elided_offsets())
+        .with_elided_includes(expanded.elided_include_offsets());
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 
@@ -1250,16 +1428,29 @@ pub fn collect_from_expanded_selecting(
         }
     }
 
-    let linted = match selection {
-        RuleSelection::All => oxabl_lint::lint_file(&program.statements, &sem, &ctx),
-        RuleSelection::ContextFree => oxabl_lint::Registry::builtin_shared().run_where(
-            &program.statements,
-            &sem,
-            &ctx,
-            |meta| meta.context_free,
-        ),
+    let shared = oxabl_lint::RunShared::default();
+    let shared = match summaries {
+        Some(provider) => shared.with_summaries(provider),
+        None => shared,
     };
+    let linted = oxabl_lint::Registry::builtin_shared().run_where_shared(
+        &program.statements,
+        &sem,
+        &ctx,
+        |meta| everything || meta.context_free,
+        &shared,
+    );
+    let registry = oxabl_lint::Registry::builtin_shared();
     for d in linted {
+        if everything
+            && registry
+                .rules()
+                .any(|rule| rule.meta().use_site_in_includer && rule.meta().code == d.code.0)
+            && let Some(found) = include_finding(&d, expanded)
+        {
+            out.include_findings.push(found);
+            continue;
+        }
         match resolve_diagnostic(d, expanded) {
             Ok(resolved) => out.diagnostics.push(CollectedDiagnostic {
                 diagnostic: resolved,
@@ -1380,6 +1571,31 @@ pub fn analyze_from_expanded(
         );
     }
     (sem, recovered)
+}
+
+/// `d` as a finding at the `{...}` site of the include that holds its anchor,
+/// or `None` when its anchor is in the root file or in no file on disk.
+fn include_finding(d: &Diagnostic, expanded: &ExpandedFile) -> Option<IncludeFinding> {
+    let (path, span, site) = expanded.resolve_include_span(d.span.span)?;
+    let mut diagnostic = d.clone();
+    diagnostic.span = FileSpan {
+        file: expanded.root,
+        span: site,
+    };
+    diagnostic
+        .labels
+        .retain_mut(|label| match expanded.resolve_span(label.span.span) {
+            Some(fs) => {
+                label.span = fs;
+                true
+            }
+            None => false,
+        });
+    Some(IncludeFinding {
+        diagnostic,
+        path: path.to_path_buf(),
+        span,
+    })
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,
@@ -1532,6 +1748,7 @@ mod tests {
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
             include_origins: Vec::new(),
+            file_paths: Vec::new(),
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
@@ -1539,6 +1756,8 @@ mod tests {
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
             text_losses: Vec::new(),
+            elided_offsets: Vec::new(),
+            elided_include_offsets: Vec::new(),
             root: ROOT,
         }
     }
@@ -1872,6 +2091,112 @@ mod tests {
             "LINT0003 must fire on a bad field under a loaded schema, got {:?}",
             codes(&live)
         );
+    }
+
+    // A missing include or an undefined `{&name}` after the record phrase
+    // may be the lock phrase: LK001 does not call the lock the default.
+    #[test]
+    fn an_elided_reference_in_a_read_hides_its_lock_from_lk001() {
+        let mut map = LintSeverityMap::new();
+        map.base_mut().enable_group("strict.locks");
+        let schema = customer_schema();
+        let lk001 = |src: &str| {
+            let fs = InMemoryFileSystem::new();
+            let out = collect_diagnostics(ROOT, src, &fs, &[], &schema, true, &map, true);
+            codes(&out).iter().filter(|c| **c == "LK001").count()
+        };
+        assert_eq!(
+            lk001("FIND FIRST Customer WHERE Customer.CustNum = 1.\n"),
+            1
+        );
+        assert_eq!(lk001("FIND FIRST Customer {missing.i}.\n"), 0);
+        assert_eq!(lk001("FIND FIRST Customer {&lock}.\n"), 0);
+        assert_eq!(
+            lk001("&SCOPED-DEFINE lock NO-LOCK\nFIND FIRST Customer {&lock}.\n"),
+            0
+        );
+    }
+
+    // A missing include between statements may write or release the record:
+    // LK001 suggests no lock, and LK002 stays quiet. A file that has no such
+    // include is judged as before.
+    #[test]
+    fn a_missing_include_between_statements_hides_a_write_from_the_lock_rules() {
+        let mut map = LintSeverityMap::new();
+        map.base_mut().enable_group("strict.locks");
+        let schema = customer_schema();
+        let run = |src: &str| {
+            let fs = InMemoryFileSystem::new();
+            collect_diagnostics(ROOT, src, &fs, &[], &schema, true, &map, true)
+        };
+        let lk001_help = |src: &str| {
+            let out = run(src);
+            let d = out.all().find(|d| d.diagnostic.code.0 == "LK001");
+            d.and_then(|d| d.diagnostic.help.clone())
+                .unwrap_or_default()
+        };
+        let lk002 = |src: &str| codes(&run(src)).iter().filter(|c| **c == "LK002").count();
+
+        let read = "DO FOR Customer:\n  FIND FIRST Customer WHERE Customer.CustNum = 1.\n";
+        let tail = "  MESSAGE Customer.Name.\nEND.\n";
+        assert!(lk001_help(&format!("{read}  MESSAGE \"a\".\n{tail}")).contains("add `NO-LOCK`"));
+        let hidden = lk001_help(&format!("{read}  {{missing.i}}\n{tail}"));
+        assert!(!hidden.contains("NO-LOCK"), "{hidden}");
+        let before = lk001_help(&format!(
+            "DO FOR Customer:\n  {{missing.i}}\n{}{tail}",
+            &read[17..]
+        ));
+        assert!(before.contains("add `NO-LOCK`"), "{before}");
+        assert!(hidden.contains("Write the lock phrase"), "{hidden}");
+
+        let tx =
+            "DO TRANSACTION:\n  FIND FIRST Customer WHERE Customer.CustNum = 1 EXCLUSIVE-LOCK.\n";
+        assert_eq!(
+            lk002(&format!("{tx}  MESSAGE \"a\".\nEND.\nMESSAGE \"b\".\n")),
+            1
+        );
+        assert_eq!(
+            lk002(&format!("{tx}  {{missing.i}}\nEND.\nMESSAGE \"b\".\n")),
+            0
+        );
+        assert_eq!(
+            lk002(&format!(
+                "DO TRANSACTION:\n  {{missing.i}}\n{}  MESSAGE \"a\".\nEND.\nMESSAGE \"b\".\n",
+                &tx[16..]
+            )),
+            1
+        );
+    }
+
+    // `c = {&none}` followed by a line `d = "x".` reads as `c = (d = "x")`
+    // once the name expands to nothing: LINT0004 does not judge text that
+    // joined across the gap, and still judges the same text when it is there.
+    #[test]
+    fn lint0004_skips_an_assignment_that_an_elided_reference_joins() {
+        let schema = Schema::empty();
+        let lint0004 = |src: &str| {
+            let fs = InMemoryFileSystem::new();
+            let out = collect_diagnostics(
+                ROOT,
+                src,
+                &fs,
+                &[],
+                &schema,
+                false,
+                &LintSeverityMap::new(),
+                true,
+            );
+            codes(&out).iter().filter(|c| **c == "LINT0004").count()
+        };
+        let decls =
+            "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nDEFINE VARIABLE d AS CHARACTER NO-UNDO.\n";
+        assert_eq!(lint0004(&format!("{decls}c = d = \"x\".\n")), 1);
+        assert_eq!(lint0004(&format!("{decls}c = {{&none}}\nd = \"x\".\n")), 0);
+        assert_eq!(
+            lint0004(&format!("{decls}ASSIGN\n  c = {{&none}}\n  d = \"x\".\n")),
+            0
+        );
+        assert_eq!(lint0004(&format!("{decls}c = d = \"x\".\n{{&none}}\n")), 1);
     }
 
     // Loud filter: an unresolvable include surfaces PREPROC007 as a Preproc

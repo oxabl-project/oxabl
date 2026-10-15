@@ -330,6 +330,7 @@ pub enum Kind {
     ParentFieldsBefore,
     ParentFieldsAfter,
     WidgetPool,
+    UseWidgetPool,
     TableHandle,
     Bind,
     ByValue,
@@ -346,11 +347,23 @@ pub enum Kind {
     NoApply,
     BeforeHide,
     UnlessHidden,
+    BufferName,
+    File,
 
     // Phrases
     Editing,
     QueryTuning,
     Trigger,
+    Total,
+    Count,
+    Average,
+    Maximum,
+    Minimum,
+    SubTotal,
+    SubCount,
+    SubAverage,
+    SubMaximum,
+    SubMinimum,
 
     // Widgets
     Rectangle,
@@ -373,6 +386,33 @@ pub enum Kind {
     Blob,
     ComHandle,
     Void,
+    XDocument,
+    XNoderef,
+    SaxReader,
+    SaxWriter,
+    SaxAttributes,
+    Socket,
+    ServerSocket,
+    Server,
+    SoapHeader,
+    SoapHeaderEntryref,
+    ClientPrincipal,
+    Button,
+    ComboBox,
+    ControlFrame,
+    DialogBox,
+    Editor,
+    FillIn,
+    Image,
+    Menu,
+    MenuItem,
+    RadioSet,
+    SelectionList,
+    Slider,
+    SubMenu,
+    ToggleBox,
+    Object,
+    Widget,
 
     // Handles
     Clipboard,
@@ -812,6 +852,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (4, 102) => match lower {
+            "file" => Some(Kind::File),
             "fill" => Some(Kind::Fill),
             "find" => Some(Kind::Find),
             "font" => Some(Kind::Font),
@@ -846,6 +887,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (4, 109) => match lower {
+            "menu" => Some(Kind::Menu),
             "modu" => Some(Kind::Modulo),
             _ => None,
         },
@@ -948,6 +990,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "colon" => Some(Kind::Colon),
             "color" => Some(Kind::Color),
             "compi" => Some(Kind::Compile),
+            "count" => Some(Kind::Count),
             "curso" => Some(Kind::Cursor),
             _ => None,
         },
@@ -985,6 +1028,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (5, 105) => match lower {
+            "image" => Some(Kind::Image),
             "index" => Some(Kind::Index),
             "initi" => Some(Kind::Initial),
             "input" => Some(Kind::Input),
@@ -1029,6 +1073,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (5, 115) => match lower {
+            "share" => Some(Kind::ShareLock),
             "space" => Some(Kind::Space),
             _ => None,
         },
@@ -1037,6 +1082,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "termi" => Some(Kind::Terminal),
             "throw" => Some(Kind::Throw),
             "title" => Some(Kind::Title),
+            "total" => Some(Kind::Total),
             "trans" => Some(Kind::Trans),
             _ => None,
         },
@@ -1084,6 +1130,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "begins" => Some(Kind::Begins),
             "browse" => Some(Kind::Browse),
             "buffer" => Some(Kind::Buffer),
+            "button" => Some(Kind::Button),
             _ => None,
         },
         (6, 99) => match lower {
@@ -1112,6 +1159,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (6, 101) => match lower {
+            "editor" => Some(Kind::Editor),
             "enable" => Some(Kind::Enable),
             "encode" => Some(Kind::Encode),
             "endkey" => Some(Kind::Endkey),
@@ -1169,6 +1217,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (6, 111) => match lower {
+            "object" => Some(Kind::Object),
             "option" => Some(Kind::Option),
             "os-dir" => Some(Kind::OsDir),
             "output" => Some(Kind::Output),
@@ -1196,7 +1245,11 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "scroll" => Some(Kind::Scroll),
             "search" => Some(Kind::Search),
             "select" => Some(Kind::Select),
+            "server" => Some(Kind::Server),
+            "share-" => Some(Kind::ShareLock),
             "shared" => Some(Kind::Shared),
+            "slider" => Some(Kind::Slider),
+            "socket" => Some(Kind::Socket),
             "static" => Some(Kind::KwStatic),
             "status" => Some(Kind::Status),
             "stream" => Some(Kind::Stream),
@@ -1220,6 +1273,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (6, 119) => match lower {
+            "widget" => Some(Kind::Widget),
             "window" => Some(Kind::Window),
             _ => None,
         },
@@ -1238,6 +1292,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "attr sp" => Some(Kind::AttrSpace),
             "attr-sp" => Some(Kind::AttrSpace),
             "availab" => Some(Kind::Available),
+            "average" => Some(Kind::Average),
             _ => None,
         },
         (7, 98) => match lower {
@@ -1276,6 +1331,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (7, 102) => match lower {
+            "fill-in" => Some(Kind::FillIn),
             "finally" => Some(Kind::Finally),
             "from ch" => Some(Kind::FromChars),
             "from pi" => Some(Kind::FromPixels),
@@ -1314,7 +1370,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (7, 109) => match lower {
             "matches" => Some(Kind::Matches),
+            "maximum" => Some(Kind::Maximum),
             "message" => Some(Kind::Message),
+            "minimum" => Some(Kind::Minimum),
             _ => None,
         },
         (7, 110) => match lower {
@@ -1367,6 +1425,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "sdbname" => Some(Kind::Sdbname),
             "session" => Some(Kind::Session),
             "setuser" => Some(Kind::Setuserid),
+            "share-l" => Some(Kind::ShareLock),
             "stdcall" => Some(Kind::Stdcall),
             _ => None,
         },
@@ -1528,6 +1587,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (8, 115) => match lower {
             "setuseri" => Some(Kind::Setuserid),
+            "share-lo" => Some(Kind::ShareLock),
+            "sub-menu" => Some(Kind::SubMenu),
             _ => None,
         },
         (8, 116) => match lower {
@@ -1586,6 +1647,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "case-sens" => Some(Kind::CaseSensitive),
             "character" => Some(Kind::Character),
             "clipboard" => Some(Kind::Clipboard),
+            "combo-box" => Some(Kind::ComboBox),
             "connected" => Some(Kind::Connected),
             _ => None,
         },
@@ -1641,6 +1703,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "last-even" => Some(Kind::LastEvent),
             _ => None,
         },
+        (9, 109) => match lower {
+            "menu-item" => Some(Kind::MenuItem),
+            _ => None,
+        },
         (9, 110) => match lower {
             "no-attr-l" => Some(Kind::NoAttrList),
             "no-attr-s" => Some(Kind::NoAttrSpace),
@@ -1674,6 +1740,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (9, 114) => match lower {
+            "radio-set" => Some(Kind::RadioSet),
             "rectangle" => Some(Kind::Rectangle),
             "recursive" => Some(Kind::Recursive),
             _ => None,
@@ -1681,9 +1748,12 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         (9, 115) => match lower {
             "screen-io" => Some(Kind::ScreenIo),
             "setuserid" => Some(Kind::Setuserid),
+            "share-loc" => Some(Kind::ShareLock),
             "show-stat" => Some(Kind::ShowStats),
             "signature" => Some(Kind::Signature),
             "stream-io" => Some(Kind::StreamIo),
+            "sub-count" => Some(Kind::SubCount),
+            "sub-total" => Some(Kind::SubTotal),
             "subscribe" => Some(Kind::Subscribe),
             _ => None,
         },
@@ -1695,6 +1765,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (9, 119) => match lower {
             "work-tabl" => Some(Kind::WorkTable),
+            _ => None,
+        },
+        (9, 120) => match lower {
+            "x-noderef" => Some(Kind::XNoderef),
             _ => None,
         },
         (10, 38) => match lower {
@@ -1734,6 +1808,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "debug list" => Some(Kind::DebugList),
             "descending" => Some(Kind::Descending),
             "destructor" => Some(Kind::Destructor),
+            "dialog-box" => Some(Kind::DialogBox),
             "dictionary" => Some(Kind::Dictionary),
             "disconnect" => Some(Kind::Disconnect),
             _ => None,
@@ -1818,6 +1893,8 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (10, 115) => match lower {
             "sax-comple" => Some(Kind::SaxComplete),
+            "sax-reader" => Some(Kind::SaxReader),
+            "sax-writer" => Some(Kind::SaxWriter),
             "share-lock" => Some(Kind::ShareLock),
             "show-stats" => Some(Kind::ShowStats),
             "single-run" => Some(Kind::SingleRun),
@@ -1825,6 +1902,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (10, 116) => match lower {
             "temp-table" => Some(Kind::TempTable),
+            "toggle-box" => Some(Kind::ToggleBox),
             _ => None,
         },
         (10, 117) => match lower {
@@ -1834,6 +1912,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         (10, 119) => match lower {
             "word-index" => Some(Kind::WordIndex),
             "work-table" => Some(Kind::WorkTable),
+            _ => None,
+        },
+        (10, 120) => match lower {
+            "x-document" => Some(Kind::XDocument),
             _ => None,
         },
         (11, 38) => match lower {
@@ -1853,6 +1935,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "before-hide" => Some(Kind::BeforeHide),
             "block-level" => Some(Kind::BlockLevel),
             "buffer-copy" => Some(Kind::BufferCopy),
+            "buffer-name" => Some(Kind::BufferName),
             _ => None,
         },
         (11, 99) => match lower {
@@ -1945,6 +2028,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "sax-complet" => Some(Kind::SaxComplete),
             "sax-running" => Some(Kind::SaxRunning),
             "search-self" => Some(Kind::SearchSelf),
+            "soap-header" => Some(Kind::SoapHeader),
+            "sub-average" => Some(Kind::SubAverage),
+            "sub-maximum" => Some(Kind::SubMaximum),
+            "sub-minimum" => Some(Kind::SubMinimum),
             _ => None,
         },
         (11, 116) => match lower {
@@ -2082,6 +2169,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         (13, 99) => match lower {
             "case sensitiv" => Some(Kind::CaseSensitive),
             "case-sensitiv" => Some(Kind::CaseSensitive),
+            "control-frame" => Some(Kind::ControlFrame),
             "current langu" => Some(Kind::CurrentLanguage),
             "current-langu" => Some(Kind::CurrentLanguage),
             _ => None,
@@ -2145,6 +2233,7 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         (13, 115) => match lower {
             "sax-write-tag" => Some(Kind::SaxWriteTag),
             "search-targer" => Some(Kind::SearchTarger),
+            "server-socket" => Some(Kind::ServerSocket),
             "stream-handle" => Some(Kind::StreamHandle),
             "system-dialog" => Some(Kind::SystemDialog),
             _ => None,
@@ -2222,7 +2311,9 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             _ => None,
         },
         (14, 115) => match lower {
+            "sax-attributes" => Some(Kind::SaxAttributes),
             "sax-write-idle" => Some(Kind::SaxWriteIdle),
+            "selection-list" => Some(Kind::SelectionList),
             "serialize-name" => Some(Kind::SerializeName),
             _ => None,
         },
@@ -2280,12 +2371,17 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
             "security-policy" => Some(Kind::SecurityPolicy),
             _ => None,
         },
+        (15, 117) => match lower {
+            "use-widget-pool" => Some(Kind::UseWidgetPool),
+            _ => None,
+        },
         (15, 119) => match lower {
             "window-maximize" => Some(Kind::WindowMaximized),
             "window-minimize" => Some(Kind::WindowMinimized),
             _ => None,
         },
         (16, 99) => match lower {
+            "client-principal" => Some(Kind::ClientPrincipal),
             "codebase locator" => Some(Kind::CodebaseLocator),
             "codebase-locator" => Some(Kind::CodebaseLocator),
             "current language" => Some(Kind::CurrentLanguage),
@@ -2392,6 +2488,10 @@ pub fn match_keyword(s: &str) -> Option<Kind> {
         },
         (20, 112) => match lower {
             "parent-fields-before" => Some(Kind::ParentFieldsBefore),
+            _ => None,
+        },
+        (20, 115) => match lower {
+            "soap-header-entryref" => Some(Kind::SoapHeaderEntryref),
             _ => None,
         },
         _ => None,

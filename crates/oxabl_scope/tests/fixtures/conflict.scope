@@ -1,0 +1,15 @@
+unit u0 main
+  b0 main @1
+  b1 do @3
+  b2 for-each @8
+  b3 for-each @9
+buffer Customer default db:Customer owner=u0 refs=3
+  scope u0/b0 raised @6 absorbed=@3 refs=3
+  unknown conflict @3
+buffer Order default db:Order owner=u0 refs=2
+  scope u0/b2 weak @8 absorbed=@9 refs=2
+  unknown conflict @9
+read find Customer @4 u0/b1 lock=no-lock
+read find Customer @6 u0/b0 lock=no-lock
+read for Order @8 u0/b2 lock=no-lock
+read for Order @9 u0/b3 lock=no-lock

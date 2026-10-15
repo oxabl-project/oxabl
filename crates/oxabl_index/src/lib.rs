@@ -50,6 +50,7 @@
 //! with another extension is not seen to change.
 
 mod batch;
+pub mod calls;
 mod closure;
 mod deps;
 mod facts;

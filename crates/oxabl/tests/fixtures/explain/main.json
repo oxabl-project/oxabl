@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "file": "main.p",
+  "coordinates": "expanded-lines",
+  "units": [
+    {
+      "kind": "main",
+      "name": null,
+      "line": 1,
+      "effects": [],
+      "summary": {
+        "complete": true,
+        "partial": [],
+        "recursive": false,
+        "effects": [
+          {
+            "table": "Customer",
+            "operation": "read",
+            "lock": "no-lock",
+            "shape": "once",
+            "line": null,
+            "index": null,
+            "reason": null,
+            "via": "<root>/read.p::main"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "procedure",
+      "name": "scan",
+      "line": 5,
+      "effects": [
+        {
+          "table": "Customer",
+          "operation": "read",
+          "lock": "no-lock",
+          "shape": "once",
+          "line": 6,
+          "index": "CustNum",
+          "reason": "primary; tie=none; whole=true; equality=0; range=false",
+          "via": null
+        },
+        {
+          "table": "Customer",
+          "operation": "read",
+          "lock": "no-lock",
+          "shape": "per-row",
+          "line": 7,
+          "index": "CustNum",
+          "reason": "unique-equality; tie=none; whole=false; equality=1; range=false",
+          "via": null
+        }
+      ],
+      "summary": {
+        "complete": false,
+        "partial": [
+          "call:dynamic"
+        ],
+        "recursive": false,
+        "effects": [
+          {
+            "table": "Customer",
+            "operation": "read",
+            "lock": "no-lock",
+            "shape": "once",
+            "line": null,
+            "index": null,
+            "reason": null,
+            "via": null
+          },
+          {
+            "table": "Customer",
+            "operation": "read",
+            "lock": "no-lock",
+            "shape": "per-row",
+            "line": null,
+            "index": null,
+            "reason": null,
+            "via": null
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+unit u0 main
+  query @3 escapes holder=hQuery pool=unscoped
+    escape freed-by-other-unit @3 freed-elsewhere

@@ -100,7 +100,7 @@ pub fn run(
     if hazards.is_empty() {
         return Vec::new();
     }
-    let paths = paths::Paths::new(program, ctx.source);
+    let paths = paths::Paths::new(program, ctx.source, ctx.tokens);
     let cleared = paths.assigned_before_every_outside_read(&hazards, sem);
     hazards
         .iter()
@@ -213,9 +213,14 @@ mod paths {
     }
 
     impl<'a> Paths<'a> {
-        pub(super) fn new(program: &'a [Statement], source: &'a str) -> Self {
+        /// `tokens` are the ones `program` was parsed from, or none.
+        pub(super) fn new(
+            program: &'a [Statement],
+            source: &'a str,
+            tokens: &'a [oxabl_lexer::Token],
+        ) -> Self {
             let mut paths = Paths {
-                units: UnitBuilder::new(program, source, &FlowOptions::default()),
+                units: UnitBuilder::with_tokens(program, source, tokens, &FlowOptions::default()),
                 uses: FxHashMap::default(),
                 no_undo: FxHashSet::default(),
                 literal_writes: FxHashSet::default(),
@@ -408,7 +413,22 @@ mod paths {
                     }
                 }
                 SK::ExpressionStatement(e) | SK::Throw(e) | SK::Return(Some(e)) => read(self, e),
-                SK::DeleteObject { target, .. } => read(self, target),
+                SK::DeleteObject {
+                    target,
+                    extra_targets,
+                    ..
+                } => {
+                    read(self, target);
+                    for e in extra_targets {
+                        read(self, e);
+                    }
+                }
+                SK::ReleaseObject { target, .. } => read(self, target),
+                SK::CreateWidgetPool { name, .. } | SK::DeleteWidgetPool { name, .. } => {
+                    if let Some(e) = name {
+                        read(self, e);
+                    }
+                }
                 SK::PreprocMessage { expression } => read(self, expression),
                 SK::Do {
                     from,
@@ -614,17 +634,56 @@ mod paths {
                 SK::Create {
                     target:
                         CreateTarget::Handle {
-                            widget_pool: Some(e),
+                            handle,
+                            widget_pool,
+                            class,
+                            assignments,
+                            triggers,
+                            connect,
+                            for_table,
                             ..
                         },
                     ..
-                } => read(self, e),
+                } => {
+                    self.target(handle, id);
+                    if let Some(e) = for_table {
+                        read(self, e);
+                    }
+                    for e in [widget_pool.as_ref(), class.as_ref()].into_iter().flatten() {
+                        read(self, e);
+                    }
+                    if let Some(file) = connect.as_ref().and_then(|c| c.file.as_ref()) {
+                        read(self, file);
+                    }
+                    for a in assignments {
+                        read(self, &a.value);
+                    }
+                    for t in triggers {
+                        match &t.action {
+                            OnAction::Block(b) => self.stmt(b),
+                            OnAction::PersistentRun {
+                                in_handle,
+                                arguments,
+                                ..
+                            } => {
+                                for e in in_handle.iter().chain(arguments) {
+                                    read(self, e);
+                                }
+                            }
+                            OnAction::Revert => {}
+                        }
+                    }
+                }
                 SK::On { kind } => match kind {
                     OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => match action
                     {
                         OnAction::Block(b) => self.stmt(b),
-                        OnAction::PersistentRun { arguments, .. } => {
-                            for e in arguments {
+                        OnAction::PersistentRun {
+                            in_handle,
+                            arguments,
+                            ..
+                        } => {
+                            for e in in_handle.iter().chain(arguments) {
                                 read(self, e);
                             }
                         }

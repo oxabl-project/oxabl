@@ -1,0 +1,17 @@
+unit u0 main
+  b0 main @1 buffers=Customer,ttLine
+unit u1 method Load
+  b0 method @8
+  b1 for-each @9
+unit u2 method Total
+  b0 method @15
+  b1 for-each @18 buffers=bLine
+buffer bLine defined tt:ttLine no-undo owner=u2 @16 refs=2
+  scope u2/b1 weak @18 refs=2
+buffer Customer default db:Customer owner=u0 refs=3
+  scope u0/b0 raised @21 absorbed=@9 refs=3
+buffer ttLine default tt:ttLine no-undo owner=u0 refs=2
+  scope u0/b0 raised @10 refs=2
+read for Customer @9 u1/b1 lock=no-lock
+read for bLine @18 u2/b1 lock=n/a
+read find Customer @21 u2/b0 lock=no-lock

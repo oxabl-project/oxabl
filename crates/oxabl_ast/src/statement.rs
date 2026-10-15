@@ -140,6 +140,8 @@ pub enum StatementKind {
         /// An `EXTERNAL` or `IN ...` declaration: a signature with no ABL body,
         /// so its parameters are never referenced by name.
         is_prototype: bool,
+        /// An `EXTERNAL` declaration: an entry point of a shared library.
+        is_external: bool,
     },
 
     /// Define input/output params
@@ -513,6 +515,8 @@ pub enum StatementKind {
         is_abstract: bool,
         /// Whether FINAL was specified.
         is_final: bool,
+        /// Whether `USE-WIDGET-POOL` was specified.
+        use_widget_pool: bool,
         /// Class body statements (methods, properties, variables, constructors).
         body: Vec<Statement>,
     },
@@ -624,10 +628,14 @@ pub enum StatementKind {
         no_error: bool,
     },
 
-    /// DELETE buffer-name [NO-ERROR].
+    /// DELETE buffer-name [NO-ERROR] — a record delete.
+    ///
+    /// Handle deletes are [`Self::DeleteObject`]; pool deletes are
+    /// [`Self::DeleteWidgetPool`].
     Delete { buffer: Identifier, no_error: bool },
 
-    /// `DELETE OBJECT <expression> [NO-ERROR].` — destroy an object or handle.
+    /// `DELETE OBJECT | PROCEDURE | WIDGET | SERVER <expression> [NO-ERROR].` —
+    /// destroy an object or handle.
     ///
     /// Its own variant rather than a spelling of [`Self::Delete`] because the
     /// operand is an **expression**, not a name: `DELETE OBJECT ttbl:HANDLE.` and
@@ -636,14 +644,37 @@ pub enum StatementKind {
     /// cost every name it passed over a real reference — a handle deleted and never
     /// read again looked touched-by-something-unmodelled rather than dead.
     DeleteObject {
+        kind: DeleteObjectKind,
         /// The object being destroyed. Resolved like any other expression, so the
         /// handle it names is credited a read.
         target: Expression,
+        /// Further handles of `DELETE WIDGET h1 h2 ...`; empty for every other form.
+        extra_targets: Vec<Expression>,
         no_error: bool,
     },
 
-    /// RELEASE buffer-name [NO-ERROR].
+    /// `DELETE WIDGET-POOL [pool-name] [NO-ERROR].`
+    ///
+    /// `name` is `None` for the unnamed pool.
+    DeleteWidgetPool {
+        name: Option<Expression>,
+        no_error: bool,
+    },
+
+    /// `CREATE WIDGET-POOL [pool-name] [PERSISTENT] [NO-ERROR].`
+    ///
+    /// `name` is `None` for the unnamed pool.
+    CreateWidgetPool {
+        name: Option<Expression>,
+        persistent: bool,
+        no_error: bool,
+    },
+
+    /// RELEASE buffer-name [NO-ERROR] — a record release.
     Release { buffer: Identifier, no_error: bool },
+
+    /// `RELEASE OBJECT com-handle [NO-ERROR].` — release a COM object.
+    ReleaseObject { target: Expression, no_error: bool },
 
     /// VALIDATE buffer-name [NO-ERROR].
     Validate { buffer: Identifier, no_error: bool },
@@ -1356,29 +1387,96 @@ pub enum DataSourceKeys {
 // =============================================================================
 
 /// Target of a CREATE statement.
+// Boxing the payload would force every consumer to deref a field it matches on directly.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateTarget {
     /// CREATE buffer-name — record creation or any unrecognized CREATE.
     Name(Identifier),
-    /// CREATE DATASET/DATA-SOURCE/TEMP-TABLE handle [IN WIDGET-POOL pool].
+    /// `CREATE <type> handle [IN WIDGET-POOL pool] ...` — a dynamic object.
     Handle {
         kind: CreateTargetKind,
-        handle: Identifier,
+        /// The variable or field that receives the new handle. An expression so
+        /// that `hArr[i]` and `tt.hq` keep their real target.
+        handle: Expression,
         widget_pool: Option<Expression>,
+        /// The class of an [`Automation`](CreateTargetKind::Automation) or
+        /// [`Dynamic`](CreateTargetKind::Dynamic) create: the string literal of
+        /// `CREATE "Excel.Application" ch`, or the argument of `CREATE VALUE(expr) ch`.
+        class: Option<Expression>,
+        /// `ASSIGN attribute = expression ...` of a widget create.
+        assignments: Vec<CreateAssignment>,
+        /// `TRIGGERS: ON event ... END TRIGGERS` of a widget create.
+        triggers: Vec<WidgetTrigger>,
+        /// `CONNECT [TO file]` of a COM create.
+        connect: Option<CreateConnect>,
+        /// The `FOR TABLE` operand of `CREATE BUFFER`: a table name or a handle
+        /// expression, so a bare name in it may not be a variable.
+        for_table: Option<Expression>,
     },
+}
+
+/// One `attribute = expression` pair of a widget create's ASSIGN clause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateAssignment {
+    pub attribute: Identifier,
+    pub value: Expression,
+}
+
+/// One `ON event-list trigger-block` entry of a widget create's TRIGGERS phrase.
+///
+/// The body is a deferred trigger, not inline control flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WidgetTrigger {
+    pub events: Vec<Identifier>,
+    pub action: OnAction,
+}
+
+/// The `CONNECT [TO file]` clause of a COM create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateConnect {
+    pub file: Option<Expression>,
 }
 
 /// The type keyword in a CREATE ... handle statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CreateTargetKind {
     Dataset,
     DataSource,
     TempTable,
     Buffer,
     Query,
+    /// Any widget type: `CREATE BUTTON h`, `CREATE WINDOW h`, `CREATE BROWSE h`, ...
     Widget,
     /// `CREATE CALL handle` — a dynamic call object.
     Call,
+    XDocument,
+    XNodeRef,
+    SaxReader,
+    SaxWriter,
+    SaxAttributes,
+    Socket,
+    ServerSocket,
+    Server,
+    SoapHeader,
+    SoapHeaderEntryRef,
+    ClientPrincipal,
+    /// `CREATE "Excel.Application" ch` — a COM automation object.
+    Automation,
+    /// `CREATE VALUE(expr) h` — the type is computed, so it may be a COM object
+    /// or a dynamic handle.
+    Dynamic,
+}
+
+/// Which keyword a [`StatementKind::DeleteObject`] was written with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeleteObjectKind {
+    Object,
+    Procedure,
+    Widget,
+    Server,
 }
 
 // =============================================================================
@@ -1498,9 +1596,10 @@ pub enum OnAction {
     Block(Box<Statement>),
     /// REVERT -- removes the trigger.
     Revert,
-    /// PERSISTENT RUN procedure [(args)].
+    /// PERSISTENT RUN procedure [IN handle] [(args)].
     PersistentRun {
         procedure: Identifier,
+        in_handle: Option<Expression>,
         arguments: Vec<Expression>,
     },
 }

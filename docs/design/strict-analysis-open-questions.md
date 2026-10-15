@@ -10,7 +10,10 @@ This note answers two of the three open questions in
 [`strict-analysis-plan.md`](strict-analysis-plan.md): where annotations may appear, and where
 diagnostics inside include files are reported. The third (PROPATH and include resolution parity
 with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
-lists the block semantics that the flow graph (`oxabl_flow`) models without a reference.
+lists the block semantics that the flow graph (`oxabl_flow`) models without a reference,
+section 6 the handle semantics that `oxabl_handles` relies on, section 7 the buffer-scope,
+transaction and lock semantics that `oxabl_scope` relies on, and section 8 the database effects,
+index selection and call graph that `oxabl_effects` and `oxabl_index` rely on.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -114,6 +117,12 @@ in expressions.
    the same statement list. Blank lines and comments do not break the run. After preprocessing,
    the target is the first statement of an include's expansion. An annotation before an `&IF`
    targets the conditional; M6 must decide whether to look into its branches (open).
+
+**Corpus delta of H5 and H5a (verified).** Distinct normal-path leak sites fell from 1771 to 1750
+on the first corpus and from 291 to 280 on the second; none were added. Of 10 moved sites sampled,
+all 10 were false positives: 3 `CREATE ... NO-ERROR` or `RUN ... PERSISTENT SET ... NO-ERROR`
+followed by `IF ERROR-STATUS:ERROR`, and 7 freed under a `VALID-OBJECT` guard (mostly in
+`FINALLY` blocks).
 
 **Still to verify against a licensed install:** the compiler's treatment of an annotation in a
 position it does not know, the exact list of annotations it reads itself, and whether unquoted
@@ -336,6 +345,53 @@ open, how an include with several roots in one run picks its context for rules t
 context-free, and whether to follow includes reachable from the roots instead of walking `.i`
 files.
 
+### Handle rules in includes (M2)
+
+HD001 to HD005 are not context-free in the strict sense: whether an object leaks can depend on the
+includer. They are registered as context-free, so that they follow the shipped M1 route: a finding
+whose create or delete sits in an include is reported once, in the include, when the include is checked
+alone. The analysis of a root runs over the expanded text, so the root sees the create in an include
+and the delete after it together. A root's finding whose anchor sits in an include is therefore not
+dropped at once. It is routed (`RuleMeta::use_site_in_includer`, set for the five rules):
+
+- The root run keeps the finding aside, with the include file, the anchor in the include's own bytes,
+  and the root's outermost `{...}` site (`CollectedDiagnostics::include_findings`).
+- `LintPipeline::run` runs the include alone (`run_context_free`, as a walk does). If that run has the
+  same rule at the same anchor, the include reports it, and the root stays silent. This is the "never
+  both" rule of recommendation 3.
+- Otherwise the include cannot see the finding. Either it creates an object whose variable the root
+  defines (alone, the name does not resolve, so the object escapes), or it deletes or overwrites an
+  object that the root creates (alone, there is no create). The root reports it at the `{...}` site, with "(in file.i:line, reached through this include)" in the message (the path
+  is relative to the working directory when it lies below it) and
+  `oxabl_lint::fragment::USE_SITE_NOTE` at the end of the help. The finding is not autofixable. Its
+  baseline key is the includer's path, as for any other finding of the root.
+- The run of one include is made once per run handle, however many roots include it.
+- An include whose own configuration has no context-free rule on is never run alone, and its findings
+  are dropped with it. This follows the per-directory overrides: a rule that the user turned off for the
+  include is not shown at the use site.
+
+Confidence: high that the two cases of the review (a create that nothing deletes, a delete of an object
+that the root creates) are reported. Medium for the comparison: it is by rule and anchor, so a finding
+that the include shows alone with another anchor is reported twice. Limits: the include has to be
+readable through the same file system and path that the preprocessor used. The editor and the daemon
+(`collect`, the incremental path) do not run the includes, so they do not show these findings. An include
+that nobody walks (given as one file to `check`, outside the walked directory, or with another extension)
+still counts as "shown alone", so the root stays silent about a finding that the include would show.
+
+An include that is checked alone cannot see its includer. Its findings are therefore lower confidence
+in two cases, with the help ending in `oxabl_lint::fragment::FRAGMENT_NOTE` (and not autofixable):
+
+- HD001, HD003 and HD004 for an object still live at the end of the include's main block. The includer
+  may free it later.
+- HD005 always. The includer may create the widget pool.
+
+A statement that holds a reference or an `&IF` is also lowered by the shared fragment rule above.
+HD002 is not lowered: only an error path is claimed, and an includer rarely changes that.
+
+HD005 is reported once per file, on the file's own first create. A root leaves out the creates that an
+include wrote and counts only its own, so it reports even when an include creates earlier. The include
+reports its own creates (lower confidence) when it is checked.
+
 ## 4. Shared definitions and `NO-UNDO`
 
 TX006 reports a variable or temp-table defined without `NO-UNDO`, and its help used to say "add
@@ -388,3 +444,581 @@ draft, and its row says what it was.
 
 **Still to verify against a licensed install:** F5, F7 (when it settles, keep one successor) and F8 for STOP and QUIT first, because
 the readings differ in graph shape. Then F10 (destructor and trigger blocks) and F13.
+
+## 6. Handle lifetimes: the semantics `oxabl_handles` relies on
+
+`oxabl_handles` follows each dynamic object from its create over every path of its unit's flow
+graph and gives it a verdict: freed, pool-freed, escapes, leaks or unknown. The rules below are
+readings, marked as in section 5. Each has a fixture in `crates/oxabl_handles/tests/fixtures/`
+(re-bless with `OXABL_BLESS=1 cargo test -p oxabl_handles --test snapshots`), and the rule
+queries are pinned by `crates/oxabl_handles/tests/rules.rs`.
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| H1 | Class instances (`NEW`, `DYNAMIC-NEW`) are reference-counted and freed by the AVM: verdict "collected", not followed. Cycles between objects leak, and are out of scope (the plan defers them). | Recalled, high. | `create_kinds.p` |
+| H2 | Handle-based objects (`CREATE QUERY`, `BUFFER`, `TEMP-TABLE`, `DATASET`, `DATA-SOURCE`, `CALL`, X-, SAX-, SOAP-, socket and server objects, `CLIENT-PRINCIPAL`), widgets, COM objects, persistent procedures and MEMPTRs are not collected. They live until deleted, until their widget pool is deleted, or until the session ends. | Recalled, high. | `create_kinds.p` |
+| H3 | Frees: `DELETE OBJECT`, `DELETE PROCEDURE`, `DELETE WIDGET` (each handle of `DELETE WIDGET h1 h2`), `RELEASE OBJECT` (COM) and `SET-SIZE(m) = 0`. A delete that raises (an invalid handle) is still a free on its error edge. `h:HANDLE` is the same object as `h`, so `DELETE OBJECT h:HANDLE` is a free and `h2 = h:HANDLE` is an alias. A delete whose operand names a holder but is not the holder (`DELETE OBJECT WIDGET-HANDLE(STRING(h))`, `h:PARENT`) makes the object unknown (`unmapped-free`), never "no effect". | Recalled, high. | `create_kinds.p`, `frees.p`, `new_kinds.p`, `memptr.p`; `model_fixes.rs` |
+| H4 | `APPLY "CLOSE" TO hProc` frees a persistent procedure, and no other kind of object (a window or a query is not deleted by CLOSE). This is a convention, not a language rule: the procedure's `CLOSE` trigger usually runs `DELETE PROCEDURE THIS-PROCEDURE`. `RUN destroy IN h` follows the same kind of convention but shows nothing in the caller, so it makes the object unknown, not freed. The convention is read widely: any internal procedure name that starts with `destroy` (`destroyObject`, `DestroyThis`; user names, case-insensitive), and ADM's `RUN dispatch IN h ('destroy')`. | Proposed, medium. Low for the wider names and for `dispatch`. | `frees.p`, `persistent.p`, `destroy_names.p`; `model_fixes.rs` |
+| H5 | A live object's handle is valid and not unknown. Each test of a holder then has a fixed value: `VALID-HANDLE(h)`, `VALID-OBJECT(h)` and `h <> ?` are true, `h = ?` is false, `NOT` flips. An `IF` whose whole condition has a fixed value this way, through `AND`, `OR` and `NOT`, has a branch that cannot happen while `h` holds a live object: `IF VALID-HANDLE(h) THEN DELETE OBJECT h.` frees on every path, and so does `IF h <> ? AND VALID-HANDLE(h)`. The false branch of `VALID-HANDLE(h) AND x` can happen (`x` is false), so it stays. A test of another holder is no guard. `VALID-OBJECT` is taken as a guard on handles too: real code tests procedure and widget handles with it. | Recalled, high for `VALID-HANDLE`, `<> ?` and `= ?`. Medium for `VALID-OBJECT` on a handle (the corpus uses it for cleanup of handles; its behaviour on an invalid handle is not confirmed). | `guards.p`, `guards_compound.p` |
+| H5a | After `CREATE ... NO-ERROR` or `RUN ... PERSISTENT SET h NO-ERROR`, the object may not exist. The branch of an `IF` that tests `ERROR-STATUS:ERROR` as true cannot hold the object, so a path that leaves there is no leak. This holds only when the `IF` is the next statement after the create: any other statement may change the error status. `NOT VALID-HANDLE(h)` after the create is H5. A create without `NO-ERROR` gets no such rule. | Proposed, medium. | `no_error.p` |
+| H6 | An object created without `IN WIDGET-POOL` goes into the most recent unnamed pool, else the session pool. An unnamed pool is deleted when the procedure or trigger that created it ends; one created in the main block of a persistent procedure lives until that procedure is deleted. Model: a `CREATE WIDGET-POOL.` that dominates the create in the same unit is the unit's pool; one in the main block also covers the file's other units (the file pool). The caller's pool is not knowable: "unscoped" (HD005). | Recalled, medium. | `pools.p`, `unscoped.p` |
+| H6a | A class with `USE-WIDGET-POOL` has an unnamed pool for each instance. An object a unit of the class creates without `IN WIDGET-POOL` goes there, unless a `CREATE WIDGET-POOL` of the unit dominates the create. The pool is deleted with the instance, so the object is pool-freed (placement "class"). `NEW` and static members are not told apart: a static method may use the session pool in a real run. | Proposed, low. | `class_pool.cls` |
+| H7 | A named pool is session-wide by name. `DELETE WIDGET-POOL name` deletes it, and so does the end of the procedure that created it, unless it is `PERSISTENT`. A pool name no statement of the file creates belongs to someone else: the object escapes to it. | Recalled, medium. | `pools.p` |
+| H8 | Widget pools hold handle-based objects and widgets, not persistent procedures, MEMPTRs, COM objects or class instances. Server and socket objects, and a `CREATE VALUE` whose type is not known, are taken as not pooled, so HD005 does not report them. | Recalled. Medium; low for the server, socket, X-, SAX- and SOAP- objects. | `pools.p`, `new_kinds.p` |
+| H9 | An object left in a pool this procedure deletes is freed with it, so it is not an HD001 leak, also when a loop overwrites its handle. It can still grow memory until the procedure ends. | Proposed. | `pools.p` |
+| H10 | A statement that raises does not complete: a `CREATE` that raises makes nothing, and an assignment that raises stores nothing. The assignment of a plain variable or literal to a plain variable, and `RETURN` of one, cannot raise, although the flow graph gives every assignment a raise edge. So does a test with only variable references, literals, comparisons and `AND`/`OR`/`NOT`: `IF`, `ELSE IF`, `CASE` (its `WHEN` values too), `DO WHILE`, `REPEAT WHILE`. `VALID-HANDLE(v)`, `VALID-OBJECT(v)` and `ERROR-STATUS:ERROR` read a value and do not raise, so a `FINALLY` that tests `IF VALID-HANDLE(h)` before its delete adds no raise edge. A `DO i = a TO b [BY c]` header whose bounds are variables or literals does not raise either, so an error in a loop is taken from a statement of its body, which is what HD002 names. Any other call, attribute, method, arithmetic or field in the test can raise. `h:HANDLE` counts as a plain variable. This list is for the handle walk only; `oxabl_flow` keeps the raise edges. | Proposed, high for assignments. Medium for tests (an invalid-handle read is excluded by the no-call rule, a `?` comparison on a variable is taken as safe). | `alias.p`, `escapes.p`, `cannot_raise_tests.p`, `finally.p` |
+| H11 | Overwriting the last variable that holds a live object (a new create into it, `h = ?`, an `OUTPUT` argument) loses the object there. An `OUTPUT` parameter starts at its initial value in the callee, so the old value is not seen. A create in a loop whose object is still live on the next iteration is lost at that create. | Recalled for `OUTPUT`, high. Proposed for the rest. | `loops_overwrite.p`, `alias.p` |
+| H12 | `SET-SIZE` on a MEMPTR that already has a size raises an error and frees nothing, so it does not lose the old allocation. Assigning a MEMPTR copies the pointer, not the memory, so both variables name one allocation. `COPY-LOB ... TO m` allocates `m` when the definition `m` resolves to from the unit (its own, an enclosing unit's, or a member) is `AS MEMPTR`. The parser skips the statement, so the target is read from its tokens. It is the same allocation as an earlier `SET-SIZE` or `COPY-LOB` of `m` that dominates it, not a second object. `COPY-LOB FROM m` is a use. | Recalled, medium for `SET-SIZE`. Proposed, low for `COPY-LOB`. | `memptr.p`; `model_fixes.rs` |
+| H13 | `RUN p PERSISTENT` without `SET` keeps no handle in this file (a singleton or a self-managing super procedure): verdict "uncaptured", for HD003 to treat on its own. | Proposed. | `persistent.p` |
+| H14 | An `INPUT` handle argument goes by what the callee shows. A procedure, function or method this file defines is matched by name, and its parameter by position. A method is matched only when no subclass can override it: a `PRIVATE` or `STATIC` method, or any method of a `FINAL` class. A call of any other method, or of an `ABSTRACT` one, is unknown (`callee`), because the code that runs may be a subclass's in another file; interface methods are never read. A prototype is not a definition: `PROCEDURE p IN SUPER`, `PROCEDURE p IN h` and `FUNCTION f ... IN h` / `IN SUPER` / `MAP TO` run code of another file (`PROCEDURE p EXTERNAL` is H14a). A `FUNCTION f ... FORWARD` is matched through its definition. A body whose parameter at that position is not declared `HANDLE`, `WIDGET-HANDLE`, `COM-HANDLE`, `MEMPTR` or as a table, dataset or buffer parameter (`CHARACTER`, a class, `LIKE`) is not the callee: an inherited overload may take the handle, so the object is unknown (`callee`). What the defined callee does with the parameter, or with a local variable it copies the parameter into, is read without regard to order: a free hands the object over (escape `freed-by-callee`); a store where it outlives the call (a member, an outer or shared variable, an `OUTPUT` parameter, a field, an attribute), `RETURN`, or any other escape of this list keeps it (escape `kept-by-callee`); a pass to a callee the file does not define, a skipped statement or a dynamic call that names it makes the object unknown (`callee`); otherwise the callee borrows it, a use. A pass on to another callee of the file takes that callee's fate, up to four calls deep, then unknown; a call back into a callee whose parameter is being read (recursion) adds nothing. One fate reads at most 1,000 callee bodies, then it is unknown, so callees that pass a handle to each other cost a bounded time. If the callee is not in the file (`RUN x.p`, `RUN p IN h`, a static class call), the object is unknown (`callee`): the callee may delete or keep it. Built-in functions borrow. A method call resolves by its receiver: on a variable declared `AS HANDLE` or `WIDGET-HANDLE`, a buffer, table or dataset parameter (any `TABLE`/`DATASET` form), a static buffer, temp-table, dataset, data-source or frame, a system handle, a chain of attributes from one of these, or a chain whose last link is a `...HANDLE` attribute (`BUFFER b:HANDLE`), a method that looks built in (a hyphenated name such as `SET-BUFFERS`, or `FILL`, `READ`, `WRITE`, `CONNECT`, `DISCONNECT`, `INVOKE`, `SAVE`, `LOAD`, `PARSE`, `SELECT`) borrows. A call with no receiver, on `THIS-OBJECT`, or on a variable whose declared type is this class names a method of the file, read only when the method is matched as above. Any other method call (`oRepo:Save(h)` on another class, `CAST(...)`, `SUPER:`, a name the file does not declare) is unknown. A `TABLE`, `TABLE-HANDLE`, `DATASET` or `DATASET-HANDLE` argument passes a copy, so the callee cannot free the caller's object: a borrow (the keyword is read from the text before the argument, since the parser drops it). A call with no receiver in a class may name one of the class's methods. A built-in function missing from the lexer registry is unknown too, which errs towards no report. An `INPUT-OUTPUT` argument escapes. Passing to a constructor (`NEW C(h)`), `ADD-SUPER-PROCEDURE`, `PUBLISH` and `SUBSCRIBE PROCEDURE` escapes. `ADD-BUFFER` on a query this unit creates is a use (a query does not own its buffers), and on a dataset this unit creates it is H15. On any other receiver (a parameter, a static dataset, a variable of another unit) the receiver may be a dataset, so the object is unknown (`add-buffer`; in a callee, `callee`). `SET-BUFFERS` is a use. | Proposed, medium. Recalled for queries, high. | `escapes.p`, `dataset_member.p`; `model_fixes.rs`, `callees.rs` |
+| H14a | A `PROCEDURE p EXTERNAL "lib"` prototype (a shared-library entry point) borrows every `INPUT` argument. Only `SET-SIZE(m) = 0` frees an ABL MEMPTR: a library that frees the pointer corrupts the AVM's bookkeeping, and one that keeps the pointer does not free it either. A handle reaches a library only as a `LONG` or `INT64`, not as a handle. | Recalled, medium. | `callees.rs` |
+| H15 | `hDs:ADD-BUFFER(h)` or `hDs:ADD-BUFFER(h:DEFAULT-BUFFER-HANDLE)`, where this unit creates a dataset into `hDs`, makes the dataset the owner. Whether deleting a dynamic dataset deletes the temp-tables of the buffers added to it is not confirmed. | Proposed, low. | `dataset_member.p` |
+| H16 | Storing the handle where it outlives the unit escapes it: an `OUTPUT` parameter, `RETURN`, a class member, a variable of an enclosing unit, a shared variable, a field, an array element or `EXTENT` variable, another object's attribute. The escape records whether another unit of the file frees that variable: the name must resolve to the same definition from that unit, so a local of the same name in another unit does not count; a class-level check reads it (a member no unit frees is a leak of the class). | Proposed. | `escapes.p`, `class.cls`; `model_fixes.rs` |
+| H17 | A widget put under a parent (`CREATE BUTTON h ASSIGN FRAME = f`, `PARENT = w`, or a later `h:FRAME = f`) is owned by the parent: deleting a frame or window deletes the widgets in it. The parent keeps its own owner. The deferred `TRIGGERS` bodies of a widget create are not read. | Recalled, medium. | `widgets.p` |
+| H18 | A main-block variable that another unit of the file frees by name (a cleanup procedure, a trigger) owns the object at the main block's end: escape. | Proposed. | `other_unit.p`; `model_fixes.rs` |
+| H19 | A `DELETE PROCEDURE` of a handle that walks a procedure list (`FIRST-PROCEDURE`, `NEXT-SIBLING`, ...) may delete any persistent procedure: unknown, not freed. | Proposed. | `sweep.p` |
+| H20 | A statement the parser skips that names a holder, a dynamic call with a holder as argument (`RUN VALUE`, `DYNAMIC-FUNCTION` except its `IN` handle, `DYNAMIC-INVOKE`), or an unexpanded include, while the object lives, makes a would-be leak unknown. A file whose parse was recovered gets no HD001-HD005 finding at all: recovery can close a unit early and move a free out of it, and no statement left behind names the holder. An include fragment run alone is exempt: it is partial by nature, its parse often recovers, and its findings are reported once, in the include; a gate there would move them to every includer. | Proposed. | `opaque.p`; `recovered_parse.rs`, `handles_recovered_cli.rs` |
+| H21 | A handle derived from a live object (`h:DEFAULT-BUFFER-HANDLE`, `h:HANDLE`, `h:BUFFER-HANDLE`, `h:GET-BUFFER-HANDLE(n)`, `h:TABLE-HANDLE`, also `QUERY`, `DATASET`, `PARENT`, `FRAME`, `WINDOW`; any attribute or method with `HANDLE` in its name) that reaches an escape sink (`RETURN`, an `OUTPUT` parameter, a member, an outer or shared variable, a field, an array element, another object's attribute) hands the root object over: escape `derived-handle`. The caller reaches the object through the derived handle and deletes it. A derived handle assigned to a local variable, or passed `INPUT`, is a use. Other attributes (`NUM-RESULTS`) are not derived handles. | Proposed, low. | `derived_escape.p` |
+| H22 | The walk of one object stops at 100,000 states, and the objects of one file share 600,000. Past either, the object is unknown (`too-complex`), so a generated file with many aliased holders costs a bounded time. The order is the objects' order of analysis, so a file's later objects are the ones a spent budget hits. | Proposed. | `model_fixes.rs` |
+
+Not modelled, known gaps:
+
+- A statement between a `NO-ERROR` create and the test of `ERROR-STATUS:ERROR` ends H5a, also when it
+  cannot change the status. A leak is then reported on the failed path. The test of a saved status
+  (`lErr = ERROR-STATUS:ERROR` first) is not read.
+- `UNDO` restores a variable without `NO-UNDO`, a handle variable included. Objects are not undone,
+  and the model does not restore variables either. This is safe to leave: the only effect on a
+  verdict is a miss. A transaction block that creates into a variable and then undoes the variable
+  loses the handle in a real run, while the model still sees it, so a later `IF VALID-HANDLE(h)
+  THEN DELETE OBJECT h` is taken as a free (a missed leak, not a false report). The opposite case
+  needs an old live handle overwritten inside a block that is then undone, which is rare. Modelling
+  it needs the CFG to know which edges undo which block, and the holder set to remember the value at
+  each block entry. `undo.p` pins the current verdicts.
+- Statements other than `SET-SIZE` and `COPY-LOB ... TO m` that allocate a MEMPTR.
+- A call in a statement the effect reader does not scan (`FOR EACH ... WHERE f(h)`, `DISPLAY f(h)`) is a use of `h`, not unknown.
+- `CREATE-LIKE` on a dataset, and the widget-pool option
+  of a widget's `ASSIGN` phrase.
+- A caller's widget pool. Each callee of the file is read without order or paths, and a pass on is
+  followed up to four calls deep: a free on one branch only counts as a free, and a parameter used
+  in a trigger the callee defines is not seen. A receiver typed `LIKE` another variable, a database buffer, and a member a class inherits
+  are not resolved, so their method calls are unknown.
+- More than 64 variables of one unit that hold the same object on one path.
+- Which method body runs is read from this file only (H14). A method a subclass could override is
+  unknown even when no subclass does, so a leak through it is missed. A `STATIC` method called
+  through its class name (`Svc:Work(h)`) is not matched.
+- A `VAR` with an access modifier in a class body (`VAR PRIVATE HANDLE h.`) does not parse as a
+  declaration, so that member is not resolved.
+
+**Corpus check (verified, proportions only).** Over two large real corpora, of 20 sampled objects
+that leak on a normal path, 18 looked real on reading the code (never deleted, or skipped by an
+early `RETURN` or a conditional cleanup). One was a procedure-list sweep (now H19) and one a
+`VALID-OBJECT` test on a handle. Includes multiply the raw counts: one leak in a widely included
+file is counted once per includer, so the corpus runner also counts distinct sites.
+
+**Still to verify against a licensed install:** H6 and H7 (pool scope, and the persistent
+procedure case), H8 for the less common object kinds, H11 for a MEMPTR passed `OUTPUT`, H12, and H15.
+
+## 7. Buffer scopes and transactions: the semantics `oxabl_scope` relies on
+
+`oxabl_scope` replays the compiler's decisions for one file: the block each buffer is scoped to,
+the blocks that are transaction blocks, and the lock each record read takes. The `COMPILE ...
+LISTING` output is the oracle (plan, M3 exit gate), and no OpenEdge install was available while
+this was written. This section therefore uses its own marks:
+
+- **Documented** — the OpenEdge documentation says this, and the wording is remembered with high
+  confidence. It is still not checked on this host.
+- **Recalled** — remembered with less certainty, or remembered as behaviour rather than read.
+- **Inferred** — derived from the other rows, or a choice oxabl makes where the source is silent.
+
+Each row has a fixture in `crates/oxabl_scope/tests/fixtures/` (re-bless with
+`OXABL_BLESS=1 cargo test -p oxabl_scope --test snapshots`). The LISTING harness
+(`crates/oxabl/examples/scope_listing.rs`, section 7.5) measures every row that the listing shows.
+Where the model cannot decide, the answer is **Unknown** with a reason, never a guess.
+
+`oxabl_scope` resolves buffer and field names itself, against the file's definitions and the
+schema, rather than through `oxabl_semantic`. The semantic resolver binds a name through the
+scope tree of the file; the compiler's choice of a buffer for an unqualified field follows the
+record phrases and record blocks around the reference (S11), which the scope tree does not
+carry.
+
+### 7.1 Buffers
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| B1 | Every database table and every temp-table has a default buffer with the table's name. A table name in a record phrase, a field qualifier or a buffer position (`DISPLAY t`, `AVAILABLE t`, `BUFFER t:HANDLE`, `RELEASE t`) names that buffer. `db.table` names the same buffer as `table`. | Documented. | `free.p` |
+| B2 | A default buffer belongs to the procedure file, not to the internal procedure, function or trigger that uses it. A free reference in an internal procedure to a buffer the procedure does not define therefore scopes the buffer to the main procedure block, and the record stays in the buffer after the call returns. A `FOR` block in the internal procedure still scopes the buffer to that block, unless a scope at the main block absorbs it (S5). The same holds for a buffer the main block defines with `DEFINE BUFFER`. | Recalled, medium. The "define a buffer in every internal procedure" practice rests on it. | `units.p` |
+| B3 | In a class, a default buffer, or a buffer the class body defines, that a method uses belongs to the class: the method's free references scope it to the class's main block. | Inferred, low: the class rule is the procedure rule carried over. | `class.cls` |
+| B4 | `DEFINE BUFFER b FOR t` makes a new buffer owned by the unit that defines it. Its scopes lie in that unit (or, for a main-block definition, as in B2). `FOR TEMP-TABLE tt` and a `t` that names a temp-table of the file give a temp-table buffer; otherwise `t` is a database table. | Documented. | `buffer_kinds.p` |
+| B5 | A buffer parameter (`DEFINE PARAMETER BUFFER b FOR t`) and the buffers of a database trigger (`TRIGGER PROCEDURE FOR WRITE OF t NEW BUFFER n OLD BUFFER o`, the table's own buffer included) and of an `ON WRITE OF t NEW BUFFER n` trigger hold the caller's record. Their scope is the caller's: the model gives them no scope (`external`). | Recalled, medium. | `buffer_kinds.p` |
+| B6 | `DEFINE SHARED BUFFER b` uses the producer's buffer, and its scope is the producer's (`external`). `DEFINE NEW SHARED BUFFER b` and `NEW GLOBAL SHARED` are scoped to the main block of the procedure that defines them, whatever the references. | Recalled, medium for `SHARED`; low for `NEW SHARED`. | `buffer_kinds.p` |
+| B7 | Temp-table buffers are scoped by the same rules as database buffers. A temp-table write never makes a block a transaction block (T3). A temp-table without `NO-UNDO` is undone with the transaction or sub-transaction that changed it; one with `NO-UNDO` is not. | Documented for scoping; Recalled, medium, that temp-table writes start no transaction. | `temp_tables.p` |
+| B8 | Dynamic buffers (`CREATE BUFFER h FOR TABLE ...`) are run-time objects: they have no compile-time scope and are not modelled. A dynamic method on a handle (`h:BUFFER-CREATE()`, `h:FIND-FIRST(..., EXCLUSIVE-LOCK)`, `h:BUFFER-FIELD(...):BUFFER-VALUE = v`) may update a database record that the compiler cannot see (T7). | Documented that the compiler cannot see the table; the effect on transactions is Inferred. | `opaque.p` |
+
+### 7.2 Scopes
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| S1 | **Strong scope.** `DO FOR b` and `REPEAT FOR b` scope `b` to the block. Every reference to `b` inside the block, a `FOR EACH b` included, belongs to that scope. | Documented. | `strong.p` |
+| S2 | **Weak scope.** A `FOR` block scopes the buffer of each of its record phrases (`EACH`, `FIRST`, `LAST`, joined phrases included) to the block. A reference to `b` inside the block body belongs to that scope. | Documented. | `weak.p` |
+| S3 | **Free reference.** Any other reference: `FIND`, `CREATE`, `DELETE`, `RELEASE`, `VALIDATE`, `BUFFER-COPY`, `BUFFER-COMPARE`, a field (qualified or not), a buffer name in an expression (`AVAILABLE b`, `BUFFER b:HANDLE`, `RUN p (BUFFER b)`), a statement the parser skips that names the buffer or one of its fields (`UPDATE`, `PUT`, `EXPORT`, `ENABLE`), and `OPEN QUERY` / `GET` (S10). Definitions are no reference: `FORM`, `DEFINE FRAME`, `DEFINE BROWSE`, `DEFINE QUERY`, `DEFINE DATA-SOURCE`, `LIKE`. The field list of `BUFFER-COPY` and `BUFFER-COMPARE` (`USING`, `EXCEPT`) names fields, not references. | Documented for the statement forms; Inferred for the skipped forms and the definitions. | `free.p` |
+| S4 | A free reference scopes the buffer to the nearest enclosing block that has record scoping: the routine block (procedure, function, method, constructor, destructor, property accessor, trigger), a `REPEAT`, a `FOR`, or a `DO FOR` / `REPEAT FOR` of that buffer (for other buffers it is a plain `DO` or `REPEAT`). A plain `DO` has no record scoping, also with `TRANSACTION` or an `ON ERROR` phrase, so its free references go to the block around it. `CATCH` and `FINALLY` have none either. | Documented for `REPEAT`, `FOR` and the routine block; Recalled, medium, that `DO TRANSACTION` and `DO ON ERROR` do not scope records (the other reading gives them record scoping; the harness will tell); Inferred for `CATCH` and `FINALLY`. | `free.p`, `raise.p` |
+| S5 | **Raising.** The scopes of one buffer never overlap. When the block of a free-reference scope encloses another scope of the same buffer (a weak scope, or the scope of free references in a deeper block), the outer scope absorbs the inner one: the buffer is scoped once, to the outer block. A free reference at procedure level thus raises every weak scope of that buffer in the procedure to the procedure. The model reports the scope as `raised` and names the free reference that holds it there. | Documented for a weak scope raised by a free reference; Inferred for the general merge. | `raise.p` |
+| S6 | Two scopes whose blocks do not nest stay separate: two `FOR EACH b` in a row, or `FIND b` in two sibling `REPEAT` blocks, give two scopes. | Documented for `FOR`; Recalled for `REPEAT`. | `weak.p`, `raise.p` |
+| S7 | **Conflicts.** A free-reference scope that would absorb a strong scope (a reference to `b` outside a `DO FOR b` whose scope encloses it), a strong scope nested in a weak scope of the same buffer, and a weak scope nested in another weak scope of the same buffer are compile errors, as far as remembered. The model answers Unknown (`conflict`) for that buffer. | Recalled, low. | `conflict.p` |
+| S8 | The header of a block (`WHERE`, `OF`, `WHILE`, `BY`) runs before the body. A reference there to a buffer that is not one of the block's own record phrases belongs to the enclosing block, so `FOR EACH o OF c` is a free reference to `c` in the block around the `FOR`. | Inferred. | `weak.p` |
+| S9 | `CAN-FIND` reads with a buffer of its own: it is no reference to `b` and changes no scope. References to other buffers inside it (its `WHERE`) are free references. | Recalled, high. | `locks.p` |
+| S10 | `OPEN QUERY q FOR EACH b` and `GET ... q` are free references to `b` where they stand; `GET` reads every buffer `DEFINE QUERY q FOR ...` names. `DEFINE QUERY` itself is none. | Inferred, low. | `queries.p` |
+| S11 | **Unqualified fields.** A field written without its buffer resolves, in order, to the record phrases of its own statement (`FIND`, `FOR`, `CAN-FIND`, the target of `BUFFER-COPY ... ASSIGN`); then to the buffers of the enclosing `FOR`, `DO FOR` and `REPEAT FOR` blocks, innermost first; then to the buffers the file names. At each level, one buffer with the field (exact name before abbreviation) wins; two are ambiguous, which the model answers Unknown (`ambiguous-field`) for those buffers. An abbreviation counts only at the first two levels, and a word the lexer reads as a keyword (`ROW`, `AVAILABLE`) only by its exact name: on a large real corpus, abbreviations against every buffer of the file were mostly keywords and frame options. A declared variable, parameter or property of the same name wins over a field. A field of a table no buffer of the file names is not found. A table the loaded schema does not have makes its buffer Unknown (`unknown-table`) where one of its fields could be meant; with no schema loaded, every unresolved name does (`no-schema`). | Recalled, low (the compiler's search order is not remembered exactly; an ambiguous name is a compile error). | `fields.p`, `no_schema.p` |
+| S12 | A buffer with no reference has no scope. A `DEFINE BUFFER` alone is no reference. `DEFINE VARIABLE v LIKE t.f` is no reference. | Recalled, medium. | `buffer_kinds.p` |
+
+### 7.3 Transactions
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| T1 | **Explicit.** A `DO`, `REPEAT` or `FOR` block with the `TRANSACTION` keyword is a transaction block. | Documented. | `txn_explicit.p` |
+| T2 | **Implicit.** A routine block, a `FOR`, a `REPEAT`, and a `DO` with an `ON ERROR` or `ON ENDKEY` phrase is a transaction block when it *directly* updates the database or directly reads with `EXCLUSIVE-LOCK`. Directly: the statement is in the block, or in plain `DO` blocks inside it, and not inside a nested block that is itself transaction-capable. A plain `DO` hands its statements to the block around it. A `FOR ... EXCLUSIVE-LOCK` makes its own block a transaction block (the read is part of each iteration). | Documented for the procedure, `FOR EACH`, `REPEAT` and `DO ON ERROR`; Recalled for `ON ENDKEY`; Inferred for functions, methods, constructors, destructors, property accessors and `ON ... DO` triggers (taken as procedure blocks). | `txn_implicit.p` |
+| T3 | **Updates.** `CREATE b`, `DELETE b`, an assignment to a field (`=`, `ASSIGN`, the first argument of `ENTRY`, `SUBSTRING` or `OVERLAY` on the left of `=`), `BUFFER-COPY ... TO b`, `UPDATE`, `SET`, `INSERT` and `IMPORT` naming a field or buffer, `COPY-LOB ... TO b.f`, and `FIND`, `FOR`, `OPEN QUERY`, `GET` or `FIND CURRENT` with `EXCLUSIVE-LOCK`, where `b` is a database buffer. Writes to temp-table buffers do not count. `PROMPT-FOR` only reads input into the frame. A statement form the model does not know (`RAW-TRANSFER` among them) that names a database buffer gives Unknown (T7). | Documented for the database statements; Recalled, medium, for temp-tables; Inferred for `PROMPT-FOR` and `COPY-LOB`. | `txn_implicit.p`, `temp_tables.p`, `opaque.p` |
+| T3a | **The screen form of `ASSIGN`.** An `ASSIGN` element with no `=` moves the screen value into the record: `ASSIGN b.f`, `ASSIGN FRAME fr b.f`, `ASSIGN INPUT b.f`, `ASSIGN BROWSE br b.f`, and `ASSIGN b [EXCEPT b.f ...]` for every field of the record. Each such field or record is an update, like `b.f = v`. The fields after `EXCEPT` are not. Where the text after an `=` or `WHEN` cannot be read as an expression, the rest of the statement is read as a form the model does not know: a database buffer it names gives Unknown for the block's transaction and for `written` (L3). | Documented. | `screen_assign.p` |
+| T4 | **Sub-transactions.** A transaction block inside an active transaction is a sub-transaction: `UNDO` of it undoes only its own changes, and the commit happens at the end of the outermost transaction block. The model records, for each transaction block, the closest enclosing transaction block of the same unit (`in`). | Documented. | `txn_nested.p` |
+| T5 | **Calls.** A procedure, function or method called while a transaction is active runs inside it; its own transaction blocks become sub-transactions. The `TRANSACTION` function is true when a transaction is active. The compiler cannot see the caller, so it decides each unit as if no transaction were active, and the model does the same. | Documented for the inheritance; Inferred for the listing. | `txn_nested.p` |
+| T6 | **The listing's `Tran` column** is taken to say "this block is a transaction block", nested or not. The other reading (only the outermost block of each unit) is reported by the harness too. | Inferred, low. | (harness) |
+| T7 | **Unknown.** A transaction-capable block that is not a transaction block is Unknown when its direct statements include a dynamic buffer method that may update (B8, reason `dynamic-buffer`), a statement whose form the model does not know and that names a database buffer (`skipped-statement`), an unexpanded include (`unexpanded-include`), a write to a table the loaded schema does not have (`unknown-table`), or, with no schema loaded, an assignment to a name that resolves to nothing (`no-schema`). The compiler does not see the first: the listing then says `No`, and the harness counts the block as unknown, not as a disagreement. A recovered parse makes every capable block that is not a transaction block Unknown (`recovered-parse`). | Inferred. | `opaque.p` |
+| T8 | `UNDO` restores the database records, the temp-tables without `NO-UNDO` and the variables without `NO-UNDO` changed in the undone transaction or sub-transaction. Section 5 (F5-F8) says which block an `UNDO` undoes. | Documented. | (section 5) |
+
+### 7.4 Locks
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| L1 | `FIND`, a `FOR` record phrase, `OPEN QUERY` and `CAN-FIND` without a lock phrase read with `SHARE-LOCK` (the model's `default share`). A `GET` without one takes the lock its query was opened with: the last `OPEN QUERY` of that query before it in the file, else Unknown (`query-lock`). The `-NL` startup option, if remembered right, makes the default `NO-LOCK` for some of them; the model does not read startup options. | Documented for `FIND` and `FOR`; Recalled for `CAN-FIND`, `OPEN QUERY` and `GET`; Recalled, low, for `-NL`. | `locks.p`, `queries.p` |
+| L2 | Temp-table records have no locks: the lock of a read on a temp-table buffer is `n/a`, whatever the phrase. | Documented. | `locks.p` |
+| L3 | A record read with `SHARE-LOCK` and then changed in a transaction is upgraded to `EXCLUSIVE-LOCK` at the change. A change to a record read with `NO-LOCK` is a run-time error. The model marks a read `written` when a write to the same buffer, in the same scope of that buffer, may run after the read: the input LK001 needs to know whether `NO-LOCK` is a safe fix. A write in the read's routine may run after it when it comes later in the text, or when an iterating block (`REPEAT`, `FOR`, `DO WHILE`, `DO ... TO`) inside the scope holds both the read and the write: the next iteration writes the record the read gave. The scope block itself counts as iterating, on purpose: when a `REPEAT` or `FOR` scopes the buffer, the record may be released at the end of each iteration, so the earlier write could not touch it (Recalled, to be confirmed by the `LISTING`/oracle gate), but the model does not rely on that. The cost is a `written` that is Yes where No is true, so LK001 suggests `EXCLUSIVE-LOCK` where `NO-LOCK` is safe: the safe direction. A write in another routine of a scope raised across routines (B2) runs whenever that routine is called, so the answer is Unknown (`unit-order`). When no such write exists but the buffer is passed to a call that may run after the read (`RUN p (BUFFER b)`, `f(BUFFER b)`), or it is a shared buffer and such a `RUN` is in the unit, the answer is Unknown (`callee`); a statement form the model does not know that names the buffer gives Unknown (`skipped-statement`). | Recalled, medium; the `written` test is Inferred (it reads blocks, not paths). | `locks.p`, `written_order.p` |
+| L4 | **Lifetime.** A lock taken in a transaction is held until the transaction ends. If the buffer's scope is still open then, an `EXCLUSIVE-LOCK` is downgraded to `SHARE-LOCK`, held until the scope ends, the buffer reads another record, or `RELEASE`. A `SHARE-LOCK` taken outside a transaction is released when the buffer's record changes or its scope ends. This is why LK002 compares a buffer's scope with its transaction block. | Documented for the end of the transaction; Recalled, medium, for the downgrade. | LK002 tests in `oxabl_lint` |
+| L5 | A lock phrase that the text does not show gives Unknown (`unexpanded-include`). That is a read with no visible lock phrase where, after the record phrase, the preprocessor replaced a reference with nothing (an include it did not find, a `{&name}` with no value, a `{N}` with no argument; not inside a string), or a reference stays unexpanded (`--no-preprocess`). The hidden text may be `EXCLUSIVE-LOCK`, so the block's transaction is Unknown too unless an update decides it. In an include checked alone, such a reference anywhere in the read does the same, because the includer's definitions are missing. An undefined `{&name}` expands to nothing in the compiler as well; it still counts, because the author put the reference where a lock phrase goes. | Inferred. | `hidden_lock.p` |
+
+### 7.5 What `COMPILE ... LISTING` shows
+
+The harness parses the listing. The text format below is remembered, not read from a real
+listing on this host, so the parser is lenient: it finds the table by its header, reads each row
+from its words rather than fixed columns, and skips page headers. The listings in
+`crates/oxabl_scope/tests/listings/` are **synthetic**: they were written from this description.
+
+| # | The format | Confidence |
+|---|---|---|
+| X1 | `COMPILE f.p LISTING f.lst` writes the source with three left columns: the include level (`{}`), the line number in the file the line comes from, and the block depth (`Blk`). Lines from an include file carry the include's own line numbers. Each page starts with a header line (file name, date and time, `PROGRESS(R) Page n`), and pages are separated by a form feed. | Recalled, medium. |
+| X2 | After the source comes the block table, with the header `File Name  Line Blk. Type  Tran  Blk. Label` and a line of dashes. Each block of the file is one row: the file the block statement is written in (an include's path for a block in an include), its line in that file, the block type, `Yes` or `No` in `Tran`, and the label. The main procedure block is a row with line `0`. | Recalled, medium. |
+| X3 | Block types: `Procedure` (the main block and each internal procedure), `Function`, `Method`, `Constructor`, `Destructor`, `Property`, `Trigger`, `Do`, `For`, `Repeat`, `Catch`, `Finally`, `Editing`. The label column holds the block label, or the routine's kind and name (`Procedure ip-name`). | Recalled, low for the routine kinds and the label column. |
+| X4 | Under a row, `    Buffers: db.table` lists the buffers scoped to that block, and `    Frames:  name` the frames. A second buffer is either on the same line after a comma or alone on the next line, under the first. Named and temp-table buffers are written without the database name (`bCust`, `ttOrder`), default database buffers with it (`sports2000.Customer`). | Recalled, low for the separator and the database prefix; the harness compares the last dotted segment, case-insensitively. |
+| X5 | The header and its dashes repeat on each page of the table. | Recalled, medium. |
+
+### 7.6 Corpus check
+
+Verified, proportions only. Over the compilation units (`.p`, `.w`, `.cls`) of two large real
+corpora, with their schemas loaded, the engine ran without a panic, in about the time of
+expanding and parsing the same files.
+
+- **Buffers.** 85 % (first corpus) and 68 % (second) of the buffers have a known scope; 4 % and
+  32 % belong to the caller or producer (parameters, shared buffers, and the buffers of session
+  triggers, which a common include defines in most programs of the second corpus). Unknown
+  answers are 10.5 % and 0.2 % of the buffers. In the first corpus most come from the 7 % of
+  files whose parse was recovered; then a table the schema does not have, an unexpanded
+  include, and an unqualified field that two buffers have.
+- **Scopes.** Of the known scopes, about 60 % (first) and 77 % (second) are raised, and 75 % and
+  87 % of those only because a unit other than the owner references the buffer (B2). Weak scopes
+  are 12 % and 9 %, strong scopes almost none. B2 is therefore the rule that decides most
+  answers, and the first one to check against a listing.
+- **Transactions.** Implicit transaction blocks outnumber explicit ones, by 1.6 times and 5.6
+  times. In the second corpus most implicit ones are the routine blocks of session triggers
+  (`ON WRITE OF t ... DO:`) brought in by a common include, counted once per program. Apart from
+  recovered parses, Unknown transaction answers come mostly from dynamic buffer methods (B8): on
+  reading, most of those methods work on temp-table handles, which the model cannot tell apart
+  from database handles without following the handle.
+- **Locks.** Explicit `NO-LOCK` dominates; reads with the default `SHARE-LOCK` are under 1 % of
+  `FIND` and `FOR` reads, but 70 % and 85 % of `CAN-FIND` reads on database tables.
+
+Reading 15 sampled answers per corpus against the code: 14 of the 30 follow from the documented
+rules (S1, S2, S4, S5, T1, T2) and look right; 13 follow from B2 (an internal procedure, a
+function or a UI trigger that uses the file's default buffer or temp-table, scoped to the main
+block); 2 follow from B3 (a class method). One looked doubtful: a free reference in one internal
+procedure raises the scope to the main block and so absorbs the `FOR EACH` scopes of the same
+buffer in sibling internal procedures. That is what B2 with S5 gives, but it is the case to check
+first. One sample showed a bug, now fixed: a variable named like a buffer hid the buffer in
+`buffer.field`.
+
+**Still to verify against a licensed install**, in this order, because each changes many
+answers: B2 (default buffers in internal procedures and triggers, and whether a raise absorbs
+scopes in sibling procedures), S4 (`DO TRANSACTION` and `DO ON ERROR` without record scoping), T6
+(the meaning of `Tran`), X3 and X4 (the format), then B3, S7, S10 and S11.
+`scripts/gen-scope-listings.sh` writes the listings, and the harness reports each disagreement
+with both sides.
+
+### 7.7 The lock rules (M3)
+
+LK001, LK002 and LK003 (`strict.locks`, preview, warning) select findings from `oxabl_scope`;
+`oxabl_lint` computes one analysis per file through `RunShared`, and only when one of the three
+rules is enabled. They are routed like the `HD` rules (section 3, "Handle rules in includes").
+
+Common to the three rules:
+
+- **Unknown is silent.** A file with a file-level Unknown (recovered parse, unexpanded include,
+  past the work budget) gets no finding. A buffer whose scope is Unknown or external gets no LK002
+  finding and no `NO-LOCK` suggestion in LK001.
+- **Database tables only.** A read counts only when its table is in the loaded schema
+  (`RecordRead::table` is `Table::Database`). With no schema, every table is `Unknown` and the
+  rules are silent: the name can be a temp-table that the file does not show.
+
+LK001 rests on L1 and L2. Its help suggests `NO-LOCK` only when `written` is No (L3) and the
+buffer's scope is known; it suggests `EXCLUSIVE-LOCK` when `written` is Yes, and no lock when
+`written` is Unknown. No autofix yet. `GET` is not reported (it takes the lock of its query). A
+`CAN-FIND` keeps no record, so its lock outlives nothing; its cost is the wait while another
+session holds the record with `EXCLUSIVE-LOCK` (Recalled, high). `NO-LOCK` answers without the
+wait, but may see a change another session has not committed (a dirty read; Recalled, high), so
+its answer can differ from the committed one for an "already exists" check. Its message names
+the wait, and its help always suggests `NO-LOCK` and says so. A read whose lock phrase the text may hide (L5) is not
+reported. An include that did not arrive (`PREPROC007`) after a read, in its scope or in an
+iterating block of it, may write the record: `written` is Unknown (`unexpanded-include`), so the
+help suggests no lock. The rest of the file is judged as before. LK002 is not reported for a
+transaction that holds such an include after its last read: the include may `RELEASE` the
+record.
+
+LK002 rests on L4 (Documented, and Recalled medium for the downgrade), S1, S2, S4 (Recalled
+medium for `DO TRANSACTION`), the documented half of S5 (a weak scope raised by a free
+reference), B2 (Recalled medium), T1 and the documented half of T2. Those meet the bar
+"Documented, or Recalled with medium confidence or more", so the rule ships. Findings that need
+an inferred rule are left out: the general merge of S5 (a free scope absorbed by an outer free
+scope), B3 (classes), and T2 for functions, methods, property accessors and `ON ... DO` triggers.
+Also left out: a transaction whose last read into the buffer is `NO-LOCK`, or that releases or
+deletes the record after it; a transaction whose last read is a `FOR EACH` or `PRESELECT` phrase
+(whether the buffer still holds a record after the last iteration is not decided); a scope in
+which nothing runs after the transaction block. A record that `CREATE` makes is held the same way
+but is not reported. Medium confidence overall: B2 and S4 decide most findings, and section 7.6
+lists both as the first to check against a listing.
+
+LK003 uses the flow graph of the unit (`oxabl_flow::UnitBuilder`, built only when a candidate
+exists). The upgrade is `FIND CURRENT b EXCLUSIVE-LOCK` or `FIND b2 WHERE ROWID(b2) = ROWID(b)
+EXCLUSIVE-LOCK` (or `RECID`) after a `NO-LOCK` read of `b` in the same loop (its own record
+phrase, or a `FIND` or `GET` before it). "Every iteration": the end of the loop body is reachable
+from its start on normal edges, but not around the upgrade. An upgrade with `NO-WAIT` is not
+reported: the loop then skips records that another session holds, which a loop that reads with
+`EXCLUSIVE-LOCK` cannot do.
+
+**Corpus check (verified, counts only).** Over two large real corpora, with their schemas, the
+three rules ran with no panic. LK001 gave 5,321 and 466 findings, 96 % and 82 % of them on
+`CAN-FIND`. LK002 gave 1,013 and 270; LK003 119 and 32. Fifteen findings per rule per corpus were
+read against the code:
+
+- LK001: 30 of 30 correct (one on a dictionary table, `_File`, counted unsure).
+- LK002: in a first sample, 25 correct and 5 unsure, all with a `FOR EACH` phrase as the last
+  read; the rule now leaves those out. A second sample: 30 of 30 correct, if B2 and S4 hold. Most
+  are an internal procedure of a persistent or server-side procedure that locks the file's default
+  buffer, so the record stays `SHARE-LOCK`ed after the call returns.
+- LK003: in a first sample, 9 of 30 were deliberate: `NO-WAIT` with a `LOCKED` test that skips
+  records another session holds. The rule now leaves those out. A second sample: 30 of 30
+  correct.
+
+A finding in an include that does not parse alone is reported at each `{...}` site: one widely
+included fragment gave 1,131 of the 1,164 use-site findings of LK001 in the first corpus.
+
+After the review fixes (the screen form of `ASSIGN`, `written` by blocks rather than text order,
+the lock phrase that unexpanded text may hide, the CAN-FIND message), the counts are LK001 5,323
+and 466 (1,173 at use sites in the first corpus), the others unchanged. In the first corpus, 7
+LK001 findings in includes checked alone moved to 9 use sites: each `CAN-FIND` there has a `{1}`
+or `{&name}` after its table, which the include alone cannot read and its includers give a value.
+The help changed for 29 and 5 LK001 findings, from a lock suggestion to none: most have a write in
+another routine of a scope raised across routines (`unit-order`). No write that only the loop
+rule or the screen form of `ASSIGN` sees changed a finding on these corpora.
+
+### 7.8 The transaction rules (M3)
+
+TX001 to TX005 (`strict.transactions`, preview, warning) select findings from the same
+`oxabl_scope` analysis as the lock rules, made once per file through `RunShared`. They are routed
+like the `HD` and `LK` rules. TX006, in the same group, is syntactic and does not use the analysis.
+
+Common to the five rules:
+
+- **Unknown is silent.** A file with a file-level Unknown gets no finding. A buffer whose scope
+  is Unknown or external gets no TX005 finding. A block inside a block whose transaction status
+  is Unknown gets no TX001 finding.
+- **Which blocks are transactions.** A block counts when T1 makes it one (`TRANSACTION`), or the
+  documented half of T2 (a procedure or main block, a `FOR`, a `REPEAT`, a `DO ON ERROR` or
+  `DO ON ENDKEY`) with a first update of a table of the loaded schema. The implicit routine
+  blocks of functions, methods, property accessors and `ON ... DO` triggers are inferred and do
+  not count. With no schema, only `TRANSACTION` blocks count.
+- **Include files.** In an include checked alone, the main block is not judged: the includer
+  decides which block its statements are in.
+
+| # | The model | Confidence |
+|---|---|---|
+| U1 | `WAIT-FOR`, `UPDATE`, `SET`, `PROMPT-FOR`, `INSERT` (the screen form), `CHOOSE` and `READKEY` wait for the user. `PAUSE` with no time waits for a key; `PAUSE n` waits at most `n` seconds; `PAUSE ... BEFORE-HIDE` sets an option. `MESSAGE ... VIEW-AS ALERT-BOX` shows a modal box, and `MESSAGE ... SET` or `UPDATE` waits for input. | Documented for the statements; Recalled, high, for the `MESSAGE` forms. |
+| U2 | In a session with no user (batch, AppServer) the statements of U1 do not wait: an alert box is written to the log. | Recalled, medium. |
+| U3 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run the callee in another session, outside the caller's transaction. `RUN ... ON [SERVER] SESSION` names the local session: the callee runs in the caller's transaction. | Documented. |
+
+- **TX001** rests on T2 and T3. One finding per block, at its first update, for a block that no
+  other transaction block of its routine encloses (a sub-transaction is not reported). The main
+  block is left to TX002, a `TRIGGER PROCEDURE` to the transaction of the write that fires it.
+- **TX002** is the main block of a procedure file that is a transaction block, once per file. An
+  internal procedure that is one is reported by TX001.
+- **TX003** rests on U1 with the transaction blocks above. The statement must be in the
+  transaction block or in a block inside it of the same routine: a trigger or an internal
+  procedure that the transaction calls is not followed. `PAUSE n` is not reported: lock-retry
+  loops sleep with it.
+- **TX004** rests on T5 and U3. The shared summary provider (8.6) suppresses calls whose
+  complete transitive summary has no database writes. Missing and partial summaries remain
+  Unknown; known writes retain the warning. Direct file-only entry points have no provider.
+  An internal procedure with a body, and one declared `EXTERNAL`, keep their local exemption.
+  In an include checked alone, a bare name may belong to the includer and is not reported.
+- **TX005** rests on S2, S4, the documented half of S5 (a weak scope raised by a free reference)
+  and B2 (Recalled, medium). It is reported when the raising reference and the `FOR` block are in
+  the same routine, or the reference is in the main block and the `FOR` block in a routine inside
+  it. Left out: a reference in one internal procedure that raises a `FOR` block in another (B2
+  with S5, the case section 7.6 marks to check first), the general merge of S5, a raise held by a
+  reference in a block header (S8) or in a statement the parser skips (S3; `DISABLE TRIGGERS FOR
+  LOAD OF t` among them), a raise to a block other than a routine block, and class files (B3).
+
+**Overlap with LK002.** A raised scope that keeps a record locked after a transaction gives both
+a TX005 finding, at the reference that raises the scope, and an LK002 finding, at the read in the
+transaction. Both are kept: one shows the cause, the other the lock. The help of LK002 names TX005
+when TX005 reports the raise, and the help of TX005 names LK002.
+
+**Overlap with LK003.** The fix LK003 suggests, `FOR EACH ... EXCLUSIVE-LOCK`, makes the block a
+transaction block implicitly, which TX001 reports. The fixed example of LK003 therefore adds
+`TRANSACTION`.
+
+**Corpus check (verified, counts only).** Over the same two corpora, with their schemas, the five
+rules ran with no panic. TX001 gave 4,738 and 1,089 findings, TX002 250 and 73, TX003 342 and 184,
+TX004 6,391 and 3,043, TX005 1,410 and 309. The LK counts did not change. Fifteen findings per
+rule per corpus were read against the code, then the false-positive classes were fixed and a new
+sample of 15 was read for each rule that changed:
+
+- TX001: 29 of 30 correct. One was a `COPY-LOB ... TO FILE` that the engine read as a write to a
+  field; `oxabl_scope` now reads `TO FILE` as no write. A second sample of 15: 15 correct.
+- TX002: 30 of 30 correct.
+- TX003: 22 of 30 correct; 8 were `PAUSE n` sleeps in lock-retry loops, now left out. A second
+  sample: 30 of 30 correct by the rule. About 70 % of all TX003 findings are `MESSAGE ...
+  VIEW-AS ALERT-BOX`, and many of those are in code that runs on an AppServer, where U2 says the
+  box does not wait.
+- TX004: 26 of 30 correct; 4 were a `RUN` of a bare name in an include checked alone, which the
+  includer defines, now left out. A second sample of 15: 15 correct. About 30 % (first corpus)
+  and 78 % (second) are `RUN ... IN h`; in the second, most of those call one error-dialog
+  procedure, which is itself user interaction in a transaction.
+- TX005: 26 of 30 correct. Three were `DISABLE TRIGGERS FOR LOAD OF t` and one an `OUTPUT TO
+  t.d` whose file name the engine read as a field of `t`. `oxabl_scope` now reads an `OUTPUT`
+  or `INPUT` target written without `VALUE` as a file name, and TX005 leaves out raises held by a
+  skipped statement. A second sample: 30 of 30 correct, if B2 holds.
+
+Medium confidence overall: B2 and S4 decide most TX005 findings, and T2 for internal procedures
+(the largest share of TX001) is documented but not yet checked against a listing.
+
+## 8. Database effects and the call graph
+
+`oxabl_effects` lists, per unit, what the unit does to the database: every record read with its
+lock (from `oxabl_scope`), every create, update and delete, the access shape of each, and for every
+search the index the compiler is expected to use. `oxabl_index::calls` lists the calls of a file and
+what each calls; the transitive summaries combine both over the call graph. The oracle is the
+compiler's `COMPILE ... XREF` output (plan, M4 exit gate: "DB002 agrees with XREF `WHOLE-INDEX`
+entries"). No OpenEdge install was available while this was written, so the marks of section 7
+apply: **Documented**, **Recalled**, **Inferred**.
+
+Each row has a fixture in `crates/oxabl_effects/tests/fixtures/` (re-bless with
+`OXABL_BLESS=1 cargo test -p oxabl_effects --test snapshots`). The XREF harness
+(`crates/oxabl/examples/effects_xref.rs`, written by `scripts/gen-xref.sh` on a licensed install)
+measures every row of 8.2 that XREF shows. Where the model cannot decide, the answer is **Unknown**
+with a reason, never a guess.
+
+### 8.1 What XREF shows
+
+The harness parses the text form. The format below is remembered, not read from a real XREF file on
+this host, so the parser is lenient: it splits on white space, keeps double-quoted fields whole, and
+skips a line it cannot read. The files in `crates/oxabl_effects/tests/xref/` are **synthetic**.
+
+| # | The format | Confidence |
+|---|---|---|
+| R1 | `COMPILE f.p XREF f.xref` writes one reference per line: `<compiled file> <source file> <line> <TYPE> <details>`. The source file is the include a line comes from, and the line is in that file. A file name with a space is in double quotes. | Recalled, medium. |
+| R2 | `SEARCH db.table index` for each index a `FIND`, `FOR`, `CAN-FIND`, `PRESELECT` or `OPEN QUERY` phrase uses, with `WHOLE-INDEX` after the index name when no criterion brackets it. A phrase that uses several indexes has one row per index. A temp-table is written without a database name. | Documented for `WHOLE-INDEX`; Recalled, medium, for the rest. |
+| R3 | `TABLE-SCAN` takes the place of the index name (or follows it) for a `TABLE-SCAN` phrase. | Recalled, low. |
+| R4 | The line of a `SEARCH` row is the line the statement starts on, not the line of the phrase. | Recalled, low. The harness can place a search on either (`OXABL_EFFECTS_XREF_LINE`). |
+| R5 | `ACCESS db.table field` for each field read, `UPDATE db.table field` for each field written, `CREATE db.table` and `DELETE db.table` for the statements, `REFERENCE db.table` for a table named elsewhere. | Recalled, medium. The harness does not compare them yet. |
+| R6 | `RUN name` for each `RUN` with a literal name (as written); `PROCEDURE name,,`, `FUNCTION name,type,params` and `METHOD ...` rows define the units; `INCLUDE file` for each include. | Recalled, medium for `RUN` and `INCLUDE`, low for the unit rows. |
+| R7 | `SORT-ACCESS db.table field` for a `BY` that no index gives in order (the client sorts). | Recalled, medium. |
+| R8 | `COMPILE ... XREF-XML` writes the same facts as XML. The harness reads the text form. | Documented. |
+
+### 8.2 Which index a search uses
+
+The compiler picks the index of a `FIND`, `CAN-FIND` or `FOR`/`PRESELECT`/`OPEN QUERY` phrase from
+its `WHERE`, `OF`, `USE-INDEX`, `TABLE-SCAN` and `BY`. The model reads them from the tokens of the
+phrase (the parser keeps only the first phrase's `WHERE`).
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| I1 | A criterion is **active** when it is a conjunct of the `WHERE` at the top level: joined to the rest by `AND`, not under `OR` or `NOT`, not inside `IF ... THEN ... ELSE`. Parentheses around a conjunct are looked through. | Documented. | `index.p` |
+| I2 | `USE-INDEX i` makes the search use `i`. The bracket is still decided by I3 and I4 on `i`'s components, so `USE-INDEX` with no matching criterion is `WHOLE-INDEX`. A name the table does not have is Unknown (`unknown-index`). | Documented. | `index.p` |
+| I3 | An **equality match** is an active `field = expr` (or `EQ`), on either side, where the field is of the phrase's table and `expr` does not name the phrase's own record. The equality matches of an index are those on its leading components, without a gap. | Documented for the leading components; Inferred for "does not name its own record" (the record is not there before the search). | `index.p` |
+| I4 | A **range match** is an active `<`, `<=`, `>`, `>=` (either side) or `field BEGINS expr`, on the first component, or on the component after the equality matches. | Documented. | `index.p` |
+| I5 | Not matches: `<>`, `MATCHES`, a field inside a function (`SUBSTRING(f, 1, 2) = x`), a field of an array element, a field compared with a field of its own record, a bare logical field (`WHERE t.active`). | Documented for `<>`, `MATCHES` and functions; Inferred for the rest. | `index.p` |
+| I6 | The choice, in order: `TABLE-SCAN`; `USE-INDEX`; `FIND t constant` (I11); a `CONTAINS` (I14); a unique index whose every component has an equality match; the most equality matches; then a range match on the next component; then the most `BY` fields in index order (I12); then the primary index; then the first by name. With no match at all, the primary index, `WHOLE-INDEX`. Inactive indexes are never chosen; word indexes only by `CONTAINS`. | Documented for unique-equality, equality, range and "primary when nothing matches"; Recalled, low, for the order of the tie breaks. | `index.p` |
+| I7 | **WHOLE-INDEX**: the chosen index has neither an equality match on its first component nor a range match on it. | Documented. | `index.p` |
+| I8 | `TABLE-SCAN` (OpenEdge 11.? and later, Type II areas) reads the table without an index. | Documented. | `index.p` |
+| I9 | **Several indexes.** A `FOR`, `PRESELECT` or `OPEN QUERY` phrase may use several indexes: for an `OR` whose every branch brackets some index, and for an `AND` of equality matches that cover all components of two or more indexes with no unique one among them. The model answers Unknown (`multi-index`) there. A `FIND` and `CAN-FIND` always use one index, so an `OR` there makes its criteria inactive. | Recalled, medium for the `OR` case, low for the `AND` case. | `index.p` |
+| I10 | `t OF p` adds equality matches on the components of a unique index of `p` that `t` also has (the fields the two tables share), else of a unique index of `t` that `p` has. With neither, Unknown (`of-join`). | Recalled, medium for "a common field in a unique index"; Inferred for which index's fields. | `index.p` |
+| I11 | `FIND t constant` finds by the primary index, which must have one component: an equality match. | Documented. | `index.p` |
+| I12 | `BY` fields of the phrase's table count as sort matches in the order of an index's components from the first; they decide only between indexes the criteria leave tied, and choose the index when nothing matches. They apply to the first phrase of the statement. A `BY` on an expression matches nothing. | Recalled, low. | `index.p` |
+| I13 | Temp-tables follow the same rules over the indexes their `DEFINE TEMP-TABLE` gives. With no `INDEX` phrase the table has one index, `default`, with no components: every search is `WHOLE-INDEX`. When no index is marked `PRIMARY`, the first is primary. `LIKE t` with no `INDEX` and no `USE-INDEX` copies `t`'s indexes; with `USE-INDEX` only those; with `INDEX` only its own. | Recalled, medium for `default` and the first-is-primary rule; low for `LIKE`. | `temp_tables.p` |
+| I14 | `field CONTAINS expr` uses the word index on that field (a word index is never chosen otherwise). A `CONTAINS` on a field with no word index is a compile error; the model answers Unknown (`no-word-index`). | Documented. | `index.p` |
+| I15 | `WHERE ROWID(b) = r` (or `RECID`) on the phrase's own buffer fetches one record by its address: no index (`rowid`). Whether XREF writes a `SEARCH` row for it is not known; the harness counts these apart. | Recalled for the access; unknown for XREF. | `index.p` |
+| I16 | An unqualified name in a criterion is a field of the phrase's table (exact name, else a unique abbreviation) unless the file declares a variable or parameter of that name, which wins. A qualified name is a field of the phrase when its qualifier is the phrase's buffer, or its table for a default buffer. | Inferred (follows S11). | `index.p` |
+| I17 | A phrase whose text the preprocessor did not show (an elided reference, an unexpanded `{...}`, a lock phrase L5 makes Unknown) is Unknown (`unexpanded`). With no schema loaded, every database search is Unknown (`no-schema`). | Inferred. | `no_schema.p` |
+
+### 8.3 Access shapes
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| A1 | A **record loop** is a `FOR` block with an `EACH` phrase, or a `REPEAT` or `DO WHILE` block whose body drives a query: `GET NEXT`/`PREV`, `FIND NEXT`/`PREV`, or `h:GET-NEXT()`/`GET-PREV()` on a dynamic query (in its header too: `DO WHILE q:GET-NEXT():`). The innermost iterating block around the driving statement is the loop. | Documented for `FOR EACH`; Inferred for query loops. | `shapes.p` |
+| A2 | Not record loops: `FOR FIRST` and `FOR LAST` with no `EACH` phrase (one record), `DO i = 1 TO n`, a `REPEAT` that drives no query. `FOR t` with no qualifier is not counted. | Documented for `FOR FIRST`/`LAST`; Inferred for the rest. | `shapes.p` |
+| A3 | A statement's shape is **once** with no record loop of its unit around it, **per row** with one, **nested(d)** with `d`. A `FOR` phrase does not count its own block; a joined phrase counts the `EACH` phrases before it in the same statement. The statement that drives a query loop does not count that loop. | Inferred. | `shapes.p` |
+| A4 | Shapes stop at the unit: a statement in an internal procedure has the shape it has there. Through a call, the callee's shapes add the depth of the call site (8.6). | Inferred. | `calls.p` |
+| A5 | A `CAN-FIND` in the header of a `FOR` block is placed in the block around it (S8): its shape does not count the loop, though the compiler evaluates it per candidate row. | Inferred; known to under-count. | `shapes.p` |
+
+### 8.4 Operations
+
+| # | The model | Confidence |
+|---|---|---|
+| O1 | Reads are the record reads of `oxabl_scope` (section 7.4): `FIND`, `FOR`, `PRESELECT` and `OPEN QUERY` phrases, `CAN-FIND`, `GET`, with their lock. `GET` and `FIND CURRENT` do not search, so they have no index. | Documented. |
+| O2 | Writes are the database updates of `oxabl_scope` (T3): `CREATE` is create, `DELETE` is delete, an assignment, `BUFFER-COPY` to the buffer or an input statement is update. An `EXCLUSIVE-LOCK` read is a read with that lock, not a write. Temp-table writes are not database effects. | Documented (T3). |
+| O3 | A unit's effects are **Unknown** in part when it holds a dynamic query or buffer (`CREATE QUERY`, `CREATE BUFFER`, and the methods `QUERY-PREPARE`, `QUERY-OPEN`, `GET-*`, `FIND-*`, `BUFFER-CREATE`, `BUFFER-DELETE`, `FILL`, `SAVE-ROW-CHANGES`), a statement the parser skips that names a database buffer, a write to a table the schema does not have, an unexpanded include, or when the parse recovered. Most dynamic access works on temp-tables, which the model cannot tell apart without following the handle. | Inferred. |
+
+### 8.5 The call graph
+
+`FileCalls::extract` reads the calls of one file; `resolve_program` resolves a program name over
+the search path through the run index (`WorkspaceIndex::program`), which memoizes it.
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| C1 | `RUN name` runs the internal procedure of that name when the file defines one with a body, else the program `name` over PROPATH. `RUN name IN THIS-PROCEDURE` is the internal procedure. | Documented. | `calls.p` |
+| C2 | A program name resolves to one file on the search path (the run index's rule: the spellings tried in order, exactly one match). Several matches are Unknown (`ambiguous`), none `not-found`, an unparseable or self match `unusable`. | Proposed (the index's existing policy). | (index tests) |
+| C3 | `RUN p IN h` runs the internal procedure `p` of the program `h` holds. When every write of `h` in the file is `RUN prog PERSISTENT SET h` of one program, the target is `p` in `prog`; any other write of `h` (an assignment, an `OUTPUT` argument, a parameter or shared definition) makes it Unknown (`handle`). | Documented for the run-time meaning; Inferred for the file-level check (it does not follow the order of the writes). | `calls.p` |
+| C4 | `RUN SUPER`, `SUPER(...)`, a routine declared `IN SUPER` and the super-procedure stack are run-time: Unknown (`super`). A routine declared `IN h` is Unknown (`handle`). | Documented. | `calls.p` |
+| C5 | A call of a user-defined function the file defines (or declares `FORWARD`) is a call of that function. `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW` and `RUN VALUE(...)` are Unknown (`dynamic`). `PUBLISH` is Unknown (`event`). | Documented. | `calls.p` |
+| C6 | A method call `x:m(...)`: on `THIS-OBJECT` (or with no receiver, in a class) a method of the file's class is a call of it; on a handle (a system handle, a name declared `HANDLE`, `WIDGET-HANDLE` or `COM-HANDLE`, a `BUFFER`, `QUERY`, `FRAME` ... reference, or a chain from one) it is a built-in method and no call; on anything else it is Unknown (`method`). Inherited methods, static calls and objects of other classes are not followed in this slice. | Documented for the meaning; Inferred for the receiver test. | `calls.p` |
+| C7 | `RUN ... PERSISTENT` runs the program's main block now. `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run in another session (section 7.8, U3): the edge is kept, marked remote. A procedure declared `EXTERNAL` (a shared library) has no database effects. `ON event ... PERSISTENT RUN p` runs on an event, not at the statement: it is no call site. | Documented. | `calls.p` |
+| C8 | Bounds: at most 20,000 call sites per file and 2,000,000 edges per graph; past them the file or graph is marked truncated and the summaries partial (`bound`). | Proposed. | — |
+
+### 8.6 Transitive summaries
+
+`summary::summarize` solves the components of the call graph callees first. A component with a
+cycle (recursion, or procedures that call each other) is iterated to a fixed point; depths are
+capped at 4, so it ends. A summary keeps one effect per table, operation, lock and depth, and
+names the first callee on the way (`via`). It is **partial**, with every reason, when an effect may
+be missing: a call whose target is Unknown (C2-C6, by reason), a unit whose own effects are Unknown
+in part (O3), or a bound. Recursion alone does not make a summary partial (the fixed point covers it);
+it is flagged `recursive`. Temp-table effects are left out.
+
+
+**Built in slice 2.** `LintPipeline` builds a lazy `WorkspaceEffects` over the run's batch index.
+It uses the known compilation units and follows reachable programs outside that set.
+Each file supplies direct facts once. `summary::summarize` solves the graph once for the run.
+The first root uses the supplied expansion, including unsaved text. A changed root expansion
+invalidates that run cache. Unreadable files, missing targets, lost include text, recovered parses,
+and call-site bounds cannot produce a complete answer. Remote calls do not add local effects.
+
+The lint registry accepts `RunShared` with a `CalleeSummaries` provider. TX004 asks by expanded
+call-site offset. It suppresses a finding only for a complete summary without database writes.
+A missing or partial answer is Unknown and cannot suppress a finding. Known writes retain the
+warning. Direct file-only rule entry points keep their conservative result.
+
+The daemon caches the reachable graph in a tracked query per buffer revision. It records disk
+revisions for callee bodies, expanded includes, and every existence check, including failed search
+candidates. A body change, include change, or newly created target invalidates the dependent graph.
+The schema revision and preprocessor environment also invalidate it. Cycles are solved in the
+shared pipeline, outside recursive tracked queries. The daemon protocol is unchanged.
+
+With TX004 off, a normal lint run builds no graph or summaries. The other strict analyses keep
+their existing lazy rule gates. `explain` explicitly requests summaries, regardless of lint settings.
+
+### 8.7 Corpus check
+
+Verified, counts only. Over the compilation units (`.p`, `.w`, `.cls`) of the two large real
+corpora of section 7.6, expanded as `oxabl check` expands them and with their schemas, the call
+graph, the effects and the summaries ran with no panic (`crates/oxabl/examples/effects_corpus.rs`).
+Counts are per expanded unit, so an internal procedure that a common include brings into many
+programs counts once per program.
+
+- **Call graph.** Of the `RUN` sites, 95.8 % (first corpus, 298,446) and 70.9 % (second, 36,579)
+  resolve to a routine. The Unknown ones are, in the first corpus, `RUN p IN h` with a handle the
+  file does not set by one `PERSISTENT SET` (6,406), a program not on the search path (5,287) and
+  `RUN VALUE` (1,090); in the second, the same handles (8,198), a name two files on the search path
+  match (4,249: the index declines to pick one) and programs not on the path (1,984). Calls of the
+  file's own functions resolve (243,897 and 29,389); method calls on objects mostly do not (8,924 and
+  1,010 resolve, 301,725 and 30,668 are Unknown `method`), and `SUPER(...)` gives 6,830 in the first.
+- **Index choice.** Of the searches of database tables (491,833 and 31,482), the model names no
+  index for 0.6 % and 2.6 %: almost all `multi-index` (I9), then `unexpanded` (I17) and `of-join`
+  (I10). `WHOLE-INDEX` is 1.7 % and 1.5 % of them, `ROWID` 5.0 % and 9.0 %.
+- **Unit effects.** 6.5 % and 11.5 % of the units have effects the model cannot see in full,
+  mostly dynamic queries and buffers (O3), then recovered parses.
+- **Summaries.** 71.8 % and 72.1 % are complete. The partial ones mostly call a method of an object
+  (22 % and 15 % of all summaries), hold dynamic access themselves or through a callee (10 % and
+  8 %), or call a super procedure (5 %, first corpus). 1,392 summaries of the first corpus reached
+  the bound of 512 effects.
+- **Cost.** The calls and effects took 12.6 s and 1.0 s, against 28.6 s and 2.4 s for the scope
+  analysis and 38.1 s and 3.6 s to expand and parse; solving every summary took 0.6 s and 0.05 s.
+  With `strict.access` off, `oxabl check` computes none of it: its output on both trees is byte for
+  byte the output before this change, and its wall time is the same within the noise of a shared
+  host (the order of two runs decided which was faster).
+
+**DB001.** 20,290 and 2,457 findings, 386 and 87 of them at the `{...}` site of an include
+(`crates/oxabl/examples/db_corpus.rs`). Fifteen findings per corpus were read against the code: in
+the first sample of the second corpus 14 were right and 1 was a find by `ROWID` that locks the
+loop's record again, a class DB001 now leaves to LK003; a new sample of 15 there, and the 15 of the
+first corpus, were all right. Every one is a `FIND` or `CAN-FIND` in the body of a `FOR EACH`
+(over a database table or a temp-table) or of a `REPEAT` / `DO WHILE` that `GET NEXT` or a dynamic
+`GET-NEXT()` drives. Many look up a code or master record by a key of the row; some do not depend
+on the row at all (a lookup that a read before the loop would answer once).
+
+**TX004 and the summaries.** The brief asked whether a callee summary with no database write could
+silence TX004. Of the TX004 findings in the programs' own text (4,927 and 2,909), the callee of 631
+(12.8 %) and 322 (11.1 %) has a complete summary with no create, update or delete; 2,163 and 283 have
+a callee that writes; 1,204 and 91 a partial one; 929 and 2,213 an Unknown callee. Most of the
+second corpus's silenced findings are label-printing procedures of a persistent library.
+Slice 2 now applies this test through the shared provider. With every strict group enabled,
+the second corpus gives 3,311 TX004 findings before and 2,976 after (335 removed, 10.1 %).
+On the tracked files of the first corpus it gives 6,487 before and 6,149 after (338 removed,
+5.2 %). All other strict findings are unchanged. These totals include fragments and include use sites.
+Ten removed findings were read against the caller and callee source; all ten have no database
+writes, including transitive calls. `strict_corpus` measures this through the actual lint pipeline.
+
+### 8.8 The access rules (M4)
+
+DB001 (`strict.access`, preview, warning) selects findings from `oxabl_effects`; `oxabl_lint`
+computes one analysis per file through `RunShared`, over the scope analysis the `LK` and `TX` rules
+use, and only when the rule is enabled. It is routed like the `HD`, `LK` and `TX` rules.
+
+- **DB001** rests on A1-A3 and O1. A `FIND` or `CAN-FIND` of a table of the loaded schema whose
+  innermost record loop is in the same unit. Left out: `FIND NEXT`/`PREV` that drives its loop,
+  `FIND CURRENT`, a find by `ROWID`/`RECID` (a re-read to lock, LK003's domain), a `CAN-FIND` in a
+  loop's header (A5), a read in a routine the loop calls (A4), temp-tables, no schema, and files with
+  a file-level Unknown (section 7.7).
+
+What the later slices need:
+
+- **DB002** (whole-index scan): the `WHOLE-INDEX` answer of 8.2 and the XREF gate. Before it ships,
+  run `effects_xref` on a licensed install and settle R2-R4, I6 (tie breaks), I9, I10, I12, I13 and
+  I15; then decide whether `FIND FIRST`/`LAST` with no criteria (one record) and small code tables
+  are reported.
+- **DB003** (order from index): the `BY` fields (I12), `FIRST-OF`/`LAST-OF`, and whether the chosen
+  index gives the order; `SORT-ACCESS` rows (R7) are its oracle.
+- **DB004** (missing fields list): the fields used in the scope of each read (the `ACCESS` rows, R5,
+  are the oracle) and which code runs client-server.
+- **Built: `oxabl explain <file>[:line]`.** Prints each unit's direct database effects and
+  transitive summary. Direct effects include the table, operation, lock, access shape, likely
+  index and selection reason. Partial summaries list all reasons. The optional one-based line
+  selects the innermost unit in root coordinates; output lines refer to expanded text.
+  `--json` uses an independent document with `version: 1`, `file`, `coordinates`, and `units`.
+  Each unit has `kind`, `name`, `line`, `effects`, and `summary`. A summary has `complete`,
+  `partial`, `recursive`, and `effects`. An effect has `table`, `operation`, `lock`, `shape`,
+  `line`, `index`, `reason`, and `via`. Inherited effects have no search site or index;
+  `via` names the first callee. Unknown indexes have a null index and an explicit reason.
+  Direct temp-table reads use the `tt:` prefix; summaries exclude temp-table effects.
+  This new document does not change the existing analyze or check envelopes.
+- **Still needed: summaries in `analyze`.** Add a section from the shared provider, with an
+  additive envelope change and a section version bump.
+- **Still needed: LSP code lens.** Read the daemon's cached graph and map unit positions back
+  through the expansion. Add capability handling and a `textDocument/codeLens` renderer.
+  If summaries become an `oxabl/*` wire method, add fields and bump the protocol version.

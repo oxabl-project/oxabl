@@ -1,0 +1,12 @@
+unit u0 main
+  query @7 leaks holder=hQuery pool=unscoped
+    free delete-object @9
+    leak exit-return @7 abnormal via raise(error)@7 path 7>6>7
+    leak overwrite @7 normal path 7>6>7
+  query @13 freed holder=hQuery pool=unscoped
+    free delete-object @14
+  buffer @18 leaks holder=hOther pool=unscoped
+    leak exit-return @19 abnormal via raise(error)@19 path 18>19
+    leak overwrite @19 normal path 18>19
+  buffer @19 leaks holder=hOther pool=unscoped
+    leak overwrite @20 normal path 19>20

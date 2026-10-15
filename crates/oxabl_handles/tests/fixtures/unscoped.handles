@@ -1,0 +1,4 @@
+unit u0 main
+  pool @6 unnamed
+  query @5 leaks holder=hQuery pool=unscoped
+    leak exit-return @6 normal path 5>6

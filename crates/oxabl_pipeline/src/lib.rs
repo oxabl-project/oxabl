@@ -57,6 +57,9 @@
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 
+mod effects;
+mod explain;
+pub use effects::{EffectFile, WorkspaceEffects};
 mod config;
 mod format;
 mod lint;

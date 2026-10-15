@@ -1,0 +1,11 @@
+unit u1 constructor
+  query @6 escapes holder=hQuery pool=unscoped
+    escape member @6 freed-elsewhere
+  query @7 escapes holder=hNever pool=unscoped
+    escape member @7
+unit u2 method Work
+  buffer @12 leaks holder=hLocal pool=unscoped
+    leak exit-return @12 normal path 12
+unit u3 method Make
+  temp-table @17 escapes holder=hNew pool=unscoped
+    escape return @18

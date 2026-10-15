@@ -125,6 +125,7 @@ mod tests {
             name: ident(name),
             body: Vec::new(),
             is_prototype: false,
+            is_external: false,
         })
     }
 

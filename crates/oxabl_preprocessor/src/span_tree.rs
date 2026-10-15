@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
+use rustc_hash::FxHashMap;
 
 use crate::PreprocVarTable;
 
@@ -174,6 +175,36 @@ pub struct TextLoss {
     pub site: FileSpan,
 }
 
+/// What kind of reference an [`ElidedReference`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ElidedKind {
+    /// `{file.i}` whose text did not arrive: no file was found, it could not
+    /// be read, it would close a cycle, or it is past the depth limit.
+    Include,
+    /// `{&name}` with no definition, or with an empty value.
+    Name,
+    /// `{N}` in an include that was given no such argument, or an empty one.
+    Argument,
+}
+
+/// A reference that the expansion replaced with no text. The compiler may
+/// put text there (a lock phrase, a `WHERE` term), so a reader of the
+/// expanded text cannot tell what the statement around it says.
+///
+/// An undefined `{&name}` expands to nothing in the compiler too; it is kept
+/// because a file checked without its includer has none of the includer's
+/// definitions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElidedReference {
+    pub kind: ElidedKind,
+    /// The `{...}` site, in the coordinates of the file that wrote it.
+    pub site: FileSpan,
+    /// The include or substitution site whose text holds the reference;
+    /// `None` in the file being processed.
+    pub within: Option<FileSpan>,
+}
+
 /// The preprocessed representation of a source file.
 ///
 /// Contains the virtual span tree, the preprocessor variable state after
@@ -200,6 +231,10 @@ pub struct PreprocessedFile {
     /// Every place, at any depth, where text was dropped or a branch was chosen
     /// without the facts to choose it.
     pub text_losses: Vec<TextLoss>,
+    /// Every reference, at any depth, that the expansion replaced with no
+    /// text, in the order they were met. [`Self::elided_offsets`] places
+    /// them in the expanded text.
+    pub elided: Vec<ElidedReference>,
     /// Non-fatal diagnostics accumulated during preprocessing.
     ///
     /// Fatal diagnostics bail out with `Err` from [`crate::Preprocessor::process`].
@@ -230,6 +265,7 @@ impl PreprocessedFile {
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             text_losses: Vec::new(),
+            elided: Vec::new(),
             diagnostics,
             sources,
         }
@@ -253,6 +289,64 @@ impl PreprocessedFile {
                 end: virtual_offset,
             },
         }
+    }
+
+    /// The offset in [`Self::to_text`] of each of [`Self::elided`], sorted.
+    /// A reference lies between the text before and after it in its file;
+    /// in a file with no text next to it, where that file's text starts.
+    pub fn elided_offsets(&self) -> Vec<u32> {
+        self.placed(|_| true)
+    }
+
+    /// [`Self::elided_offsets`] for the [`ElidedKind::Include`] references
+    /// only: text the compiler may see between the statements around them.
+    pub fn elided_include_offsets(&self) -> Vec<u32> {
+        self.placed(|e| e.kind == ElidedKind::Include)
+    }
+
+    fn placed(&self, keep: impl Fn(&ElidedReference) -> bool) -> Vec<u32> {
+        if self.elided.is_empty() {
+            return Vec::new();
+        }
+        type Key = (FileId, u32);
+        let mut by_start: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
+        let mut by_end: FxHashMap<Key, Vec<usize>> = FxHashMap::default();
+        for (i, e) in self.elided.iter().enumerate() {
+            by_start
+                .entry((e.site.file, e.site.span.start))
+                .or_default()
+                .push(i);
+            by_end
+                .entry((e.site.file, e.site.span.end))
+                .or_default()
+                .push(i);
+        }
+        let mut walk = ElidedWalk {
+            by_start,
+            by_end,
+            includes: FxHashMap::default(),
+            found: vec![None; self.elided.len()],
+            cursor: 0,
+        };
+        walk.nodes(&self.tree);
+        let mut out: Vec<u32> = self
+            .elided
+            .iter()
+            .zip(&walk.found)
+            .filter(|(e, _)| keep(e))
+            .map(|(e, found)| {
+                found
+                    .or_else(|| {
+                        let w = e.within?;
+                        walk.includes
+                            .get(&(w.file, w.span.start, w.span.end))
+                            .copied()
+                    })
+                    .unwrap_or(0)
+            })
+            .collect();
+        out.sort_unstable();
+        out
     }
 
     /// Produce the logical source text for lexing.
@@ -305,6 +399,50 @@ impl PreprocessedFile {
 
     fn get_source(&self, file: FileId) -> Option<&str> {
         self.source(file).map(|src| &**src)
+    }
+}
+
+/// The state of [`PreprocessedFile::elided_offsets`].
+struct ElidedWalk {
+    /// Elided references by the file and offset where they start, and end.
+    by_start: FxHashMap<(FileId, u32), Vec<usize>>,
+    by_end: FxHashMap<(FileId, u32), Vec<usize>>,
+    /// Where the text of each include site starts.
+    includes: FxHashMap<(FileId, u32, u32), u32>,
+    found: Vec<Option<u32>>,
+    cursor: u32,
+}
+
+impl ElidedWalk {
+    fn nodes(&mut self, nodes: &[SpanNode]) {
+        for node in nodes {
+            match node {
+                SpanNode::Chunk { file, start, end } => {
+                    self.place(true, (*file, *start), self.cursor);
+                    self.cursor += end - start;
+                    self.place(false, (*file, *end), self.cursor);
+                }
+                SpanNode::Include { site, children, .. } => {
+                    let key = (site.file, site.span.start);
+                    self.place(true, key, self.cursor);
+                    self.includes
+                        .insert((site.file, site.span.start, site.span.end), self.cursor);
+                    self.nodes(children);
+                    self.place(false, (site.file, site.span.end), self.cursor);
+                }
+            }
+        }
+    }
+
+    /// Place the references that end where text starts (`before`), or that
+    /// start where text ends.
+    fn place(&mut self, before: bool, key: (FileId, u32), at: u32) {
+        let map = if before { &self.by_end } else { &self.by_start };
+        if let Some(list) = map.get(&key) {
+            for &i in list {
+                self.found[i].get_or_insert(at);
+            }
+        }
     }
 }
 

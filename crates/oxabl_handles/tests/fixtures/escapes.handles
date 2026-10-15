@@ -1,0 +1,35 @@
+unit u0 main
+  query @10 escapes holder=phOut pool=unscoped
+    escape output-parameter @10
+  query @12 escapes holder=h pool=unscoped
+    escape shared @13
+  query @15 leaks holder=h pool=unscoped
+    escape field @16
+    leak exit-return @16 abnormal via raise(error)@16 path 15>16
+  query @18 escapes holder=hArr pool=unscoped
+    escape array-element @18
+  query @20 leaks holder=h pool=unscoped
+    escape constructor-argument @21
+    leak exit-return @21 abnormal via raise(error)@21 path 20>21
+  class-instance @21 collected
+  persistent-procedure @23 leaks holder=hProc
+    escape super-procedure @24
+    leak exit-return @24 abnormal via raise(error)@24 path 23>24
+  query @26 leaks holder=h pool=unscoped
+    escape input-output-argument @27
+    leak exit-return @27 abnormal via raise(error)@27 path 26>27
+  query @29 leaks holder=h pool=unscoped
+    escape published @30
+    leak exit-return @30 abnormal via raise(error)@30 path 29>30
+  query @32 unknown holder=h pool=unscoped
+    opaque callee @33
+    leak exit-return @33 normal path 32>33
+unit u1 function make
+  query @37 escapes holder=hNew pool=unscoped
+    escape return @38
+unit u2 procedure keep
+  query @42 escapes holder=hMain pool=unscoped
+    escape outer-variable @42
+unit u3 procedure hand-off
+  buffer @47 leaks holder=hLocal pool=unscoped
+    leak exit-return @49 normal path 47>48>49
