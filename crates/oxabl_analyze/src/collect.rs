@@ -1092,6 +1092,30 @@ pub fn collect_from_expanded_selecting(
     source_context: SourceContext,
     selection: RuleSelection,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    collect_from_expanded_with_summaries(
+        expanded,
+        schema,
+        schema_loaded,
+        lint_severities,
+        index,
+        source_context,
+        selection,
+        None,
+    )
+}
+
+/// Collect with callee summaries in expanded byte coordinates.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_from_expanded_with_summaries(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    selection: RuleSelection,
+    summaries: Option<&dyn oxabl_lint::CalleeSummaries>,
+) -> (Option<Semantic>, CollectedDiagnostics) {
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
     let everything = selection == RuleSelection::All;
@@ -1147,15 +1171,18 @@ pub fn collect_from_expanded_selecting(
         }
     }
 
-    let linted = match selection {
-        RuleSelection::All => oxabl_lint::lint_file(&program.statements, &sem, &ctx),
-        RuleSelection::ContextFree => oxabl_lint::Registry::builtin_shared().run_where(
-            &program.statements,
-            &sem,
-            &ctx,
-            |meta| meta.context_free,
-        ),
+    let shared = oxabl_lint::RunShared::default();
+    let shared = match summaries {
+        Some(provider) => shared.with_summaries(provider),
+        None => shared,
     };
+    let linted = oxabl_lint::Registry::builtin_shared().run_where_shared(
+        &program.statements,
+        &sem,
+        &ctx,
+        |meta| everything || meta.context_free,
+        &shared,
+    );
     let registry = oxabl_lint::Registry::builtin_shared();
     for d in linted {
         if everything

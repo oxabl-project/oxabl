@@ -49,7 +49,7 @@ pub(super) fn describe_block(source: &str, unit: &UnitScopes, block: BlockId) ->
 }
 
 /// The header of the block statement at `span`: the text before the colon
-/// that opens its body.
+/// (or the period, which ABL also accepts) that opens its body.
 pub(super) fn header(source: &str, span: Span) -> Span {
     let Some(text) = source.get(span.start as usize..span.end as usize) else {
         return span;
@@ -57,7 +57,8 @@ pub(super) fn header(source: &str, span: Span) -> Span {
     let colon = Lexer::new(text)
         .take_while(|t| t.kind != Kind::Eof)
         .find(|t| {
-            t.kind == Kind::Colon && text[t.end..].chars().next().is_none_or(char::is_whitespace)
+            matches!(t.kind, Kind::Colon | Kind::Period)
+                && text[t.end..].chars().next().is_none_or(char::is_whitespace)
         });
     match colon {
         Some(t) => Span {

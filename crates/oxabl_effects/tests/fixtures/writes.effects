@@ -1,0 +1,7 @@
+unit main
+  @6 create Order once
+  @7 update Order once
+  @8 read Customer find exclusive-lock once index CustNum whole-index (primary)
+  @9 delete Customer once
+unit procedure dyn
+  unknown dynamic @13

@@ -8,6 +8,7 @@ pub mod block_var_used_outside;
 pub mod default_lock;
 pub mod delete_not_in_finally;
 pub mod dynamic_invoke;
+pub mod find_in_loop;
 pub mod handle_not_deleted;
 pub mod implicit_transaction;
 pub mod lock_outlives_transaction;
@@ -84,3 +85,6 @@ pub const LK001: &str = "LK001";
 pub const LK002: &str = "LK002";
 /// Diagnostic code for `lock-upgrade-in-loop` (LK003).
 pub const LK003: &str = "LK003";
+
+/// Diagnostic code for `find-in-loop` (DB001).
+pub const DB001: &str = "DB001";

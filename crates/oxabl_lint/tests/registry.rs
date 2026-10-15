@@ -141,6 +141,7 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
                 warning
             ),
             ("TX005", "scope-widened", "strict.transactions", warning),
+            ("DB001", "find-in-loop", "strict.access", warning),
         ]
     );
     for rule in registry.rules() {
@@ -152,6 +153,7 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             m.use_site_in_includer,
             m.group == "strict.handles"
                 || m.group == "strict.locks"
+                || m.group == "strict.access"
                 || (m.group == "strict.transactions" && m.code != "TX006"),
             "{}",
             m.code

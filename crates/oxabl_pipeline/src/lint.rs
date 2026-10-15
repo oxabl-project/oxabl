@@ -83,7 +83,7 @@ use std::sync::{Arc, Mutex};
 
 use oxabl_analyze::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    RuleSelection, UnresolvedInclude, collect_from_expanded_selecting, expand_source_with,
+    RuleSelection, UnresolvedInclude, collect_from_expanded_with_summaries, expand_source_with,
 };
 
 use oxabl_common::{
@@ -439,6 +439,8 @@ pub struct LintPipeline<'a> {
     ///
     /// [`report_include_findings`]: LintPipeline::report_include_findings
     include_runs: Arc<Mutex<HashMap<PathBuf, Option<Arc<IncludeAlone>>>>>,
+    summaries: Arc<Mutex<Option<Arc<crate::WorkspaceEffects>>>>,
+    known_files: &'a [PathBuf],
 }
 
 /// Where a handle's index lives: owned by the handle that built it, borrowed
@@ -487,6 +489,8 @@ impl<'a> LintPipeline<'a> {
             )),
             file: None,
             include_runs: Arc::default(),
+            summaries: Arc::default(),
+            known_files: &[],
         }
     }
 
@@ -516,6 +520,7 @@ impl<'a> LintPipeline<'a> {
     /// index, so there is nothing left for it to seed.
     #[must_use]
     pub fn with_known_files(mut self, files: &'a [PathBuf]) -> Self {
+        self.known_files = files;
         self.index = match self.index {
             RunIndex::Owned(index) => RunIndex::Owned(Box::new((*index).seeded_with(files))),
             // A sibling does not own the index it answers from, so it cannot
@@ -590,6 +595,60 @@ impl<'a> LintPipeline<'a> {
             },
             file: Some(path.into()),
             include_runs: Arc::clone(&self.include_runs),
+            summaries: Arc::clone(&self.summaries),
+            known_files: self.known_files,
+        }
+    }
+
+    /// Supply an incremental client's cached summaries.
+    pub fn with_effect_summaries(self, summaries: Arc<crate::WorkspaceEffects>) -> Self {
+        *self.summaries.lock().unwrap_or_else(|e| e.into_inner()) = Some(summaries);
+        self
+    }
+
+    /// Whether TX004 is enabled for this file. This query computes no effects.
+    pub fn callee_summaries_enabled(&self) -> bool {
+        let severities = self
+            .file()
+            .map(|p| self.config.lint_severities.for_path(p))
+            .unwrap_or_else(|| self.config.lint_severities.clone());
+        let registry = oxabl_lint::Registry::builtin_shared();
+        registry
+            .rules()
+            .any(|r| r.meta().code == "TX004" && registry.severity_for(r, &severities).is_some())
+    }
+
+    fn effect_summaries(&self, expansion: &Expansion) -> Arc<crate::WorkspaceEffects> {
+        let mut cache = self.summaries.lock().unwrap_or_else(|e| e.into_inner());
+        let path = self.file().unwrap_or(Path::new(""));
+        if cache
+            .as_ref()
+            .and_then(|s| s.file(path))
+            .is_some_and(|f| !f.matches(expansion))
+        {
+            *cache = None;
+        }
+        cache
+            .get_or_insert_with(|| {
+                Arc::new(self.build_effect_summaries(expansion, self.known_files))
+            })
+            .clone()
+    }
+
+    pub(crate) fn effect_program_path(
+        &self,
+        name: &str,
+        fallback: &BatchIndex<'_>,
+    ) -> Result<PathBuf, oxabl_index::calls::UnknownCall> {
+        use oxabl_index::calls::{ProgramAnswer, UnknownCall};
+        let index = match &self.index {
+            RunIndex::Owned(index) => &**index,
+            RunIndex::Shared(index) => *index,
+            RunIndex::External(_) => fallback,
+        };
+        match oxabl_index::calls::resolve_program(index, name) {
+            ProgramAnswer::Found(id) => index.indexed_path(id).ok_or(UnknownCall::Unusable),
+            ProgramAnswer::Unknown(reason) => Err(reason),
         }
     }
 
@@ -881,8 +940,15 @@ impl<'a> LintPipeline<'a> {
                     Some(path) => Cow::Owned(self.config.lint_severities.for_path(path)),
                     None => Cow::Borrowed(&self.config.lint_severities),
                 };
+                let summaries = self
+                    .callee_summaries_enabled()
+                    .then(|| self.effect_summaries(expansion));
+                let provider = summaries
+                    .as_ref()
+                    .and_then(|s| s.file(self.file().unwrap_or(Path::new(""))))
+                    .map(|f| f as &dyn oxabl_lint::CalleeSummaries);
                 let (semantic, diagnostics) = self.with_run_index(|index| {
-                    collect_from_expanded_selecting(
+                    collect_from_expanded_with_summaries(
                         expanded,
                         &self.config.schema,
                         self.config.schema_loaded,
@@ -890,6 +956,7 @@ impl<'a> LintPipeline<'a> {
                         index,
                         source_context,
                         selection,
+                        provider,
                     )
                 });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)

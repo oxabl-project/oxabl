@@ -116,7 +116,7 @@ needs whole-program type flow and comes after the rest.
 
 Every procedure, internal procedure, function and method gets a summary answering "what does
 this do?" without reading the code. It ships as a `summaries` section in
-`oxabl analyze --format json`, a human-readable `oxabl explain <file>[:<procedure>]`, and an LSP
+`oxabl analyze --format json`, a human-readable `oxabl explain <file>[:line]`, and an LSP
 code lens such as "reads 3 tables · 1 transaction · per-row FIND on Item".
 
 Each summary contains:

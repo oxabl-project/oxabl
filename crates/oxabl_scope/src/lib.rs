@@ -66,9 +66,9 @@ mod scopes;
 mod txn;
 
 pub use model::{
-    BlockScopes, Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind, RecordRead, Scope,
-    ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown, UnknownReason, Update, UpdateKind,
-    Written,
+    BlockScopes, BlockUnknown, BlockUpdate, Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind,
+    RecordRead, Scope, ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown, UnknownReason,
+    Update, UpdateKind, Written,
 };
 
 use oxabl_ast::{Span, Statement};
@@ -107,6 +107,8 @@ pub struct FileScopes {
     units: Vec<UnitScopes>,
     buffers: Vec<Buffer>,
     reads: Vec<RecordRead>,
+    updates: Vec<BlockUpdate>,
+    write_unknowns: Vec<BlockUnknown>,
     unknown: Vec<Unknown>,
 }
 
@@ -134,6 +136,20 @@ impl FileScopes {
     /// Every record read, in source order.
     pub fn reads(&self) -> &[RecordRead] {
         &self.reads
+    }
+
+    /// Every database update (section 7.3, T3), in source order: a write to
+    /// a table of the loaded schema, or to any table when none is loaded.
+    /// Temp-table writes are not here.
+    pub fn updates(&self) -> &[BlockUpdate] {
+        &self.updates
+    }
+
+    /// Statements that may update the database where the model cannot tell
+    /// (T7), in source order: a dynamic buffer method, a skipped statement
+    /// naming a database buffer, a write to a table the schema does not have.
+    pub fn write_unknowns(&self) -> &[BlockUnknown] {
+        &self.write_unknowns
     }
 
     /// Reasons that hold for the whole file (an unexpanded include may name
@@ -411,10 +427,32 @@ pub fn analyze_flow(
             }
         }
     }
+    let mut updates: Vec<BlockUpdate> = res
+        .updates
+        .iter()
+        .map(|&(unit, block, update)| BlockUpdate {
+            unit,
+            block,
+            update,
+        })
+        .collect();
+    updates.sort_by_key(|u| u.update.at.start);
+    let mut write_unknowns: Vec<BlockUnknown> = res
+        .tx_unknowns
+        .iter()
+        .map(|&(unit, block, unknown)| BlockUnknown {
+            unit,
+            block,
+            unknown,
+        })
+        .collect();
+    write_unknowns.sort_by_key(|u| u.unknown.at.start);
     FileScopes {
         units,
         buffers: res.buffers,
         reads: res.reads,
+        updates,
+        write_unknowns,
         unknown: file_unknown,
     }
 }

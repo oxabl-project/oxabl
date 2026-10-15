@@ -86,7 +86,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 
 - `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary
 - `crates/oxabl_pipeline` - The shared lint and format run every client drives; sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
-- `crates/oxabl_index` - Cross-file fact extraction plus the in-run batch index; sits *beneath* `oxabl_pipeline`
+- `crates/oxabl_index` - Cross-file fact extraction, the in-run batch index and the static call graph; sits *beneath* `oxabl_pipeline`
 - `crates/oxabl_daemon` - The session core: one salsa instance per workspace root, serving several clients; the **only** crate that may know about salsa
 - `crates/oxabl_daemon_protocol` - Wire types and the contract version for the daemon's `oxabl/*` methods; depends on serde and nothing else
 - `crates/oxabl_lexer` - Tokenizer for ABL source code (MVP complete)
@@ -97,6 +97,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - `crates/oxabl_flow` - Control-flow graphs per unit with ABL block semantics, plus a dataflow solver
 - `crates/oxabl_handles` - Lifetimes of dynamic objects per unit (create, free and escape sites, leaking paths), read by the `strict.handles` rules
 - `crates/oxabl_scope` - Buffer scopes, transaction blocks and lock modes per unit, as the compiler assigns them, plus the `COMPILE ... LISTING` block-table parser its oracle harness uses
+- `crates/oxabl_effects` - Database effects per unit (table, operation, lock, access shape, likely index), transitive summaries over the call graph, and the `COMPILE ... XREF` parser its oracle harness uses
 
 (Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_semantic`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
 

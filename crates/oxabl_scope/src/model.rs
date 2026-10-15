@@ -253,6 +253,23 @@ pub struct Update {
     pub buffer: Option<BufferId>,
 }
 
+/// A database update with the unit and block whose statement holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockUpdate {
+    pub unit: UnitId,
+    pub block: BlockId,
+    pub update: Update,
+}
+
+/// Something that may update the database, with the unit and block whose
+/// statement holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockUnknown {
+    pub unit: UnitId,
+    pub block: BlockId,
+    pub unknown: Unknown,
+}
+
 /// Whether a block is a transaction block, and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxKind {

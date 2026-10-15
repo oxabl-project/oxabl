@@ -1,0 +1,6 @@
+ADD TABLE "Customer"
+ADD FIELD "CustNum" OF "Customer" AS integer
+ADD INDEX "CustNum" ON "Customer"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "CustNum" ASCENDING

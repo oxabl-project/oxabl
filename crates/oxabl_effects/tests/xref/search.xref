@@ -1,0 +1,15 @@
+search.p search.p 1 COMPILE search.p
+search.p search.p 1 CPINTERNAL ISO8859-1
+search.p search.p 1 SEARCH sports.Customer CustNum
+search.p search.p 1 ACCESS sports.Customer CustNum
+search.p search.p 2 SEARCH sports.Customer CustNum WHOLE-INDEX
+search.p search.p 2 ACCESS sports.Customer Name
+search.p search.p 3 SEARCH sports.Order OrderStatus
+search.p search.p 5 SEARCH sports.Customer Name
+search.p search.p 5 SEARCH sports.Customer CustNum
+search.p search.p 7 SEARCH sports.Item TABLE-SCAN
+search.p search.p 9 SEARCH sports.Order OrderDate WHOLE-INDEX
+search.p search.p 11 SEARCH sports.Item ItemNum
+search.p search.p 0 PROCEDURE search.p,,
+"my dir/search.p" "my dir/search.p" 12 RUN "other prog.p"
+garbage

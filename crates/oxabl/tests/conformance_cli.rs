@@ -178,14 +178,14 @@ fn empty_directory_exits_2() {
     assert!(stderr.contains("No ABL files found in"), "got:\n{stderr}");
 }
 
-/// The visible CLI is **exactly** `check`, `format`, `lsp`, `schema` (R23), with
+/// The visible CLI is **exactly** `check`, `explain`, `format`, `lsp`, `schema` (R23), with
 /// both instruments — `conformance` and `analyze` — reachable but hidden.
 ///
 /// Asserted as an exact set rather than a list of `contains` checks: the point of
 /// R23 is a settled surface, and a test that only checks the four are *present*
 /// would pass just as happily if a fifth appeared.
 #[test]
-fn the_visible_surface_is_exactly_the_four_user_facing_commands() {
+fn the_visible_surface_is_exactly_the_five_user_facing_commands() {
     let out = oxabl().arg("--help").output().unwrap();
     assert!(out.status.success());
     let help = String::from_utf8_lossy(&out.stdout);
@@ -202,7 +202,7 @@ fn the_visible_surface_is_exactly_the_four_user_facing_commands() {
 
     assert_eq!(
         listed,
-        vec!["check", "format", "lsp", "schema", "help"],
+        vec!["check", "explain", "format", "lsp", "schema", "help"],
         "the advertised surface must not grow, got:\n{help}"
     );
     for hidden in ["conformance", "analyze"] {
