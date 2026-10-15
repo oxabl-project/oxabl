@@ -235,6 +235,32 @@
       },
       "type": "object"
     },
+    "SourceEncoding": {
+      "description": "The character encoding of ABL source files on disk (`[workspace.sources].encoding`).\n\nEvery encoding decodes to the same Unicode text in memory; spans and offsets the tools report are byte offsets into that text.",
+      "oneOf": [
+        {
+          "description": "UTF-8. A file with invalid UTF-8 cannot be read.",
+          "enum": [
+            "utf-8"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "ISO 8859-1 (Latin-1): every byte is the code point of the same value.",
+          "enum": [
+            "iso-8859-1"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Windows code page 1252. Every byte decodes; the five bytes the code page leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) become the C1 control of the same value.",
+          "enum": [
+            "windows-1252"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "SourcesConfig": {
       "description": "The `[workspace.sources]` section.",
       "properties": {
@@ -250,6 +276,25 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "encoding": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SourceEncoding"
+            }
+          ],
+          "description": "The character encoding of source files: `\"utf-8\"` (the default), `\"iso-8859-1\"` or `\"windows-1252\"`.\n\nIt applies to every file read from disk: roots, include files, classes and `.df` schema files, and `oxabl format` writes a file back in the same encoding. A UTF-8 byte order mark always means UTF-8 and is removed, whatever this says. `\"utf-8\"` rejects a file with invalid UTF-8; see `fallback_encoding`."
+        },
+        "fallback_encoding": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceEncoding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The encoding to use for a file that is not valid UTF-8. Unset by default, so such a file cannot be read.\n\nFor a tree that mixes UTF-8 files and single-byte ones. It only matters when `encoding` is `\"utf-8\"`: a single-byte encoding decodes every file."
         },
         "include_paths": {
           "default": [],

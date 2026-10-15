@@ -47,7 +47,7 @@ use oxabl_daemon_protocol::{
 };
 use oxabl_pipeline::{EdgeKind, Expansion, LintPipeline, LintResult, ReverseGraph};
 use oxabl_semantic::{SymbolFlags, SymbolKind as SemanticSymbolKind};
-use oxabl_workspace::{FileSystem, RealFileSystem, discover_path_in};
+use oxabl_workspace::{EncodedFileSystem, FileSystem, discover_path_in};
 
 use crate::dispatch::{ClientContext, Dispatch, MethodError};
 use crate::session::{
@@ -781,7 +781,10 @@ fn build_workspace(
         oxabl_pipeline::PipelineConfig::resolve(root, &oxabl_pipeline::ConfigOverrides::default());
     let files = discover_path_in(root, &config.root_extensions).map_err(MethodError::internal)?;
     progress.set_total(files.len());
-    let fs = OverlayFileSystem { overlay };
+    let fs = OverlayFileSystem {
+        overlay,
+        disk: config.file_system(),
+    };
     let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(
         &files,
         std::thread::available_parallelism().map_or(1, usize::from),
@@ -819,6 +822,7 @@ fn build_workspace(
 
 struct OverlayFileSystem {
     overlay: HashMap<PathBuf, Arc<str>>,
+    disk: EncodedFileSystem,
 }
 
 impl FileSystem for OverlayFileSystem {
@@ -827,11 +831,11 @@ impl FileSystem for OverlayFileSystem {
             .get(path)
             .cloned()
             .map(Ok)
-            .unwrap_or_else(|| RealFileSystem.read(path))
+            .unwrap_or_else(|| self.disk.read(path))
     }
 
     fn exists(&self, path: &Path) -> bool {
-        self.overlay.contains_key(path) || RealFileSystem.exists(path)
+        self.overlay.contains_key(path) || self.disk.exists(path)
     }
 }
 

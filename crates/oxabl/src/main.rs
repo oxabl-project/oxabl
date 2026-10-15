@@ -17,7 +17,10 @@ use oxabl_pipeline::{
 };
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
-use oxabl_workspace::{RealFileSystem, discover_path, discover_path_in, walk_include_fragments};
+use oxabl_workspace::{
+    EncodedFileSystem, FileSystem, SourceDecoding, discover_path, discover_path_in,
+    walk_include_fragments,
+};
 use serde::Serialize;
 
 #[derive(ClapParser)]
@@ -695,10 +698,17 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
     // degrades to defaults with one `warning:` line (R7) — `format` rewrites
     // layout rather than answering a pass/fail question, so unlike `check` (A3) it
     // has nothing to report wrongly.
+    //
+    // The source encoding is the exception: `--style` still has to read the files
+    // the way the tree is stored, so it takes the encoding from the config and
+    // stays silent about a config it otherwise ignores.
     let (config, warnings) = match cli_style {
         Some(style) => (
             PipelineConfig {
                 style,
+                decoding: PipelineConfig::resolve_style_only(path, &ConfigOverrides::default())
+                    .0
+                    .decoding,
                 ..PipelineConfig::default()
             },
             Vec::new(),
@@ -738,23 +748,30 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
     let mut any_io_error = false;
 
     for file in &files {
-        let source = match std::fs::read_to_string(file) {
-            Ok(s) => s,
+        let stored = match config.decoding.read_file(file) {
+            Ok(stored) => stored,
             Err(e) => {
                 eprintln!("error: cannot read {}: {e}", file.display());
                 any_io_error = true;
                 continue;
             }
         };
+        let source = &stored.text;
 
-        let outcome = pipeline.format(&source);
+        let outcome = pipeline.format(source);
         if let Some(formatted) = outcome.output() {
             if check {
                 eprintln!("{}: would reformat", file.display());
                 any_would_change = true;
             } else if stdout {
-                print!("{formatted}");
-            } else if let Err(e) = std::fs::write(file, formatted) {
+                if let Err(e) = write_stored(&stored, formatted, &mut std::io::stdout()) {
+                    eprintln!("error: cannot write {}: {e}", file.display());
+                    any_io_error = true;
+                }
+            } else if let Err(e) = stored
+                .encode(formatted)
+                .and_then(|bytes| std::fs::write(file, bytes))
+            {
                 eprintln!("error: cannot write {}: {e}", file.display());
                 any_io_error = true;
             }
@@ -775,8 +792,9 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
                     eprintln!("{}: {}", file.display(), not_formatted.reason());
                 }
             }
-            if stdout {
-                print!("{source}");
+            if stdout && let Err(e) = write_stored(&stored, source, &mut std::io::stdout()) {
+                eprintln!("error: cannot write {}: {e}", file.display());
+                any_io_error = true;
             }
         }
     }
@@ -1092,7 +1110,7 @@ fn run_check(
         .map(|f| std::path::absolute(f).unwrap_or_else(|_| f.clone()))
         .collect();
 
-    let fs = RealFileSystem;
+    let fs = config.file_system();
     // One run handle, so one cross-file index spans the whole walk: files sharing
     // a parent class read it once, not once each. The per-file handle below is a
     // pointer copy off this one.
@@ -1133,6 +1151,7 @@ fn run_check(
         include_findings,
         baseline: baseline.as_ref(),
         format: &format,
+        decoding: config.decoding,
     };
     // Files first, then include fragments, so the output order is the serial
     // order whatever the thread count.
@@ -1154,6 +1173,7 @@ fn run_check(
     let mut totals = Totals::default();
     run_ordered(
         jobs.min(tasks.len()),
+        config.decoding,
         &lint,
         || {
             LintPipeline::new(&config, &fs)
@@ -1440,6 +1460,7 @@ struct CheckPass<'a> {
     include_findings: bool,
     baseline: Option<&'a baseline::Run>,
     format: &'a FormatPipeline,
+    decoding: SourceDecoding,
 }
 
 impl CheckPass<'_> {
@@ -1460,7 +1481,7 @@ impl CheckPass<'_> {
     ) -> Unit {
         let mut unit = Unit::default();
         let display = file.display().to_string();
-        let source = match std::fs::read_to_string(file) {
+        let source = match read_source(file, self.decoding) {
             Ok(s) => s,
             Err(e) => {
                 // Report and continue (R24): one unreadable file must not cost
@@ -1602,7 +1623,7 @@ impl CheckPass<'_> {
     fn fragment(&self, lint: &LintPipeline<'_>, file: &Path, indexed_path: &Path) -> Unit {
         let mut unit = Unit::default();
         let display = file.display().to_string();
-        let source = match std::fs::read_to_string(file) {
+        let source = match read_source(file, self.decoding) {
             Ok(s) => s,
             Err(e) => {
                 unit.output
@@ -1647,6 +1668,7 @@ impl CheckPass<'_> {
 /// runs on the calling thread through `run_lint` with no thread at all.
 fn run_ordered<'a>(
     jobs: usize,
+    decoding: SourceDecoding,
     run_lint: &LintPipeline<'a>,
     own_lint: impl Fn() -> LintPipeline<'a> + Sync,
     tasks: &[Task<'_>],
@@ -1654,7 +1676,7 @@ fn run_ordered<'a>(
     mut absorb: impl FnMut(Unit),
 ) {
     if jobs <= 1 {
-        let mut texts = IncludeTexts::default();
+        let mut texts = IncludeTexts::new(decoding);
         for task in tasks {
             absorb(work(run_lint, &mut texts, task));
         }
@@ -1668,7 +1690,7 @@ fn run_ordered<'a>(
             let (next, own_lint, work) = (&next, &own_lint, &work);
             scope.spawn(move || {
                 let lint = own_lint();
-                let mut texts = IncludeTexts::default();
+                let mut texts = IncludeTexts::new(decoding);
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(task) = tasks.get(i) else { break };
@@ -1723,16 +1745,40 @@ fn report_findings(
 }
 
 /// Include files read for `--include-findings`, each at most once per worker.
-#[derive(Default)]
-struct IncludeTexts(HashMap<PathBuf, Option<String>>);
+struct IncludeTexts {
+    decoding: SourceDecoding,
+    texts: HashMap<PathBuf, Option<String>>,
+}
 
 impl IncludeTexts {
+    fn new(decoding: SourceDecoding) -> Self {
+        IncludeTexts {
+            decoding,
+            texts: HashMap::new(),
+        }
+    }
+
     fn get(&mut self, path: &Path) -> Option<&str> {
-        self.0
+        self.texts
             .entry(path.to_path_buf())
-            .or_insert_with(|| std::fs::read_to_string(path).ok())
+            .or_insert_with(|| read_source(path, self.decoding).ok())
             .as_deref()
     }
+}
+
+/// Write `text` to `out` in the encoding `stored` was read in, so `--stdout`
+/// hands back the bytes a file would hold.
+fn write_stored(
+    stored: &oxabl_workspace::DecodedSource,
+    text: &str,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    out.write_all(&stored.encode(text)?)
+}
+
+/// The text of the source file at `path`, decoded as `decoding`.
+fn read_source(path: &Path, decoding: SourceDecoding) -> std::io::Result<String> {
+    decoding.read_file(path).map(|source| source.text)
 }
 
 /// `path:line:col` of a reference at `at` in `text`, or just `path` when the
@@ -1916,14 +1962,6 @@ fn run_analyze(
     include_paths: &[PathBuf],
     schema_path: Option<&Path>,
 ) -> ExitCode {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read {}: {e}", path.display());
-            return ExitCode::from(2);
-        }
-    };
-
     // One resolution for every configured surface — include paths, lint
     // severities, and the schema — instead of the three independent `resolved_*`
     // calls this used to make, which parsed `oxabl.toml` once each and could each
@@ -1940,7 +1978,15 @@ fn run_analyze(
         eprintln!("warning: {warning}");
     }
 
-    let fs = RealFileSystem;
+    let source = match read_source(path, config.decoding) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", path.display());
+            return ExitCode::from(2);
+        }
+    };
+
+    let fs = config.file_system();
     // Guarded (R20): a panic in the shared pipeline is reported as this file's
     // failure, not an unwind out of the subcommand with a raw backtrace. Aborting
     // is right here — there is exactly one file — which is why `check`'s
@@ -2087,9 +2133,15 @@ fn run_conformance(
     // `.df`, and a malformed config degrades to flags-only with one warning, as
     // before: this command reports what oxabl can parse, not whether the caller's
     // configuration is right.
-    let path_config = if preprocess {
+    // The source encoding is configuration too, so the walk resolves it with or
+    // without preprocessing.
+    let path_config = {
         let overrides = ConfigOverrides {
-            include_paths: include_paths.to_vec(),
+            include_paths: if preprocess {
+                include_paths.to_vec()
+            } else {
+                Vec::new()
+            },
             ..Default::default()
         };
         let (config, warnings) = PipelineConfig::resolve_style_only(path, &overrides);
@@ -2097,8 +2149,6 @@ fn run_conformance(
             eprintln!("warning: {warning}");
         }
         config
-    } else {
-        PipelineConfig::default()
     };
     let effective_paths = &path_config.include_paths;
 
@@ -2114,7 +2164,7 @@ fn run_conformance(
 
     // Debug mode: use parse_program() with error recovery and show AST context
     if debug {
-        let real_fs = RealFileSystem;
+        let real_fs = path_config.file_system();
         for file in &files {
             run_debug_parse(
                 file,
@@ -2140,7 +2190,7 @@ fn run_conformance(
     }
 
     // Set up filesystem for preprocessing
-    let real_fs = RealFileSystem;
+    let real_fs = path_config.file_system();
 
     // Parse all files
     let start = Instant::now();
@@ -2154,7 +2204,7 @@ fn run_conformance(
                 &path_config.include_paths_for(Some(file)),
             ));
         } else {
-            results.push(parse_file(file));
+            results.push(parse_file(file, path_config.decoding));
         }
         progress.inc(1);
     }
@@ -2182,9 +2232,9 @@ fn run_conformance(
     }
 }
 
-fn parse_file(path: &Path) -> FileResult {
+fn parse_file(path: &Path, decoding: SourceDecoding) -> FileResult {
     // Read the file
-    let source = match std::fs::read_to_string(path) {
+    let source = match read_source(path, decoding) {
         Ok(s) => s,
         Err(e) => {
             return FileResult::IoError {
@@ -2225,11 +2275,11 @@ fn parse_file(path: &Path) -> FileResult {
 
 fn parse_file_with_preprocess(
     path: &Path,
-    fs: &RealFileSystem,
+    fs: &EncodedFileSystem,
     include_paths: &[PathBuf],
 ) -> FileResult {
     // Read the file
-    let source = match std::fs::read_to_string(path) {
+    let source = match fs.read(path).map(|text| text.to_string()) {
         Ok(s) => s,
         Err(e) => {
             return FileResult::IoError {
@@ -2512,8 +2562,13 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) -> Result<(), E
     }
 }
 
-fn run_debug_parse(path: &Path, preprocess: bool, fs: &RealFileSystem, include_paths: &[PathBuf]) {
-    let source = match std::fs::read_to_string(path) {
+fn run_debug_parse(
+    path: &Path,
+    preprocess: bool,
+    fs: &EncodedFileSystem,
+    include_paths: &[PathBuf],
+) {
+    let source = match fs.read(path).map(|text| text.to_string()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("I/O error: {} — {}", path.display(), e);

@@ -421,6 +421,26 @@ pub struct SourcesConfig {
     /// distinct matches still leave the name unresolved.
     #[serde(default)]
     pub case_insensitive_lookup: bool,
+
+    /// The character encoding of source files: `"utf-8"` (the default),
+    /// `"iso-8859-1"` or `"windows-1252"`.
+    ///
+    /// It applies to every file read from disk: roots, include files, classes and
+    /// `.df` schema files, and `oxabl format` writes a file back in the same
+    /// encoding. A UTF-8 byte order mark always means UTF-8 and is removed,
+    /// whatever this says. `"utf-8"` rejects a file with invalid UTF-8; see
+    /// `fallback_encoding`.
+    #[serde(default)]
+    pub encoding: crate::SourceEncoding,
+
+    /// The encoding to use for a file that is not valid UTF-8. Unset by default,
+    /// so such a file cannot be read.
+    ///
+    /// For a tree that mixes UTF-8 files and single-byte ones. It only matters
+    /// when `encoding` is `"utf-8"`: a single-byte encoding decodes every file.
+    #[serde(default)]
+    pub fallback_encoding: Option<crate::SourceEncoding>,
+
     /// Extensions that make a file an ABL *root* when a directory is walked,
     /// written without the dot and matched case-insensitively. Default
     /// `["p", "w", "cls", "v"]`.
@@ -433,6 +453,14 @@ pub struct SourcesConfig {
     /// the defaults you still need.
     #[serde(default = "default_root_extensions")]
     pub root_extensions: Vec<String>,
+}
+
+impl SourcesConfig {
+    /// How file bytes become text under this section's `encoding` and
+    /// `fallback_encoding`.
+    pub fn decoding(&self) -> crate::SourceDecoding {
+        crate::SourceDecoding::new(self.encoding, self.fallback_encoding)
+    }
 }
 
 /// The extensions that make a walked file an ABL root.
@@ -521,6 +549,8 @@ impl Default for SourcesConfig {
             root_relative_include_paths: Vec::new(),
             run_extensions: default_run_extensions(),
             case_insensitive_lookup: false,
+            encoding: crate::SourceEncoding::default(),
+            fallback_encoding: None,
             root_extensions: default_root_extensions(),
         }
     }
@@ -688,6 +718,24 @@ proversion = "12.8"
         assert_eq!(pp.window_system, "TTY");
         assert!(!pp.batch_mode);
         assert_eq!(pp.proversion.as_deref(), Some("12.8"));
+    }
+
+    #[test]
+    fn encoding_defaults_to_utf8_and_names_a_single_byte_one() {
+        use crate::SourceEncoding;
+        let config = WorkspaceConfig::from_toml("[workspace]\nname = \"p\"\n").unwrap();
+        let sources = config.workspace.sources;
+        assert_eq!(sources.encoding, SourceEncoding::Utf8);
+        assert_eq!(sources.fallback_encoding, None);
+
+        let toml = "[workspace]\nname = \"p\"\n[workspace.sources]\n\
+                    encoding = \"windows-1252\"\nfallback_encoding = \"iso-8859-1\"\n";
+        let sources = WorkspaceConfig::from_toml(toml).unwrap().workspace.sources;
+        assert_eq!(sources.encoding, SourceEncoding::Windows1252);
+        assert_eq!(sources.fallback_encoding, Some(SourceEncoding::Iso8859_1));
+
+        let bad = "[workspace]\nname = \"p\"\n[workspace.sources]\nencoding = \"ebcdic\"\n";
+        assert!(WorkspaceConfig::from_toml(bad).is_err());
     }
 
     #[test]
