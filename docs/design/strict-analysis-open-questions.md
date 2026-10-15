@@ -1019,6 +1019,20 @@ What the later slices need:
   This new document does not change the existing analyze or check envelopes.
 - **Still needed: summaries in `analyze`.** Add a section from the shared provider, with an
   additive envelope change and a section version bump.
-- **Still needed: LSP code lens.** Read the daemon's cached graph and map unit positions back
-  through the expansion. Add capability handling and a `textDocument/codeLens` renderer.
-  If summaries become an `oxabl/*` wire method, add fields and bump the protocol version.
+- **Built: LSP code lens.** `textDocument/codeLens` renders the same direct effects and
+  transitive summaries as `explain`. Each main block, procedure, function, method or trigger
+  with database effects or calls gets one lens. Titles list reads, writes and call counts;
+  unresolved direct calls have an unknown count. Incomplete summaries say `partial`.
+  The renderer uses root header offsets from `resolve_root_span`; an include-only unit has
+  no lens. The existing `root_units` selection spans keep their include-site fallback for
+  `explain`, but code lenses never use that fallback.
+  The client must offer code-lens support. Static clients get the capability at initialization
+  only when the declared workspace enables DB001 (`strict.access`) or TX004
+  (`strict.transactions`). Dynamic clients register only open files whose resolved lint
+  settings enable either rule, including file overrides. Requests also check file settings.
+  A worker reads the daemon's revision-tracked reachable graph cache. A request returns only
+  ready lenses, or an empty list while the worker runs. The LSP thread builds no graph.
+  Clients with `workspace.codeLens.refreshSupport` receive a refresh request when results
+  become ready. Other clients see them on their next request. Edits, closes and watched-file
+  changes discard rendered lenses and obsolete worker results. No `oxabl/*` method or JSON
+  envelope changed; the daemon protocol version is unchanged.

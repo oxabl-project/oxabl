@@ -1004,6 +1004,27 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     handle.collect(&expansion).into_diagnostics()
 }
 
+/// Render cached effect summaries on a worker snapshot. Cancellation returns no answer.
+/// This may populate the reachable graph; callers must keep it off the LSP thread.
+pub fn compute_effect_lenses(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+) -> Option<Vec<(u32, String)>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let path = buffer.path(snapshot).as_deref()?;
+        let run = snapshot.config().lint_pipeline();
+        if !run.with_file(path).effect_lenses_enabled() {
+            return Some(Vec::new());
+        }
+        effect_summaries(snapshot, buffer, schema)
+            .file(path)
+            .map(|f| f.effect_lenses())
+    }))
+    .ok()
+    .flatten()
+}
+
 /// Compute diagnostics on a snapshot, swallowing a [`salsa::Cancelled`] unwind
 /// (returns `None` when the read was cancelled by a concurrent write, KTD7).
 ///

@@ -1,0 +1,6 @@
+ADD TABLE "customer"
+ADD FIELD "id" OF "customer" AS integer
+ADD INDEX "pk" ON "customer" IS PRIMARY UNIQUE
+INDEX-FIELD "id" ASCENDING
+ADD TABLE "order-line"
+ADD FIELD "id" OF "order-line" AS integer
