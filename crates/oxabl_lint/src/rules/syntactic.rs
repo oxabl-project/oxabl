@@ -224,7 +224,12 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_expression(v, e);
             }
         }
-        StatementKind::Update { targets, options } | StatementKind::Set { targets, options } => {
+        StatementKind::Update {
+            targets, options, ..
+        }
+        | StatementKind::Set {
+            targets, options, ..
+        } => {
             for e in targets.iter().chain(options) {
                 walk_expression(v, e);
             }
