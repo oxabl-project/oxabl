@@ -342,3 +342,64 @@ END.
         "a field an unknown table may own must not bind the temp-table"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Unqualified fields of a named buffer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unqualified_field_of_a_buffer_for_a_database_qualified_table_resolves() {
+    let src = "DEFINE BUFFER b FOR sports.foo.
+FOR EACH b NO-LOCK:
+    EXPORT alpha.
+    DISPLAY alpha.
+END.
+";
+    let (sem, diags) = analyze(src, &schema_from_df(DF));
+    assert!(diags.is_empty(), "expected no findings, got: {diags:#?}");
+    assert_eq!(
+        field_types(&sem, "alpha"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Character)); 2]
+    );
+}
+
+#[test]
+fn unqualified_field_of_a_named_buffer_resolves_outside_a_record_block() {
+    let src = "DEFINE BUFFER b FOR sports.bar.
+FIND FIRST b NO-LOCK NO-ERROR.
+DISPLAY gamma.
+";
+    let (sem, diags) = analyze(src, &schema_from_df(DF));
+    assert!(diags.is_empty(), "expected no findings, got: {diags:#?}");
+    assert_eq!(
+        field_types(&sem, "gamma"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Character))]
+    );
+}
+
+#[test]
+fn a_field_two_named_buffers_have_is_ambiguous() {
+    let df = r#"
+ADD TABLE "foo"
+ADD FIELD "code" OF "foo" AS character
+
+ADD TABLE "bar"
+ADD FIELD "code" OF "bar" AS integer
+"#;
+    let src = "DEFINE BUFFER b1 FOR foo.
+DEFINE BUFFER b2 FOR bar.
+DISPLAY code.
+";
+    let (sem, diags) = analyze(src, &schema_from_df(df));
+    assert!(diags.is_empty(), "expected no findings, got: {diags:#?}");
+    assert!(
+        matches!(
+            resolutions(&sem, "code").as_slice(),
+            [Resolution::Unresolved {
+                reason: UnresolvedReason::PresentButUnusable,
+                ..
+            }]
+        ),
+        "an ambiguous field must not bind either buffer"
+    );
+}

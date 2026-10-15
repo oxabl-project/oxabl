@@ -13153,3 +13153,59 @@ fn wait_for_is_head_parsed_with_the_widgets() {
         }
     }
 }
+
+#[test]
+fn define_buffer_for_a_database_qualified_table_keeps_the_whole_name() {
+    for source in [
+        "DEFINE BUFFER b FOR sports.Customer.",
+        "DEFINE BUFFER b FOR sports.Customer .",
+        "DEFINE BUFFER b FOR sports.Customer PRESELECT.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 1, "{source}: {stmts:?}");
+        let StatementKind::DefineBuffer {
+            target: BufferTarget::Table(t),
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected DefineBuffer, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(t.name, "sports.Customer", "{source}");
+    }
+}
+
+#[test]
+fn buffer_parameters_and_like_take_a_database_qualified_table() {
+    let buffer_target = |stmt: &Statement| match &stmt.kind {
+        StatementKind::DefineParameter {
+            param_type: ParameterType::Buffer { target, .. },
+            ..
+        } => target.name.clone(),
+        other => panic!("expected a buffer parameter, got {other:?}"),
+    };
+    for source in [
+        "DEFINE PARAMETER BUFFER b FOR sports.Customer.",
+        "DEFINE INPUT PARAMETER BUFFER b FOR sports.Customer.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert_eq!(stmts.len(), 1, "{source}: {stmts:?}");
+        assert_eq!(buffer_target(&stmts[0]), "sports.Customer", "{source}");
+    }
+
+    let source = "FUNCTION f RETURNS LOGICAL (BUFFER b FOR sports.Customer):\nEND FUNCTION.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::Function { body, .. } = &stmts[0].kind else {
+        panic!("expected Function, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(buffer_target(&body[0]), "sports.Customer");
+
+    let source = "DEFINE TEMP-TABLE tt NO-UNDO LIKE sports.Customer.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::DefineTempTable { like_table, .. } = &stmts[0].kind else {
+        panic!("expected DefineTempTable, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(
+        like_table.as_ref().map(|t| t.name.as_str()),
+        Some("sports.Customer")
+    );
+}

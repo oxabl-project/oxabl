@@ -1052,7 +1052,7 @@ impl Parser<'_> {
             if self.check(Kind::TempTable) {
                 self.advance();
             }
-            let target = self.parse_identifier()?;
+            let target = self.parse_qualified_identifier()?;
             self.expect_period("Expected '.' after parameter definition")?;
             return Ok(self.stmt(StatementKind::DefineParameter {
                 direction: ParameterDirection::Input,
@@ -1551,7 +1551,7 @@ impl Parser<'_> {
                 self.advance();
                 let name = self.parse_identifier()?;
                 self.expect_kind(Kind::KwFor, "Expected FOR after buffer name")?;
-                let target = self.parse_identifier()?;
+                let target = self.parse_qualified_identifier()?;
                 ParameterType::Buffer { name, target }
             }
             // Standard: name [INIT value] [NO-UNDO] AS type [NO-UNDO] or LIKE field [NO-UNDO]
@@ -1748,7 +1748,7 @@ impl Parser<'_> {
 
         if self.check(Kind::Like) || self.check(Kind::LikeSequential) {
             self.advance(); // consume LIKE or LIKE-SEQUENTIAL
-            like_table = Some(self.parse_identifier()?);
+            like_table = Some(self.parse_qualified_identifier()?);
 
             // Optional VALIDATE
             if self.check(Kind::Validate) {
@@ -2018,7 +2018,8 @@ impl Parser<'_> {
                 name: self.source[pp.start..pp.end].to_string(),
             })
         } else {
-            self.parse_identifier().map(BufferTarget::Table)?
+            // `db.table` names a table of a given database.
+            self.parse_qualified_identifier().map(BufferTarget::Table)?
         };
 
         // Parse XML/serialize options (NAMESPACE-URI, SERIALIZE-NAME, etc.)
