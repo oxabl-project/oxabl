@@ -222,7 +222,7 @@ impl Visitor<'_> {
                     self.record_ident(target);
                 }
             }
-            StatementKind::Import { targets, .. } | StatementKind::Set { targets } => {
+            StatementKind::Import { targets, .. } | StatementKind::Set { targets, .. } => {
                 for target in targets {
                     self.record_target(target);
                 }

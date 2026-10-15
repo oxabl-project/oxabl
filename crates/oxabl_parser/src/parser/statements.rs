@@ -4123,7 +4123,7 @@ impl Parser<'_> {
     fn parse_form_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume FORM
         let mut fields = Vec::new();
-        let items = self.parse_frame_items(false, Some(&mut fields));
+        let (items, _) = self.parse_frame_items(false, Some(&mut fields));
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Form { items, fields }, tail))
     }
@@ -4205,7 +4205,7 @@ impl Parser<'_> {
             Ok(())
         };
         if head.is_ok() {
-            items = self.parse_frame_items(false, None);
+            items = self.parse_frame_items(false, None).0;
         }
         let tail = self.skip_tail_to_statement_end();
         let kind = match verb {
@@ -4225,13 +4225,13 @@ impl Parser<'_> {
         if self.check(Kind::UnlessHidden) {
             self.advance();
         }
-        let targets = self.parse_frame_items(true, None);
+        let (targets, options) = self.parse_frame_items(true, None);
         let range = self.skip_to_statement_end_editing_aware();
         let tail = self.skipped_tail(range);
         let kind = if update {
-            StatementKind::Update { targets }
+            StatementKind::Update { targets, options }
         } else {
-            StatementKind::Set { targets }
+            StatementKind::Set { targets, options }
         };
         Ok(self.stmt_with_tail(kind, tail))
     }
@@ -4239,15 +4239,17 @@ impl Parser<'_> {
     /// The items of a FORM, UPDATE or SET list, each with its format options.
     /// The list ends at the first token that does not start an item. With
     /// `targets`, only fields, variables and records are items (constants and
-    /// `^` are passed over), and an option operand that is not a literal ends
-    /// the list. A `name AS type` / `name LIKE field` item goes to `fields`, or
-    /// ends the list when there is none.
+    /// `^` are passed over) and the expressions of the format options are the
+    /// second result; without, they are items too. A `name AS type` /
+    /// `name LIKE field` item goes to `fields`, or ends the list when there is
+    /// none.
     fn parse_frame_items(
         &mut self,
         targets: bool,
         mut fields: Option<&mut Vec<FrameField>>,
-    ) -> Vec<Expression> {
+    ) -> (Vec<Expression>, Vec<Expression>) {
         let mut items = Vec::new();
+        let mut options = Vec::new();
         'items: loop {
             if !targets && (self.check(Kind::Header) || self.check(Kind::Background)) {
                 self.advance();
@@ -4263,8 +4265,10 @@ impl Parser<'_> {
                 if self.check(Kind::LeftParen) {
                     match self.parse_head_item(|_| false) {
                         Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
-                        Some(e) if !targets => items.push(e),
-                        _ => {
+                        Some(e) => {
+                            if targets { &mut options } else { &mut items }.push(e);
+                        }
+                        None => {
                             self.current = mark;
                             break;
                         }
@@ -4322,11 +4326,24 @@ impl Parser<'_> {
                         self.advance();
                         match self.parse_head_item(|_| false) {
                             Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
-                            Some(e) if !targets => items.push(e),
-                            _ => {
+                            Some(e) => {
+                                if targets { &mut options } else { &mut items }.push(e);
+                            }
+                            None => {
                                 self.current = at;
                                 break 'items;
                             }
+                        }
+                    }
+                    Kind::Validate | Kind::When => {
+                        let option = self.current;
+                        if !self.parse_condition_option(if targets {
+                            &mut options
+                        } else {
+                            &mut items
+                        }) {
+                            self.current = option;
+                            break 'items;
                         }
                     }
                     Kind::To | Kind::Colon
@@ -4349,7 +4366,39 @@ impl Parser<'_> {
                 }
             }
         }
-        items
+        (items, options)
+    }
+
+    /// `VALIDATE(condition, message)` or `WHEN condition` of a format phrase,
+    /// with the cursor on the keyword. Pushes the non-literal expressions to
+    /// `out`; returns false, with the cursor unspecified, when they do not parse.
+    fn parse_condition_option(&mut self, out: &mut Vec<Expression>) -> bool {
+        let validate = self.check(Kind::Validate);
+        self.advance(); // consume VALIDATE / WHEN
+        if validate {
+            if !self.check(Kind::LeftParen) {
+                return false;
+            }
+            self.advance();
+        }
+        loop {
+            match self.parse_head_item(|_| false) {
+                Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
+                Some(e) => out.push(e),
+                None => return false,
+            }
+            if !(validate && self.check(Kind::Comma)) {
+                break;
+            }
+            self.advance();
+        }
+        if validate {
+            if !self.check(Kind::RightParen) {
+                return false;
+            }
+            self.advance();
+        }
+        true
     }
 
     /// Whether the cursor starts a FORM item. A name followed by a number is an
