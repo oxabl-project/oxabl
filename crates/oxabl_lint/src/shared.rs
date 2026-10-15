@@ -13,8 +13,8 @@ use oxabl_semantic::AnalysisContext;
 /// that needs it pays nothing.
 #[derive(Default)]
 pub struct RunShared {
-    /// The scopes will be analysed: their CFGs of every unit serve the
-    /// dynamic objects too.
+    /// The scopes will be analysed: the CFGs of every unit serve the dynamic
+    /// objects too.
     share_flow: bool,
     flow: OnceCell<FileFlow>,
     handles: OnceCell<FileHandles>,
@@ -22,12 +22,9 @@ pub struct RunShared {
 }
 
 impl RunShared {
-    /// Facts for a run that analyses the scopes when `scopes` is set.
-    pub(crate) fn new(scopes: bool) -> Self {
-        RunShared {
-            share_flow: scopes,
-            ..RunShared::default()
-        }
+    /// Note whether the run will analyse the scopes too.
+    pub(crate) fn share_flow(&mut self, scopes: bool) {
+        self.share_flow = scopes;
     }
 
     /// The CFGs of every unit, built once.
@@ -40,7 +37,7 @@ impl RunShared {
     /// The dynamic objects of the file, analysed once.
     pub fn handles(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileHandles {
         self.handles.get_or_init(|| {
-            if self.share_flow {
+            if self.share_flow || self.flow.get().is_some() {
                 let flow = self.flow(program, ctx);
                 return oxabl_handles::analyze_flow(program, ctx.source, ctx.tokens, flow);
             }
