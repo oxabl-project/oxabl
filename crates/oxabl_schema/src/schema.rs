@@ -755,23 +755,23 @@ mod tests {
     #[test]
     fn resolve_table_takes_an_exact_name_or_a_unique_abbreviation() {
         let mut s = Schema::empty();
-        let receipts = s.insert_table(new_table("Receipts"));
+        let gadgets = s.insert_table(new_table("Gadgets"));
         let order = s.insert_table(new_table("order"));
         let orders = s.insert_table(new_table("orders"));
-        s.insert_table(new_table("rec-line"));
+        s.insert_table(new_table("gad-line"));
 
-        assert_eq!(s.resolve_table(&fold_atom("RECEIPTS")), Some(receipts));
-        assert_eq!(s.resolve_table(&fold_atom("receipt")), Some(receipts));
-        assert_eq!(s.resolve_table(&fold_atom("rece")), Some(receipts));
+        assert_eq!(s.resolve_table(&fold_atom("GADGETS")), Some(gadgets));
+        assert_eq!(s.resolve_table(&fold_atom("gadget")), Some(gadgets));
+        assert_eq!(s.resolve_table(&fold_atom("gadg")), Some(gadgets));
         // An exact name beats the longer table it is a prefix of.
         assert_eq!(s.resolve_table(&fold_atom("order")), Some(order));
         assert_eq!(s.resolve_table(&fold_atom("orders")), Some(orders));
         // A prefix of two tables is not an abbreviation.
-        assert_eq!(s.resolve_table(&fold_atom("rec")), None);
+        assert_eq!(s.resolve_table(&fold_atom("gad")), None);
         assert_eq!(s.resolve_table(&fold_atom("ord")), None);
-        assert_eq!(s.resolve_table(&fold_atom("receiptsx")), None);
+        assert_eq!(s.resolve_table(&fold_atom("gadgetsx")), None);
         // The exact lookup stays exact.
-        assert_eq!(s.table_id(&fold_atom("receipt")), None);
+        assert_eq!(s.table_id(&fold_atom("gadget")), None);
     }
 
     #[test]
