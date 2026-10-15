@@ -12,6 +12,7 @@ use oxabl_lexer::{Kind, Token as LexToken, is_callable_kind};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
+use crate::ScopeOptions;
 use crate::model::{BufferKind, LockMode, ReadKind, UnknownReason, UpdateKind};
 
 /// Lowercase ASCII copy of a name, the key of every lookup.
@@ -100,6 +101,8 @@ pub(crate) struct RawRead {
     pub target: ReadTarget,
     /// For `OPEN QUERY` and `GET`, the query (folded).
     pub query: Option<String>,
+    /// Text the file does not show may stand where a lock phrase would.
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -185,7 +188,7 @@ pub(crate) struct Token {
 
 /// The significant tokens of the analysed text: the lexer's, without
 /// comments.
-pub(crate) fn significant(tokens: &[LexToken]) -> Vec<Token> {
+fn significant(tokens: &[LexToken]) -> Vec<Token> {
     tokens
         .iter()
         .filter(|t| !matches!(t.kind, Kind::Comment | Kind::Eof))
@@ -200,8 +203,9 @@ pub(crate) fn significant(tokens: &[LexToken]) -> Vec<Token> {
 pub(crate) fn collect(
     program: &[Statement],
     source: &str,
-    tokens: Vec<Token>,
+    tokens: &[LexToken],
     flow: &FileFlow,
+    options: &ScopeOptions<'_>,
 ) -> Collected {
     let mut units_of: FxHashMap<NodeId, SmallVec<[UnitId; 2]>> = FxHashMap::default();
     for cfg in flow.units().iter().skip(1) {
@@ -209,9 +213,11 @@ pub(crate) fn collect(
     }
     let mut c = Collector {
         src: source,
-        tokens,
+        tokens: significant(tokens),
         flow,
         units_of,
+        elided: options.elided,
+        fragment: options.fragment,
         out: Collected::default(),
     };
     let main = UnitId::from_index(0);
@@ -224,6 +230,10 @@ struct Collector<'a> {
     tokens: Vec<Token>,
     flow: &'a FileFlow,
     units_of: FxHashMap<NodeId, SmallVec<[UnitId; 2]>>,
+    /// Where the preprocessor replaced a reference with no text, sorted.
+    elided: &'a [u32],
+    /// An include file checked alone.
+    fragment: bool,
     out: Collected,
 }
 
@@ -470,6 +480,8 @@ impl<'a> Collector<'a> {
             SK::Find { buffer, .. } => {
                 let context = self.context(enclosing);
                 let lock = self.lock_in(s.span, Some(buffer.span));
+                let end = self.phrase_end(self.range(s.span), s.span.end);
+                let hidden = self.hidden(s.span.start, buffer.span.end, end);
                 let r = self.buffer_ref(unit, block, buffer, None, context);
                 self.out.contexts[context as usize]
                     .phrase
@@ -484,6 +496,7 @@ impl<'a> Collector<'a> {
                     lock,
                     target: ReadTarget::Ref(r),
                     query: None,
+                    hidden,
                 });
                 let spans = Spans {
                     consumed: &[buffer.span],
@@ -962,6 +975,43 @@ impl<'a> Collector<'a> {
         })
     }
 
+    /// Whether text the file does not show may stand in a read from `start`
+    /// to `end` (the start of the token that ends the phrase): an elided
+    /// reference outside a string, or a reference left unexpanded. `name` is
+    /// where the record phrase ends; before it only counts in a fragment.
+    fn hidden(&self, start: u32, name: u32, end: u32) -> bool {
+        let lo = if self.fragment { start } else { name };
+        let from = self.elided.partition_point(|&o| o < lo);
+        let elided = self.elided[from..]
+            .iter()
+            .take_while(|&&o| o <= end)
+            .any(|&o| !self.in_string(o));
+        elided
+            || self.tokens[self.range(Span { start: lo, end })]
+                .iter()
+                .any(|t| self.src.as_bytes().get(t.start) == Some(&b'{'))
+    }
+
+    /// Whether offset `at` lies inside a string literal.
+    fn in_string(&self, at: u32) -> bool {
+        let at = at as usize;
+        let i = self.tokens.partition_point(|t| t.start < at);
+        i.checked_sub(1)
+            .map(|p| &self.tokens[p])
+            .is_some_and(|t| t.kind == Kind::StringLiteral && at < t.end)
+    }
+
+    /// Where the token that ends a phrase or statement starts: the last token
+    /// of `range` when it is a period or colon, else the end of `span`.
+    fn phrase_end(&self, range: std::ops::Range<usize>, span_end: u32) -> u32 {
+        match range.end.checked_sub(1).map(|i| &self.tokens[i]) {
+            Some(t) if range.end > range.start && matches!(t.kind, Kind::Period | Kind::Colon) => {
+                t.start as u32
+            }
+            _ => span_end,
+        }
+    }
+
     /// The lock phrase of a one-buffer statement, at paren depth 0, outside
     /// `skip`.
     fn lock_in(&self, span: Span, skip: Option<Span>) -> Option<LockMode> {
@@ -1140,6 +1190,11 @@ impl<'a> Collector<'a> {
                 context,
             });
             own.push(r);
+            let end = match toks.get(prange.end) {
+                Some(t) => t.start as u32,
+                None => self.phrase_end(range.clone(), header.end),
+            };
+            let hidden = self.hidden(s.span.start, span.end, end);
             self.out.reads.push(RawRead {
                 unit,
                 block: b,
@@ -1150,6 +1205,7 @@ impl<'a> Collector<'a> {
                 lock,
                 target: ReadTarget::Ref(r),
                 query: None,
+                hidden,
             });
         }
         for &r in &own {
@@ -1234,7 +1290,7 @@ impl<'a> Collector<'a> {
                 return;
             }
             Kind::Get => {
-                self.get(s, toks, unit, block, context);
+                self.get(s, toks, unit, block);
                 return;
             }
             Kind::Empty | Kind::Close | Kind::Reposition => return,
@@ -1409,6 +1465,11 @@ impl<'a> Collector<'a> {
             self.out.contexts[context as usize]
                 .phrase
                 .push(Phrase::Ref(r));
+            let end = match toks.get(prange.end) {
+                Some(t) => t.start as u32,
+                None => self.phrase_end(base..base + toks.len(), s.span.end),
+            };
+            let hidden = self.hidden(s.span.start, span.end, end);
             self.out.reads.push(RawRead {
                 unit,
                 block,
@@ -1419,6 +1480,7 @@ impl<'a> Collector<'a> {
                 lock: phrase_lock(toks, prange.clone()),
                 target: ReadTarget::Ref(r),
                 query: qname.as_deref().map(fold),
+                hidden,
             });
         }
         if let Some(name) = qname {
@@ -1446,7 +1508,7 @@ impl<'a> Collector<'a> {
 
     /// `GET [FIRST|NEXT|PREV|LAST|CURRENT] q [lock]`: a read of each buffer of
     /// the query (resolved by name later).
-    fn get(&mut self, s: &Statement, toks: &[Token], unit: UnitId, block: BlockId, _c: u32) {
+    fn get(&mut self, s: &Statement, toks: &[Token], unit: UnitId, block: BlockId) {
         let at = 1 + usize::from(matches!(
             toks.get(1).map(|t| t.kind),
             Some(Kind::First | Kind::Next | Kind::Prev | Kind::Last | Kind::Current)
@@ -1456,6 +1518,8 @@ impl<'a> Collector<'a> {
         };
         let name = self.text(t).to_string();
         let lock = phrase_lock(toks, 0..toks.len());
+        let end = self.phrase_end(self.range(s.span), s.span.end);
+        let hidden = self.hidden(s.span.start, t.end as u32, end);
         let query = Some(fold(&name));
         self.out.query_uses.push((unit, fold(&name)));
         let q = (self.out.query_uses.len() - 1) as u32;
@@ -1472,6 +1536,7 @@ impl<'a> Collector<'a> {
             lock,
             target: ReadTarget::Query(q),
             query,
+            hidden,
         });
     }
 
@@ -1717,6 +1782,8 @@ impl<'a> Collector<'a> {
         let (name, span) = self.name_text(&self.tokens, at);
         let after = self.skip_name(&self.tokens, at);
         let lock = phrase_lock(&self.tokens, at..close.saturating_sub(1).max(at));
+        let end = self.tokens[close - 1].start as u32;
+        let hidden = self.hidden(self.tokens[i].start as u32, span.end, end);
         self.out.privates.push((sc.unit, fold(last_segment(&name))));
         let private = (self.out.privates.len() - 1) as u32;
         self.out.reads.push(RawRead {
@@ -1729,6 +1796,7 @@ impl<'a> Collector<'a> {
             lock,
             target: ReadTarget::Private,
             query: None,
+            hidden,
         });
         let mut inner = self.out.contexts[sc.context as usize].clone();
         inner.phrase.insert(0, Phrase::Private(private));

@@ -81,12 +81,20 @@ pub const MAX_REFERENCES: usize = 400_000;
 
 /// Options for [`analyze_file_with`].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ScopeOptions {
+pub struct ScopeOptions<'a> {
     /// The flow options (the default error directive).
     pub flow: FlowOptions,
     /// The parser recovered from an error: statements may be missing, so
     /// every answer is Unknown (`recovered-parse`).
     pub parse_recovered: bool,
+    /// Offsets in the source where the preprocessor replaced a reference with
+    /// no text, sorted. One after the record phrase of a read without a
+    /// visible lock phrase makes its lock Unknown (`unexpanded-include`).
+    pub elided: &'a [u32],
+    /// The source is an include file checked alone: an elided reference
+    /// anywhere in a read makes its lock Unknown, because the includer's
+    /// definitions are missing.
+    pub fragment: bool,
 }
 
 /// The scopes, transaction blocks and record reads of one file.
@@ -177,7 +185,7 @@ pub fn analyze_file_with(
     program: &[Statement],
     source: &str,
     schema: Option<&Schema>,
-    options: &ScopeOptions,
+    options: &ScopeOptions<'_>,
 ) -> FileScopes {
     let tokens = oxabl_lexer::tokenize(source);
     analyze_tokens(program, source, &tokens, schema, options)
@@ -190,10 +198,10 @@ pub fn analyze_tokens(
     source: &str,
     tokens: &[oxabl_lexer::Token],
     schema: Option<&Schema>,
-    options: &ScopeOptions,
+    options: &ScopeOptions<'_>,
 ) -> FileScopes {
     let flow = oxabl_flow::build_file_with(program, source, &options.flow);
-    let collected = collect::collect(program, source, collect::significant(tokens), &flow);
+    let collected = collect::collect(program, source, tokens, &flow, options);
     let mut file_unknown: Vec<Unknown> = Vec::new();
     if options.parse_recovered {
         file_unknown.push(Unknown {

@@ -729,8 +729,11 @@ impl<'a> Resolver<'a> {
             let lock_for = |table: &Table| match (table, read.lock) {
                 (Table::TempTable { .. }, _) => Lock::TempTable,
                 (_, Some(m)) => Lock::Explicit(m),
+                // The text the file does not show may be a lock phrase.
+                (_, None) if read.hidden => Lock::Unknown(UnknownReason::UnexpandedInclude),
                 (_, None) => Lock::Default,
             };
+
             let targets: SmallVec<[(BufferId, String); 2]> = match read.target {
                 ReadTarget::Ref(i) => match self.raw[i as usize] {
                     Some(b) => smallvec::smallvec![(b, read.name.clone())],
@@ -740,6 +743,7 @@ impl<'a> Resolver<'a> {
                 // counts.
                 ReadTarget::Private => {
                     let table = self.private_table(&fold(last_segment(&read.name)), read.unit);
+                    self.hidden_lock(read, &table);
                     self.out.reads.push(RecordRead {
                         unit: read.unit,
                         block: read.block,
@@ -768,6 +772,7 @@ impl<'a> Resolver<'a> {
             };
             for (b, name) in targets {
                 let table = self.out.buffers[b.index()].table.clone();
+                self.hidden_lock(read, &table);
                 let mut lock = lock_for(&table);
                 if read.kind == ReadKind::Get && lock == Lock::Default {
                     lock = self.opened_with(read, &name);
@@ -803,6 +808,21 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// A lock phrase the file may hide can be `EXCLUSIVE-LOCK`, which makes
+    /// the block a transaction block.
+    fn hidden_lock(&mut self, read: &crate::collect::RawRead, table: &Table) {
+        if read.hidden && read.lock.is_none() && !table.is_temp_table() {
+            self.out.tx_unknowns.push((
+                read.unit,
+                read.block,
+                Unknown {
+                    reason: UnknownReason::UnexpandedInclude,
+                    at: read.at,
+                },
+            ));
+        }
+    }
+
     /// The lock of the last `OPEN QUERY` phrase of the same query and buffer
     /// before a `GET` without a lock phrase.
     fn opened_with(&self, get: &crate::collect::RawRead, buffer: &str) -> Lock {
@@ -820,6 +840,9 @@ impl<'a> Resolver<'a> {
             })
             .max_by_key(|r| r.at.start);
         match open {
+            Some(r) if r.hidden && r.lock.is_none() => {
+                Lock::Unknown(UnknownReason::UnexpandedInclude)
+            }
             Some(r) => r.lock.map_or(Lock::Default, Lock::Explicit),
             None => Lock::Unknown(UnknownReason::QueryLock),
         }

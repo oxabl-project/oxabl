@@ -36,6 +36,8 @@ impl RunShared {
 pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> FileScopes {
     let options = ScopeOptions {
         parse_recovered: ctx.parse_recovered,
+        elided: ctx.elided,
+        fragment: ctx.source_context.is_include_fragment(),
         ..ScopeOptions::default()
     };
     let schema = ctx.schema_loaded.then_some(ctx.schema);

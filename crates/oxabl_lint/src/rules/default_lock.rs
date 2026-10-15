@@ -41,7 +41,11 @@
 //!   loaded: the name may be a temp-table that the file does not show;
 //! - a `GET`, which takes the lock its query was opened with;
 //! - a file the scope analysis cannot judge: a recovered parse, an unexpanded
-//!   include, or a file past its work budget.
+//!   include, or a file past its work budget;
+//! - a read where text the file does not show stands after the record phrase:
+//!   an include the preprocessor did not find, or a `{&name}` that expanded
+//!   to nothing (in an include checked alone, anywhere in the read). That text
+//!   may be the lock phrase.
 //!
 //! The `-NL` startup option, which changes the default, is not read.
 //!
