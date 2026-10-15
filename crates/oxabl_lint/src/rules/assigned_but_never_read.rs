@@ -10,7 +10,7 @@
 //! narrows to "declared and never referenced at all", so one symbol yields
 //! exactly one diagnostic.
 //!
-//! Skips: everything in [`super::unused_symbol_shared::is_skipped`], plus
+//! Skips: everything in `super::unused_symbol_shared::is_skipped`, plus
 //! table-shaped parameters (whose counts are meaningless). Notably that skip
 //! list is what leaves the *callee*-written flavor — a variable written only
 //! through a write-back `RUN` argument — to the separate opt-in advisory (#125)
@@ -58,7 +58,7 @@
 //! `references` entry — and marks each hit with
 //! `SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT`. This rule declines to fire
 //! for any symbol so marked, via
-//! [`is_skipped`](super::unused_symbol_shared::is_skipped). The read and write
+//! `is_skipped`. The read and write
 //! counts stay exact: the flag says "these counts are incomplete", it does not
 //! fabricate an access.
 //!

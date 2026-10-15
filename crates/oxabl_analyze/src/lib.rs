@@ -873,7 +873,7 @@ pub struct DependencySection {
 
 /// A span inside the file under analysis.
 ///
-/// Deliberately not the `diagnostics` section's [`SpanRow`]: that carries a `file`
+/// Deliberately not the `diagnostics` section's `SpanRow`: that carries a `file`
 /// because a diagnostic can be anchored anywhere, while this is always the
 /// analysed file.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
