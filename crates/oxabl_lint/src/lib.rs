@@ -53,10 +53,15 @@
 //! | LK001 | [`default_lock`]            | `strict.locks`        | a database read with no lock phrase (`SHARE-LOCK`)        |
 //! | LK002 | [`lock_outlives_transaction`] | `strict.locks`      | a record still locked after its transaction, because the buffer scope is wider |
 //! | LK003 | [`lock_upgrade_in_loop`]    | `strict.locks`        | a `NO-LOCK` read upgraded to `EXCLUSIVE-LOCK` on every iteration |
+//! | TX001 | [`implicit_transaction`]    | `strict.transactions` | a block that is a transaction only because it updates the database |
+//! | TX002 | [`procedure_wide_transaction`] | `strict.transactions` | a main block that is a transaction block                |
+//! | TX003 | [`transaction_spans_ui`]    | `strict.transactions` | a statement that waits for the user inside a transaction  |
+//! | TX004 | [`transaction_spans_call`]  | `strict.transactions` | a `RUN` inside a transaction whose callee is not in the file |
+//! | TX005 | [`scope_widened`]           | `strict.transactions` | a reference that raises a `FOR` block's buffer scope to the procedure |
 //!
 //! The `HD` rules read one analysis of the file's dynamic objects
-//! (`oxabl_handles`), and the `LK` rules one analysis of its buffer scopes,
-//! transactions and locks (`oxabl_scope`). Each is made once per
+//! (`oxabl_handles`), and the `LK` rules and `TX001`-`TX005` one analysis of
+//! its buffer scopes, transactions and locks (`oxabl_scope`). Each is made once per
 //! [`Registry::run_where`] through [`RunShared`] and only when one of its
 //! rules is enabled.
 //!
@@ -84,11 +89,13 @@ pub use registry::{
 };
 pub use rules::{
     CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
-    LINT0005, LINT0006, LK001, LK002, LK003, TX006, assigned_but_never_read,
-    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
-    handle_not_deleted, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
-    missing_no_undo, missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
-    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
+    LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
+    assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
+    dynamic_invoke, handle_not_deleted, implicit_transaction, lock_outlives_transaction,
+    lock_upgrade_in_loop, memptr_not_freed, missing_no_undo, missing_widget_pool,
+    persistent_procedure_leak, procedure_wide_transaction, run_value, scope_widened, shared_state,
+    transaction_spans_call, transaction_spans_ui, type_mismatch_assignment, undefined_symbol,
+    unknown_table_or_field, unused_variable,
 };
 pub use shared::RunShared;
 

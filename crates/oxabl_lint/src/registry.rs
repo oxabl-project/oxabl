@@ -12,11 +12,13 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
     CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
-    LINT0005, LINT0006, LK001, LK002, LK003, TX006, assigned_but_never_read,
-    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
-    handle_not_deleted, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
-    missing_no_undo, missing_widget_pool, persistent_procedure_leak, run_value, shared_state,
-    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
+    LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
+    assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
+    dynamic_invoke, handle_not_deleted, implicit_transaction, lock_outlives_transaction,
+    lock_upgrade_in_loop, memptr_not_freed, missing_no_undo, missing_widget_pool,
+    persistent_procedure_leak, procedure_wide_transaction, run_value, scope_widened, shared_state,
+    transaction_spans_call, transaction_spans_ui, type_mismatch_assignment, undefined_symbol,
+    unknown_table_or_field, unused_variable,
 };
 use crate::shared::RunShared;
 
@@ -450,6 +452,46 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         lock_upgrade_in_loop::DESCRIPTION,
         lock_upgrade_in_loop::DEFAULT_SEVERITY,
         lock_upgrade_in_loop::check,
+    ),
+    scopes_rule(
+        TX001,
+        implicit_transaction::NAME,
+        implicit_transaction::GROUP,
+        implicit_transaction::DESCRIPTION,
+        implicit_transaction::DEFAULT_SEVERITY,
+        implicit_transaction::check,
+    ),
+    scopes_rule(
+        TX002,
+        procedure_wide_transaction::NAME,
+        procedure_wide_transaction::GROUP,
+        procedure_wide_transaction::DESCRIPTION,
+        procedure_wide_transaction::DEFAULT_SEVERITY,
+        procedure_wide_transaction::check,
+    ),
+    scopes_rule(
+        TX003,
+        transaction_spans_ui::NAME,
+        transaction_spans_ui::GROUP,
+        transaction_spans_ui::DESCRIPTION,
+        transaction_spans_ui::DEFAULT_SEVERITY,
+        transaction_spans_ui::check,
+    ),
+    scopes_rule(
+        TX004,
+        transaction_spans_call::NAME,
+        transaction_spans_call::GROUP,
+        transaction_spans_call::DESCRIPTION,
+        transaction_spans_call::DEFAULT_SEVERITY,
+        transaction_spans_call::check,
+    ),
+    scopes_rule(
+        TX005,
+        scope_widened::NAME,
+        scope_widened::GROUP,
+        scope_widened::DESCRIPTION,
+        scope_widened::DEFAULT_SEVERITY,
+        scope_widened::check,
     ),
 ];
 

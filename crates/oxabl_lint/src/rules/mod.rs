@@ -9,14 +9,19 @@ pub mod default_lock;
 pub mod delete_not_in_finally;
 pub mod dynamic_invoke;
 pub mod handle_not_deleted;
+pub mod implicit_transaction;
 pub mod lock_outlives_transaction;
 pub mod lock_upgrade_in_loop;
 pub mod memptr_not_freed;
 pub mod missing_no_undo;
 pub mod missing_widget_pool;
 pub mod persistent_procedure_leak;
+pub mod procedure_wide_transaction;
 pub mod run_value;
+pub mod scope_widened;
 pub mod shared_state;
+pub mod transaction_spans_call;
+pub mod transaction_spans_ui;
 pub mod type_mismatch_assignment;
 pub mod undefined_symbol;
 pub mod unknown_table_or_field;
@@ -25,7 +30,7 @@ pub mod unused_variable;
 
 // Wording and anchoring for the handle rules.
 mod handle_support;
-// Shared queries over the scope analysis for the lock rules.
+// Shared queries over the scope analysis for the lock and transaction rules.
 mod lock_support;
 // Walk and source helpers for the syntactic strict rules.
 mod syntactic;
@@ -49,6 +54,16 @@ pub const CL001: &str = "CL001";
 pub const CL002: &str = "CL002";
 /// Diagnostic code for `shared-state` (CL005).
 pub const CL005: &str = "CL005";
+/// Diagnostic code for `implicit-transaction` (TX001).
+pub const TX001: &str = "TX001";
+/// Diagnostic code for `procedure-wide-transaction` (TX002).
+pub const TX002: &str = "TX002";
+/// Diagnostic code for `transaction-spans-ui` (TX003).
+pub const TX003: &str = "TX003";
+/// Diagnostic code for `transaction-spans-call` (TX004).
+pub const TX004: &str = "TX004";
+/// Diagnostic code for `scope-widened` (TX005).
+pub const TX005: &str = "TX005";
 /// Diagnostic code for `missing-no-undo` (TX006).
 pub const TX006: &str = "TX006";
 
