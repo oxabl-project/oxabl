@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::collect::{
-    Collected, DefBuffer, Form, Phrase, RawRef, ReadTarget, Role, What, fold, last_segment,
+    Collected, DefBuffer, Folded, Form, Phrase, RawRef, ReadTarget, Role, What, fold, last_segment,
 };
 use crate::model::{
     Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind, RecordRead, Table, Unknown,
@@ -34,6 +34,9 @@ pub(crate) struct Ref {
     pub write: Option<UpdateKind>,
     /// Passed to a call as `BUFFER b`.
     pub passed: bool,
+    /// In a statement of a form the model does not know, which may change
+    /// the record.
+    pub opaque: bool,
 }
 
 #[derive(Debug, Default)]
@@ -47,8 +50,8 @@ pub(crate) struct Resolved {
     pub tx_unknowns: Vec<(UnitId, BlockId, Unknown)>,
     /// Things that make the scopes of one buffer Unknown.
     pub buffer_unknowns: Vec<(BufferId, Unknown)>,
-    /// Every `RUN`: its unit and where it starts.
-    pub runs: Vec<(UnitId, u32)>,
+    /// Every `RUN`: its unit, its block and where it starts.
+    pub runs: Vec<(UnitId, BlockId, u32)>,
     /// Things that make the scopes of every buffer visible in a unit Unknown,
     /// with the tables that may be affected: all (`None`), or database ones.
     pub unit_unknowns: Vec<(UnitId, Unknown)>,
@@ -84,10 +87,17 @@ impl<T> Default for ByName<T> {
 
 impl<T: Copy> ByName<T> {
     /// Add `value` for `name` in `unit`, unless the unit has one already.
-    fn insert_first(&mut self, name: String, unit: UnitId, value: T) {
-        let entries = self.0.entry(name).or_default();
-        if !entries.iter().any(|(u, _)| *u == unit) {
-            entries.push((unit, value));
+    fn insert_first(&mut self, name: &str, unit: UnitId, value: T) {
+        match self.0.get_mut(name) {
+            Some(entries) => {
+                if !entries.iter().any(|(u, _)| *u == unit) {
+                    entries.push((unit, value));
+                }
+            }
+            None => {
+                self.0
+                    .insert(name.to_string(), smallvec::smallvec![(unit, value)]);
+            }
         }
     }
 
@@ -136,15 +146,15 @@ impl<'a> Resolver<'a> {
         let parent = flow.units().iter().map(|u| u.unit().parent).collect();
         let mut defined = ByName::default();
         for (i, d) in c.buffers.iter().enumerate() {
-            defined.insert_first(fold(&d.name), d.unit, i);
+            defined.insert_first(&fold(&d.name), d.unit, i);
         }
         let mut temp_tables = ByName::default();
         for (i, t) in c.temp_tables.iter().enumerate() {
-            temp_tables.insert_first(fold(&t.name), t.unit, i);
+            temp_tables.insert_first(&fold(&t.name), t.unit, i);
         }
         let mut variables = ByName::default();
         for (u, v) in &c.variables {
-            variables.insert_first(v.clone(), *u, ());
+            variables.insert_first(v, *u, ());
         }
         Resolver {
             c,
@@ -325,7 +335,7 @@ impl<'a> Resolver<'a> {
             };
             let id = self.new_buffer(&tt.name.clone(), BufferKind::Default, table, owner, None);
             self.temp_table_of.insert(id, t);
-            self.defaults.insert_first(key.to_string(), owner, id);
+            self.defaults.insert_first(key, owner, id);
             return Some(id);
         }
         let main = UnitId::from_index(0);
@@ -338,7 +348,7 @@ impl<'a> Resolver<'a> {
         }
         let table = self.db_table(key, written);
         let id = self.new_buffer(written, BufferKind::Default, table, main, None);
-        self.defaults.insert_first(key.to_string(), main, id);
+        self.defaults.insert_first(key, main, id);
         Some(id)
     }
 
@@ -365,13 +375,13 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    fn dotted(&mut self, words: &[String], r: &RawRef) -> Option<BufferId> {
+    fn dotted(&mut self, words: &[Folded], r: &RawRef) -> Option<BufferId> {
         let qualifier = match words.len() {
             2 => &words[0],
             3 => &words[1],
             _ => return None,
         };
-        if self.privates(r).contains(&qualifier.as_str()) {
+        if self.privates(r).contains(&&**qualifier) {
             return None;
         }
         if let Some(b) = self.lookup(qualifier, r.unit, false) {
@@ -480,7 +490,7 @@ impl<'a> Resolver<'a> {
             }
         };
         if keep {
-            self.memo.insert_first(word.to_string(), r.unit, hit);
+            self.memo.insert_first(word, r.unit, hit);
         }
         hit
     }
@@ -691,6 +701,7 @@ impl<'a> Resolver<'a> {
                 at: r.at,
                 write: r.write,
                 passed: r.passed,
+                opaque: r.form == Form::UnknownSkipped && database,
             });
         }
     }
@@ -725,8 +736,11 @@ impl<'a> Resolver<'a> {
             let lock_for = |table: &Table| match (table, read.lock) {
                 (Table::TempTable { .. }, _) => Lock::TempTable,
                 (_, Some(m)) => Lock::Explicit(m),
+                // The text the file does not show may be a lock phrase.
+                (_, None) if read.hidden => Lock::Unknown(UnknownReason::UnexpandedInclude),
                 (_, None) => Lock::Default,
             };
+
             let targets: SmallVec<[(BufferId, String); 2]> = match read.target {
                 ReadTarget::Ref(i) => match self.raw[i as usize] {
                     Some(b) => smallvec::smallvec![(b, read.name.clone())],
@@ -735,7 +749,9 @@ impl<'a> Resolver<'a> {
                 // A CAN-FIND reads with a buffer of its own: only its table
                 // counts.
                 ReadTarget::Private => {
-                    let table = self.private_table(&fold(last_segment(&read.name)), read.unit);
+                    let table =
+                        self.private_table(&Folded::new(last_segment(&read.name)), read.unit);
+                    self.hidden_lock(read, &table);
                     self.out.reads.push(RecordRead {
                         unit: read.unit,
                         block: read.block,
@@ -764,6 +780,7 @@ impl<'a> Resolver<'a> {
             };
             for (b, name) in targets {
                 let table = self.out.buffers[b.index()].table.clone();
+                self.hidden_lock(read, &table);
                 let mut lock = lock_for(&table);
                 if read.kind == ReadKind::Get && lock == Lock::Default {
                     lock = self.opened_with(read, &name);
@@ -777,6 +794,7 @@ impl<'a> Resolver<'a> {
                         at: read.at,
                         write: None,
                         passed: false,
+                        opaque: false,
                     });
                 }
                 if read.lock == Some(LockMode::ExclusiveLock) {
@@ -798,10 +816,25 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// A lock phrase the file may hide can be `EXCLUSIVE-LOCK`, which makes
+    /// the block a transaction block.
+    fn hidden_lock(&mut self, read: &crate::collect::RawRead, table: &Table) {
+        if read.hidden && read.lock.is_none() && !table.is_temp_table() {
+            self.out.tx_unknowns.push((
+                read.unit,
+                read.block,
+                Unknown {
+                    reason: UnknownReason::UnexpandedInclude,
+                    at: read.at,
+                },
+            ));
+        }
+    }
+
     /// The lock of the last `OPEN QUERY` phrase of the same query and buffer
     /// before a `GET` without a lock phrase.
     fn opened_with(&self, get: &crate::collect::RawRead, buffer: &str) -> Lock {
-        let buffer = fold(last_segment(buffer));
+        let buffer = last_segment(buffer);
         let open = self
             .c
             .reads
@@ -810,11 +843,14 @@ impl<'a> Resolver<'a> {
                 r.kind == ReadKind::OpenQuery
                     && r.query == get.query
                     && r.at.start < get.at.start
-                    && fold(last_segment(&r.name)) == buffer
+                    && last_segment(&r.name).eq_ignore_ascii_case(buffer)
                     && self.visible(r.unit, get.unit)
             })
             .max_by_key(|r| r.at.start);
         match open {
+            Some(r) if r.hidden && r.lock.is_none() => {
+                Lock::Unknown(UnknownReason::UnexpandedInclude)
+            }
             Some(r) => r.lock.map_or(Lock::Default, Lock::Explicit),
             None => Lock::Unknown(UnknownReason::QueryLock),
         }

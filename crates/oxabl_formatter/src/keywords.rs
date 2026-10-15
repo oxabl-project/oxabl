@@ -165,6 +165,17 @@ fn was_identifier(kind: Kind) -> bool {
             | Kind::Slider
             | Kind::SubMenu
             | Kind::ToggleBox
+            | Kind::File
+            | Kind::Total
+            | Kind::Count
+            | Kind::Average
+            | Kind::Maximum
+            | Kind::Minimum
+            | Kind::SubTotal
+            | Kind::SubCount
+            | Kind::SubAverage
+            | Kind::SubMaximum
+            | Kind::SubMinimum
     )
 }
 

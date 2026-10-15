@@ -647,6 +647,18 @@ impl Parser<'_> {
             return Ok(self.skipped_table_stmt(hi));
         }
 
+        // CHOOSE {ROW | FIELD} field ... — a UI statement that waits for the
+        // user. CHOOSE is also a name: only a word after it makes the statement.
+        if self.check(Kind::Choose)
+            && matches!(
+                self.peek_nth_non_comment(2).kind,
+                Kind::Field | Kind::Identifier
+            )
+        {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+
         // PAGE / DISABLE / ENABLE / ACCUMULATE / DOWN / OPEN / APPLY / STATUS /
         // CLEAR / HIDE — skip to end.
         // Uses skip_to_statement_end() (not skip_to_period()) so that field-access dots
@@ -2817,7 +2829,7 @@ impl Parser<'_> {
         while self.check(Kind::On) {
             self.advance(); // consume ON
             // the condition (ERROR, ENDKEY, STOP, QUIT: keyword or identifier)
-            if !self.check(Kind::Colon) && !self.check(Kind::Comma) {
+            if !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Comma) {
                 self.advance();
             }
             if self.check(Kind::Undo) {

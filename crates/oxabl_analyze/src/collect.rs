@@ -296,6 +296,9 @@ pub struct ExpandedFile {
     /// Places, at any depth, where the preprocessor dropped text or decided a
     /// branch without the facts to decide it.
     text_losses: Vec<TextLoss>,
+    /// Offsets in `text` where the expansion replaced a reference with no
+    /// text, sorted.
+    elided_offsets: Vec<u32>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -354,6 +357,14 @@ impl ExpandedFile {
     /// unknown, so the absence of an edge proves nothing for this file.
     pub fn text_losses(&self) -> &[TextLoss] {
         &self.text_losses
+    }
+
+    /// Offsets in the expanded text where a reference was replaced with no
+    /// text: an include that did not arrive, a `{&name}` with no value, a
+    /// `{N}` with no argument. Sorted. What the compiler would see there is
+    /// not known.
+    pub fn elided_offsets(&self) -> &[u32] {
+        &self.elided_offsets
     }
 
     /// Map a span in the **expanded** buffer back to the root file's own bytes.
@@ -596,6 +607,7 @@ pub fn expand_source_with(
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
             text_losses: Vec::new(),
+            elided_offsets: Vec::new(),
             root,
         });
     }
@@ -701,6 +713,7 @@ pub fn expand_source_with(
                 nested_unresolved_includes,
                 unreadable_includes,
                 text_losses: pf.text_losses.clone(),
+                elided_offsets: pf.elided_offsets(),
                 root,
             })
         }
@@ -1107,7 +1120,9 @@ pub fn collect_from_expanded_selecting(
         .with_lint_severities(lint_severities.clone())
         .with_index(index)
         .with_source_context(source_context)
-        .with_parse_recovered(out.parse_recovered);
+        .with_parse_recovered(out.parse_recovered)
+        .with_tokens(&tokens)
+        .with_elided(expanded.elided_offsets());
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file(&program.statements, &ctx);
 
@@ -1323,6 +1338,7 @@ mod tests {
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
             text_losses: Vec::new(),
+            elided_offsets: Vec::new(),
             root: ROOT,
         }
     }
@@ -1637,6 +1653,30 @@ mod tests {
             codes(&live).contains(&"LINT0003"),
             "LINT0003 must fire on a bad field under a loaded schema, got {:?}",
             codes(&live)
+        );
+    }
+
+    // A missing include or an undefined `{&name}` after the record phrase
+    // may be the lock phrase: LK001 does not call the lock the default.
+    #[test]
+    fn an_elided_reference_in_a_read_hides_its_lock_from_lk001() {
+        let mut map = LintSeverityMap::new();
+        map.base_mut().enable_group("strict.locks");
+        let schema = customer_schema();
+        let lk001 = |src: &str| {
+            let fs = InMemoryFileSystem::new();
+            let out = collect_diagnostics(ROOT, src, &fs, &[], &schema, true, &map, true);
+            codes(&out).iter().filter(|c| **c == "LK001").count()
+        };
+        assert_eq!(
+            lk001("FIND FIRST Customer WHERE Customer.CustNum = 1.\n"),
+            1
+        );
+        assert_eq!(lk001("FIND FIRST Customer {missing.i}.\n"), 0);
+        assert_eq!(lk001("FIND FIRST Customer {&lock}.\n"), 0);
+        assert_eq!(
+            lk001("&SCOPED-DEFINE lock NO-LOCK\nFIND FIRST Customer {&lock}.\n"),
+            0
         );
     }
 

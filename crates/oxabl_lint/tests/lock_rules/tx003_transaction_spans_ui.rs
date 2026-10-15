@@ -121,3 +121,15 @@ END.
     assert_eq!(lines(src, &check(run, src)), [2, 4]);
     assert_eq!(lines(src, &check_fragment(run, src)), [4]);
 }
+
+#[test]
+fn choose_waits_for_the_user() {
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DO TRANSACTION:
+    FIND FIRST Customer EXCLUSIVE-LOCK.
+    CHOOSE FIELD c.
+END.
+";
+    assert_eq!(lines(src, &check(run, src)), [4]);
+}

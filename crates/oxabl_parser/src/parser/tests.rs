@@ -12783,6 +12783,50 @@ fn object_and_widget_stay_usable_as_names() {
 }
 
 #[test]
+fn choose_is_a_skipped_statement_and_still_a_name() {
+    let stmts = parse_clean("CHOOSE FIELD c AUTO-RETURN WITH FRAME f.\nCHOOSE ROW b.\n");
+    assert_eq!(stmts.len(), 2);
+    for s in &stmts {
+        assert!(
+            matches!(s.kind, StatementKind::Skipped { .. }),
+            "{:?}",
+            s.kind
+        );
+    }
+    for source in [
+        "DEFINE VARIABLE choose AS INTEGER NO-UNDO.",
+        "choose = 1.",
+        "ON CHOOSE OF b DO:\nEND.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
+fn aggregate_words_and_file_stay_usable_as_names() {
+    for source in [
+        "DEFINE VARIABLE total AS DECIMAL NO-UNDO.",
+        "DEFINE VARIABLE file AS CHARACTER NO-UNDO.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD count AS INTEGER FIELD average AS DECIMAL.",
+        "total = count + average.",
+        "x = tt.total + tt.sub-total.",
+        "x = MAXIMUM(1, 2) + MINIMUM(3, 4).",
+        "MESSAGE file maximum minimum.",
+        "ASSIGN sub-count = 1 sub-average = 2 sub-maximum = 3 sub-minimum = 4.",
+        "DISPLAY qty (TOTAL) price (SUB-AVERAGE).",
+        "COPY-LOB FROM x TO FILE \"y.txt\".",
+        "PROCEDURE total:\n  RETURN.\nEND PROCEDURE.",
+        "RUN count.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
 fn delete_and_release_object_forms_keep_their_kind() {
     let stmts = parse_clean("DELETE OBJECT object.\nDELETE WIDGET widget.\nRELEASE OBJECT object.");
     assert!(matches!(
@@ -13056,5 +13100,25 @@ fn temp_table_like_takes_a_database_qualified_table() {
             assert_eq!(fields.len(), 1);
         }
         other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn block_headers_cut_at_the_end_of_the_file_do_not_panic() {
+    for source in [
+        "DO ON",
+        "DO ON ERROR",
+        "DO ON ERROR UNDO",
+        "DO ON ERROR UNDO,",
+        "REPEAT TRANSACTION ON",
+        "DO FOR customer TRANSACTION ON",
+        "DO TRANSACTION",
+        "REPEAT FOR",
+        "DO FOR sports.",
+        "FOR EACH customer ON",
+    ] {
+        let tokens = tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        assert!(!program.errors.is_empty(), "{source}");
     }
 }

@@ -1183,6 +1183,18 @@ impl<'a> Parser<'a> {
                     | Kind::FrameFile
                     | Kind::FrameField
                     | Kind::FrameIndex
+                    // Aggregate phrase words and COPY-LOB's FILE (unreserved)
+                    | Kind::File
+                    | Kind::Total
+                    | Kind::Count
+                    | Kind::Average
+                    | Kind::Maximum
+                    | Kind::Minimum
+                    | Kind::SubTotal
+                    | Kind::SubCount
+                    | Kind::SubAverage
+                    | Kind::SubMaximum
+                    | Kind::SubMinimum
                     // Dynamic-object and widget type keywords of CREATE (unreserved)
                     | Kind::Object
                     | Kind::Widget
@@ -2006,7 +2018,8 @@ impl<'a> Parser<'a> {
     }
 
     /// The unreserved keywords of dynamic-object and widget types, plus
-    /// `OBJECT` and `WIDGET`. Each is a legal class name.
+    /// `OBJECT`, `WIDGET`, `FILE` and the aggregate words. Each is a legal
+    /// class name.
     fn is_unreserved_type_name_kind(kind: Kind) -> bool {
         matches!(
             kind,
@@ -2037,6 +2050,17 @@ impl<'a> Parser<'a> {
                 | Kind::Slider
                 | Kind::SubMenu
                 | Kind::ToggleBox
+                | Kind::File
+                | Kind::Total
+                | Kind::Count
+                | Kind::Average
+                | Kind::Maximum
+                | Kind::Minimum
+                | Kind::SubTotal
+                | Kind::SubCount
+                | Kind::SubAverage
+                | Kind::SubMaximum
+                | Kind::SubMinimum
         )
     }
 

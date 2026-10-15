@@ -10,7 +10,8 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use crate::PreprocVarTable;
 use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment};
 use crate::span_tree::{
-    PreprocessedFile, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
+    ElidedKind, ElidedReference, PreprocessedFile, SpanNode, TextLoss, TextLossKind,
+    UnreadableInclude, UnresolvedInclude,
 };
 use crate::var_table::BaseVars;
 
@@ -155,6 +156,7 @@ impl<'fs> Preprocessor<'fs> {
             unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
             text_losses: Vec::new(),
+            elided: Vec::new(),
             line_starts: HashMap::new(),
             expanding_vars: Vec::new(),
             sources: vec![(file, Arc::from(source))],
@@ -185,6 +187,7 @@ impl<'fs> Preprocessor<'fs> {
         );
         processed.unreadable_includes = ctx.unreadable_includes;
         processed.text_losses = ctx.text_losses;
+        processed.elided = ctx.elided;
         Ok(processed)
     }
 }
@@ -248,6 +251,8 @@ struct ProcessContext<'a> {
     unreadable_includes: Vec<UnreadableInclude>,
     /// Places where text was dropped or a branch was decided on a guess.
     text_losses: Vec<TextLoss>,
+    /// References replaced with no text.
+    elided: Vec<ElidedReference>,
     /// Byte offset of each line start, built on first use per source for
     /// `{&LINE-NUMBER}`. Keyed by the source's address and length, which are
     /// stable because every source is held for the whole run.
@@ -616,6 +621,7 @@ impl ProcessContext<'_> {
                                         kind: TextLossKind::IncludeDepthLimit,
                                         site: include_site,
                                     });
+                                    self.elide(ElidedKind::Include, include_site);
                                     i = ref_end;
                                     chunk_start = i as u32;
                                     continue;
@@ -645,6 +651,8 @@ impl ProcessContext<'_> {
                                         start: i as u32,
                                         end: ref_end as u32,
                                     });
+                                } else {
+                                    self.elide(ElidedKind::Include, include_site);
                                 }
 
                                 i = ref_end;
@@ -1102,11 +1110,30 @@ impl ProcessContext<'_> {
                     path: None,
                     children,
                 });
+                *chunk_start = ref_end as u32;
+                return Some(ref_end);
             }
         }
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: i as u32,
+                end: ref_end as u32,
+            },
+        };
+        self.elide(ElidedKind::Name, site);
 
         *chunk_start = ref_end as u32;
         Some(ref_end)
+    }
+
+    /// Record a reference the expansion replaced with no text.
+    fn elide(&mut self, kind: ElidedKind, site: FileSpan) {
+        self.elided.push(ElidedReference {
+            kind,
+            site,
+            within: self.site_stack.last().copied(),
+        });
     }
 
     /// Expand a `{N}` positional include-argument reference at byte offset `i`.
@@ -1143,6 +1170,16 @@ impl ProcessContext<'_> {
 
         let in_include = !positional_args.is_empty();
         let arg_val = positional_args.get(index).map(|s| s.as_str());
+        if in_include && arg_val.is_none_or(str::is_empty) {
+            let site = FileSpan {
+                file,
+                span: Span {
+                    start: i as u32,
+                    end: ref_end as u32,
+                },
+            };
+            self.elide(ElidedKind::Argument, site);
+        }
 
         match (arg_val, in_include) {
             (Some(arg_val), _) => {
@@ -5148,5 +5185,60 @@ DEFINE VARIABLE ghProp AS HANDLE NO-UNDO.
             text.contains("val=handleY"),
             "global define value must expand {{2}}, got: {text}"
         );
+    }
+
+    /// The text before each elided offset, for the assertions below.
+    fn elided_at(result: &PreprocessedFile) -> Vec<String> {
+        let text = result.to_text();
+        result
+            .elided_offsets()
+            .iter()
+            .map(|&o| text[..o as usize].to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_missing_include_and_an_undefined_name_are_elided_where_they_stood() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "FIND c {missing.i}.\nFIND d {&lock}.\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "FIND c .\nFIND d .\n");
+        let kinds: Vec<ElidedKind> = result.elided.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [ElidedKind::Include, ElidedKind::Name]);
+        assert_eq!(elided_at(&result), ["FIND c ", "FIND c .\nFIND d "]);
+    }
+
+    #[test]
+    fn a_defined_name_is_not_elided_but_an_empty_one_is() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE a NO-LOCK\n&SCOPED-DEFINE b\nFIND c {&a} {&b}.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "FIND c NO-LOCK .");
+        assert_eq!(elided_at(&result), ["FIND c NO-LOCK "]);
+    }
+
+    #[test]
+    fn a_reference_in_an_include_is_placed_in_the_expanded_text() {
+        let fs = make_fs(&[("/inc/find.i", "FIND c {&lock}.\n"), ("/inc/only.i", "{1}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "X.\n{find.i}Y {only.i}.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+        assert_eq!(&*result.to_text(), "X.\nFIND c .\nY .");
+        assert_eq!(elided_at(&result), ["X.\nFIND c ", "X.\nFIND c .\nY "]);
+        assert!(result.elided[0].within.is_some());
+    }
+
+    #[test]
+    fn a_missing_include_in_a_list_stays_as_text_and_is_not_elided() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let result = pp
+            .process(FileId::new(1), "DISPLAY a, {missing.i}.")
+            .unwrap();
+        assert!(result.to_text().contains("{missing.i}"));
+        assert!(result.elided.is_empty());
     }
 }

@@ -171,6 +171,7 @@ fn compare_file(
     let recovered = !program.errors.is_empty();
     let options = ScopeOptions {
         parse_recovered: recovered,
+        elided: expanded.elided_offsets(),
         ..ScopeOptions::default()
     };
     let scopes = oxabl_scope::analyze_tokens(&program.statements, text, &tokens, schema, &options);

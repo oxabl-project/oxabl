@@ -177,3 +177,29 @@ MESSAGE f().
 ";
     assert!(check(run, src).is_empty());
 }
+
+#[test]
+fn the_help_names_scope_widened_only_when_it_reports_the_raise() {
+    let alone = "\
+PROCEDURE setBal:
+    FIND FIRST Customer EXCLUSIVE-LOCK.
+    Customer.Balance = 0.
+END PROCEDURE.
+";
+    let diags = check(run, alone);
+    assert_eq!(lines(alone, &diags), [2]);
+    assert!(!help(&diags[0]).contains("TX005"), "{}", help(&diags[0]));
+
+    let raised = "\
+FOR EACH Customer NO-LOCK:
+END.
+DO TRANSACTION:
+    FIND FIRST Customer EXCLUSIVE-LOCK.
+    Customer.Balance = 0.
+END.
+DISPLAY Customer.Name.
+";
+    let diags = check(run, raised);
+    assert_eq!(lines(raised, &diags), [4]);
+    assert!(help(&diags[0]).contains("TX005"), "{}", help(&diags[0]));
+}

@@ -567,6 +567,7 @@ carry.
 | T1 | **Explicit.** A `DO`, `REPEAT` or `FOR` block with the `TRANSACTION` keyword is a transaction block. | Documented. | `txn_explicit.p` |
 | T2 | **Implicit.** A routine block, a `FOR`, a `REPEAT`, and a `DO` with an `ON ERROR` or `ON ENDKEY` phrase is a transaction block when it *directly* updates the database or directly reads with `EXCLUSIVE-LOCK`. Directly: the statement is in the block, or in plain `DO` blocks inside it, and not inside a nested block that is itself transaction-capable. A plain `DO` hands its statements to the block around it. A `FOR ... EXCLUSIVE-LOCK` makes its own block a transaction block (the read is part of each iteration). | Documented for the procedure, `FOR EACH`, `REPEAT` and `DO ON ERROR`; Recalled for `ON ENDKEY`; Inferred for functions, methods, constructors, destructors, property accessors and `ON ... DO` triggers (taken as procedure blocks). | `txn_implicit.p` |
 | T3 | **Updates.** `CREATE b`, `DELETE b`, an assignment to a field (`=`, `ASSIGN`, the first argument of `ENTRY`, `SUBSTRING` or `OVERLAY` on the left of `=`), `BUFFER-COPY ... TO b`, `UPDATE`, `SET`, `INSERT` and `IMPORT` naming a field or buffer, `COPY-LOB ... TO b.f`, and `FIND`, `FOR`, `OPEN QUERY`, `GET` or `FIND CURRENT` with `EXCLUSIVE-LOCK`, where `b` is a database buffer. Writes to temp-table buffers do not count. `PROMPT-FOR` only reads input into the frame. A statement form the model does not know (`RAW-TRANSFER` among them) that names a database buffer gives Unknown (T7). | Documented for the database statements; Recalled, medium, for temp-tables; Inferred for `PROMPT-FOR` and `COPY-LOB`. | `txn_implicit.p`, `temp_tables.p`, `opaque.p` |
+| T3a | **The screen form of `ASSIGN`.** An `ASSIGN` element with no `=` moves the screen value into the record: `ASSIGN b.f`, `ASSIGN FRAME fr b.f`, `ASSIGN INPUT b.f`, `ASSIGN BROWSE br b.f`, and `ASSIGN b [EXCEPT b.f ...]` for every field of the record. Each such field or record is an update, like `b.f = v`. The fields after `EXCEPT` are not. Where the text after an `=` or `WHEN` cannot be read as an expression, the rest of the statement is read as a form the model does not know: a database buffer it names gives Unknown for the block's transaction and for `written` (L3). | Documented. | `screen_assign.p` |
 | T4 | **Sub-transactions.** A transaction block inside an active transaction is a sub-transaction: `UNDO` of it undoes only its own changes, and the commit happens at the end of the outermost transaction block. The model records, for each transaction block, the closest enclosing transaction block of the same unit (`in`). | Documented. | `txn_nested.p` |
 | T5 | **Calls.** A procedure, function or method called while a transaction is active runs inside it; its own transaction blocks become sub-transactions. The `TRANSACTION` function is true when a transaction is active. The compiler cannot see the caller, so it decides each unit as if no transaction were active, and the model does the same. | Documented for the inheritance; Inferred for the listing. | `txn_nested.p` |
 | T6 | **The listing's `Tran` column** is taken to say "this block is a transaction block", nested or not. The other reading (only the outermost block of each unit) is reported by the harness too. | Inferred, low. | (harness) |
@@ -579,9 +580,9 @@ carry.
 |---|---|---|---|
 | L1 | `FIND`, a `FOR` record phrase, `OPEN QUERY` and `CAN-FIND` without a lock phrase read with `SHARE-LOCK` (the model's `default share`). A `GET` without one takes the lock its query was opened with: the last `OPEN QUERY` of that query before it in the file, else Unknown (`query-lock`). The `-NL` startup option, if remembered right, makes the default `NO-LOCK` for some of them; the model does not read startup options. | Documented for `FIND` and `FOR`; Recalled for `CAN-FIND`, `OPEN QUERY` and `GET`; Recalled, low, for `-NL`. | `locks.p`, `queries.p` |
 | L2 | Temp-table records have no locks: the lock of a read on a temp-table buffer is `n/a`, whatever the phrase. | Documented. | `locks.p` |
-| L3 | A record read with `SHARE-LOCK` and then changed in a transaction is upgraded to `EXCLUSIVE-LOCK` at the change. A change to a record read with `NO-LOCK` is a run-time error. The model marks a read `written` when a write to the same buffer lies in the same scope of that buffer after the read (for a `FOR` phrase, in its block): the input LK001 needs to know whether `NO-LOCK` is a safe fix. When no write follows but the buffer is passed to a call after the read (`RUN p (BUFFER b)`, `f(BUFFER b)`), or it is a shared buffer and a `RUN` follows in the unit, the answer is Unknown (`callee`). | Recalled, medium; the `written` test is Inferred (it is textual, not a path query). | `locks.p` |
+| L3 | A record read with `SHARE-LOCK` and then changed in a transaction is upgraded to `EXCLUSIVE-LOCK` at the change. A change to a record read with `NO-LOCK` is a run-time error. The model marks a read `written` when a write to the same buffer, in the same scope of that buffer, may run after the read: the input LK001 needs to know whether `NO-LOCK` is a safe fix. A write in the read's routine may run after it when it comes later in the text, or when an iterating block (`REPEAT`, `FOR`, `DO WHILE`, `DO ... TO`) inside the scope holds both the read and the write: the next iteration writes the record the read gave. A write in another routine of a scope raised across routines (B2) runs whenever that routine is called, so the answer is Unknown (`unit-order`). When no such write exists but the buffer is passed to a call that may run after the read (`RUN p (BUFFER b)`, `f(BUFFER b)`), or it is a shared buffer and such a `RUN` is in the unit, the answer is Unknown (`callee`); a statement form the model does not know that names the buffer gives Unknown (`skipped-statement`). | Recalled, medium; the `written` test is Inferred (it reads blocks, not paths). | `locks.p`, `written_order.p` |
 | L4 | **Lifetime.** A lock taken in a transaction is held until the transaction ends. If the buffer's scope is still open then, an `EXCLUSIVE-LOCK` is downgraded to `SHARE-LOCK`, held until the scope ends, the buffer reads another record, or `RELEASE`. A `SHARE-LOCK` taken outside a transaction is released when the buffer's record changes or its scope ends. This is why LK002 compares a buffer's scope with its transaction block. | Documented for the end of the transaction; Recalled, medium, for the downgrade. | LK002 tests in `oxabl_lint` |
-| L5 | A lock phrase that the expanded text does not show (an unexpanded include or preprocessor name in the phrase) gives Unknown (`unexpanded-include`). | Inferred. | `opaque.p` |
+| L5 | A lock phrase that the text does not show gives Unknown (`unexpanded-include`). That is a read with no visible lock phrase where, after the record phrase, the preprocessor replaced a reference with nothing (an include it did not find, a `{&name}` with no value, a `{N}` with no argument; not inside a string), or a reference stays unexpanded (`--no-preprocess`). The hidden text may be `EXCLUSIVE-LOCK`, so the block's transaction is Unknown too unless an update decides it. In an include checked alone, such a reference anywhere in the read does the same, because the includer's definitions are missing. An undefined `{&name}` expands to nothing in the compiler as well; it still counts, because the author put the reference where a lock phrase goes. | Inferred. | `hidden_lock.p` |
 
 ### 7.5 What `COMPILE ... LISTING` shows
 
@@ -656,7 +657,11 @@ Common to the three rules:
 
 LK001 rests on L1 and L2. Its help suggests `NO-LOCK` only when `written` is No (L3) and the
 buffer's scope is known; it suggests `EXCLUSIVE-LOCK` when `written` is Yes, and no lock when
-`written` is Unknown. No autofix yet. `GET` is not reported (it takes the lock of its query).
+`written` is Unknown. No autofix yet. `GET` is not reported (it takes the lock of its query). A
+`CAN-FIND` keeps no record, so its lock outlives nothing; its cost is the wait while another
+session holds the record with `EXCLUSIVE-LOCK` (Recalled, high). Its message names that wait,
+and its help always suggests `NO-LOCK`. A read whose lock phrase the text may hide (L5) is not
+reported.
 
 LK002 rests on L4 (Documented, and Recalled medium for the downgrade), S1, S2, S4 (Recalled
 medium for `DO TRANSACTION`), the documented half of S5 (a weak scope raised by a free
@@ -696,6 +701,15 @@ read against the code:
 A finding in an include that does not parse alone is reported at each `{...}` site: one widely
 included fragment gave 1,131 of the 1,164 use-site findings of LK001 in the first corpus.
 
+After the review fixes (the screen form of `ASSIGN`, `written` by blocks rather than text order,
+the lock phrase that unexpanded text may hide, the CAN-FIND message), the counts are LK001 5,323
+and 466 (1,173 at use sites in the first corpus), the others unchanged. In the first corpus, 7
+LK001 findings in includes checked alone moved to 9 use sites: each `CAN-FIND` there has a `{1}`
+or `{&name}` after its table, which the include alone cannot read and its includers give a value.
+The help changed for 29 and 5 LK001 findings, from a lock suggestion to none: most have a write in
+another routine of a scope raised across routines (`unit-order`). No write that only the loop
+rule or the screen form of `ASSIGN` sees changed a finding on these corpora.
+
 ### 7.8 The transaction rules (M3)
 
 TX001 to TX005 (`strict.transactions`, preview, warning) select findings from the same
@@ -719,7 +733,7 @@ Common to the five rules:
 |---|---|---|
 | U1 | `WAIT-FOR`, `UPDATE`, `SET`, `PROMPT-FOR`, `INSERT` (the screen form), `CHOOSE` and `READKEY` wait for the user. `PAUSE` with no time waits for a key; `PAUSE n` waits at most `n` seconds; `PAUSE ... BEFORE-HIDE` sets an option. `MESSAGE ... VIEW-AS ALERT-BOX` shows a modal box, and `MESSAGE ... SET` or `UPDATE` waits for input. | Documented for the statements; Recalled, high, for the `MESSAGE` forms. |
 | U2 | In a session with no user (batch, AppServer) the statements of U1 do not wait: an alert box is written to the log. | Recalled, medium. |
-| U3 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run the callee in another session, outside the caller's transaction. | Documented. |
+| U3 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run the callee in another session, outside the caller's transaction. `RUN ... ON [SERVER] SESSION` names the local session: the callee runs in the caller's transaction. | Documented. |
 
 - **TX001** rests on T2 and T3. One finding per block, at its first update, for a block that no
   other transaction block of its routine encloses (a sub-transaction is not reported). The main
@@ -747,7 +761,7 @@ Common to the five rules:
 **Overlap with LK002.** A raised scope that keeps a record locked after a transaction gives both
 a TX005 finding, at the reference that raises the scope, and an LK002 finding, at the read in the
 transaction. Both are kept: one shows the cause, the other the lock. The help of LK002 names TX005
-when the scope is raised, and the help of TX005 names LK002.
+when TX005 reports the raise, and the help of TX005 names LK002.
 
 **Overlap with LK003.** The fix LK003 suggests, `FOR EACH ... EXCLUSIVE-LOCK`, makes the block a
 transaction block implicitly, which TX001 reports. The fixed example of LK003 therefore adds

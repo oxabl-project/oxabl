@@ -222,13 +222,29 @@ fn file_key(file: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Whether two paths name the same file: the components of the shorter one
+/// (without `.`) end the longer one, case-insensitively. The listing writes
+/// an include as the compiler found it, the model as it resolved it.
+fn same_file(a: &str, b: &str) -> bool {
+    let parts = |p: &'_ str| -> Vec<String> {
+        p.split(['/', '\\'])
+            .filter(|c| !c.is_empty() && *c != ".")
+            .map(str::to_ascii_lowercase)
+            .collect()
+    };
+    let (a, b) = (parts(a), parts(b));
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    long.ends_with(&short)
+}
+
 /// The last dotted segment of a buffer name, lowercase.
 pub fn buffer_key(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase()
 }
 
 /// Compare a listing with the model's blocks of the same compile. Blocks
-/// pair by file name and line, in order within one line.
+/// pair by file and line, in order within one line; a file pairs by the end
+/// of its path.
 pub fn compare(listing: &Listing, model: &[ModelBlock]) -> Comparison {
     let mut c = Comparison {
         listing_blocks: listing.blocks.len(),
@@ -247,10 +263,11 @@ pub fn compare(listing: &Listing, model: &[ModelBlock]) -> Comparison {
         let slot = by_place.get_mut(&key);
         let Some(m) = slot.and_then(|v| {
             // Prefer a block of the same type on that line.
+            let file = |m: &&ModelBlock| same_file(&m.file, &l.file);
             let i = v
                 .iter()
-                .position(|m| m.kind.eq_ignore_ascii_case(&l.kind))
-                .or((!v.is_empty()).then_some(0))?;
+                .position(|m| file(m) && m.kind.eq_ignore_ascii_case(&l.kind))
+                .or_else(|| v.iter().position(file))?;
             Some(v.remove(i))
         }) else {
             c.disagreements.push(Disagreement::ListingOnly(l.clone()));
@@ -388,5 +405,35 @@ mod tests {
         assert_eq!(file_key(".\\src\\A.P"), "a.p");
         assert_eq!(file_key("src/inc/x.i"), "x.i");
         assert_eq!(buffer_key("sports2000.Customer"), "customer");
+    }
+
+    #[test]
+    fn a_file_pairs_by_the_end_of_its_path() {
+        assert!(same_file("/proj/inc/X.i", "inc\\x.i"));
+        assert!(same_file("x.i", "/proj/ms/x.i"));
+        assert!(same_file(".\\a.p", "a.p"));
+        assert!(!same_file("/proj/ms/x.i", "inc/x.i"));
+    }
+
+    #[test]
+    fn includes_with_one_name_in_two_directories_pair_by_directory() {
+        let block = |file: &str, transaction| ModelBlock {
+            file: file.to_string(),
+            line: 3,
+            kind: "Do",
+            transaction: Some(transaction),
+            outermost: Some(transaction),
+            buffers: Some(Vec::new()),
+        };
+        let model = [block("/proj/ms/x.i", false), block("/proj/inc/x.i", true)];
+        let listing = parse(
+            "File Name   Line Blk. Type   Tran   Blk. Label\n\
+             ----------- ---- ---------- ------ ---------------\n\
+             inc/x.i        3 Do         Yes\n\
+             ms/x.i         3 Do         No\n",
+        );
+        let c = compare(&listing, &model);
+        assert_eq!(c.matched, 2);
+        assert_eq!(c.tran_agree, 2, "{:?}", c.disagreements);
     }
 }
