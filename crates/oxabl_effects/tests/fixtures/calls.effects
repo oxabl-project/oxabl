@@ -1,0 +1,21 @@
+unit main
+  @26 read Customer for no-lock once index CustNum whole-index (primary)
+  call @12 run procedure inner once
+  call @13 run program other.p once
+  call @14 run-persistent program lib/svc.p once
+  call @15 run doit in lib/svc.p once
+  call @16 run unknown(handle) doit once
+  call @17 run procedure inner once
+  call @18 run unknown(dynamic) once
+  call @19 run library ext once
+  call @20 run-remote program far.p once
+  call @21 call function addOne once
+  call @21 call unknown(handle) remote once
+  call @22 call unknown(dynamic) once
+  call @23 publish unknown(event) once
+  call @27 run procedure inner per-row
+unit procedure ext
+unit procedure inner
+  @31 read Customer find no-lock once index CustNum whole-index (primary)
+  call @32 run unknown(super) once
+unit function addOne

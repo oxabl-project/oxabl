@@ -6,19 +6,20 @@ use std::sync::OnceLock;
 
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, LintRuleRef, LintSeverityMap, Severity};
+use oxabl_effects::FileEffects;
 use oxabl_handles::FileHandles;
 use oxabl_scope::FileScopes;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
-    CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
-    LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
+    CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
     assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
-    dynamic_invoke, handle_not_deleted, implicit_transaction, lock_outlives_transaction,
-    lock_upgrade_in_loop, memptr_not_freed, missing_no_undo, missing_widget_pool,
-    persistent_procedure_leak, procedure_wide_transaction, run_value, scope_widened, shared_state,
-    transaction_spans_call, transaction_spans_ui, type_mismatch_assignment, undefined_symbol,
-    unknown_table_or_field, unused_variable,
+    dynamic_invoke, find_in_loop, handle_not_deleted, implicit_transaction,
+    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, persistent_procedure_leak, procedure_wide_transaction, run_value,
+    scope_widened, shared_state, transaction_spans_call, transaction_spans_ui,
+    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
 use crate::shared::RunShared;
 
@@ -174,11 +175,17 @@ pub type HandlesFn = fn(&FileHandles, &AnalysisContext) -> Vec<Diagnostic>;
 /// were found in.
 pub type ScopesFn = fn(&FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
 
+/// The signature of a rule that reads the database effects of the file
+/// ([`oxabl_effects`]) with the scope analysis they were made over.
+pub type EffectsFn =
+    fn(&FileEffects, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
+
 #[derive(Debug, Clone, Copy)]
 enum Body {
     Plain(RuleFn),
     Handles(HandlesFn),
     Scopes(ScopesFn),
+    Effects(EffectsFn),
 }
 
 /// A [`Rule`] made of metadata and a plain function — how every built-in rule
@@ -215,6 +222,16 @@ impl FnRule {
             body: Body::Scopes(check),
         }
     }
+
+    /// Pair `meta` with a query over the file's database effects. One
+    /// registry run analyses the file once for every such rule, over the same
+    /// scope analysis the scope rules read.
+    pub const fn over_effects(meta: RuleMeta, check: EffectsFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::Effects(check),
+        }
+    }
 }
 
 impl Rule for FnRule {
@@ -237,6 +254,12 @@ impl Rule for FnRule {
             Body::Plain(run) => run(program, sem, ctx),
             Body::Handles(check) => check(shared.handles(program, ctx.source), ctx),
             Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
+            Body::Effects(check) => check(
+                shared.effects(program, ctx),
+                shared.scopes(program, ctx),
+                program,
+                ctx,
+            ),
         }
     }
 }
@@ -493,6 +516,14 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         scope_widened::DEFAULT_SEVERITY,
         scope_widened::check,
     ),
+    effects_rule(
+        DB001,
+        find_in_loop::NAME,
+        find_in_loop::GROUP,
+        find_in_loop::DESCRIPTION,
+        find_in_loop::DEFAULT_SEVERITY,
+        find_in_loop::check,
+    ),
 ];
 
 /// A syntactic strict rule: context-free, and in preview until its
@@ -545,6 +576,25 @@ const fn scopes_rule(
     check: ScopesFn,
 ) -> FnRule {
     FnRule::over_scopes(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free()
+            .reported_at_use_site(),
+        check,
+    )
+}
+
+/// A strict rule over database effects: routed like [`scopes_rule`].
+const fn effects_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    check: EffectsFn,
+) -> FnRule {
+    FnRule::over_effects(
         RuleMeta::new(code, name, group, description)
             .with_default_severity(severity)
             .with_stability(Stability::Preview)

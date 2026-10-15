@@ -1,10 +1,11 @@
 //! The two `abl` blocks of each LK and TX rule's module docs: the first is the
 //! bad example and must fire; the second is the fixed one and must not, for
-//! any of the eight rules.
+//! any of the nine rules.
 
 use oxabl_lint::{
-    default_lock, implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop,
-    procedure_wide_transaction, scope_widened, transaction_spans_call, transaction_spans_ui,
+    default_lock, find_in_loop, implicit_transaction, lock_outlives_transaction,
+    lock_upgrade_in_loop, procedure_wide_transaction, scope_widened, transaction_spans_call,
+    transaction_spans_ui,
 };
 
 use super::{RuleFn, check};
@@ -44,7 +45,7 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         "{name}: the bad example gives no finding\n{}",
         blocks[0]
     );
-    let rules: [(&str, RuleFn); 8] = [
+    let rules: [(&str, RuleFn); 9] = [
         ("LK001", default_lock::run),
         ("LK002", lock_outlives_transaction::run),
         ("LK003", lock_upgrade_in_loop::run),
@@ -53,6 +54,7 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         ("TX003", transaction_spans_ui::run),
         ("TX004", transaction_spans_call::run),
         ("TX005", scope_widened::run),
+        ("DB001", find_in_loop::run),
     ];
     for (other, f) in rules {
         let fixed = check(f, &blocks[1]);
@@ -134,5 +136,14 @@ fn tx005_examples() {
         "TX005",
         scope_widened::run,
         include_str!("../../src/rules/scope_widened.rs"),
+    );
+}
+
+#[test]
+fn db001_examples() {
+    examples(
+        "DB001",
+        find_in_loop::run,
+        include_str!("../../src/rules/find_in_loop.rs"),
     );
 }

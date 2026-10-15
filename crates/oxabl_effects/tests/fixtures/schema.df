@@ -1,0 +1,78 @@
+ADD TABLE "Customer"
+ADD FIELD "CustNum" OF "Customer" AS integer
+ADD FIELD "Name" OF "Customer" AS character
+ADD FIELD "SalesRep" OF "Customer" AS character
+ADD FIELD "Country" OF "Customer" AS character
+ADD FIELD "City" OF "Customer" AS character
+ADD FIELD "Balance" OF "Customer" AS decimal
+ADD FIELD "Comments" OF "Customer" AS character
+
+ADD INDEX "CustNum" ON "Customer"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "CustNum" ASCENDING
+
+ADD INDEX "Name" ON "Customer"
+  INDEX-FIELD "Name" ASCENDING
+
+ADD INDEX "SalesRep" ON "Customer"
+  INDEX-FIELD "SalesRep" ASCENDING
+  INDEX-FIELD "Name" ASCENDING
+
+ADD INDEX "CountryCity" ON "Customer"
+  INDEX-FIELD "Country" ASCENDING
+  INDEX-FIELD "City" ASCENDING
+
+ADD INDEX "Comments" ON "Customer"
+  WORD
+  INDEX-FIELD "Comments" ASCENDING
+
+ADD TABLE "Order"
+ADD FIELD "OrderNum" OF "Order" AS integer
+ADD FIELD "CustNum" OF "Order" AS integer
+ADD FIELD "OrderDate" OF "Order" AS date
+ADD FIELD "OrderStatus" OF "Order" AS character
+
+ADD INDEX "OrderNum" ON "Order"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "OrderNum" ASCENDING
+
+ADD INDEX "CustOrder" ON "Order"
+  UNIQUE
+  INDEX-FIELD "CustNum" ASCENDING
+  INDEX-FIELD "OrderNum" ASCENDING
+
+ADD INDEX "OrderDate" ON "Order"
+  INDEX-FIELD "OrderDate" ASCENDING
+
+ADD INDEX "OrderStatus" ON "Order"
+  INDEX-FIELD "OrderStatus" ASCENDING
+
+ADD TABLE "OrderLine"
+ADD FIELD "OrderNum" OF "OrderLine" AS integer
+ADD FIELD "LineNum" OF "OrderLine" AS integer
+ADD FIELD "ItemNum" OF "OrderLine" AS integer
+ADD FIELD "Qty" OF "OrderLine" AS integer
+
+ADD INDEX "OrderLine" ON "OrderLine"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "OrderNum" ASCENDING
+  INDEX-FIELD "LineNum" ASCENDING
+
+ADD INDEX "ItemNum" ON "OrderLine"
+  INDEX-FIELD "ItemNum" ASCENDING
+
+ADD TABLE "Item"
+ADD FIELD "ItemNum" OF "Item" AS integer
+ADD FIELD "ItemName" OF "Item" AS character
+ADD FIELD "Price" OF "Item" AS decimal
+
+ADD INDEX "ItemNum" ON "Item"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "ItemNum" ASCENDING
+
+ADD INDEX "ItemName" ON "Item"
+  INDEX-FIELD "ItemName" ASCENDING

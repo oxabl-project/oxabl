@@ -66,9 +66,9 @@ mod scopes;
 mod txn;
 
 pub use model::{
-    BlockScopes, Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind, RecordRead, Scope,
-    ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown, UnknownReason, Update, UpdateKind,
-    Written,
+    BlockScopes, BlockUnknown, BlockUpdate, Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind,
+    RecordRead, Scope, ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown, UnknownReason,
+    Update, UpdateKind, Written,
 };
 
 use oxabl_ast::{Span, Statement};
@@ -107,6 +107,8 @@ pub struct FileScopes {
     units: Vec<UnitScopes>,
     buffers: Vec<Buffer>,
     reads: Vec<RecordRead>,
+    updates: Vec<BlockUpdate>,
+    write_unknowns: Vec<BlockUnknown>,
     unknown: Vec<Unknown>,
 }
 
@@ -134,6 +136,20 @@ impl FileScopes {
     /// Every record read, in source order.
     pub fn reads(&self) -> &[RecordRead] {
         &self.reads
+    }
+
+    /// Every database update (section 7.3, T3), in source order: a write to
+    /// a table of the loaded schema, or to any table when none is loaded.
+    /// Temp-table writes are not here.
+    pub fn updates(&self) -> &[BlockUpdate] {
+        &self.updates
+    }
+
+    /// Statements that may update the database where the model cannot tell
+    /// (T7), in source order: a dynamic buffer method, a skipped statement
+    /// naming a database buffer, a write to a table the schema does not have.
+    pub fn write_unknowns(&self) -> &[BlockUnknown] {
+        &self.write_unknowns
     }
 
     /// Reasons that hold for the whole file (an unexpanded include may name
@@ -238,7 +254,20 @@ pub fn analyze_tokens(
     options: &ScopeOptions<'_>,
 ) -> FileScopes {
     let flow = oxabl_flow::build_file_with(program, source, &options.flow);
-    let collected = collect::collect(program, source, tokens, &flow, options);
+    analyze_flow(program, source, tokens, &flow, schema, options)
+}
+
+/// [`analyze_tokens`] over the file's flow graphs, built by the caller with
+/// `oxabl_flow::build_file_with(program, source, &options.flow)`.
+pub fn analyze_flow(
+    program: &[Statement],
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    flow: &oxabl_flow::FileFlow,
+    schema: Option<&Schema>,
+    options: &ScopeOptions<'_>,
+) -> FileScopes {
+    let collected = collect::collect(program, source, tokens, flow, options);
     let mut file_unknown: Vec<Unknown> = Vec::new();
     if options.parse_recovered {
         file_unknown.push(Unknown {
@@ -252,8 +281,8 @@ pub fn analyze_tokens(
             at: Span::DUMMY,
         });
     }
-    let mut res = resolve::resolve(&collected, &flow, schema);
-    let scope_of = scopes::assign(&mut res, &flow);
+    let mut res = resolve::resolve(&collected, flow, schema);
+    let scope_of = scopes::assign(&mut res, flow);
 
     // Unknowns: per buffer, per unit (every buffer the unit can see), file.
     for (b, u) in std::mem::take(&mut res.buffer_unknowns) {
@@ -316,7 +345,7 @@ pub fn analyze_tokens(
                 continue;
             }
             let same_unit = r.unit == read.unit;
-            if same_unit && !runs_after(&flow, read, r.at.start, r.block, bound) {
+            if same_unit && !runs_after(flow, read, r.at.start, r.block, bound) {
                 continue;
             }
             let reason = if r.write.is_some() {
@@ -344,12 +373,12 @@ pub fn analyze_tokens(
             && res
                 .runs
                 .iter()
-                .any(|&(u, block, at)| u == read.unit && runs_after(&flow, read, at, block, bound))
+                .any(|&(u, block, at)| u == read.unit && runs_after(flow, read, at, block, bound))
         {
             written = Written::Unknown(UnknownReason::Callee);
         }
         if written == Written::No
-            && include_may_run_after(&flow, read, bound, options.elided_includes)
+            && include_may_run_after(flow, read, bound, options.elided_includes)
         {
             written = Written::Unknown(UnknownReason::UnexpandedInclude);
         }
@@ -358,7 +387,7 @@ pub fn analyze_tokens(
     res.reads.sort_by_key(|r| r.at.start);
 
     let extra = file_unknown.first().copied();
-    let tx = txn::transactions(&flow, &res, extra);
+    let tx = txn::transactions(flow, &res, extra);
     let mut units: Vec<UnitScopes> = flow
         .units()
         .iter()
@@ -398,10 +427,32 @@ pub fn analyze_tokens(
             }
         }
     }
+    let mut updates: Vec<BlockUpdate> = res
+        .updates
+        .iter()
+        .map(|&(unit, block, update)| BlockUpdate {
+            unit,
+            block,
+            update,
+        })
+        .collect();
+    updates.sort_by_key(|u| u.update.at.start);
+    let mut write_unknowns: Vec<BlockUnknown> = res
+        .tx_unknowns
+        .iter()
+        .map(|&(unit, block, unknown)| BlockUnknown {
+            unit,
+            block,
+            unknown,
+        })
+        .collect();
+    write_unknowns.sort_by_key(|u| u.unknown.at.start);
     FileScopes {
         units,
         buffers: res.buffers,
         reads: res.reads,
+        updates,
+        write_unknowns,
         unknown: file_unknown,
     }
 }

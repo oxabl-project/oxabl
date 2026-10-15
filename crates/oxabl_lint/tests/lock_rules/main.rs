@@ -3,11 +3,13 @@
 //! `lock-upgrade-in-loop` (LK003), and the `strict.transactions` rules
 //! `implicit-transaction` (TX001), `procedure-wide-transaction` (TX002),
 //! `transaction-spans-ui` (TX003), `transaction-spans-call` (TX004) and
-//! `scope-widened` (TX005).
+//! `scope-widened` (TX005), and the `strict.access` rule `find-in-loop`
+//! (DB001) over `oxabl_effects`.
 //!
 //! Synthetic ABL runs through the real lexer, parser and semantic pass, with a
 //! small schema loaded, then through the rule itself.
 
+mod db001_find_in_loop;
 mod doc_examples;
 mod lk001_default_lock;
 mod lk002_lock_outlives_transaction;

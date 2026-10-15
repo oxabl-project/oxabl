@@ -58,12 +58,14 @@
 //! | TX003 | [`transaction_spans_ui`]    | `strict.transactions` | a statement that waits for the user inside a transaction  |
 //! | TX004 | [`transaction_spans_call`]  | `strict.transactions` | a `RUN` inside a transaction whose callee is not in the file |
 //! | TX005 | [`scope_widened`]           | `strict.transactions` | a reference that raises a `FOR` block's buffer scope to the procedure |
+//! | DB001 | [`find_in_loop`]            | `strict.access`       | a `FIND` or `CAN-FIND` that runs once per row of a record loop (N+1) |
 //!
 //! The `HD` rules read one analysis of the file's dynamic objects
-//! (`oxabl_handles`), and the `LK` rules and `TX001`-`TX005` one analysis of
-//! its buffer scopes, transactions and locks (`oxabl_scope`). Each is made once per
-//! [`Registry::run_where`] through [`RunShared`] and only when one of its
-//! rules is enabled.
+//! (`oxabl_handles`), the `LK` rules and `TX001`-`TX005` one analysis of
+//! its buffer scopes, transactions and locks (`oxabl_scope`), and the `DB`
+//! rules one analysis of its database effects (`oxabl_effects`) over the same
+//! scopes. Each is made once per [`Registry::run_where`] through [`RunShared`]
+//! and only when one of its rules is enabled.
 //!
 //! A finding that sits in an include file is dropped when the includer is
 //! linted. A context-free rule reports it once, in the include file itself,
@@ -84,18 +86,18 @@ mod rules;
 mod shared;
 
 pub use registry::{
-    BUILTIN_GROUPS, BUILTIN_RULES, FnRule, HandlesFn, Registry, RegistryError, Rule, RuleFn,
-    RuleGroup, RuleMeta, ScopesFn, Stability, groups,
+    BUILTIN_GROUPS, BUILTIN_RULES, EffectsFn, FnRule, HandlesFn, Registry, RegistryError, Rule,
+    RuleFn, RuleGroup, RuleMeta, ScopesFn, Stability, groups,
 };
 pub use rules::{
-    CL001, CL002, CL005, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004,
-    LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
+    CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
     assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
-    dynamic_invoke, handle_not_deleted, implicit_transaction, lock_outlives_transaction,
-    lock_upgrade_in_loop, memptr_not_freed, missing_no_undo, missing_widget_pool,
-    persistent_procedure_leak, procedure_wide_transaction, run_value, scope_widened, shared_state,
-    transaction_spans_call, transaction_spans_ui, type_mismatch_assignment, undefined_symbol,
-    unknown_table_or_field, unused_variable,
+    dynamic_invoke, find_in_loop, handle_not_deleted, implicit_transaction,
+    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, persistent_procedure_leak, procedure_wide_transaction, run_value,
+    scope_widened, shared_state, transaction_spans_call, transaction_spans_ui,
+    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
 };
 pub use shared::RunShared;
 

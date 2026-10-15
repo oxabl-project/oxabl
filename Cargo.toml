@@ -23,5 +23,6 @@ members = [
     "crates/oxabl_flow",
     "crates/oxabl_handles",
     "crates/oxabl_scope",
+    "crates/oxabl_effects",
 ]
 resolver = "2"

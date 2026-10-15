@@ -81,3 +81,6 @@ oxabl_flow = { path = "../oxabl_flow", version = "0.2.0" }
 oxabl_handles = { path = "../oxabl_handles", version = "0.1.0" }
 # The `scope_corpus` and `scope_listing` examples only.
 oxabl_scope = { path = "../oxabl_scope", version = "0.1.0" }
+# The `effects_corpus` and `effects_xref` examples only.
+oxabl_effects = { path = "../oxabl_effects", version = "0.1.0" }
+oxabl_index = { path = "../oxabl_index", version = "2.0.0" }
