@@ -112,6 +112,15 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
+        let rest = self.chars.as_str();
+        let count = rest
+            .as_bytes()
+            .iter()
+            .take_while(|&&b| {
+                matches!(b, b' ' | b'\t' | b'\r') || (b == b'\n' && !self.in_directive)
+            })
+            .count();
+        self.chars = rest[count..].chars();
         while let Some(c) = self.peek() {
             match c {
                 ' ' | '\t' | '\r' => {
@@ -571,25 +580,23 @@ impl<'a> Lexer<'a> {
         // compilation and get flagged later on in the parser.
         // It should still match "my-var1" though.
         let mut escaped = self.source.as_bytes().get(start) == Some(&b'\\');
-        loop {
-            if matches!(
-                self.peek(),
-                Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
-            ) {
-                self.advance();
-            } else if self.peek() == Some('\\')
-                && matches!(
-                    self.chars.clone().nth(1),
-                    Some('a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '#' | '$')
-                )
+        let rest = self.chars.as_str();
+        let bytes = rest.as_bytes();
+        let word_byte = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'#' | b'$');
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            if word_byte(bytes[consumed]) {
+                consumed += 1;
+            } else if bytes[consumed] == b'\\'
+                && bytes.get(consumed + 1).is_some_and(|&b| word_byte(b))
             {
-                self.advance(); // backslash
-                self.advance(); // escaped word character
+                consumed += 2;
                 escaped = true;
             } else {
                 break;
             }
         }
+        self.chars = rest[consumed..].chars();
 
         // NOW we have the full word
         let raw = &self.source[start..self.offset()];
@@ -2468,5 +2475,26 @@ mod iterator_tests {
         let first_two: Vec<Token> = Lexer::new("MESSAGE \"x\". DISPLAY y.").take(2).collect();
         assert_eq!(first_two.len(), 2);
         assert_eq!(first_two[0].kind, tokenize("MESSAGE \"x\".")[0].kind);
+    }
+}
+
+#[cfg(test)]
+mod byte_scan_tests {
+    use super::*;
+
+    #[test]
+    fn byte_scans_stop_at_unicode_and_keep_escaped_identifier_spans() {
+        let source = " \t\r\nname_1-$# \\na\\me éword\n&SCOPED-DEFINE v one\nNO LOCK\n";
+        let tokens = tokenize(source);
+        let authored: Vec<_> = tokens
+            .iter()
+            .map(|t| (t.kind, &source[t.start..t.end]))
+            .collect();
+        assert_eq!(authored[0], (Kind::Identifier, "name_1-$#"));
+        assert_eq!(authored[1], (Kind::Identifier, "\\na\\me"));
+        assert_eq!(tokens[1].value, TokenValue::String("name".into()));
+        assert!(authored.contains(&(Kind::PreprocEnd, "\n")));
+        assert!(authored.contains(&(Kind::NoLock, "NO LOCK")));
+        assert_eq!(tokens, Lexer::new(source).collect::<Vec<_>>());
     }
 }
