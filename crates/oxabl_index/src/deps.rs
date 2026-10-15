@@ -1004,8 +1004,13 @@ fn class_edges(
 fn symbol_linked_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
     let symbols = &inputs.semantic.symbols;
     for (id, symbol) in symbols.iter() {
+        let program = symbols.program_file(id);
+        let producer = symbols.shared_producer(id);
+        if program.is_none() && producer.is_none() {
+            continue;
+        }
         let (span, include_site) = sites_of(inputs, symbol.name_span);
-        if let Some(file) = symbols.program_file(id) {
+        if let Some(file) = program {
             out.push(DependencyEdge {
                 kind: EdgeKind::ProgramReference,
                 target: EdgeTarget::IndexedFile {
@@ -1016,7 +1021,7 @@ fn symbol_linked_edges(inputs: &EdgeInputs<'_>, out: &mut Vec<DependencyEdge>) {
                 include_site,
             });
         }
-        if let Some(file) = symbols.shared_producer(id) {
+        if let Some(file) = producer {
             out.push(DependencyEdge {
                 kind: EdgeKind::SharedProducer,
                 target: EdgeTarget::IndexedFile {
