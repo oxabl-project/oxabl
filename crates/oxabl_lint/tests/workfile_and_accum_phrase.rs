@@ -114,3 +114,12 @@ fn seek_statement_does_not_derail_the_following_put() {
         "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\nv = \"x\".\nOUTPUT TO VALUE(\"f\") APPEND.\nSEEK OUTPUT TO END.\nPUT UNFORMATTED (v + \"n\").\n",
     );
 }
+
+#[test]
+fn trigger_procedure_old_and_new_buffers_are_declared() {
+    assert_silent(
+        "TRIGGER PROCEDURE FOR WRITE OF po-line NEW BUFFER nb OLD BUFFER ob.\n\
+         IF po-line.cost NE ob.cost THEN MESSAGE ob.po-number nb.cost.\n\
+         PUT UNFORMATTED ob.cost nb.cost.\n",
+    );
+}

@@ -739,12 +739,24 @@ impl<'a> Walker<'a> {
                     OnKind::KeyRemap { .. } => {}
                 }
             }
-            StatementKind::TriggerProcedure { .. } => {
+            StatementKind::TriggerProcedure {
+                target,
+                referencing,
+                ..
+            } => {
                 // Opens an implicit trigger-procedure scope for the file
                 // body that follows. Currently just records the scope
                 // without lifting the subsequent statements into it —
                 // parse-level ordering already nests them.
                 let _ = self.tree.push(ScopeKind::TriggerProcedure, scope, stmt.id);
+                // `NEW BUFFER n` / `OLD BUFFER n` are buffers of the target table.
+                for alias in [&referencing.new_buffer, &referencing.old_buffer]
+                    .into_iter()
+                    .flatten()
+                {
+                    let source = self.record_source_of(target, scope);
+                    self.declare_buffer(stmt, scope, alias, SymbolFlags::empty(), source);
+                }
             }
 
             // ---- PreprocIf: walk both branches so declarations in either
