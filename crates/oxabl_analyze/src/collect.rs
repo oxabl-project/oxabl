@@ -1744,6 +1744,37 @@ mod tests {
         );
     }
 
+    // `c = {&none}` followed by a line `d = "x".` reads as `c = (d = "x")`
+    // once the name expands to nothing: LINT0004 does not judge text that
+    // joined across the gap, and still judges the same text when it is there.
+    #[test]
+    fn lint0004_skips_an_assignment_that_an_elided_reference_joins() {
+        let schema = Schema::empty();
+        let lint0004 = |src: &str| {
+            let fs = InMemoryFileSystem::new();
+            let out = collect_diagnostics(
+                ROOT,
+                src,
+                &fs,
+                &[],
+                &schema,
+                false,
+                &LintSeverityMap::new(),
+                true,
+            );
+            codes(&out).iter().filter(|c| **c == "LINT0004").count()
+        };
+        let decls =
+            "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nDEFINE VARIABLE d AS CHARACTER NO-UNDO.\n";
+        assert_eq!(lint0004(&format!("{decls}c = d = \"x\".\n")), 1);
+        assert_eq!(lint0004(&format!("{decls}c = {{&none}}\nd = \"x\".\n")), 0);
+        assert_eq!(
+            lint0004(&format!("{decls}ASSIGN\n  c = {{&none}}\n  d = \"x\".\n")),
+            0
+        );
+        assert_eq!(lint0004(&format!("{decls}c = d = \"x\".\n{{&none}}\n")), 1);
+    }
+
     // Loud filter: an unresolvable include surfaces PREPROC007 as a Preproc
     // diagnostic.
     #[test]
