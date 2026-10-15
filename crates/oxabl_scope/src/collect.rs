@@ -20,6 +20,26 @@ pub(crate) fn fold(s: &str) -> String {
     s.to_ascii_lowercase()
 }
 
+/// A name folded to lowercase ASCII, held inline when it is short: the words
+/// of a reference, made without a heap allocation for most names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Folded(SmallVec<[u8; 32]>);
+
+impl Folded {
+    pub(crate) fn new(s: &str) -> Self {
+        Folded(s.bytes().map(|b| b.to_ascii_lowercase()).collect())
+    }
+}
+
+impl std::ops::Deref for Folded {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        // ASCII folding keeps the bytes valid UTF-8.
+        std::str::from_utf8(&self.0).unwrap_or("")
+    }
+}
+
 /// How a reference uses its buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Role {
@@ -35,11 +55,11 @@ pub(crate) enum What {
     /// buffer, possibly database-qualified.
     Buffer(String),
     /// Dotted words in an expression: `b.f`, `db.t`, `db.t.f` (folded).
-    Dotted(SmallVec<[String; 3]>),
+    Dotted(SmallVec<[Folded; 3]>),
     /// A bare word in an expression (folded): a buffer, a field, a variable
     /// or something else. A word the lexer reads as a keyword is a field only
     /// by its exact name, never as an abbreviation.
-    Bare { word: String, keyword: bool },
+    Bare { word: Folded, keyword: bool },
 }
 
 /// The record phrases a bare field of a statement resolves against first.
@@ -1310,7 +1330,7 @@ impl<'a> Collector<'a> {
             });
             let target = to
                 .and_then(|i| toks.get(i + 1))
-                .filter(|t| !self.text(t).eq_ignore_ascii_case("FILE"));
+                .filter(|t| t.kind != Kind::File);
             if let Some(to) = target {
                 writes.push((
                     Span {
@@ -1659,9 +1679,9 @@ impl<'a> Collector<'a> {
                 i = end;
                 continue;
             }
-            let words: SmallVec<[String; 3]> = (i..end)
+            let words: SmallVec<[Folded; 3]> = (i..end)
                 .step_by(2)
-                .map(|j| fold(self.text(&self.tokens[j])))
+                .map(|j| Folded::new(self.text(&self.tokens[j])))
                 .collect();
             let span = Span {
                 start: t.start as u32,
@@ -1678,15 +1698,15 @@ impl<'a> Collector<'a> {
                 // A keyword is a field name only where an operand can stand,
                 // and never a built-in function's.
                 let target = sc.writes.iter().any(|(w, _)| w.start as usize == t.start);
-                if k != Kind::Identifier
-                    && (is_callable_kind(k) || !target && !prev.is_some_and(operand_before))
+                let keyword = !named_like_identifier(k);
+                if keyword && (is_callable_kind(k) || !target && !prev.is_some_and(operand_before))
                 {
                     i = end;
                     continue;
                 }
                 What::Bare {
                     word: words.into_iter().next().unwrap_or_default(),
-                    keyword: k != Kind::Identifier,
+                    keyword,
                 }
             } else if words.len() <= 3 {
                 What::Dotted(words)
@@ -1716,17 +1736,21 @@ impl<'a> Collector<'a> {
     /// Whether the token at `i` starts an aggregate phrase: `TOTAL`, `COUNT`,
     /// `AVERAGE`, `MAXIMUM`, `MINIMUM` and their `SUB-` forms.
     fn aggregate_phrase(&self, i: usize) -> bool {
-        let Some(t) = self.tokens.get(i) else {
-            return false;
-        };
-        let word = self.text(t);
-        let word = word
-            .get(..4)
-            .filter(|p| p.eq_ignore_ascii_case("sub-"))
-            .map_or(word, |_| &word[4..]);
-        ["total", "count", "average", "maximum", "minimum"]
-            .iter()
-            .any(|a| word.eq_ignore_ascii_case(a))
+        self.tokens.get(i).is_some_and(|t| {
+            matches!(
+                t.kind,
+                Kind::Total
+                    | Kind::Count
+                    | Kind::Average
+                    | Kind::Maximum
+                    | Kind::Minimum
+                    | Kind::SubTotal
+                    | Kind::SubCount
+                    | Kind::SubAverage
+                    | Kind::SubMaximum
+                    | Kind::SubMinimum
+            )
+        })
     }
 
     /// Whether the `:` or `::` at `i` starts a dynamic buffer access that may
@@ -1868,6 +1892,26 @@ fn is_word(kind: Kind, text: &str) -> bool {
         .bytes()
         .next()
         .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+}
+
+/// An identifier, or an unreserved keyword that lexed as one until the lexer
+/// learned it (the aggregate words, `FILE`): a name like any other.
+fn named_like_identifier(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Identifier
+            | Kind::File
+            | Kind::Total
+            | Kind::Count
+            | Kind::Average
+            | Kind::Maximum
+            | Kind::Minimum
+            | Kind::SubTotal
+            | Kind::SubCount
+            | Kind::SubAverage
+            | Kind::SubMaximum
+            | Kind::SubMinimum
+    )
 }
 
 /// `EACH`, `FIRST`, `LAST`, `NEXT`, `PREV` before a record phrase's buffer.

@@ -975,3 +975,64 @@ keyword_type = "Type"
 name = "BUFFER-NAME"
 reserved = false
 keyword_type = "Option"
+
+# =============================================================================
+# AGGREGATE PHRASE AND COPY-LOB FILE
+# `qty (TOTAL)`, `COPY-LOB ... TO FILE name`. Unreserved, exact names only:
+# they stay valid names (MAXIMUM and MINIMUM are also built-in functions).
+# =============================================================================
+
+[[add]]
+name = "FILE"
+reserved = false
+keyword_type = "Option"
+
+[[add]]
+name = "TOTAL"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "COUNT"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "AVERAGE"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "MAXIMUM"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "MINIMUM"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-TOTAL"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-COUNT"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-AVERAGE"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-MAXIMUM"
+reserved = false
+keyword_type = "Phrase"
+
+[[add]]
+name = "SUB-MINIMUM"
+reserved = false
+keyword_type = "Phrase"

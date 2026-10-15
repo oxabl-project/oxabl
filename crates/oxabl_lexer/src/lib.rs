@@ -2440,3 +2440,30 @@ mod object_keyword_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod aggregate_keyword_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_words_and_file_lex_as_keywords_by_their_full_names() {
+        for (word, kind) in [
+            ("FILE", Kind::File),
+            ("total", Kind::Total),
+            ("Count", Kind::Count),
+            ("AVERAGE", Kind::Average),
+            ("maximum", Kind::Maximum),
+            ("MINIMUM", Kind::Minimum),
+            ("sub-total", Kind::SubTotal),
+            ("SUB-COUNT", Kind::SubCount),
+            ("sub-average", Kind::SubAverage),
+            ("SUB-MAXIMUM", Kind::SubMaximum),
+            ("sub-minimum", Kind::SubMinimum),
+        ] {
+            assert_eq!(tokenize(word)[0].kind, kind, "{word}");
+        }
+        for word in ["max", "min", "tot", "files", "sub-tot"] {
+            assert_eq!(tokenize(word)[0].kind, Kind::Identifier, "{word}");
+        }
+    }
+}

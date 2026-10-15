@@ -12783,6 +12783,28 @@ fn object_and_widget_stay_usable_as_names() {
 }
 
 #[test]
+fn aggregate_words_and_file_stay_usable_as_names() {
+    for source in [
+        "DEFINE VARIABLE total AS DECIMAL NO-UNDO.",
+        "DEFINE VARIABLE file AS CHARACTER NO-UNDO.",
+        "DEFINE TEMP-TABLE tt NO-UNDO FIELD count AS INTEGER FIELD average AS DECIMAL.",
+        "total = count + average.",
+        "x = tt.total + tt.sub-total.",
+        "x = MAXIMUM(1, 2) + MINIMUM(3, 4).",
+        "MESSAGE file maximum minimum.",
+        "ASSIGN sub-count = 1 sub-average = 2 sub-maximum = 3 sub-minimum = 4.",
+        "DISPLAY qty (TOTAL) price (SUB-AVERAGE).",
+        "COPY-LOB FROM x TO FILE \"y.txt\".",
+        "PROCEDURE total:\n  RETURN.\nEND PROCEDURE.",
+        "RUN count.",
+    ] {
+        let full = format!("{source}{NEXT_STMT}");
+        let stmts = parse_clean(&full);
+        assert_next_stmt_survives(&stmts, &full);
+    }
+}
+
+#[test]
 fn delete_and_release_object_forms_keep_their_kind() {
     let stmts = parse_clean("DELETE OBJECT object.\nDELETE WIDGET widget.\nRELEASE OBJECT object.");
     assert!(matches!(
