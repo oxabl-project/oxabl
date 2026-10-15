@@ -1049,12 +1049,16 @@ fn run_check(
     // One run handle, so one cross-file index spans the whole walk: files sharing
     // a parent class read it once, not once each. The per-file handle below is a
     // pointer copy off this one.
+    // The walk's own file list — no directory scan — scanned once, on every
+    // core, which is what lets a `DEFINE SHARED` consumer find its producer even
+    // when no `RUN` names the producing file.
+    let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(
+        &indexed,
+        std::thread::available_parallelism().map_or(1, usize::from),
+    );
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(preprocess)
-        // The walk's own file list — no directory scan — which is what lets a
-        // `DEFINE SHARED` consumer find its producer even when no `RUN` names the
-        // producing file.
-        .with_known_files(&indexed);
+        .with_shared_producers(&producers);
     // The format pipeline is built from the resolved style and nothing else, so
     // it *cannot* see expanded macro text however this walk is configured (R4).
     let format = FormatPipeline::new(config.style.clone());
