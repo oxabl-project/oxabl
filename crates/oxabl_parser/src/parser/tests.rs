@@ -12585,8 +12585,10 @@ fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
 
 #[test]
 fn harvest_drops_a_dynamic_buffer_field() {
-    assert_eq!(harvest("PUT hbuf::company."), vec!["hbuf"]);
+    assert_eq!(harvest("FORM hbuf::company."), vec!["hbuf"]);
+}
 
+#[test]
 fn put_is_head_parsed_with_stream_and_items() {
     let source = "PUT STREAM s1 UNFORMATTED a \"x\" SKIP b + 1 FORMAT \"x(5)\" AT 10 tail-var.";
     let program = Parser::new(&tokenize(source), source).parse_program();
