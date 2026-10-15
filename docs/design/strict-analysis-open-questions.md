@@ -11,8 +11,9 @@ This note answers two of the three open questions in
 diagnostics inside include files are reported. The third (PROPATH and include resolution parity
 with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
 lists the block semantics that the flow graph (`oxabl_flow`) models without a reference,
-section 6 the handle semantics that `oxabl_handles` relies on, and section 7 the buffer-scope,
-transaction and lock semantics that `oxabl_scope` relies on.
+section 6 the handle semantics that `oxabl_handles` relies on, section 7 the buffer-scope,
+transaction and lock semantics that `oxabl_scope` relies on, and section 8 the database effects,
+index selection and call graph that `oxabl_effects` and `oxabl_index` rely on.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -797,3 +798,181 @@ sample of 15 was read for each rule that changed:
 
 Medium confidence overall: B2 and S4 decide most TX005 findings, and T2 for internal procedures
 (the largest share of TX001) is documented but not yet checked against a listing.
+
+## 8. Database effects and the call graph
+
+`oxabl_effects` lists, per unit, what the unit does to the database: every record read with its
+lock (from `oxabl_scope`), every create, update and delete, the access shape of each, and for every
+search the index the compiler is expected to use. `oxabl_index::calls` lists the calls of a file and
+what each calls; the transitive summaries combine both over the call graph. The oracle is the
+compiler's `COMPILE ... XREF` output (plan, M4 exit gate: "DB002 agrees with XREF `WHOLE-INDEX`
+entries"). No OpenEdge install was available while this was written, so the marks of section 7
+apply: **Documented**, **Recalled**, **Inferred**.
+
+Each row has a fixture in `crates/oxabl_effects/tests/fixtures/` (re-bless with
+`OXABL_BLESS=1 cargo test -p oxabl_effects --test snapshots`). The XREF harness
+(`crates/oxabl/examples/effects_xref.rs`, written by `scripts/gen-xref.sh` on a licensed install)
+measures every row of 8.2 that XREF shows. Where the model cannot decide, the answer is **Unknown**
+with a reason, never a guess.
+
+### 8.1 What XREF shows
+
+The harness parses the text form. The format below is remembered, not read from a real XREF file on
+this host, so the parser is lenient: it splits on white space, keeps double-quoted fields whole, and
+skips a line it cannot read. The files in `crates/oxabl_effects/tests/xref/` are **synthetic**.
+
+| # | The format | Confidence |
+|---|---|---|
+| R1 | `COMPILE f.p XREF f.xref` writes one reference per line: `<compiled file> <source file> <line> <TYPE> <details>`. The source file is the include a line comes from, and the line is in that file. A file name with a space is in double quotes. | Recalled, medium. |
+| R2 | `SEARCH db.table index` for each index a `FIND`, `FOR`, `CAN-FIND`, `PRESELECT` or `OPEN QUERY` phrase uses, with `WHOLE-INDEX` after the index name when no criterion brackets it. A phrase that uses several indexes has one row per index. A temp-table is written without a database name. | Documented for `WHOLE-INDEX`; Recalled, medium, for the rest. |
+| R3 | `TABLE-SCAN` takes the place of the index name (or follows it) for a `TABLE-SCAN` phrase. | Recalled, low. |
+| R4 | The line of a `SEARCH` row is the line the statement starts on, not the line of the phrase. | Recalled, low. The harness can place a search on either (`OXABL_EFFECTS_XREF_LINE`). |
+| R5 | `ACCESS db.table field` for each field read, `UPDATE db.table field` for each field written, `CREATE db.table` and `DELETE db.table` for the statements, `REFERENCE db.table` for a table named elsewhere. | Recalled, medium. The harness does not compare them yet. |
+| R6 | `RUN name` for each `RUN` with a literal name (as written); `PROCEDURE name,,`, `FUNCTION name,type,params` and `METHOD ...` rows define the units; `INCLUDE file` for each include. | Recalled, medium for `RUN` and `INCLUDE`, low for the unit rows. |
+| R7 | `SORT-ACCESS db.table field` for a `BY` that no index gives in order (the client sorts). | Recalled, medium. |
+| R8 | `COMPILE ... XREF-XML` writes the same facts as XML. The harness reads the text form. | Documented. |
+
+### 8.2 Which index a search uses
+
+The compiler picks the index of a `FIND`, `CAN-FIND` or `FOR`/`PRESELECT`/`OPEN QUERY` phrase from
+its `WHERE`, `OF`, `USE-INDEX`, `TABLE-SCAN` and `BY`. The model reads them from the tokens of the
+phrase (the parser keeps only the first phrase's `WHERE`).
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| I1 | A criterion is **active** when it is a conjunct of the `WHERE` at the top level: joined to the rest by `AND`, not under `OR` or `NOT`, not inside `IF ... THEN ... ELSE`. Parentheses around a conjunct are looked through. | Documented. | `index.p` |
+| I2 | `USE-INDEX i` makes the search use `i`. The bracket is still decided by I3 and I4 on `i`'s components, so `USE-INDEX` with no matching criterion is `WHOLE-INDEX`. A name the table does not have is Unknown (`unknown-index`). | Documented. | `index.p` |
+| I3 | An **equality match** is an active `field = expr` (or `EQ`), on either side, where the field is of the phrase's table and `expr` does not name the phrase's own record. The equality matches of an index are those on its leading components, without a gap. | Documented for the leading components; Inferred for "does not name its own record" (the record is not there before the search). | `index.p` |
+| I4 | A **range match** is an active `<`, `<=`, `>`, `>=` (either side) or `field BEGINS expr`, on the first component, or on the component after the equality matches. | Documented. | `index.p` |
+| I5 | Not matches: `<>`, `MATCHES`, a field inside a function (`SUBSTRING(f, 1, 2) = x`), a field of an array element, a field compared with a field of its own record, a bare logical field (`WHERE t.active`). | Documented for `<>`, `MATCHES` and functions; Inferred for the rest. | `index.p` |
+| I6 | The choice, in order: `TABLE-SCAN`; `USE-INDEX`; `FIND t constant` (I11); a `CONTAINS` (I14); a unique index whose every component has an equality match; the most equality matches; then a range match on the next component; then the most `BY` fields in index order (I12); then the primary index; then the first by name. With no match at all, the primary index, `WHOLE-INDEX`. Inactive indexes are never chosen; word indexes only by `CONTAINS`. | Documented for unique-equality, equality, range and "primary when nothing matches"; Recalled, low, for the order of the tie breaks. | `index.p` |
+| I7 | **WHOLE-INDEX**: the chosen index has neither an equality match on its first component nor a range match on it. | Documented. | `index.p` |
+| I8 | `TABLE-SCAN` (OpenEdge 11.? and later, Type II areas) reads the table without an index. | Documented. | `index.p` |
+| I9 | **Several indexes.** A `FOR`, `PRESELECT` or `OPEN QUERY` phrase may use several indexes: for an `OR` whose every branch brackets some index, and for an `AND` of equality matches that cover all components of two or more indexes with no unique one among them. The model answers Unknown (`multi-index`) there. A `FIND` and `CAN-FIND` always use one index, so an `OR` there makes its criteria inactive. | Recalled, medium for the `OR` case, low for the `AND` case. | `index.p` |
+| I10 | `t OF p` adds equality matches on the components of a unique index of `p` that `t` also has (the fields the two tables share), else of a unique index of `t` that `p` has. With neither, Unknown (`of-join`). | Recalled, medium for "a common field in a unique index"; Inferred for which index's fields. | `index.p` |
+| I11 | `FIND t constant` finds by the primary index, which must have one component: an equality match. | Documented. | `index.p` |
+| I12 | `BY` fields of the phrase's table count as sort matches in the order of an index's components from the first; they decide only between indexes the criteria leave tied, and choose the index when nothing matches. They apply to the first phrase of the statement. A `BY` on an expression matches nothing. | Recalled, low. | `index.p` |
+| I13 | Temp-tables follow the same rules over the indexes their `DEFINE TEMP-TABLE` gives. With no `INDEX` phrase the table has one index, `default`, with no components: every search is `WHOLE-INDEX`. When no index is marked `PRIMARY`, the first is primary. `LIKE t` with no `INDEX` and no `USE-INDEX` copies `t`'s indexes; with `USE-INDEX` only those; with `INDEX` only its own. | Recalled, medium for `default` and the first-is-primary rule; low for `LIKE`. | `temp_tables.p` |
+| I14 | `field CONTAINS expr` uses the word index on that field (a word index is never chosen otherwise). A `CONTAINS` on a field with no word index is a compile error; the model answers Unknown (`no-word-index`). | Documented. | `index.p` |
+| I15 | `WHERE ROWID(b) = r` (or `RECID`) on the phrase's own buffer fetches one record by its address: no index (`rowid`). Whether XREF writes a `SEARCH` row for it is not known; the harness counts these apart. | Recalled for the access; unknown for XREF. | `index.p` |
+| I16 | An unqualified name in a criterion is a field of the phrase's table (exact name, else a unique abbreviation) unless the file declares a variable or parameter of that name, which wins. A qualified name is a field of the phrase when its qualifier is the phrase's buffer, or its table for a default buffer. | Inferred (follows S11). | `index.p` |
+| I17 | A phrase whose text the preprocessor did not show (an elided reference, an unexpanded `{...}`, a lock phrase L5 makes Unknown) is Unknown (`unexpanded`). With no schema loaded, every database search is Unknown (`no-schema`). | Inferred. | `no_schema.p` |
+
+### 8.3 Access shapes
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| A1 | A **record loop** is a `FOR` block with an `EACH` phrase, or a `REPEAT` or `DO WHILE` block whose body drives a query: `GET NEXT`/`PREV`, `FIND NEXT`/`PREV`, or `h:GET-NEXT()`/`GET-PREV()` on a dynamic query (in its header too: `DO WHILE q:GET-NEXT():`). The innermost iterating block around the driving statement is the loop. | Documented for `FOR EACH`; Inferred for query loops. | `shapes.p` |
+| A2 | Not record loops: `FOR FIRST` and `FOR LAST` with no `EACH` phrase (one record), `DO i = 1 TO n`, a `REPEAT` that drives no query. `FOR t` with no qualifier is not counted. | Documented for `FOR FIRST`/`LAST`; Inferred for the rest. | `shapes.p` |
+| A3 | A statement's shape is **once** with no record loop of its unit around it, **per row** with one, **nested(d)** with `d`. A `FOR` phrase does not count its own block; a joined phrase counts the `EACH` phrases before it in the same statement. The statement that drives a query loop does not count that loop. | Inferred. | `shapes.p` |
+| A4 | Shapes stop at the unit: a statement in an internal procedure has the shape it has there. Through a call, the callee's shapes add the depth of the call site (8.6). | Inferred. | `calls.p` |
+| A5 | A `CAN-FIND` in the header of a `FOR` block is placed in the block around it (S8): its shape does not count the loop, though the compiler evaluates it per candidate row. | Inferred; known to under-count. | `shapes.p` |
+
+### 8.4 Operations
+
+| # | The model | Confidence |
+|---|---|---|
+| O1 | Reads are the record reads of `oxabl_scope` (section 7.4): `FIND`, `FOR`, `PRESELECT` and `OPEN QUERY` phrases, `CAN-FIND`, `GET`, with their lock. `GET` and `FIND CURRENT` do not search, so they have no index. | Documented. |
+| O2 | Writes are the database updates of `oxabl_scope` (T3): `CREATE` is create, `DELETE` is delete, an assignment, `BUFFER-COPY` to the buffer or an input statement is update. An `EXCLUSIVE-LOCK` read is a read with that lock, not a write. Temp-table writes are not database effects. | Documented (T3). |
+| O3 | A unit's effects are **Unknown** in part when it holds a dynamic query or buffer (`CREATE QUERY`, `CREATE BUFFER`, and the methods `QUERY-PREPARE`, `QUERY-OPEN`, `GET-*`, `FIND-*`, `BUFFER-CREATE`, `BUFFER-DELETE`, `FILL`, `SAVE-ROW-CHANGES`), a statement the parser skips that names a database buffer, a write to a table the schema does not have, an unexpanded include, or when the parse recovered. Most dynamic access works on temp-tables, which the model cannot tell apart without following the handle. | Inferred. |
+
+### 8.5 The call graph
+
+`FileCalls::extract` reads the calls of one file; `resolve_program` resolves a program name over
+the search path through the run index (`WorkspaceIndex::program`), which memoizes it.
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| C1 | `RUN name` runs the internal procedure of that name when the file defines one with a body, else the program `name` over PROPATH. `RUN name IN THIS-PROCEDURE` is the internal procedure. | Documented. | `calls.p` |
+| C2 | A program name resolves to one file on the search path (the run index's rule: the spellings tried in order, exactly one match). Several matches are Unknown (`ambiguous`), none `not-found`, an unparseable or self match `unusable`. | Proposed (the index's existing policy). | (index tests) |
+| C3 | `RUN p IN h` runs the internal procedure `p` of the program `h` holds. When every write of `h` in the file is `RUN prog PERSISTENT SET h` of one program, the target is `p` in `prog`; any other write of `h` (an assignment, an `OUTPUT` argument, a parameter or shared definition) makes it Unknown (`handle`). | Documented for the run-time meaning; Inferred for the file-level check (it does not follow the order of the writes). | `calls.p` |
+| C4 | `RUN SUPER`, `SUPER(...)`, a routine declared `IN SUPER` and the super-procedure stack are run-time: Unknown (`super`). A routine declared `IN h` is Unknown (`handle`). | Documented. | `calls.p` |
+| C5 | A call of a user-defined function the file defines (or declares `FORWARD`) is a call of that function. `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW` and `RUN VALUE(...)` are Unknown (`dynamic`). `PUBLISH` is Unknown (`event`). | Documented. | `calls.p` |
+| C6 | A method call `x:m(...)`: on `THIS-OBJECT` (or with no receiver, in a class) a method of the file's class is a call of it; on a handle (a system handle, a name declared `HANDLE`, `WIDGET-HANDLE` or `COM-HANDLE`, a `BUFFER`, `QUERY`, `FRAME` ... reference, or a chain from one) it is a built-in method and no call; on anything else it is Unknown (`method`). Inherited methods, static calls and objects of other classes are not followed in this slice. | Documented for the meaning; Inferred for the receiver test. | `calls.p` |
+| C7 | `RUN ... PERSISTENT` runs the program's main block now. `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run in another session (section 7.8, U3): the edge is kept, marked remote. A procedure declared `EXTERNAL` (a shared library) has no database effects. `ON event ... PERSISTENT RUN p` runs on an event, not at the statement: it is no call site. | Documented. | `calls.p` |
+| C8 | Bounds: at most 20,000 call sites per file and 2,000,000 edges per graph; past them the file or graph is marked truncated and the summaries partial (`bound`). | Proposed. | — |
+
+### 8.6 Transitive summaries
+
+`summary::summarize` solves the components of the call graph callees first. A component with a
+cycle (recursion, or procedures that call each other) is iterated to a fixed point; depths are
+capped at 4, so it ends. A summary keeps one effect per table, operation, lock and depth, and
+names the first callee on the way (`via`). It is **partial**, with every reason, when an effect may
+be missing: a call whose target is Unknown (C2-C6, by reason), a unit whose own effects are Unknown
+in part (O3), or a bound. Recursion alone does not make a summary partial (the fixed point covers it);
+it is flagged `recursive`. Temp-table effects are left out.
+
+### 8.7 Corpus check
+
+Verified, counts only. Over the compilation units (`.p`, `.w`, `.cls`) of the two large real
+corpora of section 7.6, expanded as `oxabl check` expands them and with their schemas, the call
+graph, the effects and the summaries ran with no panic (`crates/oxabl/examples/effects_corpus.rs`).
+Counts are per expanded unit, so an internal procedure that a common include brings into many
+programs counts once per program.
+
+- **Call graph.** Of the `RUN` sites, 95.8 % (first corpus, 298,446) and 70.9 % (second, 36,579)
+  resolve to a routine. The Unknown ones are, in the first corpus, `RUN p IN h` with a handle the
+  file does not set by one `PERSISTENT SET` (6,406), a program not on the search path (5,287) and
+  `RUN VALUE` (1,090); in the second, the same handles (8,198), a name two files on the search path
+  match (4,249: the index declines to pick one) and programs not on the path (1,984). Calls of the
+  file's own functions resolve (243,897 and 29,389); method calls on objects mostly do not (8,924 and
+  1,010 resolve, 301,725 and 30,668 are Unknown `method`), and `SUPER(...)` gives 6,830 in the first.
+- **Index choice.** Of the searches of database tables (491,833 and 31,482), the model names no
+  index for 0.6 % and 2.6 %: almost all `multi-index` (I9), then `unexpanded` (I17) and `of-join`
+  (I10). `WHOLE-INDEX` is 1.7 % and 1.5 % of them, `ROWID` 5.0 % and 9.0 %.
+- **Unit effects.** 6.5 % and 11.5 % of the units have effects the model cannot see in full,
+  mostly dynamic queries and buffers (O3), then recovered parses.
+- **Summaries.** 71.8 % and 72.1 % are complete. The partial ones mostly call a method of an object
+  (22 % and 15 % of all summaries), hold dynamic access themselves or through a callee (10 % and
+  8 %), or call a super procedure (5 %, first corpus). 1,392 summaries of the first corpus reached
+  the bound of 512 effects.
+- **Cost.** The calls and effects took 12.6 s and 1.0 s, against 28.6 s and 2.4 s for the scope
+  analysis and 38.1 s and 3.6 s to expand and parse; solving every summary took 0.6 s and 0.05 s.
+  With `strict.access` off, `oxabl check` computes none of it: its output on both trees is byte for
+  byte the output before this change, and its wall time is the same within the noise of a shared
+  host (the order of two runs decided which was faster).
+
+**DB001.** 20,290 and 2,457 findings, 386 and 87 of them at the `{...}` site of an include
+(`crates/oxabl/examples/db_corpus.rs`). Fifteen findings per corpus were read against the code: in
+the first sample of the second corpus 14 were right and 1 was a find by `ROWID` that locks the
+loop's record again, a class DB001 now leaves to LK003; a new sample of 15 there, and the 15 of the
+first corpus, were all right. Every one is a `FIND` or `CAN-FIND` in the body of a `FOR EACH`
+(over a database table or a temp-table) or of a `REPEAT` / `DO WHILE` that `GET NEXT` or a dynamic
+`GET-NEXT()` drives. Many look up a code or master record by a key of the row; some do not depend
+on the row at all (a lookup that a read before the loop would answer once).
+
+**TX004 and the summaries.** The brief asked whether a callee summary with no database write could
+silence TX004. Of the TX004 findings in the programs' own text (4,927 and 2,909), the callee of 631
+(12.8 %) and 322 (11.1 %) has a complete summary with no create, update or delete; 2,163 and 283 have
+a callee that writes; 1,204 and 91 a partial one; 929 and 2,213 an Unknown callee. Most of the
+second corpus's silenced findings are label-printing procedures of a persistent library. TX004 is
+not changed in this slice: the lint runs per file and cannot see another file's summary. It needs a
+summary provider (an index query, or the daemon's cache) first; see "What the later slices need"
+below.
+
+### 8.8 The access rules (M4)
+
+DB001 (`strict.access`, preview, warning) selects findings from `oxabl_effects`; `oxabl_lint`
+computes one analysis per file through `RunShared`, over the scope analysis the `LK` and `TX` rules
+use, and only when the rule is enabled. It is routed like the `HD`, `LK` and `TX` rules.
+
+- **DB001** rests on A1-A3 and O1. A `FIND` or `CAN-FIND` of a table of the loaded schema whose
+  innermost record loop is in the same unit. Left out: `FIND NEXT`/`PREV` that drives its loop,
+  `FIND CURRENT`, a find by `ROWID`/`RECID` (a re-read to lock, LK003's domain), a `CAN-FIND` in a
+  loop's header (A5), a read in a routine the loop calls (A4), temp-tables, no schema, and files with
+  a file-level Unknown (section 7.7).
+
+What the later slices need:
+
+- **DB002** (whole-index scan): the `WHOLE-INDEX` answer of 8.2 and the XREF gate. Before it ships,
+  run `effects_xref` on a licensed install and settle R2-R4, I6 (tie breaks), I9, I10, I12, I13 and
+  I15; then decide whether `FIND FIRST`/`LAST` with no criteria (one record) and small code tables
+  are reported.
+- **DB003** (order from index): the `BY` fields (I12), `FIRST-OF`/`LAST-OF`, and whether the chosen
+  index gives the order; `SORT-ACCESS` rows (R7) are its oracle.
+- **DB004** (missing fields list): the fields used in the scope of each read (the `ACCESS` rows, R5,
+  are the oracle) and which code runs client-server.
+- **Summaries in `analyze`, `oxabl explain`, LSP code lens:** a whole-workspace pass that resolves
+  every file's calls (`effects_corpus` does this in a batch run), and a way for a per-file client to
+  ask for callee summaries: an index query or a daemon cache. The envelope change is additive, with a
+  version bump.
