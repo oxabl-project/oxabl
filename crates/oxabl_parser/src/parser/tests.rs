@@ -4,8 +4,8 @@ use oxabl_ast::{
     DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind, ExpressionKind,
     FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId,
     OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, SortDirection, Span,
-    StatementKind, StreamDirection, StreamOperation, StringLiteral, SubscribeTarget, TypeSource,
-    UnknownLiteral, UsingSource, WhenBranch, WidgetQualifier,
+    StatementKind, StreamDirection, StreamOperation, StreamTarget, StringLiteral, SubscribeTarget,
+    TypeSource, UnknownLiteral, UsingSource, WhenBranch, WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -4696,7 +4696,9 @@ fn parse_message_simple() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 1);
             assert!(set_targets.is_empty());
         }
@@ -4711,7 +4713,9 @@ fn parse_message_view_as_alert_box() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 2); // "Error:" and errMsg
             assert!(set_targets.is_empty());
         }
@@ -4726,7 +4730,9 @@ fn parse_message_with_update() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 1); // "Confirm?"
             assert_eq!(set_targets.len(), 1);
             assert_eq!(set_targets[0].name, "lChoice");
@@ -4770,10 +4776,54 @@ fn parse_message_update_without_view_as() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 1);
             assert_eq!(set_targets.len(), 1);
             assert_eq!(set_targets[0].name, "cName");
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_update_as_declares_field() {
+    let source =
+        r#"MESSAGE "Fix?" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE v-fix AS LOGICAL."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Message {
+            items,
+            set_targets,
+            fields,
+        } => {
+            assert_eq!(items.len(), 1);
+            assert!(set_targets.is_empty());
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "v-fix");
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_update_like_declares_field() {
+    let source = r#"MESSAGE "Enter:" UPDATE v-copy LIKE item.descr."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Message {
+            set_targets,
+            fields,
+            ..
+        } => {
+            assert!(set_targets.is_empty());
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "v-copy");
         }
         _ => panic!("Expected Message statement"),
     }
@@ -8562,6 +8612,172 @@ fn output_to_with_append() {
                 _ => panic!("Expected To operation"),
             }
         }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+/// Assert `target` is a bare file name spelling `expected`, and that its span
+/// covers exactly that text in `source`.
+#[track_caller]
+fn assert_file_name(source: &str, target: StreamTarget, expected: &str) {
+    match target {
+        StreamTarget::FileName(name) => {
+            assert_eq!(name.name, expected);
+            assert_eq!(
+                &source[name.span.start as usize..name.span.end as usize],
+                expected
+            );
+        }
+        other => panic!("expected a file name, got {other:?}"),
+    }
+}
+
+/// A bare name after `TO` is a literal file name, not a field access. Before
+/// this, `report.txt` parsed as the field `txt` of a table named `report`.
+#[test]
+fn output_to_unquoted_file_name() {
+    let source = "OUTPUT TO report.txt.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt.kind {
+        StatementKind::StreamIo {
+            direction,
+            operation,
+            ..
+        } => {
+            assert_eq!(direction, StreamDirection::Output);
+            match operation {
+                StreamOperation::To { target, append } => {
+                    assert!(!append);
+                    assert_file_name(source, target, "report.txt");
+                }
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+/// The name is the run of touching tokens, so a directory path survives whole.
+#[test]
+fn output_stream_to_unquoted_path_with_append() {
+    let source = "OUTPUT STREAM s-output TO data/out.d APPEND.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt.kind {
+        StatementKind::StreamIo {
+            stream_name,
+            operation,
+            ..
+        } => {
+            assert_eq!(stream_name.unwrap().name, "s-output");
+            match operation {
+                StreamOperation::To { target, append } => {
+                    assert!(append);
+                    assert_file_name(source, target, "data/out.d");
+                }
+                _ => panic!("Expected To operation"),
+            }
+        }
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+/// A drive letter and slashes touch, so the whole path is one name.
+#[test]
+fn input_from_unquoted_drive_path() {
+    let source = "INPUT FROM c:/tmp/in.csv.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt.kind {
+        StatementKind::StreamIo { operation, .. } => match operation {
+            StreamOperation::From(target) => assert_file_name(source, target, "c:/tmp/in.csv"),
+            _ => panic!("Expected From operation"),
+        },
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+/// The statement-terminating period is not part of the name.
+#[test]
+fn output_to_unquoted_name_without_extension() {
+    let source = "OUTPUT TO report.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt.kind {
+        StatementKind::StreamIo { operation, .. } => match operation {
+            StreamOperation::To { target, .. } => assert_file_name(source, target, "report"),
+            _ => panic!("Expected To operation"),
+        },
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+/// `VALUE(...)` stays an expression so its argument resolves as a real read.
+#[test]
+fn output_to_value_is_an_expression() {
+    let source = "OUTPUT TO VALUE(v-file).";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt.kind {
+        StatementKind::StreamIo { operation, .. } => match operation {
+            StreamOperation::To { target, .. } => match target {
+                StreamTarget::Expression(expr) => match expr.kind {
+                    ExpressionKind::FunctionCall { arguments, .. } => {
+                        assert_eq!(arguments.len(), 1);
+                        match &arguments[0].kind {
+                            ExpressionKind::Identifier(id) => assert_eq!(id.name, "v-file"),
+                            other => panic!("expected an identifier, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected a VALUE call, got {other:?}"),
+                },
+                other => panic!("expected an expression, got {other:?}"),
+            },
+            _ => panic!("Expected To operation"),
+        },
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+/// Keyword targets are not file names.
+#[test]
+fn output_to_terminal_is_not_a_file_name() {
+    let source = "OUTPUT TO TERMINAL.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt.kind {
+        StatementKind::StreamIo { operation, .. } => match operation {
+            StreamOperation::To { target, .. } => {
+                assert!(matches!(target, StreamTarget::Expression(_)));
+            }
+            _ => panic!("Expected To operation"),
+        },
+        _ => panic!("Expected StreamIo"),
+    }
+}
+
+/// `PRINTER` is unreserved and lexes as an identifier, but stands as a keyword
+/// target rather than a file name.
+#[test]
+fn output_to_printer_is_not_a_file_name() {
+    let source = "OUTPUT TO PRINTER.";
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("should parse");
+    match stmt.kind {
+        StatementKind::StreamIo { operation, .. } => match operation {
+            StreamOperation::To { target, .. } => {
+                assert!(matches!(target, StreamTarget::Expression(_)));
+            }
+            _ => panic!("Expected To operation"),
+        },
         _ => panic!("Expected StreamIo"),
     }
 }
@@ -12905,7 +13121,7 @@ fn input_from_os_dir_takes_a_path_expression() {
     ] {
         let stmts = assert_parses_clean(source);
         let StatementKind::StreamIo {
-            operation: StreamOperation::From(source_expr),
+            operation: StreamOperation::From(StreamTarget::Expression(source_expr)),
             ..
         } = &stmts[0].kind
         else {

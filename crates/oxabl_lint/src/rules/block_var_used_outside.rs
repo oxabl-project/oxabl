@@ -632,8 +632,12 @@ mod paths {
                     }
                 }
                 SK::StreamIo { operation, .. } => match operation {
-                    StreamOperation::From(e) | StreamOperation::Through(e) => read(self, e),
-                    StreamOperation::To { target, .. } => read(self, target),
+                    StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                        if let Some(e) = target.expression() {
+                            read(self, e);
+                        }
+                    }
+                    StreamOperation::Through(e) => read(self, e),
                     StreamOperation::Close => {}
                 },
                 SK::Create {

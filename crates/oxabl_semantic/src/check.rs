@@ -521,11 +521,13 @@ impl<'a> CheckWalker<'a> {
             }
 
             StatementKind::StreamIo { operation, .. } => match operation {
-                StreamOperation::From(e) | StreamOperation::Through(e) => {
-                    self.check_expression(e, scope);
+                StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                    if let Some(e) = target.expression() {
+                        self.check_expression(e, scope);
+                    }
                 }
-                StreamOperation::To { target, .. } => {
-                    self.check_expression(target, scope);
+                StreamOperation::Through(e) => {
+                    self.check_expression(e, scope);
                 }
                 StreamOperation::Close => {}
             },

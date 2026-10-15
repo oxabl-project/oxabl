@@ -158,8 +158,12 @@ fn candidates(program: &[Statement]) -> Vec<(Span, Candidate)> {
                 | StatementKind::Set { .. }
                 | StatementKind::WaitFor { .. }
                 | StatementKind::Pause { .. } => Candidate::Skipped,
-                StatementKind::Message { set_targets, .. } => Candidate::Message {
-                    set: !set_targets.is_empty(),
+                StatementKind::Message {
+                    set_targets,
+                    fields,
+                    ..
+                } => Candidate::Message {
+                    set: !set_targets.is_empty() || !fields.is_empty(),
                 },
                 _ => return true,
             };

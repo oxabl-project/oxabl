@@ -10,10 +10,10 @@ use oxabl_ast::{
     AccessModifier, Annotation, AnnotationAttribute, AnnotationValue, AssignPair, BufferTarget,
     CreateAssignment, CreateConnect, CreateTarget, CreateTargetKind, DataRelation,
     DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DeleteObjectKind, DisplayItem, Expression,
-    ExpressionKind, FindType, FrameField, HandleParamKind, HandlePassingOptions, Identifier,
-    IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
+    ExpressionKind, FileName, FindType, FrameField, HandleParamKind, HandlePassingOptions,
+    Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
     ParameterType, ParentIdRelation, PreprocIf, RunArgument, RunTarget, SkippedTail, SortDirection,
-    Span, Statement, StatementKind, StreamDirection, StreamOperation, StringLiteral,
+    Span, Statement, StatementKind, StreamDirection, StreamOperation, StreamTarget, StringLiteral,
     SubscribeTarget, TempTableField, TempTableIndex, TriggerAssignParam, TriggerReferencing,
     TypeSource, UnknownLiteral, UseIndex, UsingSource, WhenBranch, WidgetQualifier, WidgetRef,
     WidgetTrigger, XmlSerializeOptions,
@@ -4757,6 +4757,7 @@ impl Parser<'_> {
 
         let mut items = Vec::new();
         let mut set_targets = Vec::new();
+        let mut fields = Vec::new();
 
         // Parse message items until VIEW-AS, SET, UPDATE, or period
         while !self.check(Kind::ViewAs)
@@ -4815,14 +4816,29 @@ impl Parser<'_> {
                     self.advance();
                     continue;
                 }
-                // Skip AS DataType annotation (e.g. UPDATE v-fix AS LOGICAL)
+                // A stray AS with no name before it: skip it and its type.
                 if self.check(Kind::KwAs) {
-                    self.advance(); // consume AS
-                    let _ = self.parse_data_type(); // consume the data type
+                    self.advance();
+                    let _ = self.parse_data_type();
                     continue;
                 }
                 if Self::can_be_identifier(self.peek().kind) {
-                    set_targets.push(self.parse_identifier()?);
+                    let name = self.parse_identifier()?;
+                    let after_name = self.current;
+                    // `name AS type` / `name LIKE field` declares the field.
+                    if self.check(Kind::KwAs) || self.check(Kind::Like) {
+                        match self.parse_type_source() {
+                            Ok(type_source) => {
+                                fields.push(FrameField { name, type_source });
+                            }
+                            Err(_) => {
+                                self.current = after_name;
+                                set_targets.push(name);
+                            }
+                        }
+                    } else {
+                        set_targets.push(name);
+                    }
                 } else {
                     break;
                 }
@@ -4832,7 +4848,11 @@ impl Parser<'_> {
         self.expect_period("Expected '.' after MESSAGE statement")?;
 
         crate::parser::debug_assert_expr_sibling_order(&items);
-        Ok(self.stmt(StatementKind::Message { items, set_targets }))
+        Ok(self.stmt(StatementKind::Message {
+            items,
+            set_targets,
+            fields,
+        }))
     }
 
     // Parse ASSIGN statement: ASSIGN target = value [target = value ...].
@@ -7199,7 +7219,7 @@ impl Parser<'_> {
                 });
             }
             self.advance(); // consume FROM
-            let target = self.parse_expression()?;
+            let target = self.parse_stream_io_target()?;
             StreamOperation::From(target)
         } else if self.check(Kind::To) {
             if direction == StreamDirection::Input {
@@ -7227,7 +7247,7 @@ impl Parser<'_> {
                 let (_, hi) = self.skip_to_statement_end();
                 return Ok(self.skipped_stmt(hi));
             }
-            let target = self.parse_expression()?;
+            let target = self.parse_stream_io_target()?;
             let append = if self.check(Kind::Append) {
                 self.advance();
                 true
@@ -7292,6 +7312,106 @@ impl Parser<'_> {
             },
             tail,
         ))
+    }
+
+    /// Parse the target of a stream I/O `TO`/`FROM` phrase.
+    ///
+    /// ABL reads a bare, unquoted name here as a *literal* file name, not as an
+    /// expression. Only `VALUE(...)`, a string literal, a preprocessor
+    /// reference, and the keyword targets (`TERMINAL`, `PRINTER`, `CLIPBOARD`,
+    /// `OS-DIR(...)`) are expressions. Everything else is a file name, so
+    /// `OUTPUT TO report.txt.` names a file and must not resolve as the field
+    /// `txt` of a table named `report`.
+    fn parse_stream_io_target(&mut self) -> ParseResult<StreamTarget> {
+        if self.stream_io_target_is_expression() {
+            return Ok(StreamTarget::Expression(self.parse_expression()?));
+        }
+        Ok(StreamTarget::FileName(self.parse_file_name()))
+    }
+
+    /// True when the token at the cursor begins an expression target rather than
+    /// a bare file name.
+    fn stream_io_target_is_expression(&self) -> bool {
+        match self.peek().kind {
+            Kind::Value
+            | Kind::Terminal
+            | Kind::Clipboard
+            | Kind::OsDir
+            | Kind::StringLiteral
+            | Kind::Preprop
+            | Kind::IncludeArgReference => true,
+            // `PRINTER`, but not the first part of a touching run such as
+            // `printer.txt`.
+            Kind::Printer => self.file_name_run_end() == self.peek().end,
+            _ => false,
+        }
+    }
+
+    /// Consume a bare file name and return it.
+    ///
+    /// A name is a run of tokens that touch each other, e.g. `data/out.d` or
+    /// `c:/tmp/in.csv`. A period belongs to the name only when another name
+    /// part touches it, so the statement terminator is never swallowed.
+    fn parse_file_name(&mut self) -> FileName {
+        let start = self.peek().start;
+        let end = self.file_name_run_end();
+        while self.peek().kind != Kind::Eof && self.peek().start < end {
+            self.advance();
+        }
+        FileName {
+            span: Span {
+                start: start as u32,
+                end: end as u32,
+            },
+            name: self.source[start..end].to_string(),
+        }
+    }
+
+    /// Byte end of the run of touching tokens that form a bare file name at the
+    /// cursor. Does not move the cursor.
+    fn file_name_run_end(&self) -> usize {
+        let mut end = self.peek().end;
+        let mut i = self.current + 1;
+        while let Some(tok) = self.tokens.get(i) {
+            if tok.kind == Kind::Comment || tok.kind == Kind::Eof || tok.start != end {
+                break;
+            }
+            if tok.kind == Kind::Period {
+                // Part of the name only when a name part touches the period.
+                match self.tokens.get(i + 1) {
+                    Some(after)
+                        if after.kind != Kind::Comment
+                            && after.start == tok.end
+                            && Self::is_file_name_part(after.kind) =>
+                    {
+                        end = tok.end;
+                        i += 1;
+                    }
+                    _ => break,
+                }
+            } else if Self::is_file_name_part(tok.kind) {
+                end = tok.end;
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        end
+    }
+
+    /// True for a kind that can appear inside a bare file name: word-like tokens
+    /// (identifiers and keyword spellings used as path components, e.g. `in` in
+    /// `c:/tmp/in.csv`) plus the separators and numeric pieces of a path.
+    fn is_file_name_part(kind: Kind) -> bool {
+        Self::is_word_kind(kind)
+            || matches!(
+                kind,
+                Kind::Slash
+                    | Kind::Colon
+                    | Kind::Period
+                    | Kind::IntegerLiteral
+                    | Kind::DecimalLiteral
+            )
     }
 
     // ── Preprocessor parsing ─────────────────────────────────────────
