@@ -3321,7 +3321,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         resolutions: SILENT,
         source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
                  MESSAGE VALID-OBJECT(v-calc).\n\
-                 PUT UNFORMATTED mystery.helper:run() SKIP.\n",
+                 EXPORT mystery.helper:run().\n",
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
@@ -4342,10 +4342,6 @@ const DEGRADED_FIXTURES: &[(&str, Degraded)] = &[
     (
         "edges_recovered_parse",
         Degraded(&["parse_recovered"], &["parse_recovered"]),
-    ),
-    (
-        "edges_put_static_receiver",
-        Degraded(&[], &["unmodelled_statement"]),
     ),
     (
         "edges_unmodelled_statement_unattributed",

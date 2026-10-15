@@ -11423,11 +11423,11 @@ fn classify_comment_defensive_brace_branch_is_excluded() {
 /// The dispatch keyword is the range's first token and is dropped
 /// unconditionally, so `PUT` does not harvest itself.
 #[test]
-fn skipped_put_harvests_the_variable_not_the_keyword() {
-    assert_eq!(harvest("PUT v-total."), vec!["v-total"]);
+fn skipped_form_harvests_the_variable_not_the_keyword() {
+    assert_eq!(harvest("FORM v-total."), vec!["v-total"]);
 }
 
-/// `EXPORT` consumes its own keyword before skipping, where `PUT` does not.
+/// `EXPORT` consumes its own keyword before skipping, where `FORM` does not.
 /// Anchoring the range on the statement's first token normalizes both shapes,
 /// so the harvest looks the same from the outside.
 #[test]
@@ -11444,7 +11444,7 @@ fn skipped_export_drops_the_field_half_of_a_qualified_name() {
 #[test]
 fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
     assert_eq!(
-        harvest(r#"PUT v-total FORMAT ">>9"."#),
+        harvest(r#"FORM v-total FORMAT ">>9"."#),
         vec!["v-total", "FORMAT"]
     );
 }
@@ -11454,7 +11454,7 @@ fn skipped_harvest_keeps_option_keywords_as_candidate_names() {
 #[test]
 fn skipped_harvest_keeps_spaced_division_operands() {
     assert_eq!(
-        harvest("PUT v-total / v-count."),
+        harvest("FORM v-total / v-count."),
         vec!["v-total", "v-count"]
     );
 }
@@ -11549,7 +11549,7 @@ fn skipped_span_covers_the_whole_statement() {
 /// the roughly thirty #128 dispatch sites are unchanged in behavior and cost.
 #[test]
 fn skipped_ordinary_form_is_not_a_table_candidate() {
-    assert!(!marks_tables("PUT v-total."));
+    assert!(!marks_tables("FORM v-total."));
     assert!(!marks_tables("EXPORT vendor.vend-number."));
 }
 
@@ -12585,5 +12585,71 @@ fn a_dropped_assign_target_is_part_of_the_skipped_tail() {
 
 #[test]
 fn harvest_drops_a_dynamic_buffer_field() {
-    assert_eq!(harvest("PUT hbuf::company."), vec!["hbuf"]);
+    assert_eq!(harvest("EXPORT hbuf::company."), vec!["hbuf"]);
+}
+
+#[test]
+fn put_is_head_parsed_with_stream_and_items() {
+    let source = "PUT STREAM s1 UNFORMATTED a \"x\" SKIP b + 1 FORMAT \"x(5)\" AT 10 tail-var.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let stmt = &program.statements[0];
+    let StatementKind::Put { stream_name, items } = &stmt.kind else {
+        panic!("expected Put, got {:?}", stmt.kind);
+    };
+    assert_eq!(stream_name.as_ref().unwrap().name, "s1");
+    assert_eq!(items.len(), 3);
+    let tail = stmt.skipped_tail.as_ref().expect("options stay a tail");
+    assert!(tail.names.iter().any(|n| n.name == "tail-var"));
+}
+
+#[test]
+fn os_file_statements_harvest_only_value_operands() {
+    let source = "OS-DELETE VALUE(path-var) SAVE silent.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    let StatementKind::Skipped { names, .. } = &program.statements[0].kind else {
+        panic!("expected Skipped");
+    };
+    let got: Vec<_> = names.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(got, ["path-var"]);
+
+    let source = "OS-CREATE-DIR some-dir.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    let StatementKind::Skipped { names, .. } = &program.statements[0].kind else {
+        panic!("expected Skipped");
+    };
+    assert!(names.is_empty());
+}
+
+#[test]
+fn put_dynamic_function_item_is_an_expression() {
+    let source = "PUT UNFORMATTED DYNAMIC-FUNCTION(\"f\") SKIP.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    let StatementKind::Put { items, .. } = &program.statements[0].kind else {
+        panic!("expected Put, got {:?}", program.statements[0].kind);
+    };
+    assert_eq!(items.len(), 1, "{:?}", program.statements[0]);
+}
+
+#[test]
+fn put_with_a_non_identifier_stream_name_still_parses() {
+    let source = "PUT STREAM 2dstream UNFORMATTED apage.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let stmt = &program.statements[0];
+    assert!(matches!(stmt.kind, StatementKind::Put { .. }));
+    let tail = stmt.skipped_tail.as_ref().expect("names kept as a tail");
+    assert!(tail.names.iter().any(|n| n.name == "apage"));
+}
+
+#[test]
+fn seek_statement_parses_with_end_operand() {
+    let source = "SEEK OUTPUT TO END.\nSEEK STREAM s TO 0.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 2);
+    assert!(matches!(
+        program.statements[0].kind,
+        StatementKind::Skipped { .. }
+    ));
 }

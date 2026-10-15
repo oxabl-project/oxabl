@@ -60,3 +60,66 @@ fn accum_aggregate_by_phrase_is_not_an_identifier() {
          END.\n",
     );
 }
+
+#[test]
+fn put_reads_and_undefined_names() {
+    let src = "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE STREAM s.\nv = 1.\nPUT STREAM s UNFORMATTED v SKIP.\n";
+    assert_silent(src);
+    let diags = lint("PUT UNFORMATTED nope SKIP.\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}
+
+#[test]
+fn stream_operand_functions_take_a_stream() {
+    assert_silent(
+        "DEFINE STREAM s.\nDEFINE VARIABLE n AS INTEGER NO-UNDO.\n\
+         n = PAGE-NUMBER(s) + LINE-COUNTER(s) + PAGE-SIZE(s) + SEEK(s).\nMESSAGE n.\n",
+    );
+    // A stream declared out of sight is left unjudged.
+    assert_silent("DEFINE VARIABLE n AS INTEGER NO-UNDO.\nn = PAGE-NUMBER(unseen).\nMESSAGE n.\n");
+}
+
+#[test]
+fn a_variable_before_a_parenthesised_item_is_not_a_call() {
+    assert_silent(
+        "DEFINE VARIABLE x AS INTEGER NO-UNDO.\nDEFINE VARIABLE d AS CHARACTER NO-UNDO.\n\
+         x = 1.\nd = \",\".\n\
+         PUT UNFORMATTED x (x + 1) d SKIP.\nMESSAGE x (x + 1) d.\nDISPLAY x (x + 1) d.\n",
+    );
+    let diags = lint("MESSAGE nope (1).\n");
+    assert!(
+        diags.iter().any(|d| d.message.contains("nope")),
+        "{diags:#?}"
+    );
+}
+
+#[test]
+fn upper_and_lower_are_built_in() {
+    assert_silent(
+        "DEFINE VARIABLE s AS CHARACTER NO-UNDO.\ns = \"a\".\nMESSAGE UPPER(s) LOWER(s).\n",
+    );
+}
+
+#[test]
+fn user_is_the_userid_abbreviation() {
+    assert_silent("DEFINE VARIABLE u AS CHARACTER NO-UNDO.\nu = USER(\"db\").\nMESSAGE u.\n");
+}
+
+#[test]
+fn seek_statement_does_not_derail_the_following_put() {
+    assert_silent(
+        "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\nv = \"x\".\nOUTPUT TO VALUE(\"f\") APPEND.\nSEEK OUTPUT TO END.\nPUT UNFORMATTED (v + \"n\").\n",
+    );
+}
+
+#[test]
+fn trigger_procedure_old_and_new_buffers_are_declared() {
+    assert_silent(
+        "TRIGGER PROCEDURE FOR WRITE OF po-line NEW BUFFER nb OLD BUFFER ob.\n\
+         IF po-line.cost NE ob.cost THEN MESSAGE ob.po-number nb.cost.\n\
+         PUT UNFORMATTED ob.cost nb.cost.\n",
+    );
+}

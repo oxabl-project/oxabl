@@ -723,6 +723,43 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// [`skipped_stmt`](Self::skipped_stmt) for a form whose operands are file
+    /// paths or literals (`OS-DELETE`, `OS-COPY`, ...): the only symbols in it are
+    /// those inside a `VALUE( ... )` operand, so only those are harvested.
+    #[inline(never)]
+    pub(crate) fn skipped_stmt_value_operands(&mut self, hi: usize) -> Statement {
+        let mut names = Vec::new();
+        let hi = hi.min(self.tokens.len());
+        let mut i = self.stmt_start_token + 1;
+        while i + 1 < hi {
+            if self.tokens[i].kind == Kind::Value && self.tokens[i + 1].kind == Kind::LeftParen {
+                let open = i + 1;
+                let mut depth = 0usize;
+                let mut close = open;
+                while close < hi {
+                    match self.tokens[close].kind {
+                        Kind::LeftParen => depth += 1,
+                        Kind::RightParen => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    close += 1;
+                }
+                names.extend(self.harvest_skipped_names(open, close));
+                i = close;
+            }
+            i += 1;
+        }
+        self.stmt(StatementKind::Skipped {
+            names,
+            may_reference_tables: false,
+        })
+    }
+
     /// [`skipped_stmt`](Self::skipped_stmt) for a form whose grammar names a
     /// table or temp-table: `DEFINE QUERY` and `OPEN QUERY` (#130).
     ///
