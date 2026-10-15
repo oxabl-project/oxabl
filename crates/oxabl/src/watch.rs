@@ -193,6 +193,16 @@ fn cycle(
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(opts.preprocess)
         .with_shared_producers(&producers);
+    // TX004 asks for the summaries of its callees. Build them once for the
+    // whole walk and share them, as each handle would otherwise build its own
+    // from the one file it happens to see first. Rebuilt every pass, so the
+    // next pass sees the edit.
+    let summaries = (!opts.no_lint && lint.callee_summaries_enabled())
+        .then(|| std::sync::Arc::new(lint.build_workspace_effect_summaries(&indexed)));
+    let lint = match &summaries {
+        Some(s) => lint.with_effect_summaries(std::sync::Arc::clone(s)),
+        None => lint,
+    };
 
     let fragments: Vec<(PathBuf, PathBuf)> = if !opts.no_lint && opts.path.is_dir() {
         walk_include_fragments(opts.path)
@@ -222,9 +232,13 @@ fn cycle(
             &indexed,
             opts.jobs,
             || {
-                LintPipeline::new(&config, &fs)
+                let handle = LintPipeline::new(&config, &fs)
                     .with_preprocess(opts.preprocess)
-                    .with_shared_producers(&producers)
+                    .with_shared_producers(&producers);
+                match &summaries {
+                    Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
+                    None => handle,
+                }
             },
             |_, _, _| (),
         );
@@ -275,9 +289,13 @@ fn cycle(
         config.decoding,
         &lint,
         || {
-            LintPipeline::new(&config, &fs)
+            let handle = LintPipeline::new(&config, &fs)
                 .with_preprocess(opts.preprocess)
-                .with_shared_producers(&producers)
+                .with_shared_producers(&producers);
+            match &summaries {
+                Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
+                None => handle,
+            }
         },
         &tasks,
         |lint, texts, task| pass.run(lint, texts, task),
