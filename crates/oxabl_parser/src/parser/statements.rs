@@ -716,7 +716,7 @@ impl Parser<'_> {
         if self.check(Kind::Choose)
             && matches!(
                 self.peek_nth_non_comment(2).kind,
-                Kind::Field | Kind::Identifier
+                Kind::Field | Kind::Row | Kind::Identifier
             )
         {
             let (_, hi) = self.skip_to_statement_end();
@@ -4350,24 +4350,75 @@ impl Parser<'_> {
             loop {
                 match self.peek().kind {
                     Kind::Format | Kind::Form | Kind::Label | Kind::ColumnLabel | Kind::Help => {
+                        let option = self.current;
                         self.advance();
-                        self.skip_format_value();
+                        if self.starts_format_literal() {
+                            self.skip_format_value();
+                        } else {
+                            // A non-literal FORMAT/LABEL value is an expression
+                            // (`LABEL v-name`); keep it as an option.
+                            match self.parse_head_item(|_| false) {
+                                Some(e) => {
+                                    if targets { &mut options } else { &mut items }.push(e);
+                                }
+                                None => {
+                                    self.current = option;
+                                    break 'items;
+                                }
+                            }
+                        }
                     }
-                    Kind::At => {
-                        // `AT ROW r COLUMN c` and `AT X x Y y` are not modelled.
-                        if self.peek_nth_non_comment(2).kind == Kind::Identifier {
+                    Kind::ViewAs => {
+                        // `VIEW-AS <widget-type>`, whose own options such as
+                        // `SIZE n BY n` the loop takes on the next pass.
+                        let option = self.current;
+                        self.advance();
+                        if !Self::is_widget_type_kind(self.peek().kind) {
+                            self.current = option;
                             break 'items;
                         }
-                        let at = self.current;
                         self.advance();
-                        match self.parse_head_item(|_| false) {
-                            Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
-                            Some(e) => {
-                                if targets { &mut options } else { &mut items }.push(e);
-                            }
-                            None => {
-                                self.current = at;
+                    }
+                    Kind::Size | Kind::SizeChars | Kind::SizePixels => {
+                        let option = self.current;
+                        self.advance();
+                        if !self.consume_number() || !self.check(Kind::By) {
+                            self.current = option;
+                            break 'items;
+                        }
+                        self.advance(); // BY
+                        if !self.consume_number() {
+                            self.current = option;
+                            break 'items;
+                        }
+                    }
+                    Kind::At => {
+                        let next = self.peek_nth_non_comment(2).kind;
+                        if matches!(next, Kind::Row | Kind::Column) {
+                            // `AT [ROW n] [COLUMN n]`.
+                            let option = self.current;
+                            self.advance();
+                            if !self.consume_at_offset() {
+                                self.current = option;
                                 break 'items;
+                            }
+                        } else if next == Kind::Identifier {
+                            // `AT X x Y y` and `AT v-col` are not modelled.
+                            break 'items;
+                        } else {
+                            // `AT n` or `AT <expression>`: a non-literal
+                            // expression is kept as an option.
+                            let at = self.current;
+                            self.advance();
+                            match self.parse_head_item(|_| false) {
+                                Some(e) if matches!(e.kind, ExpressionKind::Literal(_)) => {}
+                                Some(e) => {
+                                    if targets { &mut options } else { &mut items }.push(e);
+                                }
+                                None => {
+                                    self.current = at;
+                                    break 'items;
+                                }
                             }
                         }
                     }
@@ -4391,11 +4442,20 @@ impl Parser<'_> {
                         self.advance();
                         self.advance();
                     }
+                    Kind::Bgcolor | Kind::Fgcolor | Kind::Font => {
+                        let option = self.current;
+                        self.advance();
+                        if !self.consume_number() {
+                            self.current = option;
+                            break 'items;
+                        }
+                    }
                     Kind::NoLabels
                     | Kind::NoAttrSpace
                     | Kind::AutoReturn
                     | Kind::Deblank
-                    | Kind::Blank => {
+                    | Kind::Blank
+                    | Kind::NoTabStop => {
                         self.advance();
                     }
                     _ => break,
@@ -4438,7 +4498,8 @@ impl Parser<'_> {
     }
 
     /// Whether the cursor starts a FORM item. A name followed by a number is an
-    /// option the lexer does not classify (`BGCOLOR 3`, `ROW 2`), not an item.
+    /// option the lexer does not classify (`QTY 3`, `MOUSE-POINTER 2`), not an
+    /// item.
     fn starts_form_item(&self) -> bool {
         match self.peek().kind {
             Kind::StringLiteral
@@ -4453,6 +4514,56 @@ impl Parser<'_> {
             ),
             _ => false,
         }
+    }
+
+    /// Whether the cursor starts a literal format value that
+    /// [`Self::skip_format_value`] consumes. Any other value is a non-literal
+    /// expression (`LABEL v-name`).
+    fn starts_format_literal(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            Kind::StringLiteral
+                | Kind::IntegerLiteral
+                | Kind::DecimalLiteral
+                | Kind::Preprop
+                | Kind::IncludeArgReference
+        )
+    }
+
+    /// Consume an integer or decimal literal. These are the operands of the
+    /// format-phrase size, position and colour options.
+    fn consume_number(&mut self) -> bool {
+        if matches!(
+            self.peek().kind,
+            Kind::IntegerLiteral | Kind::DecimalLiteral
+        ) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The `[ROW n] [COLUMN n]` operands of an AT phrase, with the cursor on the
+    /// first keyword. Requires at least one numeric operand; returns false, with
+    /// the cursor unspecified, when a keyword has none.
+    fn consume_at_offset(&mut self) -> bool {
+        let mut found = false;
+        if self.check(Kind::Row) {
+            self.advance();
+            if !self.consume_number() {
+                return false;
+            }
+            found = true;
+        }
+        if self.check(Kind::Column) {
+            self.advance();
+            if !self.consume_number() {
+                return false;
+            }
+            found = true;
+        }
+        found
     }
 
     /// `DOWN [STREAM s] [n] [frame-phrase]`, and the same for `UP`. The stream

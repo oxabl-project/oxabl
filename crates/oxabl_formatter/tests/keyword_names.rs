@@ -345,3 +345,32 @@ fn the_type_list_scan_stays_linear() {
     assert!(out.starts_with("ON CHOOSE OF a, b IN FRAME f RETURN NO-APPLY.\n"));
     assert!(took.as_millis() < 3000, "{took:?}");
 }
+
+#[test]
+fn format_option_and_printer_words_used_as_names_keep_their_spelling() {
+    let src = "\
+Define Variable row As Integer No-Undo.
+Define Variable Col As Integer No-Undo.
+Define Variable printer As Character No-Undo.
+row = 1.
+Col = row + bgcolor.
+Display row Col printer.
+";
+    let upper = "\
+DEFINE VARIABLE row AS INTEGER NO-UNDO.
+DEFINE VARIABLE Col AS INTEGER NO-UNDO.
+DEFINE VARIABLE printer AS CHARACTER NO-UNDO.
+row = 1.
+Col = row + bgcolor.
+DISPLAY row Col printer.
+";
+    let lower = "\
+define variable row as integer no-undo.
+define variable Col as integer no-undo.
+define variable printer as character no-undo.
+row = 1.
+Col = row + bgcolor.
+display row Col printer.
+";
+    assert_formats(src, upper, lower);
+}
