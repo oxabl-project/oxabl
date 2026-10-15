@@ -138,13 +138,14 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
         }
         group.push(read);
     }
+    let skipped = super::scope_widened::skipped_statements(program);
     let mut diags = Vec::new();
     for key in order {
         let (b, unit_id, tx) = key;
         let reads = &groups[&key];
         let buffer = scopes.buffer(b);
         let unit = scopes.unit(unit_id);
-        if let Some(d) = finding(scopes, program, ctx, buffer, unit, tx, reads) {
+        if let Some(d) = finding(scopes, &skipped, ctx, buffer, unit, tx, reads) {
             diags.push(d);
         }
     }
@@ -153,7 +154,7 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
 
 fn finding(
     scopes: &FileScopes,
-    program: &[Statement],
+    skipped: &[Span],
     ctx: &AnalysisContext,
     buffer: &Buffer,
     unit: &UnitScopes,
@@ -220,7 +221,7 @@ fn finding(
             name = buffer.name,
         )
     };
-    if super::scope_widened::reports(scopes, program, ctx, buffer, scope) {
+    if super::scope_widened::reports(scopes, skipped, ctx, buffer, scope) {
         help.push_str(
             " A reference outside the block raises the buffer's scope; scope-widened (TX005) \
              reports such references.",
