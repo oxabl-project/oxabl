@@ -731,6 +731,7 @@ mod tests {
             stmt(StatementKind::Message {
                 items: vec![],
                 set_targets: vec![id_at("answer", 90)],
+                fields: vec![],
             }),
         ];
         let diags = lint(&stmts);

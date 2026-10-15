@@ -371,7 +371,11 @@ fn contains_input(stmts: &[Statement], src: Src<'_>) -> bool {
     stmts.iter().any(|s| match &s.kind {
         SK::Skipped { .. } => tokens::skipped_input(src, s.span) == Input::Blocking,
         SK::Update { .. } | SK::Set { .. } | SK::WaitFor { .. } => true,
-        SK::Message { set_targets, .. } => !set_targets.is_empty(),
+        SK::Message {
+            set_targets,
+            fields,
+            ..
+        } => !set_targets.is_empty() || !fields.is_empty(),
         _ if is_unit_stmt(s) => false,
         _ => child_lists(s).iter().any(|l| contains_input(l, src)),
     })
@@ -1527,9 +1531,13 @@ impl<'a> Builder<'a> {
                 waits: true,
                 opaque: None,
             },
-            SK::Message { set_targets, .. } => Shape::Plain {
+            SK::Message {
+                set_targets,
+                fields,
+                ..
+            } => Shape::Plain {
                 raises: !self.no_error_text(s),
-                endkey: !set_targets.is_empty(),
+                endkey: !set_targets.is_empty() || !fields.is_empty(),
                 waits: false,
                 opaque: None,
             },

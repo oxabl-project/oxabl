@@ -4697,7 +4697,9 @@ fn parse_message_simple() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 1);
             assert!(set_targets.is_empty());
         }
@@ -4712,7 +4714,9 @@ fn parse_message_view_as_alert_box() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 2); // "Error:" and errMsg
             assert!(set_targets.is_empty());
         }
@@ -4727,7 +4731,9 @@ fn parse_message_with_update() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 1); // "Confirm?"
             assert_eq!(set_targets.len(), 1);
             assert_eq!(set_targets[0].name, "lChoice");
@@ -4771,10 +4777,54 @@ fn parse_message_update_without_view_as() {
     let mut parser = Parser::new(&tokens, source);
     let stmt = parser.parse_statement().expect("Expected a statement");
     match stmt.kind {
-        StatementKind::Message { items, set_targets } => {
+        StatementKind::Message {
+            items, set_targets, ..
+        } => {
             assert_eq!(items.len(), 1);
             assert_eq!(set_targets.len(), 1);
             assert_eq!(set_targets[0].name, "cName");
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_update_as_declares_field() {
+    let source =
+        r#"MESSAGE "Fix?" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE v-fix AS LOGICAL."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Message {
+            items,
+            set_targets,
+            fields,
+        } => {
+            assert_eq!(items.len(), 1);
+            assert!(set_targets.is_empty());
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "v-fix");
+        }
+        _ => panic!("Expected Message statement"),
+    }
+}
+
+#[test]
+fn parse_message_update_like_declares_field() {
+    let source = r#"MESSAGE "Enter:" UPDATE v-copy LIKE item.descr."#;
+    let tokens = tokenize(source);
+    let mut parser = Parser::new(&tokens, source);
+    let stmt = parser.parse_statement().expect("Expected a statement");
+    match stmt.kind {
+        StatementKind::Message {
+            set_targets,
+            fields,
+            ..
+        } => {
+            assert!(set_targets.is_empty());
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name.name, "v-copy");
         }
         _ => panic!("Expected Message statement"),
     }

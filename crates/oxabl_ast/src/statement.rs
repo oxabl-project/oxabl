@@ -209,6 +209,8 @@ pub enum StatementKind {
         items: Vec<Expression>,
         /// Variables bound by SET or UPDATE clauses.
         set_targets: Vec<Identifier>,
+        /// Fields declared by `SET`/`UPDATE name AS type` or `name LIKE field`.
+        fields: Vec<FrameField>,
     },
 
     /// PUT statement — writes values to a stream.

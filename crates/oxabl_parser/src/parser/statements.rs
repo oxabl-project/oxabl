@@ -4747,6 +4747,7 @@ impl Parser<'_> {
 
         let mut items = Vec::new();
         let mut set_targets = Vec::new();
+        let mut fields = Vec::new();
 
         // Parse message items until VIEW-AS, SET, UPDATE, or period
         while !self.check(Kind::ViewAs)
@@ -4805,14 +4806,29 @@ impl Parser<'_> {
                     self.advance();
                     continue;
                 }
-                // Skip AS DataType annotation (e.g. UPDATE v-fix AS LOGICAL)
+                // A stray AS with no name before it: skip it and its type.
                 if self.check(Kind::KwAs) {
-                    self.advance(); // consume AS
-                    let _ = self.parse_data_type(); // consume the data type
+                    self.advance();
+                    let _ = self.parse_data_type();
                     continue;
                 }
                 if Self::can_be_identifier(self.peek().kind) {
-                    set_targets.push(self.parse_identifier()?);
+                    let name = self.parse_identifier()?;
+                    let after_name = self.current;
+                    // `name AS type` / `name LIKE field` declares the field.
+                    if self.check(Kind::KwAs) || self.check(Kind::Like) {
+                        match self.parse_type_source() {
+                            Ok(type_source) => {
+                                fields.push(FrameField { name, type_source });
+                            }
+                            Err(_) => {
+                                self.current = after_name;
+                                set_targets.push(name);
+                            }
+                        }
+                    } else {
+                        set_targets.push(name);
+                    }
                 } else {
                     break;
                 }
@@ -4822,7 +4838,11 @@ impl Parser<'_> {
         self.expect_period("Expected '.' after MESSAGE statement")?;
 
         crate::parser::debug_assert_expr_sibling_order(&items);
-        Ok(self.stmt(StatementKind::Message { items, set_targets }))
+        Ok(self.stmt(StatementKind::Message {
+            items,
+            set_targets,
+            fields,
+        }))
     }
 
     // Parse ASSIGN statement: ASSIGN target = value [target = value ...].

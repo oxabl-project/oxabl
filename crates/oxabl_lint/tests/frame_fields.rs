@@ -152,6 +152,51 @@ DISPLAY v-name v-code WITH FRAME f.
 }
 
 #[test]
+fn a_message_update_as_field_is_a_variable() {
+    let r = run(
+        r#"MESSAGE "Fix?" VIEW-AS ALERT-BOX QUESTION BUTTONS YES-NO UPDATE v-fix AS LOGICAL.
+IF v-fix THEN MESSAGE "fixing".
+"#,
+    );
+    assert!(
+        r.diags.is_empty(),
+        "expected no findings, got: {:#?}",
+        r.diags
+    );
+    assert_eq!(
+        variables(&r, "v-fix"),
+        vec![Some(ResolvedType::Primitive(PrimitiveTy::Logical))]
+    );
+}
+
+#[test]
+fn a_message_update_like_field_is_a_variable() {
+    let r = run(r#"MESSAGE "Enter:" UPDATE v-copy LIKE item.descr.
+DISPLAY v-copy.
+"#);
+    assert!(
+        r.diags.is_empty(),
+        "expected no findings, got: {:#?}",
+        r.diags
+    );
+    assert_eq!(variables(&r, "v-copy"), vec![None]);
+}
+
+#[test]
+fn a_message_update_target_without_as_is_not_declared() {
+    // Without AS or LIKE the phrase declares nothing: the name stays a write
+    // target, so a later read of it is still an undefined symbol.
+    let r = run(r#"MESSAGE "x" UPDATE v-undeclared.
+DISPLAY v-undeclared.
+"#);
+    assert!(variables(&r, "v-undeclared").is_empty());
+    assert_eq!(
+        undefined(&r.diags),
+        vec!["undefined symbol `v-undeclared`".to_string()]
+    );
+}
+
+#[test]
 fn an_undeclared_frame_item_is_still_undefined() {
     let r = run(
         "DEFINE FRAME f v-known AS CHARACTER v-unknown WITH NO-LABELS.
