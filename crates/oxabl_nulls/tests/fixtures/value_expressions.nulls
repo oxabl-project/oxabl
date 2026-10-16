@@ -7,6 +7,4 @@ comparison u0 @6 c `c`
 comparison u0 @7 c `c`
 propagation u0 @13 x `x`
 propagation u0 @15 x `x`
-propagation u0 @17 x `x`
 comparison u0 @24 n `n`
-propagation u0 @35 x `x`

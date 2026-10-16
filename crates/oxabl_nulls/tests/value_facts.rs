@@ -273,3 +273,13 @@ IF d > TODAY THEN MESSAGE 1.
     assert_eq!(run("DO i = 1 TO n:", ""), ["d@9"]);
     assert_eq!(run("DO i = 1 TO 5 WHILE n > 0:", ""), ["d@9"]);
 }
+
+#[test]
+fn a_zero_divisor_is_no_source() {
+    let source = "DEFINE VARIABLE y AS DECIMAL NO-UNDO.
+DEFINE VARIABLE z AS DECIMAL NO-UNDO.
+y = 1 / 0.
+z = y + 1.
+";
+    assert_eq!(uses(source), Vec::<String>::new());
+}

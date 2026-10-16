@@ -509,8 +509,9 @@ impl Problem<'_> {
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
+                // A zero divisor (V3, medium) is no source.
                 if matches!(e.kind, E::Divide(..)) && self.number(b) == Some(0) {
-                    return QUESTION;
+                    return UNKNOWN;
                 }
                 let (a, b) = (self.eval(a, f), self.eval(b, f));
                 if a == QUESTION || b == QUESTION {
@@ -601,9 +602,7 @@ impl Problem<'_> {
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
-            | E::Modulo(a, b)
-                if !matches!(e.kind, E::Divide(..)) || self.number(b) != Some(0) =>
-            {
+            | E::Modulo(a, b) => {
                 add(self.required(a, f));
                 add(self.required(b, f));
             }
