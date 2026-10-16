@@ -112,6 +112,11 @@ impl<'a> RunShared<'a> {
                 scopes,
                 &NullOptions { elided: ctx.elided },
             )
+            .with_values(
+                program,
+                self.flow(program, ctx),
+                &NullOptions { elided: ctx.elided },
+            )
         })
     }
 

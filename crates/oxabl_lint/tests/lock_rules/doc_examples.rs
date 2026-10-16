@@ -45,7 +45,7 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         "{name}: the bad example gives no finding\n{}",
         blocks[0]
     );
-    let rules: [(&str, RuleFn); 10] = [
+    let rules: [(&str, RuleFn); 12] = [
         ("LK001", default_lock::run),
         ("LK002", lock_outlives_transaction::run),
         ("LK003", lock_upgrade_in_loop::run),
@@ -55,6 +55,8 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         ("TX004", transaction_spans_call::run),
         ("TX005", scope_widened::run),
         ("DB001", find_in_loop::run),
+        ("NL001", oxabl_lint::unknown_in_comparison::run),
+        ("NL002", oxabl_lint::unknown_propagation::run),
         ("NL003", field_after_failed_find::run),
     ];
     for (other, f) in rules {
@@ -155,5 +157,23 @@ fn nl003_examples() {
         "NL003",
         field_after_failed_find::run,
         include_str!("../../src/rules/field_after_failed_find.rs"),
+    );
+}
+
+#[test]
+fn nl001_examples() {
+    examples(
+        "NL001",
+        oxabl_lint::unknown_in_comparison::run,
+        include_str!("../../src/rules/unknown_in_comparison.rs"),
+    );
+}
+
+#[test]
+fn nl002_examples() {
+    examples(
+        "NL002",
+        oxabl_lint::unknown_propagation::run,
+        include_str!("../../src/rules/unknown_propagation.rs"),
     );
 }

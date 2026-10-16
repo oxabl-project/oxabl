@@ -1,8 +1,12 @@
 //! Unknown values and missing records in Progress ABL.
 //!
 //! The plan (`docs/design/strict-analysis-plan.md`, M5) gives this crate the
-//! unknown value `?` from its sources to its sinks. This first slice covers
-//! the record a failed `FIND` leaves missing: [`analyze_file`] runs a forward
+//! unknown value `?` from its sources to its sinks.
+//! [`FileNulls::with_values`] adds local variable facts before each flow node.
+//! [`FileNulls::value_before`] separates known values, possible `?` values,
+//! Unknown and unreachable points.
+//!
+//! The record analysis covers the record a failed `FIND` leaves missing: [`analyze_file`] runs a forward
 //! dataflow over the flow graph of each unit (`oxabl_flow`) that tracks, per
 //! program point, the `FIND ... NO-ERROR` statements (`FIRST`, `LAST`, `NEXT`,
 //! `PREV` and unique) that may have failed and left their buffer empty.
@@ -48,6 +52,8 @@ mod analysis;
 mod cond;
 mod dump;
 mod model;
+mod values;
+pub use values::{ValueState, ValueUse};
 
 pub use model::{FailedFind, MissingRecord};
 
@@ -63,15 +69,57 @@ pub struct NullOptions<'a> {
     pub elided: &'a [u32],
 }
 
-/// The failed finds of one file and the field references they reach.
+/// Failed finds, local unknown values, and the uses they reach.
 #[derive(Debug, Clone, Default)]
 pub struct FileNulls {
+    values: Vec<ValueUse>,
+    value_facts: Vec<values::UnitValues>,
     finds: Vec<FailedFind>,
     missing: Vec<MissingRecord>,
     unknown: Vec<oxabl_scope::Unknown>,
 }
 
 impl FileNulls {
+    /// Local variable uses with a known possible source of `?`, in source order.
+    pub fn values(&self) -> &[ValueUse] {
+        &self.values
+    }
+
+    /// The first use of [`values`](Self::values) per unit, variable and kind:
+    /// the uses after it repeat the same source.
+    pub fn first_values(&self) -> impl Iterator<Item = &ValueUse> {
+        let mut seen = rustc_hash::FxHashSet::default();
+        self.values
+            .iter()
+            .filter(move |u| seen.insert((u.unit, u.name.to_ascii_lowercase(), u.propagation)))
+    }
+
+    /// Read a local variable before a node. Names are case insensitive.
+    /// Returns `None` for variables and units outside this analysis.
+    pub fn value_before(
+        &self,
+        unit: oxabl_flow::UnitId,
+        node: oxabl_flow::NodeIx,
+        name: &str,
+    ) -> Option<ValueState> {
+        self.value_facts
+            .iter()
+            .find(|f| f.unit == unit)?
+            .before(node, name)
+    }
+
+    /// Add local variable dataflow over the same program and flow graphs.
+    pub fn with_values(
+        mut self,
+        program: &[oxabl_ast::Statement],
+        flow: &FileFlow,
+        options: &NullOptions<'_>,
+    ) -> Self {
+        if self.unknown.is_empty() {
+            (self.values, self.value_facts) = values::analyze(program, flow, options.elided);
+        }
+        self
+    }
     /// Every `FIND ... NO-ERROR` of a judged buffer, in source order.
     pub fn finds(&self) -> &[FailedFind] {
         &self.finds
