@@ -1,5 +1,122 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v2.0.0...oxabl_semantic-v3.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** `StreamOperation::From` and `StreamOperation::To` now carry a `StreamTarget` instead of an `Expression`; the new `StreamTarget::FileName` holds the bare file name.
+* **parser:** StatementKind::Message gains a fields field.
+* **parser:** StatementKind::Update and StatementKind::Set gain a fields field.
+* **parser:** StatementKind::Update and StatementKind::Set have a new `options` field.
+* **parser:** oxabl_lexer::Kind adds the Stop variant. Exhaustive matches must handle it.
+* **parser:** StatementKind::Form and StatementKind::DefineFrame have a new `fields: Vec<FrameField>` field.
+* **parser:** StatementKind has a new WaitFor variant; WAIT-FOR no longer parses to Skipped.
+* **parser:** StatementKind has a new Apply variant; APPLY no longer parses to Skipped.
+* **parser:** StatementKind has new Enable, Disable, Hide and View variants; those statements no longer parse to Skipped.
+* **parser:** StatementKind has new Update and Set variants; UPDATE and SET no longer parse to Skipped.
+* **parser:** StatementKind has new Form and DefineWidget variants and SymbolKind has a new Widget variant; FORM and static widget definitions no longer parse to Skipped.
+* **parser:** StatementKind has new Pause, Down and Up variants; PAUSE, DOWN and UP no longer parse to Skipped.
+* **parser:** StatementKind has new Export and Import variants; EXPORT and IMPORT no longer parse to Skipped.
+* **scope:** `oxabl_semantic::AnalysisContext` has a new public field, `elided_includes`, so a struct literal of it no longer compiles. Build it with `AnalysisContext::new` and `with_elided_includes`.
+* **semantic:** `AnalysisContext` has two new public fields, `tokens` and `elided`. Code that builds it with a struct literal must set them;
+* **parser:** StatementKind has a new Put variant; PUT no longer parses to Skipped.
+* **parser:** Statement has a new public field, skipped_tail.
+* **parser:** AccessModifier gains a PackageProtected variant.
+* **parser:** StatementKind::Procedure has a new `is_external` field. Code that builds or destructures it without `..` must add the field.
+* **lexer:** `OnAction::PersistentRun` gains `in_handle`.
+* **handles:** `oxabl_semantic::AnalysisContext` has a new public field, `include_regions`. Code that builds it with a struct literal must set it;
+* **parser:** `StatementKind::Class` has a new field, `use_widget_pool`. Code that builds the variant or matches it without `..` must name it.
+* **parser:** new `StatementKind::ReleaseObject` and
+* **parser:** `StatementKind::Do`, `Repeat` and `ForEach` have a new
+* **semantic:** `SymbolKind` has a new `Sequence` variant.
+* **parser:** StatementKind has a new VariableDeclarationList variant, so exhaustive matches on StatementKind must handle it.
+* **lint:** StatementKind::Procedure gains an is_prototype field.
+
+### Features
+
+* **lexer:** lex OBJECT, WIDGET and BUFFER-NAME as keywords ([cb99b14](https://github.com/oxabl-project/oxabl/commit/cb99b14ba33e78f13b12b00606b66f3726118e2d))
+* **lint:** report LINT0006 dead stores at every write form ([248b988](https://github.com/oxabl-project/oxabl/commit/248b988aedfa848e9de487d9e34fc826ca15e8e2)), closes [#131](https://github.com/oxabl-project/oxabl/issues/131)
+* **lint:** strict ABL M6 slice 1: CL003 signature-mismatch and CL004 unresolved-call ([16f4256](https://github.com/oxabl-project/oxabl/commit/16f425673616cb68c743c902b1d4abf256239e3f))
+* **parser:** accept USING-imported keyword class names and OE12 VAR lists ([498faa2](https://github.com/oxabl-project/oxabl/commit/498faa2a248db29222384e7735c1aa6ccbe70f57))
+* **parser:** credit reads inside the skipped tails of modelled statements ([c93aa74](https://github.com/oxabl-project/oxabl/commit/c93aa742c3f49dc3b1621cb641d003860dfe0c83)), closes [#134](https://github.com/oxabl-project/oxabl/issues/134)
+* **parser:** declare frame fields of FORM and DEFINE FRAME ([de9817d](https://github.com/oxabl-project/oxabl/commit/de9817d06e20866f0eff98c311ae92c24bba6d9e))
+* **parser:** declare frame fields of UPDATE and SET ([ffb8263](https://github.com/oxabl-project/oxabl/commit/ffb82636fd6767d0b1864f48e09ee400396ea734))
+* **parser:** declare the AS/LIKE field of a MESSAGE SET/UPDATE phrase ([72b77a3](https://github.com/oxabl-project/oxabl/commit/72b77a306d99c7b46e3445d515a3cd5ce2d11789))
+* **parser:** head-parse APPLY ([ef487a1](https://github.com/oxabl-project/oxabl/commit/ef487a1f35ab24a6f90973a304e242101c8e9957)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse ENABLE, DISABLE, HIDE and VIEW ([d983d80](https://github.com/oxabl-project/oxabl/commit/d983d80ca20ccc87d952289215f20e47bd059980)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse EXPORT and IMPORT ([59f6c2c](https://github.com/oxabl-project/oxabl/commit/59f6c2c074d9d2a0f2f2038e60d171e48532f1e3)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse FORM and declare static widgets ([27d2c24](https://github.com/oxabl-project/oxabl/commit/27d2c2487060f605c4f7b042fb12e5a27f62b7a8)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse PAUSE, DOWN and UP ([b16c0eb](https://github.com/oxabl-project/oxabl/commit/b16c0ebab1fb7a91a4db041b9f7ae6e5198c46e2)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse PUT and trim the harvest of OS-* file statements ([ba9faee](https://github.com/oxabl-project/oxabl/commit/ba9faeef75aa39f3b549c9c13b7ae2b2580f2801)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse UPDATE and SET ([c2882f4](https://github.com/oxabl-project/oxabl/commit/c2882f45a574bdb676c110a4be0fe8372856a77c)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse WAIT-FOR ([7179cea](https://github.com/oxabl-project/oxabl/commit/7179cea2f0c45f2afa8dd852a4671cc020d5cf07)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** mark EXTERNAL procedure declarations ([aee65aa](https://github.com/oxabl-project/oxabl/commit/aee65aa962334a06fb829d839a254ee6ba35c1d0))
+* **parser:** model the handle-lifetime statements ([86c7938](https://github.com/oxabl-project/oxabl/commit/86c793879ff33e210d4253563aaa8af1dee90b9d))
+* **parser:** record USE-WIDGET-POOL on a class ([2b7fbbf](https://github.com/oxabl-project/oxabl/commit/2b7fbbf00dc2cda3a729f7d542c71a7528969490))
+* **scope:** strict-analysis M3: oxabl_scope, the LISTING harness, LK001-LK003 and TX001-TX005 ([d4779c9](https://github.com/oxabl-project/oxabl/commit/d4779c9f0ff420c55403a67b93c773dd24a4c6dd))
+* **semantic,analyze:** analyze a file without the type-check pass ([96c2aa4](https://github.com/oxabl-project/oxabl/commit/96c2aa48e3852106a09c0b73102b1f6a6d339de8)), closes [#218](https://github.com/oxabl-project/oxabl/issues/218)
+* **semantic:** carry the tokens and the elided offsets in AnalysisContext ([a1b1c2c](https://github.com/oxabl-project/oxabl/commit/a1b1c2c83a5321136657740bfb23c965ca394f8b))
+* **semantic:** read the parameter lists of procedures ([7d0296c](https://github.com/oxabl-project/oxabl/commit/7d0296cbabdfb5d4e65b75e4d913f8cbe3f3c455))
+* **semantic:** recognize documented OpenEdge built-in types ([a528bbc](https://github.com/oxabl-project/oxabl/commit/a528bbc0f7953dcc355a88c91e2a5438099f1d37)), closes [#154](https://github.com/oxabl-project/oxabl/issues/154)
+* **semantic:** resolve abbreviated schema table names ([4a6a265](https://github.com/oxabl-project/oxabl/commit/4a6a26530ca683521f958d4270f0fe8eddd9e6eb))
+* **semantic:** resolve sequence operands against the loaded schema ([95bbbc2](https://github.com/oxabl-project/oxabl/commit/95bbbc25011cdb0bf5341825c8ff072fd67839fb)), closes [#185](https://github.com/oxabl-project/oxabl/issues/185)
+
+
+### Bug Fixes
+
+* **handles:** close false-positive causes found in the HD001-HD005 triage ([d4e211c](https://github.com/oxabl-project/oxabl/commit/d4e211ce75927af28a0370fbd4966e73970b78ad))
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **lint:** leave a recovered parse unjudged by the strict.handles rules ([4396af1](https://github.com/oxabl-project/oxabl/commit/4396af1a570ed4b05bb594d733fdd44d86705c37))
+* **lint:** skip CATCH variables and EXTERNAL/IN procedure parameters in unused-variable ([0ac00a2](https://github.com/oxabl-project/oxabl/commit/0ac00a2b5f2ec41d27011a300430569310a68a5f)), closes [#195](https://github.com/oxabl-project/oxabl/issues/195) [#196](https://github.com/oxabl-project/oxabl/issues/196)
+* **parser:** handle STOP, comments between statement keywords, and bare metaschema fields ([a2b093b](https://github.com/oxabl-project/oxabl/commit/a2b093b74998b49260470fac9a4a25d23d3aef39))
+* **parser:** keep the expression of a block header ON phrase action ([c930ea0](https://github.com/oxabl-project/oxabl/commit/c930ea016dcb12e644b3df2a34ed3baf7154f6f0)), closes [#226](https://github.com/oxabl-project/oxabl/issues/226)
+* **parser:** keep the expressions of UPDATE, SET, FORM and ENABLE format options ([d3436fb](https://github.com/oxabl-project/oxabl/commit/d3436fb0428577d7c363068017323fd60582791c))
+* **parser:** keep the table a signature buffer parameter names ([0843777](https://github.com/oxabl-project/oxabl/commit/0843777db35aa2595dd20d5faeaef40448425c8a)), closes [#139](https://github.com/oxabl-project/oxabl/issues/139)
+* **parser:** parse the PACKAGE-PROTECTED access modifier ([95d7b23](https://github.com/oxabl-project/oxabl/commit/95d7b23d30f45c079e1801b5e178100fd13a5e02))
+* **parser:** read an unquoted OUTPUT/INPUT file name as a name ([130d384](https://github.com/oxabl-project/oxabl/commit/130d384c83d7e61c4840cecb2f155b5d0c70b680))
+* **parser:** unquoted stream file names and MESSAGE UPDATE fields ([06c823c](https://github.com/oxabl-project/oxabl/commit/06c823cc47c388bbbcf63639cb32a3e8889e9a45))
+* **scope:** let an include that did not arrive between statements hide a write or a release ([5afe7fd](https://github.com/oxabl-project/oxabl/commit/5afe7fd02ac03eb367e9b5cf08318325605f2575))
+* **semantic:** an unqualified name under an unread superclass is unknowable ([07b4825](https://github.com/oxabl-project/oxabl/commit/07b4825df5c4b3e037d2912aade44fc8df5ed582)), closes [#178](https://github.com/oxabl-project/oxabl/issues/178)
+* **semantic:** bind FOR EACH to the buffer already in scope ([cf17969](https://github.com/oxabl-project/oxabl/commit/cf17969bf7c59e7a3cf995e62a4e88ba72c18640)), closes [#179](https://github.com/oxabl-project/oxabl/issues/179)
+* **semantic:** credit an assignment through a pseudo-function to its operand ([c778506](https://github.com/oxabl-project/oxabl/commit/c7785061c695c5fece3dbeaa9cc916b06f0ce3e6)), closes [#156](https://github.com/oxabl-project/oxabl/issues/156)
+* **semantic:** credit reads in arguments of a method call inside a member-access chain ([73ecd48](https://github.com/oxabl-project/oxabl/commit/73ecd48e9262f1832f9af2b23b126ce817f02903)), closes [#197](https://github.com/oxabl-project/oxabl/issues/197) [#157](https://github.com/oxabl-project/oxabl/issues/157)
+* **semantic:** declare the NEW and OLD buffers of a TRIGGER PROCEDURE ([11c7d3a](https://github.com/oxabl-project/oxabl/commit/11c7d3aabbdb72f2a5769e8f6c37088c81e57507))
+* **semantic:** declare TRIGGER PROCEDURE buffers only for a table that resolves ([0fb98cf](https://github.com/oxabl-project/oxabl/commit/0fb98cfa7b68ec041e16f2b174515bb276ffae3e))
+* **semantic:** do not flag a declaration repeated in sibling &IF arms as a duplicate ([55a80cd](https://github.com/oxabl-project/oxabl/commit/55a80cd6944b0ad805cb264886aabe5b683b1e8a)), closes [#180](https://github.com/oxabl-project/oxabl/issues/180)
+* **semantic:** do not report a `..` RUN target as absent ([5c3074f](https://github.com/oxabl-project/oxabl/commit/5c3074f68c83213c99bc9c01e17d69e96d32687e)), closes [#227](https://github.com/oxabl-project/oxabl/issues/227)
+* **semantic:** give record-only schema table references an edge ([3f8e090](https://github.com/oxabl-project/oxabl/commit/3f8e090ec4bd58fd724f4e2fb334a693207f401f)), closes [#223](https://github.com/oxabl-project/oxabl/issues/223)
+* **semantic:** look up the class-shaped runs of a modelled statement's skipped tail ([0da4553](https://github.com/oxabl-project/oxabl/commit/0da45535c733292776ca1baf659831c4af962cd0))
+* **semantic:** read ON ... OF targets and register missing built-ins ([a5899ba](https://github.com/oxabl-project/oxabl/commit/a5899ba049ea4d16c57feaf21f8f709996c8b050))
+* **semantic:** resolve stream operands and value-before-parenthesis items ([38bc1f1](https://github.com/oxabl-project/oxabl/commit/38bc1f18006d8ae27ff01e720f60dad033277a70))
+* **semantic:** resolve the type operand of CAST, TYPE-OF and GET-CLASS as a type ([0e837c6](https://github.com/oxabl-project/oxabl/commit/0e837c6b614ad9a4efbdeaeac40551d9bc7bfb7f)), closes [#155](https://github.com/oxabl-project/oxabl/issues/155)
+* **semantic:** resolve unqualified fields against temp-tables in scope ([337f1ac](https://github.com/oxabl-project/oxabl/commit/337f1acc079d6dadda328a28eac683a3094e714b)), closes [#160](https://github.com/oxabl-project/oxabl/issues/160)
+* sweep of 25 open parser, semantic, lint and schema issues ([f01fcce](https://github.com/oxabl-project/oxabl/commit/f01fcce408f13c4c20050f712a683435b57a4a46))
+* UPDATE/SET frame fields, shared summaries in check --watch, rustdoc links ([bd0df69](https://github.com/oxabl-project/oxabl/commit/bd0df6971eb692a65dcbc18ac89c160319952a01))
+
+
+### Performance Improvements
+
+* **index:** reduce name interning and unrelated span mapping ([ce8616c](https://github.com/oxabl-project/oxabl/commit/ce8616c93eef5aa92c621ee18a848d79963251d9))
+* **semantic:** fold short names inline and skip lexing empty record tails ([f734e57](https://github.com/oxabl-project/oxabl/commit/f734e57cb67a46e668e8758ccbf0905501d54977))
+* **semantic:** size the side tables from the program's node count ([7f24230](https://github.com/oxabl-project/oxabl/commit/7f24230a70bddc01484931066effbded3bce7684))
+* **semantic:** size the side tables from the program's node count ([4c53517](https://github.com/oxabl-project/oxabl/commit/4c53517be3000ab5a569fbda2e4004dd6487bf71))
+* win back parser, resolve and preprocessor time ([07a6324](https://github.com/oxabl-project/oxabl/commit/07a63246bca88025c833fba6c96e3d003465a819))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_lexer bumped from 1.0.2 to 2.0.0
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+  * dev-dependencies
+    * oxabl_lexer bumped from 1.0.2 to 2.0.0
+    * oxabl_parser bumped from 2.0.0 to 3.0.0
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v1.1.1...oxabl_semantic-v2.0.0) (2026-10-14)
 
 

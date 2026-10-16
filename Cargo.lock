@@ -1211,7 +1211,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "oxabl"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_analyze"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_common",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_ast"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "rust_decimal",
  "serde",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_codegen"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "scraper",
  "serde",
@@ -1288,7 +1288,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_common"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "codspeed-criterion-compat",
  "glob",
@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_daemon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "codspeed-criterion-compat",
@@ -1332,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_effects"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_flow"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_lexer",
@@ -1357,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_formatter"
-version = "1.0.3"
+version = "2.0.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_handles"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_index"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_common",
@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_lexer"
-version = "1.0.2"
+version = "2.0.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_common",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_lint"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_lsp"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_nulls"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1467,7 +1467,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_parser"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_pipeline"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "oxabl_analyze",
  "oxabl_ast",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_preprocessor"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_schema"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_scope"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1544,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_semantic"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "bitflags 2.13.2",
  "codspeed-criterion-compat",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_wasm"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "oxabl",
  "oxabl_pipeline",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_workspace"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "encoding_rs",
  "oxabl_ast",

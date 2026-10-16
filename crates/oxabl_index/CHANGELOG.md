@@ -1,5 +1,68 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v2.0.0...oxabl_index-v3.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** StatementKind::Update and StatementKind::Set have a new `options` field.
+* **pipeline:** `ConditionalIncludeClosure` has a new `references` field and is now `#[non_exhaustive]`.
+* **parser:** the exhaustive enum oxabl_lexer::Kind has new variants on this branch: Kind::RawTransfer here, and Kind::PackageProtected, Kind::Ordinal, Kind::Cdecl, Kind::Pascal and Kind::Stdcall from the PACKAGE-PROTECTED and EXTERNAL procedure option fixes.
+* **workspace:** `SourcesConfig` has a new pub field, `root_relative_include_paths`; `PipelineConfig` has a new pub field, `root_relative_include_paths`; `IncludeContext` has a new pub field, `root_relative_paths`.
+* **pipeline:** `PreprocessedFile` has a new pub field, `skipped_text`. `MAX_INCLUDE_DEPTH` is now public.
+* **index:** index_file takes an IncludeContext instead of a PreprocessorConfig. SharedProducers::build and definitions_in take an IncludeContext instead of a filesystem and a PreprocessorConfig. IndexHandle::set_preprocessor is replaced by set_environment, which takes the PipelineConfig, and IndexEnvironment gains an include_paths field.
+* **index:** SourcesConfig and PipelineConfig gain a pub case_insensitive_lookup field.
+* **preprocessor:** `PreprocessedFile` has a new pub field, `skipped_includes`.
+
+### Features
+
+* **effects:** strict ABL M4: call graph, database effects, callee summaries, DB001 and explain ([f68126d](https://github.com/oxabl-project/oxabl/commit/f68126d6b8d4f7718558a542abfdc90a43b7cf7e))
+* **index:** add opt-in case-insensitive class and program lookup ([6b14dc8](https://github.com/oxabl-project/oxabl/commit/6b14dc808ed1118c3634eee3a59cd47f6f44afe9)), closes [#214](https://github.com/oxabl-project/oxabl/issues/214)
+* **index:** add the static call graph ([8d74de5](https://github.com/oxabl-project/oxabl/commit/8d74de5757bd985b4901be013e0f91034bdc3f79))
+* **index:** answer parameter lists and workspace procedure names ([b76cbec](https://github.com/oxabl-project/oxabl/commit/b76cbec66a9e4d2e41c275bfd03d442184e32f5b))
+* **index:** find SHARED producers from a map that is built once ([d305b66](https://github.com/oxabl-project/oxabl/commit/d305b664d926772a697d9a2470fc3f24a3b506ce)), closes [#218](https://github.com/oxabl-project/oxabl/issues/218)
+* **index:** index classes built from includes through the preprocessor ([1d80f13](https://github.com/oxabl-project/oxabl/commit/1d80f13fed347e40f75eb88940f54db79bcbec1d)), closes [#225](https://github.com/oxabl-project/oxabl/issues/225)
+* **lint:** strict ABL M6 slice 1: CL003 signature-mismatch and CL004 unresolved-call ([16f4256](https://github.com/oxabl-project/oxabl/commit/16f425673616cb68c743c902b1d4abf256239e3f))
+* **pipeline:** list class and program names in not-taken &IF branches and the closure of conditional includes ([6b153d6](https://github.com/oxabl-project/oxabl/commit/6b153d631c4c6e4750fa13cc740f14cc9dd203ed))
+* **pipeline:** list the class and program names a conditional include's target writes ([81462eb](https://github.com/oxabl-project/oxabl/commit/81462eb81a826051c2e285bf6f0d855f5dbd316c))
+* **preprocessor:** carry include references in not-taken &IF branches ([b1057ac](https://github.com/oxabl-project/oxabl/commit/b1057ac88120afad1ce4d59acb2deb808a3fcc9e))
+* **workspace:** search each root's own directory first with root_relative_include_paths ([1793dc7](https://github.com/oxabl-project/oxabl/commit/1793dc7d65eaba696cf115172a04422b2f5b061a))
+
+
+### Bug Fixes
+
+* **index:** answer SHARED producers independently of earlier files ([cee66f4](https://github.com/oxabl-project/oxabl/commit/cee66f4021eba6c82e1e40fea206a676cb7bb8f9)), closes [#224](https://github.com/oxabl-project/oxabl/issues/224)
+* **index:** give a SHARED producer the same answer in every seeding mode ([d6bb24f](https://github.com/oxabl-project/oxabl/commit/d6bb24f5efb4ee08b583530b2d66834a17a5f3f6))
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **parser,index:** read every RUN target path shape whole ([079e451](https://github.com/oxabl-project/oxabl/commit/079e451c22e1ee7d604f71452314dbcc45eef44e)), closes [#227](https://github.com/oxabl-project/oxabl/issues/227)
+* **parser:** give RAW-TRANSFER, UNDERLINE and CURRENT-CHANGED their table edge ([d9e83df](https://github.com/oxabl-project/oxabl/commit/d9e83df85b4930f54e3afbeeb15c3099e81fc7b9))
+* **parser:** keep the expressions of UPDATE, SET, FORM and ENABLE format options ([d3436fb](https://github.com/oxabl-project/oxabl/commit/d3436fb0428577d7c363068017323fd60582791c))
+* **semantic:** give record-only schema table references an edge ([3f8e090](https://github.com/oxabl-project/oxabl/commit/3f8e090ec4bd58fd724f4e2fb334a693207f401f)), closes [#223](https://github.com/oxabl-project/oxabl/issues/223)
+* sweep of 25 open parser, semantic, lint and schema issues ([f01fcce](https://github.com/oxabl-project/oxabl/commit/f01fcce408f13c4c20050f712a683435b57a4a46))
+* UPDATE/SET frame fields, shared summaries in check --watch, rustdoc links ([bd0df69](https://github.com/oxabl-project/oxabl/commit/bd0df6971eb692a65dcbc18ac89c160319952a01))
+
+
+### Performance Improvements
+
+* **check:** scan the SHARED producer map on every core ([fa951a2](https://github.com/oxabl-project/oxabl/commit/fa951a247a9754d992970c543437ba5d0d159b7d))
+* **index:** reduce name interning and unrelated span mapping ([ce8616c](https://github.com/oxabl-project/oxabl/commit/ce8616c93eef5aa92c621ee18a848d79963251d9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_lexer bumped from 1.0.2 to 2.0.0
+    * oxabl_parser bumped from 2.0.0 to 3.0.0
+    * oxabl_preprocessor bumped from 0.6.0 to 0.7.0
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+    * oxabl_semantic bumped from 2.0.0 to 3.0.0
+    * oxabl_workspace bumped from 2.0.0 to 3.0.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v1.0.3...oxabl_index-v2.0.0) (2026-10-14)
 
 

@@ -1,16 +1,16 @@
 [package]
 name = "oxabl_flow"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 description = "Control-flow graphs with ABL block semantics, plus a dataflow framework, for Progress ABL"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_flow"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "2.0.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.2" }
+oxabl_ast = { path = "../oxabl_ast", version = "3.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.0" }
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union"] }
 
 [dev-dependencies]
-oxabl_parser = { path = "../oxabl_parser", version = "2.0.0" }
+oxabl_parser = { path = "../oxabl_parser", version = "3.0.0" }

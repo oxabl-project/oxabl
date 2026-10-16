@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.6.0...oxabl_preprocessor-v0.7.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **scope:** `oxabl_semantic::AnalysisContext` has a new public field, `elided_includes`, so a struct literal of it no longer compiles. Build it with `AnalysisContext::new` and `with_elided_includes`.
+* **pipeline:** `PreprocessedFile` has a new pub field, `skipped_text`. `MAX_INCLUDE_DEPTH` is now public.
+* **preprocessor:** `PreprocessedFile` has a new pub field, `skipped_includes`.
+
+### Features
+
+* **pipeline:** list class and program names in not-taken &IF branches and the closure of conditional includes ([6b153d6](https://github.com/oxabl-project/oxabl/commit/6b153d631c4c6e4750fa13cc740f14cc9dd203ed))
+* **preprocessor:** carry include references in not-taken &IF branches ([b1057ac](https://github.com/oxabl-project/oxabl/commit/b1057ac88120afad1ce4d59acb2deb808a3fcc9e))
+* **preprocessor:** record the references the expansion replaced with no text ([a188a23](https://github.com/oxabl-project/oxabl/commit/a188a230ca9ec01c8c83c0b5b51561a24f50e0d2))
+* **scope:** strict-analysis M3: oxabl_scope, the LISTING harness, LK001-LK003 and TX001-TX005 ([d4779c9](https://github.com/oxabl-project/oxabl/commit/d4779c9f0ff420c55403a67b93c773dd24a4c6dd))
+
+
+### Bug Fixes
+
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **preprocessor:** keep an unresolved include in list position as text ([42b6893](https://github.com/oxabl-project/oxabl/commit/42b68931041033364791e84887f1e4af0c69028f)), closes [#108](https://github.com/oxabl-project/oxabl/issues/108)
+* **preprocessor:** read a doubled quote in an include argument as one quote ([2d80ed1](https://github.com/oxabl-project/oxabl/commit/2d80ed15241694a2e5bd7622b1432253ec4a5cd1))
+* **scope:** let an include that did not arrive between statements hide a write or a release ([5afe7fd](https://github.com/oxabl-project/oxabl/commit/5afe7fd02ac03eb367e9b5cf08318325605f2575))
+* sweep of 25 open parser, semantic, lint and schema issues ([f01fcce](https://github.com/oxabl-project/oxabl/commit/f01fcce408f13c4c20050f712a683435b57a4a46))
+
+
+### Performance Improvements
+
+* **preprocessor:** step over plain text in one scan ([570c939](https://github.com/oxabl-project/oxabl/commit/570c93984d2536360bbaf5b94f38ee9026e7bcad))
+* win back parser, resolve and preprocessor time ([07a6324](https://github.com/oxabl-project/oxabl/commit/07a63246bca88025c833fba6c96e3d003465a819))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_workspace bumped from 2.0.0 to 3.0.0
+
 ## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.5.2...oxabl_preprocessor-v0.6.0) (2026-10-14)
 
 

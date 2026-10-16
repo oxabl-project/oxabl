@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v1.0.3...oxabl_formatter-v2.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lexer:** `oxabl_lexer::Kind` gains File, Total, Count, Average, Maximum, Minimum, SubTotal, SubCount, SubAverage, SubMaximum and SubMinimum; these words no longer lex as `Kind::Identifier`.
+
+### Features
+
+* **lexer:** lex FILE and the aggregate words as keywords ([8d3cde1](https://github.com/oxabl-project/oxabl/commit/8d3cde15d110bcc094910cdbc93c9e6e03e6e338))
+* **scope:** strict-analysis M3: oxabl_scope, the LISTING harness, LK001-LK003 and TX001-TX005 ([d4779c9](https://github.com/oxabl-project/oxabl/commit/d4779c9f0ff420c55403a67b93c773dd24a4c6dd))
+
+
+### Bug Fixes
+
+* **formatter:** keep the spelling of PRINTER and the new format-option words used as names ([f431429](https://github.com/oxabl-project/oxabl/commit/f4314294bd515df4ffdd609e0ba251d04292fd4e))
+* **formatter:** keep unreserved class names and recase every other keyword as before ([694ed0f](https://github.com/oxabl-project/oxabl/commit/694ed0fdcff5bfd777655998d6aaaaac180992e7))
+* **formatter:** read IMPLEMENTS lists in one pass ([67949ec](https://github.com/oxabl-project/oxabl/commit/67949ec57142dcfab11aaed7fcc65fc0addd50f3))
+* **formatter:** recase an unreserved keyword only where it is a keyword ([72753e0](https://github.com/oxabl-project/oxabl/commit/72753e05718f9b3a0b97a91a79ab7db1d712f880))
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **parser:** keep parsing frame items after layout options ([ed6761d](https://github.com/oxabl-project/oxabl/commit/ed6761d1e56493ebe696fed4c83030c0ce58af92))
+* UPDATE/SET frame fields, shared summaries in check --watch, rustdoc links ([bd0df69](https://github.com/oxabl-project/oxabl/commit/bd0df6971eb692a65dcbc18ac89c160319952a01))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_lexer bumped from 1.0.2 to 2.0.0
+    * oxabl_parser bumped from 2.0.0 to 3.0.0
+
 ## [1.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v1.0.2...oxabl_formatter-v1.0.3) (2026-10-14)
 
 

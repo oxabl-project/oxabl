@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.5.1...oxabl_codegen-v0.6.0) (2026-10-16)
+
+
+### Features
+
+* **codegen:** merge the Progress.* built-in classes into the index ([2da1d7f](https://github.com/oxabl-project/oxabl/commit/2da1d7f3357db383019f84ddbc164743e2e75153)), closes [#154](https://github.com/oxabl-project/oxabl/issues/154)
+* **codegen:** scrape the Progress built-in class index from the ABL API docs ([f7cbbdf](https://github.com/oxabl-project/oxabl/commit/f7cbbdf78e9fb16df886ff060b3e4666e6c82633)), closes [#154](https://github.com/oxabl-project/oxabl/issues/154)
+* **semantic:** recognize documented OpenEdge built-in types ([a528bbc](https://github.com/oxabl-project/oxabl/commit/a528bbc0f7953dcc355a88c91e2a5438099f1d37)), closes [#154](https://github.com/oxabl-project/oxabl/issues/154)
+
+
+### Bug Fixes
+
+* **codegen:** decode only a trailing generic in built-in class page names ([307ac14](https://github.com/oxabl-project/oxabl/commit/307ac14fb2aa1b7b6293a7e7afd40150a2427af1)), closes [#154](https://github.com/oxabl-project/oxabl/issues/154)
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **lexer:** register OVERLAY, OS-DIR, NEW and the byte-order constants as built-ins ([e6552d6](https://github.com/oxabl-project/oxabl/commit/e6552d646caf5666c746efbc7b68b5a2b4e34eec)), closes [#183](https://github.com/oxabl-project/oxabl/issues/183)
+* **lexer:** register UPPER, LOWER, SET-SIZE, PUT-* and WIDGET-H* as built-in functions ([5250ddf](https://github.com/oxabl-project/oxabl/commit/5250ddf8acd7de9bd328ffac2a7f04063e425a15))
+* **parser:** parse the SEEK statement and register USER as the USERID abbreviation ([73fb2f9](https://github.com/oxabl-project/oxabl/commit/73fb2f99979f98bcf25d7362b82f72683fd400e7))
+* **semantic:** read ON ... OF targets and register missing built-ins ([a5899ba](https://github.com/oxabl-project/oxabl/commit/a5899ba049ea4d16c57feaf21f8f709996c8b050))
+
+
+### Performance Improvements
+
+* **lexer:** narrow keyword dispatch and scan ASCII runs ([78803ae](https://github.com/oxabl-project/oxabl/commit/78803ae6c77cf5229387674ad8f5f765e9c53295))
+
 ## [0.5.1](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.5.0...oxabl_codegen-v0.5.1) (2026-10-14)
 
 

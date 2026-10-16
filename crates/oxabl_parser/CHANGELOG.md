@@ -1,5 +1,124 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v2.0.0...oxabl_parser-v3.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** oxabl_lexer::Kind adds Bgcolor, Column, Fgcolor, NoTabStop, Row, SizeChars and SizePixels.
+* **lexer:** oxabl_lexer::Kind adds the Printer variant.
+* **parser:** `StreamOperation::From` and `StreamOperation::To` now carry a `StreamTarget` instead of an `Expression`; the new `StreamTarget::FileName` holds the bare file name.
+* **parser:** StatementKind::Message gains a fields field.
+* **parser:** StatementKind::Update and StatementKind::Set gain a fields field.
+* **parser:** StatementKind::Update and StatementKind::Set have a new `options` field.
+* **parser:** oxabl_lexer::Kind adds the Stop variant. Exhaustive matches must handle it.
+* **parser:** StatementKind::Form and StatementKind::DefineFrame have a new `fields: Vec<FrameField>` field.
+* **parser:** StatementKind has a new WaitFor variant; WAIT-FOR no longer parses to Skipped.
+* **parser:** StatementKind has a new Apply variant; APPLY no longer parses to Skipped.
+* **parser:** StatementKind has new Enable, Disable, Hide and View variants; those statements no longer parse to Skipped.
+* **parser:** StatementKind has new Update and Set variants; UPDATE and SET no longer parse to Skipped.
+* **parser:** StatementKind has new Form and DefineWidget variants and SymbolKind has a new Widget variant; FORM and static widget definitions no longer parse to Skipped.
+* **parser:** StatementKind has new Pause, Down and Up variants; PAUSE, DOWN and UP no longer parse to Skipped.
+* **parser:** StatementKind has new Export and Import variants; EXPORT and IMPORT no longer parse to Skipped.
+* **lexer:** `oxabl_lexer::Kind` gains File, Total, Count, Average, Maximum, Minimum, SubTotal, SubCount, SubAverage, SubMaximum and SubMinimum; these words no longer lex as `Kind::Identifier`.
+* **parser:** the exhaustive enum oxabl_lexer::Kind has new variants on this branch: Kind::RawTransfer here, and Kind::PackageProtected, Kind::Ordinal, Kind::Cdecl, Kind::Pascal and Kind::Stdcall from the PACKAGE-PROTECTED and EXTERNAL procedure option fixes.
+* **parser:** StatementKind has a new Put variant; PUT no longer parses to Skipped.
+* **parser:** Statement has a new public field, skipped_tail.
+* **parser:** AccessModifier gains a PackageProtected variant.
+* **parser:** StatementKind::Procedure has a new `is_external` field. Code that builds or destructures it without `..` must add the field.
+* **lexer:** `OnAction::PersistentRun` gains `in_handle`.
+* **parser:** `StatementKind::Class` has a new field, `use_widget_pool`. Code that builds the variant or matches it without `..` must name it.
+* **parser:** new `StatementKind::ReleaseObject` and
+* **parser:** `StatementKind::Do`, `Repeat` and `ForEach` have a new
+* **parser:** StatementKind has a new VariableDeclarationList variant, so exhaustive matches on StatementKind must handle it.
+* **lint:** StatementKind::Procedure gains an is_prototype field.
+
+### Features
+
+* **lexer:** add the PRINTER keyword for OUTPUT TO PRINTER ([02425b3](https://github.com/oxabl-project/oxabl/commit/02425b3ed2446746afaca9c868c03ca84effea68))
+* **lexer:** lex FILE and the aggregate words as keywords ([8d3cde1](https://github.com/oxabl-project/oxabl/commit/8d3cde15d110bcc094910cdbc93c9e6e03e6e338))
+* **lexer:** lex OBJECT, WIDGET and BUFFER-NAME as keywords ([cb99b14](https://github.com/oxabl-project/oxabl/commit/cb99b14ba33e78f13b12b00606b66f3726118e2d))
+* **parser:** accept USING-imported keyword class names and OE12 VAR lists ([498faa2](https://github.com/oxabl-project/oxabl/commit/498faa2a248db29222384e7735c1aa6ccbe70f57))
+* **parser:** credit reads inside the skipped tails of modelled statements ([c93aa74](https://github.com/oxabl-project/oxabl/commit/c93aa742c3f49dc3b1621cb641d003860dfe0c83)), closes [#134](https://github.com/oxabl-project/oxabl/issues/134)
+* **parser:** declare frame fields of FORM and DEFINE FRAME ([de9817d](https://github.com/oxabl-project/oxabl/commit/de9817d06e20866f0eff98c311ae92c24bba6d9e))
+* **parser:** declare frame fields of UPDATE and SET ([ffb8263](https://github.com/oxabl-project/oxabl/commit/ffb82636fd6767d0b1864f48e09ee400396ea734))
+* **parser:** declare the AS/LIKE field of a MESSAGE SET/UPDATE phrase ([72b77a3](https://github.com/oxabl-project/oxabl/commit/72b77a306d99c7b46e3445d515a3cd5ce2d11789))
+* **parser:** head-parse APPLY ([ef487a1](https://github.com/oxabl-project/oxabl/commit/ef487a1f35ab24a6f90973a304e242101c8e9957)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse ENABLE, DISABLE, HIDE and VIEW ([d983d80](https://github.com/oxabl-project/oxabl/commit/d983d80ca20ccc87d952289215f20e47bd059980)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse EXPORT and IMPORT ([59f6c2c](https://github.com/oxabl-project/oxabl/commit/59f6c2c074d9d2a0f2f2038e60d171e48532f1e3)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse FORM and declare static widgets ([27d2c24](https://github.com/oxabl-project/oxabl/commit/27d2c2487060f605c4f7b042fb12e5a27f62b7a8)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse PAUSE, DOWN and UP ([b16c0eb](https://github.com/oxabl-project/oxabl/commit/b16c0ebab1fb7a91a4db041b9f7ae6e5198c46e2)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse PUT and trim the harvest of OS-* file statements ([ba9faee](https://github.com/oxabl-project/oxabl/commit/ba9faeef75aa39f3b549c9c13b7ae2b2580f2801)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse UPDATE and SET ([c2882f4](https://github.com/oxabl-project/oxabl/commit/c2882f45a574bdb676c110a4be0fe8372856a77c)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse WAIT-FOR ([7179cea](https://github.com/oxabl-project/oxabl/commit/7179cea2f0c45f2afa8dd852a4671cc020d5cf07)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** mark EXTERNAL procedure declarations ([aee65aa](https://github.com/oxabl-project/oxabl/commit/aee65aa962334a06fb829d839a254ee6ba35c1d0))
+* **parser:** model the handle-lifetime statements ([86c7938](https://github.com/oxabl-project/oxabl/commit/86c793879ff33e210d4253563aaa8af1dee90b9d))
+* **parser:** record USE-WIDGET-POOL on a class ([2b7fbbf](https://github.com/oxabl-project/oxabl/commit/2b7fbbf00dc2cda3a729f7d542c71a7528969490))
+* **scope:** strict-analysis M3: oxabl_scope, the LISTING harness, LK001-LK003 and TX001-TX005 ([d4779c9](https://github.com/oxabl-project/oxabl/commit/d4779c9f0ff420c55403a67b93c773dd24a4c6dd))
+
+
+### Bug Fixes
+
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **lint:** skip CATCH variables and EXTERNAL/IN procedure parameters in unused-variable ([0ac00a2](https://github.com/oxabl-project/oxabl/commit/0ac00a2b5f2ec41d27011a300430569310a68a5f)), closes [#195](https://github.com/oxabl-project/oxabl/issues/195) [#196](https://github.com/oxabl-project/oxabl/issues/196)
+* **parser,index:** read every RUN target path shape whole ([079e451](https://github.com/oxabl-project/oxabl/commit/079e451c22e1ee7d604f71452314dbcc45eef44e)), closes [#227](https://github.com/oxabl-project/oxabl/issues/227)
+* **parser:** accept any word written against a colon as a member name ([33dad7c](https://github.com/oxabl-project/oxabl/commit/33dad7cb079ded432cfd46448912565cce550c79))
+* **parser:** accept EXTERNAL procedure options in any order ([41a4e99](https://github.com/oxabl-project/oxabl/commit/41a4e9941829e19f88e3374101dc1cb0af64690f))
+* **parser:** accept GET-CODEPAGE(s), :NULL member and SERIALIZABLE class option ([90592e0](https://github.com/oxabl-project/oxabl/commit/90592e0189746319831386e1ec3716ffee7ecea0)), closes [#198](https://github.com/oxabl-project/oxabl/issues/198) [#192](https://github.com/oxabl-project/oxabl/issues/192) [#191](https://github.com/oxabl-project/oxabl/issues/191)
+* **parser:** accept OVERRIDE in DEFINE PROPERTY ([91ca632](https://github.com/oxabl-project/oxabl/commit/91ca6324fcdb2d6ade0f63666fdaed82bbaf67cd))
+* **parser:** accept OVERRIDE on either side of ABSTRACT in DEFINE PROPERTY ([ed32530](https://github.com/oxabl-project/oxabl/commit/ed32530cb96c71e16b0cf7602c015a8b9f3ec335))
+* **parser:** accept TRANSACTION after the ON phrases of a DO block ([4af5116](https://github.com/oxabl-project/oxabl/commit/4af5116cfabd31925534db943e4414fd3a35ce1c))
+* **parser:** accept unreserved type keywords as class names ([f8f1b44](https://github.com/oxabl-project/oxabl/commit/f8f1b442cc483f3ed3da37bf944dc2d05ba21814))
+* **parser:** drop a dynamic buffer field from the unmodelled harvest ([e780737](https://github.com/oxabl-project/oxabl/commit/e780737730eac9f2804b76180d890f3689fd1bb9)), closes [#223](https://github.com/oxabl-project/oxabl/issues/223)
+* **parser:** end a block header at a keyword against its colon ([000e6c2](https://github.com/oxabl-project/oxabl/commit/000e6c26ecaa9ceaf68e28f5fdd0c723a29438ed))
+* **parser:** give RAW-TRANSFER, UNDERLINE and CURRENT-CHANGED their table edge ([d9e83df](https://github.com/oxabl-project/oxabl/commit/d9e83df85b4930f54e3afbeeb15c3099e81fc7b9))
+* **parser:** handle STOP, comments between statement keywords, and bare metaschema fields ([a2b093b](https://github.com/oxabl-project/oxabl/commit/a2b093b74998b49260470fac9a4a25d23d3aef39))
+* **parser:** keep parsing frame items after layout options ([ed6761d](https://github.com/oxabl-project/oxabl/commit/ed6761d1e56493ebe696fed4c83030c0ce58af92))
+* **parser:** keep parsing frame items after VIEW-AS, SIZE, AT and colour options ([8839b62](https://github.com/oxabl-project/oxabl/commit/8839b623fe5f2e312ac6850e371b07cb88b51257))
+* **parser:** keep the body of DO FOR and REPEAT FOR blocks ([57fc6d5](https://github.com/oxabl-project/oxabl/commit/57fc6d5d2371abfad6ea7c4562c3d055a4e053cf))
+* **parser:** keep the database qualifier of a buffer or LIKE table ([2302914](https://github.com/oxabl-project/oxabl/commit/23029149faaa223c062e3ed411fb4bf084ff5d29))
+* **parser:** keep the expression of a block header ON phrase action ([c930ea0](https://github.com/oxabl-project/oxabl/commit/c930ea016dcb12e644b3df2a34ed3baf7154f6f0)), closes [#226](https://github.com/oxabl-project/oxabl/issues/226)
+* **parser:** keep the expressions of UPDATE, SET, FORM and ENABLE format options ([d3436fb](https://github.com/oxabl-project/oxabl/commit/d3436fb0428577d7c363068017323fd60582791c))
+* **parser:** keep the table a signature buffer parameter names ([0843777](https://github.com/oxabl-project/oxabl/commit/0843777db35aa2595dd20d5faeaef40448425c8a)), closes [#139](https://github.com/oxabl-project/oxabl/issues/139)
+* **parser:** merge class header option loop ([6d432a5](https://github.com/oxabl-project/oxabl/commit/6d432a5bcd97f1fed2ee5a6d40187b328449f520)), closes [#191](https://github.com/oxabl-project/oxabl/issues/191)
+* **parser:** model DEFINE WORKFILE/WORK-TABLE and the ACCUM aggregate phrase ([ad51cbc](https://github.com/oxabl-project/oxabl/commit/ad51cbc97efa8f68a6b6e0103f37e3a8977ffe7b)), closes [#159](https://github.com/oxabl-project/oxabl/issues/159) [#184](https://github.com/oxabl-project/oxabl/issues/184)
+* **parser:** parse NEW(buffer) and every byte-order constant as an expression ([d23e55f](https://github.com/oxabl-project/oxabl/commit/d23e55f39a72975da0a58fdf05168ed86a33cd12)), closes [#183](https://github.com/oxabl-project/oxabl/issues/183)
+* **parser:** parse the CHOOSE statement as a skipped statement ([91bdc0b](https://github.com/oxabl-project/oxabl/commit/91bdc0b0d7f840597b5a1e56ba3c3488f4622524))
+* **parser:** parse the PACKAGE-PROTECTED access modifier ([95d7b23](https://github.com/oxabl-project/oxabl/commit/95d7b23d30f45c079e1801b5e178100fd13a5e02))
+* **parser:** parse the SEEK statement and register USER as the USERID abbreviation ([73fb2f9](https://github.com/oxabl-project/oxabl/commit/73fb2f99979f98bcf25d7362b82f72683fd400e7))
+* **parser:** read a receiverless call to a keyword-named method as a call ([c0c70b4](https://github.com/oxabl-project/oxabl/commit/c0c70b41d2a8035e8e59c68641a581b3360f6aa2))
+* **parser:** read an unquoted OUTPUT/INPUT file name as a name ([130d384](https://github.com/oxabl-project/oxabl/commit/130d384c83d7e61c4840cecb2f155b5d0c70b680))
+* **parser:** read database-qualified names in record statements ([6d8cbf1](https://github.com/oxabl-project/oxabl/commit/6d8cbf10c5e64de5963dde999b0727d24b41e697))
+* **parser:** read database-qualified tables in buffer and temp-table definitions ([161028f](https://github.com/oxabl-project/oxabl/commit/161028f56ca62f531c7be020b2d6e9bc528f7cb5))
+* **parser:** read past the end of the tokens as the EOF token ([4123f7d](https://github.com/oxabl-project/oxabl/commit/4123f7db57ce689cfa52c41cfec3acabbf79a8b1))
+* **parser:** report a missing class name after NEW instead of panicking ([4feba22](https://github.com/oxabl-project/oxabl/commit/4feba2270d3ccd6216536d2c12ad04ef0ee63508))
+* **parser:** stop a block header's ON phrase at the end of the file ([f1a7ac0](https://github.com/oxabl-project/oxabl/commit/f1a7ac030398a80308e3cd182b068bcd1fc4dfc4))
+* **parser:** take WHILE, TRANSACTION and ON phrases of a DO in any order ([1e807b2](https://github.com/oxabl-project/oxabl/commit/1e807b209f74a0d0ab4380834d80fa48eb1a38e2))
+* **parser:** unquoted stream file names and MESSAGE UPDATE fields ([06c823c](https://github.com/oxabl-project/oxabl/commit/06c823cc47c388bbbcf63639cb32a3e8889e9a45))
+* **semantic:** do not report a `..` RUN target as absent ([5c3074f](https://github.com/oxabl-project/oxabl/commit/5c3074f68c83213c99bc9c01e17d69e96d32687e)), closes [#227](https://github.com/oxabl-project/oxabl/issues/227)
+* sweep of 25 open parser, semantic, lint and schema issues ([f01fcce](https://github.com/oxabl-project/oxabl/commit/f01fcce408f13c4c20050f712a683435b57a4a46))
+* UPDATE/SET frame fields, shared summaries in check --watch, rustdoc links ([bd0df69](https://github.com/oxabl-project/oxabl/commit/bd0df6971eb692a65dcbc18ac89c160319952a01))
+
+
+### Performance Improvements
+
+* **parser:** always inline the token cursor reads ([0e99def](https://github.com/oxabl-project/oxabl/commit/0e99def149861b9fd9c9d09530c128b9e17be8e9))
+* **parser:** parse a single-name VAR without a declaration list ([c2d0166](https://github.com/oxabl-project/oxabl/commit/c2d0166043749f33332780e33f5d25a7aea844f1))
+* **parser:** presize the top-level statement list ([49857f2](https://github.com/oxabl-project/oxabl/commit/49857f253310cfabbfd09e583ef19b352e3cc8ae))
+* win back parser, resolve and preprocessor time ([07a6324](https://github.com/oxabl-project/oxabl/commit/07a63246bca88025c833fba6c96e3d003465a819))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_lexer bumped from 1.0.2 to 2.0.0
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.6.0 to 0.7.0
+    * oxabl_workspace bumped from 2.0.0 to 3.0.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v1.0.4...oxabl_parser-v2.0.0) (2026-10-14)
 
 
