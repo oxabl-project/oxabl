@@ -85,6 +85,9 @@ struct Problem<'a> {
     call_writes: Vec<usize>,
     /// Buffers named by `AVAILABLE` in the unit, for correlated tests.
     buffers: FxHashMap<String, usize>,
+    /// The header of each counted loop whose constant bounds make its body
+    /// run, with the index of its [`Fact::fresh`] atom.
+    counted: FxHashMap<NodeIx, usize>,
     /// Comparisons whose left operand the parser read as `NOT a`.
     loosened: &'a FxHashMap<NodeId, Expression>,
     /// The leading variables that some test reads (section 9.9).
@@ -478,10 +481,10 @@ impl Problem<'_> {
             return Fact::flag(self.tracked, i).map(|a| (a, true));
         }
         let k = lookup(&self.buffers, available_buffer(e)?)?;
-        Some((Fact::buffer(self.tracked, k), false))
+        Some((Fact::buffer(self.tracked, self.counted.len(), k), false))
     }
     fn forget_buffers(&self, f: &mut Fact) {
-        f.drop_atoms_from(Fact::buffer(self.tracked, 0));
+        f.drop_atoms_from(Fact::buffer(self.tracked, self.counted.len(), 0));
     }
     fn variable(&self, e: &Expression) -> Option<usize> {
         if let E::Identifier(i) = &e.kind {
@@ -1291,6 +1294,57 @@ impl Analysis for Problem<'_> {
         }
     }
     fn transfer_edge(&self, c: &Cfg, n: NodeIx, e: &Edge, f: &mut Fact) {
+        self.edge_step(c, n, e, f);
+        if f.dead() {
+            return;
+        }
+        // A counted loop whose body runs leaves only after an iteration: the
+        // sources that only entering paths carry are gone at its exit.
+        if let Some(&j) = self.counted.get(&n)
+            && e.kind == EdgeKind::LoopDone
+        {
+            f.drop_marked(Fact::fresh(self.tracked, j));
+        }
+        if let Some(&j) = self.counted.get(&e.to) {
+            let a = Fact::fresh(self.tracked, j);
+            if matches!(
+                e.kind,
+                EdgeKind::LoopBack | EdgeKind::Next | EdgeKind::Retry
+            ) {
+                f.unmark_sources(a);
+            } else {
+                f.mark_sources(a);
+            }
+        }
+    }
+}
+
+impl Problem<'_> {
+    /// `DO v = a TO b [BY k]` with constant bounds that run the body, and no
+    /// `WHILE`.
+    fn runs_body(&self, s: &Statement) -> bool {
+        let S::Do {
+            loop_var: Some(_),
+            from: Some(from),
+            to: Some(to),
+            by,
+            while_condition: None,
+            ..
+        } = &s.kind
+        else {
+            return false;
+        };
+        let (Some(from), Some(to)) = (self.number(from), self.number(to)) else {
+            return false;
+        };
+        match by.as_ref().map(|b| self.number(b)) {
+            None => from <= to,
+            Some(Some(k)) if k > 0 => from <= to,
+            Some(Some(k)) if k < 0 => from >= to,
+            _ => false,
+        }
+    }
+    fn edge_step(&self, c: &Cfg, n: NodeIx, e: &Edge, f: &mut Fact) {
         if matches!(e.kind, EdgeKind::Raise(_)) {
             if !f.dead() {
                 f.fill(UNKNOWN);
@@ -1555,6 +1609,7 @@ fn analyze_inspect(
             repeat_vars: &repeat_vars,
             call_writes: Vec::new(),
             buffers: FxHashMap::default(),
+            counted: FxHashMap::default(),
             loosened: &loosened,
             tracked: 0,
         };
@@ -1653,6 +1708,15 @@ fn analyze_inspect(
             }
         }
         p.buffers = buffers;
+        for (n, node) in cfg.nodes() {
+            if node.kind == NodeKind::Head
+                && let Some(s) = node.stmt.and_then(|id| p.statements.get(&id))
+                && p.runs_body(s)
+            {
+                let next = p.counted.len();
+                p.counted.insert(n, next);
+            }
+        }
         p.call_writes = p
             .names
             .iter()
@@ -1749,6 +1813,7 @@ mod tests {
             repeat_vars: &FxHashMap::default(),
             call_writes: Vec::new(),
             buffers: FxHashMap::default(),
+            counted: FxHashMap::default(),
             loosened: &FxHashMap::default(),
             tracked: 2,
         };

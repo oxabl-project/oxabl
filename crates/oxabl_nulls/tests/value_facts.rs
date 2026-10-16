@@ -248,3 +248,28 @@ IF d > TODAY THEN MESSAGE 1.
     // `i` is no constant 0, so `d = ?` can run.
     assert_eq!(uses(source), ["d@9"]);
 }
+
+#[test]
+fn a_counted_loop_with_constant_bounds_runs_its_body() {
+    let run = |header: &str, skip: &str| {
+        uses(&format!(
+            "DEFINE VARIABLE d AS DATE NO-UNDO.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+DEFINE VARIABLE n AS INTEGER NO-UNDO.
+n = 5.
+{header}
+  {skip}
+  d = TODAY.
+END.
+IF d > TODAY THEN MESSAGE 1.
+"
+        ))
+    };
+    assert_eq!(run("DO i = 1 TO 5:", ""), Vec::<String>::new());
+    assert_eq!(run("DO i = 5 TO 1 BY -1:", ""), Vec::<String>::new());
+    // Every iteration may skip the write.
+    assert_eq!(run("DO i = 1 TO 5:", "IF n = i THEN NEXT."), ["d@9"]);
+    assert_eq!(run("DO i = 1 TO 0:", ""), ["d@9"]);
+    assert_eq!(run("DO i = 1 TO n:", ""), ["d@9"]);
+    assert_eq!(run("DO i = 1 TO 5 WHILE n > 0:", ""), ["d@9"]);
+}

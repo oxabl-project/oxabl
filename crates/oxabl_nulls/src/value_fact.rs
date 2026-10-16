@@ -116,9 +116,42 @@ impl Fact {
     pub fn flag(limit: usize, i: usize) -> Option<usize> {
         (i < limit).then_some(limit.next_multiple_of(2) + 2 * i)
     }
-    /// The atom "`AVAILABLE` of the `k`-th buffer is true".
-    pub fn buffer(limit: usize, k: usize) -> usize {
-        limit.next_multiple_of(2) + 2 * limit + 2 * k
+    /// The atom "the `j`-th counted loop has not finished an iteration since
+    /// it was entered".
+    pub fn fresh(limit: usize, j: usize) -> usize {
+        limit.next_multiple_of(2) + 2 * limit + 2 * j
+    }
+    /// The atom "`AVAILABLE` of the `k`-th buffer is true", after the atoms
+    /// of `loops` counted loops.
+    pub fn buffer(limit: usize, loops: usize, k: usize) -> usize {
+        Self::fresh(limit, loops) + 2 * k
+    }
+    /// Add atom `a` to the conditions of every source.
+    pub fn mark_sources(&mut self, a: usize) {
+        for r in self.sources() {
+            r.insert(a);
+        }
+    }
+    /// Remove atom `a` from the conditions of every source.
+    pub fn unmark_sources(&mut self, a: usize) {
+        for r in self.sources() {
+            r.remove(a);
+        }
+    }
+    /// Drop the sources that carry atom `a`.
+    pub fn drop_marked(&mut self, a: usize) {
+        let cut: Vec<usize> = self
+            .requires
+            .iter()
+            .filter(|(_, r)| r.contains(a))
+            .map(|(&i, _)| i)
+            .collect();
+        for i in cut {
+            self.drop_source(i);
+            if self.dead() {
+                return;
+            }
+        }
     }
     /// No path reaches this point. A zero value always zeroes every value.
     pub fn dead(&self) -> bool {
@@ -343,7 +376,8 @@ mod tests {
         for limit in 0..6 {
             let mut atoms: Vec<usize> = (0..limit)
                 .filter_map(|i| Fact::flag(limit, i))
-                .chain((0..3).map(|k| Fact::buffer(limit, k)))
+                .chain((0..2).map(|j| Fact::fresh(limit, j)))
+                .chain((0..3).map(|k| Fact::buffer(limit, 2, k)))
                 .collect();
             assert!(atoms.iter().all(|a| a % 2 == 0 && *a >= limit), "{limit}");
             atoms.extend(atoms.clone().iter().map(|a| a ^ 1));
