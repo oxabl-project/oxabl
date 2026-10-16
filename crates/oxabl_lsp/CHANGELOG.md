@@ -1,5 +1,45 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v2.0.0...oxabl_lsp-v3.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** index_file takes an IncludeContext instead of a PreprocessorConfig. SharedProducers::build and definitions_in take an IncludeContext instead of a filesystem and a PreprocessorConfig. IndexHandle::set_preprocessor is replaced by set_environment, which takes the PipelineConfig, and IndexEnvironment gains an include_paths field.
+* **analyze:** `oxabl_analyze::IncludeFinding` and `oxabl_analyze::CollectedDiagnostics` are `#[non_exhaustive]`. Code outside the crate can no longer build them with a struct expression or match them without `..`. Use `CollectedDiagnostics::new`; `IncludeFinding` is produced by the crate only.
+
+### Features
+
+* **index:** index classes built from includes through the preprocessor ([1d80f13](https://github.com/oxabl-project/oxabl/commit/1d80f13fed347e40f75eb88940f54db79bcbec1d)), closes [#225](https://github.com/oxabl-project/oxabl/issues/225)
+* **lsp:** code lens for database effect summaries ([530aa7b](https://github.com/oxabl-project/oxabl/commit/530aa7b1cd76e46d4b25e3e4db6082f299bd99ec))
+* **lsp:** show cached database effect summaries as code lenses ([2924b89](https://github.com/oxabl-project/oxabl/commit/2924b89d1fffc950307c8b3453fce42c8ee7c80c))
+
+
+### Bug Fixes
+
+* **analyze:** mark IncludeFinding and CollectedDiagnostics non-exhaustive ([40a0bae](https://github.com/oxabl-project/oxabl/commit/40a0bae77f1a1c6a6cd4a0886522d719b0076b7a))
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* UPDATE/SET frame fields, shared summaries in check --watch, rustdoc links ([bd0df69](https://github.com/oxabl-project/oxabl/commit/bd0df6971eb692a65dcbc18ac89c160319952a01))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 2.0.0 to 3.0.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_daemon bumped from 0.4.0 to 0.5.0
+    * oxabl_pipeline bumped from 2.0.0 to 3.0.0
+    * oxabl_workspace bumped from 2.0.0 to 3.0.0
+  * dev-dependencies
+    * oxabl_daemon bumped from 0.4.0 to 0.5.0
+    * oxabl_analyze bumped from 2.0.0 to 3.0.0
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_workspace bumped from 2.0.0 to 3.0.0
+    * oxabl_pipeline bumped from 2.0.0 to 3.0.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v1.0.3...oxabl_lsp-v2.0.0) (2026-10-14)
 
 

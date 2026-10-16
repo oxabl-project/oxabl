@@ -1,33 +1,33 @@
 [package]
 name = "oxabl_lint"
-version = "2.0.0"
+version = "3.0.0"
 edition = "2024"
 license = "MIT"
 description = "Lint rules for Progress ABL built on the oxabl_semantic model"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_lint"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "2.0.0" }
-oxabl_common = { path = "../oxabl_common", version = "1.2.0" }
-oxabl_effects = { path = "../oxabl_effects", version = "0.1.0" }
-oxabl_flow = { path = "../oxabl_flow", version = "0.2.0" }
-oxabl_handles = { path = "../oxabl_handles", version = "0.1.0" }
-oxabl_index = { path = "../oxabl_index", version = "2.0.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.2" }
-oxabl_nulls = { path = "../oxabl_nulls", version = "0.1.0" }
-oxabl_scope = { path = "../oxabl_scope", version = "0.1.0" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "2.0.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "3.0.0" }
+oxabl_common = { path = "../oxabl_common", version = "1.2.1" }
+oxabl_effects = { path = "../oxabl_effects", version = "0.2.0" }
+oxabl_flow = { path = "../oxabl_flow", version = "0.3.0" }
+oxabl_handles = { path = "../oxabl_handles", version = "0.2.0" }
+oxabl_index = { path = "../oxabl_index", version = "3.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.0" }
+oxabl_nulls = { path = "../oxabl_nulls", version = "0.2.0" }
+oxabl_scope = { path = "../oxabl_scope", version = "0.2.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "3.0.0" }
 rustc-hash = "2"
 
 [dev-dependencies]
 # The batch workspace index, for the cross-file resolution tests: they build a
 # real `BatchIndex` over an `InMemoryFileSystem` rather than a hand-written stub,
 # so what they pin is the resolution every client gets.
-oxabl_index = { path = "../oxabl_index", version = "2.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.3.1", features = ["test-support"] }
-oxabl_parser = { path = "../oxabl_parser", version = "2.0.0" }
-oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.6.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "2.0.0" }
+oxabl_index = { path = "../oxabl_index", version = "3.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.4.0", features = ["test-support"] }
+oxabl_parser = { path = "../oxabl_parser", version = "3.0.0" }
+oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.7.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "3.0.0" }
 rust_decimal = "1.40.0"
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 smallvec = { version = "1", features = ["union"] }

@@ -1,20 +1,20 @@
 [package]
 name = "oxabl_effects"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Database effects per unit, likely index per record read, and transitive summaries over the call graph, for Progress ABL"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_effects"
 
 [dependencies]
-oxabl_ast = { path = "../oxabl_ast", version = "2.0.0" }
-oxabl_flow = { path = "../oxabl_flow", version = "0.2.0" }
-oxabl_index = { path = "../oxabl_index", version = "2.0.0" }
-oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.2" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.3.1" }
-oxabl_scope = { path = "../oxabl_scope", version = "0.1.0" }
+oxabl_ast = { path = "../oxabl_ast", version = "3.0.0" }
+oxabl_flow = { path = "../oxabl_flow", version = "0.3.0" }
+oxabl_index = { path = "../oxabl_index", version = "3.0.0" }
+oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.4.0" }
+oxabl_scope = { path = "../oxabl_scope", version = "0.2.0" }
 rustc-hash = "2"
 
 [dev-dependencies]
-oxabl_parser = { path = "../oxabl_parser", version = "2.0.0" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.3.1", features = ["test-support"] }
+oxabl_parser = { path = "../oxabl_parser", version = "3.0.0" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.4.0", features = ["test-support"] }

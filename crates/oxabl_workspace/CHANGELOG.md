@@ -1,5 +1,35 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v2.0.0...oxabl_workspace-v3.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **workspace:** `SourcesConfig` gains the public fields `encoding` and `fallback_encoding`, and `PipelineConfig` gains the public field `decoding`. Code that builds either with a struct literal must set them.
+* **workspace:** `SourcesConfig` has a new pub field, `root_relative_include_paths`; `PipelineConfig` has a new pub field, `root_relative_include_paths`; `IncludeContext` has a new pub field, `root_relative_paths`.
+* **workspace:** SourcesConfig and PipelineConfig gain a pub root_extensions field.
+* **index:** SourcesConfig and PipelineConfig gain a pub case_insensitive_lookup field.
+
+### Features
+
+* **index:** add opt-in case-insensitive class and program lookup ([6b14dc8](https://github.com/oxabl-project/oxabl/commit/6b14dc808ed1118c3634eee3a59cd47f6f44afe9)), closes [#214](https://github.com/oxabl-project/oxabl/issues/214)
+* **workspace:** make the root extension set configurable ([8994bb4](https://github.com/oxabl-project/oxabl/commit/8994bb4b21dc869b3c05be77310dd8324049b7e8)), closes [#143](https://github.com/oxabl-project/oxabl/issues/143)
+* **workspace:** read source files in a configured encoding ([68164e3](https://github.com/oxabl-project/oxabl/commit/68164e3e46912235b76836838879080fc17f0869))
+* **workspace:** search each root's own directory first with root_relative_include_paths ([1793dc7](https://github.com/oxabl-project/oxabl/commit/1793dc7d65eaba696cf115172a04422b2f5b061a))
+
+
+### Bug Fixes
+
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v1.0.3...oxabl_workspace-v2.0.0) (2026-10-14)
 
 

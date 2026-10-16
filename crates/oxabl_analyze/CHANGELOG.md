@@ -1,5 +1,71 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v2.0.0...oxabl_analyze-v3.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **analysis:** oxabl_lint::RunShared now has a lifetime parameter so it can borrow a callee summary provider. Types that store RunShared must supply that lifetime.
+* **parser:** StatementKind has new Form and DefineWidget variants and SymbolKind has a new Widget variant; FORM and static widget definitions no longer parse to Skipped.
+* **scope:** `oxabl_semantic::AnalysisContext` has a new public field, `elided_includes`, so a struct literal of it no longer compiles. Build it with `AnalysisContext::new` and `with_elided_includes`.
+* **pipeline:** `PreprocessedFile` has a new pub field, `skipped_text`. `MAX_INCLUDE_DEPTH` is now public.
+* **pipeline:** CollectedDiagnostics has a new public field, include_origin, so code that builds it with a struct expression must set it.
+* **analyze:** `oxabl_analyze::IncludeFinding` and `oxabl_analyze::CollectedDiagnostics` are `#[non_exhaustive]`. Code outside the crate can no longer build them with a struct expression or match them without `..`. Use `CollectedDiagnostics::new`; `IncludeFinding` is produced by the crate only.
+* **lint:** `oxabl_analyze::CollectedDiagnostics` has a new public field, `include_findings`. Code that builds it with a struct literal must set it or use `..Default::default()`.
+* **handles:** `oxabl_semantic::AnalysisContext` has a new public field, `include_regions`. Code that builds it with a struct literal must set it;
+* **preprocessor:** `PreprocessedFile` has a new pub field, `skipped_includes`.
+* **semantic:** `SymbolKind` has a new `Sequence` variant.
+
+### Features
+
+* **analysis:** add callee summaries and database explanations ([ac6fd5d](https://github.com/oxabl-project/oxabl/commit/ac6fd5d57965e713c8df46086e5c9d5419427682))
+* **effects:** strict ABL M4: call graph, database effects, callee summaries, DB001 and explain ([f68126d](https://github.com/oxabl-project/oxabl/commit/f68126d6b8d4f7718558a542abfdc90a43b7cf7e))
+* **parser:** head-parse FORM and declare static widgets ([27d2c24](https://github.com/oxabl-project/oxabl/commit/27d2c2487060f605c4f7b042fb12e5a27f62b7a8)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **pipeline:** list class and program names in not-taken &IF branches and the closure of conditional includes ([6b153d6](https://github.com/oxabl-project/oxabl/commit/6b153d631c4c6e4750fa13cc740f14cc9dd203ed))
+* **pipeline:** retain include-origin findings with their compilation context ([950e08b](https://github.com/oxabl-project/oxabl/commit/950e08bc61f631828eb57261cc26f00a9b2f166f))
+* **preprocessor:** carry include references in not-taken &IF branches ([b1057ac](https://github.com/oxabl-project/oxabl/commit/b1057ac88120afad1ce4d59acb2deb808a3fcc9e))
+* **scope:** strict-analysis M3: oxabl_scope, the LISTING harness, LK001-LK003 and TX001-TX005 ([d4779c9](https://github.com/oxabl-project/oxabl/commit/d4779c9f0ff420c55403a67b93c773dd24a4c6dd))
+* **semantic,analyze:** analyze a file without the type-check pass ([96c2aa4](https://github.com/oxabl-project/oxabl/commit/96c2aa48e3852106a09c0b73102b1f6a6d339de8)), closes [#218](https://github.com/oxabl-project/oxabl/issues/218)
+* **semantic:** resolve sequence operands against the loaded schema ([95bbbc2](https://github.com/oxabl-project/oxabl/commit/95bbbc25011cdb0bf5341825c8ff072fd67839fb)), closes [#185](https://github.com/oxabl-project/oxabl/issues/185)
+
+
+### Bug Fixes
+
+* **analyze:** mark IncludeFinding and CollectedDiagnostics non-exhaustive ([40a0bae](https://github.com/oxabl-project/oxabl/commit/40a0bae77f1a1c6a6cd4a0886522d719b0076b7a))
+* **handles:** close false-positive causes found in the HD001-HD005 triage ([d4e211c](https://github.com/oxabl-project/oxabl/commit/d4e211ce75927af28a0370fbd4966e73970b78ad))
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **lint:** leave a recovered parse unjudged by the strict.handles rules ([4396af1](https://github.com/oxabl-project/oxabl/commit/4396af1a570ed4b05bb594d733fdd44d86705c37))
+* **lint:** report handle findings anchored in an include at the use site ([b414a76](https://github.com/oxabl-project/oxabl/commit/b414a76e4179e87c6b78a06d8fa732b883a631af))
+* **lint:** skip LINT0004 on an assignment that an empty reference joins ([8ef08c6](https://github.com/oxabl-project/oxabl/commit/8ef08c6a2b52e8a246f5b161fca2cc128c5d101b))
+* **scope:** let an include that did not arrive between statements hide a write or a release ([5afe7fd](https://github.com/oxabl-project/oxabl/commit/5afe7fd02ac03eb367e9b5cf08318325605f2575))
+* **scope:** read a lock that unexpanded text may hide as Unknown ([ca9caae](https://github.com/oxabl-project/oxabl/commit/ca9caae9d8ed232f1a64271222b2fac34c58813e))
+* sweep of 25 open parser, semantic, lint and schema issues ([f01fcce](https://github.com/oxabl-project/oxabl/commit/f01fcce408f13c4c20050f712a683435b57a4a46))
+* UPDATE/SET frame fields, shared summaries in check --watch, rustdoc links ([bd0df69](https://github.com/oxabl-project/oxabl/commit/bd0df6971eb692a65dcbc18ac89c160319952a01))
+
+
+### Performance Improvements
+
+* **analyze:** stop cloning every lint finding and recounting include expansions ([3fad8ca](https://github.com/oxabl-project/oxabl/commit/3fad8ca548baa586503cc6555e88ca58b010f30c))
+* **lint:** pass the parsed tokens to the scope analysis ([901b4a0](https://github.com/oxabl-project/oxabl/commit/901b4a04bcecd4563db55ce99fcaee9ad2d57c02))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_lexer bumped from 1.0.2 to 2.0.0
+    * oxabl_lint bumped from 2.0.0 to 3.0.0
+    * oxabl_parser bumped from 2.0.0 to 3.0.0
+    * oxabl_preprocessor bumped from 0.6.0 to 0.7.0
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+    * oxabl_semantic bumped from 2.0.0 to 3.0.0
+    * oxabl_workspace bumped from 2.0.0 to 3.0.0
+  * dev-dependencies
+    * oxabl_index bumped from 2.0.0 to 3.0.0
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v1.1.4...oxabl_analyze-v2.0.0) (2026-10-14)
 
 

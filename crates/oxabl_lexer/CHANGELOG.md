@@ -1,5 +1,71 @@
 # Changelog
 
+## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v1.0.2...oxabl_lexer-v2.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** oxabl_lexer::Kind adds Bgcolor, Column, Fgcolor, NoTabStop, Row, SizeChars and SizePixels.
+* **lexer:** oxabl_lexer::Kind adds the Printer variant.
+* **parser:** oxabl_lexer::Kind adds the Stop variant. Exhaustive matches must handle it.
+* **parser:** StatementKind has new Update and Set variants; UPDATE and SET no longer parse to Skipped.
+* **parser:** StatementKind has new Pause, Down and Up variants; PAUSE, DOWN and UP no longer parse to Skipped.
+* **parser:** StatementKind has new Export and Import variants; EXPORT and IMPORT no longer parse to Skipped.
+* **lexer:** `oxabl_lexer::Kind` gains File, Total, Count, Average, Maximum, Minimum, SubTotal, SubCount, SubAverage, SubMaximum and SubMinimum; these words no longer lex as `Kind::Identifier`.
+* **lexer:** `share`, `share-`, `share-l`, `share-lo` and `share-loc` now lex as `Kind::ShareLock`, not `Kind::Identifier`.
+* **parser:** the exhaustive enum oxabl_lexer::Kind has new variants on this branch: Kind::RawTransfer here, and Kind::PackageProtected, Kind::Ordinal, Kind::Cdecl, Kind::Pascal and Kind::Stdcall from the PACKAGE-PROTECTED and EXTERNAL procedure option fixes.
+* **lexer:** `Kind` has a new variant, `TypeOf`.
+* **parser:** AccessModifier gains a PackageProtected variant.
+* **lexer:** `OnAction::PersistentRun` gains `in_handle`.
+* **parser:** `StatementKind::Class` has a new field, `use_widget_pool`. Code that builds the variant or matches it without `..` must name it.
+* **parser:** new `StatementKind::ReleaseObject` and
+
+### Features
+
+* **lexer:** add the PRINTER keyword for OUTPUT TO PRINTER ([02425b3](https://github.com/oxabl-project/oxabl/commit/02425b3ed2446746afaca9c868c03ca84effea68))
+* **lexer:** lex FILE and the aggregate words as keywords ([8d3cde1](https://github.com/oxabl-project/oxabl/commit/8d3cde15d110bcc094910cdbc93c9e6e03e6e338))
+* **lexer:** lex OBJECT, WIDGET and BUFFER-NAME as keywords ([cb99b14](https://github.com/oxabl-project/oxabl/commit/cb99b14ba33e78f13b12b00606b66f3726118e2d))
+* **lexer:** lex TYPE-OF as a built-in function keyword ([2bc10ca](https://github.com/oxabl-project/oxabl/commit/2bc10ca5121948713dce1a8bb2e8394def689b1a))
+* **parser:** head-parse EXPORT and IMPORT ([59f6c2c](https://github.com/oxabl-project/oxabl/commit/59f6c2c074d9d2a0f2f2038e60d171e48532f1e3)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse PAUSE, DOWN and UP ([b16c0eb](https://github.com/oxabl-project/oxabl/commit/b16c0ebab1fb7a91a4db041b9f7ae6e5198c46e2)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse UPDATE and SET ([c2882f4](https://github.com/oxabl-project/oxabl/commit/c2882f45a574bdb676c110a4be0fe8372856a77c)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** model the handle-lifetime statements ([86c7938](https://github.com/oxabl-project/oxabl/commit/86c793879ff33e210d4253563aaa8af1dee90b9d))
+* **parser:** record USE-WIDGET-POOL on a class ([2b7fbbf](https://github.com/oxabl-project/oxabl/commit/2b7fbbf00dc2cda3a729f7d542c71a7528969490))
+* **scope:** strict-analysis M3: oxabl_scope, the LISTING harness, LK001-LK003 and TX001-TX005 ([d4779c9](https://github.com/oxabl-project/oxabl/commit/d4779c9f0ff420c55403a67b93c773dd24a4c6dd))
+
+
+### Bug Fixes
+
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **lexer:** lex SHARE as the abbreviation of SHARE-LOCK ([232929e](https://github.com/oxabl-project/oxabl/commit/232929e0e7d9a87e44f59500c317e8dcd89f9f64))
+* **lexer:** register OVERLAY, OS-DIR, NEW and the byte-order constants as built-ins ([e6552d6](https://github.com/oxabl-project/oxabl/commit/e6552d646caf5666c746efbc7b68b5a2b4e34eec)), closes [#183](https://github.com/oxabl-project/oxabl/issues/183)
+* **lexer:** register UPPER, LOWER, SET-SIZE, PUT-* and WIDGET-H* as built-in functions ([5250ddf](https://github.com/oxabl-project/oxabl/commit/5250ddf8acd7de9bd328ffac2a7f04063e425a15))
+* **lexer:** stop printing to stdout on an overflowing number literal ([14d970e](https://github.com/oxabl-project/oxabl/commit/14d970efeacf9ac7b8112772348fbb00ff32f1ed))
+* **parser:** accept EXTERNAL procedure options in any order ([41a4e99](https://github.com/oxabl-project/oxabl/commit/41a4e9941829e19f88e3374101dc1cb0af64690f))
+* **parser:** give RAW-TRANSFER, UNDERLINE and CURRENT-CHANGED their table edge ([d9e83df](https://github.com/oxabl-project/oxabl/commit/d9e83df85b4930f54e3afbeeb15c3099e81fc7b9))
+* **parser:** handle STOP, comments between statement keywords, and bare metaschema fields ([a2b093b](https://github.com/oxabl-project/oxabl/commit/a2b093b74998b49260470fac9a4a25d23d3aef39))
+* **parser:** keep parsing frame items after layout options ([ed6761d](https://github.com/oxabl-project/oxabl/commit/ed6761d1e56493ebe696fed4c83030c0ce58af92))
+* **parser:** keep parsing frame items after VIEW-AS, SIZE, AT and colour options ([8839b62](https://github.com/oxabl-project/oxabl/commit/8839b623fe5f2e312ac6850e371b07cb88b51257))
+* **parser:** parse the PACKAGE-PROTECTED access modifier ([95d7b23](https://github.com/oxabl-project/oxabl/commit/95d7b23d30f45c079e1801b5e178100fd13a5e02))
+* **parser:** parse the SEEK statement and register USER as the USERID abbreviation ([73fb2f9](https://github.com/oxabl-project/oxabl/commit/73fb2f99979f98bcf25d7362b82f72683fd400e7))
+* **parser:** unquoted stream file names and MESSAGE UPDATE fields ([06c823c](https://github.com/oxabl-project/oxabl/commit/06c823cc47c388bbbcf63639cb32a3e8889e9a45))
+* **semantic:** read ON ... OF targets and register missing built-ins ([a5899ba](https://github.com/oxabl-project/oxabl/commit/a5899ba049ea4d16c57feaf21f8f709996c8b050))
+* sweep of 25 open parser, semantic, lint and schema issues ([f01fcce](https://github.com/oxabl-project/oxabl/commit/f01fcce408f13c4c20050f712a683435b57a4a46))
+* UPDATE/SET frame fields, shared summaries in check --watch, rustdoc links ([bd0df69](https://github.com/oxabl-project/oxabl/commit/bd0df6971eb692a65dcbc18ac89c160319952a01))
+
+
+### Performance Improvements
+
+* **lexer:** intern literal slices without a temporary allocation ([640be41](https://github.com/oxabl-project/oxabl/commit/640be41aaa5d26d5b8f6fb198e052ea5c6ba0c23))
+* **lexer:** narrow keyword dispatch and scan ASCII runs ([78803ae](https://github.com/oxabl-project/oxabl/commit/78803ae6c77cf5229387674ad8f5f765e9c53295))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+
 ## [1.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v1.0.1...oxabl_lexer-v1.0.2) (2026-10-14)
 
 

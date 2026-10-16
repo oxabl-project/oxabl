@@ -1,5 +1,92 @@
 # Changelog
 
+## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v2.0.0...oxabl_pipeline-v3.0.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **analysis:** oxabl_lint::RunShared now has a lifetime parameter so it can borrow a callee summary provider. Types that store RunShared must supply that lifetime.
+* **parser:** StatementKind has new Export and Import variants; EXPORT and IMPORT no longer parse to Skipped.
+* **workspace:** `SourcesConfig` gains the public fields `encoding` and `fallback_encoding`, and `PipelineConfig` gains the public field `decoding`. Code that builds either with a struct literal must set them.
+* **daemon:** `ReverseGraph::build_with` takes the file list, a job count, a factory for per-worker run handles and an `Fn` inspect that returns a value, and returns the graph together with the inspected values. `ReverseGraph` now derives `Debug` and `PartialEq`.
+* **pipeline:** `ConditionalIncludeClosure` has a new `references` field and is now `#[non_exhaustive]`.
+* **workspace:** `SourcesConfig` has a new pub field, `root_relative_include_paths`; `PipelineConfig` has a new pub field, `root_relative_include_paths`; `IncludeContext` has a new pub field, `root_relative_paths`.
+* **pipeline:** `PreprocessedFile` has a new pub field, `skipped_text`. `MAX_INCLUDE_DEPTH` is now public.
+* **parser:** StatementKind has a new Put variant; PUT no longer parses to Skipped.
+* **pipeline:** CollectedDiagnostics has a new public field, include_origin, so code that builds it with a struct expression must set it.
+* **workspace:** SourcesConfig and PipelineConfig gain a pub root_extensions field.
+* **index:** index_file takes an IncludeContext instead of a PreprocessorConfig. SharedProducers::build and definitions_in take an IncludeContext instead of a filesystem and a PreprocessorConfig. IndexHandle::set_preprocessor is replaced by set_environment, which takes the PipelineConfig, and IndexEnvironment gains an include_paths field.
+* **pipeline:** the edge_set_with callback receives a LintResult without lint findings or type-check diagnostics; edge_set runs no lint rules.
+* **index:** SourcesConfig and PipelineConfig gain a pub case_insensitive_lookup field.
+* **analyze:** `oxabl_analyze::IncludeFinding` and `oxabl_analyze::CollectedDiagnostics` are `#[non_exhaustive]`. Code outside the crate can no longer build them with a struct expression or match them without `..`. Use `CollectedDiagnostics::new`; `IncludeFinding` is produced by the crate only.
+* **lint:** `oxabl_analyze::CollectedDiagnostics` has a new public field, `include_findings`. Code that builds it with a struct literal must set it or use `..Default::default()`.
+* **preprocessor:** `PreprocessedFile` has a new pub field, `skipped_includes`.
+* **parser:** `StatementKind::Do`, `Repeat` and `ForEach` have a new
+
+### Features
+
+* **analysis:** add callee summaries and database explanations ([ac6fd5d](https://github.com/oxabl-project/oxabl/commit/ac6fd5d57965e713c8df46086e5c9d5419427682))
+* **effects:** strict ABL M4: call graph, database effects, callee summaries, DB001 and explain ([f68126d](https://github.com/oxabl-project/oxabl/commit/f68126d6b8d4f7718558a542abfdc90a43b7cf7e))
+* **index:** add opt-in case-insensitive class and program lookup ([6b14dc8](https://github.com/oxabl-project/oxabl/commit/6b14dc808ed1118c3634eee3a59cd47f6f44afe9)), closes [#214](https://github.com/oxabl-project/oxabl/issues/214)
+* **index:** index classes built from includes through the preprocessor ([1d80f13](https://github.com/oxabl-project/oxabl/commit/1d80f13fed347e40f75eb88940f54db79bcbec1d)), closes [#225](https://github.com/oxabl-project/oxabl/issues/225)
+* **lint:** add the strict.locks rules LK001-LK003 ([318f55f](https://github.com/oxabl-project/oxabl/commit/318f55fd9a7367bf78a6475fb75056bc494abc2f))
+* **lsp:** code lens for database effect summaries ([530aa7b](https://github.com/oxabl-project/oxabl/commit/530aa7b1cd76e46d4b25e3e4db6082f299bd99ec))
+* **lsp:** show cached database effect summaries as code lenses ([2924b89](https://github.com/oxabl-project/oxabl/commit/2924b89d1fffc950307c8b3453fce42c8ee7c80c))
+* **parser:** head-parse EXPORT and IMPORT ([59f6c2c](https://github.com/oxabl-project/oxabl/commit/59f6c2c074d9d2a0f2f2038e60d171e48532f1e3)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **parser:** head-parse PUT and trim the harvest of OS-* file statements ([ba9faee](https://github.com/oxabl-project/oxabl/commit/ba9faeef75aa39f3b549c9c13b7ae2b2580f2801)), closes [#136](https://github.com/oxabl-project/oxabl/issues/136)
+* **pipeline:** list class and program names in not-taken &IF branches and the closure of conditional includes ([6b153d6](https://github.com/oxabl-project/oxabl/commit/6b153d631c4c6e4750fa13cc740f14cc9dd203ed))
+* **pipeline:** list the class and program names a conditional include's target writes ([81462eb](https://github.com/oxabl-project/oxabl/commit/81462eb81a826051c2e285bf6f0d855f5dbd316c))
+* **pipeline:** retain include-origin findings with their compilation context ([950e08b](https://github.com/oxabl-project/oxabl/commit/950e08bc61f631828eb57261cc26f00a9b2f166f))
+* **preprocessor:** carry include references in not-taken &IF branches ([b1057ac](https://github.com/oxabl-project/oxabl/commit/b1057ac88120afad1ce4d59acb2deb808a3fcc9e))
+* **scope:** strict-analysis M3: oxabl_scope, the LISTING harness, LK001-LK003 and TX001-TX005 ([d4779c9](https://github.com/oxabl-project/oxabl/commit/d4779c9f0ff420c55403a67b93c773dd24a4c6dd))
+* **workspace:** make the root extension set configurable ([8994bb4](https://github.com/oxabl-project/oxabl/commit/8994bb4b21dc869b3c05be77310dd8324049b7e8)), closes [#143](https://github.com/oxabl-project/oxabl/issues/143)
+* **workspace:** read source files in a configured encoding ([68164e3](https://github.com/oxabl-project/oxabl/commit/68164e3e46912235b76836838879080fc17f0869))
+* **workspace:** search each root's own directory first with root_relative_include_paths ([1793dc7](https://github.com/oxabl-project/oxabl/commit/1793dc7d65eaba696cf115172a04422b2f5b061a))
+
+
+### Bug Fixes
+
+* **analyze:** mark IncludeFinding and CollectedDiagnostics non-exhaustive ([40a0bae](https://github.com/oxabl-project/oxabl/commit/40a0bae77f1a1c6a6cd4a0886522d719b0076b7a))
+* **index:** answer SHARED producers independently of earlier files ([cee66f4](https://github.com/oxabl-project/oxabl/commit/cee66f4021eba6c82e1e40fea206a676cb7bb8f9)), closes [#224](https://github.com/oxabl-project/oxabl/issues/224)
+* **index:** give a SHARED producer the same answer in every seeding mode ([d6bb24f](https://github.com/oxabl-project/oxabl/commit/d6bb24f5efb4ee08b583530b2d66834a17a5f3f6))
+* issue sweep 2 (downstream edges, parser members) ([430fc3b](https://github.com/oxabl-project/oxabl/commit/430fc3b3302699c55984b2bfc2cc78c265584406))
+* **lint:** report handle findings anchored in an include at the use site ([b414a76](https://github.com/oxabl-project/oxabl/commit/b414a76e4179e87c6b78a06d8fa732b883a631af))
+* **parser:** keep the expression of a block header ON phrase action ([c930ea0](https://github.com/oxabl-project/oxabl/commit/c930ea016dcb12e644b3df2a34ed3baf7154f6f0)), closes [#226](https://github.com/oxabl-project/oxabl/issues/226)
+* **semantic:** an unqualified name under an unread superclass is unknowable ([07b4825](https://github.com/oxabl-project/oxabl/commit/07b4825df5c4b3e037d2912aade44fc8df5ed582)), closes [#178](https://github.com/oxabl-project/oxabl/issues/178)
+* **semantic:** give record-only schema table references an edge ([3f8e090](https://github.com/oxabl-project/oxabl/commit/3f8e090ec4bd58fd724f4e2fb334a693207f401f)), closes [#223](https://github.com/oxabl-project/oxabl/issues/223)
+* **semantic:** look up the class-shaped runs of a modelled statement's skipped tail ([0da4553](https://github.com/oxabl-project/oxabl/commit/0da45535c733292776ca1baf659831c4af962cd0))
+* sweep of 25 open parser, semantic, lint and schema issues ([f01fcce](https://github.com/oxabl-project/oxabl/commit/f01fcce408f13c4c20050f712a683435b57a4a46))
+
+
+### Performance Improvements
+
+* **check:** scan the SHARED producer map on every core ([fa951a2](https://github.com/oxabl-project/oxabl/commit/fa951a247a9754d992970c543437ba5d0d159b7d))
+* **daemon:** build the cold workspace pass on every core ([4efe428](https://github.com/oxabl-project/oxabl/commit/4efe428e7774965b106413dc90cf48a6ebc0dd9c)), closes [#170](https://github.com/oxabl-project/oxabl/issues/170)
+* **pipeline:** build edge sets without lint rules or type checks ([bcf44d3](https://github.com/oxabl-project/oxabl/commit/bcf44d36ba12efa7fed1558bac1bb1bf4ddc3733)), closes [#218](https://github.com/oxabl-project/oxabl/issues/218)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.1.0 to 0.2.0
+    * oxabl_lexer bumped from 1.0.2 to 2.0.0
+    * oxabl_parser bumped from 2.0.0 to 3.0.0
+    * oxabl_flow bumped from 0.2.0 to 0.3.0
+    * oxabl_scope bumped from 0.1.0 to 0.2.0
+    * oxabl_ast bumped from 2.0.0 to 3.0.0
+    * oxabl_analyze bumped from 2.0.0 to 3.0.0
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_formatter bumped from 1.0.3 to 2.0.0
+    * oxabl_index bumped from 2.0.0 to 3.0.0
+    * oxabl_lint bumped from 2.0.0 to 3.0.0
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+    * oxabl_semantic bumped from 2.0.0 to 3.0.0
+    * oxabl_workspace bumped from 2.0.0 to 3.0.0
+  * dev-dependencies
+    * oxabl_common bumped from 1.2.0 to 1.2.1
+    * oxabl_schema bumped from 0.3.1 to 0.4.0
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v1.2.1...oxabl_pipeline-v2.0.0) (2026-10-14)
 
 
