@@ -607,7 +607,15 @@ impl<'a> Parser<'a> {
                 }
                 "INITIAL" => {
                     self.idx += 1;
+                    let quoted = self
+                        .tokens
+                        .get(self.idx)
+                        .is_some_and(|t| t.kind == TokKind::QuotedString);
                     f.initial = self.expect_string_or_word();
+                    if quoted && f.initial.as_deref() == Some("?") {
+                        f.extras
+                            .push((fold_atom(Field::INITIAL_QUOTED), String::new()));
+                    }
                 }
                 "LABEL" => {
                     self.idx += 1;
@@ -1169,6 +1177,28 @@ ADD FIELD "CustNum" OF "Customer" AS integer
         assert_eq!(pf.field.max_width, Some(4));
         assert_eq!(pf.field.order, Some(10));
         assert!(pf.field.mandatory);
+    }
+
+    #[test]
+    fn a_quoted_question_mark_initial_is_not_the_unknown_value() {
+        let out = parse(
+            r#"
+ADD FIELD "a" OF "T" AS date
+  INITIAL ?
+ADD FIELD "b" OF "T" AS character
+  INITIAL "?"
+ADD FIELD "c" OF "T" AS character
+  INITIAL ""
+ADD FIELD "d" OF "T" AS character
+"#,
+        );
+        let unknown: Vec<bool> = out
+            .fields
+            .iter()
+            .map(|f| f.field.initial_is_unknown())
+            .collect();
+        assert_eq!(unknown, [true, false, false, false]);
+        assert_eq!(out.fields[1].field.initial.as_deref(), Some("?"));
     }
 
     #[test]

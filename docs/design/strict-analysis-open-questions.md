@@ -1040,9 +1040,10 @@ What the later slices need:
 
 ## 9. Unknown values and records that may be missing
 
-`oxabl_nulls` follows two things through the flow graph of each unit (`oxabl_flow`): the unknown
-value `?` in local variables (the second slice) and records a `FIND ... NO-ERROR` may have
-failed to find (the first slice). Buffers resolve through `oxabl_scope` (section 7): its names, its default buffers and its
+`oxabl_nulls` follows three things through the flow graph of each unit (`oxabl_flow`): the unknown
+value `?` in local variables (the second slice), records a `FIND ... NO-ERROR` may have
+failed to find (the first slice) and database fields the schema starts at `?` (the third slice,
+section 9.11). Buffers resolve through `oxabl_scope` (section 7): its names, its default buffers and its
 reading of unqualified fields. No OpenEdge install was available while this was written, so the
 marks of section 7 apply: **Documented**, **Recalled**, **Inferred**; a design choice of oxabl is
 **Proposed**.
@@ -1053,8 +1054,9 @@ the answer is **Unknown**, which never makes a finding.
 
 ### 9.1 The unknown value
 
-The second slice models local values for NL001 and NL002 (section 9.9). Database fields
-remain for NL004. The confidence marks still apply; these checks have no licensed runtime oracle.
+The second slice models local values for NL001 and NL002 (section 9.9); the third models
+database fields for NL004 (section 9.11). The confidence marks still apply; these checks have no
+licensed runtime oracle.
 
 | # | ABL | Confidence |
 |---|---|---|
@@ -1230,12 +1232,12 @@ the second (12.1 s and 12.9 s with `strict.locks` on, in one process).
 
 ### 9.8 What NL004 and later value analysis need
 
-NL001 and NL002 now have local variable facts and expression walks (section 9.9).
-NL004 still needs the schema facts of V2: `MANDATORY`, schema `INITIAL`, and resolved field
-references. It must apply the comparison and arithmetic sinks to fields read from records.
-Most fields are not mandatory. A narrower trigger is needed first: schema `INITIAL ?`, or
-an annotation such as `@strict.nullable`. Missing records remain the separate NL003 analysis;
-a missing record raises ERROR instead of supplying `?`.
+NL001 and NL002 have local variable facts and expression walks (section 9.9). NL004 reads the
+schema facts of V2 (`MANDATORY`, schema `INITIAL`) and the field references of `oxabl_scope`, and
+applies the same sinks to fields (section 9.11). Most fields are not mandatory, so its trigger is
+narrow: schema `INITIAL ?`. An annotation such as `@strict.nullable` could widen it. Missing
+records remain the separate NL003 analysis; a missing record raises ERROR instead of supplying
+`?`.
 
 Later work must connect function returns and procedure `OUTPUT` parameters to the call graph
 (section 8.5). Unseen call results and output values remain Unknown. Local `LIKE` declarations,
@@ -1300,7 +1302,7 @@ constant zero (the medium part of V3) is Unknown, so it makes no finding. V5 `=`
 an argument that is already a `?` source; they never make one. `STRING`, `VALID-HANDLE`,
 `VALID-OBJECT`, `AVAILABLE`, `CAN-FIND` and `LOCKED` absorb (V11). `SUBSTITUTE` is Unknown
 (low confidence). V9 takes the `ELSE` value for a definite `?` condition and joins the arms
-otherwise. V12 conversion errors are no source; V13 is for NL004.
+otherwise. V12 conversion errors are no source; V13 is why a `MANDATORY` field is no source of NL004.
 
 **V6 and V7 never make a value.** The result of an ordering comparison, `BEGINS`, `MATCHES`,
 `NOT`, `AND` or `OR` is Unknown as a value. The model uses V6, V7 and V8 to remove sources: the
@@ -1351,7 +1353,8 @@ ABL reference: `NOT` comes after the relational operators and before `AND`). The
 report. NL002 reports such a local in arithmetic or string `+` whose result is assigned,
 displayed, written by `MESSAGE`, `PUT` or `EXPORT`; an absorbing function stops the chain and a
 propagating one carries it to the sink. Each rule reports a local once per unit, at its first
-use: later uses repeat the same source. Fields are Unknown (NL004). Both rules are opt-in
+use: later uses repeat the same source. Fields are Unknown here; NL004 reads them (section 9.11).
+Both rules are opt-in
 `strict.nulls`, preview, Warning, without an autofix, and use the include routing of NL003.
 With the group off, no null analysis is computed.
 
@@ -1398,3 +1401,91 @@ NL003 alone (first corpus 170 s to 242 s, second 12 s to 17 s; the group off tak
 Most of it is in the shared solver: every statement that may raise has an edge whose fact the
 solver clones and this analysis replaces, and the solver also computes the fact after every node,
 which this analysis does not read. A solver hook for both would remove about a third of it.
+
+### 9.11 Nullable database fields, NL004
+
+**Trigger.** A field is a source of `?` when the loaded schema gives it `INITIAL ?` (the bare `?`
+a `.df` writes for the unknown value; `INITIAL "?"` is a string, which `Field::initial_is_unknown`
+tells apart), does not make it `MANDATORY` (V13) and gives it no extent. Any record created
+without assigning it holds `?` (V1, V2). A field with no `INITIAL` attribute in the `.df` is no
+source: a dump always writes it, and the model does not read the type default. A temp-table
+field, a table the schema does not have, a buffer with an Unknown reason of its own
+(`oxabl_scope`), a file with a file-level Unknown and a run with no schema give no finding.
+In the two schemas of section 7.6 about 15 % (4,400 of 30,191) and 17 % (408 of 2,461) of the
+fields have `INITIAL ?`, and 40 and 17 of them are `MANDATORY`; most are dates.
+
+**Model.** The analysis is a second solve of the value dataflow of section 9.9 per unit, over the
+nullable fields the unit references and no locals (`FileNulls::with_fields`). The first solve is
+unchanged, so NL001, NL002 and NL003 give the same findings as before (section 9.12), and a local
+that is assigned from a field is Unknown, not a source: `d = b.f. IF d < TODAY ...` gives no
+finding. The variable is the pair buffer and field, found by the span of the reference that
+`oxabl_scope` resolved (so `b.f`, `db.b.f` and an unqualified `f` are one variable). Its value is
+"possibly `?`" (known or `?`), not "certainly `?`", so a true ordering test or `b.f <> ?` proves
+it known and `b.f = ?` makes it a proven source, as for a local. The guards and sinks are those
+of NL001 and NL002 (the `IF` and `WHILE` condition, ordering operands, arithmetic and string `+`
+that is stored or displayed).
+
+The value is set again where the record changes:
+
+| What | Value after it |
+|---|---|
+| Entry to the unit | possibly `?` |
+| `FIND`, `GET`, `CREATE`; the body of a `FOR` | possibly `?` again (a guard before does not cover the next record) |
+| The `WHERE` of a `FIND` or `FOR EACH` | holds of the record: an ordering test proves its operands known, and a field `=` a known value is known (fields only; for locals the model does not narrow this way) |
+| Exit of a `FOR` loop | Unknown (no record) |
+| `b.f = x`, `ASSIGN`, `UPDATE`, `SET`, `IMPORT` of the field | the value assigned; Unknown if the value is |
+| Other writes to the record (`BUFFER-COPY ... TO b`, `DELETE b`, `UPDATE b`), a `BUFFER b` passed to a call, a statement the scope analysis marks opaque | Unknown for every field of `b` |
+| An unseen call, `RUN` or trigger-running statement | Unknown for the fields of a buffer that is shared, a parameter or a trigger buffer, or that more than one unit of the file uses |
+| `ASSIGN x = v WHEN c` | Unknown for `x`, and `v` is no sink: the parser drops `c`, so the model reads the `WHEN` token and does not follow the condition |
+| `DISPLAY v WHEN c` | `v` is read with `c` true |
+
+NL004 reports a field once per unit, kind and first use, like NL001 and NL002. It is a preview
+`strict.nulls` rule, Warning, without an autofix, routed like NL003 (use site in the includer).
+The comparison finding rests on V6 and V8 as NL001 does, and its help says so. The unit budget of
+section 9.9 applies to the field solve too: a unit past it is in `FileNulls::exhausted` and gives
+no field finding.
+
+**Left.** A local that holds a field (`d = b.f`), a field copied to a field of another buffer,
+function and method calls that return a field, `LIKE` locals, array fields and fields of
+temp-tables are Unknown. Correlations with locals are not followed: `IF b.f = ? AND (x <> ? OR
+y <> ?) THEN NEXT.` then `IF x <> ? AND b.f < x` reads `b.f` as possibly `?`. A `WHERE` that
+equates a field to a local (`b.f = x`) proves nothing because `x` may be `?`. The `WHEN` of an
+`ASSIGN` pair is dropped by the parser (NL002 has the same blind spot for locals; the field
+analysis treats it as no sink, and the local analysis was left as it was). An abbreviated field
+name has no scope reference, so it is never judged. Whether a field is `?` in practice (an
+invariant of the application, a write trigger) is outside the model; those findings are right
+by the rule and may still be harmless.
+
+### 9.12 Corpus check of NL004
+
+Over the two corpora of section 7.6, with their schemas and `strict.nulls` on
+(`crates/oxabl/examples/nulls_corpus.rs`): no panic. NL004 gives 595 findings in the first corpus
+and 165 in the second (16 and 21 at a use site). NL001, NL002 and NL003 give
+exactly the findings they gave before (93, 44 and 9,774; 16, 28 and 825), line for line. With
+`strict.nulls` off, `oxabl check --json --no-format .` is byte-identical on both trees. The
+findings spread over 38 top directories in the first corpus (at most 103 in one) and 5 in the
+second (at most 72 in one).
+
+Triage.
+
+| Round | Wrong | What was wrong, and the change |
+|---|---|---|
+| 1, first model, about 25 read in the two corpora | 1 of 25 | `ASSIGN t.d = b.x - b.y WHEN b.x <> ? AND b.y <> ?` (the guard is a `WHEN`; see the table above) |
+| 2, 15 new random findings per corpus | 0 of 15, 0 of 15 | |
+| 2, the findings whose preceding 40 lines test the same field against `?` (15 and 6) | 1 of 21 | a guard through a local: `IF f = ? AND (x <> ? OR y <> ?) THEN NEXT.` then `IF x <> ? AND f < x` |
+
+That is a false-positive rate under 3 % (2 of 76) on the findings read. The one wrong finding left is
+a correlation with a local, a known class (sections 9.7 and 9.10). "Right" means that the field
+can hold `?` there and nothing in the unit says otherwise, not that the code is wrong: most
+right findings are of four kinds. A date field read after a `FIND` or in a `FOR EACH` and
+compared with a date or subtracted (a due date, a planned payment date, `period-end + 1`);
+a quantity added to a running total or subtracted from another; a
+character field concatenated into a message or a page; and a validation that reports a `?`
+field and then compares it anyway (`IF f = 0 OR f = ? THEN log-error.` and then `IF f > g`).
+
+**Cost.** With `strict.nulls` off nothing is computed. With the group on, in one process, the
+field solve adds about 16 % to the run of the first corpus (209 s to 243 s) and 4 % to 8 % to
+the second (13.4 s and 14.8 s to 14.0 s and 16.0 s); the local solve and NL003 take the rest.
+The field solve runs only over the units that reference a nullable field, and only when a rule
+that reads it is enabled. One unit of the first corpus runs past its work budget, as it did
+before this change, and none of the second.

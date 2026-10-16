@@ -10,6 +10,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_nulls"
 oxabl_ast = { path = "../oxabl_ast", version = "2.0.0" }
 oxabl_flow = { path = "../oxabl_flow", version = "0.2.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.2" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.3.1" }
 oxabl_scope = { path = "../oxabl_scope", version = "0.1.0" }
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union"] }

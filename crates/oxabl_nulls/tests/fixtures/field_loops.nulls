@@ -1,0 +1,6 @@
+find#0 u0 @20 Shipment `FIND FIRST Shipment WHERE Shipment.DateG > TODAY NO-LOCK NO-ERROR.`
+missing u0 @21 Shipment `Shipment.DateG` read after find#0
+field-comparison u0 @3 Shipment.DateA `Shipment.DateA`
+field-propagation u0 @7 Shipment.DateC `Shipment.DateC`
+field-propagation u0 @22 Shipment.DateH `Shipment.DateH`
+field-propagation u0 @24 Shipment.DateI `Shipment.DateI`

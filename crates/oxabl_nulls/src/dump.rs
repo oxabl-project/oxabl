@@ -72,5 +72,20 @@ pub(crate) fn dump(nulls: &FileNulls, source: &str, scopes: &FileScopes) -> Stri
             text(source, u.at)
         );
     }
+    for u in nulls.field_values() {
+        let _ = writeln!(
+            out,
+            "field-{} u{} @{} {} `{}`",
+            if u.propagation {
+                "propagation"
+            } else {
+                "comparison"
+            },
+            u.unit.index(),
+            line_of(source, u.at.start),
+            u.name,
+            text(source, u.at)
+        );
+    }
     out
 }

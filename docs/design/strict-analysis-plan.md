@@ -102,7 +102,7 @@ becomes an error only after its false-positive rate on a large real corpus is un
 | NL001 | unknown-in-comparison | Possibly-unknown value in a comparison or `IF` condition | No |
 | NL002 | unknown-propagation | Possibly-unknown value in arithmetic or string concatenation | No |
 | NL003 | field-after-failed-find | Buffer field used after `FIND NO-ERROR` without an `AVAILABLE` check | No |
-| NL004 | nullable-db-field | Non-mandatory field used as if it can't be unknown | No |
+| NL004 | nullable-db-field | Field the schema starts at `?` (`INITIAL ?`, not mandatory) used as if it can't be unknown | No |
 | CL001 | run-value | `RUN VALUE(...)` | No |
 | CL002 | dynamic-invoke | `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `CALL` object | No |
 | CL003 | signature-mismatch | Static `RUN` arguments differ from callee parameters in count, type or mode | No |
