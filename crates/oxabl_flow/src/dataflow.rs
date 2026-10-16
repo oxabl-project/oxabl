@@ -13,6 +13,15 @@
 //! [`Analysis::transfer_edge`] to treat them differently from the normal edges
 //! (for example, a variable assigned by `x = f().` is not assigned on its
 //! [`EdgeKind::Raise`](crate::EdgeKind::Raise) edge).
+//!
+//! # Termination
+//!
+//! At the target of every edge that goes back in the visiting order (a loop
+//! head) the solver joins the node's previous fact into the new one. With
+//! monotone transfers this changes nothing; with a transfer that is not, the
+//! facts at the loop heads still only grow, so a lattice of finite height
+//! reaches a fixed point. [`solve_within`] also bounds the work and reports
+//! when the bound is hit.
 
 use std::collections::VecDeque;
 
@@ -77,9 +86,31 @@ impl<F> Solution<F> {
 
 /// Solve `analysis` over `cfg` to a fixed point.
 pub fn solve<A: Analysis>(cfg: &Cfg, analysis: &A) -> Solution<A::Fact> {
+    match solve_within(cfg, analysis, usize::MAX) {
+        Ok(solution) => solution,
+        Err(Exhausted) => unreachable!("an unbounded budget is never spent"),
+    }
+}
+
+/// The work [`solve_within`] did not finish within its budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exhausted;
+
+/// A budget for [`solve_within`]: 64 visits per node.
+pub fn default_budget(cfg: &Cfg) -> usize {
+    cfg.node_count().saturating_mul(64)
+}
+
+/// Solve `analysis` over `cfg` to a fixed point, visiting at most `budget`
+/// nodes. A caller that gets [`Exhausted`] has no answer for the unit.
+pub fn solve_within<A: Analysis>(
+    cfg: &Cfg,
+    analysis: &A,
+    budget: usize,
+) -> Result<Solution<A::Fact>, Exhausted> {
     match analysis.direction() {
-        Direction::Forward => solve_forward(cfg, analysis),
-        Direction::Backward => solve_backward(cfg, analysis),
+        Direction::Forward => solve_forward(cfg, analysis, budget),
+        Direction::Backward => solve_backward(cfg, analysis, budget),
     }
 }
 
@@ -112,7 +143,33 @@ fn order(cfg: &Cfg) -> Vec<NodeIx> {
     post
 }
 
-fn solve_forward<A: Analysis>(cfg: &Cfg, a: &A) -> Solution<A::Fact> {
+/// The targets of the edges that go back in `order`: every cycle has one.
+fn heads(cfg: &Cfg, order: &[NodeIx], forward: bool) -> BitSet {
+    let mut position = vec![0; cfg.node_count()];
+    for (i, n) in order.iter().enumerate() {
+        position[n.index()] = i;
+    }
+    let mut out = BitSet::new_empty(cfg.node_count());
+    for &n in order {
+        for e in cfg.successors(n) {
+            let (from, to) = if forward {
+                (e.from, e.to)
+            } else {
+                (e.to, e.from)
+            };
+            if position[from.index()] >= position[to.index()] {
+                out.insert(to.index());
+            }
+        }
+    }
+    out
+}
+
+fn solve_forward<A: Analysis>(
+    cfg: &Cfg,
+    a: &A,
+    mut budget: usize,
+) -> Result<Solution<A::Fact>, Exhausted> {
     let n = cfg.node_count();
     let initial = a.initial(cfg);
     let boundary = a.boundary(cfg);
@@ -125,14 +182,20 @@ fn solve_forward<A: Analysis>(cfg: &Cfg, a: &A) -> Solution<A::Fact> {
     };
     let mut before: Vec<A::Fact> = (0..n).map(|i| start(NodeIx(i as u32))).collect();
     let mut queued = BitSet::new_full(n);
-    let mut work: VecDeque<NodeIx> = order(cfg).into();
+    let order = order(cfg);
+    let heads = heads(cfg, &order, true);
+    let mut work: VecDeque<NodeIx> = order.into();
     while let Some(node) = work.pop_front() {
+        budget = budget.checked_sub(1).ok_or(Exhausted)?;
         queued.remove(node.index());
         let mut fact = start(node);
         for e in cfg.predecessors(node) {
             let mut incoming = before[e.from.index()].clone();
             a.transfer_edge(cfg, e.from, e, &mut incoming);
             a.join(&mut fact, &incoming);
+        }
+        if heads.contains(node.index()) {
+            a.join(&mut fact, &before[node.index()]);
         }
         if fact != before[node.index()] {
             before[node.index()] = fact;
@@ -150,10 +213,14 @@ fn solve_forward<A: Analysis>(cfg: &Cfg, a: &A) -> Solution<A::Fact> {
             f
         })
         .collect();
-    Solution { before, after }
+    Ok(Solution { before, after })
 }
 
-fn solve_backward<A: Analysis>(cfg: &Cfg, a: &A) -> Solution<A::Fact> {
+fn solve_backward<A: Analysis>(
+    cfg: &Cfg,
+    a: &A,
+    mut budget: usize,
+) -> Result<Solution<A::Fact>, Exhausted> {
     let n = cfg.node_count();
     let initial = a.initial(cfg);
     let boundary = a.boundary(cfg);
@@ -167,14 +234,20 @@ fn solve_backward<A: Analysis>(cfg: &Cfg, a: &A) -> Solution<A::Fact> {
     };
     let mut before: Vec<A::Fact> = (0..n).map(|i| start(NodeIx(i as u32))).collect();
     let mut queued = BitSet::new_full(n);
-    let mut work: VecDeque<NodeIx> = order(cfg).into_iter().rev().collect();
+    let order: Vec<NodeIx> = order(cfg).into_iter().rev().collect();
+    let heads = heads(cfg, &order, false);
+    let mut work: VecDeque<NodeIx> = order.into();
     while let Some(node) = work.pop_front() {
+        budget = budget.checked_sub(1).ok_or(Exhausted)?;
         queued.remove(node.index());
         let mut fact = start(node);
         for e in cfg.successors(node) {
             let mut outgoing = before[e.to.index()].clone();
             a.transfer_edge(cfg, node, e, &mut outgoing);
             a.join(&mut fact, &outgoing);
+        }
+        if heads.contains(node.index()) {
+            a.join(&mut fact, &before[node.index()]);
         }
         if fact != before[node.index()] {
             before[node.index()] = fact;
@@ -195,7 +268,7 @@ fn solve_backward<A: Analysis>(cfg: &Cfg, a: &A) -> Solution<A::Fact> {
             f
         })
         .collect();
-    Solution { before, after }
+    Ok(Solution { before, after })
 }
 
 /// A fixed-size set of small integers.
