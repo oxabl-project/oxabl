@@ -109,6 +109,8 @@ Lint rules are in groups. The `LINT` rules are in the `default` group, which is 
 |---|---|---|---|
 | CL001 | `run-value` | `strict.calls` | `RUN VALUE(...)` with a computed target |
 | CL002 | `dynamic-invoke` | `strict.calls` | `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `DYNAMIC-PROPERTY`, `CREATE CALL` |
+| CL003 | `signature-mismatch` | `strict.calls` | a static `RUN` whose arguments differ from the callee's parameters in count, kind (`TABLE`, `BUFFER`, ...), mode (`INPUT`, `OUTPUT`, `INPUT-OUTPUT`) or data type; an internal procedure, a program on the search paths, or a procedure `IN h` of a program the file runs `PERSISTENT SET h` |
+| CL004 | `unresolved-call` | `strict.calls` | a static `RUN` of a name that is neither a procedure of the file nor a program on the search paths; `LINT0001` reports the same miss for a name with an extension, so a `RUN` is never reported twice |
 | CL005 | `shared-state` | `strict.calls` | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
 | TX006 | `missing-no-undo` | `strict.transactions` | a variable, parameter, temp-table or property without `NO-UNDO` |
 | HD001 | `handle-not-deleted` | `strict.handles` | a dynamic object (query, buffer, temp-table, dataset, widget, ...) that some path loses without a delete |

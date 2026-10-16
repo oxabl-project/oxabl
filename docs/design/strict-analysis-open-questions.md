@@ -13,8 +13,9 @@ with the AVM) stays open. Section 4 records one ABL fact that a rule depends on.
 lists the block semantics that the flow graph (`oxabl_flow`) models without a reference,
 section 6 the handle semantics that `oxabl_handles` relies on, section 7 the buffer-scope,
 transaction and lock semantics that `oxabl_scope` relies on, section 8 the database effects,
-index selection and call graph that `oxabl_effects` and `oxabl_index` rely on, and section 9 the
-unknown-value and record-availability semantics that `oxabl_nulls` relies on.
+index selection and call graph that `oxabl_effects` and `oxabl_index` rely on, section 9 the
+unknown-value and record-availability semantics that `oxabl_nulls` relies on, and section 10 how
+`RUN` matches arguments to parameters and which `RUN` targets the call rules judge.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -1489,3 +1490,162 @@ the second (13.4 s and 14.8 s to 14.0 s and 16.0 s); the local solve and NL003 t
 The field solve runs only over the units that reference a nullable field, and only when a rule
 that reads it is enabled. One unit of the first corpus runs past its work budget, as it did
 before this change, and none of the second.
+
+## 10. Calls and signatures
+
+The call rules CL003 (`signature-mismatch`) and CL004 (`unresolved-call`) judge a static `RUN`
+against its callee. They read the call graph of section 8.5 (`oxabl_index::calls`, which says what
+each `RUN` runs, or why that is Unknown) and the parameter lists that the run index now holds
+(`WorkspaceIndex::signature`, `oxabl_semantic::ProgramSignatures`). The marks of section 7 apply:
+**Documented**, **Recalled**, **Inferred**, **Verified** (against this repository or a corpus),
+and **Proposed** for a design choice of oxabl. No OpenEdge install was available, so no row is
+checked against a compiler. Where the corpus contradicts what the model first said, the row says
+so.
+
+Each modelled row has a test in `crates/oxabl_lint/tests/call_rules/` (CL003 and CL004 read the
+index, so the tests drive a real `BatchIndex` over an in-memory file system), in
+`crates/oxabl_index/tests/signatures.rs` and in `oxabl_semantic::signature`. Where the model
+cannot decide, the answer is **Unknown**, and Unknown never makes a finding.
+
+### 10.1 How `RUN` matches arguments to parameters
+
+| # | The model | Confidence |
+|---|---|---|
+| P1 | Arguments match parameters by position: the i-th argument fills the i-th `DEFINE ... PARAMETER` of the callee's routine block (the main block of a program, the body of an internal procedure), in source order. Names play no part. A `RETURN` parameter is no argument slot. | Documented. |
+| P2 | The counts must be equal. A different count is an error. For an internal procedure of the file the compiler finds it; for another program, a procedure `IN h` or a persistent program it is found when the call runs (the message names "mismatched number of parameters"). | Recalled (the compile-time and run-time split; the message text is from memory). |
+| P3 | A mode is `INPUT` (the default when none is written), `OUTPUT` or `INPUT-OUTPUT`. The mode of the argument must be the mode of the parameter: an `OUTPUT` parameter needs `OUTPUT` at the call, an `INPUT` parameter must not get `OUTPUT`, an `INPUT-OUTPUT` parameter needs `INPUT-OUTPUT`. | Recalled. |
+| P4 | An `OUTPUT` or `INPUT-OUTPUT` argument must be something the callee can write: a variable, field, array element, widget attribute or property. A literal or an expression (an operator, `IF ... THEN ... ELSE`, `NEW`) is an error. | Documented. |
+| P5 | A table, dataset or buffer is passed with its keyword: `TABLE t`, `TABLE-HANDLE h`, `DATASET d`, `DATASET-HANDLE h`, `BUFFER b`. The parameter kinds are `TABLE FOR`, `TABLE-HANDLE`, `DATASET FOR`, `DATASET-HANDLE`, `BUFFER ... FOR`. A static and a dynamic form of one kind pass to each other (`TABLE` to `TABLE-HANDLE`, `DATASET` to `DATASET-HANDLE`). A scalar argument does not pass to a table, dataset or buffer parameter, and the other way round. A `BUFFER` parameter has no mode. `BUFFER b:HANDLE` is a handle value, a scalar. | Recalled. |
+| P6 | `APPEND`, `BIND`, `BY-REFERENCE` and `BY-VALUE` change how a table or dataset travels, not whether it fits. The model compares none of them, nor the definition of the temp-table behind a `TABLE`. | Documented for the meaning; Proposed for the scope. |
+| P7 | A value of a type that differs from the parameter converts when the call runs, for many pairs. **The corpus shows `INTEGER` fields passed to `CHARACTER` parameters in running code, and `CHARACTER` values passed to `INTEGER`, `LOGICAL`, `DECIMAL` and `DATE` ones.** The first version of CL003 used the assignment ladder of `LINT0004` and gave 470 type findings in one corpus, 340 of them `INTEGER` for `CHARACTER` (section 10.6). So the model keeps one clash: a `HANDLE` or `COM-HANDLE` against a type other than `HANDLE`, `COM-HANDLE`, `INTEGER`, `INT64`, `CHARACTER` or `LONGCHAR`. Every other pair is Unknown. | Verified against the corpus that many pairs convert; the clash itself is Proposed. |
+| P8 | The unknown value `?` fits a parameter of any type. | Documented. |
+| P9 | A parameter with `LIKE`, an array (`EXTENT`), a class type or a conditional type has no type in the model. An argument without a primitive type (an unresolved name, an array, an object) is Unknown. | Proposed. |
+| P10 | A `DEFINE PARAMETER` inside a `DO` block or under a label of the routine is a parameter, in order. One inside a loop or a condition makes the list Unknown. | Verified in the corpus (parameters in a `DO:` block of a procedure are common); Proposed for the rest. |
+
+### 10.2 Which routine a `RUN` runs
+
+| # | The model | Confidence |
+|---|---|---|
+| Q1 | `RUN name` of an internal procedure of the file (with a body, once; a name defined twice has no list) is checked against that procedure. `RUN name IN THIS-PROCEDURE` is the same. | Documented (section 8.5, C1). |
+| Q2 | `RUN prog.p` is checked against the main-block parameters of the file that the search path gives (the rule of section 8.5, C2: exactly one match). A class, a file that does not parse and a file with no statement (empty, or all comment) have no list. | Documented for the meaning; Proposed for the file rule. |
+| Q3 | `RUN prog.p PERSISTENT SET h (args)` runs the main block now, so the arguments meet the main-block parameters. | Documented. |
+| Q4 | `RUN p IN h (args)` is checked against the procedure `p` of the program, when every `PERSISTENT SET h` of the file runs one program and nothing else writes `h` (section 8.5, C3). Any other `h` is Unknown. | Inferred. |
+| Q5 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run in another session, and the callee may be another file there: not checked. `RUN VALUE(...)`, `RUN SUPER` and a routine declared `IN SUPER` are Unknown. | Documented for the meaning; Proposed for the scope. |
+| Q6 | A user-defined function or a method is a call by name in an expression, not a `RUN`. CL003 does not check them. | Proposed (a later slice). |
+
+### 10.3 Where a parameter list comes from
+
+`oxabl_semantic::ProgramSignatures::of` reads the `DEFINE ... PARAMETER` statements of a parsed
+file: those of its main block and those of each internal procedure with a body. It also counts the
+parameters the text itself holds, so a list that an `{include}` completes is told from one that
+the text shows. A list is **Unknown** when an `{include}` (not expanded), an `&IF` that holds a
+parameter or a loop that holds one may change it, or when the procedure is defined twice. A file
+with no statement has no list.
+
+The index gives the list through `WorkspaceIndex::signature(program, procedure)`. `BatchIndex`
+reads a file for its lists the first time a rule asks, not when it indexes the file, so a run
+with CL003 off reads nothing for them. A file whose own text does not show the list whole is read
+again from its expanded text (`oxabl_index::program_signatures_at`, the same expansion
+`index_file` uses). The daemon holds one tracked query per file and registers the include files,
+so an edit to the file or to an include re-reads the list. An index without the method answers
+`None`.
+
+**A list that an include supplies is marked** (`Signature::from_include`), when the expanded text
+holds more parameters than the file's own text. The corpus has programs that call each other with
+`{globals-out.i}` (72 arguments) against `{globals-in.i}` (72 parameters), and a
+character and a graphical build of one program (an include sets a `build-type` name, and
+`&IF` then adds the 72 parameters or none). A callee read in one environment can be run in
+another. So **a count that differs from an include-supplied list is not judged when the call has
+no text from an include**; with an include inside the call (`RUN p ({globals-out.i}, x)`)
+the count is judged. Mode, kind and type are compared whenever the counts agree. This row is
+**Proposed**; with the rule for an empty program (Q2) it cut the 219 count findings of the first corpus to 157.
+
+### 10.4 The rule CL004 `unresolved-call`
+
+A static `RUN name` whose target the call graph says is `not-found`: the index searched every
+configured path, and nothing supplies the name, as a program. It is never reported for a
+`dynamic`, `handle`, `super`, `unexpanded`, `ambiguous` or `unusable` target, nor with no index or
+an index with no search path.
+
+**Overlap with `LINT0001`.** `LINT0001` (`undefined-symbol`, always on, Error) already reports a
+`RUN` target that names a file (it has an extension) when no search path supplies it, except
+when the target starts with `..`. CL004 does not report that case again. It reports the rest: a
+target with no extension (`RUN post-invoice`) and a path with no extension. The two rules
+split one population and no `RUN` is reported twice. (The other choice, CL004 for all and a
+suppression in `LINT0001`, changes the default output, which must not change.)
+
+The rest of the rows are choices that the corpus forced. The first version reported every bare
+name that nothing on the search path supplies: **586 of 601 findings in the second corpus were
+procedures that another file defines**, called through a super procedure or a persistent
+procedure with a plain `RUN name`.
+
+| # | The model | Confidence |
+|---|---|---|
+| R1 | A plain `RUN name` finds, in order, an internal procedure, a super procedure's procedure and a program. The model sees the first and the last. | Documented. |
+| R2 | A bare name is reported only when the index lists the files of the workspace and **no file defines a `PROCEDURE` of that name**, in its own text or in an include file that a listed file names (an include is followed when its name is written out and resolves in the file's directory or on the include paths; `{&name}` and `{1}` are not followed). The files are read on the first bare name that misses, once per run. An index with no list (the language server) reports no bare name. | Proposed. |
+| R3 | In an include checked alone, and in a file with an include that did not arrive, a bare name may be a procedure of the includer: not reported. | Proposed (as TX004). |
+| R4 | In a file that binds a web service port type (`RUN port-type SET h ON SERVER s`, without `PERSISTENT`), a bare name is an operation of the service: not reported. | Inferred (one case in the second corpus; the operation names are in a WSDL). |
+| R5 | A path into a directory the OpenEdge install ships (`adecomm/`, `adeshar/`, `prodict/`, ...) is not reported: a workspace that does not configure the install cannot supply it. | Proposed. |
+| R6 | A target that starts with `..` is relative to a directory the search paths do not cover (the rule `LINT0001` already keeps): not reported. | Inferred (five cases in the second corpus: the program is there, one directory up from where the search starts). |
+| R7 | The parser reads a name up to a digit after a slash and stops (`RUN dir/870-recon.p` is `dir/870`). A name followed at once by a letter, a digit, `-`, `_`, `/` or `.x` is not reported. | Verified (one case in the first corpus). |
+
+### 10.5 The rules (M6, first slice)
+
+Both are preview `strict.calls` rules, Warning, without an autofix, context-free and routed like
+TX004 (reported in the include when the include alone shows it, else at the `{...}` site of the
+includer). With the group off nothing is computed: the rules do not run, the index reads no file
+for a list or a procedure name, and `RunShared::calls` is not built.
+
+- **CL003** reports, per `RUN` of a resolved target: a count that differs (one finding, on the
+  target); then, with the counts equal and per argument, at most one finding: the kind (P5), the
+  mode (P3), an expression as `OUTPUT` (P4), a handle against a type it does not convert to
+  (P7). It is silent for a callee that is Unknown, an argument of unknown type, a call whose
+  argument list holds an include reference or a gap the preprocessor left, a recovered parse,
+  and, in an include checked alone or in a file with a lost include, a bare name.
+- **CL004** reports a static `RUN` of a name that nothing can run (section 10.4).
+
+### 10.6 Corpus check
+
+The two corpora of section 7.6, with their schemas, include paths and workspace sources, and the
+two rules switched on in memory (`crates/oxabl/examples/calls_corpus.rs`; like the other corpus
+examples it counts per top directory, `OXABL_CALLS_FINDINGS=<file>` writes every finding, and
+`OXABL_CALLS_ONLY=<text>` checks the files whose path holds the text). No panic.
+
+| | First corpus | Second corpus |
+|---|---|---|
+| Roots, include files | 10,619 and 3,549 | 2,526 and 782 |
+| CL003 | 163 (157 count, 3 mode, 3 kind) | 25 (24 count, 1 mode) |
+| CL004 | 16 | 9 |
+| At a use site (CL003, CL004) | 3, 0 | 3, 0 |
+| Top directories with a finding (at most in one), CL003 and CL004 | 29 (28) and 4 (12) | 4 (14) and 3 (3) |
+
+**Default output.** With the group off, `oxabl check --json --no-format .` is byte-identical to
+the base (the commit this branch grew from) on both trees.
+**Cost.** With the group off nothing is computed. On the first corpus, three alternating runs of
+`oxabl check --json --no-format .` take 3.97 s to 4.21 s of wall time (77 s to 82 s of CPU) for the
+base and 4.01 s to 4.23 s (77 s to 81 s) for this branch. With the two rules on, in one process
+(`calls_corpus`, one thread), the first corpus takes 103.6 s against 57.0 s with them off, and the
+second 9.0 s against 5.7 s. The extra work is the read, expansion and parse of each callee file for
+its parameter list, and one pass over every file and include of the run for procedure names, made
+when the first bare name misses.
+
+**Triage.** "Right" means that the finding says what the code does under the rules above and the
+configured search paths, not that the code fails at run time. Many right CL003 findings are a
+callee that gained a parameter its callers do not pass (a trailing `INTEGER`, a class object, a
+`TABLE`), or a caller that dropped the `{globals-out.i}` the others pass.
+
+| Round | Wrong | What was wrong, and the change |
+|---|---|---|
+| 1, first model (the full lists) | CL004: 586 of 601 findings in the second corpus; CL003: 1,481 findings in the first corpus, of which the later model keeps 163 | CL004: a bare name that a super or persistent procedure defines (R2). CL003: `INPUT BUFFER b:HANDLE` read as a buffer (366); `INTEGER` to `CHARACTER` and other pairs that convert (P7: 470 type findings, 340 of that one kind); a procedure whose parameters sit in a `DO:` block read as having none (P10, about 420 count findings); a program that is empty or all comment read as having none |
+| 2, after those | CL003: 219 count findings before the include rule of 10.3, 157 after; CL004 2 of 14 and 1 of 17 | An include-supplied list read in another environment (10.3). `adecomm/` (R5), a web service operation (R4), `..` paths (R6), a name read short (R7) |
+| 3, every finding of the second corpus (34); the first corpus: 15 CL003 findings spread over the sorted list, and all 16 CL004 | 0 of 34, 0 of 31 | |
+
+That is 0 wrong in the 65 findings read in round 3. The sample is small, so read the
+false-positive rate as under 5 %. Right findings are of five kinds: a count that differs because
+a callee gained or lost a parameter (most of the CL003 findings read); `RUN x IN h` of a
+persistent program whose procedure changed; a caller that passes the parameters in another order
+after a change (the `TABLE` and scalar kinds); an `OUTPUT` parameter passed without `OUTPUT`; a
+bare name that nothing defines (a typo, a procedure that was removed, a class that calls
+procedures of a template that no longer exists). Some right findings depend on the configured
+search path: in the second corpus, callers in one directory call two programs that exist in two
+directories with different lists, and only one of the directories is on the configured path.
