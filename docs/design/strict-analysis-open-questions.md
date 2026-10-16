@@ -1101,7 +1101,7 @@ remain for NL004. The confidence marks still apply; these checks have no license
 | G6 | `CAN-FIND` is no guard (N9). `LOCKED b` (and `LOCKED(b)`) being true says `b` is empty; being false says nothing; so it proves nothing on either edge and is not Unknown. After `FIND ... NO-WAIT NO-ERROR`, `IF LOCKED b THEN RETURN.` still leaves `b` empty when no record matched. | Recalled, high. | `cases.rs` |
 | G7 | A condition that names `b` at record level in a form the model does not read (`ROWID(b) = ?`, `RECID(b) <> ?`, `BUFFER b:AVAILABLE`, `AVAILABLE b = no`, `NEW b`) is Unknown for `b` on both edges; an Unknown operand stays Unknown through `AND`, `OR` and `NOT`. `ERROR-STATUS` in a form the model does not read (`ERROR-STATUS:NUM-MESSAGES > 0`, `ERROR-STATUS:ERROR = lFlag`) is Unknown on both edges for every find it links (G5). A `CASE` on `AVAILABLE b` or on `ERROR-STATUS` is Unknown in every branch. | Proposed. | `guards.p`, `cases.rs` |
 | G8 | **Inside one statement.** A field of `b` in a statement that also tests `AVAILABLE b` anywhere (the `IF ... THEN ... ELSE` function, `AND`, `OR`, `DISPLAY ... WHEN`) is taken as guarded (N10). The test is by statement, not by operand, so `NOT AVAILABLE b AND b.f = x` is missed. In the same way a field read that runs only on some paths of its statement (`IF lFlag AND b.f > 0`, `IF x THEN b.f ELSE ...`, `DISPLAY b.f WHEN x`) proves `b` after the statement (K3) on every path: it is reported itself, but a later use on a path where it did not run is not. | Proposed (conservative). | `guards.p` |
-| G9 | **Dependent finds.** `FIND c WHERE c.x = b.f NO-ERROR` with `b` empty raises the error of N3, which `NO-ERROR` suppresses. Whether `c` is then empty, or keeps the record it held before because the statement was abandoned (N7), is not known (no install was available to check). The model therefore uses the dependency only when, on every path into that `FIND`, `c` is empty (in the main block, which runs first, or for a buffer only the routine sees, before anything fills it) or already holds a record of an earlier such `FIND` that read `b`. A guard or completed use that later proves `c` then proves `b`, and the model forgets the failed finds of `b`. On a path where the `FIND` did not run and `c` is still empty, the proof of `c` runs on no path, so it proves `b` too (`IF AVAILABLE b THEN FIND c ... . IF AVAILABLE c THEN b.f`). It follows each `FIND c` site, not the buffer: anything that may change `c` (a refill, a call that may change it, an Unknown) ends the dependency, and so does another `FIND b ... NO-ERROR` unless `c` is still empty. An `ERROR-STATUS` test proves it only when no other find of `c` may still have failed. | Inferred from N3; where `c` may hold another record the answer depends on N7 for `FIND`, which is unchecked, and the use is reported. | `guards.p`, `cases.rs` |
+| G9 | **Dependent finds.** `FIND c WHERE c.x = b.f NO-ERROR` with `b` empty raises the error of N3, which `NO-ERROR` suppresses. Whether `c` is then empty, or keeps the record it held before because the statement was abandoned (N7), is not known (no install was available to check). The model therefore uses the dependency only when, on every path into that `FIND`, `c` is empty (in the main block, which runs first, or in a routine for a buffer the routine defines and no other unit uses, before anything fills it; a default buffer belongs to the procedure file (B2) and may hold the record of an earlier call) or already holds a record of an earlier such `FIND` that read `b`. A guard or completed use that later proves `c` then proves `b`, and the model forgets the failed finds of `b`. On a path where the `FIND` did not run and `c` is still empty, the proof of `c` runs on no path, so it proves `b` too (`IF AVAILABLE b THEN FIND c ... . IF AVAILABLE c THEN b.f`). It follows each `FIND c` site, not the buffer: anything that may change `c` (a refill, a call that may change it, an Unknown) ends the dependency, and so does another `FIND b ... NO-ERROR` unless `c` is still empty. An `ERROR-STATUS` test proves it only when no other find of `c` may still have failed. | Inferred from N3; where `c` may hold another record the answer depends on N7 for `FIND`, which is unchecked, and the use is reported. | `guards.p`, `cases.rs` |
 
 ### 9.4 Where a record comes back
 
@@ -1245,7 +1245,8 @@ resolved type and storage facts. They do not supply a default `?` source in this
 From the review of the first slice: V2 says an `OUTPUT` parameter the callee does not set is
 `?`; as recalled, an `OUTPUT` parameter starts at the initial value of its data type (`0`, `""`,
 `no`), so it is `?` only for the types whose default is `?`. Section 9.9 models it that way;
-check it on an install. Also check G9's premise there (`FIND FIRST c NO-LOCK.`, then `FIND c
+check it on an install. Check V6, V7 and V8 there too (NL001 relies on V6 and V8), and V3's
+division by zero (now Unknown). Also check G9's premise there (`FIND FIRST c NO-LOCK.`, then `FIND c
 WHERE c.x = b.f NO-ERROR` with `b` empty, then `AVAILABLE c`): if `c` is emptied, G9 can apply
 where `c` held a record too. One include line can carry thousands of NL003 use-site copies
 (3,583 from two lines in the first corpus); one finding per include line per run, or a summary
@@ -1257,9 +1258,23 @@ line, would cut that noise.
 parsed expressions. `value_before(unit, node, name)` gives the value of a local before a flow
 node: unreachable, known, possibly `?`, or Unknown. Internally, separate bits record known
 values, proven `?` sources, and paths whose value is Unknown. A join keeps a proven source even
-when another path is Unknown. An Unknown path alone never supplies a source or a finding. The
-transfers are monotone, and loops reach a fixed point. A test checks every pair of lattice
-states.
+when another path is Unknown. An Unknown path alone never supplies a source or a finding.
+
+**Termination.** A narrowing that the edge alone decides may turn an Unknown local into a source
+(V5) or into a known value. A narrowing that depends on the fact (the decided side of a false
+`A AND B` or a true `A OR B`, and `a = b`) is weak: it only removes values, so a larger fact never
+gives a smaller result. With that the statement and edge transfers are monotone; a property test
+checks them on the solved facts of a hundred random programs, and a unit test checks the
+expression transfer on every pair of lattice states. The atoms of the correlated tests below
+(logical flags, `AVAILABLE`, counted loops) are even, so `a ^ 1` is the opposite of `a`. The
+shared solver of `oxabl_flow`
+also joins the previous fact into the new one at every loop head, so a transfer that is not
+monotone still ends on this finite lattice, and each solve runs within a work budget (64 visits
+per node). A unit past the budget is Unknown for every local and gives no finding; so does the
+failed-find analysis for its unit. Random programs (300, fixed seed) must reach a fixed point
+within the budget. The first version of this section said the transfers were monotone when they
+were not: a `REPEAT` around `DO WHILE i <> ? AND d <> ?: i = ?. END.` never ended (a regression
+test now).
 
 **Sources** are V1 and the local part of V2: the literal `?`, `INITIAL ?`, the default of
 `DATE`, `DATETIME`, `DATETIME-TZ`, `HANDLE`, `ROWID`, `RECID` and object references, and an
@@ -1270,22 +1285,28 @@ code itself says that `x` can be `?`. `INPUT` and `INPUT-OUTPUT` parameters star
 parameters count. An unseen function or method result is Unknown. `IMPORT`, `UPDATE`, `SET`,
 `MESSAGE ... UPDATE` and call `OUTPUT` arguments forget the value. An unseen call in an
 expression also forgets its variable arguments (the AST has no argument modes there), and any
-call forgets the locals another unit of the file writes. Opaque statements, elided preprocessor
+call forgets the locals another unit of the file writes. So do `WAIT-FOR`, `APPLY`, `ENABLE`,
+`PUBLISH`, `UPDATE` and `SET`, which may run triggers (K6); `CHOOSE`, `PROMPT-FOR`, `INSERT` and
+`READKEY` are opaque statements. Opaque statements, elided preprocessor
 text, explicit `UNDO` and error paths forget every local. `LIKE`, `EXTENT` and shared variables
 are Unknown.
 
-**Propagation.** V3 arithmetic, unary minus and V4 string `+` propagate `?`; a literal division
-by zero gives `?` (the medium part of V3). V5 `=` and `<>` absorb. The V10 functions propagate
+**Propagation.** V3 arithmetic, unary minus and V4 string `+` propagate `?`; a division by a
+constant zero (the medium part of V3) is Unknown, so it makes no finding. V5 `=` and `<>` absorb. The V10 functions propagate
 an argument that is already a `?` source; they never make one. `STRING`, `VALID-HANDLE`,
 `VALID-OBJECT`, `AVAILABLE`, `CAN-FIND` and `LOCKED` absorb (V11). `SUBSTITUTE` is Unknown
 (low confidence). V9 takes the `ELSE` value for a definite `?` condition and joins the arms
 otherwise. V12 conversion errors are no source; V13 is for NL004.
 
-**V6 and V7 never make a finding.** The result of an ordering comparison, `BEGINS`, `MATCHES`,
-`NOT`, `AND` or `OR` is Unknown as a value. The model uses V6, V7 and V8 only to remove sources:
-the edge a `?` condition cannot take (the `THEN` edge, the loop body) drops the sources that
-would make the condition `?`. If V6 or V7 is wrong, the model misses findings; it never makes
-wrong ones.
+**V6 and V7 never make a value.** The result of an ordering comparison, `BEGINS`, `MATCHES`,
+`NOT`, `AND` or `OR` is Unknown as a value. The model uses V6, V7 and V8 to remove sources: the
+edge a `?` condition cannot take (the `THEN` edge, the loop body) drops the sources that would
+make the condition `?`. If they are wrong there, the model misses findings. NL001 is different:
+it reports a `?` source that reaches an ordering comparison or a condition, and that use is a
+defect only if V6 (the comparison gives `?`) and V8 (a `?` condition skips the `THEN` branch or
+ends the loop) hold. Both are Recalled (low and medium) and unchecked, so NL001 can be wrong
+where they are; it stays preview until they are checked on an install, and its help says so.
+NL002 rests on V3 and V4, Documented for `?` operands.
 
 **Guards and correlated tests.** `x = ?`, `EQ`, `<>`, `NE`, `NOT`, the true arms of `AND` and
 the false arms of `OR` narrow both edges, and a false `A AND B` (or a true `A OR B`) whose one
@@ -1309,7 +1330,11 @@ every local.
 **Counted loops.** A `DO i = a TO b` body runs only when `a` and `b` are not `?` (`i <= ?` is
 `?`, V6 and V8), so the body edge proves both known: `DO i = 1 TO NUM-ENTRIES(list)` reads `list`
 as known in the body. A `TO` loop can end before its `WHILE` condition is false, so its exit
-does not narrow by the `WHILE` condition. An integer local that is never written keeps its
+does not narrow by the `WHILE` condition. A `DO v = a TO b [BY k]` without `WHILE` whose
+constant bounds give an iteration leaves only after one: a source that only the entering paths
+carry is gone at its exit (`NEXT` and `RETRY` still come from iterations that may skip the rest
+of the body). `REPEAT v = a TO b` writes `v` at its head; the AST does not keep that phrase, so
+the loop variable is read from the tokens. An integer local that is never written keeps its
 initial value, which decides constant tests.
 
 **`NOT` binds looser than a comparison** (Documented in the operator precedence table of the
