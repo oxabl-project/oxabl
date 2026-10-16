@@ -79,6 +79,9 @@ struct Problem<'a> {
     variables: Vec<Variable>,
     names: FxHashMap<String, usize>,
     elided: &'a [u32],
+    /// The loop variable of each `REPEAT var = ... TO ...`, which the AST does
+    /// not keep.
+    repeat_vars: &'a FxHashMap<NodeId, String>,
     call_writes: Vec<usize>,
     /// Buffers named by `AVAILABLE` in the unit, for correlated tests.
     buffers: FxHashMap<String, usize>,
@@ -1022,6 +1025,11 @@ impl Problem<'_> {
             _ => {}
         }
     }
+    fn forget_call_writes(&self, f: &mut Fact) {
+        for &i in &self.call_writes {
+            f.forget(i, UNKNOWN);
+        }
+    }
     fn step(&self, s: &Statement, f: &mut Fact) {
         if f.dead() {
             return;
@@ -1039,7 +1047,6 @@ impl Problem<'_> {
                     self.assign(&a.target, &a.value, f);
                 }
             }
-            // An unseen callee may change variables passed by reference.
             S::Do {
                 loop_var: Some(name),
                 ..
@@ -1048,9 +1055,35 @@ impl Problem<'_> {
                     f.forget(i, UNKNOWN);
                 }
             }
+            S::Repeat { .. } => {
+                if let Some(i) = self
+                    .repeat_vars
+                    .get(&s.id)
+                    .and_then(|n| lookup(&self.names, n))
+                {
+                    f.forget(i, UNKNOWN);
+                }
+            }
             S::Import { targets, .. } | S::Update { targets, .. } | S::Set { targets, .. } => {
+                // Input runs the triggers of the frame.
+                if !matches!(s.kind, S::Import { .. }) {
+                    self.forget_call_writes(f);
+                }
                 for target in targets {
                     if let Some(i) = self.variable(target) {
+                        f.forget(i, UNKNOWN);
+                    }
+                }
+            }
+            // These run triggers, which may write the locals other units write.
+            S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } => self.forget_call_writes(f),
+            S::Publish { arguments, .. } => {
+                self.forget_call_writes(f);
+                for a in arguments {
+                    self.forget_calls(&a.expression, f);
+                    if a.direction != ParameterDirection::Input
+                        && let Some(i) = self.variable(&a.expression)
+                    {
                         f.forget(i, UNKNOWN);
                     }
                 }
@@ -1067,10 +1100,9 @@ impl Problem<'_> {
                     }
                 }
             }
+            // An unseen callee may change variables passed by reference.
             S::Run { arguments, .. } => {
-                for &i in &self.call_writes {
-                    f.forget(i, UNKNOWN);
-                }
+                self.forget_call_writes(f);
                 for a in arguments {
                     self.forget_calls(&a.expression, f);
                     if a.direction != ParameterDirection::Input
@@ -1309,16 +1341,60 @@ impl Analysis for Problem<'_> {
     }
 }
 
+/// The loop variable of each `REPEAT var = a TO b` among `all`, lowercase.
+fn repeat_vars(
+    all: &[&Statement],
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+) -> FxHashMap<NodeId, String> {
+    use oxabl_lexer::Kind;
+    let mut out = FxHashMap::default();
+    for s in all {
+        if !matches!(s.kind, S::Repeat { .. }) {
+            continue;
+        }
+        let first = tokens.partition_point(|t| t.start < s.span.start as usize);
+        if tokens.get(first).map(|t| t.kind) != Some(Kind::Repeat) {
+            continue;
+        }
+        let header: Vec<_> = tokens[first + 1..]
+            .iter()
+            .filter(|t| t.kind != Kind::Comment)
+            .take_while(|t| !matches!(t.kind, Kind::Colon | Kind::KwWhile | Kind::KwWhere))
+            .collect();
+        let mut depth = 0i32;
+        for (i, t) in header.iter().enumerate() {
+            match t.kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => depth -= 1,
+                Kind::Equals if depth == 0 && i > 0 => {
+                    if header[i..].iter().any(|t| t.kind == Kind::To) {
+                        let name = &source[header[i - 1].start..header[i - 1].end];
+                        out.insert(s.id, name.to_ascii_lowercase());
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn analyze(
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
     program: &[Statement],
     flow: &FileFlow,
     elided: &[u32],
 ) -> (Vec<ValueUse>, Vec<UnitValues>) {
-    analyze_inspect(program, flow, elided, &mut |_, _, _| {})
+    analyze_inspect(source, tokens, program, flow, elided, &mut |_, _, _| {})
 }
 
 /// [`analyze`], showing each solved unit to `inspect`.
 fn analyze_inspect(
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
     program: &[Statement],
     flow: &FileFlow,
     elided: &[u32],
@@ -1328,6 +1404,7 @@ fn analyze_inspect(
     for s in program {
         children(s, &mut all);
     }
+    let repeat_vars = repeat_vars(&all, source, tokens);
     let mut written = FxHashSet::default();
     let mut write = |e: &Expression| {
         if let E::Identifier(i) = &e.kind {
@@ -1347,7 +1424,7 @@ fn analyze_inspect(
                     write(t);
                 }
             }
-            S::Run { arguments, .. } => {
+            S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
                         write(&a.expression);
@@ -1357,6 +1434,7 @@ fn analyze_inspect(
             _ => {}
         }
     }
+    written.extend(repeat_vars.values().cloned());
     for s in &all {
         match &s.kind {
             S::Do {
@@ -1434,7 +1512,7 @@ fn analyze_inspect(
                     record(t);
                 }
             }
-            S::Run { arguments, .. } => {
+            S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
                         record(&a.expression);
@@ -1474,6 +1552,7 @@ fn analyze_inspect(
             variables: Vec::new(),
             names: FxHashMap::default(),
             elided,
+            repeat_vars: &repeat_vars,
             call_writes: Vec::new(),
             buffers: FxHashMap::default(),
             loosened: &loosened,
@@ -1667,6 +1746,7 @@ mod tests {
             ],
             names: [("a".into(), 0), ("b".into(), 1)].into_iter().collect(),
             elided: &[],
+            repeat_vars: &FxHashMap::default(),
             call_writes: Vec::new(),
             buffers: FxHashMap::default(),
             loosened: &FxHashMap::default(),
@@ -1723,7 +1803,7 @@ mod tests {
         }
     }
 
-    fn parse(source: &str) -> (oxabl_parser::Program, FileFlow) {
+    fn parse(source: &str) -> (Vec<oxabl_lexer::Token>, oxabl_parser::Program, FileFlow) {
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
         let flow = oxabl_flow::build_file_tokens(
@@ -1732,7 +1812,7 @@ mod tests {
             &tokens,
             &Default::default(),
         );
-        (program, flow)
+        (tokens, program, flow)
     }
 
     #[test]
@@ -1740,8 +1820,8 @@ mod tests {
         let mut programs = crate::fuzz::Programs::new(0x5eed);
         for k in 0..300 {
             let source = programs.program();
-            let (program, flow) = parse(&source);
-            let (_, facts) = analyze(&program.statements, &flow, &[]);
+            let (tokens, program, flow) = parse(&source);
+            let (_, facts) = analyze(&source, &tokens, &program.statements, &flow, &[]);
             assert!(
                 facts.iter().all(|f| !f.exhausted),
                 "program {k} spent its budget:\n{source}"
@@ -1754,39 +1834,47 @@ mod tests {
         let mut programs = crate::fuzz::Programs::new(0x6d6f);
         for k in 0..100 {
             let source = programs.program();
-            let (program, flow) = parse(&source);
-            analyze_inspect(&program.statements, &flow, &[], &mut |cfg, p, solution| {
-                let mut pool: Vec<&Fact> = Vec::new();
-                for (n, _) in cfg.nodes() {
-                    let f = solution.before(n);
-                    if !f.dead() && !pool.contains(&f) && pool.len() < 6 {
-                        pool.push(f);
+            let (tokens, program, flow) = parse(&source);
+            let (statements, elided) = (&program.statements, &[]);
+            analyze_inspect(
+                &source,
+                &tokens,
+                statements,
+                &flow,
+                elided,
+                &mut |cfg, p, solution| {
+                    let mut pool: Vec<&Fact> = Vec::new();
+                    for (n, _) in cfg.nodes() {
+                        let f = solution.before(n);
+                        if !f.dead() && !pool.contains(&f) && pool.len() < 6 {
+                            pool.push(f);
+                        }
                     }
-                }
-                for (n, node) in cfg.nodes() {
-                    if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) {
-                        continue;
-                    }
-                    for e in cfg.successors(n) {
-                        for small in &pool {
-                            for other in &pool {
-                                let mut large = (*small).clone();
-                                large.join(other);
-                                let (mut a, mut b) = ((*small).clone(), large.clone());
-                                p.transfer_edge(cfg, n, e, &mut a);
-                                p.transfer_edge(cfg, n, e, &mut b);
-                                assert!(
-                                    a.leq(&b),
-                                    "program {k}, node {} {:?} by {:?}:\n{small:?}\n<= {large:?}\ngives {a:?}\nnot <= {b:?}\n{source}",
-                                    n.index(),
-                                    cfg.node(n).kind,
-                                    e.kind,
-                                );
+                    for (n, node) in cfg.nodes() {
+                        if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) {
+                            continue;
+                        }
+                        for e in cfg.successors(n) {
+                            for small in &pool {
+                                for other in &pool {
+                                    let mut large = (*small).clone();
+                                    large.join(other);
+                                    let (mut a, mut b) = ((*small).clone(), large.clone());
+                                    p.transfer_edge(cfg, n, e, &mut a);
+                                    p.transfer_edge(cfg, n, e, &mut b);
+                                    assert!(
+                                        a.leq(&b),
+                                        "program {k}, node {} {:?} by {:?}:\n{small:?}\n<= {large:?}\ngives {a:?}\nnot <= {b:?}\n{source}",
+                                        n.index(),
+                                        cfg.node(n).kind,
+                                        e.kind,
+                                    );
+                                }
                             }
                         }
                     }
-                }
-            });
+                },
+            );
         }
     }
 }

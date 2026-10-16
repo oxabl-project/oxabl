@@ -196,8 +196,10 @@ pub type ScopesFn = fn(&FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagn
 pub type EffectsFn =
     fn(&FileEffects, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
 
-/// The signature of a rule that reads the failed finds of the file
-/// ([`oxabl_nulls`]) with the scope analysis they were made over.
+/// The signature of a rule that reads the null analysis of the file
+/// ([`oxabl_nulls`]): its failed finds ([`FnRule::over_nulls`]) or its local
+/// value facts ([`FnRule::over_null_values`]), with the scope analysis they
+/// were made over.
 pub type NullsFn = fn(&FileNulls, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
 
 #[derive(Debug, Clone, Copy)]
@@ -207,6 +209,7 @@ enum Body {
     Scopes(ScopesFn),
     Effects(EffectsFn),
     Nulls(NullsFn),
+    NullValues(NullsFn),
     Shared(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
 }
 
@@ -264,6 +267,16 @@ impl FnRule {
             body: Body::Nulls(check),
         }
     }
+
+    /// Pair `meta` with a query over the file's local value facts. One
+    /// registry run analyses the file once for every such rule, apart from
+    /// the failed finds.
+    pub const fn over_null_values(meta: RuleMeta, check: NullsFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::NullValues(check),
+        }
+    }
 }
 
 impl Rule for FnRule {
@@ -282,7 +295,11 @@ impl Rule for FnRule {
     fn reads_scopes(&self) -> bool {
         matches!(
             self.body,
-            Body::Scopes(_) | Body::Effects(_) | Body::Nulls(_) | Body::Shared(_)
+            Body::Scopes(_)
+                | Body::Effects(_)
+                | Body::Nulls(_)
+                | Body::NullValues(_)
+                | Body::Shared(_)
         )
     }
 
@@ -306,6 +323,12 @@ impl Rule for FnRule {
             ),
             Body::Nulls(check) => check(
                 shared.nulls(program, ctx),
+                shared.scopes(program, ctx),
+                program,
+                ctx,
+            ),
+            Body::NullValues(check) => check(
+                shared.null_values(program, ctx),
                 shared.scopes(program, ctx),
                 program,
                 ctx,
@@ -579,7 +602,7 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         find_in_loop::DEFAULT_SEVERITY,
         find_in_loop::check,
     ),
-    FnRule::over_nulls(
+    FnRule::over_null_values(
         RuleMeta::new(
             NL001,
             unknown_in_comparison::NAME,
@@ -592,7 +615,7 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         .reported_at_use_site(),
         unknown_in_comparison::check,
     ),
-    FnRule::over_nulls(
+    FnRule::over_null_values(
         RuleMeta::new(
             NL002,
             unknown_propagation::NAME,

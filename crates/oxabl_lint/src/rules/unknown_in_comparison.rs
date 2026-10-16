@@ -45,7 +45,7 @@ pub fn run(
 ) -> Vec<Diagnostic> {
     let shared = crate::RunShared::default();
     check(
-        shared.nulls(program, ctx),
+        shared.null_values(program, ctx),
         shared.scopes(program, ctx),
         program,
         ctx,
