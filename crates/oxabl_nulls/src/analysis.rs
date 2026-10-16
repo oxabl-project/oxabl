@@ -646,7 +646,8 @@ fn operand_end(kind: Kind) -> bool {
 /// record: an `@` target, a widget attribute or method
 /// (`b.f:SCREEN-VALUE`), `b.f IN FRAME f`, `INPUT [FRAME f] b.f`, and the
 /// fields of `ENABLE`, `DISABLE`, `PROMPT-FOR`, `HIDE`, `VIEW`, `CLEAR`,
-/// `WAIT-FOR` and `APPLY ... TO`. It neither reads nor proves a record.
+/// `WAIT-FOR`, `APPLY ... TO` and the `OF` list of an `ON` header. It
+/// neither reads nor proves a record.
 /// A temp-table field may hold a handle, so `tt.f:attr` is a widget only
 /// with `IN FRAME` or `IN BROWSE`; a database field cannot.
 fn widget(
@@ -698,6 +699,9 @@ fn widget(
     if in_frame(next) {
         return true;
     }
+    if on_header(toks, at) {
+        return true;
+    }
     let Some(iv) = owner else {
         return false;
     };
@@ -715,6 +719,30 @@ fn widget(
         Some(Kind::Apply) => toks[first..at].iter().any(|t| t.kind == Kind::To),
         _ => false,
     }
+}
+
+/// Whether the token at `at` is in the `OF` list of an `ON` statement. The
+/// parser ends that statement at the period of `b.f`, so the tokens decide.
+fn on_header(toks: &[Tok], at: usize) -> bool {
+    let mut of = false;
+    for i in (at.saturating_sub(64)..at).rev() {
+        match toks[i].kind {
+            Kind::Of => of = true,
+            Kind::On => {
+                return of
+                    && i.checked_sub(1)
+                        .is_none_or(|p| matches!(toks[p].kind, Kind::Period | Kind::Colon));
+            }
+            // The period inside `b.f`.
+            Kind::Period
+                if i > 0
+                    && toks[i - 1].end == toks[i].start
+                    && toks.get(i + 1).is_some_and(|n| n.start == toks[i].end) => {}
+            Kind::Period | Kind::Colon | Kind::Do => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A method that may change the record of a buffer whose handle it is called

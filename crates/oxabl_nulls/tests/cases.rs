@@ -61,13 +61,14 @@ fn widget_references_are_no_record_reads() {
         "APPLY \"entry\" TO Customer.Name IN FRAME f.",
         "HIDE Customer.Name IN FRAME f.",
         "VIEW Customer.Name IN FRAME f.",
+        "ON LEAVE OF Customer.Name DO:\n  MESSAGE \"left\".\nEND.",
     ];
     for form in forms {
         let body = format!("FIND FIRST Customer NO-LOCK NO-ERROR.\n{form}\n");
         assert_eq!(missing(&body), Vec::<usize>::new(), "{form}");
         // Neither do they prove the record.
         let body = format!("FIND FIRST Customer NO-LOCK NO-ERROR.\n{form}\nc = Customer.Name.\n");
-        assert_eq!(missing(&body), vec![3], "{form}");
+        assert_eq!(missing(&body), vec![form.lines().count() + 2], "{form}");
     }
     // A temp-table field may hold a handle: its method reads the record.
     let body = "DEFINE TEMP-TABLE th NO-UNDO FIELD h AS HANDLE.\n\
