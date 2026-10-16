@@ -1232,6 +1232,7 @@ dependencies = [
  "oxabl_lexer",
  "oxabl_lint",
  "oxabl_lsp",
+ "oxabl_nulls",
  "oxabl_parser",
  "oxabl_pipeline",
  "oxabl_preprocessor",

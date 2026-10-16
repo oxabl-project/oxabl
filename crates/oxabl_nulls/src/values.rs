@@ -3,7 +3,7 @@ use oxabl_ast::{
     DataType, Expression, ExpressionKind as E, Literal, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, Span, Statement, StatementKind as S, TypeSource,
 };
-use oxabl_flow::dataflow::{Analysis, Direction, Solution, default_budget, solve_within};
+use oxabl_flow::dataflow::{Analysis, Direction, Limits, Solution, default_budget, solve_bounded};
 use oxabl_flow::{Cfg, Edge, EdgeKind, FileFlow, NodeIx, NodeKind, UnitId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -300,6 +300,9 @@ fn loosen_not(e: &Expression) -> Option<Expression> {
 
 // Bound the relations between locals without limiting the value facts.
 const TRACKED_LIMIT: usize = 256;
+/// The most work the solve of one unit may do (see [`Fact::cost`]). Past it
+/// the unit is Unknown.
+const WORK_LIMIT: usize = 1_000_000;
 
 /// Locals that a condition, comparison or loop limit reads.
 fn tested_names<'a>(statements: impl Iterator<Item = &'a Statement>) -> FxHashSet<String> {
@@ -1275,6 +1278,9 @@ impl Analysis for Problem<'_> {
     fn join(&self, a: &mut Fact, b: &Fact) {
         a.join(b);
     }
+    fn fact_cost(&self, f: &Fact) -> usize {
+        f.cost()
+    }
     fn transfer(&self, c: &Cfg, n: NodeIx, f: &mut Fact) {
         if !matches!(c.node(n).kind, NodeKind::Stmt | NodeKind::Head) {
             return;
@@ -1725,7 +1731,14 @@ fn analyze_inspect(
             .filter(|(name, _)| nonlocal.contains(*name))
             .map(|(_, &i)| i)
             .collect();
-        let Ok(solution) = solve_within(cfg, &p, default_budget(cfg)) else {
+        let Ok(solution) = solve_bounded(
+            cfg,
+            &p,
+            Limits {
+                visits: default_budget(cfg),
+                work: WORK_LIMIT,
+            },
+        ) else {
             facts.push(UnitValues {
                 unit: cfg.id(),
                 names: p.names,
