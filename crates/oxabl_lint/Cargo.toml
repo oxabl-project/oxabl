@@ -14,6 +14,7 @@ oxabl_flow = { path = "../oxabl_flow", version = "0.2.0" }
 oxabl_handles = { path = "../oxabl_handles", version = "0.1.0" }
 oxabl_index = { path = "../oxabl_index", version = "2.0.0" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "1.0.2" }
+oxabl_nulls = { path = "../oxabl_nulls", version = "0.1.0" }
 oxabl_scope = { path = "../oxabl_scope", version = "0.1.0" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "2.0.0" }
 rustc-hash = "2"

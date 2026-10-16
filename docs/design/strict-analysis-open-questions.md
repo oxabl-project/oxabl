@@ -12,8 +12,10 @@ diagnostics inside include files are reported. The third (PROPATH and include re
 with the AVM) stays open. Section 4 records one ABL fact that a rule depends on. Section 5
 lists the block semantics that the flow graph (`oxabl_flow`) models without a reference,
 section 6 the handle semantics that `oxabl_handles` relies on, section 7 the buffer-scope,
-transaction and lock semantics that `oxabl_scope` relies on, and section 8 the database effects,
-index selection and call graph that `oxabl_effects` and `oxabl_index` rely on.
+transaction and lock semantics that `oxabl_scope` relies on, section 8 the database effects,
+index selection and call graph that `oxabl_effects` and `oxabl_index` rely on, section 9 the
+unknown-value and record-availability semantics that `oxabl_nulls` relies on, and section 10 how
+`RUN` matches arguments to parameters and which `RUN` targets the call rules judge.
 
 **How to read the confidence marks.** No OpenEdge installation or ABL reference was available
 while this was written. Each claim is marked:
@@ -1019,6 +1021,631 @@ What the later slices need:
   This new document does not change the existing analyze or check envelopes.
 - **Still needed: summaries in `analyze`.** Add a section from the shared provider, with an
   additive envelope change and a section version bump.
-- **Still needed: LSP code lens.** Read the daemon's cached graph and map unit positions back
-  through the expansion. Add capability handling and a `textDocument/codeLens` renderer.
-  If summaries become an `oxabl/*` wire method, add fields and bump the protocol version.
+- **Built: LSP code lens.** `textDocument/codeLens` renders the same direct effects and
+  transitive summaries as `explain`. Each main block, procedure, function, method or trigger
+  with database effects or calls gets one lens. Titles list reads, writes and call counts;
+  unresolved direct calls have an unknown count. Incomplete summaries say `partial`.
+  The renderer uses root header offsets from `resolve_root_span`; an include-only unit has
+  no lens. The existing `root_units` selection spans keep their include-site fallback for
+  `explain`, but code lenses never use that fallback.
+  The client must offer code-lens support. Static clients get the capability at initialization
+  only when the declared workspace enables DB001 (`strict.access`) or TX004
+  (`strict.transactions`). Dynamic clients register only open files whose resolved lint
+  settings enable either rule, including file overrides. Requests also check file settings.
+  A worker reads the daemon's revision-tracked reachable graph cache. A request returns only
+  ready lenses, or an empty list while the worker runs. The LSP thread builds no graph.
+  Clients with `workspace.codeLens.refreshSupport` receive a refresh request when results
+  become ready. Other clients see them on their next request. Edits, closes and watched-file
+  changes discard rendered lenses and obsolete worker results. No `oxabl/*` method or JSON
+  envelope changed; the daemon protocol version is unchanged.
+
+## 9. Unknown values and records that may be missing
+
+`oxabl_nulls` follows three things through the flow graph of each unit (`oxabl_flow`): the unknown
+value `?` in local variables (the second slice), records a `FIND ... NO-ERROR` may have
+failed to find (the first slice) and database fields the schema starts at `?` (the third slice,
+section 9.11). Buffers resolve through `oxabl_scope` (section 7): its names, its default buffers and its
+reading of unqualified fields. No OpenEdge install was available while this was written, so the
+marks of section 7 apply: **Documented**, **Recalled**, **Inferred**; a design choice of oxabl is
+**Proposed**.
+
+Each modelled row has a fixture in `crates/oxabl_nulls/tests/fixtures/` (re-bless
+with `OXABL_BLESS=1 cargo test -p oxabl_nulls --test snapshots`). Where the model cannot decide,
+the answer is **Unknown**, which never makes a finding.
+
+### 9.1 The unknown value
+
+The second slice models local values for NL001 and NL002 (section 9.9); the third models
+database fields for NL004 (section 9.11). The confidence marks still apply; these checks have no
+licensed runtime oracle.
+
+| # | ABL | Confidence |
+|---|---|---|
+| V1 | `?` is the unknown value. A variable, field or parameter of any data type can hold it. | Documented. |
+| V2 | **Sources.** The literal `?`; `INITIAL ?`; the default of a `DATE`, `DATETIME`, `DATETIME-TZ`, `HANDLE`, `ROWID`, `RECID` and object-reference variable (the other types start at `0`, `""` or `no`); a database field whose stored value is `?` (any field that is not `MANDATORY`, and a field whose schema `INITIAL` is `?`); a user-defined function that ends without `RETURN` a value; `ROWID(b)` and `RECID(b)` with no record in `b`; an `OUTPUT` parameter the callee does not set. | Documented for the literal, `INITIAL ?`, the `DATE` and `HANDLE` defaults and non-mandatory fields; Recalled, medium, for the other defaults, function returns and `ROWID`/`RECID`. |
+| V3 | **Arithmetic propagates.** `+`, `-`, `*`, `/`, `MODULO` and unary `-` with a `?` operand give `?`. Division by zero gives `?`, not an error. | Documented for `?` operands; Recalled, medium, for division by zero. |
+| V4 | **String `+` propagates.** `"a" + ?` is `?`, not `"a"` or `"a?"`. | Documented. |
+| V5 | **`=` and `<>` absorb.** `? = ?` is `yes`; `x = ?` is `yes` exactly when `x` is `?`; `<>` is the negation. They never give `?`. | Documented. |
+| V6 | **Ordering propagates.** `<`, `<=`, `>`, `>=`, `BEGINS`, `MATCHES` and `CONTAINS` with a `?` operand give `?`. | Recalled, low. |
+| V7 | **Logic.** `NOT ?` is `?`. `AND` and `OR` are three-valued: `? AND no` is `no`, `? AND yes` is `?`, `? OR yes` is `yes`, `? OR no` is `?`. | Recalled, low. |
+| V8 | **Conditions.** An `IF` statement whose condition is `?` runs its `ELSE` branch (or nothing); `DO WHILE ?` and `REPEAT WHILE ?` end the loop; a `WHERE` that is `?` for a record does not select it. `?` behaves as `no` there, so a comparison that silently gives `?` (V6) skips code. | Recalled, medium. |
+| V9 | **`IF ... THEN ... ELSE` as a function** takes the `ELSE` value when its condition is `?` (V8). The result is `?` only when the chosen value is. | Recalled, medium. |
+| V10 | **Built-ins.** Most built-in functions give `?` when an argument is `?`: `ENTRY`, `NUM-ENTRIES`, `LOOKUP`, `SUBSTRING`, `LENGTH`, `TRIM`, `CAPS`, `INDEX`, `REPLACE`, `MAXIMUM`, `MINIMUM`, `ABSOLUTE`, `ROUND`, `TRUNCATE`, `INTEGER`, `DECIMAL`, `DATE` and the date parts. | Recalled, medium for the general rule; low for each function. |
+| V11 | **Built-ins that absorb.** `STRING(?)` is the string `"?"`; `VALID-HANDLE(?)` and `VALID-OBJECT(?)` are `no`; `AVAILABLE`, `CAN-FIND` and `LOCKED` never give `?`; `SUBSTITUTE` writes `?` for an unknown argument. | Recalled, high for `STRING` and `VALID-HANDLE`; low for `SUBSTITUTE`. |
+| V12 | **Errors are not `?`.** A conversion that cannot read its argument (`INTEGER("abc")`, `DATE("x")`) and `ENTRY` past the end of a list raise ERROR; they do not give `?`. | Recalled, medium. |
+| V13 | **Mandatory fields.** Assigning `?` to a `MANDATORY` field raises ERROR when the record is validated (at the latest when it is written), not at the assignment. | Recalled, medium. |
+
+### 9.2 A failed `FIND`
+
+| # | ABL | Confidence | Fixture |
+|---|---|---|---|
+| N1 | `FIND` (unique, `FIRST`, `LAST`, `NEXT`, `PREV`) that finds no record raises ERROR (`** <table> record not on file`), and so does a unique `FIND` that matches two records. With `NO-ERROR` it raises nothing, and the buffer has no record: `AVAILABLE b` is `no`. | Documented. | `finds.p` |
+| N2 | The record the buffer held before a failed `FIND` is released: after the statement the buffer is empty, whatever it held. | Recalled, medium. | `finds.p` |
+| N3 | **A field of an empty buffer is an error, not `?`.** Reading or assigning `b.f` when `b` has no record raises ERROR (`** No <table> record is available`). | Documented. | `finds.p` |
+| N4 | `NO-WAIT NO-ERROR` on a record another session locks leaves the buffer empty, with `LOCKED b` true. | Recalled, medium. | — |
+| N5 | `FIND NEXT` and `FIND PREV` with `NO-ERROR` past the last record leave the buffer empty (the usual end of a `REPEAT` that walks an index). | Documented. | `loops.p` |
+| N6 | `FIND CURRENT b NO-ERROR` fails, and leaves the buffer empty, when `b` has no record or another session deleted it. The model takes it as no source and no refill: it re-reads the record the buffer holds, and the buffer stays as it was. On both corpora these were re-reads to change the lock right after the record was used, and two of the first fifteen findings of the second corpus were such re-reads. | Recalled, low; the model's choice is Proposed. | `finds.p` |
+| N7 | `NO-ERROR` on a statement also suppresses the error of N3: `ASSIGN x = b.f NO-ERROR` with no record raises nothing, and `x` is unchanged. | Recalled, medium. | `finds.p` |
+| N8 | **`ERROR-STATUS`.** Each statement with `NO-ERROR` resets `ERROR-STATUS`; a statement without it leaves it alone. After a `FIND ... NO-ERROR` that found no record, `ERROR-STATUS:ERROR` is `yes`; after one that found a record, `no`. | Recalled, medium. | `guards.p` |
+| N9 | `CAN-FIND` reads with a buffer of its own (S9): it neither fills nor empties `b`. | Recalled, high. | `guards.p` |
+| N10 | `AND` and `OR` stop early: `AVAILABLE b AND b.f = x` does not read `b.f` when `b` is empty. | Recalled, medium. | `guards.p` |
+| N11 | `RELEASE b` and `DELETE b` also leave the buffer empty. | Documented. | — |
+| N12 | **Frame fields.** A field reference that names the widget of a frame, not the record, needs no record: the target of `@` in `DISPLAY`, a widget attribute or method (`b.f:SCREEN-VALUE`, `b.f:SENSITIVE`, `b.f:LABEL`), `b.f IN FRAME f`, the `INPUT [FRAME f] b.f` function, and the fields of `ENABLE`, `DISABLE`, `PROMPT-FOR`, `HIDE`, `VIEW`, `CLEAR`, `WAIT-FOR` and `APPLY ... TO`. A database field cannot hold a handle, so `b.f:attr` on one is always the widget; a temp-table field may (`tt.h:NAME` reads the record), so the model takes `tt.f:attr` as the widget only with `IN FRAME` or `IN BROWSE`. `INPUT` after `(` or `,` is the mode of a parameter, which reads the record. | Documented for the statements; Recalled, high, for the attributes. | `cases.rs` |
+
+### 9.3 Guards
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| G1 | `AVAILABLE b`, `AVAIL b` and `AVAILABLE(b)` in the condition of an `IF` statement: on the `THEN` edge `b` has a record; on the `ELSE` edge (taken with or without an `ELSE`) it is empty. `NOT` swaps the edges. The operand is always a buffer, also where a variable of the same name hides the table from the scope analysis (S11): the model then looks the name up among the buffers the unit can see. | Documented. | `guards.p` |
+| G2 | `AND` and `OR` combine: the `THEN` edge of `A AND B` has what either side gives; its `ELSE` edge only what both give on their `ELSE` edges. `OR` is the dual. Parentheses are looked through. | Inferred from G1. | `guards.p` |
+| G3 | `DO WHILE` and `REPEAT WHILE` guard the body by their condition; the edge that leaves the loop is guarded by the negation only when the header has no `TO` and no record phrase (a `TO` limit leaves too, and `FOR EACH ... WHILE` also ends when its records run out). | Inferred from G1. | `loops.p`, `cases.rs` |
+| G4 | An arm that does not reach the code after the `IF` (`LEAVE`, `NEXT`, `RETURN`, `RETURN ERROR`, `UNDO, ...`, `THROW`, `STOP`, `QUIT`, a `DO` block that ends with one) guards the rest: the flow graph only reaches it from the other arm. An arm that rejoins keeps the buffer maybe empty. | Documented (the flow graph's block semantics, section 5). | `guards.p` |
+| G5 | `ERROR-STATUS:ERROR` in a condition, alone or compared with a logical constant (`= TRUE`, `EQ NO`, `<> FALSE`, ...): its false edge has a record in `b` when, on every path, the last statement with `NO-ERROR` is the `FIND` of `b` or `b` was refilled or guarded after that `FIND` (N8). A chain `IF NOT ERROR-STATUS:ERROR THEN FIND c ... NO-ERROR.` keeps the link. Any other `NO-ERROR` statement after an unguarded `FIND` breaks it. A call (`RUN`, a function or method) between the `FIND` and a test of `ERROR-STATUS` may or may not run a statement with `NO-ERROR`: the finds the test would link are Unknown from the call on. A call with no such test after it changes nothing here. | Inferred from N8. | `guards.p`, `cases.rs` |
+| G6 | `CAN-FIND` is no guard (N9). `LOCKED b` (and `LOCKED(b)`) being true says `b` is empty; being false says nothing; so it proves nothing on either edge and is not Unknown. After `FIND ... NO-WAIT NO-ERROR`, `IF LOCKED b THEN RETURN.` still leaves `b` empty when no record matched. | Recalled, high. | `cases.rs` |
+| G7 | A condition that names `b` at record level in a form the model does not read (`ROWID(b) = ?`, `RECID(b) <> ?`, `BUFFER b:AVAILABLE`, `AVAILABLE b = no`, `NEW b`) is Unknown for `b` on both edges; an Unknown operand stays Unknown through `AND`, `OR` and `NOT`. `ERROR-STATUS` in a form the model does not read (`ERROR-STATUS:NUM-MESSAGES > 0`, `ERROR-STATUS:ERROR = lFlag`) is Unknown on both edges for every find it links (G5). A `CASE` on `AVAILABLE b` or on `ERROR-STATUS` is Unknown in every branch. | Proposed. | `guards.p`, `cases.rs` |
+| G8 | **Inside one statement.** A field of `b` in a statement that also tests `AVAILABLE b` anywhere (the `IF ... THEN ... ELSE` function, `AND`, `OR`, `DISPLAY ... WHEN`) is taken as guarded (N10). The test is by statement, not by operand, so `NOT AVAILABLE b AND b.f = x` is missed. In the same way a field read that runs only on some paths of its statement (`IF lFlag AND b.f > 0`, `IF x THEN b.f ELSE ...`, `DISPLAY b.f WHEN x`) proves `b` after the statement (K3) on every path: it is reported itself, but a later use on a path where it did not run is not. | Proposed (conservative). | `guards.p` |
+| G9 | **Dependent finds.** `FIND c WHERE c.x = b.f NO-ERROR` with `b` empty raises the error of N3, which `NO-ERROR` suppresses. Whether `c` is then empty, or keeps the record it held before because the statement was abandoned (N7), is not known (no install was available to check). The model therefore uses the dependency only when, on every path into that `FIND`, `c` is empty (in the main block, which runs first, or in a routine for a buffer the routine defines and no other unit uses, before anything fills it; a default buffer belongs to the procedure file (B2) and may hold the record of an earlier call) or already holds a record of an earlier such `FIND` that read `b`. A guard or completed use that later proves `c` then proves `b`, and the model forgets the failed finds of `b`. On a path where the `FIND` did not run and `c` is still empty, the proof of `c` runs on no path, so it proves `b` too (`IF AVAILABLE b THEN FIND c ... . IF AVAILABLE c THEN b.f`). It follows each `FIND c` site, not the buffer: anything that may change `c` (a refill, a call that may change it, an Unknown) ends the dependency, and so does another `FIND b ... NO-ERROR` unless `c` is still empty. An `ERROR-STATUS` test proves it only when no other find of `c` may still have failed. | Inferred from N3; where `c` may hold another record the answer depends on N7 for `FIND`, which is unchecked, and the use is reported. | `guards.p`, `cases.rs` |
+
+### 9.4 Where a record comes back
+
+| # | The model | Confidence | Fixture |
+|---|---|---|---|
+| K1 | `FIND` without `NO-ERROR` completes only with a record (N1): after it, on the normal edge, `b` has one. Its raise edge keeps what held before. | Documented. | `finds.p` |
+| K2 | `CREATE b` and `INSERT b` give `b` a new record. | Documented. | `finds.p` |
+| K3 | A field reference to `b` in a statement without `NO-ERROR` that completes proves a record (N3): after it `b` has one, so a missing record is reported once per path, at its first use. A frame-field reference (N12) proves nothing. For a reference that runs only on some paths of its statement, see G8. | Documented (from N3). | `finds.p` |
+| K4 | A `FOR` or `PRESELECT` phrase of `b`, an `OPEN QUERY` or `GET` that reads `b`, and any other write to `b` as a whole (`BUFFER-COPY ... TO b`, `DELETE b`, `RELEASE b`): Unknown. The `FOR` body has a record; after the block, and after a `GET`, whether it has one is not decided, so the model forgets the failed `FIND`. `RELEASE b` empties `b` for certain (N11), but a later use is no failed `FIND`'s fault. A `REPOSITION` statement may fill the buffers of its query (with a browse): the model forgets every buffer, as for the dynamic `REPOSITION-*` methods. | Documented for the `FOR` body; Inferred for the rest. | `loops.p`, `cases.rs` |
+| K5 | A statement that may change `b` where the file does not show it: `b` passed as `BUFFER b` to a call, a statement form the model does not know that names `b` (also a temp-table: `RAW-TRANSFER x TO tt`, a word the parser does not know), a dynamic method on any handle (`FIND-*`, `GET-*`, `BUFFER-CREATE`, `BUFFER-COPY`, `FILL`, `QUERY-OPEN`, `REPOSITION-*`, `SYNCHRONIZE`, `RAW-TRANSFER`: the handle may be `BUFFER b:HANDLE`), and an unexpanded `{...}` or an elided `{&name}` in the statement. Unknown for `b`, or for every buffer when the target cannot be told. A method is a name written right against the colon after its operand (`h:FIND-FIRST`); the colon that ends a block header or a label is none (`DO: find-count = 1.`). | Inferred. | `unknown.p`, `cases.rs` |
+| K6 | A statement that runs other code of the file or another program (`RUN`, a user-defined or dynamic function, `SUPER`, a method call, `PUBLISH`, `APPLY`, `WAIT-FOR`, an input statement whose triggers may run) may change a shared buffer and any buffer another routine of the file names: Unknown for those. | Inferred. | `unknown.p` |
+| K7 | Each routine starts with no failed `FIND` known: a buffer of the main block that an internal procedure uses may hold any record when the procedure is called. | Proposed (conservative). | `units.p` |
+| K8 | **Error paths are not followed.** The flow graph lets every statement without `NO-ERROR` raise ERROR (section 5), also an `IF AVAILABLE b` test that cannot. On a raise edge the model forgets every failed `FIND`: where a statement raised, the error is the first problem. A `CATCH` or `ON ERROR` arm that reads a field of a buffer a `FIND` in its block may have left empty is therefore not reported. | Proposed (conservative). On the second corpus this removed 42 of 825 findings; those read were raise paths from statements that cannot raise. | `finds.p` |
+
+### 9.5 What the model leaves Unknown
+
+- **The whole file,** when the scope analysis has a file-level Unknown (section 7.7): a recovered
+  parse, an unexpanded include, or a file past the work budget.
+- **A buffer** whose table the loaded schema does not have. With no schema, database buffers are
+  never judged (a name may be a temp-table the file does not show); temp-table buffers are.
+- **A statement** that holds an elided reference (an undefined `{&name}`, a `{N}` with no
+  argument): it may hide `NO-ERROR`, a guard or a write. The model forgets every failed `FIND` there
+  and reports nothing in it.
+- **A branch of a statement-level `&IF`** that the preprocessor left in the text (its test was
+  not decided): the branch may never be compiled, so a use in it is not reported. Its statements
+  still refill and forget.
+- **Correlated guards.** A guard through a variable (`IF NOT AVAILABLE b THEN lError = TRUE.`
+  ... `IF lError THEN RETURN.`) or a loop that runs only with a record is not seen: the model is
+  path-insensitive. These are the false positives left (section 9.7).
+- Everything in K4 to K8.
+
+### 9.6 The rule NL003 (M5, first slice)
+
+NL003 `field-after-failed-find` (`strict.nulls`, preview, warning) selects findings from
+`oxabl_nulls`; `oxabl_lint` computes one analysis per file through `RunShared`, over the scope
+analysis the `LK`, `TX` and `DB` rules use, and only when the rule is enabled. It is routed like
+them.
+
+A field of `b` is reported where `b` may be empty because a `FIND ... NO-ERROR` of `b` may have
+failed (N1, N5) and no guard (G1-G9) or refill (K1-K8) lies on some path between them. It rests on
+N1, N3 (Documented) and N7, N10 (Recalled, medium). The message quotes the `FIND`. One finding per
+statement and buffer, at its first field reference; a statement in a `FINALLY` block counts once.
+
+Left out:
+
+- a reference in a statement with `NO-ERROR` (N7), and the search criteria of a `FIND`, `FOR`,
+  `CAN-FIND` or `OPEN QUERY` of `b` itself;
+- a frame-field reference (N12), which needs no record;
+- record-level uses of an empty buffer (`DISPLAY b`, `BUFFER-COPY b TO c`, `DELETE b`), which
+  raise the same error: a later slice may add them;
+- a `FOR FIRST` or `FOR LAST` that finds nothing (it runs no iteration, so no field is read);
+- `FIND CURRENT ... NO-ERROR` as a source (N6), and `RELEASE` and `DELETE` (N11);
+- error paths (K8);
+- everything section 9.5 leaves Unknown.
+
+### 9.7 Corpus check
+
+Verified, counts only. Over the two corpora of section 7.6, as `oxabl check` expands them, with
+their schemas and `strict.nulls` switched on (`crates/oxabl/examples/nulls_corpus.rs`): no panic.
+NL003 gives 9,154 findings in the first corpus (10,619 programs and 3,549 include files checked)
+and 714 in the second (2,526 and 782). 3,823 and 49 of them are at the `{...}` site of an
+include; two include lines of the first corpus account for 3,583 of those, so the findings have
+5,370 and 701 distinct anchors.
+
+Triage. Fifteen random findings per corpus were read against the code, in rounds; each round's
+wrong ones changed the model:
+
+- **`FIND CURRENT ... NO-ERROR`** after the record was used (2 of the first 15, second corpus):
+  now no source (N6).
+- **Raise paths** (an `IF NOT AVAILABLE` test that "may raise" into an `ON ERROR` arm that
+  rejoins; 1 of the first 15, first corpus): error paths are no longer followed (K8).
+- **A table name hidden by a variable of the same name** in `AVAILABLE` (3 of the first 15,
+  first corpus): G1 now looks the name up.
+- **`ERROR-STATUS` chains** (`IF NOT ERROR-STATUS:ERROR THEN FIND ... NO-ERROR.` repeated, then
+  one test): G5 now keeps the link (1 of 15).
+- **Dependent finds** (`FIND c WHERE ROWID(c) = TO-ROWID(b.id) NO-ERROR.` and a guard of `c`
+  only; 4 of 15, second corpus): G9.
+- **A loop over `RECID(b)`** that runs only with a record (1 of 15): K4 covers a loop header that
+  names `b`.
+
+In the last round, 14 of 15 were right in each corpus; the one wrong finding of each was a
+correlated guard (a variable, a dependent find proved by a later use), and the final model drops
+both without dropping a right one. Correlated guards through a variable (section 9.5) are the
+known class left. That is a false-positive rate near 7 % on a sample this small, so the rule
+stays a preview warning.
+
+The right findings are of four kinds: a control or setup record found with `NO-ERROR` and used at
+once (the most common; the record exists in every working database, but the code does not say
+so); a record found by `ROWID` or `RECID` passed in by the caller; a not-available arm that
+reports the problem and then falls through to the use; and real bugs. The samples held at least
+eight that look like bugs: four tests of the wrong buffer (`FIND bOrder ... IF NOT AVAILABLE
+Order`), one `IF NOT AVAILABLE b THEN x = b.f`, one message in the not-available arm that names a
+field of the missing record, and two not-available arms that set an error flag and fall through
+to the use.
+
+**Review round.** An adversarial review of the first slice changed the model as rows N12, G3,
+G5-G9, K4 and K5 now say. The counts moved to 9,774 findings in the first corpus (3,837 at a use
+site) and 825 in the second (55), from 9,154 and 714. Measured one change at a time against the
+final model:
+
+| Change | First corpus | Second corpus |
+|---|---|---|
+| Frame fields are no record reads (N12): all were `@` targets | -48 | 0 |
+| G9 only where `c` was empty (or already depended on `b`) before the dependent `FIND` | +308 | +45 |
+| `LOCKED b` proves nothing (G6), no longer Unknown | +161 | +61 |
+| A call before an `ERROR-STATUS` test makes it Unknown (G5) | 0 | -1 |
+| The rest: G9 per `FIND` site, not per buffer (+218 and +8), and the Unknown cases of G7, K4 and K5 (-7 and -2), with the include routing that follows | +199 | +6 |
+
+A first cut of N12 took any `tt.f:attr` as a widget: on a temp-table field that holds a handle
+(`tbuffer.bufferhandle:BUFFER-FIELD(...)`) that hid 67 real reads, so a temp-table field now needs
+`IN FRAME`; `INPUT` after `(` or `,` is a parameter mode (33 hidden reads in the second corpus).
+The G9 additions are records found with `NO-ERROR` and not tested, whose dependent `FIND` ran
+where `c` may hold a record (a loop, a file-level buffer an internal procedure also fills); the
+`LOCKED` additions are the `EXCLUSIVE-LOCK NO-WAIT NO-ERROR` + `IF LOCKED b THEN ...` idiom,
+where no record matched. Fifteen new random findings per corpus, read against the code: 15 of 15
+right in the first corpus; 12 of 15 in the second, where the three wrong ones were in the
+earlier output too and are correlated guards (two through a variable, one through an
+`ERROR-STATUS` test of a lock `FIND` keyed on `RECID(b)`). Four sampled G9 additions and two
+`LOCKED` additions were right.
+
+**Cost.** With `strict.nulls` off nothing is computed: `oxabl check` gives byte-identical output
+on both trees before and after this change, and its wall time is the same within the noise. With
+the group on, the scope analysis the rule reads dominates (it is shared with `strict.locks`); the
+failed-find analysis on top of it is within the noise on the first corpus and under a second on
+the second (12.1 s and 12.9 s with `strict.locks` on, in one process).
+
+### 9.8 What NL004 and later value analysis need
+
+NL001 and NL002 have local variable facts and expression walks (section 9.9). NL004 reads the
+schema facts of V2 (`MANDATORY`, schema `INITIAL`) and the field references of `oxabl_scope`, and
+applies the same sinks to fields (section 9.11). Most fields are not mandatory, so its trigger is
+narrow: schema `INITIAL ?`. An annotation such as `@strict.nullable` could widen it. Missing
+records remain the separate NL003 analysis; a missing record raises ERROR instead of supplying
+`?`.
+
+Later work must connect function returns and procedure `OUTPUT` parameters to the call graph
+(section 8.5). Unseen call results and output values remain Unknown. Local `LIKE` declarations,
+array elements, shared state, and references to variables owned by another unit also need
+resolved type and storage facts. They do not supply a default `?` source in this slice.
+
+From the review of the first slice: V2 says an `OUTPUT` parameter the callee does not set is
+`?`; as recalled, an `OUTPUT` parameter starts at the initial value of its data type (`0`, `""`,
+`no`), so it is `?` only for the types whose default is `?`. Section 9.9 models it that way;
+check it on an install. Check V6, V7 and V8 there too (NL001 relies on V6 and V8), and V3's
+division by zero (now Unknown). Also check G9's premise there (`FIND FIRST c NO-LOCK.`, then `FIND c
+WHERE c.x = b.f NO-ERROR` with `b` empty, then `AVAILABLE c`): if `c` is emptied, G9 can apply
+where `c` held a record too. One include line can carry thousands of NL003 use-site copies
+(3,583 from two lines in the first corpus); one finding per include line per run, or a summary
+line, would cut that noise.
+
+### 9.9 Local unknown-value facts, NL001 and NL002
+
+`FileNulls::with_values` adds a forward dataflow over each unit's flow graph. It reads the
+parsed expressions. `value_before(unit, node, name)` gives the value of a local before a flow
+node: unreachable, known, possibly `?`, or Unknown. Internally, separate bits record known
+values, proven `?` sources, and paths whose value is Unknown. A join keeps a proven source even
+when another path is Unknown. An Unknown path alone never supplies a source or a finding.
+
+**Termination.** A narrowing that the edge alone decides may turn an Unknown local into a source
+(V5) or into a known value. A narrowing that depends on the fact (the decided side of a false
+`A AND B` or a true `A OR B`, and `a = b`) is weak: it only removes values, so a larger fact never
+gives a smaller result. With that the statement and edge transfers are monotone; a property test
+checks them on the solved facts of a hundred random programs, and a unit test checks the
+expression transfer on every pair of lattice states. The atoms of the correlated tests below
+(logical flags, `AVAILABLE`, counted loops) are even, so `a ^ 1` is the opposite of `a`. The
+shared solver of `oxabl_flow`
+also joins the previous fact into the new one at every loop head, so a transfer that is not
+monotone still ends on this finite lattice, and each solve runs within a work budget (64 visits
+per node, and 1,000,000 units of work). A visit costs the size of its fact: a unit per few locals,
+and for each source of `?` a unit per word of its conditions. So a unit with many locals and a long
+loop costs a bounded time (about a second at most, in release), not minutes. A unit past the budget
+is Unknown for every local and gives no finding; so does the failed-find analysis for its unit
+(which charges the size of its sets and the walk of its pairs). `FileNulls::exhausted` lists those
+units. Random programs (300, fixed seed) must reach a fixed point
+within the budget. The first version of this section said the transfers were monotone when they
+were not: a `REPEAT` around `DO WHILE i <> ? AND d <> ?: i = ?. END.` never ended (a regression
+test now).
+
+**Sources** are V1 and the local part of V2: the literal `?`, `INITIAL ?`, the default of
+`DATE`, `DATETIME`, `DATETIME-TZ`, `HANDLE`, `ROWID`, `RECID` and object references, and an
+assignment from a possibly `?` expression. A test `x = ?` (or `x <> ?`) on a value the model
+cannot decide makes `x` a `?` source on the edge where the test says so (V5, Documented): the
+code itself says that `x` can be `?`. `INPUT` and `INPUT-OUTPUT` parameters start Unknown;
+`OUTPUT` parameters start at the default of their type (section 9.8). Method and constructor
+parameters count. An unseen function or method result is Unknown. `IMPORT`, `UPDATE`, `SET`,
+`MESSAGE ... UPDATE` and call `OUTPUT` arguments forget the value. An unseen call in an
+expression also forgets its variable arguments (the AST has no argument modes there), and any
+call forgets the locals another unit of the file writes. So do `WAIT-FOR`, `APPLY`, `ENABLE`,
+`PUBLISH`, `UPDATE` and `SET`, which may run triggers (K6); `CHOOSE`, `PROMPT-FOR`, `INSERT` and
+`READKEY` are opaque statements. Opaque statements, elided preprocessor
+text, explicit `UNDO` and error paths forget every local. `LIKE`, `EXTENT` and shared variables
+are Unknown.
+
+**Propagation.** V3 arithmetic, unary minus and V4 string `+` propagate `?`; a division by a
+constant zero (the medium part of V3) is Unknown, so it makes no finding. V5 `=` and `<>` absorb. The V10 functions propagate
+an argument that is already a `?` source; they never make one. `STRING`, `VALID-HANDLE`,
+`VALID-OBJECT`, `AVAILABLE`, `CAN-FIND` and `LOCKED` absorb (V11). `SUBSTITUTE` is Unknown
+(low confidence). V9 takes the `ELSE` value for a definite `?` condition and joins the arms
+otherwise. V12 conversion errors are no source; V13 is why a `MANDATORY` field is no source of NL004.
+
+**V6 and V7 never make a value.** The result of an ordering comparison, `BEGINS`, `MATCHES`,
+`NOT`, `AND` or `OR` is Unknown as a value. The model uses V6, V7 and V8 to remove sources: the
+edge a `?` condition cannot take (the `THEN` edge, the loop body) drops the sources that would
+make the condition `?`. If they are wrong there, the model misses findings. NL001 is different:
+it reports a `?` source that reaches an ordering comparison or a condition, and that use is a
+defect only if V6 (the comparison gives `?`) and V8 (a `?` condition skips the `THEN` branch or
+ends the loop) hold. Both are Recalled (low and medium) and unchecked, so NL001 can be wrong
+where they are; it stays preview until they are checked on an install, and its help says so.
+NL002 rests on V3 and V4, Documented for `?` operands.
+
+**Guards and correlated tests.** `x = ?`, `EQ`, `<>`, `NE`, `NOT`, the true arms of `AND` and
+the false arms of `OR` narrow both edges, and a false `A AND B` (or a true `A OR B`) whose one
+side is decided narrows the other. The expression walk narrows each operand of `AND`, `OR` and
+the `IF` function by the others, and an inner test re-applies the enclosing ones, so
+`(AVAILABLE b AND NOT AVAILABLE c) OR (AVAILABLE b AND x > y)` reads `x > y` with `c` available.
+A true ordering test proves its operands known in that arm, so `x > limit OR x = ?` does not
+report. `RETURN`, `LEAVE` and `NEXT` use the exits of the flow graph.
+
+Each source carries the conditions that hold on every path that carries it: the locals that are
+`?` there (pairs such as `a = ? AND b = ?`), the result of `AVAILABLE b`, and the value of a
+logical local. A join keeps a condition only where every such path has it; a write to the local
+or a statement that may change the record in `b` removes it (anything but an assignment, `IF`,
+`DO`, `REPEAT`, `CASE`, `DISPLAY`, `MESSAGE`, `PUT`, `EXPORT`, `LEAVE` or `NEXT` without an
+unseen call). A test that contradicts the conditions of a source removes the source on that
+edge. So `IF AVAILABLE b THEN d = b.d.` and then `IF AVAILABLE b AND d > TODAY` or
+`IF found THEN ... d` after `found = FALSE. IF ... THEN ASSIGN found = TRUE d = TODAY.` do not
+report. A condition can name the locals a test of the unit reads (up to 256); value facts cover
+every local.
+
+**Counted loops.** A `DO i = a TO b` body runs only when `a` and `b` are not `?` (`i <= ?` is
+`?`, V6 and V8), so the body edge proves both known: `DO i = 1 TO NUM-ENTRIES(list)` reads `list`
+as known in the body. A `TO` loop can end before its `WHILE` condition is false, so its exit
+does not narrow by the `WHILE` condition. A `DO v = a TO b [BY k]` without `WHILE` whose
+constant bounds give an iteration leaves only after one: a source that only the entering paths
+carry is gone at its exit (`NEXT` and `RETRY` still come from iterations that may skip the rest
+of the body). `REPEAT v = a TO b` writes `v` at its head; the AST does not keep that phrase, so
+the loop variable is read from the tokens. An integer local that is never written keeps its
+initial value, which decides constant tests.
+
+**`NOT` binds looser than a comparison** (Documented in the operator precedence table of the
+ABL reference: `NOT` comes after the relational operators and before `AND`). The parser reads `NOT a BEGINS b` as
+`(NOT a) BEGINS b`; this analysis reads such a comparison as `NOT (a BEGINS b)`.
+
+**The rules.** NL001 reports a local with a proven possible source of `?` that is an operand of
+`<`, `<=`, `>`, `>=`, `BEGINS` or `MATCHES` (also through the V10 functions, such as
+`LENGTH(x) > 0`), or that is the whole condition of an `IF` or `WHILE`. `=` and `<>` never
+report. NL002 reports such a local in arithmetic or string `+` whose result is assigned,
+displayed, written by `MESSAGE`, `PUT` or `EXPORT`; an absorbing function stops the chain and a
+propagating one carries it to the sink. Each rule reports a local once per unit, at its first
+use: later uses repeat the same source. Fields are Unknown here; NL004 reads them (section 9.11).
+Both rules are opt-in
+`strict.nulls`, preview, Warning, without an autofix, and use the include routing of NL003.
+With the group off, no null analysis is computed.
+
+The `value_*` and `values` fixtures cover defaults, parameters, assignments, joins, built-ins,
+low-confidence results, guards, correlated tests, `NOT`, loops and unreachable paths. The lint
+tests check the opt-in policy, the first-use rule and both documentation examples.
+
+### 9.10 Corpus check of NL001 and NL002
+
+Over the two corpora of section 7.6, as `oxabl check` expands them, with their schemas and
+`strict.nulls` on (`crates/oxabl/examples/nulls_corpus.rs`): no panic. NL001 gives 93 findings
+in the first corpus and 16 in the second; NL002 gives 44 and 28. None is at an include site in
+the first corpus; three NL002 findings are in the second.
+
+Triage. Fifteen random findings per rule were read against the code in the first corpus, in
+rounds, each round's wrong ones changing the model; in the second corpus every finding was read
+(16 of NL001 and 28 of NL002).
+
+| Round | NL001 wrong | NL002 wrong | What was wrong, and the change |
+|---|---|---|---|
+| 1, first corpus | 4 of 15 | 4 of 15 | A value set under `IF AVAILABLE b` and read under a second test of `b` (now a condition of the source); a body of `DO i = 1 TO NUM-ENTRIES(x)` with `x` `?` (four, one variable: counted loops); an `IF ... ELSE IF` chain whose arms cover every case (two); a `FOR EACH` that must find the record a `FIND` found |
+| 1, second corpus | 0 of 16 | 1 of 28 | A variable set in both arms of `IF NOT AVAILABLE b` / `IF AVAILABLE b` (conditions of the source) |
+| 2, first corpus | 1 of 15 | 2 of 15 | A pair of tests in a unit with more than 32 locals (conditions only named the first 32; now the tested locals); `NOT x BEGINS "/"` read with the wrong precedence; a `CASE` without `OTHERWISE` that leaves both a date `?` and a loop limit `0` |
+| 3, first corpus | 0 of 15 | 1 of 18 | The same `CASE` pattern in a copy of that file |
+
+The rules also reported the same variable many times in one unit (up to six uses of one source);
+it now reports the first use. The wrong findings left are correlations the model does not
+follow: an `IF` chain that covers every case, a loop limit that is `0` exactly when a date is
+`?`, and a record loop that must run. That is near 5 % on these samples.
+
+Most right findings are of three kinds: an option or setting read with `NO-ERROR` that sets the
+variable to `?` when the stored value is missing or bad, and then a test that treats `?` as
+`no`; a `DATE` or `DATETIME` that stays at its default when a lookup finds no record, then
+compared or subtracted; and a running total that turns `?` after one unknown term. Many of these
+rely on `?` behaving as `no` on purpose. The samples also held real bugs: a date compared before
+it is assigned (twice, a dead check), a flag tested where a test for `?` was meant, a fallback
+for `?` that the next statement overwrites with the `?` value, and validation that reports a `?`
+input and then goes on to compare it.
+
+**Cost.** With `strict.nulls` off nothing is computed: `oxabl check --json --no-format .` gives
+byte-identical output on both trees before and after this change, in the same wall time within
+the noise. With the group on, in one process, the value analysis adds about 40 % to the run of
+NL003 alone (first corpus 170 s to 242 s, second 12 s to 17 s; the group off takes 60 s and 5 s).
+Most of it is in the shared solver: every statement that may raise has an edge whose fact the
+solver clones and this analysis replaces, and the solver also computes the fact after every node,
+which this analysis does not read. A solver hook for both would remove about a third of it.
+
+### 9.11 Nullable database fields, NL004
+
+**Trigger.** A field is a source of `?` when the loaded schema gives it `INITIAL ?` (the bare `?`
+a `.df` writes for the unknown value; `INITIAL "?"` is a string, which `Field::initial_is_unknown`
+tells apart), does not make it `MANDATORY` (V13) and gives it no extent. Any record created
+without assigning it holds `?` (V1, V2). A field with no `INITIAL` attribute in the `.df` is no
+source: a dump always writes it, and the model does not read the type default. A temp-table
+field, a table the schema does not have, a buffer with an Unknown reason of its own
+(`oxabl_scope`), a file with a file-level Unknown and a run with no schema give no finding.
+In the two schemas of section 7.6 about 15 % (4,400 of 30,191) and 17 % (408 of 2,461) of the
+fields have `INITIAL ?`, and 40 and 17 of them are `MANDATORY`; most are dates.
+
+**Model.** The analysis is a second solve of the value dataflow of section 9.9 per unit, over the
+nullable fields the unit references and no locals (`FileNulls::with_fields`). The first solve is
+unchanged, so NL001, NL002 and NL003 give the same findings as before (section 9.12), and a local
+that is assigned from a field is Unknown, not a source: `d = b.f. IF d < TODAY ...` gives no
+finding. The variable is the pair buffer and field, found by the span of the reference that
+`oxabl_scope` resolved (so `b.f`, `db.b.f` and an unqualified `f` are one variable). Its value is
+"possibly `?`" (known or `?`), not "certainly `?`", so a true ordering test or `b.f <> ?` proves
+it known and `b.f = ?` makes it a proven source, as for a local. The guards and sinks are those
+of NL001 and NL002 (the `IF` and `WHILE` condition, ordering operands, arithmetic and string `+`
+that is stored or displayed).
+
+The value is set again where the record changes:
+
+| What | Value after it |
+|---|---|
+| Entry to the unit | possibly `?` |
+| `FIND`, `GET`, `CREATE`; the body of a `FOR` | possibly `?` again (a guard before does not cover the next record) |
+| The `WHERE` of a `FIND` or `FOR EACH` | holds of the record: an ordering test proves its operands known, and a field `=` a known value is known (fields only; for locals the model does not narrow this way) |
+| Exit of a `FOR` loop | Unknown (no record) |
+| `b.f = x`, `ASSIGN`, `UPDATE`, `SET`, `IMPORT` of the field | the value assigned; Unknown if the value is |
+| Other writes to the record (`BUFFER-COPY ... TO b`, `DELETE b`, `UPDATE b`), a `BUFFER b` passed to a call, a statement the scope analysis marks opaque | Unknown for every field of `b` |
+| An unseen call, `RUN` or trigger-running statement | Unknown for the fields of a buffer that is shared, a parameter or a trigger buffer, or that more than one unit of the file uses |
+| `ASSIGN x = v WHEN c` | Unknown for `x`, and `v` is no sink: the parser drops `c`, so the model reads the `WHEN` token and does not follow the condition |
+| `DISPLAY v WHEN c` | `v` is read with `c` true |
+
+NL004 reports a field once per unit, kind and first use, like NL001 and NL002. It is a preview
+`strict.nulls` rule, Warning, without an autofix, routed like NL003 (use site in the includer).
+The comparison finding rests on V6 and V8 as NL001 does, and its help says so. The unit budget of
+section 9.9 applies to the field solve too: a unit past it is in `FileNulls::exhausted` and gives
+no field finding.
+
+**Left.** A local that holds a field (`d = b.f`), a field copied to a field of another buffer,
+function and method calls that return a field, `LIKE` locals, array fields and fields of
+temp-tables are Unknown. Correlations with locals are not followed: `IF b.f = ? AND (x <> ? OR
+y <> ?) THEN NEXT.` then `IF x <> ? AND b.f < x` reads `b.f` as possibly `?`. A `WHERE` that
+equates a field to a local (`b.f = x`) proves nothing because `x` may be `?`. The `WHEN` of an
+`ASSIGN` pair is dropped by the parser (NL002 has the same blind spot for locals; the field
+analysis treats it as no sink, and the local analysis was left as it was). An abbreviated field
+name has no scope reference, so it is never judged. Whether a field is `?` in practice (an
+invariant of the application, a write trigger) is outside the model; those findings are right
+by the rule and may still be harmless.
+
+### 9.12 Corpus check of NL004
+
+Over the two corpora of section 7.6, with their schemas and `strict.nulls` on
+(`crates/oxabl/examples/nulls_corpus.rs`): no panic. NL004 gives 595 findings in the first corpus
+and 165 in the second (16 and 21 at a use site). NL001, NL002 and NL003 give
+exactly the findings they gave before (93, 44 and 9,774; 16, 28 and 825), line for line. With
+`strict.nulls` off, `oxabl check --json --no-format .` is byte-identical on both trees. The
+findings spread over 38 top directories in the first corpus (at most 103 in one) and 5 in the
+second (at most 72 in one).
+
+Triage.
+
+| Round | Wrong | What was wrong, and the change |
+|---|---|---|
+| 1, first model, about 25 read in the two corpora | 1 of 25 | `ASSIGN t.d = b.x - b.y WHEN b.x <> ? AND b.y <> ?` (the guard is a `WHEN`; see the table above) |
+| 2, 15 new random findings per corpus | 0 of 15, 0 of 15 | |
+| 2, the findings whose preceding 40 lines test the same field against `?` (15 and 6) | 1 of 21 | a guard through a local: `IF f = ? AND (x <> ? OR y <> ?) THEN NEXT.` then `IF x <> ? AND f < x` |
+
+That is a false-positive rate under 3 % (2 of 76) on the findings read. The one wrong finding left is
+a correlation with a local, a known class (sections 9.7 and 9.10). "Right" means that the field
+can hold `?` there and nothing in the unit says otherwise, not that the code is wrong: most
+right findings are of four kinds. A date field read after a `FIND` or in a `FOR EACH` and
+compared with a date or subtracted (a due date, a planned payment date, `period-end + 1`);
+a quantity added to a running total or subtracted from another; a
+character field concatenated into a message or a page; and a validation that reports a `?`
+field and then compares it anyway (`IF f = 0 OR f = ? THEN log-error.` and then `IF f > g`).
+
+**Cost.** With `strict.nulls` off nothing is computed. With the group on, in one process, the
+field solve adds about 16 % to the run of the first corpus (209 s to 243 s) and 4 % to 8 % to
+the second (13.4 s and 14.8 s to 14.0 s and 16.0 s); the local solve and NL003 take the rest.
+The field solve runs only over the units that reference a nullable field, and only when a rule
+that reads it is enabled. One unit of the first corpus runs past its work budget, as it did
+before this change, and none of the second.
+
+## 10. Calls and signatures
+
+The call rules CL003 (`signature-mismatch`) and CL004 (`unresolved-call`) judge a static `RUN`
+against its callee. They read the call graph of section 8.5 (`oxabl_index::calls`, which says what
+each `RUN` runs, or why that is Unknown) and the parameter lists that the run index now holds
+(`WorkspaceIndex::signature`, `oxabl_semantic::ProgramSignatures`). The marks of section 7 apply:
+**Documented**, **Recalled**, **Inferred**, **Verified** (against this repository or a corpus),
+and **Proposed** for a design choice of oxabl. No OpenEdge install was available, so no row is
+checked against a compiler. Where the corpus contradicts what the model first said, the row says
+so.
+
+Each modelled row has a test in `crates/oxabl_lint/tests/call_rules/` (CL003 and CL004 read the
+index, so the tests drive a real `BatchIndex` over an in-memory file system), in
+`crates/oxabl_index/tests/signatures.rs` and in `oxabl_semantic::signature`. Where the model
+cannot decide, the answer is **Unknown**, and Unknown never makes a finding.
+
+### 10.1 How `RUN` matches arguments to parameters
+
+| # | The model | Confidence |
+|---|---|---|
+| P1 | Arguments match parameters by position: the i-th argument fills the i-th `DEFINE ... PARAMETER` of the callee's routine block (the main block of a program, the body of an internal procedure), in source order. Names play no part. A `RETURN` parameter is no argument slot. | Documented. |
+| P2 | The counts must be equal. A different count is an error. For an internal procedure of the file the compiler finds it; for another program, a procedure `IN h` or a persistent program it is found when the call runs (the message names "mismatched number of parameters"). | Recalled (the compile-time and run-time split; the message text is from memory). |
+| P3 | A mode is `INPUT` (the default when none is written), `OUTPUT` or `INPUT-OUTPUT`. The mode of the argument must be the mode of the parameter: an `OUTPUT` parameter needs `OUTPUT` at the call, an `INPUT` parameter must not get `OUTPUT`, an `INPUT-OUTPUT` parameter needs `INPUT-OUTPUT`. | Recalled. |
+| P4 | An `OUTPUT` or `INPUT-OUTPUT` argument must be something the callee can write: a variable, field, array element, widget attribute or property. A literal or an expression (an operator, `IF ... THEN ... ELSE`, `NEW`) is an error. | Documented. |
+| P5 | A table, dataset or buffer is passed with its keyword: `TABLE t`, `TABLE-HANDLE h`, `DATASET d`, `DATASET-HANDLE h`, `BUFFER b`. The parameter kinds are `TABLE FOR`, `TABLE-HANDLE`, `DATASET FOR`, `DATASET-HANDLE`, `BUFFER ... FOR`. A static and a dynamic form of one kind pass to each other (`TABLE` to `TABLE-HANDLE`, `DATASET` to `DATASET-HANDLE`). A scalar argument does not pass to a table, dataset or buffer parameter, and the other way round. A `BUFFER` parameter has no mode. `BUFFER b:HANDLE` is a handle value, a scalar. | Recalled. |
+| P6 | `APPEND`, `BIND`, `BY-REFERENCE` and `BY-VALUE` change how a table or dataset travels, not whether it fits. The model compares none of them, nor the definition of the temp-table behind a `TABLE`. | Documented for the meaning; Proposed for the scope. |
+| P7 | A value of a type that differs from the parameter converts when the call runs, for many pairs. **The corpus shows `INTEGER` fields passed to `CHARACTER` parameters in running code, and `CHARACTER` values passed to `INTEGER`, `LOGICAL`, `DECIMAL` and `DATE` ones.** The first version of CL003 used the assignment ladder of `LINT0004` and gave 470 type findings in one corpus, 340 of them `INTEGER` for `CHARACTER` (section 10.6). So the model keeps one clash: a `HANDLE` or `COM-HANDLE` against a type other than `HANDLE`, `COM-HANDLE`, `INTEGER`, `INT64`, `CHARACTER` or `LONGCHAR`. Every other pair is Unknown. | Verified against the corpus that many pairs convert; the clash itself is Proposed. |
+| P8 | The unknown value `?` fits a parameter of any type. | Documented. |
+| P9 | A parameter with `LIKE`, an array (`EXTENT`), a class type or a conditional type has no type in the model. An argument without a primitive type (an unresolved name, an array, an object) is Unknown. | Proposed. |
+| P10 | A `DEFINE PARAMETER` inside a `DO` block or under a label of the routine is a parameter, in order. One inside a loop or a condition makes the list Unknown. | Verified in the corpus (parameters in a `DO:` block of a procedure are common); Proposed for the rest. |
+
+### 10.2 Which routine a `RUN` runs
+
+| # | The model | Confidence |
+|---|---|---|
+| Q1 | `RUN name` of an internal procedure of the file (with a body, once; a name defined twice has no list) is checked against that procedure. `RUN name IN THIS-PROCEDURE` is the same. | Documented (section 8.5, C1). |
+| Q2 | `RUN prog.p` is checked against the main-block parameters of the file that the search path gives (the rule of section 8.5, C2: exactly one match). A class, a file that does not parse and a file with no statement (empty, or all comment) have no list. | Documented for the meaning; Proposed for the file rule. |
+| Q3 | `RUN prog.p PERSISTENT SET h (args)` runs the main block now, so the arguments meet the main-block parameters. | Documented. |
+| Q4 | `RUN p IN h (args)` is checked against the procedure `p` of the program, when every `PERSISTENT SET h` of the file runs one program and nothing else writes `h` (section 8.5, C3). Any other `h` is Unknown. | Inferred. |
+| Q5 | `RUN ... ASYNCHRONOUS` and `RUN ... ON SERVER h` run in another session, and the callee may be another file there: not checked. `RUN VALUE(...)`, `RUN SUPER` and a routine declared `IN SUPER` are Unknown. | Documented for the meaning; Proposed for the scope. |
+| Q6 | A user-defined function or a method is a call by name in an expression, not a `RUN`. CL003 does not check them. | Proposed (a later slice). |
+
+### 10.3 Where a parameter list comes from
+
+`oxabl_semantic::ProgramSignatures::of` reads the `DEFINE ... PARAMETER` statements of a parsed
+file: those of its main block and those of each internal procedure with a body. It also counts the
+parameters the text itself holds, so a list that an `{include}` completes is told from one that
+the text shows. A list is **Unknown** when an `{include}` (not expanded), an `&IF` that holds a
+parameter or a loop that holds one may change it, or when the procedure is defined twice. A file
+with no statement has no list.
+
+The index gives the list through `WorkspaceIndex::signature(program, procedure)`. `BatchIndex`
+reads a file for its lists the first time a rule asks, not when it indexes the file, so a run
+with CL003 off reads nothing for them. A file whose own text does not show the list whole is read
+again from its expanded text (`oxabl_index::program_signatures_at`, the same expansion
+`index_file` uses). The daemon holds one tracked query per file and registers the include files,
+so an edit to the file or to an include re-reads the list. An index without the method answers
+`None`.
+
+**A list that an include supplies is marked** (`Signature::from_include`), when the expanded text
+holds more parameters than the file's own text. The corpus has programs that call each other with
+`{globals-out.i}` (72 arguments) against `{globals-in.i}` (72 parameters), and a
+character and a graphical build of one program (an include sets a `build-type` name, and
+`&IF` then adds the 72 parameters or none). A callee read in one environment can be run in
+another. So **a count that differs from an include-supplied list is not judged when the call has
+no text from an include**; with an include inside the call (`RUN p ({globals-out.i}, x)`)
+the count is judged. Mode, kind and type are compared whenever the counts agree. This row is
+**Proposed**; with the rule for an empty program (Q2) it cut the 219 count findings of the first corpus to 157.
+
+### 10.4 The rule CL004 `unresolved-call`
+
+A static `RUN name` whose target the call graph says is `not-found`: the index searched every
+configured path, and nothing supplies the name, as a program. It is never reported for a
+`dynamic`, `handle`, `super`, `unexpanded`, `ambiguous` or `unusable` target, nor with no index or
+an index with no search path.
+
+**Overlap with `LINT0001`.** `LINT0001` (`undefined-symbol`, always on, Error) already reports a
+`RUN` target that names a file (it has an extension) when no search path supplies it, except
+when the target starts with `..`. CL004 does not report that case again. It reports the rest: a
+target with no extension (`RUN post-invoice`) and a path with no extension. The two rules
+split one population and no `RUN` is reported twice. (The other choice, CL004 for all and a
+suppression in `LINT0001`, changes the default output, which must not change.)
+
+The rest of the rows are choices that the corpus forced. The first version reported every bare
+name that nothing on the search path supplies: **586 of 601 findings in the second corpus were
+procedures that another file defines**, called through a super procedure or a persistent
+procedure with a plain `RUN name`.
+
+| # | The model | Confidence |
+|---|---|---|
+| R1 | A plain `RUN name` finds, in order, an internal procedure, a super procedure's procedure and a program. The model sees the first and the last. | Documented. |
+| R2 | A bare name is reported only when the index lists the files of the workspace and **no file defines a `PROCEDURE` of that name**, in its own text or in an include file that a listed file names (an include is followed when its name is written out and resolves in the file's directory or on the include paths; `{&name}` and `{1}` are not followed). The files are read on the first bare name that misses, once per run. An index with no list (the language server) reports no bare name. | Proposed. |
+| R3 | In an include checked alone, and in a file with an include that did not arrive, a bare name may be a procedure of the includer: not reported. | Proposed (as TX004). |
+| R4 | In a file that binds a web service port type (`RUN port-type SET h ON SERVER s`, without `PERSISTENT`), a bare name is an operation of the service: not reported. | Inferred (one case in the second corpus; the operation names are in a WSDL). |
+| R5 | A path into a directory the OpenEdge install ships (`adecomm/`, `adeshar/`, `prodict/`, ...) is not reported: a workspace that does not configure the install cannot supply it. | Proposed. |
+| R6 | A target that starts with `..` is relative to a directory the search paths do not cover (the rule `LINT0001` already keeps): not reported. | Inferred (five cases in the second corpus: the program is there, one directory up from where the search starts). |
+| R7 | The parser reads a name up to a digit after a slash and stops (`RUN dir/870-recon.p` is `dir/870`). A name followed at once by a letter, a digit, `-`, `_`, `/` or `.x` is not reported. | Verified (one case in the first corpus). |
+
+### 10.5 The rules (M6, first slice)
+
+Both are preview `strict.calls` rules, Warning, without an autofix, context-free and routed like
+TX004 (reported in the include when the include alone shows it, else at the `{...}` site of the
+includer). With the group off nothing is computed: the rules do not run, the index reads no file
+for a list or a procedure name, and `RunShared::calls` is not built.
+
+- **CL003** reports, per `RUN` of a resolved target: a count that differs (one finding, on the
+  target); then, with the counts equal and per argument, at most one finding: the kind (P5), the
+  mode (P3), an expression as `OUTPUT` (P4), a handle against a type it does not convert to
+  (P7). It is silent for a callee that is Unknown, an argument of unknown type, a call whose
+  argument list holds an include reference or a gap the preprocessor left, a recovered parse,
+  and, in an include checked alone or in a file with a lost include, a bare name.
+- **CL004** reports a static `RUN` of a name that nothing can run (section 10.4).
+
+### 10.6 Corpus check
+
+The two corpora of section 7.6, with their schemas, include paths and workspace sources, and the
+two rules switched on in memory (`crates/oxabl/examples/calls_corpus.rs`; like the other corpus
+examples it counts per top directory, `OXABL_CALLS_FINDINGS=<file>` writes every finding, and
+`OXABL_CALLS_ONLY=<text>` checks the files whose path holds the text). No panic.
+
+| | First corpus | Second corpus |
+|---|---|---|
+| Roots, include files | 10,619 and 3,549 | 2,526 and 782 |
+| CL003 | 163 (157 count, 3 mode, 3 kind) | 25 (24 count, 1 mode) |
+| CL004 | 16 | 9 |
+| At a use site (CL003, CL004) | 3, 0 | 3, 0 |
+| Top directories with a finding (at most in one), CL003 and CL004 | 29 (28) and 4 (12) | 4 (14) and 3 (3) |
+
+**Default output.** With the group off, `oxabl check --json --no-format .` is byte-identical to
+the base (the commit this branch grew from) on both trees.
+**Cost.** With the group off nothing is computed. On the first corpus, three alternating runs of
+`oxabl check --json --no-format .` take 3.97 s to 4.21 s of wall time (77 s to 82 s of CPU) for the
+base and 4.01 s to 4.23 s (77 s to 81 s) for this branch. With the two rules on, in one process
+(`calls_corpus`, one thread), the first corpus takes 103.6 s against 57.0 s with them off, and the
+second 9.0 s against 5.7 s. The extra work is the read, expansion and parse of each callee file for
+its parameter list, and one pass over every file and include of the run for procedure names, made
+when the first bare name misses.
+
+**Triage.** "Right" means that the finding says what the code does under the rules above and the
+configured search paths, not that the code fails at run time. Many right CL003 findings are a
+callee that gained a parameter its callers do not pass (a trailing `INTEGER`, a class object, a
+`TABLE`), or a caller that dropped the `{globals-out.i}` the others pass.
+
+| Round | Wrong | What was wrong, and the change |
+|---|---|---|
+| 1, first model (the full lists) | CL004: 586 of 601 findings in the second corpus; CL003: 1,481 findings in the first corpus, of which the later model keeps 163 | CL004: a bare name that a super or persistent procedure defines (R2). CL003: `INPUT BUFFER b:HANDLE` read as a buffer (366); `INTEGER` to `CHARACTER` and other pairs that convert (P7: 470 type findings, 340 of that one kind); a procedure whose parameters sit in a `DO:` block read as having none (P10, about 420 count findings); a program that is empty or all comment read as having none |
+| 2, after those | CL003: 219 count findings before the include rule of 10.3, 157 after; CL004 2 of 14 and 1 of 17 | An include-supplied list read in another environment (10.3). `adecomm/` (R5), a web service operation (R4), `..` paths (R6), a name read short (R7) |
+| 3, every finding of the second corpus (34); the first corpus: 15 CL003 findings spread over the sorted list, and all 16 CL004 | 0 of 34, 0 of 31 | |
+
+That is 0 wrong in the 65 findings read in round 3. The sample is small, so read the
+false-positive rate as under 5 %. Right findings are of five kinds: a count that differs because
+a callee gained or lost a parameter (most of the CL003 findings read); `RUN x IN h` of a
+persistent program whose procedure changed; a caller that passes the parameters in another order
+after a change (the `TABLE` and scalar kinds); an `OUTPUT` parameter passed without `OUTPUT`; a
+bare name that nothing defines (a typo, a procedure that was removed, a class that calls
+procedures of a template that no longer exists). Some right findings depend on the configured
+search path: in the second corpus, callers in one directory call two programs that exist in two
+directories with different lists, and only one of the directories is on the configured path.

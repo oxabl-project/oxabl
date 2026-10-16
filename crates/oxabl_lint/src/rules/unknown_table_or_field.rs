@@ -290,8 +290,12 @@ impl Visitor<'_> {
             }
             StatementKind::Subscribe { event_name, .. } => self.walk_expression(event_name),
             StatementKind::StreamIo { operation, .. } => match operation {
-                StreamOperation::From(e) | StreamOperation::Through(e) => self.walk_expression(e),
-                StreamOperation::To { target, .. } => self.walk_expression(target),
+                StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                    if let Some(e) = target.expression() {
+                        self.walk_expression(e);
+                    }
+                }
+                StreamOperation::Through(e) => self.walk_expression(e),
                 StreamOperation::Close => {}
             },
             StatementKind::BufferCopy { assignments, .. } => {

@@ -216,6 +216,28 @@ impl Buffer {
     }
 }
 
+/// One reference to a buffer, resolved: a buffer position (`FIND b`,
+/// `CREATE b`), a buffer name in an expression (`AVAILABLE b`), or a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reference {
+    pub buffer: BufferId,
+    pub unit: UnitId,
+    /// The block the reference belongs to (a header reference to one of the
+    /// block's own buffers belongs to the block, else to the block around it).
+    pub block: BlockId,
+    pub at: Span,
+    /// A field of the buffer (`b.f`, `db.t.f`, or an unqualified field),
+    /// not the buffer itself.
+    pub field: bool,
+    /// The reference writes: an assignment target, `CREATE b`, `DELETE b`, ...
+    pub write: Option<UpdateKind>,
+    /// `BUFFER b` passed to a call, which may change the record.
+    pub passed: bool,
+    /// In a statement of a form the model does not know, which may change
+    /// the record (of a temp-table too).
+    pub opaque: bool,
+}
+
 /// What makes a block a transaction block implicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UpdateKind {

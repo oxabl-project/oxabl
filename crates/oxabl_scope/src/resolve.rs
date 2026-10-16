@@ -35,8 +35,12 @@ pub(crate) struct Ref {
     /// Passed to a call as `BUFFER b`.
     pub passed: bool,
     /// In a statement of a form the model does not know, which may change
-    /// the record.
+    /// the record, of a database buffer: the block's transaction is Unknown.
     pub opaque: bool,
+    /// In a statement of a form the model does not know, of any buffer.
+    pub skipped: bool,
+    /// A field of the buffer, not the buffer itself.
+    pub field: bool,
 }
 
 #[derive(Debug, Default)]
@@ -176,6 +180,8 @@ struct Resolver<'a> {
     temp_table_of: FxHashMap<BufferId, usize>,
     /// The resolved buffer of each raw reference (`None`: not a buffer).
     raw: Vec<Option<BufferId>>,
+    /// Whether each raw reference names a field of its buffer.
+    field: Vec<bool>,
     /// The buffer a bare field falls back to, per word and unit.
     memo: ByName<Option<BufferId>>,
     named: Vec<BufferId>,
@@ -213,6 +219,7 @@ impl<'a> Resolver<'a> {
             defaults: ByName::default(),
             temp_table_of: FxHashMap::default(),
             raw: vec![None; c.refs.len()],
+            field: vec![false; c.refs.len()],
             memo: ByName::default(),
             named: Vec::new(),
             named_in: Vec::new(),
@@ -262,7 +269,9 @@ impl<'a> Resolver<'a> {
         }
         for (i, r) in c.refs.iter().enumerate() {
             if let What::Dotted(words) = &r.what {
-                self.raw[i] = self.dotted(words, r);
+                let (b, field) = self.dotted(words, r);
+                self.raw[i] = b;
+                self.field[i] = field;
             }
         }
         let mut named: Vec<BufferId> = self.raw.iter().flatten().copied().collect();
@@ -271,7 +280,9 @@ impl<'a> Resolver<'a> {
         self.named = named;
         for (i, r) in c.refs.iter().enumerate() {
             if let What::Bare { word, keyword } = &r.what {
-                self.raw[i] = self.bare(word, *keyword, r);
+                let (b, field) = self.bare(word, *keyword, r);
+                self.raw[i] = b;
+                self.field[i] = field;
             }
         }
         self.finish_refs();
@@ -420,28 +431,30 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    fn dotted(&mut self, words: &[Folded], r: &RawRef) -> Option<BufferId> {
+    /// The buffer of `b.f`, `db.t.f` or `db.t`, and whether a field of it is
+    /// named.
+    fn dotted(&mut self, words: &[Folded], r: &RawRef) -> (Option<BufferId>, bool) {
         let qualifier = match words.len() {
             2 => &words[0],
             3 => &words[1],
-            _ => return None,
+            _ => return (None, false),
         };
         if self.privates(r).contains(&&**qualifier) {
-            return None;
+            return (None, false);
         }
         if let Some(b) = self.lookup(qualifier, r.unit, false) {
-            return Some(b);
+            return (Some(b), true);
         }
         if words.len() == 2 {
             // `db.table` in an expression.
             if let Some(b) = self.lookup(&words[1], r.unit, false) {
-                return Some(b);
+                return (Some(b), false);
             }
             if self.schema.is_none() {
                 self.no_schema(r);
             }
         }
-        None
+        (None, false)
     }
 
     fn no_schema(&mut self, r: &RawRef) {
@@ -455,16 +468,22 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn bare(&mut self, word: &str, keyword: bool, r: &RawRef) -> Option<BufferId> {
+    /// The buffer a bare word names, and whether it is a field of it.
+    fn bare(&mut self, word: &str, keyword: bool, r: &RawRef) -> (Option<BufferId>, bool) {
         if self.is_variable(word, r.unit) {
-            return None;
+            return (None, false);
         }
         if self.privates(r).contains(&word) {
-            return None;
+            return (None, false);
         }
         if let Some(b) = self.lookup(word, r.unit, false) {
-            return Some(b);
+            return (Some(b), false);
         }
+        (self.bare_field(word, keyword, r), true)
+    }
+
+    /// The buffer of a bare word that names no buffer: a field.
+    fn bare_field(&mut self, word: &str, keyword: bool, r: &RawRef) -> Option<BufferId> {
         // The statement's own record phrases, then the enclosing record
         // blocks, innermost first.
         let context = &self.c.contexts[r.context as usize];
@@ -872,6 +891,8 @@ impl<'a> Resolver<'a> {
                 write: r.write,
                 passed: r.passed,
                 opaque: r.form == Form::UnknownSkipped && database,
+                skipped: r.form == Form::UnknownSkipped,
+                field: self.field[i],
             });
         }
     }
@@ -965,6 +986,8 @@ impl<'a> Resolver<'a> {
                         write: None,
                         passed: false,
                         opaque: false,
+                        skipped: false,
+                        field: false,
                     });
                 }
                 if read.lock == Some(LockMode::ExclusiveLock) {

@@ -17,14 +17,14 @@ use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
-    MemberDescriptor, WorkspaceIndex,
+    MemberDescriptor, ProgramSignatures, Signature, WorkspaceIndex,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::facts::{ClassFacts, FileFacts};
-use crate::producers::{SharedProducers, may_define_shared};
-use crate::{IncludeContext, index_file_at, search};
+use crate::producers::{SharedProducers, may_define_shared, scan_procedures};
+use crate::{IncludeContext, index_file_at, program_signatures_at, search};
 
 /// The generation a batch reports.
 ///
@@ -131,6 +131,12 @@ struct Memo {
     scoped_classes: FxHashMap<(PathBuf, OxablAtom), IndexAnswer<ClassFacts>>,
     /// Answers per asking file's directory and `RUN` target key.
     scoped_programs: FxHashMap<(PathBuf, OxablAtom), IndexAnswer<IndexedFileId>>,
+    /// Parameter lists per indexed file, read on the first question about them:
+    /// a run that asks none reads nothing.
+    signatures: FxHashMap<IndexedFileId, Option<Arc<ProgramSignatures>>>,
+    /// The internal procedures the files of [`ProducerSource::Files`] define,
+    /// read on the first question about them.
+    procedure_names: Option<Arc<FxHashSet<Box<str>>>>,
     /// The inverse of `facts`: the path each minted id was indexed under.
     ///
     /// Kept rather than derived. Deriving it means scanning `facts` for the entry
@@ -185,6 +191,8 @@ impl<'a> BatchIndex<'a> {
                 programs: FxHashMap::default(),
                 scoped_classes: FxHashMap::default(),
                 scoped_programs: FxHashMap::default(),
+                signatures: FxHashMap::default(),
+                procedure_names: None,
                 next_file_id: 1,
                 known_indexed: false,
                 seeded: FxHashSet::default(),
@@ -455,6 +463,50 @@ impl<'a> BatchIndex<'a> {
     /// lookup has answered: by then the file behind the answer is in `facts`, so
     /// [`ExcludingFile`] can compare ids without having to know how the search
     /// turned a name into a path.
+    /// The parameter lists of the indexed file `file`, or `None` when the file
+    /// cannot be read or parsed.
+    ///
+    /// A list the file's own text does not show whole (an `{include}` may hold
+    /// a parameter) is read again from the expanded text.
+    fn signatures_of(&self, file: IndexedFileId) -> Option<Arc<ProgramSignatures>> {
+        let path = {
+            let memo = self.memo();
+            if let Some(hit) = memo.signatures.get(&file) {
+                return hit.clone();
+            }
+            memo.paths.get(&file).cloned()?
+        };
+        let answer = self.read_signatures(&path).map(Arc::new);
+        self.memo().signatures.insert(file, answer.clone());
+        answer
+    }
+
+    fn read_signatures(&self, path: &Path) -> Option<ProgramSignatures> {
+        let source = self.fs.read(path).ok()?;
+        let predefined = self.predefined();
+        program_signatures_at(path, &source, &self.includes(&predefined)).0
+    }
+
+    /// See [`WorkspaceIndex::workspace_defines_procedure`].
+    fn defines_procedure(&self, name: &IndexName) -> Option<bool> {
+        let predefined = self.predefined();
+        let includes = self.includes(&predefined);
+        match self.producers {
+            ProducerSource::None => None,
+            ProducerSource::Shared(map) => Some(map.defines_procedure(name, &includes)),
+            ProducerSource::Files(files) => {
+                let known = self.memo().procedure_names.clone();
+                let names = known.unwrap_or_else(|| {
+                    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+                    let scanned = Arc::new(scan_procedures(files, &includes, threads));
+                    self.memo().procedure_names = Some(Arc::clone(&scanned));
+                    scanned
+                });
+                Some(names.contains(name.as_str()))
+            }
+        }
+    }
+
     fn indexed_id(&self, path: &Path) -> Option<IndexedFileId> {
         let key = search::normalize_lexically(path);
         self.memo().facts.get(&key).map(|facts| facts.file)
@@ -720,6 +772,21 @@ impl WorkspaceIndex for BatchIndex<'_> {
         self.shared_producer_among(name, None)
     }
 
+    fn workspace_defines_procedure(&self, name: &IndexName) -> Option<bool> {
+        self.defines_procedure(name)
+    }
+
+    fn signature(
+        &self,
+        program: &IndexName,
+        procedure: Option<&IndexName>,
+    ) -> Option<Arc<Signature>> {
+        let IndexAnswer::Found(file) = self.program(program) else {
+            return None;
+        };
+        signature_in(&*self.signatures_of(file)?, procedure)
+    }
+
     fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
         let kind = match kind {
             LocateKind::Class => search::NameKind::Class,
@@ -749,6 +816,18 @@ impl WorkspaceIndex for BatchIndex<'_> {
     fn searches_any_path(&self) -> bool {
         !self.include_paths.is_empty()
     }
+}
+
+/// The list of the program or of its internal procedure `procedure`.
+fn signature_in(
+    signatures: &ProgramSignatures,
+    procedure: Option<&IndexName>,
+) -> Option<Arc<Signature>> {
+    let list = match procedure {
+        Some(name) => signatures.procedure(name),
+        None => signatures.main.as_ref(),
+    };
+    list.map(|s| Arc::new(s.clone()))
 }
 
 /// One asking file's view of a [`BatchIndex`]: every answer that would name the
@@ -848,6 +927,24 @@ impl WorkspaceIndex for ExcludingFile<'_, '_> {
             IndexAnswer::Found(file) if self.is_analysed(file) => IndexAnswer::Unusable,
             other => other,
         }
+    }
+
+    fn workspace_defines_procedure(&self, name: &IndexName) -> Option<bool> {
+        self.index.defines_procedure(name)
+    }
+
+    fn signature(
+        &self,
+        program: &IndexName,
+        procedure: Option<&IndexName>,
+    ) -> Option<Arc<Signature>> {
+        let IndexAnswer::Found(file) = self.index.program_from(program, self.path) else {
+            return None;
+        };
+        if self.is_analysed(file) {
+            return None;
+        }
+        signature_in(&*self.index.signatures_of(file)?, procedure)
     }
 
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {

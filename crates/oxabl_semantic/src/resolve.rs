@@ -220,6 +220,19 @@ fn climbs_out(raw: &str) -> bool {
     rest.starts_with("../") || rest.starts_with("..\\")
 }
 
+/// Whether a literal `RUN` target that no search path supplies is reported as
+/// an undefined symbol: it names a file (it has an extension) and does not climb
+/// out of the search paths. Any other miss is inconclusive for that rule.
+pub fn run_miss_is_reported(raw: &str) -> bool {
+    has_run_extension(raw) && !climbs_out(raw)
+}
+
+/// Whether a literal `RUN` target starts with `..`, so it is relative to a
+/// directory the search paths do not cover and no miss proves anything.
+pub fn run_target_climbs_out(raw: &str) -> bool {
+    climbs_out(raw)
+}
+
 /// A `RUN` target that is a single name: no extension and no path separator.
 fn is_bare_run_name(raw: &str) -> bool {
     !raw.contains(['/', '\\']) && !has_run_extension(raw)
@@ -334,6 +347,7 @@ impl<'a> Walker<'a> {
             StatementKind::Update { fields, .. } | StatementKind::Set { fields, .. } => {
                 self.declare_frame_fields(stmt, scope, fields)
             }
+            StatementKind::Message { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
             StatementKind::DefineWidget { name } => {
                 self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
             }
@@ -2001,7 +2015,7 @@ impl<'a> ResolveWalker<'a> {
     /// new findings were extension-less internal calls, every one of them correct
     /// ABL.
     fn run_miss_reason(&self, raw: &str, name: &OxablAtom) -> UnresolvedReason {
-        if !has_run_extension(raw) || climbs_out(raw) {
+        if !run_miss_is_reported(raw) {
             return UnresolvedReason::External;
         }
         self.absent_reason(name)
@@ -3188,7 +3202,11 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
-            StatementKind::Message { items, set_targets } => {
+            StatementKind::Message {
+                items,
+                set_targets,
+                fields,
+            } => {
                 for e in items {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
@@ -3200,6 +3218,7 @@ impl<'a> ResolveWalker<'a> {
                         AccessMode::Write,
                     );
                 }
+                self.note_frame_field_sources(fields, scope);
             }
 
             // ---- RUN / buffer ops ---------------------------------------
@@ -3464,11 +3483,13 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
                 match operation {
-                    StreamOperation::From(e) | StreamOperation::Through(e) => {
-                        self.walk_expression(e, scope, AccessMode::Read);
+                    StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                        if let Some(e) = target.expression() {
+                            self.walk_expression(e, scope, AccessMode::Read);
+                        }
                     }
-                    StreamOperation::To { target, .. } => {
-                        self.walk_expression(target, scope, AccessMode::Read);
+                    StreamOperation::Through(e) => {
+                        self.walk_expression(e, scope, AccessMode::Read);
                     }
                     StreamOperation::Close => {}
                 }
@@ -6077,7 +6098,19 @@ fn unmodelled_names(source: &str, span: Span) -> Vec<Identifier> {
     let Some(text) = source.get(span.start as usize..span.end as usize) else {
         return Vec::new();
     };
+    if opens_with_end(text) {
+        return Vec::new();
+    }
     header_names(oxabl_lexer::Lexer::new(text).peekable(), text, span.start)
+}
+
+/// Whether the first token of `text` is a `:` or `.` that [`header_names`]
+/// stops at, so no name follows. Saves lexing the common `FOR EACH t:` and
+/// `FIND t.` tails.
+fn opens_with_end(text: &str) -> bool {
+    let is_space = |b: &u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n');
+    let mut rest = text.as_bytes().iter().skip_while(|b| is_space(b));
+    matches!(rest.next(), Some(b':' | b'.')) && rest.next().is_none_or(is_space)
 }
 
 /// [`unmodelled_names`] over the rest of `tokens`, lexed from `text`, which
@@ -6602,6 +6635,9 @@ struct FoldedAtom {
     atom: OxablAtom,
 }
 
+/// The longest string `string_cache` stores inside the atom itself.
+const MAX_INLINE_ATOM_LEN: usize = 7;
+
 thread_local! {
     static FOLDED: std::cell::RefCell<Vec<Option<FoldedAtom>>> =
         std::cell::RefCell::new(vec![None; 1024]);
@@ -6609,7 +6645,23 @@ thread_local! {
 
 /// Case-fold and intern an identifier. Shared with [`crate::index`], whose
 /// keys must fold identically to the symbol table's names.
+#[inline]
 pub(crate) fn fold_atom(s: &str) -> OxablAtom {
+    let bytes = s.as_bytes();
+    // Names this short pack inline into the atom, which beats the cache.
+    if bytes.len() <= MAX_INLINE_ATOM_LEN {
+        let mut buf = [0u8; MAX_INLINE_ATOM_LEN];
+        for (i, &b) in bytes.iter().enumerate() {
+            buf[i] = b.to_ascii_lowercase();
+        }
+        // SAFETY: ASCII lowercasing preserves UTF-8; source was UTF-8.
+        return OxablAtom::from(unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) });
+    }
+    fold_atom_cached(s)
+}
+
+#[inline(never)]
+fn fold_atom_cached(s: &str) -> OxablAtom {
     let bytes = s.as_bytes();
     const INLINE: usize = 64;
     if bytes.len() <= INLINE {
@@ -9336,6 +9388,7 @@ mod tests {
             stmt_n(StatementKind::Message {
                 items: vec![item],
                 set_targets: vec![id("answer")],
+                fields: vec![],
             }),
         ];
         let (_t, symbols, _r, _) = run_full(&stmts);
@@ -10984,5 +11037,39 @@ mod folded_atom_tests {
                 });
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod unmodelled_names_tests {
+    use super::{header_names, opens_with_end};
+
+    #[test]
+    fn the_lexing_shortcut_only_skips_text_that_names_nothing() {
+        for text in [
+            "",
+            ":",
+            ".",
+            " :\n  FOR EACH b:",
+            ".\n",
+            "\t. x",
+            ":x",
+            "::x",
+            ".5",
+            ".x",
+            "a:",
+            " OF b:",
+            ":/* c */ x",
+            "~\n:",
+        ] {
+            let lexed = header_names(oxabl_lexer::Lexer::new(text).peekable(), text, 0);
+            if opens_with_end(text) {
+                assert!(lexed.is_empty(), "{text:?}");
+            }
+        }
+        assert!(opens_with_end(" :\n  FOR EACH b:"));
+        assert!(opens_with_end("."));
+        assert!(!opens_with_end(":x"));
+        assert!(!opens_with_end(".5"));
     }
 }

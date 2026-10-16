@@ -1,0 +1,15 @@
+find#0 u0 @5 Customer `FIND FIRST Customer WHERE Customer.CustNum = 1 NO-LOCK NO-ERROR.`
+find#1 u0 @9 Customer `FIND Customer WHERE Customer.CustNum = 2 EXCLUSIVE-LOCK NO-ERROR.`
+find#2 u0 @12 Order `FIND Order WHERE Order.OrderNum = 1 NO-LOCK NO-ERROR.`
+find#3 u0 @16 Item `FIND Item WHERE Item.ItemNum = 1 NO-ERROR.`
+find#4 u0 @20 Customer `FIND Customer WHERE Customer.CustNum = 3 NO-LOCK NO-ERROR.`
+find#5 u0 @22 Order `FIND Order WHERE Order.CustNum = Customer.CustNum NO-LOCK NO-ERROR.`
+find#6 u0 @29 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#7 u0 @33 Order `FIND FIRST Order WHERE Order.CustNum = n NO-ERROR.`
+find#8 u0 @34 Order `FIND FIRST Order WHERE Order.CustNum = Order.OrderNum NO-ERROR.`
+find#9 u0 @38 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+missing u0 @6 Customer `Customer.Name` read after find#0
+missing u0 @10 Customer `Customer.Balance` write after find#1
+missing u0 @23 Customer `Customer.CustNum` read after find#4
+missing u0 @31 Customer `Customer.Balance` write after find#6
+missing u0 @35 Order `Order.Total` read after find#8

@@ -2,7 +2,10 @@
 //! asked the questions the strict analyses will ask.
 
 use oxabl_ast::{ExpressionKind, StatementKind};
-use oxabl_flow::dataflow::{Analysis, BitSet, Direction, solve};
+use oxabl_flow::dataflow::{
+    Analysis, BitSet, Direction, Exhausted, Limits, default_budget, solve, solve_bounded,
+    solve_within,
+};
 use oxabl_flow::{
     Action, BlockId, BlockKind, Cfg, Condition, EdgeKind, ErrorDirective, ExitKind, FileFlow,
     FlowOptions, ForQualifier, NodeIx, NodeKind, OpaqueReason, Origin, RetryBehavior, UnitKind,
@@ -338,6 +341,176 @@ MESSAGE i.
     assert!(*solved.before(p.node(cfg, "i = 0")));
     assert!(*solved.before(p.node(cfg, "i = i + 1")));
     assert!(!*solved.before(p.node(cfg, "MESSAGE")));
+}
+
+/// A transfer that is not monotone: over subsets of `{a, b}`, `x = 1.` maps
+/// `{a}` to `{b}` and the others that are not empty to `{a}`.
+struct Swap<'a>(&'a Parsed);
+
+impl Analysis for Swap<'_> {
+    type Fact = u8;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn initial(&self, _: &Cfg) -> u8 {
+        0
+    }
+
+    fn boundary(&self, _: &Cfg) -> u8 {
+        1
+    }
+
+    fn join(&self, acc: &mut u8, other: &u8) {
+        *acc |= *other;
+    }
+
+    fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut u8) {
+        let n = cfg.node(node);
+        if n.kind == NodeKind::Stmt
+            && self.0.source[n.span.start as usize..].starts_with("x = 1")
+            && *fact != 0
+        {
+            *fact = if *fact == 1 { 2 } else { 1 };
+        }
+    }
+}
+
+#[test]
+fn a_transfer_that_is_not_monotone_still_ends_at_the_loop_head() {
+    let p = parse(
+        "\
+DEFINE VARIABLE x AS INTEGER NO-UNDO.
+REPEAT:
+    x = 1.
+END.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let solved = solve_within(cfg, &Swap(&p), default_budget(cfg)).expect("a fixed point");
+    assert_eq!(*solved.before(p.node(cfg, "x = 1")), 3);
+}
+
+/// A lattice without a finite height: the number of passes through `x = 1.`.
+struct Count<'a>(&'a Parsed);
+
+impl Analysis for Count<'_> {
+    type Fact = u64;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn initial(&self, _: &Cfg) -> u64 {
+        0
+    }
+
+    fn boundary(&self, _: &Cfg) -> u64 {
+        0
+    }
+
+    fn join(&self, acc: &mut u64, other: &u64) {
+        *acc = (*acc).max(*other);
+    }
+
+    fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut u64) {
+        let n = cfg.node(node);
+        if n.kind == NodeKind::Stmt && self.0.source[n.span.start as usize..].starts_with("x = 1") {
+            *fact += 1;
+        }
+    }
+}
+
+#[test]
+fn the_work_budget_reports_exhaustion() {
+    let p = parse(
+        "\
+DEFINE VARIABLE x AS INTEGER NO-UNDO.
+REPEAT:
+    x = 1.
+END.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    assert_eq!(
+        solve_within(cfg, &Count(&p), default_budget(cfg)).err(),
+        Some(Exhausted)
+    );
+    // A problem that converges is the same within the budget.
+    let bounded = solve_within(cfg, &RunAhead(&p), default_budget(cfg)).expect("a fixed point");
+    let unbounded = solve(cfg, &RunAhead(&p));
+    for (n, _) in cfg.nodes() {
+        assert_eq!(bounded.before(n), unbounded.before(n));
+    }
+}
+
+/// `RunAhead` with a fact that costs `self.1` per visit.
+struct Weighted<'a>(&'a Parsed, usize);
+
+impl Analysis for Weighted<'_> {
+    type Fact = bool;
+
+    fn direction(&self) -> Direction {
+        RunAhead(self.0).direction()
+    }
+
+    fn initial(&self, cfg: &Cfg) -> Self::Fact {
+        RunAhead(self.0).initial(cfg)
+    }
+
+    fn boundary(&self, cfg: &Cfg) -> Self::Fact {
+        RunAhead(self.0).boundary(cfg)
+    }
+
+    fn join(&self, acc: &mut Self::Fact, other: &Self::Fact) {
+        RunAhead(self.0).join(acc, other);
+    }
+
+    fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut Self::Fact) {
+        RunAhead(self.0).transfer(cfg, node, fact);
+    }
+
+    fn fact_cost(&self, _: &Self::Fact) -> usize {
+        self.1
+    }
+}
+
+#[test]
+fn the_work_limit_charges_the_cost_of_a_fact() {
+    let p = parse(
+        "\
+DEFINE VARIABLE x AS INTEGER NO-UNDO.
+REPEAT:
+    x = 1.
+END.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let visits = default_budget(cfg);
+    let within = |cost, work| solve_bounded(cfg, &Weighted(&p, cost), Limits { visits, work });
+    let cheap = within(1, usize::MAX).expect("a fixed point");
+    // The same visits cost more: the work limit ends the solve.
+    assert_eq!(within(1_000, 1_000).err(), Some(Exhausted));
+    let dear = within(1_000, usize::MAX).expect("a fixed point");
+    for (n, _) in cfg.nodes() {
+        assert_eq!(cheap.before(n), dear.before(n));
+    }
+}
+
+#[test]
+fn a_bit_set_iterates_its_members_in_order() {
+    let mut set = BitSet::new_empty(200);
+    let members = [0, 1, 63, 64, 65, 127, 199];
+    for m in members {
+        set.insert(m);
+    }
+    assert_eq!(set.iter().collect::<Vec<_>>(), members);
+    assert_eq!(BitSet::new_full(70).iter().count(), 70);
+    assert_eq!(BitSet::new_empty(0).iter().count(), 0);
 }
 
 #[test]

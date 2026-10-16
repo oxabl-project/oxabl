@@ -176,6 +176,14 @@ fn was_identifier(kind: Kind) -> bool {
             | Kind::SubAverage
             | Kind::SubMaximum
             | Kind::SubMinimum
+            | Kind::Printer
+            | Kind::Row
+            | Kind::Column
+            | Kind::Bgcolor
+            | Kind::Fgcolor
+            | Kind::NoTabStop
+            | Kind::SizeChars
+            | Kind::SizePixels
     )
 }
 

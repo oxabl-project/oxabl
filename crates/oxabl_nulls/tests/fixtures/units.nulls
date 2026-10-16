@@ -1,0 +1,6 @@
+find#0 u0 @4 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#1 u2 @12 b `FIND b WHERE b.CustNum = n NO-LOCK NO-ERROR.`
+find#2 u3 @18 b `FIND FIRST b NO-LOCK NO-ERROR.`
+missing u2 @13 b `b.Name` read after find#1
+missing u3 @21 b `b.OrderNum` read after find#2
+missing u3 @24 b `b.Total` read after find#2

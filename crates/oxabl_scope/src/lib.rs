@@ -67,8 +67,8 @@ mod txn;
 
 pub use model::{
     BlockScopes, BlockUnknown, BlockUpdate, Buffer, BufferId, BufferKind, Lock, LockMode, ReadKind,
-    RecordRead, Scope, ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown, UnknownReason,
-    Update, UpdateKind, Written,
+    RecordRead, Reference, Scope, ScopeKind, Table, Transaction, TxKind, UnitScopes, Unknown,
+    UnknownReason, Update, UpdateKind, Written,
 };
 
 use oxabl_ast::{Span, Statement};
@@ -107,6 +107,7 @@ pub struct FileScopes {
     units: Vec<UnitScopes>,
     buffers: Vec<Buffer>,
     reads: Vec<RecordRead>,
+    references: Vec<Reference>,
     updates: Vec<BlockUpdate>,
     write_unknowns: Vec<BlockUnknown>,
     unknown: Vec<Unknown>,
@@ -136,6 +137,13 @@ impl FileScopes {
     /// Every record read, in source order.
     pub fn reads(&self) -> &[RecordRead] {
         &self.reads
+    }
+
+    /// Every resolved reference to a buffer or one of its fields, in source
+    /// order. A name that resolves to no buffer (a variable, a field of a
+    /// buffer the file does not name, an ambiguous field) is not here.
+    pub fn references(&self) -> &[Reference] {
+        &self.references
     }
 
     /// Every database update (section 7.3, T3), in source order: a write to
@@ -447,10 +455,26 @@ pub fn analyze_flow(
         })
         .collect();
     write_unknowns.sort_by_key(|u| u.unknown.at.start);
+    let mut references: Vec<Reference> = res
+        .refs
+        .iter()
+        .map(|r| Reference {
+            buffer: r.buffer,
+            unit: r.unit,
+            block: r.block,
+            at: r.at,
+            field: r.field,
+            write: r.write,
+            passed: r.passed,
+            opaque: r.skipped,
+        })
+        .collect();
+    references.sort_by_key(|r| r.at.start);
     FileScopes {
         units,
         buffers: res.buffers,
         reads: res.reads,
+        references,
         updates,
         write_unknowns,
         unknown: file_unknown,

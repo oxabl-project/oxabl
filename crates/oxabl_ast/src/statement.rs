@@ -209,6 +209,8 @@ pub enum StatementKind {
         items: Vec<Expression>,
         /// Variables bound by SET or UPDATE clauses.
         set_targets: Vec<Identifier>,
+        /// Fields declared by `SET`/`UPDATE name AS type` or `name LIKE field`.
+        fields: Vec<FrameField>,
     },
 
     /// PUT statement — writes values to a stream.
@@ -1296,11 +1298,44 @@ pub enum StreamDirection {
     InputOutput,
 }
 
+/// An unquoted file name in a stream I/O `TO`/`FROM` phrase, such as
+/// `OUTPUT TO report.txt.`. ABL reads a bare name there as a literal file name,
+/// not as an expression, so it stays out of the expression tree: the parts of
+/// `report.txt` must not resolve as a table named `report` or its field `txt`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileName {
+    /// Byte extent of the name as written, without the statement terminator.
+    pub span: Span,
+    /// The name as written, e.g. `data/out.d`.
+    pub name: String,
+}
+
+/// Target of a stream I/O `TO`/`FROM` phrase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamTarget {
+    /// An expression target: `VALUE(expr)`, a string literal, a preprocessor
+    /// reference, or a keyword target such as `TERMINAL`, `PRINTER`,
+    /// `CLIPBOARD` or `OS-DIR(...)`.
+    Expression(Expression),
+    /// A bare, unquoted file name.
+    FileName(FileName),
+}
+
+impl StreamTarget {
+    /// The expression this target holds, or `None` for a bare file name.
+    pub fn expression(&self) -> Option<&Expression> {
+        match self {
+            StreamTarget::Expression(e) => Some(e),
+            StreamTarget::FileName(_) => None,
+        }
+    }
+}
+
 /// Operation for stream I/O statements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamOperation {
-    From(Expression),
-    To { target: Expression, append: bool },
+    From(StreamTarget),
+    To { target: StreamTarget, append: bool },
     Through(Expression),
     Close,
 }

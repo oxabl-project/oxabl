@@ -26,6 +26,7 @@
     "crates/oxabl_flow": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_handles": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_scope": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
-    "crates/oxabl_effects": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
+    "crates/oxabl_effects": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "crates/oxabl_nulls": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
   }
 }

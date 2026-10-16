@@ -102,7 +102,7 @@ use std::sync::{Arc, RwLock};
 
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_index::search::{self, NameKind};
-use oxabl_index::{FileFacts, IncludeContext, index_file_at};
+use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
 use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
@@ -684,6 +684,38 @@ fn indexed_class_members(
     }
 }
 
+/// The parameter lists of one file, memoized per file and read on the first
+/// question about them: a buffer whose rules ask none never reads the file for
+/// them.
+///
+/// Reads the file and its includes the way [`indexed_facts`] does, and registers
+/// each include's revision, so an edit to the file or to an include re-reads the
+/// lists. An equal result backdates, so a body edit that leaves the parameters
+/// alone stops here.
+#[salsa::tracked(returns(clone))]
+fn indexed_signatures(
+    db: &dyn AblDatabase,
+    file: IndexedFile,
+) -> Option<Arc<oxabl_semantic::ProgramSignatures>> {
+    let _revision = file.disk_revision(db);
+    let environment = db.config().index.environment(db);
+    let path = file.path(db);
+    let source = db.config().fs.read(path).ok()?;
+    db.unwind_if_revision_cancelled();
+    let config = db.config();
+    let includes = IncludeContext {
+        fs: &*config.fs,
+        include_paths: environment.include_paths(db),
+        root_relative_paths: environment.root_relative_include_paths(db),
+        predefined: environment.preprocessor(db),
+    };
+    let (signatures, read) = program_signatures_at(path, &source, &includes);
+    for path in read {
+        let _revision = config.index.include_for(db, &path).disk_revision(db);
+    }
+    signatures.map(Arc::new)
+}
+
 /// Whether a located file is usable as a `RUN` target, keyed per file.
 ///
 /// A broken file answers `Unusable` — located, and oxabl could not read it, which
@@ -839,6 +871,22 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
             IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         }
+    }
+
+    fn signature(
+        &self,
+        program: &IndexName,
+        procedure: Option<&IndexName>,
+    ) -> Option<Arc<oxabl_semantic::Signature>> {
+        let IndexAnswer::Found(file) = self.locate(program, NameKind::Program) else {
+            return None;
+        };
+        let signatures = indexed_signatures(self.db, file)?;
+        let list = match procedure {
+            Some(name) => signatures.procedure(name),
+            None => signatures.main.as_ref(),
+        };
+        list.map(|s| Arc::new(s.clone()))
     }
 
     fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
@@ -1002,6 +1050,27 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
         handle
     };
     handle.collect(&expansion).into_diagnostics()
+}
+
+/// Render cached effect summaries on a worker snapshot. Cancellation returns no answer.
+/// This may populate the reachable graph; callers must keep it off the LSP thread.
+pub fn compute_effect_lenses(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+) -> Option<Vec<(u32, String)>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let path = buffer.path(snapshot).as_deref()?;
+        let run = snapshot.config().lint_pipeline();
+        if !run.with_file(path).effect_lenses_enabled() {
+            return Some(Vec::new());
+        }
+        effect_summaries(snapshot, buffer, schema)
+            .file(path)
+            .map(|f| f.effect_lenses())
+    }))
+    .ok()
+    .flatten()
 }
 
 /// Compute diagnostics on a snapshot, swallowing a [`salsa::Cancelled`] unwind
@@ -1839,6 +1908,62 @@ mod tests {
         fs.write("/src/b.p", "FIND FIRST Customer NO-LOCK.");
         assert!(bump(&mut db, "/src/b.p"));
         assert_eq!(tx004(&db, buffer, schema), 0);
+    }
+
+    fn calls_config(fs: Arc<dyn FileSystem>) -> AnalysisConfig {
+        let mut config = searching_config(fs);
+        Arc::make_mut(&mut config.pipeline)
+            .lint_severities
+            .base_mut()
+            .enable_group("strict.calls");
+        config
+    }
+
+    fn cl003(db: &AnalysisDatabase, buffer: Buffer, schema: SchemaHandle) -> usize {
+        compute_diagnostics(db, buffer, schema)
+            .unwrap()
+            .all()
+            .filter(|d| d.diagnostic.code.0 == "CL003")
+            .count()
+    }
+
+    #[test]
+    fn parameter_lists_follow_edits_to_the_callee_and_its_includes() {
+        let fs = EditableFs::new(&[
+            (
+                "/src/callee.p",
+                "DEFINE INPUT PARAMETER a AS INTEGER NO-UNDO.",
+            ),
+            ("/src/other.p", "{head.i}\nMESSAGE 1."),
+            (
+                "/src/head.i",
+                "DEFINE OUTPUT PARAMETER b AS INTEGER NO-UNDO.",
+            ),
+        ]);
+        let mut db = AnalysisDatabase::new(calls_config(Arc::clone(&fs) as Arc<dyn FileSystem>));
+        let buffer = Buffer::new(
+            &db,
+            "RUN callee.p (INPUT 1, INPUT 2).\nRUN other.p (INPUT 1).".into(),
+            Some("/src/main.p".into()),
+        );
+        let schema = SchemaHandle::new(&db, 0);
+        // The count differs for `callee.p`; the mode differs for `other.p`, whose
+        // parameter an include defines.
+        assert_eq!(cl003(&db, buffer, schema), 2);
+
+        fs.write(
+            "/src/callee.p",
+            "DEFINE INPUT PARAMETER a AS INTEGER NO-UNDO.\nDEFINE INPUT PARAMETER c AS INTEGER NO-UNDO.",
+        );
+        assert!(bump(&mut db, "/src/callee.p"));
+        assert_eq!(cl003(&db, buffer, schema), 1);
+
+        fs.write(
+            "/src/head.i",
+            "DEFINE INPUT PARAMETER b AS INTEGER NO-UNDO.",
+        );
+        assert!(bump(&mut db, "/src/head.i"));
+        assert_eq!(cl003(&db, buffer, schema), 0);
     }
 
     #[test]

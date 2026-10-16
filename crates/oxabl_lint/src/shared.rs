@@ -7,6 +7,7 @@ use oxabl_effects::{EffectOptions, FileEffects};
 use oxabl_flow::{FileFlow, FlowOptions};
 use oxabl_handles::FileHandles;
 use oxabl_index::calls::FileCalls;
+use oxabl_nulls::{FileNulls, NullOptions};
 use oxabl_scope::{FileScopes, ScopeOptions};
 use oxabl_semantic::AnalysisContext;
 
@@ -21,9 +22,13 @@ pub struct RunShared<'a> {
     share_flow: Cell<bool>,
     handles: OnceCell<FileHandles>,
     tokens: OnceCell<Vec<oxabl_lexer::Token>>,
+    calls: OnceCell<FileCalls>,
     flow: OnceCell<FileFlow>,
     scopes: OnceCell<FileScopes>,
     effects: OnceCell<FileEffects>,
+    nulls: OnceCell<FileNulls>,
+    null_values: OnceCell<FileNulls>,
+    null_fields: OnceCell<FileNulls>,
 }
 
 /// Answers in expanded byte coordinates. Missing and partial answers are Unknown.
@@ -83,7 +88,7 @@ impl<'a> RunShared<'a> {
         self.effects.get_or_init(|| {
             let scopes = self.scopes(program, ctx);
             let tokens = self.tokens(ctx);
-            let calls = FileCalls::extract(program, ctx.source, tokens);
+            let calls = self.calls(program, ctx);
             let schema = ctx.schema_loaded.then_some(ctx.schema);
             oxabl_effects::analyze_file(
                 program,
@@ -91,14 +96,71 @@ impl<'a> RunShared<'a> {
                 tokens,
                 self.flow(program, ctx),
                 scopes,
-                &calls,
+                calls,
                 schema,
                 &EffectOptions { elided: ctx.elided },
             )
         })
     }
 
-    fn tokens<'s>(&'s self, ctx: &'s AnalysisContext) -> &'s [oxabl_lexer::Token] {
+    /// The calls the file makes and what each one calls, extracted once.
+    pub fn calls(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileCalls {
+        self.calls
+            .get_or_init(|| FileCalls::extract(program, ctx.source, self.tokens(ctx)))
+    }
+
+    /// The failed finds of the file and the field references they reach,
+    /// analysed once over [`scopes`](Self::scopes).
+    pub fn nulls(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
+        self.nulls.get_or_init(|| {
+            oxabl_nulls::analyze_file(
+                ctx.source,
+                self.tokens(ctx),
+                self.flow(program, ctx),
+                self.scopes(program, ctx),
+                &NullOptions { elided: ctx.elided },
+            )
+        })
+    }
+
+    /// The local value facts of the file and the uses of possible `?`
+    /// values, analysed once and apart from [`nulls`](Self::nulls).
+    pub fn null_values(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
+        self.null_values.get_or_init(|| {
+            oxabl_nulls::analyze_values(
+                ctx.source,
+                self.tokens(ctx),
+                program,
+                self.flow(program, ctx),
+                self.scopes(program, ctx),
+                &NullOptions { elided: ctx.elided },
+            )
+        })
+    }
+
+    /// The uses of database fields the loaded schema starts at `?`, analysed
+    /// once and apart from [`null_values`](Self::null_values). Empty when no
+    /// schema is loaded.
+    pub fn null_fields(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
+        self.null_fields.get_or_init(|| {
+            if !ctx.schema_loaded {
+                return FileNulls::default();
+            }
+            oxabl_nulls::analyze_fields(
+                ctx.source,
+                self.tokens(ctx),
+                program,
+                self.flow(program, ctx),
+                &oxabl_nulls::FieldSources {
+                    scopes: self.scopes(program, ctx),
+                    schema: ctx.schema,
+                },
+                &NullOptions { elided: ctx.elided },
+            )
+        })
+    }
+
+    pub(crate) fn tokens<'s>(&'s self, ctx: &'s AnalysisContext) -> &'s [oxabl_lexer::Token] {
         if !ctx.tokens.is_empty() {
             return ctx.tokens;
         }
@@ -137,4 +199,30 @@ pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> Fi
         return oxabl_scope::analyze_file_with(program, ctx.source, schema, &options);
     }
     oxabl_scope::analyze_tokens(program, ctx.source, ctx.tokens, schema, &options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxabl_common::FileId;
+
+    #[test]
+    fn the_failed_finds_and_the_value_facts_are_computed_apart() {
+        let source = "DEFINE VARIABLE d AS DATE NO-UNDO.\nIF d > TODAY THEN MESSAGE 1.\n";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let schema = oxabl_schema::Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+
+        let shared = RunShared::default();
+        shared.nulls(&program.statements, &ctx);
+        assert!(shared.null_values.get().is_none());
+
+        let shared = RunShared::default();
+        assert_eq!(
+            shared.null_values(&program.statements, &ctx).values().len(),
+            1
+        );
+        assert!(shared.nulls.get().is_none());
+    }
 }
