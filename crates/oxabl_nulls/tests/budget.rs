@@ -146,3 +146,84 @@ fn a_few_failed_finds_in_a_loop_are_still_analysed() {
     assert!(nulls.exhausted().is_empty());
     assert!(!nulls.missing().is_empty());
 }
+
+/// `k` tests, guards, refills and writes of nullable fields over `n` buffers
+/// of one table, in one `REPEAT`.
+fn fields(n: usize, k: usize) -> String {
+    let mut seed = 11u64;
+    let mut next = |m: usize| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 33) as usize) % m
+    };
+    let names = [
+        "DateA", "DateB", "DateC", "DateD", "DateE", "DateF", "Weight", "Memo",
+    ];
+    let mut lines: Vec<String> = (0..n)
+        .map(|i| format!("DEFINE BUFFER s{i} FOR Shipment."))
+        .collect();
+    lines.push("REPEAT:".into());
+    for _ in 0..k {
+        let (r, a, f, g) = (next(10), next(n), names[next(8)], names[next(8)]);
+        lines.push(match r {
+            0..=2 => format!("IF s{a}.{f} <> ? AND s{a}.{g} > s{a}.{f} THEN s{a}.{g} = ?."),
+            3..=4 => format!("IF s{a}.{f} = ? THEN NEXT."),
+            5 => format!("FIND NEXT s{a} NO-LOCK NO-ERROR."),
+            6 => format!("s{a}.{f} = s{a}.{g}."),
+            _ => format!("MESSAGE s{a}.{f} + s{a}.{g}."),
+        });
+    }
+    lines.push("END.".into());
+    lines.join("\n")
+}
+
+fn analyse_fields(source: &str) -> (FileNulls, Duration) {
+    let df = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/schema.df"),
+    )
+    .expect("schema.df");
+    let schema = oxabl_schema::test_support::schema_from_df(&df);
+    let started = Instant::now();
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let options = oxabl_scope::ScopeOptions::default();
+    let flow = oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &options.flow);
+    let scopes = oxabl_scope::analyze_flow(
+        &program.statements,
+        source,
+        &tokens,
+        &flow,
+        Some(&schema),
+        &options,
+    );
+    let nulls = oxabl_nulls::analyze_fields(
+        source,
+        &tokens,
+        &program.statements,
+        &flow,
+        &oxabl_nulls::FieldSources {
+            scopes: &scopes,
+            schema: &schema,
+        },
+        &NullOptions::default(),
+    );
+    (nulls, started.elapsed())
+}
+
+#[test]
+fn many_fields_in_a_long_loop_are_unknown_within_the_time_limit() {
+    let (nulls, took) = analyse_fields(&fields(120, 3000));
+    let limit = if cfg!(debug_assertions) { 20 } else { 3 };
+    assert!(took < Duration::from_secs(limit), "took {took:?}");
+    assert_eq!(nulls.exhausted().len(), 1);
+    assert!(nulls.field_values().is_empty());
+}
+
+#[test]
+fn a_few_fields_in_a_loop_are_still_analysed() {
+    let (nulls, _) = analyse_fields(&fields(3, 60));
+    assert!(nulls.exhausted().is_empty());
+    assert!(!nulls.field_values().is_empty());
+}

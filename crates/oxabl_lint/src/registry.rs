@@ -14,14 +14,14 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
     CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
-    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, TX001, TX002, TX003,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, NL004, TX001, TX002, TX003,
     TX004, TX005, TX006, assigned_but_never_read, block_var_used_outside, default_lock,
     delete_not_in_finally, dynamic_invoke, field_after_failed_find, find_in_loop,
     handle_not_deleted, implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop,
-    memptr_not_freed, missing_no_undo, missing_widget_pool, persistent_procedure_leak,
-    procedure_wide_transaction, run_value, scope_widened, shared_state, transaction_spans_call,
-    transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
-    unknown_propagation, unknown_table_or_field, unused_variable,
+    memptr_not_freed, missing_no_undo, missing_widget_pool, nullable_db_field,
+    persistent_procedure_leak, procedure_wide_transaction, run_value, scope_widened, shared_state,
+    transaction_spans_call, transaction_spans_ui, type_mismatch_assignment, undefined_symbol,
+    unknown_in_comparison, unknown_propagation, unknown_table_or_field, unused_variable,
 };
 use crate::shared::RunShared;
 
@@ -197,9 +197,10 @@ pub type EffectsFn =
     fn(&FileEffects, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
 
 /// The signature of a rule that reads the null analysis of the file
-/// ([`oxabl_nulls`]): its failed finds ([`FnRule::over_nulls`]) or its local
-/// value facts ([`FnRule::over_null_values`]), with the scope analysis they
-/// were made over.
+/// ([`oxabl_nulls`]): its failed finds ([`FnRule::over_nulls`]), its local
+/// value facts ([`FnRule::over_null_values`]) or its nullable database fields
+/// ([`FnRule::over_null_fields`]), with the scope analysis they were made
+/// over.
 pub type NullsFn = fn(&FileNulls, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
 
 #[derive(Debug, Clone, Copy)]
@@ -210,6 +211,7 @@ enum Body {
     Effects(EffectsFn),
     Nulls(NullsFn),
     NullValues(NullsFn),
+    NullFields(NullsFn),
     Shared(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
 }
 
@@ -277,6 +279,17 @@ impl FnRule {
             body: Body::NullValues(check),
         }
     }
+
+    /// Pair `meta` with a query over the nullable database fields the file
+    /// reads. One registry run analyses the file once for every such rule,
+    /// apart from the local value facts. With no schema loaded the answer is
+    /// empty.
+    pub const fn over_null_fields(meta: RuleMeta, check: NullsFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::NullFields(check),
+        }
+    }
 }
 
 impl Rule for FnRule {
@@ -299,6 +312,7 @@ impl Rule for FnRule {
                 | Body::Effects(_)
                 | Body::Nulls(_)
                 | Body::NullValues(_)
+                | Body::NullFields(_)
                 | Body::Shared(_)
         )
     }
@@ -329,6 +343,12 @@ impl Rule for FnRule {
             ),
             Body::NullValues(check) => check(
                 shared.null_values(program, ctx),
+                shared.scopes(program, ctx),
+                program,
+                ctx,
+            ),
+            Body::NullFields(check) => check(
+                shared.null_fields(program, ctx),
                 shared.scopes(program, ctx),
                 program,
                 ctx,
@@ -640,6 +660,19 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         .context_free()
         .reported_at_use_site(),
         field_after_failed_find::check,
+    ),
+    FnRule::over_null_fields(
+        RuleMeta::new(
+            NL004,
+            nullable_db_field::NAME,
+            nullable_db_field::GROUP,
+            nullable_db_field::DESCRIPTION,
+        )
+        .with_default_severity(nullable_db_field::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        nullable_db_field::check,
     ),
 ];
 

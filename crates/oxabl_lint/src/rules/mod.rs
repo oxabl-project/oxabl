@@ -26,6 +26,7 @@ pub mod transaction_spans_call;
 pub mod transaction_spans_ui;
 pub mod type_mismatch_assignment;
 pub mod undefined_symbol;
+pub mod nullable_db_field;
 pub mod unknown_in_comparison;
 pub mod unknown_propagation;
 pub mod unknown_table_or_field;
@@ -94,6 +95,9 @@ pub const DB001: &str = "DB001";
 
 /// Diagnostic code for `field-after-failed-find` (NL003).
 pub const NL003: &str = "NL003";
+
+/// Diagnostic code for `nullable-db-field` (NL004).
+pub const NL004: &str = "NL004";
 
 /// Diagnostic code for `unknown-in-comparison` (NL001).
 pub const NL001: &str = "NL001";

@@ -26,3 +26,53 @@ ADD INDEX "ItemNum" ON "Item"
   UNIQUE
   PRIMARY
   INDEX-FIELD "ItemNum" ASCENDING
+
+ADD TABLE "Shipment"
+ADD FIELD "ShipDate" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DueDate" OF "Shipment" AS date
+  INITIAL ?
+  MANDATORY
+ADD FIELD "Qty" OF "Shipment" AS integer
+  INITIAL "0"
+ADD FIELD "Weight" OF "Shipment" AS decimal
+  INITIAL ?
+ADD FIELD "Memo" OF "Shipment" AS character
+  INITIAL ?
+ADD FIELD "Tag" OF "Shipment" AS character
+  INITIAL "?"
+ADD FIELD "Slot" OF "Shipment" AS integer
+  INITIAL ?
+  EXTENT 3
+ADD FIELD "Flag" OF "Shipment" AS logical
+  INITIAL ?
+ADD FIELD "Plain" OF "Shipment" AS date
+ADD FIELD "DateA" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateB" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateC" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateD" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateE" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateF" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateG" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateH" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateI" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateJ" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateK" OF "Shipment" AS date
+  INITIAL ?
+ADD FIELD "DateL" OF "Shipment" AS date
+  INITIAL ?
+
+ADD INDEX "Qty" ON "Shipment"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "Qty" ASCENDING

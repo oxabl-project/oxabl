@@ -1,0 +1,10 @@
+find#0 u0 @4 Shipment `FIND FIRST Shipment NO-LOCK NO-ERROR.`
+find#1 u0 @7 Shipment `FIND NEXT Shipment NO-LOCK NO-ERROR.`
+find#2 u0 @22 other `FIND FIRST other NO-LOCK NO-ERROR.`
+missing u0 @5 Shipment `Shipment.DateA` read after find#0
+missing u0 @8 Shipment `Shipment.DateA` read after find#1
+missing u0 @23 other `other.DateE` read after find#2
+field-propagation u0 @8 Shipment.DateA `Shipment.DateA`
+field-propagation u0 @11 Shipment.DateA `Shipment.DateA`
+field-propagation u0 @15 Shipment.DateC `Shipment.DateC`
+field-propagation u0 @18 Shipment.DateG `Shipment.DateG`
