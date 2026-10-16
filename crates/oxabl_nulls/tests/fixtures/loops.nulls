@@ -1,0 +1,10 @@
+find#0 u0 @6 Customer `FIND NEXT Customer NO-LOCK NO-ERROR.`
+find#1 u0 @11 Order `FIND FIRST Order NO-LOCK NO-ERROR.`
+find#2 u0 @14 Order `FIND NEXT Order NO-LOCK NO-ERROR.`
+find#3 u0 @18 Order `FIND FIRST Order NO-LOCK NO-ERROR.`
+find#4 u0 @21 Order `FIND NEXT Order NO-LOCK NO-ERROR.`
+find#5 u0 @24 Item `FIND FIRST Item NO-LOCK NO-ERROR.`
+find#6 u0 @30 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#7 u0 @35 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+missing u0 @16 Order `Order.OrderNum` read after find#1, find#2
+missing u0 @31 Customer `Customer.CustNum` read after find#6

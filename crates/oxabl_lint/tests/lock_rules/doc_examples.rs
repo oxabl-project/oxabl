@@ -1,11 +1,11 @@
-//! The two `abl` blocks of each LK and TX rule's module docs: the first is the
+//! The two `abl` blocks of each LK, TX, DB and NL rule's module docs: the first is the
 //! bad example and must fire; the second is the fixed one and must not, for
-//! any of the nine rules.
+//! any of the ten rules.
 
 use oxabl_lint::{
-    default_lock, find_in_loop, implicit_transaction, lock_outlives_transaction,
-    lock_upgrade_in_loop, procedure_wide_transaction, scope_widened, transaction_spans_call,
-    transaction_spans_ui,
+    default_lock, field_after_failed_find, find_in_loop, implicit_transaction,
+    lock_outlives_transaction, lock_upgrade_in_loop, procedure_wide_transaction, scope_widened,
+    transaction_spans_call, transaction_spans_ui,
 };
 
 use super::{RuleFn, check};
@@ -45,7 +45,7 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         "{name}: the bad example gives no finding\n{}",
         blocks[0]
     );
-    let rules: [(&str, RuleFn); 9] = [
+    let rules: [(&str, RuleFn); 12] = [
         ("LK001", default_lock::run),
         ("LK002", lock_outlives_transaction::run),
         ("LK003", lock_upgrade_in_loop::run),
@@ -55,6 +55,9 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         ("TX004", transaction_spans_call::run),
         ("TX005", scope_widened::run),
         ("DB001", find_in_loop::run),
+        ("NL001", oxabl_lint::unknown_in_comparison::run),
+        ("NL002", oxabl_lint::unknown_propagation::run),
+        ("NL003", field_after_failed_find::run),
     ];
     for (other, f) in rules {
         let fixed = check(f, &blocks[1]);
@@ -145,5 +148,32 @@ fn db001_examples() {
         "DB001",
         find_in_loop::run,
         include_str!("../../src/rules/find_in_loop.rs"),
+    );
+}
+
+#[test]
+fn nl003_examples() {
+    examples(
+        "NL003",
+        field_after_failed_find::run,
+        include_str!("../../src/rules/field_after_failed_find.rs"),
+    );
+}
+
+#[test]
+fn nl001_examples() {
+    examples(
+        "NL001",
+        oxabl_lint::unknown_in_comparison::run,
+        include_str!("../../src/rules/unknown_in_comparison.rs"),
+    );
+}
+
+#[test]
+fn nl002_examples() {
+    examples(
+        "NL002",
+        oxabl_lint::unknown_propagation::run,
+        include_str!("../../src/rules/unknown_propagation.rs"),
     );
 }

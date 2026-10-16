@@ -43,7 +43,7 @@ fn codes(map: LintSeverityMap) -> Vec<&'static str> {
     codes_of(SRC, map, "LK")
 }
 
-fn codes_of(src: &str, map: LintSeverityMap, prefix: &str) -> Vec<&'static str> {
+pub(super) fn codes_of(src: &str, map: LintSeverityMap, prefix: &str) -> Vec<&'static str> {
     let tokens = tokenize(src);
     let program = Parser::new(&tokens, src).parse_program();
     let schema = schema();

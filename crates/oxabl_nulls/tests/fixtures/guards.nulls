@@ -1,0 +1,28 @@
+find#0 u0 @5 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#1 u0 @9 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#2 u0 @13 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#3 u0 @20 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#4 u0 @21 Order `FIND FIRST Order NO-LOCK NO-ERROR.`
+find#5 u0 @27 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#6 u0 @31 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#7 u0 @36 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#8 u0 @40 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#9 u0 @45 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#10 u0 @47 Order `FIND FIRST Order WHERE Order.CustNum = Customer.CustNum NO-LOCK NO-ERROR.`
+find#11 u0 @51 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#12 u0 @55 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#13 u1 @61 Customer `FIND FIRST Customer NO-LOCK NO-ERROR.`
+find#14 u0 @70 Order `FIND FIRST Order NO-LOCK NO-ERROR.`
+find#15 u0 @71 bFirst `FIND bFirst WHERE bFirst.CustNum = Order.CustNum NO-LOCK NO-ERROR.`
+find#16 u0 @74 Order `FIND FIRST Order NO-LOCK NO-ERROR.`
+find#17 u0 @75 bSecond `FIND bSecond WHERE bSecond.CustNum = Order.CustNum NO-LOCK NO-ERROR.`
+find#18 u0 @78 Order `FIND FIRST Order NO-LOCK NO-ERROR.`
+find#19 u0 @79 Customer `FIND Customer WHERE Customer.CustNum = Order.CustNum NO-LOCK NO-ERROR.`
+find#20 u0 @84 Order `FIND FIRST Order NO-LOCK NO-ERROR.`
+missing u0 @7 Customer `Customer.Name` read after find#0
+missing u0 @29 Customer `Customer.Name` read after find#5
+missing u0 @34 Customer `Customer.Name` read after find#6
+missing u0 @43 Customer `Customer.Name` read after find#8
+missing u0 @53 Customer `Customer.Name` read after find#11
+missing u0 @76 bSecond `bSecond.Name` read after find#17
+missing u0 @81 Order `Order.OrderNum` read after find#18

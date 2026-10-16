@@ -8,6 +8,7 @@ pub mod block_var_used_outside;
 pub mod default_lock;
 pub mod delete_not_in_finally;
 pub mod dynamic_invoke;
+pub mod field_after_failed_find;
 pub mod find_in_loop;
 pub mod handle_not_deleted;
 pub mod implicit_transaction;
@@ -25,6 +26,8 @@ pub mod transaction_spans_call;
 pub mod transaction_spans_ui;
 pub mod type_mismatch_assignment;
 pub mod undefined_symbol;
+pub mod unknown_in_comparison;
+pub mod unknown_propagation;
 pub mod unknown_table_or_field;
 pub mod unused_symbol_shared;
 pub mod unused_variable;
@@ -88,3 +91,12 @@ pub const LK003: &str = "LK003";
 
 /// Diagnostic code for `find-in-loop` (DB001).
 pub const DB001: &str = "DB001";
+
+/// Diagnostic code for `field-after-failed-find` (NL003).
+pub const NL003: &str = "NL003";
+
+/// Diagnostic code for `unknown-in-comparison` (NL001).
+pub const NL001: &str = "NL001";
+
+/// Diagnostic code for `unknown-propagation` (NL002).
+pub const NL002: &str = "NL002";

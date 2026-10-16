@@ -8,18 +8,20 @@ use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, LintRuleRef, LintSeverityMap, Severity};
 use oxabl_effects::FileEffects;
 use oxabl_handles::FileHandles;
+use oxabl_nulls::FileNulls;
 use oxabl_scope::FileScopes;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
     CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
-    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, TX001, TX002, TX003, TX004, TX005, TX006,
-    assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
-    dynamic_invoke, find_in_loop, handle_not_deleted, implicit_transaction,
-    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
-    missing_widget_pool, persistent_procedure_leak, procedure_wide_transaction, run_value,
-    scope_widened, shared_state, transaction_spans_call, transaction_spans_ui,
-    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, TX001, TX002, TX003,
+    TX004, TX005, TX006, assigned_but_never_read, block_var_used_outside, default_lock,
+    delete_not_in_finally, dynamic_invoke, field_after_failed_find, find_in_loop,
+    handle_not_deleted, implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop,
+    memptr_not_freed, missing_no_undo, missing_widget_pool, persistent_procedure_leak,
+    procedure_wide_transaction, run_value, scope_widened, shared_state, transaction_spans_call,
+    transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
+    unknown_propagation, unknown_table_or_field, unused_variable,
 };
 use crate::shared::RunShared;
 
@@ -194,12 +196,20 @@ pub type ScopesFn = fn(&FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagn
 pub type EffectsFn =
     fn(&FileEffects, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
 
+/// The signature of a rule that reads the null analysis of the file
+/// ([`oxabl_nulls`]): its failed finds ([`FnRule::over_nulls`]) or its local
+/// value facts ([`FnRule::over_null_values`]), with the scope analysis they
+/// were made over.
+pub type NullsFn = fn(&FileNulls, &FileScopes, &[Statement], &AnalysisContext) -> Vec<Diagnostic>;
+
 #[derive(Debug, Clone, Copy)]
 enum Body {
     Plain(RuleFn),
     Handles(HandlesFn),
     Scopes(ScopesFn),
     Effects(EffectsFn),
+    Nulls(NullsFn),
+    NullValues(NullsFn),
     Shared(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
 }
 
@@ -247,6 +257,26 @@ impl FnRule {
             body: Body::Effects(check),
         }
     }
+
+    /// Pair `meta` with a query over the file's failed finds. One registry
+    /// run analyses the file once for every such rule, over the same scope
+    /// analysis the scope rules read.
+    pub const fn over_nulls(meta: RuleMeta, check: NullsFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::Nulls(check),
+        }
+    }
+
+    /// Pair `meta` with a query over the file's local value facts. One
+    /// registry run analyses the file once for every such rule, apart from
+    /// the failed finds.
+    pub const fn over_null_values(meta: RuleMeta, check: NullsFn) -> Self {
+        FnRule {
+            meta,
+            body: Body::NullValues(check),
+        }
+    }
 }
 
 impl Rule for FnRule {
@@ -265,7 +295,11 @@ impl Rule for FnRule {
     fn reads_scopes(&self) -> bool {
         matches!(
             self.body,
-            Body::Scopes(_) | Body::Effects(_) | Body::Shared(_)
+            Body::Scopes(_)
+                | Body::Effects(_)
+                | Body::Nulls(_)
+                | Body::NullValues(_)
+                | Body::Shared(_)
         )
     }
 
@@ -283,6 +317,18 @@ impl Rule for FnRule {
             Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
             Body::Effects(check) => check(
                 shared.effects(program, ctx),
+                shared.scopes(program, ctx),
+                program,
+                ctx,
+            ),
+            Body::Nulls(check) => check(
+                shared.nulls(program, ctx),
+                shared.scopes(program, ctx),
+                program,
+                ctx,
+            ),
+            Body::NullValues(check) => check(
+                shared.null_values(program, ctx),
                 shared.scopes(program, ctx),
                 program,
                 ctx,
@@ -555,6 +601,45 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         find_in_loop::DESCRIPTION,
         find_in_loop::DEFAULT_SEVERITY,
         find_in_loop::check,
+    ),
+    FnRule::over_null_values(
+        RuleMeta::new(
+            NL001,
+            unknown_in_comparison::NAME,
+            unknown_in_comparison::GROUP,
+            unknown_in_comparison::DESCRIPTION,
+        )
+        .with_default_severity(unknown_in_comparison::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        unknown_in_comparison::check,
+    ),
+    FnRule::over_null_values(
+        RuleMeta::new(
+            NL002,
+            unknown_propagation::NAME,
+            unknown_propagation::GROUP,
+            unknown_propagation::DESCRIPTION,
+        )
+        .with_default_severity(unknown_propagation::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        unknown_propagation::check,
+    ),
+    FnRule::over_nulls(
+        RuleMeta::new(
+            NL003,
+            field_after_failed_find::NAME,
+            field_after_failed_find::GROUP,
+            field_after_failed_find::DESCRIPTION,
+        )
+        .with_default_severity(field_after_failed_find::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        field_after_failed_find::check,
     ),
 ];
 

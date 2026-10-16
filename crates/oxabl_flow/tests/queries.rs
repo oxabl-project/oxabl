@@ -2,7 +2,9 @@
 //! asked the questions the strict analyses will ask.
 
 use oxabl_ast::{ExpressionKind, StatementKind};
-use oxabl_flow::dataflow::{Analysis, BitSet, Direction, solve};
+use oxabl_flow::dataflow::{
+    Analysis, BitSet, Direction, Exhausted, default_budget, solve, solve_within,
+};
 use oxabl_flow::{
     Action, BlockId, BlockKind, Cfg, Condition, EdgeKind, ErrorDirective, ExitKind, FileFlow,
     FlowOptions, ForQualifier, NodeIx, NodeKind, OpaqueReason, Origin, RetryBehavior, UnitKind,
@@ -338,6 +340,110 @@ MESSAGE i.
     assert!(*solved.before(p.node(cfg, "i = 0")));
     assert!(*solved.before(p.node(cfg, "i = i + 1")));
     assert!(!*solved.before(p.node(cfg, "MESSAGE")));
+}
+
+/// A transfer that is not monotone: over subsets of `{a, b}`, `x = 1.` maps
+/// `{a}` to `{b}` and the others that are not empty to `{a}`.
+struct Swap<'a>(&'a Parsed);
+
+impl Analysis for Swap<'_> {
+    type Fact = u8;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn initial(&self, _: &Cfg) -> u8 {
+        0
+    }
+
+    fn boundary(&self, _: &Cfg) -> u8 {
+        1
+    }
+
+    fn join(&self, acc: &mut u8, other: &u8) {
+        *acc |= *other;
+    }
+
+    fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut u8) {
+        let n = cfg.node(node);
+        if n.kind == NodeKind::Stmt
+            && self.0.source[n.span.start as usize..].starts_with("x = 1")
+            && *fact != 0
+        {
+            *fact = if *fact == 1 { 2 } else { 1 };
+        }
+    }
+}
+
+#[test]
+fn a_transfer_that_is_not_monotone_still_ends_at_the_loop_head() {
+    let p = parse(
+        "\
+DEFINE VARIABLE x AS INTEGER NO-UNDO.
+REPEAT:
+    x = 1.
+END.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let solved = solve_within(cfg, &Swap(&p), default_budget(cfg)).expect("a fixed point");
+    assert_eq!(*solved.before(p.node(cfg, "x = 1")), 3);
+}
+
+/// A lattice without a finite height: the number of passes through `x = 1.`.
+struct Count<'a>(&'a Parsed);
+
+impl Analysis for Count<'_> {
+    type Fact = u64;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn initial(&self, _: &Cfg) -> u64 {
+        0
+    }
+
+    fn boundary(&self, _: &Cfg) -> u64 {
+        0
+    }
+
+    fn join(&self, acc: &mut u64, other: &u64) {
+        *acc = (*acc).max(*other);
+    }
+
+    fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut u64) {
+        let n = cfg.node(node);
+        if n.kind == NodeKind::Stmt && self.0.source[n.span.start as usize..].starts_with("x = 1") {
+            *fact += 1;
+        }
+    }
+}
+
+#[test]
+fn the_work_budget_reports_exhaustion() {
+    let p = parse(
+        "\
+DEFINE VARIABLE x AS INTEGER NO-UNDO.
+REPEAT:
+    x = 1.
+END.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    assert_eq!(
+        solve_within(cfg, &Count(&p), default_budget(cfg)).err(),
+        Some(Exhausted)
+    );
+    // A problem that converges is the same within the budget.
+    let bounded = solve_within(cfg, &RunAhead(&p), default_budget(cfg)).expect("a fixed point");
+    let unbounded = solve(cfg, &RunAhead(&p));
+    for (n, _) in cfg.nodes() {
+        assert_eq!(bounded.before(n), unbounded.before(n));
+    }
 }
 
 #[test]
