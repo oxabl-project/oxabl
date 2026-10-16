@@ -1270,8 +1270,12 @@ expression transfer on every pair of lattice states. The atoms of the correlated
 shared solver of `oxabl_flow`
 also joins the previous fact into the new one at every loop head, so a transfer that is not
 monotone still ends on this finite lattice, and each solve runs within a work budget (64 visits
-per node). A unit past the budget is Unknown for every local and gives no finding; so does the
-failed-find analysis for its unit. Random programs (300, fixed seed) must reach a fixed point
+per node, and 1,000,000 units of work). A visit costs the size of its fact: a unit per few locals,
+and for each source of `?` a unit per word of its conditions. So a unit with many locals and a long
+loop costs a bounded time (about a second at most, in release), not minutes. A unit past the budget
+is Unknown for every local and gives no finding; so does the failed-find analysis for its unit
+(which charges the size of its sets and the walk of its pairs). `FileNulls::exhausted` lists those
+units. Random programs (300, fixed seed) must reach a fixed point
 within the budget. The first version of this section said the transfers were monotone when they
 were not: a `REPEAT` around `DO WHILE i <> ? AND d <> ?: i = ?. END.` never ended (a regression
 test now).

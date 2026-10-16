@@ -10,6 +10,11 @@
 //! with and without the failed-find analysis (`strict.locks` shares its scope
 //! analysis).
 //!
+//! `OXABL_NL_FALLBACKS=1` also analyses every root once more, over its
+//! expanded text and the tree's schema, and counts the units whose dataflow ran
+//! past its work budget (`FileNulls::exhausted`): those units are Unknown, with
+//! no finding.
+//!
 //! # Usage
 //! ```text
 //! OXABL_NL_CORPUS=<dir> cargo run -p oxabl --release --example nulls_corpus
@@ -122,6 +127,8 @@ fn main() {
         }
     }
     let wall = started.elapsed();
+    let fallbacks =
+        std::env::var_os("OXABL_NL_FALLBACKS").map(|_| count_fallbacks(&roots, &lint, &config));
 
     let top = |p: &Path| -> String {
         let rel = p.strip_prefix(&root).unwrap_or(p);
@@ -161,6 +168,9 @@ fn main() {
     row("TOTAL", &totals);
     row("at a use site", &use_site);
     println!("wall time             {wall:.2?}");
+    if let Some((units, files)) = fallbacks {
+        println!("units over the budget {units} in {files} files");
+    }
 
     if let Some(out) = std::env::var_os("OXABL_NL_FINDINGS") {
         findings.sort_by(|a, b| (a.rule, &a.path, a.line).cmp(&(b.rule, &b.path, b.line)));
@@ -179,4 +189,53 @@ fn main() {
             .expect("write findings");
         }
     }
+}
+
+/// The units past the work budget over `roots`, and the files they are in.
+fn count_fallbacks(
+    roots: &[PathBuf],
+    lint: &LintPipeline<'_>,
+    config: &PipelineConfig,
+) -> (usize, usize) {
+    let schema = config.schema_loaded.then_some(&config.schema);
+    let (mut units, mut files) = (0, 0);
+    for file in roots {
+        let Ok(bytes) = std::fs::read(file) else {
+            continue;
+        };
+        let source = String::from_utf8_lossy(&bytes).into_owned();
+        let abs = std::path::absolute(file).unwrap_or_else(|_| file.clone());
+        let expansion = lint.with_file(abs).expand(&source);
+        let text = expansion.text().unwrap_or(&source);
+        let tokens = oxabl_lexer::tokenize(text);
+        let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
+        let options = oxabl_scope::ScopeOptions {
+            parse_recovered: !program.errors.is_empty(),
+            ..Default::default()
+        };
+        let flow = oxabl_flow::build_file_tokens(&program.statements, text, &tokens, &options.flow);
+        let scopes =
+            oxabl_scope::analyze_flow(&program.statements, text, &tokens, &flow, schema, &options);
+        let nulls = oxabl_nulls::analyze_file(
+            text,
+            &tokens,
+            &flow,
+            &scopes,
+            &oxabl_nulls::NullOptions::default(),
+        )
+        .with_values(
+            text,
+            &tokens,
+            &program.statements,
+            &flow,
+            &oxabl_nulls::NullOptions::default(),
+        );
+        let n = nulls.exhausted().len();
+        if n > 0 {
+            println!("over the budget: {} ({n} units)", file.display());
+            units += n;
+            files += 1;
+        }
+    }
+    (units, files)
 }

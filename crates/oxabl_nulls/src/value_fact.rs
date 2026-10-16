@@ -24,6 +24,9 @@ impl Required {
     pub fn new() -> Self {
         Self::default()
     }
+    pub fn words(&self) -> usize {
+        self.0.len()
+    }
     pub fn contains(&self, i: usize) -> bool {
         self.0.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
     }
@@ -164,6 +167,11 @@ impl Fact {
     }
     fn sources(&mut self) -> impl Iterator<Item = &mut Required> {
         self.requires.values_mut()
+    }
+    /// The work to clone, join and compare the fact: one unit per local, and
+    /// for each source one per word of its conditions.
+    pub fn cost(&self) -> usize {
+        self.values.len() / 16 + self.requires.values().map(|r| 1 + r.words()).sum::<usize>()
     }
     pub fn fill(&mut self, value: u8) {
         *self = Self::new(vec![value; self.len()], self.limit);

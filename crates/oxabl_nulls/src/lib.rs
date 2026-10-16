@@ -40,10 +40,11 @@
 //! one another routine of the file names, an unexpanded `{...}` or an elided
 //! `{&name}` in the statement, a statement form it does not know that names
 //! the buffer, a test of `ERROR-STATUS` it cannot read or that follows a
-//! call. A file with a file-level Unknown of the scope analysis (a
-//! recovered parse, an unexpanded include, past the work budget) gets no
-//! answer at all ([`FileNulls::unknown`]), and a buffer whose table the
-//! schema does not have is never judged.
+//! call, a unit whose dataflow costs more than its work budget
+//! ([`FileNulls::exhausted`]). A file with a file-level Unknown of the scope
+//! analysis (a recovered parse, an unexpanded include, past the work budget)
+//! gets no answer at all ([`FileNulls::unknown`]), and a buffer whose table
+//! the schema does not have is never judged.
 //!
 //! Spans are in the text the statements were parsed from (the expanded text
 //! when includes were expanded).
@@ -79,6 +80,7 @@ pub struct FileNulls {
     finds: Vec<FailedFind>,
     missing: Vec<MissingRecord>,
     unknown: Vec<oxabl_scope::Unknown>,
+    exhausted: Vec<oxabl_flow::UnitId>,
 }
 
 impl FileNulls {
@@ -123,6 +125,14 @@ impl FileNulls {
         if self.unknown.is_empty() {
             (self.values, self.value_facts) =
                 values::analyze(source, tokens, program, flow, options.elided);
+            self.exhausted.extend(
+                self.value_facts
+                    .iter()
+                    .filter(|f| f.exhausted)
+                    .map(|f| f.unit),
+            );
+            self.exhausted.sort_unstable();
+            self.exhausted.dedup();
         }
         self
     }
@@ -146,6 +156,12 @@ impl FileNulls {
     /// analysis. Empty when it was judged.
     pub fn unknown(&self) -> &[oxabl_scope::Unknown] {
         &self.unknown
+    }
+
+    /// The units whose dataflow ran past its work budget, in unit order.
+    /// Each is Unknown for the analysis that gave up: no finding for it.
+    pub fn exhausted(&self) -> &[oxabl_flow::UnitId] {
+        &self.exhausted
     }
 
     /// A stable text rendering, for snapshot tests and debugging. `source` is
