@@ -57,5 +57,20 @@ pub(crate) fn dump(nulls: &FileNulls, source: &str, scopes: &FileScopes) -> Stri
             finds.join(", "),
         );
     }
+    for u in nulls.values() {
+        let _ = writeln!(
+            out,
+            "{} u{} @{} {} `{}`",
+            if u.propagation {
+                "propagation"
+            } else {
+                "comparison"
+            },
+            u.unit.index(),
+            line_of(source, u.at.start),
+            u.name,
+            text(source, u.at)
+        );
+    }
     out
 }

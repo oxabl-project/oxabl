@@ -476,6 +476,8 @@ pub(crate) fn analyze(
     }
     missing.sort_by_key(|m| (m.at.start, m.at.end));
     FileNulls {
+        values: Vec::new(),
+        value_facts: Vec::new(),
         finds: finds_sorted,
         missing,
         unknown: Vec::new(),

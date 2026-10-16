@@ -1,0 +1,6 @@
+propagation u0 @5 n `n`
+propagation u0 @8 n `n`
+propagation u0 @10 x `x`
+propagation u0 @12 n `n`
+propagation u0 @18 n `n`
+comparison u0 @19 x `x`

@@ -27,6 +27,7 @@ fn dump(source: &str, schema: Option<&oxabl_schema::Schema>) -> String {
         &options,
     );
     oxabl_nulls::analyze_file(source, &tokens, &flow, &scopes, &NullOptions::default())
+        .with_values(&program.statements, &flow, &NullOptions::default())
         .dump(source, &scopes)
 }
 

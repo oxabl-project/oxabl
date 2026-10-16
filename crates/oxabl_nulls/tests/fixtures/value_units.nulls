@@ -1,0 +1,3 @@
+comparison u1 @7 d `d`
+propagation u1 @10 a `a`
+propagation u0 @12 outerValue `outerValue`

@@ -1,0 +1,7 @@
+find#0 u0 @13 tt `FIND FIRST tt NO-ERROR.`
+find#1 u0 @19 tt `FIND NEXT tt NO-ERROR.`
+find#2 u0 @30 tt `FIND FIRST tt NO-ERROR.`
+find#3 u0 @31 t2 `FIND FIRST t2 NO-ERROR.`
+propagation u0 @20 e `e`
+propagation u0 @25 g `g`
+propagation u0 @29 c `c`
