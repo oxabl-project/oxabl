@@ -31,6 +31,7 @@ mod operators;
 mod resolve;
 mod scope;
 mod sequence;
+mod signature;
 mod symbol;
 mod types;
 
@@ -49,9 +50,13 @@ pub use index::{
 pub use index_vec::NodeIndexVec;
 pub use namespace::{NUM_NAMESPACES, NamespaceId};
 pub use operators::{binary_op_result, unary_negate_result, unary_not_result};
-pub use resolve::{Resolution, UnresolvedReason, declare_pass, resolve_pass};
+pub use resolve::{
+    Resolution, UnresolvedReason, declare_pass, resolve_pass, run_miss_is_reported,
+    run_target_climbs_out,
+};
 pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
+pub use signature::{Param, ParamMode, ParamShape, ProgramSignatures, Signature};
 pub use symbol::{
     ClassLookup, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
     UnlinkedRun,

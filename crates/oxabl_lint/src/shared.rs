@@ -22,6 +22,7 @@ pub struct RunShared<'a> {
     share_flow: Cell<bool>,
     handles: OnceCell<FileHandles>,
     tokens: OnceCell<Vec<oxabl_lexer::Token>>,
+    calls: OnceCell<FileCalls>,
     flow: OnceCell<FileFlow>,
     scopes: OnceCell<FileScopes>,
     effects: OnceCell<FileEffects>,
@@ -87,7 +88,7 @@ impl<'a> RunShared<'a> {
         self.effects.get_or_init(|| {
             let scopes = self.scopes(program, ctx);
             let tokens = self.tokens(ctx);
-            let calls = FileCalls::extract(program, ctx.source, tokens);
+            let calls = self.calls(program, ctx);
             let schema = ctx.schema_loaded.then_some(ctx.schema);
             oxabl_effects::analyze_file(
                 program,
@@ -95,11 +96,17 @@ impl<'a> RunShared<'a> {
                 tokens,
                 self.flow(program, ctx),
                 scopes,
-                &calls,
+                calls,
                 schema,
                 &EffectOptions { elided: ctx.elided },
             )
         })
+    }
+
+    /// The calls the file makes and what each one calls, extracted once.
+    pub fn calls(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileCalls {
+        self.calls
+            .get_or_init(|| FileCalls::extract(program, ctx.source, self.tokens(ctx)))
     }
 
     /// The failed finds of the file and the field references they reach,
@@ -153,7 +160,7 @@ impl<'a> RunShared<'a> {
         })
     }
 
-    fn tokens<'s>(&'s self, ctx: &'s AnalysisContext) -> &'s [oxabl_lexer::Token] {
+    pub(crate) fn tokens<'s>(&'s self, ctx: &'s AnalysisContext) -> &'s [oxabl_lexer::Token] {
         if !ctx.tokens.is_empty() {
             return ctx.tokens;
         }
