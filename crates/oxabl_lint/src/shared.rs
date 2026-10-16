@@ -27,6 +27,7 @@ pub struct RunShared<'a> {
     effects: OnceCell<FileEffects>,
     nulls: OnceCell<FileNulls>,
     null_values: OnceCell<FileNulls>,
+    null_fields: OnceCell<FileNulls>,
 }
 
 /// Answers in expanded byte coordinates. Missing and partial answers are Unknown.
@@ -125,6 +126,28 @@ impl<'a> RunShared<'a> {
                 program,
                 self.flow(program, ctx),
                 self.scopes(program, ctx),
+                &NullOptions { elided: ctx.elided },
+            )
+        })
+    }
+
+    /// The uses of database fields the loaded schema starts at `?`, analysed
+    /// once and apart from [`null_values`](Self::null_values). Empty when no
+    /// schema is loaded.
+    pub fn null_fields(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
+        self.null_fields.get_or_init(|| {
+            if !ctx.schema_loaded {
+                return FileNulls::default();
+            }
+            oxabl_nulls::analyze_fields(
+                ctx.source,
+                self.tokens(ctx),
+                program,
+                self.flow(program, ctx),
+                &oxabl_nulls::FieldSources {
+                    scopes: self.scopes(program, ctx),
+                    schema: ctx.schema,
+                },
                 &NullOptions { elided: ctx.elided },
             )
         })

@@ -1,0 +1,2 @@
+find#0 u0 @3 tt `FIND FIRST tt NO-ERROR.`
+missing u0 @4 tt `tt.d` read after find#0

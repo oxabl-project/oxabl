@@ -17,6 +17,7 @@ pub mod lock_upgrade_in_loop;
 pub mod memptr_not_freed;
 pub mod missing_no_undo;
 pub mod missing_widget_pool;
+pub mod nullable_db_field;
 pub mod persistent_procedure_leak;
 pub mod procedure_wide_transaction;
 pub mod run_value;
@@ -94,6 +95,9 @@ pub const DB001: &str = "DB001";
 
 /// Diagnostic code for `field-after-failed-find` (NL003).
 pub const NL003: &str = "NL003";
+
+/// Diagnostic code for `nullable-db-field` (NL004).
+pub const NL004: &str = "NL004";
 
 /// Diagnostic code for `unknown-in-comparison` (NL001).
 pub const NL001: &str = "NL001";

@@ -1,0 +1,5 @@
+find#0 u0 @3 Shipment `FIND FIRST Shipment NO-LOCK NO-ERROR.`
+field-propagation u0 @10 Shipment.DateE `Shipment.DateE`
+field-comparison u0 @14 Shipment.DateH `Shipment.DateH`
+field-propagation u0 @15 Shipment.DateH `Shipment.DateH`
+field-propagation u0 @18 Shipment.DateK `Shipment.DateK`

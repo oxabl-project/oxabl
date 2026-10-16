@@ -5,7 +5,8 @@
 //! `transaction-spans-ui` (TX003), `transaction-spans-call` (TX004) and
 //! `scope-widened` (TX005), the `strict.access` rule `find-in-loop`
 //! (DB001) over `oxabl_effects`, and the `strict.nulls` rule
-//! `field-after-failed-find` (NL003) over `oxabl_nulls`.
+//! `field-after-failed-find` (NL003) and `nullable-db-field` (NL004) over
+//! `oxabl_nulls`.
 //!
 //! Synthetic ABL runs through the real lexer, parser and semantic pass, with a
 //! small schema loaded, then through the rule itself.
@@ -16,6 +17,7 @@ mod lk001_default_lock;
 mod lk002_lock_outlives_transaction;
 mod lk003_lock_upgrade_in_loop;
 mod nl003_field_after_failed_find;
+mod nl004_nullable_db_field;
 mod registry_run;
 mod tx001_implicit_transaction;
 mod tx002_procedure_wide_transaction;
@@ -46,6 +48,17 @@ ADD FIELD \"CustNum\" OF \"Order\" AS integer
 ADD TABLE \"Item\"
 ADD FIELD \"ItemNum\" OF \"Item\" AS integer
 ADD FIELD \"Price\" OF \"Item\" AS decimal
+
+ADD TABLE \"Parcel\"
+ADD FIELD \"ShipDate\" OF \"Parcel\" AS date
+  INITIAL ?
+ADD FIELD \"DueDate\" OF \"Parcel\" AS date
+  INITIAL ?
+  MANDATORY
+ADD FIELD \"Qty\" OF \"Parcel\" AS integer
+  INITIAL \"0\"
+ADD FIELD \"Weight\" OF \"Parcel\" AS decimal
+  INITIAL ?
 ";
 
 pub fn schema() -> Schema {

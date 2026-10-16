@@ -170,6 +170,21 @@ pub struct Field {
     pub source: FileSpan,
 }
 
+impl Field {
+    /// The `extras` key that marks an `INITIAL "?"`: a string, not the unknown value.
+    pub const INITIAL_QUOTED: &'static str = "INITIAL-QUOTED";
+
+    /// Whether the field starts at the unknown value `?`: its `INITIAL` is the
+    /// bare `?` that a `.df` writes for it, not a string.
+    pub fn initial_is_unknown(&self) -> bool {
+        self.initial.as_deref() == Some("?")
+            && !self
+                .extras
+                .iter()
+                .any(|(k, _)| *k == fold_atom(Self::INITIAL_QUOTED))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexField {
     pub name: OxablAtom,

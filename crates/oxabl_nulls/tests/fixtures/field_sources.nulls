@@ -1,0 +1,7 @@
+find#0 u0 @2 Shipment `FIND FIRST Shipment NO-LOCK NO-ERROR.`
+field-comparison u0 @4 Shipment.ShipDate `Shipment.ShipDate`
+field-comparison u0 @10 Shipment.Weight `Shipment.Weight`
+field-comparison u0 @11 Shipment.Memo `Shipment.Memo`
+field-comparison u0 @12 Shipment.Flag `Shipment.Flag`
+field-propagation u0 @13 Shipment.DateA `Shipment.DateA`
+field-comparison u0 @18 Shipment.DateD `DateD`

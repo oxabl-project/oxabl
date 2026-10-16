@@ -1,4 +1,4 @@
-//! nulls_corpus — run the `strict.nulls` rules over `oxabl_nulls` (NL003) over a
+//! nulls_corpus — run the `strict.nulls` rules (NL001-NL004) over a
 //! tree the way `oxabl check <dir>` does, and print the finding counts per
 //! rule per top-level directory, with the wall time.
 //!
@@ -31,7 +31,7 @@ use oxabl_analyze::DiagnosticSource;
 use oxabl_pipeline::{ConfigOverrides, LintPipeline, PipelineConfig};
 use oxabl_workspace::{RealFileSystem, discover_path, walk_include_fragments};
 
-const RULES: [&str; 3] = ["NL001", "NL002", "NL003"];
+const RULES: [&str; 4] = ["NL001", "NL002", "NL003", "NL004"];
 const N: usize = RULES.len();
 
 struct Finding {
@@ -230,6 +230,20 @@ fn count_fallbacks(
             &flow,
             &oxabl_nulls::NullOptions::default(),
         );
+        let nulls = match schema {
+            Some(schema) => nulls.with_fields(
+                text,
+                &tokens,
+                &program.statements,
+                &flow,
+                &oxabl_nulls::FieldSources {
+                    scopes: &scopes,
+                    schema,
+                },
+                &oxabl_nulls::NullOptions::default(),
+            ),
+            None => nulls,
+        };
         let n = nulls.exhausted().len();
         if n > 0 {
             println!("over the budget: {} ({n} units)", file.display());

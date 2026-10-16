@@ -26,15 +26,29 @@ fn dump(source: &str, schema: Option<&oxabl_schema::Schema>) -> String {
         schema,
         &options,
     );
-    oxabl_nulls::analyze_file(source, &tokens, &flow, &scopes, &NullOptions::default())
+    let nulls = oxabl_nulls::analyze_file(source, &tokens, &flow, &scopes, &NullOptions::default())
         .with_values(
             source,
             &tokens,
             &program.statements,
             &flow,
             &NullOptions::default(),
-        )
-        .dump(source, &scopes)
+        );
+    match schema {
+        Some(schema) => nulls.with_fields(
+            source,
+            &tokens,
+            &program.statements,
+            &flow,
+            &oxabl_nulls::FieldSources {
+                scopes: &scopes,
+                schema,
+            },
+            &NullOptions::default(),
+        ),
+        None => nulls,
+    }
+    .dump(source, &scopes)
 }
 
 #[test]

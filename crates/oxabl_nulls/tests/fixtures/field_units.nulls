@@ -1,0 +1,3 @@
+find#0 u3 @14 b `FIND FIRST b NO-LOCK NO-ERROR.`
+missing u3 @15 b `b.DateC` read after find#0
+field-propagation u2 @10 Shipment.DateB `Shipment.DateB`

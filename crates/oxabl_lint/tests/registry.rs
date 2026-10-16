@@ -145,6 +145,7 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ("NL001", "unknown-in-comparison", "strict.nulls", warning),
             ("NL002", "unknown-propagation", "strict.nulls", warning),
             ("NL003", "field-after-failed-find", "strict.nulls", warning),
+            ("NL004", "nullable-db-field", "strict.nulls", warning),
         ]
     );
     for rule in registry.rules() {

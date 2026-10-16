@@ -5,7 +5,10 @@ use oxabl_ast::{
 };
 use oxabl_flow::dataflow::{Analysis, Direction, Limits, Solution, default_budget, solve_bounded};
 use oxabl_flow::{Cfg, Edge, EdgeKind, FileFlow, NodeIx, NodeKind, UnitId};
+use oxabl_scope::{BufferId, ReadKind, UpdateKind};
 use rustc_hash::{FxHashMap, FxHashSet};
+
+use crate::fields::{self, Effects, FieldSources};
 
 #[path = "value_fact.rs"]
 mod fact;
@@ -16,6 +19,8 @@ const QUESTION: u8 = 2;
 // Keep source evidence separate from paths whose value is not known.
 const OPAQUE: u8 = 4;
 const UNKNOWN: u8 = OPAQUE;
+/// A database field that may hold `?` or a value.
+const FIELD: u8 = KNOWN | QUESTION;
 
 /// A variable use with a known possible source of `?`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +76,8 @@ impl UnitValues {
 #[derive(Clone)]
 struct Variable {
     name: String,
+    /// Lowercase name of a local; unique key of a field.
+    key: String,
     initial: u8,
     constant: Option<i64>,
 }
@@ -92,6 +99,14 @@ struct Problem<'a> {
     loosened: &'a FxHashMap<NodeId, Expression>,
     /// The leading variables that some test reads (section 9.9).
     tracked: usize,
+    /// The variables are database fields, found by the span of their
+    /// reference, not locals found by name (section 9.11).
+    fields_only: bool,
+    field_spans: FxHashMap<(u32, u32), usize>,
+    /// What each statement does to the fields, by statement.
+    effects: FxHashMap<NodeId, Effects>,
+    /// The values of `ASSIGN` pairs with a `WHEN`, which the AST does not keep.
+    when_values: &'a FxHashSet<NodeId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -304,14 +319,24 @@ const TRACKED_LIMIT: usize = 256;
 /// the unit is Unknown.
 const WORK_LIMIT: usize = 1_000_000;
 
-/// Locals that a condition, comparison or loop limit reads.
-fn tested_names<'a>(statements: impl Iterator<Item = &'a Statement>) -> FxHashSet<String> {
+/// The keys of the locals, or of the fields given by `spans`, that a
+/// condition, comparison or loop limit reads.
+fn tested_names<'a>(
+    statements: impl Iterator<Item = &'a Statement>,
+    spans: Option<&FxHashMap<(u32, u32), String>>,
+) -> FxHashSet<String> {
     let mut out = FxHashSet::default();
     let mut collect = |e: &Expression| {
-        walk(e, &mut |e| {
-            if let E::Identifier(i) = &e.kind {
+        walk(e, &mut |e| match (spans, &e.kind) {
+            (Some(spans), E::Identifier(_) | E::FieldAccess { .. }) => {
+                if let Some(key) = spans.get(&(e.span.start, e.span.end)) {
+                    out.insert(key.clone());
+                }
+            }
+            (None, E::Identifier(i)) => {
                 out.insert(i.name.to_ascii_lowercase());
             }
+            _ => {}
         })
     };
     for s in statements {
@@ -476,6 +501,85 @@ fn children<'a>(s: &'a Statement, out: &mut Vec<&'a Statement>) {
         _ => {}
     }
 }
+/// What each statement of the unit does to the fields: reads and `CREATE`
+/// refill the buffer, other writes to the record make its fields Unknown.
+fn field_effects(
+    p: &Problem<'_>,
+    fields: &fields::UnitFields,
+    indexed: &FxHashMap<String, usize>,
+    scopes: Option<&oxabl_scope::FileScopes>,
+) -> FxHashMap<NodeId, Effects> {
+    let Some(scopes) = scopes else {
+        return FxHashMap::default();
+    };
+    let mut of_buffer: FxHashMap<BufferId, Vec<usize>> = FxHashMap::default();
+    for v in &fields.vars {
+        of_buffer.entry(v.buffer).or_default().push(indexed[&v.key]);
+    }
+    let mut out: FxHashMap<NodeId, Effects> = FxHashMap::default();
+    for r in fields.reads.iter().map(|&i| &scopes.reads()[i]) {
+        let Some(b) = r.buffer else {
+            continue;
+        };
+        let Some(vars) = of_buffer.get(&b) else {
+            continue;
+        };
+        let fx = out.entry(r.stmt).or_default();
+        match r.kind {
+            ReadKind::Find | ReadKind::Get => fx.refill.extend(vars),
+            ReadKind::For => {
+                fx.body_refill.extend(vars);
+                fx.done_forget.extend(vars);
+            }
+            _ => {}
+        }
+    }
+    let mut spans: Vec<(u32, u32, NodeId)> = p
+        .statements
+        .values()
+        .map(|s| (s.span.start, s.span.end, s.id))
+        .collect();
+    spans.sort_by_key(|&(start, end, _)| (start, std::cmp::Reverse(end)));
+    let refs: Vec<_> = fields
+        .references
+        .iter()
+        .map(|&i| &scopes.references()[i])
+        .collect();
+    let positions: Vec<u32> = refs.iter().map(|r| r.at.start).collect();
+    let owners = fields::owners(&spans, &positions);
+    for (r, owner) in refs.iter().zip(owners) {
+        let Some(id) = owner else {
+            continue;
+        };
+        let fx = out.entry(id).or_default();
+        if r.field {
+            // `ASSIGN` and `=` are read by the statement transfer.
+            let handled = p
+                .statements
+                .get(&id)
+                .is_some_and(|s| matches!(s.kind, S::Assignment { .. } | S::Assign { .. }));
+            if r.write.is_some()
+                && !handled
+                && let Some(&i) = p.field_spans.get(&(r.at.start, r.at.end))
+            {
+                fx.forget.push(i);
+            }
+            continue;
+        }
+        let Some(vars) = of_buffer.get(&r.buffer) else {
+            continue;
+        };
+        match r.write {
+            Some(UpdateKind::Create) => fx.refill.extend(vars),
+            Some(UpdateKind::ExclusiveRead) if !r.passed && !r.opaque => {}
+            Some(_) => fx.forget.extend(vars),
+            None if r.passed || r.opaque => fx.forget.extend(vars),
+            None => {}
+        }
+    }
+    out
+}
+
 impl Problem<'_> {
     fn view<'s>(&'s self, e: &'s Expression) -> &'s Expression {
         self.loosened.get(&e.id).unwrap_or(e)
@@ -493,6 +597,12 @@ impl Problem<'_> {
         f.drop_atoms_from(Fact::buffer(self.tracked, self.counted.len(), 0));
     }
     fn variable(&self, e: &Expression) -> Option<usize> {
+        if self.fields_only {
+            if matches!(e.kind, E::Identifier(_) | E::FieldAccess { .. }) {
+                return self.field_spans.get(&(e.span.start, e.span.end)).copied();
+            }
+            return None;
+        }
         if let E::Identifier(i) = &e.kind {
             lookup(&self.names, &i.name)
         } else {
@@ -507,7 +617,7 @@ impl Problem<'_> {
         match &e.kind {
             E::Literal(Literal::Unknown(_)) => QUESTION,
             E::Literal(_) | E::New { .. } | E::CanFind { .. } => KNOWN,
-            E::Identifier(_) => self
+            E::Identifier(_) | E::FieldAccess { .. } => self
                 .variable(e)
                 .map_or(UNKNOWN, |i| f.get(i).copied().unwrap_or(UNKNOWN)),
             E::Add(a, b)
@@ -556,6 +666,13 @@ impl Problem<'_> {
     }
     fn assign(&self, target: &Expression, value: &Expression, f: &mut Fact) {
         self.forget_calls(value, f);
+        if self.when_values.contains(&value.id) {
+            // The pair may not run: the target keeps the old value or gets the new.
+            if let Some(i) = self.variable(target) {
+                f.forget(i, UNKNOWN);
+            }
+            return;
+        }
         if let Some(i) = self.variable(target) {
             let result = self.eval(value, f);
             let required = self.required(value, f).unwrap_or_default();
@@ -890,6 +1007,16 @@ impl Problem<'_> {
                 } else {
                     None
                 };
+                // A field equal to a known value is not `?`.
+                if self.fields_only && var.is_none() && equal {
+                    for (x, y) in [(a, b), (b, a)] {
+                        if let Some(i) = self.nullable_variable(x)
+                            && self.eval(y, f) == KNOWN
+                        {
+                            f.known(i, false);
+                        }
+                    }
+                }
                 if var.is_none()
                     && let (Some(a), Some(b)) =
                         (self.nullable_variable(a), self.nullable_variable(b))
@@ -921,7 +1048,7 @@ impl Problem<'_> {
                     }
                 }
             }
-            E::Identifier(_) if yes => {
+            E::Identifier(_) | E::FieldAccess { .. } if yes => {
                 if let Some(i) = self.variable(e) {
                     if f[i] == QUESTION {
                         f.fill(0);
@@ -1133,6 +1260,30 @@ impl Problem<'_> {
             }
             _ => {}
         }
+        self.field_effects(s, f);
+    }
+    /// What the statement does to the fields of the buffers it names: a
+    /// refilled buffer may hold `?` again, and the criteria of a `FIND` hold
+    /// of the record it found.
+    fn field_effects(&self, s: &Statement, f: &mut Fact) {
+        if !self.fields_only || f.dead() {
+            return;
+        }
+        if let Some(fx) = self.effects.get(&s.id) {
+            for &i in &fx.forget {
+                f.forget(i, UNKNOWN);
+            }
+            for &i in &fx.refill {
+                f.write(i, FIELD, Required::new(), false);
+            }
+        }
+        if let S::Find {
+            where_clause: Some(w),
+            ..
+        } = &s.kind
+        {
+            self.narrow(w, true, f);
+        }
     }
     fn use_var(
         &self,
@@ -1328,6 +1479,32 @@ impl Analysis for Problem<'_> {
 }
 
 impl Problem<'_> {
+    /// A `FOR` header fills its buffers on the way into its body, and the
+    /// `WHERE` of a `FOR EACH` holds of the record it selects. Leaving the
+    /// loop leaves no record.
+    fn field_edge(&self, s: &Statement, kind: EdgeKind, f: &mut Fact) {
+        let fx = self.effects.get(&s.id);
+        match kind {
+            EdgeKind::LoopBody | EdgeKind::Normal => {
+                for &i in fx.iter().flat_map(|fx| &fx.body_refill) {
+                    f.write(i, FIELD, Required::new(), false);
+                }
+                if let S::ForEach {
+                    where_clause: Some(w),
+                    ..
+                } = &s.kind
+                {
+                    self.narrow(w, true, f);
+                }
+            }
+            EdgeKind::LoopDone => {
+                for &i in fx.iter().flat_map(|fx| &fx.done_forget) {
+                    f.forget(i, UNKNOWN);
+                }
+            }
+            _ => {}
+        }
+    }
     /// `DO v = a TO b [BY k]` with constant bounds that run the body, and no
     /// `WHILE`.
     fn runs_body(&self, s: &Statement) -> bool {
@@ -1377,6 +1554,12 @@ impl Problem<'_> {
         let Some(s) = c.node(n).stmt.and_then(|id| self.statements.get(&id)) else {
             return;
         };
+        if self.fields_only && c.node(n).kind == NodeKind::Head {
+            self.field_edge(s, e.kind, f);
+            if f.dead() {
+                return;
+            }
+        }
         // A `?` limit ends a counted loop at once (V6, V8); this only removes sources.
         if let (
             EdgeKind::LoopBody,
@@ -1401,6 +1584,32 @@ impl Problem<'_> {
             }
         }
     }
+}
+
+/// The values of the `ASSIGN` pairs of `all` that a `WHEN` follows. The parser
+/// drops the condition, so it reads the tokens.
+fn when_values(all: &[&Statement], tokens: &[oxabl_lexer::Token]) -> FxHashSet<NodeId> {
+    let mut out = FxHashSet::default();
+    for s in all {
+        let S::Assign { assignments } = &s.kind else {
+            continue;
+        };
+        let first = tokens.partition_point(|t| t.start < s.span.start as usize);
+        for t in tokens[first..]
+            .iter()
+            .take_while(|t| t.start < s.span.end as usize)
+            .filter(|t| t.kind == oxabl_lexer::Kind::When)
+        {
+            let pair = assignments
+                .iter()
+                .filter(|a| a.value.span.end as usize <= t.start)
+                .max_by_key(|a| a.value.span.end);
+            if let Some(a) = pair {
+                out.insert(a.value.id);
+            }
+        }
+    }
+    out
 }
 
 /// The loop variable of each `REPEAT var = a TO b` among `all`, lowercase.
@@ -1450,7 +1659,42 @@ pub(crate) fn analyze(
     flow: &FileFlow,
     elided: &[u32],
 ) -> (Vec<ValueUse>, Vec<UnitValues>) {
-    analyze_inspect(source, tokens, program, flow, elided, &mut |_, _, _| {})
+    analyze_inspect(
+        source,
+        tokens,
+        program,
+        flow,
+        elided,
+        None,
+        &mut |_, _, _| {},
+    )
+}
+
+/// The uses of database fields that may hold `?`, and the units whose solve
+/// ran out of its budget.
+pub(crate) fn analyze_fields(
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    program: &[Statement],
+    flow: &FileFlow,
+    elided: &[u32],
+    input: &FieldSources<'_>,
+) -> (Vec<ValueUse>, Vec<UnitId>) {
+    let (uses, facts) = analyze_inspect(
+        source,
+        tokens,
+        program,
+        flow,
+        elided,
+        Some(input),
+        &mut |_, _, _| {},
+    );
+    let exhausted = facts
+        .iter()
+        .filter(|f| f.exhausted)
+        .map(|f| f.unit)
+        .collect();
+    (uses, exhausted)
 }
 
 /// [`analyze`], showing each solved unit to `inspect`.
@@ -1460,20 +1704,29 @@ fn analyze_inspect(
     program: &[Statement],
     flow: &FileFlow,
     elided: &[u32],
+    fields: Option<&FieldSources<'_>>,
     inspect: &mut dyn FnMut(&Cfg, &Problem<'_>, &Solution<Fact>),
 ) -> (Vec<ValueUse>, Vec<UnitValues>) {
+    let unit_fields = fields.map(|input| fields::collect(source, input));
     let mut all = Vec::new();
     for s in program {
         children(s, &mut all);
     }
     let repeat_vars = repeat_vars(&all, source, tokens);
+    let when_values = if fields.is_some() {
+        when_values(&all, tokens)
+    } else {
+        FxHashSet::default()
+    };
+    // The locals are not read in a field run.
+    let local_all: &[&Statement] = if fields.is_some() { &[] } else { &all };
     let mut written = FxHashSet::default();
     let mut write = |e: &Expression| {
         if let E::Identifier(i) = &e.kind {
             written.insert(i.name.to_ascii_lowercase());
         }
     };
-    for s in &all {
+    for s in local_all {
         match &s.kind {
             S::Assignment { target, .. } => write(target),
             S::Assign { assignments } => {
@@ -1497,7 +1750,7 @@ fn analyze_inspect(
         }
     }
     written.extend(repeat_vars.values().cloned());
-    for s in &all {
+    for s in local_all {
         match &s.kind {
             S::Do {
                 loop_var: Some(name),
@@ -1513,15 +1766,18 @@ fn analyze_inspect(
             _ => {}
         }
     }
-    let mut owners: FxHashMap<_, _> = flow
-        .units()
-        .iter()
-        .flat_map(|cfg| {
-            cfg.nodes()
-                .filter_map(move |(_, n)| n.stmt.map(|id| (id, cfg.id())))
-        })
-        .collect();
-    for s in &all {
+    let mut owners: FxHashMap<_, _> = if fields.is_some() {
+        FxHashMap::default()
+    } else {
+        flow.units()
+            .iter()
+            .flat_map(|cfg| {
+                cfg.nodes()
+                    .filter_map(move |(_, n)| n.stmt.map(|id| (id, cfg.id())))
+            })
+            .collect()
+    };
+    for s in local_all {
         let parameters = match &s.kind {
             S::Method { parameters, .. } | S::Constructor { parameters, .. } => {
                 parameters.as_slice()
@@ -1550,7 +1806,7 @@ fn analyze_inspect(
         })
         .collect();
     let mut nonlocal = FxHashSet::default();
-    for s in &all {
+    for s in local_all {
         let Some(&unit) = owners.get(&s.id) else {
             continue;
         };
@@ -1598,12 +1854,16 @@ fn analyze_inspect(
     let mut facts = Vec::new();
     let by_id: FxHashMap<NodeId, &Statement> = all.iter().map(|s| (s.id, *s)).collect();
     let mut by_unit: FxHashMap<UnitId, Vec<&Statement>> = FxHashMap::default();
-    for s in &all {
+    for s in local_all {
         if let Some(&unit) = owners.get(&s.id) {
             by_unit.entry(unit).or_default().push(*s);
         }
     }
     for cfg in flow.units() {
+        let own_fields = unit_fields.as_ref().map(|u| u.get(&cfg.id()));
+        if own_fields.is_some_and(|u| u.is_none()) {
+            continue;
+        }
         let statements: FxHashMap<_, _> = cfg
             .nodes()
             .filter_map(|(_, n)| n.stmt)
@@ -1620,8 +1880,25 @@ fn analyze_inspect(
             counted: FxHashMap::default(),
             loosened: &loosened,
             tracked: 0,
+            fields_only: fields.is_some(),
+            field_spans: FxHashMap::default(),
+            effects: FxHashMap::default(),
+            when_values: &when_values,
         };
-        for s in by_unit.get(&cfg.id()).map_or(&[][..], Vec::as_slice) {
+        let locals = if fields.is_some() {
+            &[][..]
+        } else {
+            by_unit.get(&cfg.id()).map_or(&[][..], Vec::as_slice)
+        };
+        for v in own_fields.flatten().iter().flat_map(|u| &u.vars) {
+            p.variables.push(Variable {
+                name: v.name.clone(),
+                key: v.key.clone(),
+                initial: FIELD,
+                constant: None,
+            });
+        }
+        for s in locals {
             let declaration = match &s.kind {
                 S::VariableDeclaration {
                     name,
@@ -1668,6 +1945,7 @@ fn analyze_inspect(
                     .insert(name.name.to_ascii_lowercase(), p.variables.len());
                 p.variables.push(Variable {
                     name: name.name.clone(),
+                    key: name.name.to_ascii_lowercase(),
                     initial,
                     constant: if written.contains(&name.name.to_ascii_lowercase()) {
                         None
@@ -1692,18 +1970,35 @@ fn analyze_inspect(
             continue;
         }
         // Tested locals first: a source records which of them must be `?`.
-        let tested = tested_names(p.statements.values().copied());
+        let spans = own_fields.flatten().map(|u| &u.spans);
+        let tested = tested_names(p.statements.values().copied(), spans);
         let (mut first, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut p.variables)
             .into_iter()
-            .partition(|v| tested.contains(&v.name.to_ascii_lowercase()));
+            .partition(|v| tested.contains(&v.key));
         p.tracked = first.len().min(TRACKED_LIMIT);
         first.extend(rest);
-        p.names = first
+        let indexed: FxHashMap<String, usize> = first
             .iter()
             .enumerate()
-            .map(|(i, v)| (v.name.to_ascii_lowercase(), i))
+            .map(|(i, v)| (v.key.clone(), i))
             .collect();
         p.variables = first;
+        if let Some(uf) = own_fields.flatten() {
+            p.field_spans = uf
+                .spans
+                .iter()
+                .map(|(&span, key)| (span, indexed[key]))
+                .collect();
+            p.effects = field_effects(&p, uf, &indexed, fields.map(|i| i.scopes));
+            p.call_writes = uf
+                .vars
+                .iter()
+                .filter(|v| v.shared)
+                .map(|v| indexed[&v.key])
+                .collect();
+        } else {
+            p.names = indexed;
+        }
         let mut buffers = FxHashMap::default();
         for s in p.statements.values() {
             for e in expressions(s) {
@@ -1725,12 +2020,14 @@ fn analyze_inspect(
                 p.counted.insert(n, next);
             }
         }
-        p.call_writes = p
-            .names
-            .iter()
-            .filter(|(name, _)| nonlocal.contains(*name))
-            .map(|(_, &i)| i)
-            .collect();
+        if fields.is_none() {
+            p.call_writes = p
+                .names
+                .iter()
+                .filter(|(name, _)| nonlocal.contains(*name))
+                .map(|(_, &i)| i)
+                .collect();
+        }
         let Ok(solution) = solve_bounded(
             cfg,
             &p,
@@ -1771,13 +2068,22 @@ fn analyze_inspect(
                 S::Assign { assignments } => {
                     let mut f = f.clone();
                     for a in assignments {
-                        p.sinks(&a.value, &f, cfg.id(), true, &mut out);
+                        if !p.when_values.contains(&a.value.id) {
+                            p.sinks(&a.value, &f, cfg.id(), true, &mut out);
+                        }
                         p.assign(&a.target, &a.value, &mut f);
                     }
                 }
                 S::Display { items, .. } => {
                     for i in items {
-                        p.sinks(&i.expression, f, cfg.id(), true, &mut out);
+                        match &i.when_condition {
+                            Some(w) if p.fields_only => {
+                                let mut shown = f.clone();
+                                p.narrow(w, true, &mut shown);
+                                p.sinks(&i.expression, &shown, cfg.id(), true, &mut out);
+                            }
+                            _ => p.sinks(&i.expression, f, cfg.id(), true, &mut out),
+                        }
                     }
                 }
                 S::Message { items, .. } | S::Put { items, .. } | S::Export { items, .. } => {
@@ -1787,6 +2093,9 @@ fn analyze_inspect(
                 }
                 _ => {}
             }
+        }
+        if fields.is_some() {
+            continue;
         }
         facts.push(UnitValues {
             unit: cfg.id(),
@@ -1814,11 +2123,13 @@ mod tests {
             variables: vec![
                 Variable {
                     name: "a".into(),
+                    key: "a".into(),
                     initial: UNKNOWN,
                     constant: None,
                 },
                 Variable {
                     name: "b".into(),
+                    key: "b".into(),
                     initial: UNKNOWN,
                     constant: None,
                 },
@@ -1831,6 +2142,10 @@ mod tests {
             counted: FxHashMap::default(),
             loosened: &FxHashMap::default(),
             tracked: 2,
+            fields_only: false,
+            field_spans: FxHashMap::default(),
+            effects: FxHashMap::default(),
+            when_values: &FxHashSet::default(),
         };
         let states = [
             0,
@@ -1922,6 +2237,7 @@ mod tests {
                 statements,
                 &flow,
                 elided,
+                None,
                 &mut |cfg, p, solution| {
                     let mut pool: Vec<&Fact> = Vec::new();
                     for (n, _) in cfg.nodes() {

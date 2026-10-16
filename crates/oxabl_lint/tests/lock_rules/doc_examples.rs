@@ -45,7 +45,7 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         "{name}: the bad example gives no finding\n{}",
         blocks[0]
     );
-    let rules: [(&str, RuleFn); 12] = [
+    let rules: [(&str, RuleFn); 13] = [
         ("LK001", default_lock::run),
         ("LK002", lock_outlives_transaction::run),
         ("LK003", lock_upgrade_in_loop::run),
@@ -58,6 +58,7 @@ fn examples(name: &str, rule: RuleFn, module: &str) {
         ("NL001", oxabl_lint::unknown_in_comparison::run),
         ("NL002", oxabl_lint::unknown_propagation::run),
         ("NL003", field_after_failed_find::run),
+        ("NL004", oxabl_lint::nullable_db_field::run),
     ];
     for (other, f) in rules {
         let fixed = check(f, &blocks[1]);
@@ -175,5 +176,14 @@ fn nl002_examples() {
         "NL002",
         oxabl_lint::unknown_propagation::run,
         include_str!("../../src/rules/unknown_propagation.rs"),
+    );
+}
+
+#[test]
+fn nl004_examples() {
+    examples(
+        "NL004",
+        oxabl_lint::nullable_db_field::run,
+        include_str!("../../src/rules/nullable_db_field.rs"),
     );
 }
