@@ -101,6 +101,9 @@ enum Builtin {
     Unknown,
 }
 
+// The AST gives a function name as text, and most of these names have no
+// `Kind`, so they are matched by name, folded on the stack (as in
+// `oxabl_handles`).
 fn builtin(name: &str) -> Builtin {
     let mut folded = [0u8; 64];
     if name.len() > folded.len() {

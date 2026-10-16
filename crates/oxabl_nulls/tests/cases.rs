@@ -295,3 +295,22 @@ fn a_block_colon_is_no_method_call() {
                 c = tt.k.\n";
     assert_eq!(missing(body), Vec::<usize>::new());
 }
+
+#[test]
+fn a_dependent_find_in_a_routine_proves_only_through_a_buffer_the_routine_defines() {
+    let body = "PROCEDURE p:\n\
+                  DEFINE BUFFER bo FOR Order.\n\
+                  FIND FIRST Customer NO-LOCK NO-ERROR.\n\
+                  FIND FIRST bo WHERE bo.CustNum = Customer.CustNum NO-LOCK NO-ERROR.\n\
+                  IF AVAILABLE bo THEN c = Customer.Name.\n\
+                END.\n";
+    assert_eq!(missing(body), Vec::<usize>::new());
+    // The default buffer of a routine is scoped to the procedure: it may
+    // hold the record of an earlier call.
+    let body = "PROCEDURE p:\n\
+                  FIND FIRST Customer NO-LOCK NO-ERROR.\n\
+                  FIND FIRST Order WHERE Order.CustNum = Customer.CustNum NO-LOCK NO-ERROR.\n\
+                  IF AVAILABLE Order THEN c = Customer.Name.\n\
+                END.\n";
+    assert_eq!(missing(body), vec![4]);
+}
