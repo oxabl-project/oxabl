@@ -1041,19 +1041,20 @@ What the later slices need:
 ## 9. Unknown values and records that may be missing
 
 `oxabl_nulls` follows two things through the flow graph of each unit (`oxabl_flow`): the unknown
-value `?` (later slices) and records a `FIND ... NO-ERROR` may have failed to find (the first
-slice). Buffers resolve through `oxabl_scope` (section 7): its names, its default buffers and its
+value `?` in local variables (the second slice) and records a `FIND ... NO-ERROR` may have
+failed to find (the first slice). Buffers resolve through `oxabl_scope` (section 7): its names, its default buffers and its
 reading of unqualified fields. No OpenEdge install was available while this was written, so the
 marks of section 7 apply: **Documented**, **Recalled**, **Inferred**; a design choice of oxabl is
 **Proposed**.
 
-Each row the first slice models has a fixture in `crates/oxabl_nulls/tests/fixtures/` (re-bless
+Each modelled row has a fixture in `crates/oxabl_nulls/tests/fixtures/` (re-bless
 with `OXABL_BLESS=1 cargo test -p oxabl_nulls --test snapshots`). Where the model cannot decide,
 the answer is **Unknown**, which never makes a finding.
 
 ### 9.1 The unknown value
 
-These rows are not modelled yet. They are the input of NL001, NL002 and NL004 (section 9.7).
+The second slice models local values for NL001 and NL002 (section 9.9). Database fields
+remain for NL004. The confidence marks still apply; these checks have no licensed runtime oracle.
 
 | # | ABL | Confidence |
 |---|---|---|
@@ -1227,30 +1228,144 @@ the group on, the scope analysis the rule reads dominates (it is shared with `st
 failed-find analysis on top of it is within the noise on the first corpus and under a second on
 the second (12.1 s and 12.9 s with `strict.locks` on, in one process).
 
-### 9.8 What NL001, NL002 and NL004 need
+### 9.8 What NL004 and later value analysis need
 
-- **NL001** (unknown in a comparison or condition): a forward dataflow of "may be `?`" per
-  variable, parameter and field, with the sources of V2 (the schema's `MANDATORY` flag and
-  `INITIAL` value are in `oxabl_schema`; the data type of each variable decides its default) and
-  the propagation of V3-V11 through the AST of each expression (the scope analysis reads tokens,
-  so this needs an expression walk of its own). Sinks: the operators of V6 and the conditions of
-  V8. V6 and V7 are Recalled, low: check them on a licensed install before the rule ships. A
-  comparison with `?` written in the text (`x = ?`) is a test, not a sink (V5), and narrows like
-  a guard.
-- **NL002** (unknown propagation): the same facts; sinks are arithmetic (V3) and string `+` (V4),
-  where `?` replaces the whole result. The absorbing built-ins (V11) end a chain. Assignments to
-  `MANDATORY` fields (V13) are the strongest sinks.
-- **NL004** (nullable database field): the schema facts of V2 and the uses NL001 and NL002 treat
-  as sinks, applied to non-mandatory fields read straight from a record. Most fields are not
-  mandatory, so it needs a narrower trigger first (a field whose schema `INITIAL` is `?`, or one
-  that has held `?` per an annotation, `@strict.nullable`), or it reports most field reads.
-- **All three** need user-defined function returns (V2) across the call graph (section 8.5) and
-  `OUTPUT` parameters of internal procedures; until then a call result is Unknown.
-- **From the review of the first slice**, to check before NL001 and NL002 rely on them: V2 says an
-  `OUTPUT` parameter the callee does not set is `?`; as recalled, an `OUTPUT` parameter starts at
-  the initial value of its data type (`0`, `""`, `no`), so it is `?` only for the types whose
-  default is `?`. Check on an install. Also check G9's premise there (`FIND FIRST c NO-LOCK.`,
-  then `FIND c WHERE c.x = b.f NO-ERROR` with `b` empty, then `AVAILABLE c`): if `c` is emptied,
-  G9 can apply where `c` held a record too. One include line can carry thousands of NL003
-  use-site copies (3,583 from two lines in the first corpus); one finding per include line per
-  run, or a summary line, would cut that noise.
+NL001 and NL002 now have local variable facts and expression walks (section 9.9).
+NL004 still needs the schema facts of V2: `MANDATORY`, schema `INITIAL`, and resolved field
+references. It must apply the comparison and arithmetic sinks to fields read from records.
+Most fields are not mandatory. A narrower trigger is needed first: schema `INITIAL ?`, or
+an annotation such as `@strict.nullable`. Missing records remain the separate NL003 analysis;
+a missing record raises ERROR instead of supplying `?`.
+
+Later work must connect function returns and procedure `OUTPUT` parameters to the call graph
+(section 8.5). Unseen call results and output values remain Unknown. Local `LIKE` declarations,
+array elements, shared state, and references to variables owned by another unit also need
+resolved type and storage facts. They do not supply a default `?` source in this slice.
+
+From the review of the first slice: V2 says an `OUTPUT` parameter the callee does not set is
+`?`; as recalled, an `OUTPUT` parameter starts at the initial value of its data type (`0`, `""`,
+`no`), so it is `?` only for the types whose default is `?`. Section 9.9 models it that way;
+check it on an install. Also check G9's premise there (`FIND FIRST c NO-LOCK.`, then `FIND c
+WHERE c.x = b.f NO-ERROR` with `b` empty, then `AVAILABLE c`): if `c` is emptied, G9 can apply
+where `c` held a record too. One include line can carry thousands of NL003 use-site copies
+(3,583 from two lines in the first corpus); one finding per include line per run, or a summary
+line, would cut that noise.
+
+### 9.9 Local unknown-value facts, NL001 and NL002
+
+`FileNulls::with_values` adds a forward dataflow over each unit's flow graph. It reads the
+parsed expressions. `value_before(unit, node, name)` gives the value of a local before a flow
+node: unreachable, known, possibly `?`, or Unknown. Internally, separate bits record known
+values, proven `?` sources, and paths whose value is Unknown. A join keeps a proven source even
+when another path is Unknown. An Unknown path alone never supplies a source or a finding. The
+transfers are monotone, and loops reach a fixed point. A test checks every pair of lattice
+states.
+
+**Sources** are V1 and the local part of V2: the literal `?`, `INITIAL ?`, the default of
+`DATE`, `DATETIME`, `DATETIME-TZ`, `HANDLE`, `ROWID`, `RECID` and object references, and an
+assignment from a possibly `?` expression. A test `x = ?` (or `x <> ?`) on a value the model
+cannot decide makes `x` a `?` source on the edge where the test says so (V5, Documented): the
+code itself says that `x` can be `?`. `INPUT` and `INPUT-OUTPUT` parameters start Unknown;
+`OUTPUT` parameters start at the default of their type (section 9.8). Method and constructor
+parameters count. An unseen function or method result is Unknown. `IMPORT`, `UPDATE`, `SET`,
+`MESSAGE ... UPDATE` and call `OUTPUT` arguments forget the value. An unseen call in an
+expression also forgets its variable arguments (the AST has no argument modes there), and any
+call forgets the locals another unit of the file writes. Opaque statements, elided preprocessor
+text, explicit `UNDO` and error paths forget every local. `LIKE`, `EXTENT` and shared variables
+are Unknown.
+
+**Propagation.** V3 arithmetic, unary minus and V4 string `+` propagate `?`; a literal division
+by zero gives `?` (the medium part of V3). V5 `=` and `<>` absorb. The V10 functions propagate
+an argument that is already a `?` source; they never make one. `STRING`, `VALID-HANDLE`,
+`VALID-OBJECT`, `AVAILABLE`, `CAN-FIND` and `LOCKED` absorb (V11). `SUBSTITUTE` is Unknown
+(low confidence). V9 takes the `ELSE` value for a definite `?` condition and joins the arms
+otherwise. V12 conversion errors are no source; V13 is for NL004.
+
+**V6 and V7 never make a finding.** The result of an ordering comparison, `BEGINS`, `MATCHES`,
+`NOT`, `AND` or `OR` is Unknown as a value. The model uses V6, V7 and V8 only to remove sources:
+the edge a `?` condition cannot take (the `THEN` edge, the loop body) drops the sources that
+would make the condition `?`. If V6 or V7 is wrong, the model misses findings; it never makes
+wrong ones.
+
+**Guards and correlated tests.** `x = ?`, `EQ`, `<>`, `NE`, `NOT`, the true arms of `AND` and
+the false arms of `OR` narrow both edges, and a false `A AND B` (or a true `A OR B`) whose one
+side is decided narrows the other. The expression walk narrows each operand of `AND`, `OR` and
+the `IF` function by the others, and an inner test re-applies the enclosing ones, so
+`(AVAILABLE b AND NOT AVAILABLE c) OR (AVAILABLE b AND x > y)` reads `x > y` with `c` available.
+A true ordering test proves its operands known in that arm, so `x > limit OR x = ?` does not
+report. `RETURN`, `LEAVE` and `NEXT` use the exits of the flow graph.
+
+Each source carries the conditions that hold on every path that carries it: the locals that are
+`?` there (pairs such as `a = ? AND b = ?`), the result of `AVAILABLE b`, and the value of a
+logical local. A join keeps a condition only where every such path has it; a write to the local
+or a statement that may change the record in `b` removes it (anything but an assignment, `IF`,
+`DO`, `REPEAT`, `CASE`, `DISPLAY`, `MESSAGE`, `PUT`, `EXPORT`, `LEAVE` or `NEXT` without an
+unseen call). A test that contradicts the conditions of a source removes the source on that
+edge. So `IF AVAILABLE b THEN d = b.d.` and then `IF AVAILABLE b AND d > TODAY` or
+`IF found THEN ... d` after `found = FALSE. IF ... THEN ASSIGN found = TRUE d = TODAY.` do not
+report. A condition can name the locals a test of the unit reads (up to 256); value facts cover
+every local.
+
+**Counted loops.** A `DO i = a TO b` body runs only when `a` and `b` are not `?` (`i <= ?` is
+`?`, V6 and V8), so the body edge proves both known: `DO i = 1 TO NUM-ENTRIES(list)` reads `list`
+as known in the body. A `TO` loop can end before its `WHILE` condition is false, so its exit
+does not narrow by the `WHILE` condition. An integer local that is never written keeps its
+initial value, which decides constant tests.
+
+**`NOT` binds looser than a comparison** (Documented in the operator precedence table of the
+ABL reference: `NOT` comes after the relational operators and before `AND`). The parser reads `NOT a BEGINS b` as
+`(NOT a) BEGINS b`; this analysis reads such a comparison as `NOT (a BEGINS b)`.
+
+**The rules.** NL001 reports a local with a proven possible source of `?` that is an operand of
+`<`, `<=`, `>`, `>=`, `BEGINS` or `MATCHES` (also through the V10 functions, such as
+`LENGTH(x) > 0`), or that is the whole condition of an `IF` or `WHILE`. `=` and `<>` never
+report. NL002 reports such a local in arithmetic or string `+` whose result is assigned,
+displayed, written by `MESSAGE`, `PUT` or `EXPORT`; an absorbing function stops the chain and a
+propagating one carries it to the sink. Each rule reports a local once per unit, at its first
+use: later uses repeat the same source. Fields are Unknown (NL004). Both rules are opt-in
+`strict.nulls`, preview, Warning, without an autofix, and use the include routing of NL003.
+With the group off, no null analysis is computed.
+
+The `value_*` and `values` fixtures cover defaults, parameters, assignments, joins, built-ins,
+low-confidence results, guards, correlated tests, `NOT`, loops and unreachable paths. The lint
+tests check the opt-in policy, the first-use rule and both documentation examples.
+
+### 9.10 Corpus check of NL001 and NL002
+
+Over the two corpora of section 7.6, as `oxabl check` expands them, with their schemas and
+`strict.nulls` on (`crates/oxabl/examples/nulls_corpus.rs`): no panic. NL001 gives 93 findings
+in the first corpus and 16 in the second; NL002 gives 44 and 28. None is at an include site in
+the first corpus; three NL002 findings are in the second.
+
+Triage. Fifteen random findings per rule were read against the code in the first corpus, in
+rounds, each round's wrong ones changing the model; in the second corpus every finding was read
+(16 of NL001 and 28 of NL002).
+
+| Round | NL001 wrong | NL002 wrong | What was wrong, and the change |
+|---|---|---|---|
+| 1, first corpus | 4 of 15 | 4 of 15 | A value set under `IF AVAILABLE b` and read under a second test of `b` (now a condition of the source); a body of `DO i = 1 TO NUM-ENTRIES(x)` with `x` `?` (four, one variable: counted loops); an `IF ... ELSE IF` chain whose arms cover every case (two); a `FOR EACH` that must find the record a `FIND` found |
+| 1, second corpus | 0 of 16 | 1 of 28 | A variable set in both arms of `IF NOT AVAILABLE b` / `IF AVAILABLE b` (conditions of the source) |
+| 2, first corpus | 1 of 15 | 2 of 15 | A pair of tests in a unit with more than 32 locals (conditions only named the first 32; now the tested locals); `NOT x BEGINS "/"` read with the wrong precedence; a `CASE` without `OTHERWISE` that leaves both a date `?` and a loop limit `0` |
+| 3, first corpus | 0 of 15 | 1 of 18 | The same `CASE` pattern in a copy of that file |
+
+The rules also reported the same variable many times in one unit (up to six uses of one source);
+it now reports the first use. The wrong findings left are correlations the model does not
+follow: an `IF` chain that covers every case, a loop limit that is `0` exactly when a date is
+`?`, and a record loop that must run. That is near 5 % on these samples.
+
+Most right findings are of three kinds: an option or setting read with `NO-ERROR` that sets the
+variable to `?` when the stored value is missing or bad, and then a test that treats `?` as
+`no`; a `DATE` or `DATETIME` that stays at its default when a lookup finds no record, then
+compared or subtracted; and a running total that turns `?` after one unknown term. Many of these
+rely on `?` behaving as `no` on purpose. The samples also held real bugs: a date compared before
+it is assigned (twice, a dead check), a flag tested where a test for `?` was meant, a fallback
+for `?` that the next statement overwrites with the `?` value, and validation that reports a `?`
+input and then goes on to compare it.
+
+**Cost.** With `strict.nulls` off nothing is computed: `oxabl check --json --no-format .` gives
+byte-identical output on both trees before and after this change, in the same wall time within
+the noise. With the group on, in one process, the value analysis adds about 40 % to the run of
+NL003 alone (first corpus 170 s to 242 s, second 12 s to 17 s; the group off takes 60 s and 5 s).
+Most of it is in the shared solver: every statement that may raise has an edge whose fact the
+solver clones and this analysis replaces, and the solver also computes the fact after every node,
+which this analysis does not read. A solver hook for both would remove about a third of it.
