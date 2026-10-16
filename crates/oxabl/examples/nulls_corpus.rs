@@ -236,8 +236,10 @@ fn count_fallbacks(
                 &tokens,
                 &program.statements,
                 &flow,
-                &scopes,
-                schema,
+                &oxabl_nulls::FieldSources {
+                    scopes: &scopes,
+                    schema,
+                },
                 &oxabl_nulls::NullOptions::default(),
             ),
             None => nulls,

@@ -171,7 +171,10 @@ IF d < TODAY THEN MESSAGE 1.\n\
 MESSAGE Parcel.Weight * 2.\n",
     );
     assert!(check(unknown_in_comparison::run, &src).is_empty());
-    assert_eq!(lines(&src, &check(unknown_propagation::run, &src)), [] as [usize; 0]);
+    assert_eq!(
+        lines(&src, &check(unknown_propagation::run, &src)),
+        [] as [usize; 0]
+    );
     assert_eq!(lines(&src, &check(run, &src)), [6]);
 }
 

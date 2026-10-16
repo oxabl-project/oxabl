@@ -14,8 +14,8 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
     CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
-    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, NL004, TX001, TX002, TX003,
-    TX004, TX005, TX006, assigned_but_never_read, block_var_used_outside, default_lock,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, NL004, TX001, TX002,
+    TX003, TX004, TX005, TX006, assigned_but_never_read, block_var_used_outside, default_lock,
     delete_not_in_finally, dynamic_invoke, field_after_failed_find, find_in_loop,
     handle_not_deleted, implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop,
     memptr_not_freed, missing_no_undo, missing_widget_pool, nullable_db_field,

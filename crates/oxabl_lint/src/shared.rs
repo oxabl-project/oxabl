@@ -144,8 +144,10 @@ impl<'a> RunShared<'a> {
                 self.tokens(ctx),
                 program,
                 self.flow(program, ctx),
-                self.scopes(program, ctx),
-                ctx.schema,
+                &oxabl_nulls::FieldSources {
+                    scopes: self.scopes(program, ctx),
+                    schema: ctx.schema,
+                },
                 &NullOptions { elided: ctx.elided },
             )
         })
