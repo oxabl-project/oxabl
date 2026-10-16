@@ -8,7 +8,7 @@
 //! their buffer.
 
 use oxabl_ast::{NodeId, Span};
-use oxabl_flow::dataflow::{Analysis, BitSet, Direction, solve};
+use oxabl_flow::dataflow::{Analysis, BitSet, Direction, default_budget, solve_within};
 use oxabl_flow::{Cfg, EdgeKind, FileFlow, NodeIx, NodeKind, OpaqueReason, UnitId, UnitKind};
 use oxabl_lexer::{Kind, Token};
 use oxabl_scope::{BufferId, BufferKind, FileScopes, ReadKind, Reference, Table};
@@ -401,7 +401,11 @@ pub(crate) fn analyze(
         if sites.buffer.is_empty() {
             continue;
         }
-        let tests = solve(cfg, &TestAhead { ivs, facts: &facts });
+        // Past the work budget the unit is Unknown: no finding.
+        let Ok(tests) = solve_within(cfg, &TestAhead { ivs, facts: &facts }, default_budget(cfg))
+        else {
+            continue;
+        };
         let mut test_ahead = vec![false; cfg.node_count()];
         for (n, _) in cfg.nodes() {
             test_ahead[n.index()] = *tests.after(n);
@@ -413,7 +417,9 @@ pub(crate) fn analyze(
             shared: &shared,
             test_ahead: &test_ahead,
         };
-        let solution = solve(cfg, &problem);
+        let Ok(solution) = solve_within(cfg, &problem, default_budget(cfg)) else {
+            continue;
+        };
         for (n, node) in cfg.nodes() {
             let iv = ivs[n.index()];
             if iv == u32::MAX {

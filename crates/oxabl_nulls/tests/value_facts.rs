@@ -119,3 +119,36 @@ END.";
         );
     }
 }
+
+#[test]
+fn nested_loops_over_three_valued_tests_reach_a_fixed_point() {
+    let source = "DEFINE VARIABLE d1 AS INTEGER NO-UNDO INITIAL TODAY.
+DEFINE VARIABLE i1 AS INTEGER NO-UNDO.
+REPEAT:
+  DO WHILE i1 <> ? AND d1 <> ?:
+    i1 = ?.
+  END.
+END.
+";
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty());
+    let flow =
+        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
+    let nulls =
+        FileNulls::default().with_values(&program.statements, &flow, &NullOptions::default());
+    let cfg = &flow.units()[0];
+    let write = cfg
+        .nodes()
+        .find(|(_, n)| {
+            n.kind == NodeKind::Stmt
+                && source[n.span.start as usize..n.span.end as usize].starts_with("i1 = ?")
+        })
+        .expect("assignment")
+        .0;
+    // A solve that gave up would say Unknown.
+    assert_eq!(
+        nulls.value_before(cfg.id(), write, "i1"),
+        Some(ValueState::Known)
+    );
+}

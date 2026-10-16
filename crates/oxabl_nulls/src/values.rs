@@ -3,7 +3,7 @@ use oxabl_ast::{
     DataType, Expression, ExpressionKind as E, Literal, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, Span, Statement, StatementKind as S, TypeSource,
 };
-use oxabl_flow::dataflow::{Analysis, Direction, solve};
+use oxabl_flow::dataflow::{Analysis, Direction, Solution, default_budget, solve_within};
 use oxabl_flow::{Cfg, Edge, EdgeKind, FileFlow, NodeIx, NodeKind, UnitId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -46,10 +46,15 @@ pub(crate) struct UnitValues {
     pub unit: UnitId,
     names: FxHashMap<String, usize>,
     before: Vec<Vec<u8>>,
+    /// The solve ran out of its work budget: every local is Unknown.
+    pub exhausted: bool,
 }
 impl UnitValues {
     pub fn before(&self, node: NodeIx, name: &str) -> Option<ValueState> {
         let index = lookup(&self.names, name)?;
+        if self.exhausted {
+            return Some(ValueState::Unknown);
+        }
         let value = *self.before.get(node.index())?.get(index)?;
         Some(if value == 0 {
             ValueState::Unreachable
@@ -642,7 +647,7 @@ impl Problem<'_> {
             _ => a != b,
         })
     }
-    fn prove_known(&self, e: &Expression, f: &mut Fact) {
+    fn prove_known(&self, e: &Expression, strong: bool, f: &mut Fact) {
         if f.dead() {
             return;
         }
@@ -651,7 +656,7 @@ impl Problem<'_> {
             return;
         }
         if let Some(i) = self.variable(e) {
-            f.known(i);
+            f.known(i, strong);
             return;
         }
         match &e.kind {
@@ -660,13 +665,13 @@ impl Problem<'_> {
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
-                self.prove_known(a, f);
-                self.prove_known(b, f);
+                self.prove_known(a, strong, f);
+                self.prove_known(b, strong, f);
             }
-            E::Negate(a) => self.prove_known(a, f),
+            E::Negate(a) => self.prove_known(a, strong, f),
             E::FunctionCall { name, arguments } if propagates(&name.name) => {
                 for a in arguments {
-                    self.prove_known(a, f);
+                    self.prove_known(a, strong, f);
                 }
             }
             _ => {}
@@ -830,6 +835,12 @@ impl Problem<'_> {
         }
     }
     fn narrow(&self, e: &Expression, yes: bool, f: &mut Fact) {
+        self.narrow_with(e, yes, true, f);
+    }
+    /// Narrow `f` by `e` being `yes`. A weak narrowing only removes values:
+    /// it never turns an Unknown local into a known one or into a source.
+    /// Narrowing that depends on the fact must be weak to stay monotone.
+    fn narrow_with(&self, e: &Expression, yes: bool, strong: bool, f: &mut Fact) {
         let e = self.view(e);
         if f.dead() {
             return;
@@ -856,8 +867,8 @@ impl Problem<'_> {
             | E::Matches(a, b)
                 if yes =>
             {
-                self.prove_known(a, f);
-                self.prove_known(b, f);
+                self.prove_known(a, strong, f);
+                self.prove_known(b, strong, f);
             }
             E::Equal(a, b) | E::NotEqual(a, b) => {
                 let equal = matches!(e.kind, E::Equal(..)) == yes;
@@ -875,27 +886,27 @@ impl Problem<'_> {
                 {
                     f.link(a, b);
                     if f[a] == KNOWN {
-                        f.known(b);
+                        f.known(b, false);
                     } else if f[a] == QUESTION {
-                        f.question(b);
+                        f.question(b, false);
                     }
                     if !f.dead() {
                         if f[b] == KNOWN {
-                            f.known(a);
+                            f.known(a, false);
                         } else if f[b] == QUESTION {
-                            f.question(a);
+                            f.question(a, false);
                         }
                     }
                 }
                 if let Some(i) = var {
                     if equal {
                         if f[i] & (QUESTION | OPAQUE) != 0 {
-                            f.question(i);
+                            f.question(i, strong);
                         } else {
                             f.fill(0);
                         }
                     } else {
-                        f.known(i);
+                        f.known(i, strong);
                     }
                 }
             }
@@ -904,28 +915,31 @@ impl Problem<'_> {
                     if f[i] == QUESTION {
                         f.fill(0);
                     } else {
-                        f.known(i);
+                        f.known(i, strong);
                     }
                 }
             }
             E::And(a, b) if yes => {
-                self.narrow(a, true, f);
-                self.narrow(b, true, f);
+                self.narrow_with(a, true, strong, f);
+                self.narrow_with(b, true, strong, f);
             }
             E::Or(a, b) if !yes => {
-                self.narrow(a, false, f);
-                self.narrow(b, false, f);
+                self.narrow_with(a, false, strong, f);
+                self.narrow_with(b, false, strong, f);
             }
             // A false AND with one side true: the other is false (OR dually).
             E::And(a, b) | E::Or(a, b) => {
                 let side = if yes { 2 } else { 1 };
-                if self.truth(a, f, &Required::new()) == side {
-                    self.narrow(b, yes, f);
-                } else if self.truth(b, f, &Required::new()) == side {
-                    self.narrow(a, yes, f);
+                let a_decided = self.truth(a, f, &Required::new()) == side;
+                let b_decided = self.truth(b, f, &Required::new()) == side;
+                if a_decided {
+                    self.narrow_with(b, yes, false, f);
+                }
+                if b_decided {
+                    self.narrow_with(a, yes, false, f);
                 }
             }
-            E::Not(a) => self.narrow(a, !yes, f),
+            E::Not(a) => self.narrow_with(a, !yes, strong, f),
             _ => {}
         }
         if f.dead() {
@@ -1278,9 +1292,9 @@ impl Analysis for Problem<'_> {
         ) = (e.kind, &s.kind)
         {
             if let Some(from) = from {
-                self.prove_known(from, f);
+                self.prove_known(from, true, f);
             }
-            self.prove_known(to, f);
+            self.prove_known(to, true, f);
         }
         if let Some(cond) = self.condition(s) {
             match e.kind {
@@ -1299,6 +1313,16 @@ pub(crate) fn analyze(
     program: &[Statement],
     flow: &FileFlow,
     elided: &[u32],
+) -> (Vec<ValueUse>, Vec<UnitValues>) {
+    analyze_inspect(program, flow, elided, &mut |_, _, _| {})
+}
+
+/// [`analyze`], showing each solved unit to `inspect`.
+fn analyze_inspect(
+    program: &[Statement],
+    flow: &FileFlow,
+    elided: &[u32],
+    inspect: &mut dyn FnMut(&Cfg, &Problem<'_>, &Solution<Fact>),
 ) -> (Vec<ValueUse>, Vec<UnitValues>) {
     let mut all = Vec::new();
     for s in program {
@@ -1556,7 +1580,16 @@ pub(crate) fn analyze(
             .filter(|(name, _)| nonlocal.contains(*name))
             .map(|(_, &i)| i)
             .collect();
-        let solution = solve(cfg, &p);
+        let Ok(solution) = solve_within(cfg, &p, default_budget(cfg)) else {
+            facts.push(UnitValues {
+                unit: cfg.id(),
+                names: p.names,
+                before: Vec::new(),
+                exhausted: true,
+            });
+            continue;
+        };
+        inspect(cfg, &p, &solution);
         let reachable = cfg.reachable();
         for (n, node) in cfg.nodes() {
             if !reachable.contains(n.index())
@@ -1604,6 +1637,7 @@ pub(crate) fn analyze(
                 .nodes()
                 .map(|(n, _)| solution.before(n).values.clone())
                 .collect(),
+            exhausted: false,
         });
     }
     out.sort_by_key(|u| (u.at.start, u.at.end, u.propagation));
@@ -1686,6 +1720,73 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    fn parse(source: &str) -> (oxabl_parser::Program, FileFlow) {
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let flow = oxabl_flow::build_file_tokens(
+            &program.statements,
+            source,
+            &tokens,
+            &Default::default(),
+        );
+        (program, flow)
+    }
+
+    #[test]
+    fn random_programs_reach_a_fixed_point() {
+        let mut programs = crate::fuzz::Programs::new(0x5eed);
+        for k in 0..300 {
+            let source = programs.program();
+            let (program, flow) = parse(&source);
+            let (_, facts) = analyze(&program.statements, &flow, &[]);
+            assert!(
+                facts.iter().all(|f| !f.exhausted),
+                "program {k} spent its budget:\n{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn statement_and_edge_transfers_are_monotone() {
+        let mut programs = crate::fuzz::Programs::new(0x6d6f);
+        for k in 0..100 {
+            let source = programs.program();
+            let (program, flow) = parse(&source);
+            analyze_inspect(&program.statements, &flow, &[], &mut |cfg, p, solution| {
+                let mut pool: Vec<&Fact> = Vec::new();
+                for (n, _) in cfg.nodes() {
+                    let f = solution.before(n);
+                    if !f.dead() && !pool.contains(&f) && pool.len() < 6 {
+                        pool.push(f);
+                    }
+                }
+                for (n, node) in cfg.nodes() {
+                    if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) {
+                        continue;
+                    }
+                    for e in cfg.successors(n) {
+                        for small in &pool {
+                            for other in &pool {
+                                let mut large = (*small).clone();
+                                large.join(other);
+                                let (mut a, mut b) = ((*small).clone(), large.clone());
+                                p.transfer_edge(cfg, n, e, &mut a);
+                                p.transfer_edge(cfg, n, e, &mut b);
+                                assert!(
+                                    a.leq(&b),
+                                    "program {k}, node {} {:?} by {:?}:\n{small:?}\n<= {large:?}\ngives {a:?}\nnot <= {b:?}\n{source}",
+                                    n.index(),
+                                    cfg.node(n).kind,
+                                    e.kind,
+                                );
+                            }
+                        }
+                    }
+                }
+            });
         }
     }
 }

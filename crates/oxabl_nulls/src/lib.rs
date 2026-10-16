@@ -51,6 +51,8 @@
 mod analysis;
 mod cond;
 mod dump;
+#[cfg(test)]
+mod fuzz;
 mod model;
 mod values;
 pub use values::{ValueState, ValueUse};
