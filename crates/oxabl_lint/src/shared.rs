@@ -26,6 +26,7 @@ pub struct RunShared<'a> {
     scopes: OnceCell<FileScopes>,
     effects: OnceCell<FileEffects>,
     nulls: OnceCell<FileNulls>,
+    null_values: OnceCell<FileNulls>,
 }
 
 /// Answers in expanded byte coordinates. Missing and partial answers are Unknown.
@@ -104,17 +105,26 @@ impl<'a> RunShared<'a> {
     /// analysed once over [`scopes`](Self::scopes).
     pub fn nulls(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
         self.nulls.get_or_init(|| {
-            let scopes = self.scopes(program, ctx);
             oxabl_nulls::analyze_file(
                 ctx.source,
                 self.tokens(ctx),
                 self.flow(program, ctx),
-                scopes,
+                self.scopes(program, ctx),
                 &NullOptions { elided: ctx.elided },
             )
-            .with_values(
+        })
+    }
+
+    /// The local value facts of the file and the uses of possible `?`
+    /// values, analysed once and apart from [`nulls`](Self::nulls).
+    pub fn null_values(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileNulls {
+        self.null_values.get_or_init(|| {
+            oxabl_nulls::analyze_values(
+                ctx.source,
+                self.tokens(ctx),
                 program,
                 self.flow(program, ctx),
+                self.scopes(program, ctx),
                 &NullOptions { elided: ctx.elided },
             )
         })
@@ -159,4 +169,30 @@ pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> Fi
         return oxabl_scope::analyze_file_with(program, ctx.source, schema, &options);
     }
     oxabl_scope::analyze_tokens(program, ctx.source, ctx.tokens, schema, &options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxabl_common::FileId;
+
+    #[test]
+    fn the_failed_finds_and_the_value_facts_are_computed_apart() {
+        let source = "DEFINE VARIABLE d AS DATE NO-UNDO.\nIF d > TODAY THEN MESSAGE 1.\n";
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let schema = oxabl_schema::Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+
+        let shared = RunShared::default();
+        shared.nulls(&program.statements, &ctx);
+        assert!(shared.null_values.get().is_none());
+
+        let shared = RunShared::default();
+        assert_eq!(
+            shared.null_values(&program.statements, &ctx).values().len(),
+            1
+        );
+        assert!(shared.nulls.get().is_none());
+    }
 }

@@ -13,8 +13,13 @@ MESSAGE n.\n";
     assert!(program.errors.is_empty());
     let flow =
         oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls =
-        FileNulls::default().with_values(&program.statements, &flow, &NullOptions::default());
+    let nulls = FileNulls::default().with_values(
+        source,
+        &tokens,
+        &program.statements,
+        &flow,
+        &NullOptions::default(),
+    );
     let cfg = &flow.units()[0];
     let messages: Vec<_> = cfg
         .nodes()
@@ -58,8 +63,13 @@ MESSAGE 0.";
     assert!(program.errors.is_empty());
     let flow =
         oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls =
-        FileNulls::default().with_values(&program.statements, &flow, &NullOptions::default());
+    let nulls = FileNulls::default().with_values(
+        source,
+        &tokens,
+        &program.statements,
+        &flow,
+        &NullOptions::default(),
+    );
     let cfg = &flow.units()[0];
     let node = cfg
         .nodes()
@@ -100,8 +110,13 @@ END.";
     assert!(program.errors.is_empty());
     let flow =
         oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
-    let nulls =
-        FileNulls::default().with_values(&program.statements, &flow, &NullOptions::default());
+    let nulls = FileNulls::default().with_values(
+        source,
+        &tokens,
+        &program.statements,
+        &flow,
+        &NullOptions::default(),
+    );
     let cfg = &flow.units()[0];
     let node = cfg
         .nodes()
@@ -118,4 +133,153 @@ END.";
             "{name}"
         );
     }
+}
+
+#[test]
+fn nested_loops_over_three_valued_tests_reach_a_fixed_point() {
+    let source = "DEFINE VARIABLE d1 AS INTEGER NO-UNDO INITIAL TODAY.
+DEFINE VARIABLE i1 AS INTEGER NO-UNDO.
+REPEAT:
+  DO WHILE i1 <> ? AND d1 <> ?:
+    i1 = ?.
+  END.
+END.
+";
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty());
+    let flow =
+        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
+    let nulls = FileNulls::default().with_values(
+        source,
+        &tokens,
+        &program.statements,
+        &flow,
+        &NullOptions::default(),
+    );
+    let cfg = &flow.units()[0];
+    let write = cfg
+        .nodes()
+        .find(|(_, n)| {
+            n.kind == NodeKind::Stmt
+                && source[n.span.start as usize..n.span.end as usize].starts_with("i1 = ?")
+        })
+        .expect("assignment")
+        .0;
+    // A solve that gave up would say Unknown.
+    assert_eq!(
+        nulls.value_before(cfg.id(), write, "i1"),
+        Some(ValueState::Known)
+    );
+}
+
+fn uses(source: &str) -> Vec<String> {
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let flow =
+        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
+    FileNulls::default()
+        .with_values(
+            source,
+            &tokens,
+            &program.statements,
+            &flow,
+            &NullOptions::default(),
+        )
+        .values()
+        .iter()
+        .map(|u| {
+            format!(
+                "{}@{}",
+                u.name,
+                source[..u.at.start as usize].lines().count()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn statements_that_run_triggers_forget_what_the_triggers_write() {
+    for statement in [
+        "WAIT-FOR GO OF FRAME f.",
+        "APPLY \"CHOOSE\" TO btn.",
+        "ENABLE ALL WITH FRAME f.",
+        "PUBLISH \"done\".",
+        "UPDATE n WITH FRAME f.",
+        "SET n WITH FRAME f.",
+    ] {
+        let source = format!(
+            "DEFINE VARIABLE d AS DATE NO-UNDO.
+DEFINE VARIABLE n AS INTEGER NO-UNDO.
+DEFINE BUTTON btn.
+ON CHOOSE OF btn DO:
+  d = TODAY.
+END.
+{statement}
+IF d > TODAY THEN MESSAGE n.
+"
+        );
+        assert_eq!(uses(&source), Vec::<String>::new(), "{statement}");
+    }
+    // Without such a statement the default date is a source.
+    let source = "DEFINE VARIABLE d AS DATE NO-UNDO.
+DEFINE BUTTON btn.
+ON CHOOSE OF btn DO:
+  d = TODAY.
+END.
+IF d > TODAY THEN MESSAGE 1.
+";
+    assert_eq!(uses(source), ["d@6"]);
+}
+
+#[test]
+fn a_repeat_loop_variable_is_written_by_the_loop() {
+    let source = "DEFINE VARIABLE d AS DATE NO-UNDO.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+REPEAT d = TODAY TO TODAY + 5:
+  IF d > TODAY THEN LEAVE.
+END.
+REPEAT i = 1 TO 5:
+  IF i = 0 THEN d = ?.
+END.
+IF d > TODAY THEN MESSAGE 1.
+";
+    // `i` is no constant 0, so `d = ?` can run.
+    assert_eq!(uses(source), ["d@9"]);
+}
+
+#[test]
+fn a_counted_loop_with_constant_bounds_runs_its_body() {
+    let run = |header: &str, skip: &str| {
+        uses(&format!(
+            "DEFINE VARIABLE d AS DATE NO-UNDO.
+DEFINE VARIABLE i AS INTEGER NO-UNDO.
+DEFINE VARIABLE n AS INTEGER NO-UNDO.
+n = 5.
+{header}
+  {skip}
+  d = TODAY.
+END.
+IF d > TODAY THEN MESSAGE 1.
+"
+        ))
+    };
+    assert_eq!(run("DO i = 1 TO 5:", ""), Vec::<String>::new());
+    assert_eq!(run("DO i = 5 TO 1 BY -1:", ""), Vec::<String>::new());
+    // Every iteration may skip the write.
+    assert_eq!(run("DO i = 1 TO 5:", "IF n = i THEN NEXT."), ["d@9"]);
+    assert_eq!(run("DO i = 1 TO 0:", ""), ["d@9"]);
+    assert_eq!(run("DO i = 1 TO n:", ""), ["d@9"]);
+    assert_eq!(run("DO i = 1 TO 5 WHILE n > 0:", ""), ["d@9"]);
+}
+
+#[test]
+fn a_zero_divisor_is_no_source() {
+    let source = "DEFINE VARIABLE y AS DECIMAL NO-UNDO.
+DEFINE VARIABLE z AS DECIMAL NO-UNDO.
+y = 1 / 0.
+z = y + 1.
+";
+    assert_eq!(uses(source), Vec::<String>::new());
 }

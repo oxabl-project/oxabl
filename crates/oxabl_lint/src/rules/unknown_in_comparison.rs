@@ -19,6 +19,11 @@
 //! Ordering and logical results remain Unknown. A comparison requires a separate
 //! known possible source of `?` in its operand. A variable is reported once per
 //! unit, at its first use.
+//!
+//! The finding relies on two recalled rules that are not yet checked on an
+//! OpenEdge install: an ordering comparison with `?` gives `?`, and a `?`
+//! condition skips the `THEN` branch or ends the loop. The rule stays in
+//! preview until they are.
 
 use super::handle_support::warning;
 use oxabl_ast::Statement;
@@ -45,7 +50,7 @@ pub fn run(
 ) -> Vec<Diagnostic> {
     let shared = crate::RunShared::default();
     check(
-        shared.nulls(program, ctx),
+        shared.null_values(program, ctx),
         shared.scopes(program, ctx),
         program,
         ctx,
@@ -71,7 +76,9 @@ pub fn check(
                     u.name
                 ),
                 format!(
-                    "Test `{} <> ?` before this use, or assign a known value first.",
+                    "Test `{} <> ?` before this use, or assign a known value first. This assumes \
+                     an ordering comparison with `?` gives `?` and a `?` condition acts as false, \
+                     which is not yet checked on OpenEdge.",
                     u.name
                 ),
                 u.at,

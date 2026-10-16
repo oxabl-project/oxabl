@@ -112,12 +112,46 @@ impl Fact {
         f
     }
     /// The atom "logical local `i` is true"; the next bit is "not true".
+    /// Atoms are even, so `a ^ 1` is the opposite of `a`.
     pub fn flag(limit: usize, i: usize) -> Option<usize> {
-        (i < limit).then_some(limit + 2 * i)
+        (i < limit).then_some(limit.next_multiple_of(2) + 2 * i)
     }
-    /// The atom "`AVAILABLE` of the `k`-th buffer is true".
-    pub fn buffer(limit: usize, k: usize) -> usize {
-        3 * limit + 2 * k
+    /// The atom "the `j`-th counted loop has not finished an iteration since
+    /// it was entered".
+    pub fn fresh(limit: usize, j: usize) -> usize {
+        limit.next_multiple_of(2) + 2 * limit + 2 * j
+    }
+    /// The atom "`AVAILABLE` of the `k`-th buffer is true", after the atoms
+    /// of `loops` counted loops.
+    pub fn buffer(limit: usize, loops: usize, k: usize) -> usize {
+        Self::fresh(limit, loops) + 2 * k
+    }
+    /// Add atom `a` to the conditions of every source.
+    pub fn mark_sources(&mut self, a: usize) {
+        for r in self.sources() {
+            r.insert(a);
+        }
+    }
+    /// Remove atom `a` from the conditions of every source.
+    pub fn unmark_sources(&mut self, a: usize) {
+        for r in self.sources() {
+            r.remove(a);
+        }
+    }
+    /// Drop the sources that carry atom `a`.
+    pub fn drop_marked(&mut self, a: usize) {
+        let cut: Vec<usize> = self
+            .requires
+            .iter()
+            .filter(|(_, r)| r.contains(a))
+            .map(|(&i, _)| i)
+            .collect();
+        for i in cut {
+            self.drop_source(i);
+            if self.dead() {
+                return;
+            }
+        }
     }
     /// No path reaches this point. A zero value always zeroes every value.
     pub fn dead(&self) -> bool {
@@ -207,7 +241,8 @@ impl Fact {
             self.fill(0);
         }
     }
-    pub fn known(&mut self, i: usize) {
+    /// Local `i` is not `?`. A weak step keeps an Unknown value Unknown.
+    pub fn known(&mut self, i: usize, strong: bool) {
         if i < self.limit {
             let cut: Vec<usize> = self
                 .requires
@@ -222,10 +257,37 @@ impl Fact {
                 }
             }
         }
-        self.values[i] = KNOWN;
+        self.values[i] = if strong {
+            KNOWN
+        } else {
+            self.values[i] & !QUESTION
+        };
         self.requires.remove(&i);
+        if self.values[i] == 0 {
+            self.fill(0);
+        }
     }
-    pub fn question(&mut self, i: usize) {
+    /// Local `i` is `?`. A strong step makes an Unknown value a source; a
+    /// weak one keeps it Unknown.
+    pub fn question(&mut self, i: usize, strong: bool) {
+        if !strong {
+            let value = self.values[i] & (QUESTION | super::OPAQUE);
+            if value == 0 {
+                self.fill(0);
+                return;
+            }
+            self.values[i] = value;
+            if value & QUESTION != 0 && i < self.limit {
+                let certain = self.certain();
+                self.requires.entry(i).or_insert(certain).insert(i);
+            }
+            if i < self.limit {
+                for r in self.sources() {
+                    r.insert(i);
+                }
+            }
+            return;
+        }
         let mut required = match self.requires.get(&i) {
             Some(r) if self.values[i] & super::OPAQUE == 0 => r.clone(),
             _ => self.certain(),
@@ -269,6 +331,60 @@ impl Fact {
         }
         for (v, o) in self.values.iter_mut().zip(&other.values) {
             *v |= o;
+        }
+    }
+}
+
+#[cfg(test)]
+impl Required {
+    pub fn subset(&self, other: &Self) -> bool {
+        self.0
+            .iter()
+            .enumerate()
+            .all(|(w, a)| a & !other.0.get(w).copied().unwrap_or(0) == 0)
+    }
+}
+
+#[cfg(test)]
+impl Fact {
+    /// `self` is below `other` in the order [`join`](Self::join) computes.
+    pub fn leq(&self, other: &Self) -> bool {
+        if self.dead() {
+            return true;
+        }
+        if other.dead() {
+            return false;
+        }
+        self.values
+            .iter()
+            .zip(&other.values)
+            .all(|(a, b)| a & !b == 0)
+            && other.held.subset(&self.held)
+            && self.requires.iter().all(|(i, r)| {
+                self.values[*i] & QUESTION == 0
+                    || other.requires.get(i).is_some_and(|o| o.subset(r))
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Fact;
+
+    #[test]
+    fn every_atom_pairs_with_its_opposite() {
+        for limit in 0..6 {
+            let mut atoms: Vec<usize> = (0..limit)
+                .filter_map(|i| Fact::flag(limit, i))
+                .chain((0..2).map(|j| Fact::fresh(limit, j)))
+                .chain((0..3).map(|k| Fact::buffer(limit, 2, k)))
+                .collect();
+            assert!(atoms.iter().all(|a| a % 2 == 0 && *a >= limit), "{limit}");
+            atoms.extend(atoms.clone().iter().map(|a| a ^ 1));
+            let count = atoms.len();
+            atoms.sort_unstable();
+            atoms.dedup();
+            assert_eq!(atoms.len(), count, "{limit}");
         }
     }
 }

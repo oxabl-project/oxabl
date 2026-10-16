@@ -3,7 +3,7 @@ use oxabl_ast::{
     DataType, Expression, ExpressionKind as E, Literal, NodeId, OnAction, OnKind,
     ParameterDirection, ParameterType, Span, Statement, StatementKind as S, TypeSource,
 };
-use oxabl_flow::dataflow::{Analysis, Direction, solve};
+use oxabl_flow::dataflow::{Analysis, Direction, Solution, default_budget, solve_within};
 use oxabl_flow::{Cfg, Edge, EdgeKind, FileFlow, NodeIx, NodeKind, UnitId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -46,10 +46,15 @@ pub(crate) struct UnitValues {
     pub unit: UnitId,
     names: FxHashMap<String, usize>,
     before: Vec<Vec<u8>>,
+    /// The solve ran out of its work budget: every local is Unknown.
+    pub exhausted: bool,
 }
 impl UnitValues {
     pub fn before(&self, node: NodeIx, name: &str) -> Option<ValueState> {
         let index = lookup(&self.names, name)?;
+        if self.exhausted {
+            return Some(ValueState::Unknown);
+        }
         let value = *self.before.get(node.index())?.get(index)?;
         Some(if value == 0 {
             ValueState::Unreachable
@@ -74,9 +79,15 @@ struct Problem<'a> {
     variables: Vec<Variable>,
     names: FxHashMap<String, usize>,
     elided: &'a [u32],
+    /// The loop variable of each `REPEAT var = ... TO ...`, which the AST does
+    /// not keep.
+    repeat_vars: &'a FxHashMap<NodeId, String>,
     call_writes: Vec<usize>,
     /// Buffers named by `AVAILABLE` in the unit, for correlated tests.
     buffers: FxHashMap<String, usize>,
+    /// The header of each counted loop whose constant bounds make its body
+    /// run, with the index of its [`Fact::fresh`] atom.
+    counted: FxHashMap<NodeIx, usize>,
     /// Comparisons whose left operand the parser read as `NOT a`.
     loosened: &'a FxHashMap<NodeId, Expression>,
     /// The leading variables that some test reads (section 9.9).
@@ -90,6 +101,9 @@ enum Builtin {
     Unknown,
 }
 
+// The AST gives a function name as text, and most of these names have no
+// `Kind`, so they are matched by name, folded on the stack (as in
+// `oxabl_handles`).
 fn builtin(name: &str) -> Builtin {
     let mut folded = [0u8; 64];
     if name.len() > folded.len() {
@@ -470,10 +484,10 @@ impl Problem<'_> {
             return Fact::flag(self.tracked, i).map(|a| (a, true));
         }
         let k = lookup(&self.buffers, available_buffer(e)?)?;
-        Some((Fact::buffer(self.tracked, k), false))
+        Some((Fact::buffer(self.tracked, self.counted.len(), k), false))
     }
     fn forget_buffers(&self, f: &mut Fact) {
-        f.drop_atoms_from(Fact::buffer(self.tracked, 0));
+        f.drop_atoms_from(Fact::buffer(self.tracked, self.counted.len(), 0));
     }
     fn variable(&self, e: &Expression) -> Option<usize> {
         if let E::Identifier(i) = &e.kind {
@@ -498,8 +512,9 @@ impl Problem<'_> {
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
+                // A zero divisor (V3, medium) is no source.
                 if matches!(e.kind, E::Divide(..)) && self.number(b) == Some(0) {
-                    return QUESTION;
+                    return UNKNOWN;
                 }
                 let (a, b) = (self.eval(a, f), self.eval(b, f));
                 if a == QUESTION || b == QUESTION {
@@ -590,9 +605,7 @@ impl Problem<'_> {
             | E::Minus(a, b)
             | E::Multiply(a, b)
             | E::Divide(a, b)
-            | E::Modulo(a, b)
-                if !matches!(e.kind, E::Divide(..)) || self.number(b) != Some(0) =>
-            {
+            | E::Modulo(a, b) => {
                 add(self.required(a, f));
                 add(self.required(b, f));
             }
@@ -642,7 +655,7 @@ impl Problem<'_> {
             _ => a != b,
         })
     }
-    fn prove_known(&self, e: &Expression, f: &mut Fact) {
+    fn prove_known(&self, e: &Expression, strong: bool, f: &mut Fact) {
         if f.dead() {
             return;
         }
@@ -651,7 +664,7 @@ impl Problem<'_> {
             return;
         }
         if let Some(i) = self.variable(e) {
-            f.known(i);
+            f.known(i, strong);
             return;
         }
         match &e.kind {
@@ -660,13 +673,13 @@ impl Problem<'_> {
             | E::Multiply(a, b)
             | E::Divide(a, b)
             | E::Modulo(a, b) => {
-                self.prove_known(a, f);
-                self.prove_known(b, f);
+                self.prove_known(a, strong, f);
+                self.prove_known(b, strong, f);
             }
-            E::Negate(a) => self.prove_known(a, f),
+            E::Negate(a) => self.prove_known(a, strong, f),
             E::FunctionCall { name, arguments } if propagates(&name.name) => {
                 for a in arguments {
-                    self.prove_known(a, f);
+                    self.prove_known(a, strong, f);
                 }
             }
             _ => {}
@@ -830,6 +843,12 @@ impl Problem<'_> {
         }
     }
     fn narrow(&self, e: &Expression, yes: bool, f: &mut Fact) {
+        self.narrow_with(e, yes, true, f);
+    }
+    /// Narrow `f` by `e` being `yes`. A weak narrowing only removes values:
+    /// it never turns an Unknown local into a known one or into a source.
+    /// Narrowing that depends on the fact must be weak to stay monotone.
+    fn narrow_with(&self, e: &Expression, yes: bool, strong: bool, f: &mut Fact) {
         let e = self.view(e);
         if f.dead() {
             return;
@@ -856,8 +875,8 @@ impl Problem<'_> {
             | E::Matches(a, b)
                 if yes =>
             {
-                self.prove_known(a, f);
-                self.prove_known(b, f);
+                self.prove_known(a, strong, f);
+                self.prove_known(b, strong, f);
             }
             E::Equal(a, b) | E::NotEqual(a, b) => {
                 let equal = matches!(e.kind, E::Equal(..)) == yes;
@@ -875,27 +894,27 @@ impl Problem<'_> {
                 {
                     f.link(a, b);
                     if f[a] == KNOWN {
-                        f.known(b);
+                        f.known(b, false);
                     } else if f[a] == QUESTION {
-                        f.question(b);
+                        f.question(b, false);
                     }
                     if !f.dead() {
                         if f[b] == KNOWN {
-                            f.known(a);
+                            f.known(a, false);
                         } else if f[b] == QUESTION {
-                            f.question(a);
+                            f.question(a, false);
                         }
                     }
                 }
                 if let Some(i) = var {
                     if equal {
                         if f[i] & (QUESTION | OPAQUE) != 0 {
-                            f.question(i);
+                            f.question(i, strong);
                         } else {
                             f.fill(0);
                         }
                     } else {
-                        f.known(i);
+                        f.known(i, strong);
                     }
                 }
             }
@@ -904,28 +923,31 @@ impl Problem<'_> {
                     if f[i] == QUESTION {
                         f.fill(0);
                     } else {
-                        f.known(i);
+                        f.known(i, strong);
                     }
                 }
             }
             E::And(a, b) if yes => {
-                self.narrow(a, true, f);
-                self.narrow(b, true, f);
+                self.narrow_with(a, true, strong, f);
+                self.narrow_with(b, true, strong, f);
             }
             E::Or(a, b) if !yes => {
-                self.narrow(a, false, f);
-                self.narrow(b, false, f);
+                self.narrow_with(a, false, strong, f);
+                self.narrow_with(b, false, strong, f);
             }
             // A false AND with one side true: the other is false (OR dually).
             E::And(a, b) | E::Or(a, b) => {
                 let side = if yes { 2 } else { 1 };
-                if self.truth(a, f, &Required::new()) == side {
-                    self.narrow(b, yes, f);
-                } else if self.truth(b, f, &Required::new()) == side {
-                    self.narrow(a, yes, f);
+                let a_decided = self.truth(a, f, &Required::new()) == side;
+                let b_decided = self.truth(b, f, &Required::new()) == side;
+                if a_decided {
+                    self.narrow_with(b, yes, false, f);
+                }
+                if b_decided {
+                    self.narrow_with(a, yes, false, f);
                 }
             }
-            E::Not(a) => self.narrow(a, !yes, f),
+            E::Not(a) => self.narrow_with(a, !yes, strong, f),
             _ => {}
         }
         if f.dead() {
@@ -1008,6 +1030,11 @@ impl Problem<'_> {
             _ => {}
         }
     }
+    fn forget_call_writes(&self, f: &mut Fact) {
+        for &i in &self.call_writes {
+            f.forget(i, UNKNOWN);
+        }
+    }
     fn step(&self, s: &Statement, f: &mut Fact) {
         if f.dead() {
             return;
@@ -1025,7 +1052,6 @@ impl Problem<'_> {
                     self.assign(&a.target, &a.value, f);
                 }
             }
-            // An unseen callee may change variables passed by reference.
             S::Do {
                 loop_var: Some(name),
                 ..
@@ -1034,9 +1060,35 @@ impl Problem<'_> {
                     f.forget(i, UNKNOWN);
                 }
             }
+            S::Repeat { .. } => {
+                if let Some(i) = self
+                    .repeat_vars
+                    .get(&s.id)
+                    .and_then(|n| lookup(&self.names, n))
+                {
+                    f.forget(i, UNKNOWN);
+                }
+            }
             S::Import { targets, .. } | S::Update { targets, .. } | S::Set { targets, .. } => {
+                // Input runs the triggers of the frame.
+                if !matches!(s.kind, S::Import { .. }) {
+                    self.forget_call_writes(f);
+                }
                 for target in targets {
                     if let Some(i) = self.variable(target) {
+                        f.forget(i, UNKNOWN);
+                    }
+                }
+            }
+            // These run triggers, which may write the locals other units write.
+            S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } => self.forget_call_writes(f),
+            S::Publish { arguments, .. } => {
+                self.forget_call_writes(f);
+                for a in arguments {
+                    self.forget_calls(&a.expression, f);
+                    if a.direction != ParameterDirection::Input
+                        && let Some(i) = self.variable(&a.expression)
+                    {
                         f.forget(i, UNKNOWN);
                     }
                 }
@@ -1053,10 +1105,9 @@ impl Problem<'_> {
                     }
                 }
             }
+            // An unseen callee may change variables passed by reference.
             S::Run { arguments, .. } => {
-                for &i in &self.call_writes {
-                    f.forget(i, UNKNOWN);
-                }
+                self.forget_call_writes(f);
                 for a in arguments {
                     self.forget_calls(&a.expression, f);
                     if a.direction != ParameterDirection::Input
@@ -1245,6 +1296,57 @@ impl Analysis for Problem<'_> {
         }
     }
     fn transfer_edge(&self, c: &Cfg, n: NodeIx, e: &Edge, f: &mut Fact) {
+        self.edge_step(c, n, e, f);
+        if f.dead() {
+            return;
+        }
+        // A counted loop whose body runs leaves only after an iteration: the
+        // sources that only entering paths carry are gone at its exit.
+        if let Some(&j) = self.counted.get(&n)
+            && e.kind == EdgeKind::LoopDone
+        {
+            f.drop_marked(Fact::fresh(self.tracked, j));
+        }
+        if let Some(&j) = self.counted.get(&e.to) {
+            let a = Fact::fresh(self.tracked, j);
+            if matches!(
+                e.kind,
+                EdgeKind::LoopBack | EdgeKind::Next | EdgeKind::Retry
+            ) {
+                f.unmark_sources(a);
+            } else {
+                f.mark_sources(a);
+            }
+        }
+    }
+}
+
+impl Problem<'_> {
+    /// `DO v = a TO b [BY k]` with constant bounds that run the body, and no
+    /// `WHILE`.
+    fn runs_body(&self, s: &Statement) -> bool {
+        let S::Do {
+            loop_var: Some(_),
+            from: Some(from),
+            to: Some(to),
+            by,
+            while_condition: None,
+            ..
+        } = &s.kind
+        else {
+            return false;
+        };
+        let (Some(from), Some(to)) = (self.number(from), self.number(to)) else {
+            return false;
+        };
+        match by.as_ref().map(|b| self.number(b)) {
+            None => from <= to,
+            Some(Some(k)) if k > 0 => from <= to,
+            Some(Some(k)) if k < 0 => from >= to,
+            _ => false,
+        }
+    }
+    fn edge_step(&self, c: &Cfg, n: NodeIx, e: &Edge, f: &mut Fact) {
         if matches!(e.kind, EdgeKind::Raise(_)) {
             if !f.dead() {
                 f.fill(UNKNOWN);
@@ -1278,9 +1380,9 @@ impl Analysis for Problem<'_> {
         ) = (e.kind, &s.kind)
         {
             if let Some(from) = from {
-                self.prove_known(from, f);
+                self.prove_known(from, true, f);
             }
-            self.prove_known(to, f);
+            self.prove_known(to, true, f);
         }
         if let Some(cond) = self.condition(s) {
             match e.kind {
@@ -1295,15 +1397,70 @@ impl Analysis for Problem<'_> {
     }
 }
 
+/// The loop variable of each `REPEAT var = a TO b` among `all`, lowercase.
+fn repeat_vars(
+    all: &[&Statement],
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+) -> FxHashMap<NodeId, String> {
+    use oxabl_lexer::Kind;
+    let mut out = FxHashMap::default();
+    for s in all {
+        if !matches!(s.kind, S::Repeat { .. }) {
+            continue;
+        }
+        let first = tokens.partition_point(|t| t.start < s.span.start as usize);
+        if tokens.get(first).map(|t| t.kind) != Some(Kind::Repeat) {
+            continue;
+        }
+        let header: Vec<_> = tokens[first + 1..]
+            .iter()
+            .filter(|t| t.kind != Kind::Comment)
+            .take_while(|t| !matches!(t.kind, Kind::Colon | Kind::KwWhile | Kind::KwWhere))
+            .collect();
+        let mut depth = 0i32;
+        for (i, t) in header.iter().enumerate() {
+            match t.kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => depth -= 1,
+                Kind::Equals if depth == 0 && i > 0 => {
+                    if header[i..].iter().any(|t| t.kind == Kind::To) {
+                        let name = &source[header[i - 1].start..header[i - 1].end];
+                        out.insert(s.id, name.to_ascii_lowercase());
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn analyze(
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
     program: &[Statement],
     flow: &FileFlow,
     elided: &[u32],
+) -> (Vec<ValueUse>, Vec<UnitValues>) {
+    analyze_inspect(source, tokens, program, flow, elided, &mut |_, _, _| {})
+}
+
+/// [`analyze`], showing each solved unit to `inspect`.
+fn analyze_inspect(
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    program: &[Statement],
+    flow: &FileFlow,
+    elided: &[u32],
+    inspect: &mut dyn FnMut(&Cfg, &Problem<'_>, &Solution<Fact>),
 ) -> (Vec<ValueUse>, Vec<UnitValues>) {
     let mut all = Vec::new();
     for s in program {
         children(s, &mut all);
     }
+    let repeat_vars = repeat_vars(&all, source, tokens);
     let mut written = FxHashSet::default();
     let mut write = |e: &Expression| {
         if let E::Identifier(i) = &e.kind {
@@ -1323,7 +1480,7 @@ pub(crate) fn analyze(
                     write(t);
                 }
             }
-            S::Run { arguments, .. } => {
+            S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
                         write(&a.expression);
@@ -1333,6 +1490,7 @@ pub(crate) fn analyze(
             _ => {}
         }
     }
+    written.extend(repeat_vars.values().cloned());
     for s in &all {
         match &s.kind {
             S::Do {
@@ -1410,7 +1568,7 @@ pub(crate) fn analyze(
                     record(t);
                 }
             }
-            S::Run { arguments, .. } => {
+            S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
                         record(&a.expression);
@@ -1450,8 +1608,10 @@ pub(crate) fn analyze(
             variables: Vec::new(),
             names: FxHashMap::default(),
             elided,
+            repeat_vars: &repeat_vars,
             call_writes: Vec::new(),
             buffers: FxHashMap::default(),
+            counted: FxHashMap::default(),
             loosened: &loosened,
             tracked: 0,
         };
@@ -1550,13 +1710,31 @@ pub(crate) fn analyze(
             }
         }
         p.buffers = buffers;
+        for (n, node) in cfg.nodes() {
+            if node.kind == NodeKind::Head
+                && let Some(s) = node.stmt.and_then(|id| p.statements.get(&id))
+                && p.runs_body(s)
+            {
+                let next = p.counted.len();
+                p.counted.insert(n, next);
+            }
+        }
         p.call_writes = p
             .names
             .iter()
             .filter(|(name, _)| nonlocal.contains(*name))
             .map(|(_, &i)| i)
             .collect();
-        let solution = solve(cfg, &p);
+        let Ok(solution) = solve_within(cfg, &p, default_budget(cfg)) else {
+            facts.push(UnitValues {
+                unit: cfg.id(),
+                names: p.names,
+                before: Vec::new(),
+                exhausted: true,
+            });
+            continue;
+        };
+        inspect(cfg, &p, &solution);
         let reachable = cfg.reachable();
         for (n, node) in cfg.nodes() {
             if !reachable.contains(n.index())
@@ -1604,6 +1782,7 @@ pub(crate) fn analyze(
                 .nodes()
                 .map(|(n, _)| solution.before(n).values.clone())
                 .collect(),
+            exhausted: false,
         });
     }
     out.sort_by_key(|u| (u.at.start, u.at.end, u.propagation));
@@ -1633,8 +1812,10 @@ mod tests {
             ],
             names: [("a".into(), 0), ("b".into(), 1)].into_iter().collect(),
             elided: &[],
+            repeat_vars: &FxHashMap::default(),
             call_writes: Vec::new(),
             buffers: FxHashMap::default(),
+            counted: FxHashMap::default(),
             loosened: &FxHashMap::default(),
             tracked: 2,
         };
@@ -1686,6 +1867,81 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    fn parse(source: &str) -> (Vec<oxabl_lexer::Token>, oxabl_parser::Program, FileFlow) {
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let flow = oxabl_flow::build_file_tokens(
+            &program.statements,
+            source,
+            &tokens,
+            &Default::default(),
+        );
+        (tokens, program, flow)
+    }
+
+    #[test]
+    fn random_programs_reach_a_fixed_point() {
+        let mut programs = crate::fuzz::Programs::new(0x5eed);
+        for k in 0..300 {
+            let source = programs.program();
+            let (tokens, program, flow) = parse(&source);
+            let (_, facts) = analyze(&source, &tokens, &program.statements, &flow, &[]);
+            assert!(
+                facts.iter().all(|f| !f.exhausted),
+                "program {k} spent its budget:\n{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn statement_and_edge_transfers_are_monotone() {
+        let mut programs = crate::fuzz::Programs::new(0x6d6f);
+        for k in 0..100 {
+            let source = programs.program();
+            let (tokens, program, flow) = parse(&source);
+            let (statements, elided) = (&program.statements, &[]);
+            analyze_inspect(
+                &source,
+                &tokens,
+                statements,
+                &flow,
+                elided,
+                &mut |cfg, p, solution| {
+                    let mut pool: Vec<&Fact> = Vec::new();
+                    for (n, _) in cfg.nodes() {
+                        let f = solution.before(n);
+                        if !f.dead() && !pool.contains(&f) && pool.len() < 6 {
+                            pool.push(f);
+                        }
+                    }
+                    for (n, node) in cfg.nodes() {
+                        if !matches!(node.kind, NodeKind::Stmt | NodeKind::Head) {
+                            continue;
+                        }
+                        for e in cfg.successors(n) {
+                            for small in &pool {
+                                for other in &pool {
+                                    let mut large = (*small).clone();
+                                    large.join(other);
+                                    let (mut a, mut b) = ((*small).clone(), large.clone());
+                                    p.transfer_edge(cfg, n, e, &mut a);
+                                    p.transfer_edge(cfg, n, e, &mut b);
+                                    assert!(
+                                        a.leq(&b),
+                                        "program {k}, node {} {:?} by {:?}:\n{small:?}\n<= {large:?}\ngives {a:?}\nnot <= {b:?}\n{source}",
+                                        n.index(),
+                                        cfg.node(n).kind,
+                                        e.kind,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                },
+            );
         }
     }
 }

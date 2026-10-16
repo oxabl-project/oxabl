@@ -51,6 +51,8 @@
 mod analysis;
 mod cond;
 mod dump;
+#[cfg(test)]
+mod fuzz;
 mod model;
 mod values;
 pub use values::{ValueState, ValueUse};
@@ -109,14 +111,18 @@ impl FileNulls {
     }
 
     /// Add local variable dataflow over the same program and flow graphs.
+    /// `tokens` are the lexer's tokens of `source`.
     pub fn with_values(
         mut self,
+        source: &str,
+        tokens: &[oxabl_lexer::Token],
         program: &[oxabl_ast::Statement],
         flow: &FileFlow,
         options: &NullOptions<'_>,
     ) -> Self {
         if self.unknown.is_empty() {
-            (self.values, self.value_facts) = values::analyze(program, flow, options.elided);
+            (self.values, self.value_facts) =
+                values::analyze(source, tokens, program, flow, options.elided);
         }
         self
     }
@@ -147,6 +153,24 @@ impl FileNulls {
     pub fn dump(&self, source: &str, scopes: &FileScopes) -> String {
         dump::dump(self, source, scopes)
     }
+}
+
+/// The local value facts alone, without the failed finds: a file with a
+/// file-level Unknown of the scope analysis gets none, as with
+/// [`analyze_file`] and [`FileNulls::with_values`].
+pub fn analyze_values(
+    source: &str,
+    tokens: &[oxabl_lexer::Token],
+    program: &[oxabl_ast::Statement],
+    flow: &FileFlow,
+    scopes: &FileScopes,
+    options: &NullOptions<'_>,
+) -> FileNulls {
+    FileNulls {
+        unknown: scopes.unknown().to_vec(),
+        ..FileNulls::default()
+    }
+    .with_values(source, tokens, program, flow, options)
 }
 
 /// Analyse a file over its flow graphs and its scope analysis, both built
