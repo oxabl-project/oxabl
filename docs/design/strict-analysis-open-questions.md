@@ -1491,4 +1491,5 @@ field and then compares it anyway (`IF f = 0 OR f = ? THEN log-error.` and then 
 field solve adds about 16 % to the run of the first corpus (209 s to 243 s) and 4 % to 8 % to
 the second (13.4 s and 14.8 s to 14.0 s and 16.0 s); the local solve and NL003 take the rest.
 The field solve runs only over the units that reference a nullable field, and only when a rule
-that reads it is enabled. No unit of either corpus ran past its work budget.
+that reads it is enabled. One unit of the first corpus runs past its work budget, as it did
+before this change, and none of the second.
