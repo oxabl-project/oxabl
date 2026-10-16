@@ -3,7 +3,8 @@
 
 use oxabl_ast::{ExpressionKind, StatementKind};
 use oxabl_flow::dataflow::{
-    Analysis, BitSet, Direction, Exhausted, default_budget, solve, solve_within,
+    Analysis, BitSet, Direction, Exhausted, Limits, default_budget, solve, solve_bounded,
+    solve_within,
 };
 use oxabl_flow::{
     Action, BlockId, BlockKind, Cfg, Condition, EdgeKind, ErrorDirective, ExitKind, FileFlow,
@@ -444,6 +445,72 @@ END.
     for (n, _) in cfg.nodes() {
         assert_eq!(bounded.before(n), unbounded.before(n));
     }
+}
+
+/// `RunAhead` with a fact that costs `self.1` per visit.
+struct Weighted<'a>(&'a Parsed, usize);
+
+impl Analysis for Weighted<'_> {
+    type Fact = bool;
+
+    fn direction(&self) -> Direction {
+        RunAhead(self.0).direction()
+    }
+
+    fn initial(&self, cfg: &Cfg) -> Self::Fact {
+        RunAhead(self.0).initial(cfg)
+    }
+
+    fn boundary(&self, cfg: &Cfg) -> Self::Fact {
+        RunAhead(self.0).boundary(cfg)
+    }
+
+    fn join(&self, acc: &mut Self::Fact, other: &Self::Fact) {
+        RunAhead(self.0).join(acc, other);
+    }
+
+    fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut Self::Fact) {
+        RunAhead(self.0).transfer(cfg, node, fact);
+    }
+
+    fn fact_cost(&self, _: &Self::Fact) -> usize {
+        self.1
+    }
+}
+
+#[test]
+fn the_work_limit_charges_the_cost_of_a_fact() {
+    let p = parse(
+        "\
+DEFINE VARIABLE x AS INTEGER NO-UNDO.
+REPEAT:
+    x = 1.
+END.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[0];
+    let visits = default_budget(cfg);
+    let within = |cost, work| solve_bounded(cfg, &Weighted(&p, cost), Limits { visits, work });
+    let cheap = within(1, usize::MAX).expect("a fixed point");
+    // The same visits cost more: the work limit ends the solve.
+    assert_eq!(within(1_000, 1_000).err(), Some(Exhausted));
+    let dear = within(1_000, usize::MAX).expect("a fixed point");
+    for (n, _) in cfg.nodes() {
+        assert_eq!(cheap.before(n), dear.before(n));
+    }
+}
+
+#[test]
+fn a_bit_set_iterates_its_members_in_order() {
+    let mut set = BitSet::new_empty(200);
+    let members = [0, 1, 63, 64, 65, 127, 199];
+    for m in members {
+        set.insert(m);
+    }
+    assert_eq!(set.iter().collect::<Vec<_>>(), members);
+    assert_eq!(BitSet::new_full(70).iter().count(), 70);
+    assert_eq!(BitSet::new_empty(0).iter().count(), 0);
 }
 
 #[test]

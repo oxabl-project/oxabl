@@ -61,6 +61,15 @@ pub trait Analysis {
         let _ = edge;
         self.transfer(cfg, node, fact);
     }
+
+    /// The work of one visit of a node whose joined fact is `fact`, charged
+    /// against [`Limits::work`]. A visit clones, joins and compares facts, so a
+    /// fact that grows with the unit should return its size here. Defaults to
+    /// 1.
+    fn fact_cost(&self, fact: &Self::Fact) -> usize {
+        let _ = fact;
+        1
+    }
 }
 
 /// The solved facts of every node.
@@ -101,6 +110,15 @@ pub fn default_budget(cfg: &Cfg) -> usize {
     cfg.node_count().saturating_mul(64)
 }
 
+/// The bounds of [`solve_bounded`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// The most node visits.
+    pub visits: usize,
+    /// The most work: the sum of [`Analysis::fact_cost`] over the visits.
+    pub work: usize,
+}
+
 /// Solve `analysis` over `cfg` to a fixed point, visiting at most `budget`
 /// nodes. A caller that gets [`Exhausted`] has no answer for the unit.
 pub fn solve_within<A: Analysis>(
@@ -108,9 +126,26 @@ pub fn solve_within<A: Analysis>(
     analysis: &A,
     budget: usize,
 ) -> Result<Solution<A::Fact>, Exhausted> {
+    solve_bounded(
+        cfg,
+        analysis,
+        Limits {
+            visits: budget,
+            work: usize::MAX,
+        },
+    )
+}
+
+/// Solve `analysis` over `cfg` to a fixed point within `limits`. A caller
+/// that gets [`Exhausted`] has no answer for the unit.
+pub fn solve_bounded<A: Analysis>(
+    cfg: &Cfg,
+    analysis: &A,
+    limits: Limits,
+) -> Result<Solution<A::Fact>, Exhausted> {
     match analysis.direction() {
-        Direction::Forward => solve_forward(cfg, analysis, budget),
-        Direction::Backward => solve_backward(cfg, analysis, budget),
+        Direction::Forward => solve_forward(cfg, analysis, limits),
+        Direction::Backward => solve_backward(cfg, analysis, limits),
     }
 }
 
@@ -168,8 +203,12 @@ fn heads(cfg: &Cfg, order: &[NodeIx], forward: bool) -> BitSet {
 fn solve_forward<A: Analysis>(
     cfg: &Cfg,
     a: &A,
-    mut budget: usize,
+    limits: Limits,
 ) -> Result<Solution<A::Fact>, Exhausted> {
+    let Limits {
+        visits: mut budget,
+        work: mut work_left,
+    } = limits;
     let n = cfg.node_count();
     let initial = a.initial(cfg);
     let boundary = a.boundary(cfg);
@@ -197,6 +236,7 @@ fn solve_forward<A: Analysis>(
         if heads.contains(node.index()) {
             a.join(&mut fact, &before[node.index()]);
         }
+        work_left = work_left.checked_sub(a.fact_cost(&fact)).ok_or(Exhausted)?;
         if fact != before[node.index()] {
             before[node.index()] = fact;
             for e in cfg.successors(node) {
@@ -219,8 +259,12 @@ fn solve_forward<A: Analysis>(
 fn solve_backward<A: Analysis>(
     cfg: &Cfg,
     a: &A,
-    mut budget: usize,
+    limits: Limits,
 ) -> Result<Solution<A::Fact>, Exhausted> {
+    let Limits {
+        visits: mut budget,
+        work: mut work_left,
+    } = limits;
     let n = cfg.node_count();
     let initial = a.initial(cfg);
     let boundary = a.boundary(cfg);
@@ -249,6 +293,7 @@ fn solve_backward<A: Analysis>(
         if heads.contains(node.index()) {
             a.join(&mut fact, &before[node.index()]);
         }
+        work_left = work_left.checked_sub(a.fact_cost(&fact)).ok_or(Exhausted)?;
         if fact != before[node.index()] {
             before[node.index()] = fact;
             for e in cfg.predecessors(node) {
@@ -358,6 +403,15 @@ impl BitSet {
 
     /// Members in increasing order.
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.len).filter(|&i| self.contains(i))
+        self.words.iter().enumerate().flat_map(|(w, &word)| {
+            let mut bits = word;
+            std::iter::from_fn(move || {
+                (bits != 0).then(|| {
+                    let b = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    w * 64 + b
+                })
+            })
+        })
     }
 }
