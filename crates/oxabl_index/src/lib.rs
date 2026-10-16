@@ -92,7 +92,8 @@ use oxabl_preprocessor::{PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, ImportContext, IndexName, IndexedFileId,
-    MemberDescriptor, MemberType, ResolvedType, ScopeId, SymbolFlags, SymbolKind, declare_pass,
+    MemberDescriptor, MemberType, ProgramSignatures, ResolvedType, ScopeId, SymbolFlags,
+    SymbolKind, declare_pass,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
@@ -157,6 +158,47 @@ pub fn index_file_at(
         ..*includes
     };
     index_file_with_includes(file, source, &includes)
+}
+
+/// The parameter lists of the file at `path`, and the include files they were
+/// read through (as [`index_file_with_includes`] reports them).
+///
+/// A list the text as written does not show whole (an `{include}` may hold a
+/// parameter) is read again from the expanded text; when that does not settle
+/// either, the list stays unknown. `None` when the file does not parse.
+pub fn program_signatures_at(
+    path: &Path,
+    source: &str,
+    includes: &IncludeContext<'_>,
+) -> (Option<ProgramSignatures>, Vec<PathBuf>) {
+    fn parse(source: &str) -> Option<ProgramSignatures> {
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = Parser::new(&tokens, source).parse_program();
+        program
+            .is_ok()
+            .then(|| ProgramSignatures::of(&program.statements, &tokens))
+    }
+    let Some(written) = parse(source) else {
+        return (None, Vec::new());
+    };
+    if written.main.is_some() && written.procedures.iter().all(|(_, s)| s.is_some()) {
+        return (Some(written), Vec::new());
+    }
+    let paths = includes.paths_for(path);
+    let includes = IncludeContext {
+        include_paths: &paths,
+        root_relative_paths: &[],
+        ..*includes
+    };
+    let Some(expansion) = expand(source, &includes) else {
+        return (Some(written), Vec::new());
+    };
+    let read = included_paths(&expansion.processed);
+    let signatures = expansion
+        .text
+        .and_then(|text| parse(&text))
+        .map(|expanded| expanded.marking_includes(&written));
+    (Some(signatures.unwrap_or(written)), read)
 }
 
 /// A filesystem with nothing in it.
