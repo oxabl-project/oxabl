@@ -96,6 +96,8 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ("LINT0006", "assigned-but-never-read", "default", warning),
             ("CL001", "run-value", "strict.calls", warning),
             ("CL002", "dynamic-invoke", "strict.calls", warning),
+            ("CL003", "signature-mismatch", "strict.calls", warning),
+            ("CL004", "unresolved-call", "strict.calls", warning),
             ("CL005", "shared-state", "strict.calls", warning),
             ("TX006", "missing-no-undo", "strict.transactions", warning),
             ("HD001", "handle-not-deleted", "strict.handles", warning),
@@ -159,7 +161,8 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
                 || m.group == "strict.locks"
                 || m.group == "strict.access"
                 || m.group == "strict.nulls"
-                || (m.group == "strict.transactions" && m.code != "TX006"),
+                || (m.group == "strict.transactions" && m.code != "TX006")
+                || matches!(m.code, "CL003" | "CL004"),
             "{}",
             m.code
         );

@@ -22,10 +22,12 @@
 //! missing, on every thread and in every order alike.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use oxabl_lexer::Kind;
 use oxabl_semantic::IndexName;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{IncludeContext, IndexedFileId, index_file_at};
 
@@ -39,7 +41,30 @@ use crate::{IncludeContext, IndexedFileId, index_file_at};
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SharedProducers {
     by_name: FxHashMap<Box<str>, Vec<PathBuf>>,
+    /// The files the map was built over, in path order.
+    files: Vec<PathBuf>,
+    procedures: ProcedureNames,
 }
+
+/// The names of the internal procedures the files of a [`SharedProducers`]
+/// define, read on the first question and not before. Two maps are equal
+/// whatever either has read.
+#[derive(Debug, Default)]
+struct ProcedureNames(OnceLock<FxHashSet<Box<str>>>);
+
+impl Clone for ProcedureNames {
+    fn clone(&self) -> Self {
+        ProcedureNames::default()
+    }
+}
+
+impl PartialEq for ProcedureNames {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ProcedureNames {}
 
 impl SharedProducers {
     /// Scan `files` and record which of them produce each `SHARED` name.
@@ -96,7 +121,9 @@ impl SharedProducers {
     /// the order of `files`.
     pub fn from_definitions(files: impl IntoIterator<Item = (PathBuf, Vec<IndexName>)>) -> Self {
         let mut by_name: FxHashMap<Box<str>, Vec<PathBuf>> = FxHashMap::default();
+        let mut listed = Vec::new();
         for (path, names) in files {
+            listed.push(path.clone());
             for name in names {
                 let paths = by_name.entry(name.as_str().into()).or_default();
                 if !paths.contains(&path) {
@@ -107,7 +134,30 @@ impl SharedProducers {
         for paths in by_name.values_mut() {
             paths.sort();
         }
-        SharedProducers { by_name }
+        listed.sort();
+        SharedProducers {
+            by_name,
+            files: listed,
+            procedures: ProcedureNames::default(),
+        }
+    }
+
+    /// Whether any file of the map defines an internal procedure called
+    /// `name`, as the text of the file is written.
+    ///
+    /// The files are read on the first question, on every available thread;
+    /// a map that is never asked reads nothing. The include files the files
+    /// name are read too (see [`scan_procedures`]). A name in a file that does
+    /// not read, and one that only an include named by `{&name}` or `{1}`
+    /// supplies, is not seen.
+    pub fn defines_procedure(&self, name: &IndexName, includes: &IncludeContext<'_>) -> bool {
+        self.procedures
+            .0
+            .get_or_init(|| {
+                let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+                scan_procedures(&self.files, includes, threads)
+            })
+            .contains(name.as_str())
     }
 
     /// The files that define `name`, in path order.
@@ -146,6 +196,150 @@ pub fn definitions_in(path: &Path, includes: &IncludeContext<'_>) -> Vec<IndexNa
     index_file_at(IndexedFileId::new(0), path, &source, includes)
         .0
         .shared_definitions
+}
+
+/// The folded names of the internal procedures `files` define, and the files
+/// they include, read on `threads` threads (at least one). The result does not
+/// depend on the number of threads.
+///
+/// An `{include}` is followed when its name is written out (`{lib/units.i}`, not
+/// `{&name}` or `{1}`) and it resolves in the file's own directory or on the
+/// include paths. A procedure that an include file defines may be supplied
+/// to any program that includes it, such as a super procedure.
+pub fn scan_procedures(
+    files: &[PathBuf],
+    includes: &IncludeContext<'_>,
+    threads: usize,
+) -> FxHashSet<Box<str>> {
+    let threads = threads.clamp(1, files.len().max(1));
+    let next = AtomicUsize::new(0);
+    let scan = || {
+        let mut mine = Scanned::default();
+        while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+            if let Ok(source) = includes.fs.read(path) {
+                mine.add(path.parent(), &source);
+            }
+        }
+        mine
+    };
+    let mut all = if threads == 1 {
+        scan()
+    } else {
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads).map(|_| scope.spawn(scan)).collect();
+            let mut all = Scanned::default();
+            for worker in workers {
+                match worker.join() {
+                    Ok(mine) => all.merge(mine),
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            all
+        })
+    };
+    // The include files, each read once, and the ones they include.
+    let mut seen: FxHashSet<PathBuf> = FxHashSet::default();
+    let mut pending: Vec<(Option<PathBuf>, String)> = all.includes.drain().collect();
+    pending.sort();
+    while let Some((dir, name)) = pending.pop() {
+        let own: Vec<PathBuf> = dir.into_iter().collect();
+        let Some(path) = includes
+            .fs
+            .resolve_include(&own, &name)
+            .or_else(|| includes.fs.resolve_include(includes.include_paths, &name))
+            .or_else(|| {
+                includes
+                    .fs
+                    .resolve_include(includes.root_relative_paths, &name)
+            })
+        else {
+            continue;
+        };
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        if let Ok(source) = includes.fs.read(&path) {
+            let mut found = Scanned::default();
+            found.add(path.parent(), &source);
+            all.names.extend(found.names);
+            pending.extend(found.includes);
+        }
+    }
+    all.names
+}
+
+/// What a scan of source files found: procedure names, and the include
+/// references to follow, each with the directory of the file that holds it.
+#[derive(Default)]
+struct Scanned {
+    names: FxHashSet<Box<str>>,
+    includes: FxHashSet<(Option<PathBuf>, String)>,
+}
+
+impl Scanned {
+    fn add(&mut self, dir: Option<&Path>, source: &str) {
+        procedure_names(source, &mut self.names);
+        for name in include_names(source) {
+            self.includes
+                .insert((dir.map(Path::to_path_buf), name.to_string()));
+        }
+    }
+
+    fn merge(&mut self, other: Scanned) {
+        self.names.extend(other.names);
+        self.includes.extend(other.includes);
+    }
+}
+
+/// The written-out names of the `{include}` references of `source`: the word
+/// after a `{` that does not start a `{&name}`, a `{1}` or a `{}`.
+fn include_names(source: &str) -> impl Iterator<Item = &str> {
+    source.match_indices('{').filter_map(|(at, _)| {
+        let rest = &source[at + 1..];
+        let first = rest.chars().next()?;
+        if !(first.is_alphanumeric() || matches!(first, '_' | '.' | '/' | '\\' | '"' | '\''))
+            || first.is_ascii_digit()
+        {
+            return None;
+        }
+        let end = rest.find(|c: char| c.is_whitespace() || matches!(c, '}' | '{'))?;
+        let name = rest[..end].trim_matches(['"', '\'']);
+        (!name.is_empty() && !name.contains(['&', '*'])).then_some(name)
+    })
+}
+
+/// Add the folded name of every `PROCEDURE name` in `source` to `out`. A word
+/// after `PROCEDURE` that is not a name is added too: `SUBSCRIBE PROCEDURE h`
+/// names a handle. That only makes a question answer "defined" more often.
+fn procedure_names(source: &str, out: &mut FxHashSet<Box<str>>) {
+    // The keyword may be abbreviated to `PROC`.
+    if !source
+        .as_bytes()
+        .windows(4)
+        .any(|w| w.eq_ignore_ascii_case(b"proc"))
+    {
+        return;
+    }
+    let tokens = oxabl_lexer::tokenize(source);
+    for pair in tokens.windows(2) {
+        // The lexer reads the abbreviations as plain words.
+        let keyword = pair[0].kind == Kind::Procedure
+            || (pair[0].kind == Kind::Identifier
+                && is_procedure_abbreviation(&source[pair[0].start..pair[0].end]));
+        if !keyword {
+            continue;
+        }
+        let word = source[pair[1].start..pair[1].end].trim_matches(['"', '\'']);
+        if word.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+            out.insert(IndexName::new(word).as_str().into());
+        }
+    }
+}
+
+/// `PROC`, `PROCE`, ... up to `PROCEDURE`, in any case.
+fn is_procedure_abbreviation(word: &str) -> bool {
+    const FULL: &str = "procedure";
+    (4..=FULL.len()).contains(&word.len()) && FULL[..word.len()].eq_ignore_ascii_case(word)
 }
 
 /// Whether [`index_file_at`] can find a shared definition in `source`, the file
@@ -356,6 +550,85 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn procedure_names_are_read_in_any_spelling() {
+        let files = [
+            (
+                "/a.p",
+                "PROCEDURE one-a:\nEND PROCEDURE.\nproc two-b:\nEND PROCEDURE.\nPROCEDURE \"Three-C\":\nEND.",
+            ),
+            ("/b.p", "MESSAGE \"proc nothing\".\nEND PROCEDURE."),
+        ];
+        let fs = fs_with(&files);
+        let predefined = PreprocessorConfig::default();
+        let includes = in_fs(&fs, &predefined);
+        let map = build(&fs, &paths(&files));
+        for (name, want) in [
+            ("one-a", true),
+            ("TWO-B", true),
+            ("three-c", true),
+            ("nothing", false),
+            ("missing", false),
+        ] {
+            assert_eq!(
+                map.defines_procedure(&IndexName::new(name), &includes),
+                want,
+                "{name}"
+            );
+        }
+        // The answer does not depend on the number of threads.
+        let one = scan_procedures(&paths(&files), &includes, 1);
+        assert_eq!(scan_procedures(&paths(&files), &includes, 8), one);
+        assert_eq!(one.len(), 3);
+    }
+
+    #[test]
+    fn the_include_files_a_file_names_are_followed() {
+        let files = [
+            ("/src/super.p", "{lib/units.i}\n{&dynamic}\n{1}\n"),
+            (
+                "/src/lib/units.i",
+                "PROCEDURE convert-units:\nEND PROCEDURE.\n{deeper.i}",
+            ),
+            (
+                "/src/lib/deeper.i",
+                "PROCEDURE from-deeper:\nEND PROCEDURE.",
+            ),
+            (
+                "/src/unused.i",
+                "PROCEDURE nobody-includes-me:\nEND PROCEDURE.",
+            ),
+        ];
+        let fs = fs_with(&files);
+        let predefined = PreprocessorConfig::default();
+        let include_paths = [PathBuf::from("/src")];
+        let includes = IncludeContext {
+            fs: &fs,
+            include_paths: &include_paths,
+            root_relative_paths: &[],
+            predefined: &predefined,
+        };
+        let names = scan_procedures(&paths(&files[..1]), &includes, 2);
+        assert!(names.contains("convert-units"));
+        // An include of an include is followed, from the including file's own
+        // directory.
+        assert!(names.contains("from-deeper"));
+        assert!(!names.contains("nobody-includes-me"));
+    }
+
+    #[test]
+    fn a_map_reads_no_procedure_until_it_is_asked() {
+        let files = [("/a.p", "PROCEDURE x:\nEND PROCEDURE.")];
+        let fs = fs_with(&files);
+        let map = build(&fs, &paths(&files));
+        assert!(map.procedures.0.get().is_none());
+        // Two maps are equal whatever either has read.
+        let other = build(&fs, &paths(&files));
+        let predefined = PreprocessorConfig::default();
+        other.defines_procedure(&IndexName::new("x"), &in_fs(&fs, &predefined));
+        assert_eq!(map, other);
     }
 
     #[test]

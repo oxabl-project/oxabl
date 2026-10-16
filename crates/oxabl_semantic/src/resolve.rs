@@ -220,6 +220,19 @@ fn climbs_out(raw: &str) -> bool {
     rest.starts_with("../") || rest.starts_with("..\\")
 }
 
+/// Whether a literal `RUN` target that no search path supplies is reported as
+/// an undefined symbol: it names a file (it has an extension) and does not climb
+/// out of the search paths. Any other miss is inconclusive for that rule.
+pub fn run_miss_is_reported(raw: &str) -> bool {
+    has_run_extension(raw) && !climbs_out(raw)
+}
+
+/// Whether a literal `RUN` target starts with `..`, so it is relative to a
+/// directory the search paths do not cover and no miss proves anything.
+pub fn run_target_climbs_out(raw: &str) -> bool {
+    climbs_out(raw)
+}
+
 /// A `RUN` target that is a single name: no extension and no path separator.
 fn is_bare_run_name(raw: &str) -> bool {
     !raw.contains(['/', '\\']) && !has_run_extension(raw)
@@ -2002,7 +2015,7 @@ impl<'a> ResolveWalker<'a> {
     /// new findings were extension-less internal calls, every one of them correct
     /// ABL.
     fn run_miss_reason(&self, raw: &str, name: &OxablAtom) -> UnresolvedReason {
-        if !has_run_extension(raw) || climbs_out(raw) {
+        if !run_miss_is_reported(raw) {
             return UnresolvedReason::External;
         }
         self.absent_reason(name)

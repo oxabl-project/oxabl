@@ -57,7 +57,7 @@ use oxabl_ast::{AccessModifier, Statement, StatementKind, UsingSource};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 
 use crate::resolve::fold_atom;
-use crate::{ResolvedType, SymbolKind};
+use crate::{ResolvedType, Signature, SymbolKind};
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -695,6 +695,31 @@ pub trait WorkspaceIndex {
     /// consumer the edge and nothing else: the unresolved row is still recorded.
     fn located(&self, _kind: LocateKind, _name: &IndexName) -> Located {
         Located::Nowhere
+    }
+
+    /// The parameters of the program a literal `RUN` names, or of one of its
+    /// internal procedures when `procedure` is given.
+    ///
+    /// `None` when the index cannot say: no such program, a file it cannot
+    /// use, a parameter list its statements do not show whole, a procedure
+    /// the file does not define with a body. A consumer must treat `None` as
+    /// Unknown, never as "takes no parameters". Defaults to `None`.
+    fn signature(
+        &self,
+        _program: &IndexName,
+        _procedure: Option<&IndexName>,
+    ) -> Option<Arc<Signature>> {
+        None
+    }
+
+    /// Whether some file of the run's workspace defines an internal procedure
+    /// called `name`: a procedure that a super procedure or a persistent
+    /// procedure may supply to a plain `RUN name`.
+    ///
+    /// `None` when the index holds no list of the workspace's files, so it
+    /// cannot say. Defaults to `None`.
+    fn workspace_defines_procedure(&self, _name: &IndexName) -> Option<bool> {
+        None
     }
 
     /// The generation this index is on. Stamped onto every
