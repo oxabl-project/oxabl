@@ -142,6 +142,8 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ),
             ("TX005", "scope-widened", "strict.transactions", warning),
             ("DB001", "find-in-loop", "strict.access", warning),
+            ("NL001", "unknown-in-comparison", "strict.nulls", warning),
+            ("NL002", "unknown-propagation", "strict.nulls", warning),
             ("NL003", "field-after-failed-find", "strict.nulls", warning),
         ]
     );

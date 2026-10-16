@@ -92,3 +92,11 @@ pub const DB001: &str = "DB001";
 
 /// Diagnostic code for `field-after-failed-find` (NL003).
 pub const NL003: &str = "NL003";
+
+/// Diagnostic code for `unknown-in-comparison`.
+pub const NL001: &str = "NL001";
+pub mod unknown_in_comparison;
+
+/// Diagnostic code for `unknown-propagation`.
+pub const NL002: &str = "NL002";
+pub mod unknown_propagation;

@@ -26,7 +26,7 @@ use oxabl_analyze::DiagnosticSource;
 use oxabl_pipeline::{ConfigOverrides, LintPipeline, PipelineConfig};
 use oxabl_workspace::{RealFileSystem, discover_path, walk_include_fragments};
 
-const RULES: [&str; 1] = ["NL003"];
+const RULES: [&str; 3] = ["NL001", "NL002", "NL003"];
 const N: usize = RULES.len();
 
 struct Finding {

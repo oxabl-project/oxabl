@@ -14,13 +14,14 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
     CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
-    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL003, TX001, TX002, TX003, TX004, TX005,
-    TX006, assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
-    dynamic_invoke, field_after_failed_find, find_in_loop, handle_not_deleted,
-    implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
-    missing_no_undo, missing_widget_pool, persistent_procedure_leak, procedure_wide_transaction,
-    run_value, scope_widened, shared_state, transaction_spans_call, transaction_spans_ui,
-    type_mismatch_assignment, undefined_symbol, unknown_table_or_field, unused_variable,
+    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, TX001, TX002, TX003,
+    TX004, TX005, TX006, assigned_but_never_read, block_var_used_outside, default_lock,
+    delete_not_in_finally, dynamic_invoke, field_after_failed_find, find_in_loop,
+    handle_not_deleted, implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop,
+    memptr_not_freed, missing_no_undo, missing_widget_pool, persistent_procedure_leak,
+    procedure_wide_transaction, run_value, scope_widened, shared_state, transaction_spans_call,
+    transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
+    unknown_propagation, unknown_table_or_field, unused_variable,
 };
 use crate::shared::RunShared;
 
@@ -577,6 +578,32 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         find_in_loop::DESCRIPTION,
         find_in_loop::DEFAULT_SEVERITY,
         find_in_loop::check,
+    ),
+    FnRule::over_nulls(
+        RuleMeta::new(
+            NL001,
+            unknown_in_comparison::NAME,
+            unknown_in_comparison::GROUP,
+            unknown_in_comparison::DESCRIPTION,
+        )
+        .with_default_severity(unknown_in_comparison::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        unknown_in_comparison::check,
+    ),
+    FnRule::over_nulls(
+        RuleMeta::new(
+            NL002,
+            unknown_propagation::NAME,
+            unknown_propagation::GROUP,
+            unknown_propagation::DESCRIPTION,
+        )
+        .with_default_severity(unknown_propagation::DEFAULT_SEVERITY)
+        .with_stability(Stability::Preview)
+        .context_free()
+        .reported_at_use_site(),
+        unknown_propagation::check,
     ),
     FnRule::over_nulls(
         RuleMeta::new(

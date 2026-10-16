@@ -22,6 +22,7 @@ mod tx002_procedure_wide_transaction;
 mod tx003_transaction_spans_ui;
 mod tx004_transaction_spans_call;
 mod tx005_scope_widened;
+mod value_rules;
 
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
