@@ -8,16 +8,23 @@
 //! their buffer.
 
 use oxabl_ast::{NodeId, Span};
-use oxabl_flow::dataflow::{Analysis, BitSet, Direction, default_budget, solve_within};
+use oxabl_flow::dataflow::{
+    Analysis, BitSet, Direction, Limits, default_budget, solve_bounded, solve_within,
+};
 use oxabl_flow::{Cfg, EdgeKind, FileFlow, NodeIx, NodeKind, OpaqueReason, UnitId, UnitKind};
 use oxabl_lexer::{Kind, Token};
 use oxabl_scope::{BufferId, BufferKind, FileScopes, ReadKind, Reference, Table};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use std::cell::Cell;
 
 use crate::cond::{self, Cond};
 use crate::model::{FailedFind, MissingRecord};
 use crate::{FileNulls, NullOptions};
+
+/// The most work the solve of one unit may do (see `Fact::cost`). Past it the
+/// unit is Unknown.
+const WORK_LIMIT: usize = 1_000_000;
 
 /// A token without its value.
 #[derive(Debug, Clone, Copy)]
@@ -322,6 +329,7 @@ pub(crate) fn analyze(
     }
 
     let mut out_finds: Vec<FailedFind> = Vec::new();
+    let mut exhausted: Vec<UnitId> = Vec::new();
     let mut missing: FxHashMap<(u32, u32), MissingRecord> = FxHashMap::default();
     let mut by_unit: FxHashMap<UnitId, SmallVec<[usize; 4]>> = FxHashMap::default();
     for &i in &finds {
@@ -402,8 +410,9 @@ pub(crate) fn analyze(
             continue;
         }
         // Past the work budget the unit is Unknown: no finding.
-        let Ok(tests) = solve_within(cfg, &TestAhead { ivs, facts: &facts }, default_budget(cfg))
-        else {
+        let ahead = TestAhead { ivs, facts: &facts };
+        let Ok(tests) = solve_within(cfg, &ahead, default_budget(cfg)) else {
+            exhausted.push(unit);
             continue;
         };
         let mut test_ahead = vec![false; cfg.node_count()];
@@ -416,8 +425,14 @@ pub(crate) fn analyze(
             sites: &sites,
             shared: &shared,
             test_ahead: &test_ahead,
+            extra: Cell::new(0),
         };
-        let Ok(solution) = solve_within(cfg, &problem, default_budget(cfg)) else {
+        let limits = Limits {
+            visits: default_budget(cfg),
+            work: WORK_LIMIT,
+        };
+        let Ok(solution) = solve_bounded(cfg, &problem, limits) else {
+            exhausted.push(unit);
             continue;
         };
         for (n, node) in cfg.nodes() {
@@ -487,6 +502,7 @@ pub(crate) fn analyze(
         finds: finds_sorted,
         missing,
         unknown: Vec::new(),
+        exhausted,
     }
 }
 
@@ -940,6 +956,18 @@ struct Fact {
     pairs: BitSet,
 }
 
+impl Fact {
+    /// The work to clone, join and compare the fact: its four allocations and
+    /// the words of its sets.
+    fn cost(&self) -> usize {
+        let bits = self.maybe.universe()
+            + self.error_status.universe()
+            + self.empty.universe()
+            + self.pairs.universe();
+        4 + bits.div_ceil(64)
+    }
+}
+
 struct Problem<'a> {
     ivs: &'a [u32],
     facts: &'a [Facts],
@@ -948,6 +976,9 @@ struct Problem<'a> {
     /// Per node, whether a test of `ERROR-STATUS` may follow it before a
     /// statement with `NO-ERROR` resets it.
     test_ahead: &'a [bool],
+    /// Work of the current visit beyond the size of its fact, which
+    /// [`Analysis::fact_cost`] takes.
+    extra: Cell<usize>,
 }
 
 /// Whether a test of `ERROR-STATUS` may run before the next statement with
@@ -1047,9 +1078,11 @@ impl Problem<'_> {
             if done.contains(&b) {
                 continue;
             }
+            self.extra.set(self.extra.get() + done.len());
             done.push(b);
             self.clear(fact, b);
             if let Some(ps) = self.sites.pairs_of_target.get(&b) {
+                self.extra.set(self.extra.get() + ps.len());
                 for &p in ps {
                     if fact.pairs.contains(p as usize) {
                         todo.push(self.sites.pairs[p as usize].1);
@@ -1247,6 +1280,10 @@ impl Analysis for Problem<'_> {
         acc.error_status.intersect_with(&other.error_status);
         acc.empty.intersect_with(&other.empty);
         acc.pairs.intersect_with(&other.pairs);
+    }
+
+    fn fact_cost(&self, fact: &Fact) -> usize {
+        fact.cost() + self.extra.take()
     }
 
     fn transfer(&self, cfg: &Cfg, node: NodeIx, fact: &mut Fact) {
