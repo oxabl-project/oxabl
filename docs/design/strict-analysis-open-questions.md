@@ -1462,13 +1462,9 @@ Over the two corpora of section 7.6, with their schemas and `strict.nulls` on
 (`crates/oxabl/examples/nulls_corpus.rs`): no panic. NL004 gives 595 findings in the first corpus
 and 165 in the second (16 and 21 at a use site). NL001, NL002 and NL003 give
 exactly the findings they gave before (93, 44 and 9,774; 16, 28 and 825), line for line. With
-`strict.nulls` off, `oxabl check --json --no-format .` is byte-identical on both trees. The counts
-by top directory (directories with none left out) are:
-
-- First corpus: `oe` 103, `mf` 75, `crm_webhost` 42, `po` 38, `ar` 35, `ap` 29, `ms` 27, `ic` 25,
-  `wam_tmpl` 25, `rm` 20, `wam` 19, `sa` 18, `gl` 13, `zf` 13, `dotnet` 12, `vp_webhost` 11,
-  `cv` 9, `web` 8, `zt` 7, `dotnetrm` 6, `inc` 6, and 5 or fewer in 17 more.
-- Second corpus: `wms_webhost` 72, `rf` 49, `remote` 38, `eod` 4, `ifaces` 2.
+`strict.nulls` off, `oxabl check --json --no-format .` is byte-identical on both trees. The
+findings spread over 38 top directories in the first corpus (at most 103 in one) and 5 in the
+second (at most 72 in one).
 
 Triage.
 
@@ -1482,8 +1478,8 @@ That is a false-positive rate under 3 % (2 of 76) on the findings read. The one 
 a correlation with a local, a known class (sections 9.7 and 9.10). "Right" means that the field
 can hold `?` there and nothing in the unit says otherwise, not that the code is wrong: most
 right findings are of four kinds. A date field read after a `FIND` or in a `FOR EACH` and
-compared with a date or subtracted (`due-date`, `plan-pay-dt`, `period-end + 1`, `street-date`);
-a number (WMS `item_qty`, `sugg_qty`) added to a running total or subtracted from another; a
+compared with a date or subtracted (a due date, a planned payment date, `period-end + 1`);
+a quantity added to a running total or subtracted from another; a
 character field concatenated into a message or a page; and a validation that reports a `?`
 field and then compares it anyway (`IF f = 0 OR f = ? THEN log-error.` and then `IF f > g`).
 
