@@ -43,6 +43,8 @@
 //! |-------|-----------------------------|-----------------------|-----------------------------------------------------------|
 //! | CL001 | [`run_value`]               | `strict.calls`        | `RUN VALUE(...)`                                          |
 //! | CL002 | [`dynamic_invoke`]          | `strict.calls`        | `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `DYNAMIC-PROPERTY`, `CREATE CALL` |
+//! | CL003 | [`signature_mismatch`]      | `strict.calls`        | a static `RUN` whose arguments differ from the callee's parameters in count, kind, mode or type |
+//! | CL004 | [`unresolved_call`]         | `strict.calls`        | a static `RUN` of a name that is neither a procedure of the file nor a program on the search paths |
 //! | CL005 | [`shared_state`]            | `strict.calls`        | `NEW SHARED`, `NEW GLOBAL SHARED` and `SHARED` definitions |
 //! | TX006 | [`missing_no_undo`]         | `strict.transactions` | variable, parameter, temp-table or property without `NO-UNDO` |
 //! | HD001 | [`handle_not_deleted`]      | `strict.handles`      | a dynamic object that some path loses without a delete    |
@@ -95,15 +97,16 @@ pub use registry::{
     Rule, RuleFn, RuleGroup, RuleMeta, ScopesFn, Stability, groups,
 };
 pub use rules::{
-    CL001, CL002, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003,
-    LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, NL004, TX001, TX002,
-    TX003, TX004, TX005, TX006, assigned_but_never_read, block_var_used_outside, default_lock,
-    delete_not_in_finally, dynamic_invoke, field_after_failed_find, find_in_loop,
-    handle_not_deleted, implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop,
-    memptr_not_freed, missing_no_undo, missing_widget_pool, nullable_db_field,
-    persistent_procedure_leak, procedure_wide_transaction, run_value, scope_widened, shared_state,
-    transaction_spans_call, transaction_spans_ui, type_mismatch_assignment, undefined_symbol,
-    unknown_in_comparison, unknown_propagation, unknown_table_or_field, unused_variable,
+    CL001, CL002, CL003, CL004, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001,
+    LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003,
+    NL004, TX001, TX002, TX003, TX004, TX005, TX006, assigned_but_never_read,
+    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
+    field_after_failed_find, find_in_loop, handle_not_deleted, implicit_transaction,
+    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
+    run_value, scope_widened, shared_state, signature_mismatch, transaction_spans_call,
+    transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
+    unknown_propagation, unknown_table_or_field, unresolved_call, unused_variable,
 };
 pub use shared::{CalleeSummaries, RunShared};
 

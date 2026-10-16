@@ -23,6 +23,7 @@ pub mod procedure_wide_transaction;
 pub mod run_value;
 pub mod scope_widened;
 pub mod shared_state;
+pub mod signature_mismatch;
 pub mod transaction_spans_call;
 pub mod transaction_spans_ui;
 pub mod type_mismatch_assignment;
@@ -30,9 +31,12 @@ pub mod undefined_symbol;
 pub mod unknown_in_comparison;
 pub mod unknown_propagation;
 pub mod unknown_table_or_field;
+pub mod unresolved_call;
 pub mod unused_symbol_shared;
 pub mod unused_variable;
 
+// The `RUN` statements and call-graph entries the call rules read.
+mod call_support;
 // Wording and anchoring for the handle rules.
 mod handle_support;
 // Shared queries over the scope analysis for the lock and transaction rules.
@@ -57,6 +61,10 @@ pub const LINT0006: &str = "LINT0006";
 pub const CL001: &str = "CL001";
 /// Diagnostic code for `dynamic-invoke` (CL002).
 pub const CL002: &str = "CL002";
+/// Diagnostic code for `signature-mismatch` (CL003).
+pub const CL003: &str = "CL003";
+/// Diagnostic code for `unresolved-call` (CL004).
+pub const CL004: &str = "CL004";
 /// Diagnostic code for `shared-state` (CL005).
 pub const CL005: &str = "CL005";
 /// Diagnostic code for `implicit-transaction` (TX001).
