@@ -101,7 +101,11 @@ fn args() -> Args {
                 }
             }
             "--own-dir-search" => {
-                out.own_dir_search = value().split(',').map(PathBuf::from).collect();
+                out.own_dir_search = value()
+                    .split(',')
+                    .filter(|d| !d.is_empty())
+                    .map(PathBuf::from)
+                    .collect();
             }
             "--trigger-dirs" => {
                 out.trigger_dirs = value()
