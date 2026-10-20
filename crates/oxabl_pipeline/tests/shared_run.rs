@@ -261,3 +261,72 @@ fn a_shared_run_is_sync() {
     fn sync<T: Sync>() {}
     sync::<SharedRun<'static>>();
 }
+
+#[test]
+fn a_shared_run_links_shared_names_to_their_producers_as_a_seeded_run_does() {
+    let files: &[(&str, &str)] = &[
+        (
+            "app/start.p",
+            "DEFINE NEW SHARED VARIABLE g-co AS CHARACTER NO-UNDO.\nRUN app/use.p.\n",
+        ),
+        (
+            "app/use.p",
+            "DEFINE SHARED VARIABLE g-co AS CHARACTER NO-UNDO.\nMESSAGE g-co.\n",
+        ),
+        ("app/also.p", "{inc/g.i}\nMESSAGE g-co.\n"),
+        (
+            "inc/g.i",
+            "DEFINE SHARED VARIABLE g-co AS CHARACTER NO-UNDO.\n",
+        ),
+    ];
+    let fs = CountingFs::new(files);
+    let config = config();
+    let known: Vec<PathBuf> = files
+        .iter()
+        .map(|(path, _)| PathBuf::from(format!("/proj/{path}")))
+        .collect();
+    let roots = ["app/use.p", "app/also.p", "app/start.p"];
+    let facts_of = |run: &LintPipeline<'_>, index_path: &dyn Fn(&EdgeTarget) -> Option<PathBuf>| {
+        roots
+            .iter()
+            .map(|root| {
+                let path = PathBuf::from(format!("/proj/{root}"));
+                let source = fs.read(&path).unwrap();
+                facts(&run.with_file(path).edge_set(&source).unwrap(), index_path)
+            })
+            .collect::<Vec<_>>()
+    };
+    let own = LintPipeline::new(&config, &fs).with_known_files(&known);
+    let expected = facts_of(&own, &|t| match t {
+        EdgeTarget::IndexedFile { file, .. } => own.indexed_path(*file),
+        _ => None,
+    });
+    let shared = SharedRun::new(&config, &fs).with_known_files(&known);
+    let got = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                scope.spawn(|| {
+                    let run = shared.handle();
+                    facts_of(&run, &|t| match t {
+                        EdgeTarget::IndexedFile { file, .. } => shared.indexed_path(*file),
+                        _ => None,
+                    })
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|w| w.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for facts in got {
+        assert_eq!(facts, expected);
+    }
+    assert!(
+        expected[0]
+            .iter()
+            .any(|f| f.contains("SharedProducer") && f.contains("app/start.p")),
+        "{:#?}",
+        expected[0]
+    );
+}
