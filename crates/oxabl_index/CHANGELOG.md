@@ -1,5 +1,32 @@
 # Changelog
 
+## [3.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.0.1...oxabl_index-v3.1.0) (2026-10-20)
+
+
+### Features
+
+* **index:** let a client cap the threads the known-file scans use ([950eae5](https://github.com/oxabl-project/oxabl/commit/950eae56a6af3b43288c2e66efefbe41ba219def))
+* **index:** name the view BatchIndex::searching_from returns ([ef19b8f](https://github.com/oxabl-project/oxabl/commit/ef19b8f0675260ea684f4ca5fb5a77e68d677811))
+
+
+### Performance Improvements
+
+* **index:** scan known files outside the memo lock, and CachedFileSystem fixes ([e506994](https://github.com/oxabl-project/oxabl/commit/e506994ce48ac4f6dc98644cf9046ebb27d3e439))
+* **index:** scan the known files for SHARED producers outside the memo lock ([1967d4b](https://github.com/oxabl-project/oxabl/commit/1967d4bb6c0de58eb66407d3e6d7a851493be4f1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 3.0.1 to 3.0.2
+    * oxabl_preprocessor bumped from 0.7.1 to 0.7.2
+    * oxabl_schema bumped from 0.4.1 to 0.4.2
+    * oxabl_semantic bumped from 3.0.1 to 3.0.2
+    * oxabl_workspace bumped from 3.1.0 to 3.2.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.1 to 0.4.2
+
 ## [3.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.0.0...oxabl_index-v3.0.1) (2026-10-20)
 
 

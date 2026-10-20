@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_pipeline"
-version = "3.1.0"
+version = "3.2.0"
 edition = "2024"
 license = "MIT"
 description = "Shared lint and format pipelines over one resolved oxabl configuration"
@@ -22,23 +22,23 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_pipeline"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-oxabl_effects = { path = "../oxabl_effects", version = "0.2.1" }
+oxabl_effects = { path = "../oxabl_effects", version = "0.2.2" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.0" }
-oxabl_parser = { path = "../oxabl_parser", version = "3.0.1" }
-oxabl_flow = { path = "../oxabl_flow", version = "0.3.1" }
-oxabl_scope = { path = "../oxabl_scope", version = "0.2.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "3.0.2" }
+oxabl_flow = { path = "../oxabl_flow", version = "0.3.2" }
+oxabl_scope = { path = "../oxabl_scope", version = "0.2.2" }
 # For `Span`: a dependency edge carries the offsets in the dependent file where the
 # dependency is written, and `src/reverse.rs` hands them to a client.
 oxabl_ast = { path = "../oxabl_ast", version = "3.0.0" }
-oxabl_analyze = { path = "../oxabl_analyze", version = "3.0.1" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "3.0.2" }
 oxabl_common = { path = "../oxabl_common", version = "1.2.1" }
-oxabl_formatter = { path = "../oxabl_formatter", version = "2.0.1" }
-oxabl_index = { path = "../oxabl_index", version = "3.0.1" }
-oxabl_lint = { path = "../oxabl_lint", version = "3.0.1" }
-oxabl_schema = { path = "../oxabl_schema", version = "0.4.1" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "3.0.1" }
+oxabl_formatter = { path = "../oxabl_formatter", version = "2.0.2" }
+oxabl_index = { path = "../oxabl_index", version = "3.1.0" }
+oxabl_lint = { path = "../oxabl_lint", version = "3.0.2" }
+oxabl_schema = { path = "../oxabl_schema", version = "0.4.2" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "3.0.2" }
 oxabl_style = { path = "../oxabl_style", version = "0.2.0" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "3.1.0" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "3.2.0" }
 
 [features]
 # The cross-client parity fixture table (`src/fixtures.rs`), shared by the four
@@ -69,7 +69,7 @@ oxabl_common = { path = "../oxabl_common", version = "1.2.1", features = [
 ] }
 # The shared `Customer(CustNum, Name)` fixture, so the schema-gated lint tests
 # assert against the same schema every other crate's tests use.
-oxabl_schema = { path = "../oxabl_schema", version = "0.4.1", features = [
+oxabl_schema = { path = "../oxabl_schema", version = "0.4.2", features = [
     "test-support",
 ] }
 

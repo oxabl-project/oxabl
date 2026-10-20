@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.1.0...oxabl_workspace-v3.2.0) (2026-10-20)
+
+
+### Features
+
+* **index:** let a client cap the threads the known-file scans use ([950eae5](https://github.com/oxabl-project/oxabl/commit/950eae56a6af3b43288c2e66efefbe41ba219def))
+
+
+### Bug Fixes
+
+* **workspace:** keep only failures a file gives in CachedFileSystem ([f593c1e](https://github.com/oxabl-project/oxabl/commit/f593c1efbabee73043e8537f1c885b42e3160a50))
+
+
+### Performance Improvements
+
+* **index:** scan known files outside the memo lock, and CachedFileSystem fixes ([e506994](https://github.com/oxabl-project/oxabl/commit/e506994ce48ac4f6dc98644cf9046ebb27d3e439))
+
 ## [3.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.0.0...oxabl_workspace-v3.1.0) (2026-10-20)
 
 
