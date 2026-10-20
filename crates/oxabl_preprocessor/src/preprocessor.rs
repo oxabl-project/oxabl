@@ -4322,10 +4322,11 @@ ELSE
 
         let without = run("");
         let with = run("{empty.i}");
-        assert_eq!(&*without.to_text(), "[s.i]\nfrom-scoped\n");
+        assert_eq!(&*without.to_text(), "[s.i]\nfrom-scoped\nscoped-defined\n");
         assert_eq!(&*with.to_text(), &*without.to_text());
-        // The name is a global and a scoped one, so DEFINED is a guess either way.
-        assert_eq!(with.diagnostics.len(), without.diagnostics.len());
+        // The scoped name is the visible one, so DEFINED is exact either way.
+        assert!(with.diagnostics.is_empty(), "{:?}", with.diagnostics);
+        assert!(without.diagnostics.is_empty(), "{:?}", without.diagnostics);
         assert_eq!(
             with.text_losses.iter().map(|l| l.kind).collect::<Vec<_>>(),
             without
@@ -4353,8 +4354,9 @@ ELSE
         assert_eq!(&*via.to_text(), "[s.i]\n[s.i]");
     }
 
+    /// The AVM ignores a global define of a name that is an include argument.
     #[test]
-    fn a_global_defined_over_an_include_argument_has_one_value_wherever_it_is_read() {
+    fn a_global_defined_over_an_include_argument_is_ignored() {
         let fs = make_fs(&[
             ("/inc/inc.i", "&GLOBAL-DEFINE a y\n[{&a}]"),
             ("/inc/wrap.i", "{inc.i}[{&a}]"),
@@ -4363,7 +4365,7 @@ ELSE
         let pp = Preprocessor::new(&fs, &include_paths);
         let result = pp.process(FileId::new(1), "{wrap.i &a=x}[{&a}]").unwrap();
 
-        assert_eq!(&*result.to_text(), "[x][x][y]");
+        assert_eq!(&*result.to_text(), "[x][x][]");
     }
 
     #[test]
@@ -4399,44 +4401,109 @@ ELSE
     }
 
     #[test]
-    fn a_global_undefined_in_an_include_stays_undefined() {
+    fn a_name_undefined_in_an_include_stays_undefined_whoever_defined_it() {
         let fs = make_fs(&[("/inc/undef.i", "&UNDEFINE g\n&UNDEFINE s\n")]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
         let source = "&GLOBAL-DEFINE g 1\n&SCOPED-DEFINE s 1\n{undef.i}\
                       &IF DEFINED(g) = 0 &THEN\ng-undefined\n&ENDIF\n\
-                      &IF DEFINED(s) = 3 &THEN\ns-kept\n&ENDIF\n";
+                      &IF DEFINED(s) = 0 &THEN\ns-undefined\n&ENDIF\n";
         let result = pp.process(FileId::new(1), source).unwrap();
 
-        assert_eq!(&*result.to_text(), "g-undefined\ns-kept\n");
+        assert_eq!(&*result.to_text(), "g-undefined\ns-undefined\n");
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 
+    /// The AVM ignores a global define of a name that has a scoped define, so
+    /// the order of the two decides what stays.
     #[test]
-    fn a_scoped_define_and_a_global_define_of_one_name_agree_whatever_their_order() {
+    fn a_global_define_after_a_scoped_define_of_one_name_is_ignored() {
         let fs = make_fs(&[]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
 
-        let global_first = "&GLOBAL-DEFINE x g\n&SCOPED-DEFINE x s\n&UNDEFINE x\n[{&x}]";
+        let global_first = "&GLOBAL-DEFINE x g\n&SCOPED-DEFINE x s\n[{&x}]&UNDEFINE x\n[{&x}]";
         let global_first = pp.process(FileId::new(1), global_first).unwrap();
-        let scoped_first = "&SCOPED-DEFINE x s\n&GLOBAL-DEFINE x g\n&UNDEFINE x\n[{&x}]";
+        let scoped_first = "&SCOPED-DEFINE x s\n&GLOBAL-DEFINE x g\n[{&x}]&UNDEFINE x\n[{&x}]";
         let scoped_first = pp.process(FileId::new(1), scoped_first).unwrap();
 
-        assert_eq!(&*global_first.to_text(), "[g]");
-        assert_eq!(&*scoped_first.to_text(), "[g]");
+        assert_eq!(&*global_first.to_text(), "[s][g]");
+        assert_eq!(&*scoped_first.to_text(), "[s][]");
     }
 
     #[test]
-    fn a_global_undefine_that_clears_a_global_behind_a_scoped_name_keeps_the_scoped_origin() {
+    fn an_undefine_in_an_include_removes_the_scoped_name_of_the_file_that_includes_it() {
         let fs = make_fs(&[("/inc/d.i", "&GLOBAL-DEFINE x g\n&UNDEFINE x\n&UNDEFINE x\n")]);
         let include_paths = vec![PathBuf::from("/inc")];
         let pp = Preprocessor::new(&fs, &include_paths);
-        let source = "&SCOPED-DEFINE x s\n{d.i}\n&IF DEFINED(x) = 3 &THEN yes &ELSE no &ENDIF";
+        let source = "&SCOPED-DEFINE x s\n{d.i}\n&IF DEFINED(x) = 0 &THEN yes &ELSE no &ENDIF";
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "\nyes ");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    /// The ADM `set` and `get` includes: the file holds a scoped `xp-assign`, the
+    /// first include swaps it for a global one, and the later ones see that.
+    #[test]
+    fn a_global_defined_in_an_include_after_it_undefines_a_scoped_name_is_global_after() {
+        let fs = make_fs(&[(
+            "/inc/set.i",
+            "&IF DEFINED(xp-assign) = 3 &THEN\nfirst {1}\n&UNDEFINE xp-assign\n\
+             &GLOBAL-DEFINE xp-assign {1}\n\
+             &ELSEIF DEFINED(xp-assign) = 1 AND '{&xp-assign}' = '{1}' &THEN\nsame {1}\n\
+             &ELSEIF DEFINED(xp-assign) = 1 &THEN\nother {1}\n&ELSE\nnone {1}\n&ENDIF\n",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "&SCOPED-DEFINE xp-assign\n{set.i a}{set.i a}{set.i b}\
+                      &UNDEFINE xp-assign\n{set.i c}";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "first a\nsame a\nother b\nnone c\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.text_losses.is_empty(), "{:?}", result.text_losses);
+    }
+
+    #[test]
+    fn a_scoped_define_over_an_include_argument_is_the_visible_one() {
+        let fs = make_fs(&[(
+            "/inc/inc.i",
+            "&IF DEFINED(v) = 2 &THEN arg &ENDIF\n&SCOPED-DEFINE v s\n\
+             &IF DEFINED(v) = 3 &THEN scoped {&v} &ENDIF\n&UNDEFINE v\n\
+             &IF DEFINED(v) = 2 &THEN arg {&v} &ENDIF\n",
+        )]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let source = "{inc.i &v=a}&IF DEFINED(v) = 0 &THEN gone &ENDIF";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "arg scoped s arg a gone ");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn an_empty_condition_is_false_and_not_a_guess() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF {&bootstrap} &THEN\nthen\n&ELSEIF {&other} &THEN\nelseif\n\
+                      &ELSE\nelse\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "else\n");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.text_losses.is_empty(), "{:?}", result.text_losses);
+    }
+
+    #[test]
+    fn an_empty_operand_is_a_syntax_error_and_a_guess() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&IF NOT {&missing} &THEN\nthen\n&ENDIF\n";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code.0, "PREPROC010");
     }
 
     #[test]

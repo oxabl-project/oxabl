@@ -78,6 +78,14 @@ pub struct Evaluation {
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
+    // A condition with nothing in it is false, as in the AVM; an empty operand
+    // inside one is a syntax error.
+    if tokens.is_empty() {
+        return Evaluation {
+            value: false,
+            gaps: Vec::new(),
+        };
+    }
     let mut parser = CondParser {
         tokens: &tokens,
         pos: 0,
@@ -502,9 +510,6 @@ enum CondValue {
     Num(i64),
     /// The ABL unknown value, `?`. As a logical it is the third truth value.
     Null,
-    /// A number known only to be above zero: `DEFINED` of a name that is more
-    /// than one of a global, a scoped define and an include argument.
-    Positive,
     /// The value of a part that was not modelled; a gap is already recorded for it.
     Unknown,
 }
@@ -562,7 +567,6 @@ impl<'a> CondParser<'a> {
             CondValue::Dec(d) => Some(!d.is_zero()),
             CondValue::Unknown => Some(false),
             CondValue::Null => None,
-            CondValue::Positive => Some(true),
             CondValue::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "yes" | "true" => Some(true),
                 "no" | "false" => Some(false),
@@ -723,8 +727,6 @@ impl<'a> CondParser<'a> {
                 Some(Origin::Global) => CondValue::Num(1),
                 Some(Origin::Argument) => CondValue::Num(2),
                 Some(Origin::Scoped) => CondValue::Num(3),
-                // The exact answer for a name that is several is not known.
-                Some(Origin::Mixed) => CondValue::Positive,
             },
             CondToken::BareDefined => {
                 self.invalid("DEFINED without a name in parentheses".into());
@@ -906,24 +908,6 @@ impl<'a> CondParser<'a> {
                 _ => None,
             };
         }
-        for (positive, other, flipped) in [(lhs, rhs, false), (rhs, lhs, true)] {
-            if !matches!(positive, CondValue::Positive) {
-                continue;
-            }
-            // Only a comparison with zero does not need the number itself.
-            let (Some(0), true) = (as_number(other), !matches!(other, CondValue::Positive)) else {
-                self.gap("DEFINED of a name that is defined in more than one way".into());
-                return Some(false);
-            };
-            let op = match (op, flipped) {
-                (CondToken::Lt, true) => &CondToken::Gt,
-                (CondToken::Gt, true) => &CondToken::Lt,
-                (CondToken::Le, true) => &CondToken::Ge,
-                (CondToken::Ge, true) => &CondToken::Le,
-                (op, _) => op,
-            };
-            return Some(matches!(op, CondToken::Neq | CondToken::Gt | CondToken::Ge));
-        }
         Some(match (type_of(lhs), type_of(rhs)) {
             // The AVM rejects it. The branch is a guess, read the loose way.
             (Some(a), Some(b)) if a != b => {
@@ -971,7 +955,7 @@ fn type_of(v: &CondValue) -> Option<ValueType> {
         CondValue::Str(_) => Some(ValueType::Text),
         CondValue::Num(_) | CondValue::Dec(_) => Some(ValueType::Number),
         CondValue::Bool(_) => Some(ValueType::Logical),
-        CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
+        CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -1064,7 +1048,7 @@ fn as_number(v: &CondValue) -> Option<i64> {
         CondValue::Num(n) => Some(*n),
         CondValue::Str(s) => s.trim().parse().ok(),
         CondValue::Bool(b) => Some(i64::from(*b)),
-        CondValue::Dec(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
+        CondValue::Dec(_) | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -1073,7 +1057,7 @@ fn as_decimal(v: &CondValue) -> Option<Decimal> {
         CondValue::Dec(d) => Some(d.clone()),
         CondValue::Num(n) => Decimal::parse(&n.to_string()),
         CondValue::Str(s) => Decimal::parse(s),
-        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
+        CondValue::Bool(_) | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -1083,7 +1067,7 @@ fn as_string(v: &CondValue) -> String {
         CondValue::Num(n) => n.to_string(),
         CondValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
         CondValue::Dec(d) => d.text.clone(),
-        CondValue::Positive | CondValue::Unknown | CondValue::Null => String::new(),
+        CondValue::Unknown | CondValue::Null => String::new(),
     }
 }
 
@@ -1096,7 +1080,7 @@ fn text(v: &CondValue) -> Option<String> {
         CondValue::Str(s) => Some(s.clone()),
         CondValue::Num(n) => Some(n.to_string()),
         CondValue::Dec(d) => Some(d.text.clone()),
-        CondValue::Bool(_) | CondValue::Positive | CondValue::Unknown | CondValue::Null => None,
+        CondValue::Bool(_) | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -1104,11 +1088,7 @@ fn int(v: &CondValue) -> Option<i64> {
     match v {
         CondValue::Num(n) => Some(*n),
         CondValue::Str(s) => s.trim().parse().ok(),
-        CondValue::Bool(_)
-        | CondValue::Dec(_)
-        | CondValue::Positive
-        | CondValue::Unknown
-        | CondValue::Null => None,
+        CondValue::Bool(_) | CondValue::Dec(_) | CondValue::Unknown | CondValue::Null => None,
     }
 }
 
@@ -1139,7 +1119,6 @@ fn call(name: &str, args: &[CondValue]) -> Option<CondValue> {
         "LOGICAL" => one(|a| match a {
             CondValue::Bool(b) => Some(CondValue::Bool(*b)),
             CondValue::Num(n) => Some(CondValue::Bool(*n != 0)),
-            CondValue::Positive => Some(CondValue::Bool(true)),
             CondValue::Dec(_) | CondValue::Unknown | CondValue::Null => None,
             CondValue::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
                 "yes" | "true" => Some(CondValue::Bool(true)),
@@ -1519,6 +1498,29 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_condition_with_nothing_in_it_is_false() {
+        // The AVM compiles `&IF {&undefined} &THEN` and takes the else branch.
+        assert!(!exact(""));
+        assert!(!exact("   \n "));
+        assert!(!exact("{&missing}"));
+        assert!(!exact("/* only a note */"));
+        assert!(!exact("// only a note"));
+    }
+
+    #[test]
+    fn an_empty_operand_is_still_a_syntax_error() {
+        // The AVM rejects each of these: only a whole condition may be empty.
+        for condition in ["NOT {&missing}", "{&missing} AND TRUE", "{&missing} = 1"] {
+            let e = eval(condition);
+            assert!(
+                !e.gaps.is_empty() && e.gaps.iter().all(|g| matches!(g, Gap::Invalid(_))),
+                "{condition}: {:?}",
+                e.gaps
+            );
+        }
+    }
+
     // --- Functions and gaps ---
 
     fn exact(condition: &str) -> bool {
@@ -1587,13 +1589,14 @@ mod tests {
         assert!(evaluate_exact("DEFINED(s) >= 2 AND DEFINED(g) < 2", &vars));
         assert!(evaluate_exact("DEFINED(a) <> 1 AND DEFINED(a) > 0", &vars));
         assert!(evaluate_exact("DEFINED(nothing) = 0", &vars));
-        // More than one at once: only "above zero" is certain.
+        // The newest definition of the name is the one DEFINED reports.
         vars.define("a", "y");
-        assert!(evaluate_exact("DEFINED(a) > 0 AND DEFINED(a) <> 0", &vars));
-        assert!(evaluate_exact("0 < DEFINED(a)", &vars));
-        assert!(!evaluate_exact("DEFINED(a) = 0", &vars));
+        assert!(evaluate_exact("DEFINED(a) = 3", &vars));
+        assert!(!evaluate_exact("DEFINED(a) = 2", &vars));
+        vars.undefine("a");
+        assert!(evaluate_exact("DEFINED(a) = 2", &vars));
         assert!(evaluate_exact("LOGICAL(DEFINED(a))", &vars));
-        assert_eq!(eval_in("DEFINED(a) = 2", &vars, None).gaps.len(), 1);
+        assert!(eval_in("DEFINED(a) = 2", &vars, None).gaps.is_empty());
     }
 
     #[test]
@@ -1724,7 +1727,6 @@ mod tests {
             "1 = 1 2",
             "12.5 + 3 > 3",
             r#"REPLACE("a", "a", "b") = "b""#,
-            "",
             "(1 = 1",
             r#""a" = "a" ?"#,
             r#""yes-ish""#,
