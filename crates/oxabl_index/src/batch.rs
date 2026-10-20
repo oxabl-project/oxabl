@@ -630,9 +630,11 @@ impl<'a> BatchIndex<'a> {
             // name from reading the whole walk.
             ProducerSource::Files(files) => {
                 let mut memo = self.memo();
+                // Marked only once the scan completes, so a scan cut short by a
+                // panic runs again on the next lookup.
                 if !memo.known_indexed {
-                    memo.known_indexed = true;
                     memo.index_possible_producers(&self.includes(&predefined), files);
+                    memo.known_indexed = true;
                 }
             }
         }
