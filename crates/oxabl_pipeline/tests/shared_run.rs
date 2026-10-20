@@ -156,9 +156,9 @@ const FILES: &[(&str, &str)] = &[
 const ROOTS: [&str; 4] = ["app/c.p", "app/a.p", "app/b.p", "app/Main.cls"];
 
 /// Each root's facts from a run of its own.
-fn alone(config: &PipelineConfig) -> Vec<Vec<String>> {
-    let fs = CountingFs::new(FILES);
-    ROOTS
+fn alone(config: &PipelineConfig, files: &[(&str, &str)], roots: &[&str]) -> Vec<Vec<String>> {
+    let fs = CountingFs::new(files);
+    roots
         .iter()
         .map(|root| {
             let run = LintPipeline::new(config, &fs).with_conditional_include_closure(true);
@@ -174,28 +174,26 @@ fn alone(config: &PipelineConfig) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Each root's facts from one shared run on `threads` threads, and the run's
+/// Each root's facts from one shared run on `threads` threads, which take the
+/// roots in `order` (indexes into `roots`, repeats allowed), and the run's
 /// filesystem.
 fn shared(
     config: &PipelineConfig,
+    files: &[(&str, &str)],
+    roots: &[&str],
+    order: &[usize],
     threads: usize,
-    rounds: usize,
 ) -> (Vec<Vec<String>>, CountingFs) {
-    let fs = CountingFs::new(FILES);
+    let fs = CountingFs::new(files);
     let shared = SharedRun::new(config, &fs);
     let next = AtomicUsize::new(0);
-    let out: Mutex<Vec<Option<Vec<String>>>> = Mutex::new(vec![None; ROOTS.len()]);
+    let out: Mutex<Vec<Option<Vec<String>>>> = Mutex::new(vec![None; roots.len()]);
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
                 let run = shared.handle().with_conditional_include_closure(true);
-                loop {
-                    let at = next.fetch_add(1, Ordering::Relaxed);
-                    if at >= ROOTS.len() * rounds {
-                        break;
-                    }
-                    let index = at % ROOTS.len();
-                    let path = PathBuf::from(format!("/proj/{}", ROOTS[index]));
+                while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let path = PathBuf::from(format!("/proj/{}", roots[index]));
                     let source = fs.read(&path).unwrap();
                     let edges = run.with_file(path).edge_set(&source).expect("edge set");
                     let facts = facts(&edges, &|t| match t {
@@ -204,7 +202,7 @@ fn shared(
                     });
                     let mut out = out.lock().unwrap();
                     if let Some(known) = &out[index] {
-                        assert_eq!(*known, facts, "{} differs between rounds", ROOTS[index]);
+                        assert_eq!(*known, facts, "{} differs between rounds", roots[index]);
                     }
                     out[index] = Some(facts);
                 }
@@ -220,12 +218,17 @@ fn shared(
     (facts, fs)
 }
 
+/// Every root, `rounds` times over.
+fn rounds(roots: usize, rounds: usize) -> Vec<usize> {
+    (0..roots).cycle().take(roots * rounds).collect()
+}
+
 #[test]
 fn a_shared_run_gives_each_file_the_edge_set_of_its_own_run() {
     let config = config();
-    let expected = alone(&config);
+    let expected = alone(&config, FILES, &ROOTS);
     for threads in [1, 4] {
-        let (got, _) = shared(&config, threads, 3);
+        let (got, _) = shared(&config, FILES, &ROOTS, &rounds(ROOTS.len(), 3), threads);
         for ((root, expected), got) in ROOTS.iter().zip(&expected).zip(&got) {
             assert_eq!(expected, got, "{root} on {threads} threads");
         }
@@ -245,7 +248,7 @@ fn a_shared_run_gives_each_file_the_edge_set_of_its_own_run() {
 #[test]
 fn a_shared_run_reads_what_its_files_share_once() {
     let config = config();
-    let (_, fs) = shared(&config, 4, 1);
+    let (_, fs) = shared(&config, FILES, &ROOTS, &rounds(ROOTS.len(), 1), 4);
     // Indexed once for the whole run, whichever threads reach them.
     assert_eq!(fs.reads_of("lib/util.p"), 1);
     assert_eq!(fs.reads_of("app/Thing.cls"), 1);
@@ -329,4 +332,91 @@ fn a_shared_run_links_shared_names_to_their_producers_as_a_seeded_run_does() {
         "{:#?}",
         expected[0]
     );
+}
+
+/// Roots in two directories that search their own directory first: the
+/// conditional target `inc/cond.i` names `Helper` and `util.p`, which each
+/// directory supplies, and `d1`'s copies also name the target.
+const OWN_DIR_FILES: &[(&str, &str)] = &[
+    (
+        "d1/r.p",
+        "&IF DEFINED(never) &THEN\n{inc/cond.i}\n&ENDIF\nMESSAGE 1.\n",
+    ),
+    (
+        "d2/r.p",
+        "&IF DEFINED(never) &THEN\n{inc/cond.i}\n&ENDIF\nMESSAGE 2.\n",
+    ),
+    (
+        "d1/Helper.cls",
+        "CLASS Helper:\n&IF DEFINED(never) &THEN\n{inc/cond.i}\n&ENDIF\nEND CLASS.\n",
+    ),
+    ("d2/Helper.cls", "CLASS Helper:\nEND CLASS.\n"),
+    (
+        "d1/util.p",
+        "&IF DEFINED(never) &THEN\n{inc/cond.i}\n&ENDIF\nMESSAGE 3.\n",
+    ),
+    ("d2/util.p", "MESSAGE 4.\n"),
+    (
+        "inc/cond.i",
+        "DEFINE VARIABLE h AS Helper NO-UNDO.\nh = NEW Helper().\nRUN util.p.\n\
+         &IF DEFINED(x) &THEN\nRUN util.p.\nh = NEW Helper().\n&ENDIF\n",
+    ),
+];
+
+const OWN_DIR_ROOTS: [&str; 6] = [
+    "d1/r.p",
+    "d2/r.p",
+    "d1/Helper.cls",
+    "d2/Helper.cls",
+    "d1/util.p",
+    "d2/util.p",
+];
+
+fn permutations(n: usize) -> Vec<Vec<usize>> {
+    if n == 0 {
+        return vec![Vec::new()];
+    }
+    let mut out = Vec::new();
+    for shorter in permutations(n - 1) {
+        for at in 0..=shorter.len() {
+            let mut order = shorter.clone();
+            order.insert(at, n - 1);
+            out.push(order);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_shared_run_matches_own_runs_when_roots_search_their_own_directory_first() {
+    let config = PipelineConfig {
+        root_relative_include_paths: vec![PathBuf::from(".")],
+        ..config()
+    };
+    let expected = alone(&config, OWN_DIR_FILES, &OWN_DIR_ROOTS);
+    // Each directory's copies are what the target names from there, and a
+    // root the target names gets no edge to itself.
+    let (d1, d2) = (&expected[0], &expected[1]);
+    assert!(
+        d1.iter().any(|f| f.contains("/proj/d1/Helper.cls")),
+        "{d1:#?}"
+    );
+    assert!(
+        d2.iter().any(|f| f.contains("/proj/d2/Helper.cls")),
+        "{d2:#?}"
+    );
+    let helper = &expected[2];
+    assert!(
+        !helper.iter().any(|f| f.contains("/proj/d1/Helper.cls")),
+        "{helper:#?}"
+    );
+    for order in permutations(OWN_DIR_ROOTS.len()) {
+        let (got, _) = shared(&config, OWN_DIR_FILES, &OWN_DIR_ROOTS, &order, 1);
+        assert_eq!(got, expected, "roots in order {order:?}");
+    }
+    for _ in 0..20 {
+        let order = rounds(OWN_DIR_ROOTS.len(), 4);
+        let (got, _) = shared(&config, OWN_DIR_FILES, &OWN_DIR_ROOTS, &order, 6);
+        assert_eq!(got, expected, "on 6 threads");
+    }
 }
