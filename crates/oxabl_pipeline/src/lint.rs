@@ -91,10 +91,11 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, BranchKind, ClosureReference, ClosureTarget, ConditionalBranch, ConditionalInclude,
-    ConditionalIncludeName, ConditionalReference, DirectIncludeInput, EdgeInputs, EdgeKind,
-    EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers,
-    UnreadableIncludeInput, UnresolvedIncludeInput, WrittenReference, build_edge_set,
+    BatchIndex, BranchKind, ClosureExpansions, ClosureReference, ClosureTarget, ConditionalBranch,
+    ConditionalInclude, ConditionalIncludeName, ConditionalReference, DirectIncludeInput,
+    EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput,
+    ReferenceSyntax, SharedProducers, UnreadableIncludeInput, UnresolvedIncludeInput,
+    WrittenReference, build_edge_set, conditional_include_closure_cached,
     conditional_include_closure_with, written_imports, written_references,
 };
 use oxabl_semantic::{
@@ -559,11 +560,12 @@ fn batch_index<'a>(config: &'a PipelineConfig, fs: &'a dyn FileSystem) -> BatchI
         .with_preprocessor(&config.preprocessor)
 }
 
-/// The class and program names conditional include targets write, by target.
-/// A target is analysed once: a file that needs it while another file's
-/// handle analyses it waits for that analysis.
+/// What conditional include targets read, and the class and program names
+/// they write, by target. A target is analysed once: a file that needs it
+/// while another file's handle analyses it waits for that analysis.
 #[derive(Default)]
 struct ClosureCache {
+    expansions: ClosureExpansions,
     entries: Mutex<HashMap<ClosureKey, Arc<OnceLock<ClosureEntry>>>>,
 }
 
@@ -1178,9 +1180,17 @@ impl<'a> LintPipeline<'a> {
                 root_relative_paths: &[],
                 ..includes
             };
-            conditional_include_closure_with(&names, &includes, &mut |target| {
-                self.closure_references_cached(target, &paths)
-            })
+            let mut references =
+                |target: ClosureTarget<'_>| self.closure_references_cached(target, &paths);
+            match self.closures {
+                Some(cache) => conditional_include_closure_cached(
+                    &names,
+                    &includes,
+                    &cache.expansions,
+                    &mut references,
+                ),
+                None => conditional_include_closure_with(&names, &includes, &mut references),
+            }
         });
 
         let edges = build_edge_set(&EdgeInputs {

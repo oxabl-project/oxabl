@@ -249,11 +249,11 @@ fn a_shared_run_reads_what_its_files_share_once() {
     // Indexed once for the whole run, whichever threads reach them.
     assert_eq!(fs.reads_of("lib/util.p"), 1);
     assert_eq!(fs.reads_of("app/Thing.cls"), 1);
-    // Each of the three files that name `inc/cond.i` expands it to find what
-    // it includes, and one of them analyses it, which reads `inc/deep.i` again,
-    // for every file.
-    assert_eq!(fs.reads_of("inc/cond.i"), 3);
-    assert_eq!(fs.reads_of("inc/deep.i"), 3 + 1);
+    // Three files name `inc/cond.i` conditionally. One of them expands it to
+    // find what it reads, and analyses it, which reads `inc/deep.i` again, for
+    // all three.
+    assert_eq!(fs.reads_of("inc/cond.i"), 1);
+    assert_eq!(fs.reads_of("inc/deep.i"), 2);
 }
 
 #[test]
