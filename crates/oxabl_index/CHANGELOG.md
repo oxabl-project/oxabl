@@ -1,5 +1,34 @@
 # Changelog
 
+## [3.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.0.0...oxabl_index-v3.0.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **index:** answer Unknowable after a known-file producer scan that panicked, and do not run it again ([d3b319e](https://github.com/oxabl-project/oxabl/commit/d3b319e7dcd6a0e8e04191ae56082d919b1fa9ef))
+* **index:** mark the known-file producer scan done only once it completes ([ffbecd7](https://github.com/oxabl-project/oxabl/commit/ffbecd712f1f08ddaad0181b7ec93a05aad34d40))
+
+
+### Performance Improvements
+
+* **index:** index a reached file outside the memo lock, so threads can share one index ([aad45f9](https://github.com/oxabl-project/oxabl/commit/aad45f974618d8ea9e69b3aa2b4514b951e679b9))
+* **index:** skip files that cannot say NEW SHARED, and join producer lists without a quadratic scan ([5f9b97d](https://github.com/oxabl-project/oxabl/commit/5f9b97d506deec1683f19878b53e66090ae90b60))
+* **pipeline:** expand each conditional include target once per SharedRun ([97ab6e2](https://github.com/oxabl-project/oxabl/commit/97ab6e24ad000dbc5c9f6f2e987c73b2e9bc89ad))
+* **pipeline:** share one index and include cache across a workspace walk's threads ([0776695](https://github.com/oxabl-project/oxabl/commit/0776695113f8869a459cf595a9ef000edc660711))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 3.0.0 to 3.0.1
+    * oxabl_preprocessor bumped from 0.7.0 to 0.7.1
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+    * oxabl_semantic bumped from 3.0.0 to 3.0.1
+    * oxabl_workspace bumped from 3.0.0 to 3.1.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+
 ## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v2.0.0...oxabl_index-v3.0.0) (2026-10-16)
 
 

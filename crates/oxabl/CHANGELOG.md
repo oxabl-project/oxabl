@@ -1,5 +1,35 @@
 # Changelog
 
+## [3.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl-v3.0.0...oxabl-v3.0.1) (2026-10-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 3.0.0 to 3.0.1
+    * oxabl_workspace bumped from 3.0.0 to 3.1.0
+    * oxabl_preprocessor bumped from 0.7.0 to 0.7.1
+    * oxabl_semantic bumped from 3.0.0 to 3.0.1
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+    * oxabl_analyze bumped from 3.0.0 to 3.0.1
+    * oxabl_pipeline bumped from 3.0.0 to 3.1.0
+    * oxabl_lint bumped from 3.0.0 to 3.0.1
+    * oxabl_lsp bumped from 3.0.0 to 3.0.1
+    * oxabl_daemon bumped from 0.5.0 to 0.5.1
+    * oxabl_formatter bumped from 2.0.0 to 2.0.1
+  * dev-dependencies
+    * oxabl_analyze bumped from 3.0.0 to 3.0.1
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+    * oxabl_workspace bumped from 3.0.0 to 3.1.0
+    * oxabl_pipeline bumped from 3.0.0 to 3.1.0
+    * oxabl_flow bumped from 0.3.0 to 0.3.1
+    * oxabl_handles bumped from 0.2.0 to 0.2.1
+    * oxabl_scope bumped from 0.2.0 to 0.2.1
+    * oxabl_effects bumped from 0.2.0 to 0.2.1
+    * oxabl_nulls bumped from 0.2.0 to 0.2.1
+    * oxabl_index bumped from 3.0.0 to 3.0.1
+
 ## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v2.0.0...oxabl-v3.0.0) (2026-10-16)
 
 

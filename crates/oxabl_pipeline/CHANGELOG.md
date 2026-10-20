@@ -1,5 +1,43 @@
 # Changelog
 
+## [3.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.0.0...oxabl_pipeline-v3.1.0) (2026-10-20)
+
+
+### Features
+
+* **pipeline:** add SharedRun, one index and one conditional include cache for a walk's threads ([590c481](https://github.com/oxabl-project/oxabl/commit/590c4811df62c8cf46bc44198ba22045b7daff1e))
+
+
+### Bug Fixes
+
+* **pipeline:** keep the closure cache's index view free of lookups the uncached analysis does not make ([3c2c402](https://github.com/oxabl-project/oxabl/commit/3c2c4023e32150a4bbb05a74076fb6bae708b64b))
+* **workspace:** let CachedFileSystem wrap an unsized filesystem instead of adding blanket impls ([a07d79b](https://github.com/oxabl-project/oxabl/commit/a07d79becfa5d1a2fc79e5dfc1ae8493ff443ca0))
+
+
+### Performance Improvements
+
+* **pipeline:** expand each conditional include target once per SharedRun ([97ab6e2](https://github.com/oxabl-project/oxabl/commit/97ab6e24ad000dbc5c9f6f2e987c73b2e9bc89ad))
+* **pipeline:** share one index and include cache across a workspace walk's threads ([0776695](https://github.com/oxabl-project/oxabl/commit/0776695113f8869a459cf595a9ef000edc660711))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.2.0 to 0.2.1
+    * oxabl_parser bumped from 3.0.0 to 3.0.1
+    * oxabl_flow bumped from 0.3.0 to 0.3.1
+    * oxabl_scope bumped from 0.2.0 to 0.2.1
+    * oxabl_analyze bumped from 3.0.0 to 3.0.1
+    * oxabl_formatter bumped from 2.0.0 to 2.0.1
+    * oxabl_index bumped from 3.0.0 to 3.0.1
+    * oxabl_lint bumped from 3.0.0 to 3.0.1
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+    * oxabl_semantic bumped from 3.0.0 to 3.0.1
+    * oxabl_workspace bumped from 3.0.0 to 3.1.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+
 ## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v2.0.0...oxabl_pipeline-v3.0.0) (2026-10-16)
 
 
