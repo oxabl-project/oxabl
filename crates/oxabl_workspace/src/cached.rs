@@ -31,6 +31,8 @@ const SHARDS: usize = 32;
 ///
 /// It owns what it wraps. `F` may be unsized, so a boxed
 /// `CachedFileSystem<SomeFs>` coerces to `Box<CachedFileSystem<dyn FileSystem>>`.
+/// To wrap a filesystem held only as a `Box<dyn FileSystem>` or a
+/// `&dyn FileSystem`, wrap a local type that forwards each method to it.
 pub struct CachedFileSystem<F: ?Sized> {
     shards: Box<[RwLock<Shard>]>,
     inner: F,
