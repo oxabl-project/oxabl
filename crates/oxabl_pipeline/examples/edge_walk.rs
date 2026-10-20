@@ -60,6 +60,8 @@ struct Args {
     shared: bool,
     cache_fs: bool,
     dlc: Option<PathBuf>,
+    slowest: usize,
+    only: Option<String>,
 }
 
 fn args() -> Args {
@@ -76,6 +78,8 @@ fn args() -> Args {
         shared: true,
         cache_fs: true,
         dlc: None,
+        slowest: 0,
+        only: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -99,6 +103,8 @@ fn args() -> Args {
             "--api" => out.shared = value() != "old",
             "--fs-cache" => out.cache_fs = value() != "off",
             "--dlc" => out.dlc = Some(PathBuf::from(value())),
+            "--slowest" => out.slowest = value().parse().expect("slowest"),
+            "--only" => out.only = Some(value()),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -336,6 +342,11 @@ fn main() {
     let mut roots: Vec<PathBuf> = files
         .iter()
         .filter(|p| is_root(p))
+        .filter(|p| {
+            args.only
+                .as_ref()
+                .is_none_or(|only| p.to_string_lossy().contains(only.as_str()))
+        })
         .step_by(args.stride.max(1))
         .cloned()
         .collect();
@@ -365,9 +376,16 @@ fn main() {
     let producers_started = Instant::now();
     let producers = shared_producers(&args, &config, &own_dir_config, fs, &files);
     let producers_took = producers_started.elapsed();
+    if let Ok(names) = std::env::var("EDGE_WALK_PRODUCERS_OF") {
+        for name in names.split(',') {
+            let of = producers.producers_of(&oxabl_semantic::IndexName::new(name));
+            println!("producers of {name}: {}", of.len());
+        }
+    }
 
     let cursor = AtomicUsize::new(0);
     let results: Mutex<BTreeMap<PathBuf, Outcome>> = Mutex::default();
+    let times: Mutex<Vec<(Duration, PathBuf)>> = Mutex::default();
     let stages = Mutex::new(Stages::default());
     let analysis_started = Instant::now();
     let shared = |config| SharedRun::new(config, fs).with_shared_producers(&producers);
@@ -381,6 +399,7 @@ fn main() {
                 );
                 let mut local = Stages::default();
                 let mut done = Vec::new();
+                let mut took = Vec::new();
                 loop {
                     let index = cursor.fetch_add(1, Ordering::Relaxed);
                     let Some(path) = roots.get(index) else {
@@ -391,9 +410,12 @@ fn main() {
                     } else {
                         &plain
                     };
+                    let started = Instant::now();
                     done.push((path.clone(), one(run, path, &mut local)));
+                    took.push((started.elapsed(), path.clone()));
                 }
                 results.lock().unwrap().extend(done);
+                times.lock().unwrap().extend(took);
                 stages.lock().unwrap().add(&local);
             });
         }
@@ -433,6 +455,11 @@ fn main() {
     );
 
     println!("process: {}", process_usage());
+    let mut times = times.into_inner().unwrap();
+    times.sort_by_key(|a| std::cmp::Reverse(a.0));
+    for (took, path) in times.iter().take(args.slowest) {
+        println!("slow: {took:.2?} {}", path.display());
+    }
 
     if let Some(path) = &args.dump {
         let mut out = io::BufWriter::new(std::fs::File::create(path).expect("dump"));
@@ -544,12 +571,19 @@ fn shared_producers(
                     } else {
                         &plain
                     };
+                    let started = Instant::now();
                     if let Ok(names) =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             definitions_in(path, includes)
                         }))
                     {
                         local.push((path.clone(), names));
+                    }
+                    if args.slowest > 0 {
+                        let took = started.elapsed();
+                        if took > Duration::from_millis(200) {
+                            println!("slow producer: {took:.2?} {}", path.display());
+                        }
                     }
                 }
                 found.lock().unwrap().extend(local);
