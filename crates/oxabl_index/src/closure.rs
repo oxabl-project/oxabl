@@ -43,8 +43,13 @@ struct Read {
 /// a target many files name conditionally is read and expanded once per
 /// search path. See [`conditional_include_closure_cached`].
 ///
-/// Assumes that no file changes while the value lives. `Sync`: the threads of
-/// a run share one.
+/// An entry is keyed by the target, the name it is included by and the search
+/// path only. Every call that shares one value must therefore pass the same
+/// filesystem and the same predefined names, and no file may change while the
+/// value lives. `Sync`: the threads of a run share one.
+///
+/// Hidden: the pipeline's `SharedRun` is the client that keeps those fixed.
+#[doc(hidden)]
 #[derive(Default)]
 pub struct ClosureExpansions {
     entries: Mutex<FxHashMap<ExpansionKey, ExpansionSlot>>,
@@ -97,7 +102,10 @@ pub fn conditional_include_closure_with(
 
 /// [`conditional_include_closure_with`], reading and expanding each target
 /// once for every call that shares `expansions` and the include paths.
-/// `references` is still called once per target per call.
+/// `references` is still called once per target per call. Every call that
+/// shares `expansions` must pass the same filesystem and predefined names (see
+/// [`ClosureExpansions`]).
+#[doc(hidden)]
 pub fn conditional_include_closure_cached(
     names: &[ConditionalIncludeName<'_>],
     includes: &IncludeContext<'_>,
