@@ -12,6 +12,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use oxabl_lexer::oxabl_atom::OxablAtom;
@@ -59,6 +60,9 @@ pub struct BatchIndex<'a> {
     preprocessor: Option<&'a PreprocessorConfig>,
     /// Where `SHARED` producers come from. See [`ProducerSource`].
     producers: ProducerSource<'a>,
+    /// Threads the scans of [`ProducerSource::Files`] use; `None` is the
+    /// machine's parallelism.
+    scan_threads: Option<usize>,
     /// Interior mutability because [`WorkspaceIndex`] takes `&self` — it has to,
     /// since the language server shares one index behind an `Arc` across
     /// threads, so the trait cannot ask for `&mut`.
@@ -69,6 +73,25 @@ pub struct BatchIndex<'a> {
     /// the first lookup to reach it claims a [`Pending`] slot, and a lookup that
     /// reaches it meanwhile waits on that slot rather than indexing it again.
     memo: RwLock<Memo>,
+    /// The outcome of the scan of [`ProducerSource::Files`], once it has run.
+    ///
+    /// Kept outside the memo, so the scan holds no lock that other lookups
+    /// take. A `SHARED` lookup that asks meanwhile waits for the scan rather
+    /// than running it again.
+    known: OnceLock<KnownProducers>,
+    /// The internal procedures the files of [`ProducerSource::Files`] define,
+    /// read once on the first question about them.
+    procedure_names: OnceLock<FxHashSet<Box<str>>>,
+}
+
+/// What the scan of [`ProducerSource::Files`] found.
+enum KnownProducers {
+    /// The ids of the files of the list that may produce a `SHARED` name: the
+    /// files any view may find a producer in.
+    Seeded(FxHashSet<IndexedFileId>),
+    /// The scan panicked part-way. The
+    /// files it did not reach may produce any name.
+    Failed,
 }
 
 /// The files [`BatchIndex::shared_producer`] may find a producer in, besides the
@@ -136,9 +159,6 @@ struct Memo {
     /// Parameter lists per indexed file, read on the first question about them:
     /// a run that asks none reads nothing.
     signatures: FxHashMap<IndexedFileId, Option<Arc<ProgramSignatures>>>,
-    /// The internal procedures the files of [`ProducerSource::Files`] define,
-    /// read on the first question about them.
-    procedure_names: Option<Arc<FxHashSet<Box<str>>>>,
     /// The inverse of `facts`: the path each minted id was indexed under.
     ///
     /// Kept rather than derived. Deriving it means scanning `facts` for the entry
@@ -155,20 +175,6 @@ struct Memo {
     /// outside this index, exactly as [`IndexedFileId`] documents. Starts at 1
     /// so a zero id never reads as a real file in a dump.
     next_file_id: u32,
-    /// Whether [`ProducerSource::Files`] has been scanned yet.
-    ///
-    /// The scan is deferred to the first `SHARED` lookup, so a run whose files
-    /// declare no `DEFINE SHARED` consumer never reads the walk. It indexes only
-    /// the files that can produce a name, so the memo holds those and nothing
-    /// else from the list. A flag rather than "is `facts` empty": the list may
-    /// add nothing, and the scan must not run again on every lookup.
-    known_indexed: bool,
-    /// Whether the scan of [`ProducerSource::Files`] stopped part-way (a file
-    /// panicked while it was indexed).
-    known_failed: bool,
-    /// The ids of the [`ProducerSource::Files`] list, once `known_indexed` is
-    /// set: the files any view may find a producer in.
-    seeded: FxHashSet<IndexedFileId>,
 }
 
 impl<'a> BatchIndex<'a> {
@@ -189,6 +195,7 @@ impl<'a> BatchIndex<'a> {
             case_insensitive: false,
             preprocessor: None,
             producers: ProducerSource::None,
+            scan_threads: None,
             memo: RwLock::new(Memo {
                 facts: FxHashMap::default(),
                 pending: FxHashMap::default(),
@@ -198,12 +205,10 @@ impl<'a> BatchIndex<'a> {
                 scoped_classes: FxHashMap::default(),
                 scoped_programs: FxHashMap::default(),
                 signatures: FxHashMap::default(),
-                procedure_names: None,
                 next_file_id: 1,
-                known_indexed: false,
-                known_failed: false,
-                seeded: FxHashSet::default(),
             }),
+            known: OnceLock::new(),
+            procedure_names: OnceLock::new(),
         }
     }
 
@@ -420,10 +425,29 @@ impl<'a> BatchIndex<'a> {
     /// the browser) simply does not call this, and behavior is exactly as
     /// before: `shared_producer` then answers only from the files some other
     /// lookup pulled in.
+    ///
+    /// The scan runs on [`with_scan_threads`](Self::with_scan_threads) threads,
+    /// by default the machine's parallelism, and calls the filesystem from
+    /// those threads.
     #[must_use]
     pub fn seeded_with(mut self, known_files: &'a [PathBuf]) -> Self {
         self.producers = ProducerSource::Files(known_files);
         self
+    }
+
+    /// Scan the files of [`seeded_with`](Self::seeded_with) on at most
+    /// `threads` threads (at least one) instead of the machine's parallelism.
+    ///
+    /// Apply before any lookup.
+    #[must_use]
+    pub fn with_scan_threads(mut self, threads: usize) -> Self {
+        self.scan_threads = Some(threads.max(1));
+        self
+    }
+
+    fn scan_threads(&self) -> usize {
+        self.scan_threads
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
     }
 
     /// Answer `SHARED` producer lookups from a map built once over the run's
@@ -469,7 +493,7 @@ impl<'a> BatchIndex<'a> {
     ///
     /// For a client that caches an answer for every file of one directory and
     /// checks, per file, whether the answer reached that file.
-    pub fn searching_from<'v>(&'v self, path: Option<&'v Path>) -> ExcludingFile<'v, 'a> {
+    pub fn searching_from<'v>(&'v self, path: Option<&'v Path>) -> SearchingFrom<'v, 'a> {
         ExcludingFile {
             excludes: false,
             ..self.excluding(path)
@@ -514,13 +538,9 @@ impl<'a> BatchIndex<'a> {
             ProducerSource::None => None,
             ProducerSource::Shared(map) => Some(map.defines_procedure(name, &includes)),
             ProducerSource::Files(files) => {
-                let known = self.memo().procedure_names.clone();
-                let names = known.unwrap_or_else(|| {
-                    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-                    let scanned = Arc::new(scan_procedures(files, &includes, threads));
-                    self.memo().procedure_names = Some(Arc::clone(&scanned));
-                    scanned
-                });
+                let names = self
+                    .procedure_names
+                    .get_or_init(|| scan_procedures(files, &includes, self.scan_threads()));
                 Some(names.contains(name.as_str()))
             }
         }
@@ -624,29 +644,18 @@ impl<'a> BatchIndex<'a> {
         name: &IndexName,
         reached: Option<&FxHashSet<IndexedFileId>>,
     ) -> IndexAnswer<IndexedFileId> {
-        let predefined = self.predefined();
         let mut listed: &[PathBuf] = &[];
+        let mut seeded = None;
         match self.producers {
             ProducerSource::None => {}
             ProducerSource::Shared(map) => listed = map.producers_of(name),
             // Scanned on first ask. This is the only query the list feeds, and
             // deferring it to here is what keeps a run that consumes no `SHARED`
             // name from reading the whole walk.
-            ProducerSource::Files(files) => {
-                let mut memo = self.memo();
-                // A scan cut short by a panic leaves `known_failed` set: the
-                // files it did not reach may produce any name, so every later
-                // lookup is `Unknowable`, and the scan is not run again.
-                if memo.known_failed {
-                    return IndexAnswer::Unknowable;
-                }
-                if !memo.known_indexed {
-                    memo.known_failed = true;
-                    memo.index_possible_producers(&self.includes(&predefined), files);
-                    memo.known_failed = false;
-                    memo.known_indexed = true;
-                }
-            }
+            ProducerSource::Files(files) => match self.known_producers(files) {
+                KnownProducers::Seeded(ids) => seeded = Some(ids),
+                KnownProducers::Failed => return IndexAnswer::Unknowable,
+            },
         }
         let mut found = None;
         let mut consider = |file: IndexedFileId| match found {
@@ -667,13 +676,84 @@ impl<'a> BatchIndex<'a> {
         let memo = self.memo_read();
         for facts in memo.facts.values() {
             let candidate = reached.is_none_or(|reached| {
-                reached.contains(&facts.file) || memo.seeded.contains(&facts.file)
+                reached.contains(&facts.file) || seeded.is_some_and(|ids| ids.contains(&facts.file))
             });
             if candidate && facts.defines_shared(name) && !consider(facts.file) {
                 return IndexAnswer::Unknowable;
             }
         }
         found.map_or(IndexAnswer::NotFound, IndexAnswer::Found)
+    }
+
+    /// The outcome of the scan of `files`, run by the first lookup that asks.
+    ///
+    /// A panic in the scan unwinds through the lookup that ran it and leaves
+    /// [`KnownProducers::Failed`]: every later lookup, and every lookup that
+    /// waited meanwhile, gets that at once and does not scan again.
+    fn known_producers(&self, files: &[PathBuf]) -> &KnownProducers {
+        let mut panicked = None;
+        let known = self.known.get_or_init(|| {
+            let scan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.index_possible_producers(files)
+            }));
+            scan.map_or_else(
+                |payload| {
+                    panicked = Some(payload);
+                    KnownProducers::Failed
+                },
+                KnownProducers::Seeded,
+            )
+        });
+        if let Some(payload) = panicked {
+            std::panic::resume_unwind(payload);
+        }
+        known
+    }
+
+    /// Index the files of `files` that can produce a `SHARED` name, reading each
+    /// once, and return their ids. A file this index already knows is left as
+    /// it is.
+    ///
+    /// The prefilter skips only a file that [`index_file_at`] would find no
+    /// definition in, so a file is a producer by the same rule whether an
+    /// earlier lookup indexed it or not. Files are read, prefiltered and
+    /// indexed on [`Self::scan_threads`] threads, with no memo lock held, and claimed in
+    /// list order, so the ids they get do not depend on the thread count.
+    fn index_possible_producers(&self, files: &[PathBuf]) -> FxHashSet<IndexedFileId> {
+        let predefined = self.predefined();
+        let includes = self.includes(&predefined);
+        let threads = self.scan_threads();
+        let candidates = map_parallel(files, threads, |path| {
+            let key = search::normalize_lexically(path);
+            if let Some(known) = self.memo_read().facts.get(&key) {
+                return Some(Err(known.file));
+            }
+            let source = includes.fs.read(path).ok()?;
+            may_define_shared(&key, &source, &includes).then_some(Ok((key, source)))
+        });
+        let mut seeded = FxHashSet::default();
+        let mut claimed = Vec::new();
+        {
+            let mut memo = self.memo();
+            for candidate in candidates.into_iter().flatten() {
+                match candidate {
+                    Err(known) => {
+                        seeded.insert(known);
+                    }
+                    Ok((key, source)) => match memo.claim(&key) {
+                        Ok(known) => {
+                            seeded.insert(known.file);
+                        }
+                        Err(pending) => claimed.push((key, pending, source)),
+                    },
+                }
+            }
+        }
+        seeded.extend(map_parallel(&claimed, threads, |(key, pending, source)| {
+            let facts = pending.index(key, || Some(Arc::clone(source)), &includes);
+            self.memo().publish(key.clone(), facts).file
+        }));
+        seeded
     }
 
     /// Resolve `name` to the facts of the class it names, memoized per key.
@@ -720,6 +800,45 @@ impl<'a> BatchIndex<'a> {
             .or_insert(answer)
             .clone()
     }
+}
+
+/// `f` of each of `items`, in order, computed on up to `threads` threads. A
+/// panic in `f` unwinds through the caller once every thread has stopped.
+fn map_parallel<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let threads = threads.clamp(1, items.len().max(1));
+    if threads == 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(at) else {
+                            return mine;
+                        };
+                        mine.push((at, f(item)));
+                    }
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| match worker.join() {
+                Ok(mine) => mine,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    });
+    done.sort_unstable_by_key(|(at, _)| *at);
+    done.into_iter().map(|(_, r)| r).collect()
 }
 
 /// A file one lookup is indexing: the id minted when the lookup claimed it, and
@@ -783,36 +902,6 @@ impl Memo {
         self.paths.insert(facts.file, key.clone());
         self.facts.insert(key, Arc::clone(&facts));
         facts
-    }
-
-    /// Index the files of `files` that can produce a `SHARED` name, reading each
-    /// once, and remember them as seeded. A file this index already knows is
-    /// left as it is.
-    ///
-    /// The prefilter skips only a file that [`index_file_at`] would find no
-    /// definition in, so a file is a producer by the same rule whether an
-    /// earlier lookup indexed it or not.
-    fn index_possible_producers(&mut self, includes: &IncludeContext<'_>, files: &[PathBuf]) {
-        for path in files {
-            let key = search::normalize_lexically(path);
-            if let Some(known) = self.facts.get(&key) {
-                self.seeded.insert(known.file);
-                continue;
-            }
-            let Ok(source) = includes.fs.read(path) else {
-                continue;
-            };
-            if self.pending.contains_key(&key) || may_define_shared(&key, &source, includes) {
-                let pending = match self.claim(&key) {
-                    Ok(known) => known.file,
-                    Err(pending) => {
-                        let facts = pending.index(&key, || Some(source), includes);
-                        self.publish(key, facts).file
-                    }
-                };
-                self.seeded.insert(pending);
-            }
-        }
     }
 }
 
@@ -925,6 +1014,9 @@ fn signature_in(
 /// thousand files still reads each dependency once while each file answers as if
 /// its own copy on disk were absent.
 ///
+/// [`BatchIndex::searching_from`] builds the same type, named
+/// [`SearchingFrom`] there, that searches from the file and excludes nothing.
+///
 /// # Why a file must not resolve a name to itself
 ///
 /// The client analyses a *buffer*, which for an editor is the unsaved text and
@@ -953,6 +1045,13 @@ pub struct ExcludingFile<'v, 'a> {
     /// seeded set that `shared_producer` may name.
     reached: Mutex<FxHashSet<IndexedFileId>>,
 }
+
+/// A view of a [`BatchIndex`] that searches from one file and excludes
+/// nothing, built by [`BatchIndex::searching_from`].
+///
+/// The same type as [`ExcludingFile`], under a name that says what this view
+/// does.
+pub type SearchingFrom<'v, 'a> = ExcludingFile<'v, 'a>;
 
 impl ExcludingFile<'_, '_> {
     fn reach(&self, file: IndexedFileId) {
@@ -1144,6 +1243,55 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_on_one_thread_reads_on_the_callers_thread() {
+        struct ThreadsSeen {
+            inner: CountingFs,
+            threads: std::sync::Mutex<FxHashSet<std::thread::ThreadId>>,
+        }
+        impl FileSystem for ThreadsSeen {
+            fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+                self.threads
+                    .lock()
+                    .unwrap()
+                    .insert(std::thread::current().id());
+                self.inner.read(path)
+            }
+            fn exists(&self, path: &Path) -> bool {
+                self.inner.exists(path)
+            }
+        }
+        let fs = ThreadsSeen {
+            inner: CountingFs::new(&[
+                (
+                    "/src/a.p",
+                    "DEFINE NEW SHARED VARIABLE g AS INTEGER NO-UNDO.",
+                ),
+                (
+                    "/src/b.p",
+                    "DEFINE NEW SHARED VARIABLE h AS INTEGER NO-UNDO.",
+                ),
+                ("/src/c.p", "RUN a.p."),
+            ]),
+            threads: std::sync::Mutex::default(),
+        };
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/a.p", "/src/b.p", "/src/c.p"]);
+        let index = BatchIndex::new(&fs, &paths)
+            .seeded_with(&known)
+            .with_scan_threads(1);
+        assert!(matches!(
+            index.shared_producer(&IndexName::new("g")),
+            IndexAnswer::Found(_)
+        ));
+        assert!(index.defines_procedure(&IndexName::new("p")).is_some());
+        let threads = fs.threads.into_inner().unwrap();
+        assert_eq!(
+            threads.into_iter().collect::<Vec<_>>(),
+            vec![std::thread::current().id()]
+        );
+    }
+
+    #[test]
     fn a_known_file_scan_cut_short_by_a_panic_answers_unknowable_and_is_not_run_again() {
         /// Panics on every read of one path.
         struct PanicsOn {
@@ -1194,6 +1342,191 @@ mod tests {
             "the scan is not run again"
         );
         assert_eq!(fs.inner.reads_of("/src/a.p"), 1);
+    }
+
+    /// Holds the first read of one path until the test opens the gate, then
+    /// panics on it if asked to. Other reads pass through.
+    struct Gated {
+        inner: CountingFs,
+        path: &'static str,
+        panics: bool,
+        state: Mutex<(bool, bool)>,
+        changed: std::sync::Condvar,
+    }
+
+    impl Gated {
+        fn new(inner: CountingFs, path: &'static str, panics: bool) -> Self {
+            Gated {
+                inner,
+                path,
+                panics,
+                state: Mutex::new((false, false)),
+                changed: std::sync::Condvar::new(),
+            }
+        }
+
+        fn wait_until_entered(&self) {
+            let state = self.state.lock().unwrap();
+            drop(self.changed.wait_while(state, |s| !s.0).unwrap());
+        }
+
+        fn open(&self) {
+            self.state.lock().unwrap().1 = true;
+            self.changed.notify_all();
+        }
+    }
+
+    impl FileSystem for Gated {
+        fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+            let read = self.inner.read(path);
+            if path == Path::new(self.path) && self.inner.reads_of(self.path) == 1 {
+                let mut state = self.state.lock().unwrap();
+                state.0 = true;
+                self.changed.notify_all();
+                drop(self.changed.wait_while(state, |s| !s.1).unwrap());
+                assert!(!self.panics, "cannot read {}", path.display());
+            }
+            read
+        }
+        fn exists(&self, path: &Path) -> bool {
+            self.inner.exists(path)
+        }
+    }
+
+    #[test]
+    fn lookups_go_on_while_the_known_file_scan_runs_and_its_waiters_see_its_panic() {
+        let fs = Gated::new(
+            CountingFs::new(&[
+                (
+                    "/src/a.p",
+                    "DEFINE NEW SHARED VARIABLE g AS INTEGER NO-UNDO.",
+                ),
+                (
+                    "/src/b.p",
+                    "DEFINE NEW SHARED VARIABLE h AS INTEGER NO-UNDO.",
+                ),
+                ("/src/orders/calc-base.cls", PARENT),
+            ]),
+            "/src/b.p",
+            true,
+        );
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/a.p", "/src/b.p"]);
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+        let name = IndexName::new("g");
+        std::thread::scope(|scope| {
+            let scanner = scope.spawn(|| index.shared_producer(&name));
+            fs.wait_until_entered();
+            let waiter = scope.spawn(|| index.shared_producer(&name));
+            // The scan is held inside a read: a lookup that needs no producer
+            // must not wait for it.
+            let (sent, class) = std::sync::mpsc::channel();
+            let shared = &index;
+            scope.spawn(move || sent.send(shared.class(&IndexName::new("orders.calc-base"))));
+            let class = class.recv_timeout(std::time::Duration::from_secs(10));
+            fs.open();
+            assert!(
+                matches!(class, Ok(IndexAnswer::Found(_))),
+                "the class lookup waited for the scan"
+            );
+            assert!(
+                scanner.join().is_err(),
+                "the scan reads the file that panics"
+            );
+            assert_eq!(waiter.join().unwrap(), IndexAnswer::Unknowable);
+        });
+        assert_eq!(index.shared_producer(&name), IndexAnswer::Unknowable);
+        assert_eq!(
+            fs.inner.reads_of("/src/b.p"),
+            1,
+            "the scan is not run again"
+        );
+    }
+
+    #[test]
+    fn a_waiter_on_a_file_whose_indexing_panicked_indexes_it_itself() {
+        let fs = Gated::new(
+            CountingFs::new(&[("/src/orders/post.p", "MESSAGE \"posted\".")]),
+            "/src/orders/post.p",
+            true,
+        );
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let program = IndexName::new("orders/post.p");
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| index.program(&program));
+            fs.wait_until_entered();
+            let second = scope.spawn(|| index.program(&program));
+            // Whether the second lookup waits on the slot or claims it after the
+            // panic, it ends with the file indexed under the claimed id.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            fs.open();
+            (first.join(), second.join().unwrap())
+        });
+        assert!(first.is_err(), "the first read panics");
+        let IndexAnswer::Found(file) = second else {
+            panic!("the second lookup indexes the file: {second:?}");
+        };
+        assert_eq!(index.program(&program), IndexAnswer::Found(file));
+        assert_eq!(fs.inner.reads_of("/src/orders/post.p"), 2);
+    }
+
+    #[test]
+    fn the_known_file_scan_gives_ids_in_list_order() {
+        let sources: Vec<(String, String)> = (0..24)
+            .map(|k| {
+                (
+                    format!("/src/p{k:02}.p"),
+                    format!("DEFINE NEW SHARED VARIABLE g{k} AS INTEGER NO-UNDO."),
+                )
+            })
+            .collect();
+        let files: Vec<(&str, &str)> = sources
+            .iter()
+            .map(|(path, source)| (path.as_str(), source.as_str()))
+            .collect();
+        let fs = CountingFs::new(&files);
+        let paths = dirs(&["/src"]);
+        // Not in path order, so a sort cannot pass for the list order.
+        let known: Vec<PathBuf> = sources
+            .iter()
+            .rev()
+            .map(|(path, _)| PathBuf::from(path))
+            .collect();
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+        assert!(matches!(
+            index.shared_producer(&IndexName::new("g3")),
+            IndexAnswer::Found(_)
+        ));
+        let ids: Vec<_> = known.iter().map(|path| index.indexed_id(path)).collect();
+        let expected: Vec<_> = (1..=24).map(|n| Some(IndexedFileId::new(n))).collect();
+        assert_eq!(ids, expected);
+    }
+
+    #[test]
+    fn concurrent_first_procedure_questions_scan_the_files_once() {
+        let fs = CountingFs::new(&[
+            ("/src/a.p", "PROCEDURE do-a:\nEND PROCEDURE."),
+            ("/src/b.p", "MESSAGE 1."),
+        ]);
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/a.p", "/src/b.p"]);
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+        let barrier = std::sync::Barrier::new(8);
+        let answers: Vec<_> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        index.workspace_defines_procedure(&IndexName::new("do-a"))
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+        assert!(answers.iter().all(|a| *a == Some(true)));
+        assert_eq!(fs.reads_of("/src/a.p"), 1);
+        assert_eq!(fs.reads_of("/src/b.p"), 1);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //! cargo run --release -p oxabl_pipeline --example edge_walk -- \
 //!     --root path/to/project [--include DIR]... [--own-dir-first all|none|PATH-PART] \
 //!     [--own-dir-search DIR,...] [--trigger-dirs DIR,...] [--schema] [--dlc DIR] \
-//!     [--threads N] [--api old|shared] [--fs-cache on|off] [--dump FILE] [--compare FILE]
+//!     [--threads N] [--api old|shared] [--fs-cache on|off] [--producers map|files] \
+//!     [--dump FILE] [--compare FILE]
 //! ```
 //!
 //! The settings are a build tool's: compile roots are `.p`, `.cls`, and `.t`
@@ -17,7 +18,9 @@
 //! directories below its own (default `.`) ahead of the include paths.
 //! `--schema` loads the `.df` files of the tree's `oxabl.toml`. `--dlc` adds
 //! the `psc/dlc/{tty,src,.,bin}` directories of a copy of an OpenEdge install
-//! to the include paths.
+//! to the include paths. `--producers files` finds the `SHARED` producers as a
+//! run seeded with every ABL file does, on the first lookup, instead of from
+//! the map.
 //!
 //! `--dump` writes every root's whole edge set, targets as paths, so two runs
 //! (thread counts, builds) can be compared; `--compare` diffs against a dump.
@@ -63,6 +66,7 @@ struct Args {
     stride: usize,
     shared: bool,
     cache_fs: bool,
+    known_files: bool,
     dlc: Option<PathBuf>,
     slowest: usize,
     only: Option<String>,
@@ -83,6 +87,7 @@ fn args() -> Args {
         stride: 1,
         shared: true,
         cache_fs: true,
+        known_files: false,
         dlc: None,
         slowest: 0,
         only: None,
@@ -122,6 +127,7 @@ fn args() -> Args {
             "--stride" => out.stride = value().parse().expect("stride"),
             "--api" => out.shared = value() != "old",
             "--fs-cache" => out.cache_fs = value() != "off",
+            "--producers" => out.known_files = value() == "files",
             "--dlc" => out.dlc = Some(PathBuf::from(value())),
             "--slowest" => out.slowest = value().parse().expect("slowest"),
             "--only" => out.only = Some(value()),
@@ -391,7 +397,11 @@ fn main() {
     let config_loaded = started.elapsed() - walked;
 
     let producers_started = Instant::now();
-    let producers = shared_producers(&args, &config, &own_dir_config, fs, &files);
+    let producers = if args.known_files {
+        SharedProducers::default()
+    } else {
+        shared_producers(&args, &config, &own_dir_config, fs, &files)
+    };
     let producers_took = producers_started.elapsed();
     if let Ok(names) = std::env::var("EDGE_WALK_PRODUCERS_OF") {
         for name in names.split(',') {
@@ -408,14 +418,27 @@ fn main() {
     let times: Mutex<Vec<(Duration, PathBuf)>> = Mutex::default();
     let stages = Mutex::new(Stages::default());
     let analysis_started = Instant::now();
-    let shared = |config| SharedRun::new(config, fs).with_shared_producers(&producers);
+    let shared = |config| {
+        let run = SharedRun::new(config, fs);
+        if args.known_files {
+            run.with_known_files(&files)
+        } else {
+            run.with_shared_producers(&producers)
+        }
+    };
     let (shared_plain, shared_own) = (shared(&config), shared(&own_dir_config));
     std::thread::scope(|scope| {
         for _ in 0..args.threads {
             scope.spawn(|| {
                 let (plain, own) = (
-                    run_handle(args.shared, &config, fs, &producers, &shared_plain),
-                    run_handle(args.shared, &own_dir_config, fs, &producers, &shared_own),
+                    run_handle(&args, &config, fs, (&producers, &files), &shared_plain),
+                    run_handle(
+                        &args,
+                        &own_dir_config,
+                        fs,
+                        (&producers, &files),
+                        &shared_own,
+                    ),
                 );
                 let mut local = Stages::default();
                 let mut done = Vec::new();
@@ -528,19 +551,22 @@ fn process_usage() -> String {
 }
 
 fn run_handle<'a>(
-    shared: bool,
+    args: &Args,
     config: &'a PipelineConfig,
     fs: &'a dyn FileSystem,
-    producers: &'a SharedProducers,
+    (producers, files): (&'a SharedProducers, &'a [PathBuf]),
     run: &'a SharedRun<'a>,
 ) -> LintPipeline<'a> {
-    if shared {
-        run.handle().with_conditional_include_closure(true)
-    } else {
-        LintPipeline::new(config, fs)
-            .with_shared_producers(producers)
-            .with_conditional_include_closure(true)
+    if args.shared {
+        return run.handle().with_conditional_include_closure(true);
     }
+    let own = LintPipeline::new(config, fs);
+    let own = if args.known_files {
+        own.with_known_files(files)
+    } else {
+        own.with_shared_producers(producers)
+    };
+    own.with_conditional_include_closure(true)
 }
 
 fn one(run: &LintPipeline<'_>, path: &Path, stages: &mut Stages) -> Outcome {

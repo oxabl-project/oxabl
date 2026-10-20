@@ -264,3 +264,70 @@ fn read(path: &Path, name: &str, includes: &IncludeContext<'_>) -> Option<Read> 
         source,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxabl_workspace::{FileSystem, InMemoryFileSystem, PreprocessorConfig};
+    use std::io;
+
+    /// Counts the reads of each path.
+    struct Counting {
+        inner: InMemoryFileSystem,
+        reads: Mutex<FxHashMap<PathBuf, usize>>,
+    }
+
+    impl FileSystem for Counting {
+        fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+            *self
+                .reads
+                .lock()
+                .unwrap()
+                .entry(path.to_path_buf())
+                .or_default() += 1;
+            self.inner.read(path)
+        }
+
+        fn exists(&self, path: &Path) -> bool {
+            self.inner.exists(path)
+        }
+    }
+
+    #[test]
+    fn an_expansion_is_kept_per_search_path() {
+        let mut inner = InMemoryFileSystem::new();
+        inner.insert(PathBuf::from("/src/t.i"), "{inner.i}");
+        inner.insert(PathBuf::from("/a/inner.i"), "/* a */");
+        inner.insert(PathBuf::from("/b/inner.i"), "/* b */");
+        let fs = Counting {
+            inner,
+            reads: Mutex::default(),
+        };
+        let predefined = PreprocessorConfig::default();
+        let expansions = ClosureExpansions::default();
+        let reaches = |dirs: &[&str]| {
+            let paths: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
+            let includes = IncludeContext {
+                fs: &fs,
+                include_paths: &paths,
+                root_relative_paths: &[],
+                predefined: &predefined,
+            };
+            let names = [ConditionalIncludeName {
+                name: "t.i",
+                computed_name: false,
+            }];
+            let closure =
+                conditional_include_closure_cached(&names, &includes, &expansions, &mut |_| {
+                    Vec::new()
+                });
+            closure[0].reaches.clone()
+        };
+        // The target resolves to one file on both paths; what it includes does not.
+        assert_eq!(reaches(&["/src", "/a"]), [PathBuf::from("/a/inner.i")]);
+        assert_eq!(reaches(&["/src", "/b"]), [PathBuf::from("/b/inner.i")]);
+        assert_eq!(reaches(&["/src", "/a"]), [PathBuf::from("/a/inner.i")]);
+        let reads = fs.reads.lock().unwrap();
+        assert_eq!(reads[Path::new("/src/t.i")], 2, "one read per search path");
+    }
+}

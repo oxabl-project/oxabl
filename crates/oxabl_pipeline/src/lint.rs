@@ -797,7 +797,8 @@ impl<'a> LintPipeline<'a> {
     ///
     /// A client that analyses on several threads has one run handle per thread,
     /// because the index is not `Sync`. [`with_known_files`](Self::with_known_files)
-    /// on each makes every thread scan the whole file set. Build the map once with
+    /// on each makes every thread scan the whole file set, each on every core.
+    /// Build the map once with
     /// [`shared_producers`](Self::shared_producers), then give every thread's
     /// handle a borrow of it. The answers are the same as the seeded ones.
     ///
