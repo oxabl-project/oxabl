@@ -1,3 +1,4 @@
+mod cached;
 mod config;
 mod discovery;
 mod encoding;
@@ -5,6 +6,7 @@ mod file_system;
 mod include_paths;
 mod workspace;
 
+pub use cached::CachedFileSystem;
 pub use config::{
     LintConfig, LintOverride, LintRuleSettings, LintSeverity, PreprocessorConfig,
     RejectedLintPattern, RunExtensions, WorkspaceConfig, default_root_extensions,

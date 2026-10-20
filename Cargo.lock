@@ -1485,6 +1485,7 @@ dependencies = [
 name = "oxabl_pipeline"
 version = "3.0.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "oxabl_analyze",
  "oxabl_ast",
  "oxabl_common",
@@ -1587,6 +1588,7 @@ dependencies = [
  "oxabl_ast",
  "oxabl_common",
  "oxabl_style",
+ "rustc-hash",
  "schemars",
  "serde",
  "serde_json",
