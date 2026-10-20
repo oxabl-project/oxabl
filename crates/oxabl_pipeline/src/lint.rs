@@ -2889,6 +2889,31 @@ END CLASS."#;
     END METHOD.
 END CLASS."#;
 
+    /// A signature question makes the closure cache's entry hold for no file,
+    /// and a lookup notes the file it answered with.
+    #[test]
+    fn a_recording_view_notes_answers_and_gives_up_on_a_signature() {
+        let fs = workspace(&[(
+            "/src/lib/util.p",
+            "DEFINE INPUT PARAMETER p AS CHARACTER.\n",
+        )]);
+        let paths = vec![PathBuf::from("/src")];
+        let index = BatchIndex::new(&fs, &paths);
+        let view = index.searching_from(Some(Path::new("/src/main.p")));
+        let name = IndexName::new("lib/util.p");
+
+        let lookups = Recording::new(&view);
+        let IndexAnswer::Found(file) = lookups.program(&name) else {
+            panic!("the program is on the paths");
+        };
+        assert_eq!(lookups.into_files(), Some(vec![file]));
+
+        let signatures = Recording::new(&view);
+        assert!(signatures.signature(&name, None).is_some());
+        assert_eq!(signatures.program(&name), IndexAnswer::Found(file));
+        assert_eq!(signatures.into_files(), None);
+    }
+
     fn workspace(files: &[(&str, &str)]) -> InMemoryFileSystem {
         let mut fs = InMemoryFileSystem::new();
         for (path, contents) in files {
