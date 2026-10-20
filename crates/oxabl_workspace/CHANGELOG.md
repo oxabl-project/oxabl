@@ -1,5 +1,23 @@
 # Changelog
 
+## [3.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.0.0...oxabl_workspace-v3.1.0) (2026-10-20)
+
+
+### Features
+
+* **workspace:** add CachedFileSystem, which reads and resolves each file once per run ([dadac85](https://github.com/oxabl-project/oxabl/commit/dadac85e4f7a56f947373b992d313b5b202cd378))
+
+
+### Bug Fixes
+
+* **workspace:** let CachedFileSystem wrap an unsized filesystem instead of adding blanket impls ([a07d79b](https://github.com/oxabl-project/oxabl/commit/a07d79becfa5d1a2fc79e5dfc1ae8493ff443ca0))
+
+
+### Performance Improvements
+
+* **pipeline:** share one index and include cache across a workspace walk's threads ([0776695](https://github.com/oxabl-project/oxabl/commit/0776695113f8869a459cf595a9ef000edc660711))
+* **workspace:** keep a file's text from its third read, so compile roots cost no memory ([e4a64ab](https://github.com/oxabl-project/oxabl/commit/e4a64ab69894be72faeb3e7ea1749936be323b11))
+
 ## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v2.0.0...oxabl_workspace-v3.0.0) (2026-10-16)
 
 

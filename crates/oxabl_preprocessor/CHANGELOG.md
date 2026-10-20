@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.0...oxabl_preprocessor-v0.7.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **preprocessor:** read DEFINED as the AVM does and treat an empty &IF as false ([2185b3f](https://github.com/oxabl-project/oxabl/commit/2185b3ffd019c2562ff4424f4a020193e50f21cf))
+* **preprocessor:** read DEFINED as the AVM does and treat an empty &IF as false ([bcc3de8](https://github.com/oxabl-project/oxabl/commit/bcc3de81e6d5473f682b91148e91c27f107f8dae))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.0.0 to 3.1.0
+
 ## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.6.0...oxabl_preprocessor-v0.7.0) (2026-10-16)
 
 

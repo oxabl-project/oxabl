@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_nulls-v0.2.0...oxabl_nulls-v0.2.1) (2026-10-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.3.0 to 0.3.1
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+    * oxabl_scope bumped from 0.2.0 to 0.2.1
+  * dev-dependencies
+    * oxabl_parser bumped from 3.0.0 to 3.0.1
+    * oxabl_schema bumped from 0.4.0 to 0.4.1
+
 ## [0.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_nulls-v0.1.0...oxabl_nulls-v0.2.0) (2026-10-16)
 
 

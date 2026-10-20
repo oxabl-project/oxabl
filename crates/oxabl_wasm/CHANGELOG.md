@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.6](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.5...oxabl_wasm-v1.0.6) (2026-10-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 3.0.0 to 3.0.1
+    * oxabl_pipeline bumped from 3.0.0 to 3.1.0
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.0.0 to 3.1.0
+
 ## [1.0.5](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.4...oxabl_wasm-v1.0.5) (2026-10-16)
 
 
