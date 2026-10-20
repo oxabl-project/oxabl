@@ -4,16 +4,17 @@
 //! ```text
 //! cargo run --release -p oxabl_pipeline --example edge_walk -- \
 //!     --root path/to/project [--include DIR]... [--own-dir-first all|none|PATH-PART] \
-//!     [--schema] [--dlc DIR] [--threads N] [--api old|shared] [--fs-cache on|off] \
-//!     [--dump FILE] [--compare FILE]
+//!     [--own-dir-search DIR,...] [--trigger-dirs DIR,...] [--schema] [--dlc DIR] \
+//!     [--threads N] [--api old|shared] [--fs-cache on|off] [--dump FILE] [--compare FILE]
 //! ```
 //!
 //! The settings are a build tool's: compile roots are `.p`, `.cls`, and `.t`
-//! under a `tr` or `trigger` directory; sources are Windows-1252; names resolve
-//! ignoring case; every edge set carries its conditional include closure; the
-//! `SHARED` producers come from one map over every ABL file; the predefined
-//! names are a 64-bit Linux batch compile. A root compiled own directory first
-//! searches `.` and `rf` below its directory ahead of the include paths.
+//! under one of the `--trigger-dirs` directories (none by default); sources
+//! are Windows-1252; names resolve ignoring case; every edge set carries its
+//! conditional include closure; the `SHARED` producers come from one map over
+//! every ABL file; the predefined names are a 64-bit Linux batch compile. A
+//! root compiled own directory first searches the `--own-dir-search`
+//! directories below its own (default `.`) ahead of the include paths.
 //! `--schema` loads the `.df` files of the tree's `oxabl.toml`. `--dlc` adds
 //! the `psc/dlc/{tty,src,.,bin}` directories of a copy of an OpenEdge install
 //! to the include paths.
@@ -38,7 +39,6 @@ use oxabl_workspace::{
 
 const ROOT_EXTENSIONS: [&str; 3] = ["p", "cls", "t"];
 const SOURCE_EXTENSIONS: [&str; 6] = ["p", "cls", "t", "i", "v", "w"];
-const OWN_DIR_SEARCH: [&str; 2] = [".", "rf"];
 
 /// Which roots search their own directory first: all, none, or those whose
 /// path contains a part (matched ignoring case).
@@ -53,6 +53,8 @@ struct Args {
     root: PathBuf,
     includes: Vec<PathBuf>,
     own_dir: OwnDir,
+    own_dir_search: Vec<PathBuf>,
+    trigger_dirs: Vec<String>,
     schema: bool,
     threads: usize,
     dump: Option<PathBuf>,
@@ -71,6 +73,8 @@ fn args() -> Args {
         root: PathBuf::new(),
         includes: Vec::new(),
         own_dir: OwnDir::None,
+        own_dir_search: vec![PathBuf::from(".")],
+        trigger_dirs: Vec::new(),
         schema: false,
         threads: 8,
         dump: None,
@@ -95,6 +99,16 @@ fn args() -> Args {
                     "none" => OwnDir::None,
                     part => OwnDir::Marked(part.to_ascii_lowercase()),
                 }
+            }
+            "--own-dir-search" => {
+                out.own_dir_search = value().split(',').map(PathBuf::from).collect();
+            }
+            "--trigger-dirs" => {
+                out.trigger_dirs = value()
+                    .split(',')
+                    .filter(|d| !d.is_empty())
+                    .map(str::to_string)
+                    .collect();
             }
             "--schema" => out.schema = true,
             "--threads" => out.threads = value().parse().expect("threads"),
@@ -197,7 +211,7 @@ fn has_extension(path: &Path, extensions: &[&str]) -> bool {
         .is_some_and(|e| extensions.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
 
-fn is_root(path: &Path) -> bool {
+fn is_root(path: &Path, trigger_dirs: &[String]) -> bool {
     if !has_extension(path, &ROOT_EXTENSIONS) {
         return false;
     }
@@ -207,7 +221,7 @@ fn is_root(path: &Path) -> bool {
     path.parent().is_some_and(|dir| {
         dir.components().any(|c| {
             let c = c.as_os_str().to_string_lossy();
-            c.eq_ignore_ascii_case("tr") || c.eq_ignore_ascii_case("trigger")
+            trigger_dirs.iter().any(|t| c.eq_ignore_ascii_case(t))
         })
     })
 }
@@ -340,7 +354,7 @@ fn main() {
     files.sort();
     let mut roots: Vec<PathBuf> = files
         .iter()
-        .filter(|p| is_root(p))
+        .filter(|p| is_root(p, &args.trigger_dirs))
         .filter(|p| {
             args.only
                 .as_ref()
@@ -367,7 +381,7 @@ fn main() {
     };
     let config = config(&args);
     let own_dir_config = PipelineConfig {
-        root_relative_include_paths: OWN_DIR_SEARCH.iter().map(PathBuf::from).collect(),
+        root_relative_include_paths: args.own_dir_search.clone(),
         ..config.clone()
     };
     let config_loaded = started.elapsed() - walked;
