@@ -581,32 +581,42 @@ struct ClosureKey {
 }
 
 /// The names one target writes, resolved with no file excluded, and every file
-/// a lookup answered with. The names hold for any file the lookups did not
-/// reach, since excluding a file changes only the answers that name it.
+/// a lookup answered with; `None` when the analysis asked a question whose file
+/// it could not note. The names hold for any file the lookups did not reach,
+/// since excluding a file changes only the answers that name it.
 struct ClosureEntry {
     references: Vec<ClosureReference>,
-    reached: Vec<PathBuf>,
+    reached: Option<Vec<PathBuf>>,
 }
 
 /// An index view that records the file of every answer it gives.
+///
+/// It must not change the state of the view it wraps (such as the files that
+/// view has reached): the cached analysis has to ask exactly the questions an
+/// uncached one asks.
 struct Recording<'v> {
     inner: &'v dyn WorkspaceIndex,
-    files: Mutex<Vec<IndexedFileId>>,
+    /// The files noted; `None` once an answer named a file it could not note.
+    files: Mutex<Option<Vec<IndexedFileId>>>,
 }
 
 impl<'v> Recording<'v> {
     fn new(inner: &'v dyn WorkspaceIndex) -> Self {
         Recording {
             inner,
-            files: Mutex::default(),
+            files: Mutex::new(Some(Vec::new())),
         }
     }
 
     fn note(&self, file: IndexedFileId) {
-        self.files
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(file);
+        if let Some(files) = &mut *self.files.lock().unwrap_or_else(|e| e.into_inner()) {
+            files.push(file);
+        }
+    }
+
+    /// Record that an answer may have named any file.
+    fn note_unknown(&self) {
+        *self.files.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     fn noted<T>(
@@ -620,7 +630,7 @@ impl<'v> Recording<'v> {
         answer
     }
 
-    fn into_files(self) -> Vec<IndexedFileId> {
+    fn into_files(self) -> Option<Vec<IndexedFileId>> {
         self.files.into_inner().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -658,9 +668,9 @@ impl WorkspaceIndex for Recording<'_> {
         program: &IndexName,
         procedure: Option<&IndexName>,
     ) -> Option<Arc<Signature>> {
-        if let IndexAnswer::Found(file) = self.inner.program(program) {
-            self.note(file);
-        }
+        // Finding the program's file would be a lookup of its own, which an
+        // uncached analysis does not make; the entry then holds for no file.
+        self.note_unknown();
         self.inner.signature(program, procedure)
     }
 
@@ -1283,17 +1293,25 @@ impl<'a> LintPipeline<'a> {
             let references = self.closure_references_in(target, include_paths, &analysis, &names);
             let reached = analysis
                 .into_files()
-                .into_iter()
-                .chain(names.into_files())
-                .filter_map(|file| index.indexed_path(file))
-                .collect();
+                .zip(names.into_files())
+                .map(|(analysis, names)| {
+                    analysis
+                        .into_iter()
+                        .chain(names)
+                        .filter_map(|file| index.indexed_path(file))
+                        .collect()
+                });
             ClosureEntry {
                 references,
                 reached,
             }
         });
         let analysed = self.file().map(oxabl_index::search::normalize_lexically);
-        if analysed.is_some_and(|file| entry.reached.contains(&file)) {
+        let holds = match &entry.reached {
+            Some(reached) => analysed.is_none_or(|file| !reached.contains(&file)),
+            None => false,
+        };
+        if !holds {
             return self.closure_references(target, include_paths);
         }
         entry.references.clone()
