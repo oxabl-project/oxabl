@@ -1373,6 +1373,34 @@ mod tests {
     }
 
     #[test]
+    fn a_waiter_on_a_file_whose_indexing_panicked_indexes_it_itself() {
+        let fs = Gated::new(
+            CountingFs::new(&[("/src/orders/post.p", "MESSAGE \"posted\".")]),
+            "/src/orders/post.p",
+            true,
+        );
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let program = IndexName::new("orders/post.p");
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| index.program(&program));
+            fs.wait_until_entered();
+            let second = scope.spawn(|| index.program(&program));
+            // Whether the second lookup waits on the slot or claims it after the
+            // panic, it ends with the file indexed under the claimed id.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            fs.open();
+            (first.join(), second.join().unwrap())
+        });
+        assert!(first.is_err(), "the first read panics");
+        let IndexAnswer::Found(file) = second else {
+            panic!("the second lookup indexes the file: {second:?}");
+        };
+        assert_eq!(index.program(&program), IndexAnswer::Found(file));
+        assert_eq!(fs.inner.reads_of("/src/orders/post.p"), 2);
+    }
+
+    #[test]
     fn the_known_file_scan_gives_ids_in_list_order() {
         let sources: Vec<(String, String)> = (0..24)
             .map(|k| {

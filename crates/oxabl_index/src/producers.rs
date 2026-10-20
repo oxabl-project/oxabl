@@ -426,6 +426,71 @@ mod tests {
         }
     }
 
+    /// Every text built from the parts below that the indexer finds a `NEW
+    /// SHARED` definition in passes the prefilter.
+    #[test]
+    fn the_prefilter_passes_every_definition_the_indexer_finds() {
+        const PREFIXES: [&str; 3] = ["", "o = NEW app.Thing(). ", "&SCOPED-DEFINE sh SHARED\n"];
+        const DEFINES: [&str; 3] = ["DEFINE", "def", "Defi"];
+        const NEWS: [&str; 3] = ["NEW", "new", "nEw"];
+        const SEPARATORS: [&str; 10] = [
+            " ",
+            "\n",
+            "\t",
+            "\r\n",
+            " /* note */ ",
+            "/*a*//*b*/",
+            " ~\n ",
+            "\n&SCOPED-DEFINE x 1\n",
+            "\n&IF TRUE &THEN\n&ENDIF\n",
+            " {&nothing} ",
+        ];
+        const SHAREDS: [&str; 4] = ["SHARED", "shared", "GLOBAL SHARED", "{&sh}"];
+        const OBJECTS: [&str; 3] = [
+            "VARIABLE v AS INTEGER NO-UNDO.",
+            "TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.",
+            "STREAM s.",
+        ];
+        let fs = InMemoryFileSystem::new();
+        let predefined = PreprocessorConfig::default();
+        let includes = in_fs(&fs, &predefined);
+        let path = Path::new("/src/p.p");
+        let mut found = 0;
+        for prefix in PREFIXES {
+            for define in DEFINES {
+                for new in NEWS {
+                    for before in SEPARATORS {
+                        for shared in SHAREDS {
+                            for after in SEPARATORS {
+                                for object in OBJECTS {
+                                    let text = format!(
+                                        "{prefix}{define} {new}{before}{shared}{after}{object}"
+                                    );
+                                    let facts = index_file_at(
+                                        IndexedFileId::new(1),
+                                        path,
+                                        &text,
+                                        &includes,
+                                    )
+                                    .0;
+                                    if facts.shared_definitions.is_empty() {
+                                        continue;
+                                    }
+                                    found += 1;
+                                    assert!(may_define_shared(path, &text, &includes), "{text:?}");
+                                    if !text.contains('{') {
+                                        assert!(says_new_shared(&text), "{text:?}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found > 1000, "the parts make definitions: {found}");
+    }
+
     fn build(fs: &InMemoryFileSystem, files: &[PathBuf]) -> SharedProducers {
         let predefined = PreprocessorConfig::default();
         SharedProducers::build(files, &in_fs(fs, &predefined))
