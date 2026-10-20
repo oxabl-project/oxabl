@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! cargo run --release -p oxabl_pipeline --example edge_walk -- \
-//!     --root ~/work/sail-erp [--include DIR]... [--own-dir-first all|wms|none] \
+//!     --root path/to/project [--include DIR]... [--own-dir-first all|none|PATH-PART] \
 //!     [--schema] [--dlc DIR] [--threads N] [--api old|shared] [--fs-cache on|off] \
 //!     [--dump FILE] [--compare FILE]
 //! ```
@@ -40,10 +40,12 @@ const ROOT_EXTENSIONS: [&str; 3] = ["p", "cls", "t"];
 const SOURCE_EXTENSIONS: [&str; 6] = ["p", "cls", "t", "i", "v", "w"];
 const OWN_DIR_SEARCH: [&str; 2] = [".", "rf"];
 
-#[derive(Clone, Copy, PartialEq)]
+/// Which roots search their own directory first: all, none, or those whose
+/// path contains a part (matched ignoring case).
+#[derive(Clone, PartialEq)]
 enum OwnDir {
     All,
-    Wms,
+    Marked(String),
     None,
 }
 
@@ -68,7 +70,7 @@ fn args() -> Args {
     let mut out = Args {
         root: PathBuf::new(),
         includes: Vec::new(),
-        own_dir: OwnDir::Wms,
+        own_dir: OwnDir::None,
         schema: false,
         threads: 8,
         dump: None,
@@ -91,7 +93,7 @@ fn args() -> Args {
                 out.own_dir = match value().as_str() {
                     "all" => OwnDir::All,
                     "none" => OwnDir::None,
-                    _ => OwnDir::Wms,
+                    part => OwnDir::Marked(part.to_ascii_lowercase()),
                 }
             }
             "--schema" => out.schema = true,
@@ -210,14 +212,11 @@ fn is_root(path: &Path) -> bool {
     })
 }
 
-fn own_dir_first(mode: OwnDir, path: &Path) -> bool {
+fn own_dir_first(mode: &OwnDir, path: &Path) -> bool {
     match mode {
         OwnDir::All => true,
         OwnDir::None => false,
-        OwnDir::Wms => {
-            let text = path.to_string_lossy();
-            text.contains("/wms") || text.contains("/WMS")
-        }
+        OwnDir::Marked(part) => path.to_string_lossy().to_ascii_lowercase().contains(part),
     }
 }
 
@@ -408,7 +407,7 @@ fn main() {
                     let Some(path) = roots.get(index) else {
                         break;
                     };
-                    let run = if own_dir_first(args.own_dir, path) {
+                    let run = if own_dir_first(&args.own_dir, path) {
                         &own
                     } else {
                         &plain
@@ -569,7 +568,7 @@ fn shared_producers(
                     let Some(path) = files.get(index) else {
                         break;
                     };
-                    let includes = if own_dir_first(args.own_dir, path) {
+                    let includes = if own_dir_first(&args.own_dir, path) {
                         &own
                     } else {
                         &plain
