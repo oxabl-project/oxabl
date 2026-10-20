@@ -79,7 +79,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
@@ -91,15 +91,16 @@ use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
 };
 use oxabl_index::{
-    BatchIndex, BranchKind, ClosureReference, ClosureTarget, ConditionalBranch, ConditionalInclude,
-    ConditionalIncludeName, ConditionalReference, DirectIncludeInput, EdgeInputs, EdgeKind,
-    EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput, ReferenceSyntax, SharedProducers,
-    UnreadableIncludeInput, UnresolvedIncludeInput, WrittenReference, build_edge_set,
+    BatchIndex, BranchKind, ClosureExpansions, ClosureReference, ClosureTarget, ConditionalBranch,
+    ConditionalInclude, ConditionalIncludeName, ConditionalReference, DirectIncludeInput,
+    EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput, NestedUnresolvedIncludeInput,
+    ReferenceSyntax, SharedProducers, UnreadableIncludeInput, UnresolvedIncludeInput,
+    WrittenReference, build_edge_set, conditional_include_closure_cached,
     conditional_include_closure_with, written_imports, written_references,
 };
 use oxabl_semantic::{
-    IndexAnswer, IndexName, LocateKind, Located, Semantic, SourceContext, UnresolvedReason,
-    WorkspaceIndex,
+    ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
+    MemberDescriptor, Semantic, Signature, SourceContext, UnresolvedReason, WorkspaceIndex,
 };
 use oxabl_workspace::{FileSystem, is_include_fragment};
 
@@ -462,6 +463,228 @@ pub struct LintPipeline<'a> {
     include_runs: Arc<Mutex<HashMap<PathBuf, Option<Arc<IncludeAlone>>>>>,
     summaries: Arc<Mutex<Option<Arc<crate::WorkspaceEffects>>>>,
     known_files: &'a [PathBuf],
+    /// The analyses of conditional include targets, kept across the files of a
+    /// [`SharedRun`]; `None` for any other handle, which analyses each target
+    /// once per file.
+    closures: Option<&'a ClosureCache>,
+}
+
+/// What the run handles of one walk share across threads: one cross-file index
+/// and one cache of conditional include analyses.
+///
+/// A [`LintPipeline::new`] handle owns its index, and the index is what makes a
+/// walk read each dependency once. A walk on several threads needs one handle
+/// per thread, so each thread used to index every file its share of the walk
+/// reached, and every thread reached nearly all of them. Build one `SharedRun`
+/// instead and give each thread a [`handle`](Self::handle): a file is then
+/// indexed once for the whole walk, by the first thread to reach it.
+///
+/// The handles also keep what [`edges_of`](LintPipeline::edges_of) finds in the
+/// target of a conditional include (with
+/// [`with_conditional_include_closure`](LintPipeline::with_conditional_include_closure)),
+/// so a target many files name conditionally is analysed once per search path,
+/// not once per file.
+///
+/// Like the index, the cache assumes that no file changes during the walk.
+/// The edge set of each file is the one a [`LintPipeline::new`] handle gives.
+pub struct SharedRun<'a> {
+    config: &'a PipelineConfig,
+    fs: &'a dyn FileSystem,
+    index: BatchIndex<'a>,
+    closures: ClosureCache,
+    known_files: &'a [PathBuf],
+}
+
+impl<'a> SharedRun<'a> {
+    /// The shared state of a walk over `config`, reading through `fs`. Reads
+    /// nothing yet.
+    pub fn new(config: &'a PipelineConfig, fs: &'a dyn FileSystem) -> Self {
+        SharedRun {
+            config,
+            fs,
+            index: batch_index(config, fs),
+            closures: ClosureCache::default(),
+            known_files: &[],
+        }
+    }
+
+    /// Answer `SHARED` producer questions from `producers`, as
+    /// [`LintPipeline::with_shared_producers`] does. Apply before any handle
+    /// is made.
+    #[must_use]
+    pub fn with_shared_producers(mut self, producers: &'a SharedProducers) -> Self {
+        self.index = self.index.with_shared_producers(producers);
+        self
+    }
+
+    /// Answer `SHARED` producer questions from `files`, as
+    /// [`LintPipeline::with_known_files`] does. Apply before any handle is
+    /// made.
+    #[must_use]
+    pub fn with_known_files(mut self, files: &'a [PathBuf]) -> Self {
+        self.index = self.index.seeded_with(files);
+        self.known_files = files;
+        self
+    }
+
+    /// A run handle over this shared state, with preprocessing on. Make one
+    /// per thread, then one per file with [`LintPipeline::with_file`].
+    pub fn handle(&'a self) -> LintPipeline<'a> {
+        LintPipeline {
+            config: self.config,
+            fs: self.fs,
+            preprocess: true,
+            index: RunIndex::Shared(&self.index),
+            file: None,
+            conditional_closure: false,
+            include_runs: Arc::default(),
+            summaries: Arc::default(),
+            known_files: self.known_files,
+            closures: Some(&self.closures),
+        }
+    }
+
+    /// The path the shared index assigned to `id`; see
+    /// [`LintPipeline::indexed_path`].
+    pub fn indexed_path(&self, id: IndexedFileId) -> Option<PathBuf> {
+        self.index.indexed_path(id)
+    }
+}
+
+/// The batch index a run handle over `config` owns.
+fn batch_index<'a>(config: &'a PipelineConfig, fs: &'a dyn FileSystem) -> BatchIndex<'a> {
+    BatchIndex::new(fs, &config.include_paths)
+        .with_root_relative_paths(&config.root_relative_include_paths)
+        .with_run_extensions(&config.run_extensions)
+        .with_case_insensitive_lookup(config.case_insensitive_lookup)
+        .with_preprocessor(&config.preprocessor)
+}
+
+/// What conditional include targets read, and the class and program names
+/// they write, by target. A target is analysed once: a file that needs it
+/// while another file's handle analyses it waits for that analysis.
+#[derive(Default)]
+struct ClosureCache {
+    expansions: ClosureExpansions,
+    entries: Mutex<HashMap<ClosureKey, Arc<OnceLock<ClosureEntry>>>>,
+}
+
+/// One target as one file's handle analyses it: the file and the name it is
+/// included by, the search path, and the directory a root-relative path is
+/// resolved against.
+#[derive(PartialEq, Eq, Hash)]
+struct ClosureKey {
+    path: PathBuf,
+    name: String,
+    include_paths: Vec<PathBuf>,
+    directory: Option<PathBuf>,
+}
+
+/// The names one target writes, resolved with no file excluded, and every file
+/// a lookup answered with; `None` when the analysis asked a question whose file
+/// it could not note. The names hold for any file the lookups did not reach,
+/// since excluding a file changes only the answers that name it.
+struct ClosureEntry {
+    references: Vec<ClosureReference>,
+    reached: Option<Vec<PathBuf>>,
+}
+
+/// An index view that records the file of every answer it gives.
+///
+/// It must not change the state of the view it wraps (such as the files that
+/// view has reached): the cached analysis has to ask exactly the questions an
+/// uncached one asks.
+struct Recording<'v> {
+    inner: &'v dyn WorkspaceIndex,
+    /// The files noted; `None` once an answer named a file it could not note.
+    files: Mutex<Option<Vec<IndexedFileId>>>,
+}
+
+impl<'v> Recording<'v> {
+    fn new(inner: &'v dyn WorkspaceIndex) -> Self {
+        Recording {
+            inner,
+            files: Mutex::new(Some(Vec::new())),
+        }
+    }
+
+    fn note(&self, file: IndexedFileId) {
+        if let Some(files) = &mut *self.files.lock().unwrap_or_else(|e| e.into_inner()) {
+            files.push(file);
+        }
+    }
+
+    /// Record that an answer may have named any file.
+    fn note_unknown(&self) {
+        *self.files.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    fn noted<T>(
+        &self,
+        answer: IndexAnswer<T>,
+        file: impl Fn(&T) -> IndexedFileId,
+    ) -> IndexAnswer<T> {
+        if let IndexAnswer::Found(found) = &answer {
+            self.note(file(found));
+        }
+        answer
+    }
+
+    fn into_files(self) -> Option<Vec<IndexedFileId>> {
+        self.files.into_inner().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl WorkspaceIndex for Recording<'_> {
+    fn class(&self, name: &IndexName) -> IndexAnswer<Arc<ClassDescriptor>> {
+        self.noted(self.inner.class(name), |class| class.file)
+    }
+
+    fn class_members(&self, class: &IndexName) -> IndexAnswer<Arc<[MemberDescriptor]>> {
+        if let IndexAnswer::Found(descriptor) = self.inner.class(class) {
+            self.note(descriptor.file);
+        }
+        self.inner.class_members(class)
+    }
+
+    fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
+        self.noted(self.inner.program(target), |file| *file)
+    }
+
+    fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
+        self.noted(self.inner.shared_producer(name), |file| *file)
+    }
+
+    fn located(&self, kind: LocateKind, name: &IndexName) -> Located {
+        let answer = self.inner.located(kind, name);
+        if let Located::In(file) = answer {
+            self.note(file);
+        }
+        answer
+    }
+
+    fn signature(
+        &self,
+        program: &IndexName,
+        procedure: Option<&IndexName>,
+    ) -> Option<Arc<Signature>> {
+        // Finding the program's file would be a lookup of its own, which an
+        // uncached analysis does not make; the entry then holds for no file.
+        self.note_unknown();
+        self.inner.signature(program, procedure)
+    }
+
+    fn workspace_defines_procedure(&self, name: &IndexName) -> Option<bool> {
+        self.inner.workspace_defines_procedure(name)
+    }
+
+    fn revision(&self) -> IndexRevision {
+        self.inner.revision()
+    }
+
+    fn searches_any_path(&self) -> bool {
+        self.inner.searches_any_path()
+    }
 }
 
 /// Where a handle's index lives: owned by the handle that built it, borrowed
@@ -503,18 +726,13 @@ impl<'a> LintPipeline<'a> {
             // The index reads nothing until a name is looked up (R6), so building
             // it here costs a pair of borrows and no I/O — which is what lets it
             // be unconditional rather than another thing a client can forget.
-            index: RunIndex::Owned(Box::new(
-                BatchIndex::new(fs, &config.include_paths)
-                    .with_root_relative_paths(&config.root_relative_include_paths)
-                    .with_run_extensions(&config.run_extensions)
-                    .with_case_insensitive_lookup(config.case_insensitive_lookup)
-                    .with_preprocessor(&config.preprocessor),
-            )),
+            index: RunIndex::Owned(Box::new(batch_index(config, fs))),
             file: None,
             conditional_closure: false,
             include_runs: Arc::default(),
             summaries: Arc::default(),
             known_files: &[],
+            closures: None,
         }
     }
 
@@ -694,6 +912,7 @@ impl<'a> LintPipeline<'a> {
             include_runs: Arc::clone(&self.include_runs),
             summaries: Arc::clone(&self.summaries),
             known_files: self.known_files,
+            closures: self.closures,
         }
     }
 
@@ -971,9 +1190,17 @@ impl<'a> LintPipeline<'a> {
                 root_relative_paths: &[],
                 ..includes
             };
-            conditional_include_closure_with(&names, &includes, &mut |target| {
-                self.closure_references(target, &paths)
-            })
+            let mut references =
+                |target: ClosureTarget<'_>| self.closure_references_cached(target, &paths);
+            match self.closures {
+                Some(cache) => conditional_include_closure_cached(
+                    &names,
+                    &includes,
+                    &cache.expansions,
+                    &mut references,
+                ),
+                None => conditional_include_closure_with(&names, &includes, &mut references),
+            }
         });
 
         let edges = build_edge_set(&EdgeInputs {
@@ -1005,55 +1232,7 @@ impl<'a> LintPipeline<'a> {
         if expanded.skipped_text().is_empty() {
             return Vec::new();
         }
-        let mut imports: Option<Vec<String>> = None;
-        let mut out = Vec::new();
-        self.with_run_index(|index| {
-            for skipped in expanded.skipped_text() {
-                let Some(text) = expanded.skipped_text_of(skipped) else {
-                    continue;
-                };
-                let in_root = skipped.site.file == ROOT_FILE_ID;
-                let include_site = if in_root {
-                    None
-                } else {
-                    skipped
-                        .via
-                        .first()
-                        .filter(|site| site.file == ROOT_FILE_ID)
-                        .map(|site| site.span)
-                };
-                let mut branches = None;
-                for written in written_references(text) {
-                    let target = match written.kind {
-                        EdgeKind::ProgramReference => resolve_program(index, &written.name),
-                        _ => {
-                            let imports =
-                                imports.get_or_insert_with(|| written_imports(&expanded.text));
-                            resolve_class(index, imports, &written.name)
-                        }
-                    };
-                    if target.is_none() && !keeps_unresolved(&written) {
-                        continue;
-                    }
-                    let start = skipped.site.span.start;
-                    out.push(ConditionalReference {
-                        kind: written.kind,
-                        syntax: written.syntax,
-                        target,
-                        span: in_root.then_some(oxabl_ast::Span {
-                            start: start + written.span.start,
-                            end: start + written.span.end,
-                        }),
-                        include_site,
-                        branches: branches
-                            .get_or_insert_with(|| conditional_branches(&skipped.branches))
-                            .clone(),
-                        name: written.name,
-                    });
-                }
-            }
-        });
-        out
+        self.with_run_index(|index| conditional_references_in(expanded, index))
     }
 
     /// The class and program names a conditional include's target writes, from
@@ -1068,6 +1247,86 @@ impl<'a> LintPipeline<'a> {
         target: ClosureTarget<'_>,
         include_paths: &[PathBuf],
     ) -> Vec<ClosureReference> {
+        self.with_run_index(|analysis| {
+            self.with_run_index(|skipped| {
+                self.closure_references_in(target, include_paths, analysis, skipped)
+            })
+        })
+    }
+
+    /// [`closure_references`](Self::closure_references) from a
+    /// [`SharedRun`]'s cache when the handle has one. An entry holds for this
+    /// file unless one of its lookups reached this file, which this handle
+    /// would have excluded.
+    fn closure_references_cached(
+        &self,
+        target: ClosureTarget<'_>,
+        include_paths: &[PathBuf],
+    ) -> Vec<ClosureReference> {
+        let (Some(cache), RunIndex::Shared(index)) = (self.closures, &self.index) else {
+            return self.closure_references(target, include_paths);
+        };
+        let key = ClosureKey {
+            path: oxabl_index::search::normalize_lexically(target.path),
+            name: target.name.to_string(),
+            include_paths: include_paths.to_vec(),
+            directory: self
+                .file()
+                .filter(|_| !self.config.root_relative_include_paths.is_empty())
+                .and_then(Path::parent)
+                .map(Path::to_path_buf),
+        };
+        let slot = Arc::clone(
+            cache
+                .entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(key)
+                .or_default(),
+        );
+        let entry = slot.get_or_init(|| {
+            let (first, second) = (
+                index.searching_from(self.file()),
+                index.searching_from(self.file()),
+            );
+            let (analysis, names) = (Recording::new(&first), Recording::new(&second));
+            let references = self.closure_references_in(target, include_paths, &analysis, &names);
+            let reached = analysis
+                .into_files()
+                .zip(names.into_files())
+                .map(|(analysis, names)| {
+                    analysis
+                        .into_iter()
+                        .chain(names)
+                        .filter_map(|file| index.indexed_path(file))
+                        .collect()
+                });
+            ClosureEntry {
+                references,
+                reached,
+            }
+        });
+        let analysed = self.file().map(oxabl_index::search::normalize_lexically);
+        let holds = match &entry.reached {
+            Some(reached) => analysed.is_none_or(|file| !reached.contains(&file)),
+            None => false,
+        };
+        if !holds {
+            return self.closure_references(target, include_paths);
+        }
+        entry.references.clone()
+    }
+
+    /// [`closure_references`](Self::closure_references), analysing the target
+    /// through `analysis` and resolving the names of its not-taken branches
+    /// through `skipped`.
+    fn closure_references_in(
+        &self,
+        target: ClosureTarget<'_>,
+        include_paths: &[PathBuf],
+        analysis: &dyn WorkspaceIndex,
+        skipped: &dyn WorkspaceIndex,
+    ) -> Vec<ClosureReference> {
         let Ok(expanded) = expand_source_with(
             ROOT_FILE_ID,
             Some(target.name),
@@ -1079,15 +1338,13 @@ impl<'a> LintPipeline<'a> {
         ) else {
             return Vec::new();
         };
-        let (semantic, parse_recovered) = self.with_run_index(|index| {
-            analyze_from_expanded(
-                &expanded,
-                &self.config.schema,
-                self.config.schema_loaded,
-                index,
-                SourceContext::IncludeFragment,
-            )
-        });
+        let (semantic, parse_recovered) = analyze_from_expanded(
+            &expanded,
+            &self.config.schema,
+            self.config.schema_loaded,
+            analysis,
+            SourceContext::IncludeFragment,
+        );
         let no_site = |_: oxabl_common::VirtualSpan| None;
         let edges = build_edge_set(&EdgeInputs {
             semantic: &semantic,
@@ -1127,7 +1384,7 @@ impl<'a> LintPipeline<'a> {
                 .map(|row| ClosureReference::new(row.kind, false, row.name.clone(), None)),
         );
         out.extend(
-            self.conditional_references(&expanded)
+            conditional_references_in(&expanded, skipped)
                 .into_iter()
                 .map(|r| ClosureReference::new(r.kind, true, r.name, r.target)),
         );
@@ -1354,6 +1611,63 @@ impl<'a> LintPipeline<'a> {
             Err(panic) => LintResult::failed(panic),
         }
     }
+}
+
+/// The class and program names written in the branches `expanded` did not
+/// take, resolved through `index`.
+fn conditional_references_in(
+    expanded: &ExpandedFile,
+    index: &dyn WorkspaceIndex,
+) -> Vec<ConditionalReference> {
+    if expanded.skipped_text().is_empty() {
+        return Vec::new();
+    }
+    let mut imports: Option<Vec<String>> = None;
+    let mut out = Vec::new();
+    for skipped in expanded.skipped_text() {
+        let Some(text) = expanded.skipped_text_of(skipped) else {
+            continue;
+        };
+        let in_root = skipped.site.file == ROOT_FILE_ID;
+        let include_site = if in_root {
+            None
+        } else {
+            skipped
+                .via
+                .first()
+                .filter(|site| site.file == ROOT_FILE_ID)
+                .map(|site| site.span)
+        };
+        let mut branches = None;
+        for written in written_references(text) {
+            let target = match written.kind {
+                EdgeKind::ProgramReference => resolve_program(index, &written.name),
+                _ => {
+                    let imports = imports.get_or_insert_with(|| written_imports(&expanded.text));
+                    resolve_class(index, imports, &written.name)
+                }
+            };
+            if target.is_none() && !keeps_unresolved(&written) {
+                continue;
+            }
+            let start = skipped.site.span.start;
+            out.push(ConditionalReference {
+                kind: written.kind,
+                syntax: written.syntax,
+                target,
+                span: in_root.then_some(oxabl_ast::Span {
+                    start: start + written.span.start,
+                    end: start + written.span.end,
+                }),
+                include_site,
+                branches: branches
+                    .get_or_insert_with(|| conditional_branches(&skipped.branches))
+                    .clone(),
+                name: written.name,
+            });
+        }
+    }
+    out
 }
 
 /// The enclosing branches of a skipped reference, as the edge set names them.
@@ -2574,6 +2888,31 @@ END CLASS."#;
         MESSAGE v-sum.
     END METHOD.
 END CLASS."#;
+
+    /// A signature question makes the closure cache's entry hold for no file,
+    /// and a lookup notes the file it answered with.
+    #[test]
+    fn a_recording_view_notes_answers_and_gives_up_on_a_signature() {
+        let fs = workspace(&[(
+            "/src/lib/util.p",
+            "DEFINE INPUT PARAMETER p AS CHARACTER.\n",
+        )]);
+        let paths = vec![PathBuf::from("/src")];
+        let index = BatchIndex::new(&fs, &paths);
+        let view = index.searching_from(Some(Path::new("/src/main.p")));
+        let name = IndexName::new("lib/util.p");
+
+        let lookups = Recording::new(&view);
+        let IndexAnswer::Found(file) = lookups.program(&name) else {
+            panic!("the program is on the paths");
+        };
+        assert_eq!(lookups.into_files(), Some(vec![file]));
+
+        let signatures = Recording::new(&view);
+        assert!(signatures.signature(&name, None).is_some());
+        assert_eq!(signatures.program(&name), IndexAnswer::Found(file));
+        assert_eq!(signatures.into_files(), None);
+    }
 
     fn workspace(files: &[(&str, &str)]) -> InMemoryFileSystem {
         let mut fs = InMemoryFileSystem::new();

@@ -2,6 +2,7 @@
 //! taken.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_common::FileId;
 use oxabl_preprocessor::{MAX_INCLUDE_DEPTH, Preprocessor};
@@ -24,13 +25,41 @@ pub struct ConditionalIncludeName<'a> {
 
 /// What one target read.
 struct Expanded {
+    read: Arc<Read>,
+    references: Vec<ClosureReference>,
+}
+
+/// What one target read on its own, whichever file names it.
+struct Read {
+    source: Arc<str>,
     reaches: Vec<PathBuf>,
     unresolved: Vec<String>,
     complete: bool,
     /// The target's own conditional includes.
     skipped: Vec<(String, bool)>,
-    references: Vec<ClosureReference>,
 }
+
+/// What conditional include targets read, kept across the files of one run so
+/// a target many files name conditionally is read and expanded once per
+/// search path. See [`conditional_include_closure_cached`].
+///
+/// An entry is keyed by the target, the name it is included by and the search
+/// path only. Every call that shares one value must therefore pass the same
+/// filesystem and the same predefined names, and no file may change while the
+/// value lives. `Sync`: the threads of a run share one.
+///
+/// Hidden: the pipeline's `SharedRun` is the client that keeps those fixed.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct ClosureExpansions {
+    entries: Mutex<FxHashMap<ExpansionKey, ExpansionSlot>>,
+}
+
+/// A target file, the name it is included by and the search path.
+type ExpansionKey = (PathBuf, String, Vec<PathBuf>);
+
+/// What a target read, once one call has read it; `None` when it could not.
+type ExpansionSlot = Arc<OnceLock<Option<Arc<Read>>>>;
 
 /// The closure of each of `names`, expanded on its own through `includes`.
 ///
@@ -68,6 +97,30 @@ pub fn conditional_include_closure_with(
     includes: &IncludeContext<'_>,
     references: &mut dyn FnMut(ClosureTarget<'_>) -> Vec<ClosureReference>,
 ) -> Vec<ConditionalIncludeClosure> {
+    closure(names, includes, None, references)
+}
+
+/// [`conditional_include_closure_with`], reading and expanding each target
+/// once for every call that shares `expansions` and the include paths.
+/// `references` is still called once per target per call. Every call that
+/// shares `expansions` must pass the same filesystem and predefined names (see
+/// [`ClosureExpansions`]).
+#[doc(hidden)]
+pub fn conditional_include_closure_cached(
+    names: &[ConditionalIncludeName<'_>],
+    includes: &IncludeContext<'_>,
+    expansions: &ClosureExpansions,
+    references: &mut dyn FnMut(ClosureTarget<'_>) -> Vec<ClosureReference>,
+) -> Vec<ConditionalIncludeClosure> {
+    closure(names, includes, Some(expansions), references)
+}
+
+fn closure(
+    names: &[ConditionalIncludeName<'_>],
+    includes: &IncludeContext<'_>,
+    expansions: Option<&ClosureExpansions>,
+    references: &mut dyn FnMut(ClosureTarget<'_>) -> Vec<ClosureReference>,
+) -> Vec<ConditionalIncludeClosure> {
     let mut out = Vec::new();
     let mut seen: FxHashSet<String> = FxHashSet::default();
     let mut by_path: FxHashMap<PathBuf, Option<Expanded>> = FxHashMap::default();
@@ -99,7 +152,7 @@ pub fn conditional_include_closure_with(
         let key = normalize_lexically(&path);
         let expanded = by_path
             .entry(key.clone())
-            .or_insert_with(|| expand(&path, &name, includes, references));
+            .or_insert_with(|| expand(&path, &key, &name, includes, expansions, references));
         let Some(expanded) = expanded else {
             out.push(ConditionalIncludeClosure {
                 name,
@@ -112,23 +165,24 @@ pub fn conditional_include_closure_with(
             });
             continue;
         };
-        let too_deep = depth >= MAX_INCLUDE_DEPTH && !expanded.skipped.is_empty();
+        let read = &expanded.read;
+        let too_deep = depth >= MAX_INCLUDE_DEPTH && !read.skipped.is_empty();
         if !too_deep {
-            for (next, computed) in expanded.skipped.iter().rev() {
+            for (next, computed) in read.skipped.iter().rev() {
                 work.push((next.clone(), *computed, Some(name.clone()), depth + 1));
             }
         }
         out.push(ConditionalIncludeClosure {
             via,
             path: Some(key.clone()),
-            reaches: expanded
+            reaches: read
                 .reaches
                 .iter()
                 .filter(|reached| **reached != key)
                 .cloned()
                 .collect(),
-            unresolved: expanded.unresolved.clone(),
-            complete: expanded.complete && !too_deep,
+            unresolved: read.unresolved.clone(),
+            complete: read.complete && !too_deep,
             references: expanded.references.clone(),
             name,
         });
@@ -136,14 +190,50 @@ pub fn conditional_include_closure_with(
     out
 }
 
-/// Expand the target at `path` on its own; `None` when it cannot be read or the
-/// preprocessor fails outright.
+/// Expand the target at `path` (normalized: `key`) on its own, through
+/// `expansions` when given; `None` when it cannot be read or the preprocessor
+/// fails outright.
 fn expand(
     path: &Path,
+    key: &Path,
     name: &str,
     includes: &IncludeContext<'_>,
+    expansions: Option<&ClosureExpansions>,
     references: &mut dyn FnMut(ClosureTarget<'_>) -> Vec<ClosureReference>,
 ) -> Option<Expanded> {
+    let read = match expansions {
+        Some(expansions) => {
+            let key = (
+                key.to_path_buf(),
+                name.to_string(),
+                includes.include_paths.to_vec(),
+            );
+            let slot = Arc::clone(
+                expansions
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .entry(key)
+                    .or_default(),
+            );
+            slot.get_or_init(|| read(path, name, includes).map(Arc::new))
+                .clone()?
+        }
+        None => Arc::new(read(path, name, includes)?),
+    };
+    let mut references = references(ClosureTarget {
+        path,
+        name,
+        source: &read.source,
+    });
+    references
+        .sort_by(|a, b| (a.kind, a.conditional, &a.name).cmp(&(b.kind, b.conditional, &b.name)));
+    references.dedup();
+    Some(Expanded { read, references })
+}
+
+/// Read and expand the target at `path` on its own.
+fn read(path: &Path, name: &str, includes: &IncludeContext<'_>) -> Option<Read> {
     let source = includes.fs.read(path).ok()?;
     let processed = Preprocessor::new(includes.fs, includes.include_paths)
         .with_predefined(includes.predefined)
@@ -162,15 +252,7 @@ fn expand(
         .collect();
     unresolved.sort();
     unresolved.dedup();
-    let mut references = references(ClosureTarget {
-        path,
-        name,
-        source: &source,
-    });
-    references
-        .sort_by(|a, b| (a.kind, a.conditional, &a.name).cmp(&(b.kind, b.conditional, &b.name)));
-    references.dedup();
-    Some(Expanded {
+    Some(Read {
         reaches: included_paths(&processed),
         complete: unresolved.is_empty() && processed.text_losses.is_empty(),
         unresolved,
@@ -179,6 +261,6 @@ fn expand(
             .iter()
             .map(|skipped| (skipped.name.clone(), skipped.computed_name))
             .collect(),
-        references,
+        source,
     })
 }

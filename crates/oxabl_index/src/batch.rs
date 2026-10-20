@@ -12,7 +12,7 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use oxabl_semantic::{
@@ -63,12 +63,11 @@ pub struct BatchIndex<'a> {
     /// since the language server shares one index behind an `Arc` across
     /// threads, so the trait cannot ask for `&mut`.
     ///
-    /// A lock is acceptable here, and specifically not a hot-path concern: it is
-    /// taken once per *unresolved cross-file name*, not per token or per node,
-    /// and a batch run has a single analysis thread so it is uncontended. The
-    /// guard is held across extraction on purpose — that is what makes
-    /// "indexed once" true even if two threads ask at the same moment — and
-    /// nothing under the guard re-enters the index, so it cannot deadlock.
+    /// The lock is taken once per *unresolved cross-file name*, not per token or
+    /// per node, and is never held while a file is searched for or indexed, so
+    /// one index can serve many analysis threads. A file is still indexed once:
+    /// the first lookup to reach it claims a [`Pending`] slot, and a lookup that
+    /// reaches it meanwhile waits on that slot rather than indexing it again.
     memo: RwLock<Memo>,
 }
 
@@ -107,6 +106,9 @@ struct Memo {
     /// [`search::normalize_lexically`] for why the real filesystem is not
     /// available here.
     facts: FxHashMap<PathBuf, Arc<FileFacts>>,
+    /// Files a lookup has claimed and is indexing outside the lock, by the same
+    /// key as `facts`. An entry moves to `facts` when its facts are published.
+    pending: FxHashMap<PathBuf, Arc<Pending>>,
     /// Answers per class key. Kept separately from `facts` because a key can
     /// resolve to *no* file at all, and remembering that miss is what stops a
     /// repeated reference to an external class from re-searching every path
@@ -161,6 +163,9 @@ struct Memo {
     /// else from the list. A flag rather than "is `facts` empty": the list may
     /// add nothing, and the scan must not run again on every lookup.
     known_indexed: bool,
+    /// Whether the scan of [`ProducerSource::Files`] stopped part-way (a file
+    /// panicked while it was indexed).
+    known_failed: bool,
     /// The ids of the [`ProducerSource::Files`] list, once `known_indexed` is
     /// set: the files any view may find a producer in.
     seeded: FxHashSet<IndexedFileId>,
@@ -186,6 +191,7 @@ impl<'a> BatchIndex<'a> {
             producers: ProducerSource::None,
             memo: RwLock::new(Memo {
                 facts: FxHashMap::default(),
+                pending: FxHashMap::default(),
                 paths: FxHashMap::default(),
                 classes: FxHashMap::default(),
                 programs: FxHashMap::default(),
@@ -195,6 +201,7 @@ impl<'a> BatchIndex<'a> {
                 procedure_names: None,
                 next_file_id: 1,
                 known_indexed: false,
+                known_failed: false,
                 seeded: FxHashSet::default(),
             }),
         }
@@ -326,7 +333,7 @@ impl<'a> BatchIndex<'a> {
             return self.class_facts(name);
         };
         let key = (dir, name.as_written_atom().clone());
-        if let Some(hit) = self.memo().scoped_classes.get(&key) {
+        if let Some(hit) = self.memo_read().scoped_classes.get(&key) {
             return hit.clone();
         }
         let answer = match self.find_scoped(&paths, name, search::NameKind::Class) {
@@ -335,15 +342,16 @@ impl<'a> BatchIndex<'a> {
             IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         };
-        self.memo().scoped_classes.insert(key, answer.clone());
-        answer
+        self.memo()
+            .scoped_classes
+            .entry(key)
+            .or_insert(answer)
+            .clone()
     }
 
     /// The class `name` in the file at `path`, indexing it on first touch.
     fn class_in(&self, name: &IndexName, path: &Path) -> IndexAnswer<ClassFacts> {
-        let facts = self
-            .memo()
-            .facts_for(&self.includes(&self.predefined()), path);
+        let facts = self.facts_for(path);
         match facts.class(name).cloned() {
             Some(class) => IndexAnswer::Found(class),
             None => IndexAnswer::Unusable,
@@ -356,14 +364,12 @@ impl<'a> BatchIndex<'a> {
             return self.program(target);
         };
         let key = (dir, target.as_written_atom().clone());
-        if let Some(hit) = self.memo().scoped_programs.get(&key) {
+        if let Some(hit) = self.memo_read().scoped_programs.get(&key) {
             return hit.clone();
         }
         let answer = match self.find_scoped(&paths, target, search::NameKind::Program) {
             IndexAnswer::Found(path) => {
-                let facts = self
-                    .memo()
-                    .facts_for(&self.includes(&self.predefined()), &path);
+                let facts = self.facts_for(&path);
                 if facts.parsed {
                     IndexAnswer::Found(facts.file)
                 } else {
@@ -374,8 +380,11 @@ impl<'a> BatchIndex<'a> {
             IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         };
-        self.memo().scoped_programs.insert(key, answer.clone());
-        answer
+        self.memo()
+            .scoped_programs
+            .entry(key)
+            .or_insert(answer)
+            .clone()
     }
 
     /// [`located`](WorkspaceIndex::located) for a lookup from the file at `file`.
@@ -386,11 +395,7 @@ impl<'a> BatchIndex<'a> {
                 LocateKind::Program => search::NameKind::Program,
             };
             if let IndexAnswer::Found(path) = self.find_scoped(&paths, name, search_kind) {
-                return Located::In(
-                    self.memo()
-                        .facts_for(&self.includes(&self.predefined()), &path)
-                        .file,
-                );
+                return Located::In(self.facts_for(&path).file);
             }
         }
         self.located(kind, name)
@@ -453,7 +458,21 @@ impl<'a> BatchIndex<'a> {
         ExcludingFile {
             index: self,
             path,
+            excludes: true,
             reached: Mutex::default(),
+        }
+    }
+
+    /// A view that searches as [`excluding`](Self::excluding) does for the
+    /// file at `path`, its root-relative paths first, and excludes nothing: a
+    /// name of that file resolves to it as to any other file.
+    ///
+    /// For a client that caches an answer for every file of one directory and
+    /// checks, per file, whether the answer reached that file.
+    pub fn searching_from<'v>(&'v self, path: Option<&'v Path>) -> ExcludingFile<'v, 'a> {
+        ExcludingFile {
+            excludes: false,
+            ..self.excluding(path)
         }
     }
 
@@ -470,7 +489,7 @@ impl<'a> BatchIndex<'a> {
     /// a parameter) is read again from the expanded text.
     fn signatures_of(&self, file: IndexedFileId) -> Option<Arc<ProgramSignatures>> {
         let path = {
-            let memo = self.memo();
+            let memo = self.memo_read();
             if let Some(hit) = memo.signatures.get(&file) {
                 return hit.clone();
             }
@@ -509,7 +528,7 @@ impl<'a> BatchIndex<'a> {
 
     fn indexed_id(&self, path: &Path) -> Option<IndexedFileId> {
         let key = search::normalize_lexically(path);
-        self.memo().facts.get(&key).map(|facts| facts.file)
+        self.memo_read().facts.get(&key).map(|facts| facts.file)
     }
 
     /// The path this run indexed `id` under, or `None` if `id` came from another
@@ -527,7 +546,7 @@ impl<'a> BatchIndex<'a> {
     /// the documentation is corrected here rather than left describing a call pattern
     /// that was never the real one.
     pub fn indexed_path(&self, id: IndexedFileId) -> Option<PathBuf> {
-        self.memo().paths.get(&id).cloned()
+        self.memo_read().paths.get(&id).cloned()
     }
 
     /// The memo, recovering from poisoning.
@@ -543,6 +562,38 @@ impl<'a> BatchIndex<'a> {
         self.memo
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The memo for a probe that changes nothing, recovering from poisoning as
+    /// [`memo`](Self::memo) does.
+    fn memo_read(&self) -> RwLockReadGuard<'_, Memo> {
+        self.memo
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The facts for `path`, indexing it on first touch, outside the lock.
+    fn facts_for(&self, path: &Path) -> Arc<FileFacts> {
+        // Normalized *before* the probe and used for the insert as well, so the
+        // two spellings of one file are one key on both halves. `path` itself is
+        // what gets read: the normalized form is the key, not the I/O target, so a
+        // filesystem that treats the two spellings differently is still asked the
+        // question the caller actually posed.
+        let key = search::normalize_lexically(path);
+        if let Some(hit) = self.memo_read().facts.get(&key) {
+            return Arc::clone(hit);
+        }
+        let pending = match self.memo().claim(&key) {
+            Ok(hit) => return hit,
+            Err(pending) => pending,
+        };
+        let predefined = self.predefined();
+        let includes = self.includes(&predefined);
+        // Located but unreadable is not an error case: a file we cannot read is
+        // knowably unusable, and remembering that keeps us from re-attempting the
+        // read on every reference to the same name.
+        let facts = pending.index(&key, || includes.fs.read(path).ok(), &includes);
+        self.memo().publish(key, facts)
     }
 
     /// The file that produces the `SHARED` name `name`, answered from the run's
@@ -573,7 +624,6 @@ impl<'a> BatchIndex<'a> {
         name: &IndexName,
         reached: Option<&FxHashSet<IndexedFileId>>,
     ) -> IndexAnswer<IndexedFileId> {
-        let mut memo = self.memo();
         let predefined = self.predefined();
         let mut listed: &[PathBuf] = &[];
         match self.producers {
@@ -583,9 +633,18 @@ impl<'a> BatchIndex<'a> {
             // deferring it to here is what keeps a run that consumes no `SHARED`
             // name from reading the whole walk.
             ProducerSource::Files(files) => {
+                let mut memo = self.memo();
+                // A scan cut short by a panic leaves `known_failed` set: the
+                // files it did not reach may produce any name, so every later
+                // lookup is `Unknowable`, and the scan is not run again.
+                if memo.known_failed {
+                    return IndexAnswer::Unknowable;
+                }
                 if !memo.known_indexed {
-                    memo.known_indexed = true;
+                    memo.known_failed = true;
                     memo.index_possible_producers(&self.includes(&predefined), files);
+                    memo.known_failed = false;
+                    memo.known_indexed = true;
                 }
             }
         }
@@ -597,12 +656,15 @@ impl<'a> BatchIndex<'a> {
                 true
             }
         };
+        // Indexed one at a time: a name many files produce is `Unknowable` as
+        // soon as a second one is read.
         for path in listed {
-            let facts = memo.facts_for(&self.includes(&predefined), path);
+            let facts = self.facts_for(path);
             if facts.defines_shared(name) && !consider(facts.file) {
                 return IndexAnswer::Unknowable;
             }
         }
+        let memo = self.memo_read();
         for facts in memo.facts.values() {
             let candidate = reached.is_none_or(|reached| {
                 reached.contains(&facts.file) || memo.seeded.contains(&facts.file)
@@ -616,14 +678,13 @@ impl<'a> BatchIndex<'a> {
 
     /// Resolve `name` to the facts of the class it names, memoized per key.
     fn class_facts(&self, name: &IndexName) -> IndexAnswer<ClassFacts> {
-        let mut memo = self.memo();
-        if let Some(hit) = memo.classes.get(name.as_written_atom()) {
+        if let Some(hit) = self.memo_read().classes.get(name.as_written_atom()) {
             return hit.clone();
         }
 
         let answer = match self.find_name(name, search::NameKind::Class) {
             IndexAnswer::Found(path) => {
-                let facts = memo.facts_for(&self.includes(&self.predefined()), &path);
+                let facts = self.facts_for(&path);
                 // A file *was* located at the path the class name derives, and
                 // it does not visibly declare the class. That is `Unusable`,
                 // not `NotFound`, and the difference decides whether a
@@ -651,48 +712,72 @@ impl<'a> BatchIndex<'a> {
             IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         };
-        memo.classes
-            .insert(name.as_written_atom().clone(), answer.clone());
-        answer
+        // Another thread may have answered meanwhile; the answers agree, and the
+        // first one stays.
+        self.memo()
+            .classes
+            .entry(name.as_written_atom().clone())
+            .or_insert(answer)
+            .clone()
+    }
+}
+
+/// A file one lookup is indexing: the id minted when the lookup claimed it, and
+/// its facts once extracted. A second lookup that reaches the file meanwhile
+/// waits on `facts` instead of indexing it again.
+#[derive(Debug)]
+struct Pending {
+    id: IndexedFileId,
+    facts: OnceLock<Arc<FileFacts>>,
+}
+
+impl Pending {
+    /// The facts of the file at `key`, extracted from what `read` returns on
+    /// first call; `None` is an unreadable file. Nothing here takes the memo
+    /// lock, so a lookup may wait on it while holding the lock.
+    fn index(
+        &self,
+        key: &Path,
+        read: impl FnOnce() -> Option<Arc<str>>,
+        includes: &IncludeContext<'_>,
+    ) -> Arc<FileFacts> {
+        let facts = self.facts.get_or_init(|| {
+            Arc::new(match read() {
+                Some(source) => index_file_at(self.id, key, &source, includes).0,
+                None => FileFacts::unparseable(self.id),
+            })
+        });
+        Arc::clone(facts)
     }
 }
 
 impl Memo {
-    /// The facts for `path`, indexing it on first touch.
-    ///
-    /// Takes `&mut self` (i.e. runs under the write guard) so the read, the
-    /// extraction, and the insert are one atomic step — which is what makes the
-    /// shared-dependency dedup a guarantee rather than a race.
-    fn facts_for(&mut self, includes: &IncludeContext<'_>, path: &Path) -> Arc<FileFacts> {
-        // Normalized *before* the probe and used for the insert as well, so the
-        // two spellings of one file are one key on both halves. `path` itself is
-        // what gets read: the normalized form is the key, not the I/O target, so a
-        // filesystem that treats the two spellings differently is still asked the
-        // question the caller actually posed.
-        let key = search::normalize_lexically(path);
-        if let Some(hit) = self.facts.get(&key) {
-            return Arc::clone(hit);
+    /// The facts of `key` if it is indexed, otherwise the slot it is indexed
+    /// in, claimed now if no lookup has claimed it yet. The claim mints the id,
+    /// so ids follow the order in which lookups first reach files.
+    fn claim(&mut self, key: &Path) -> Result<Arc<FileFacts>, Arc<Pending>> {
+        if let Some(hit) = self.facts.get(key) {
+            return Ok(Arc::clone(hit));
         }
-        // Located but unreadable is not an error case: a file we cannot read is
-        // knowably unusable, and remembering that keeps us from re-attempting the
-        // read on every reference to the same name.
-        let source = includes.fs.read(path).ok();
-        self.insert_facts(key, source.as_deref(), includes)
+        if let Some(pending) = self.pending.get(key) {
+            return Err(Arc::clone(pending));
+        }
+        let pending = Arc::new(Pending {
+            id: IndexedFileId::new(self.next_file_id),
+            facts: OnceLock::new(),
+        });
+        self.next_file_id += 1;
+        self.pending.insert(key.to_path_buf(), Arc::clone(&pending));
+        Err(pending)
     }
 
-    /// Index `source` under `key` and remember it; `None` is an unreadable file.
-    fn insert_facts(
-        &mut self,
-        key: PathBuf,
-        source: Option<&str>,
-        includes: &IncludeContext<'_>,
-    ) -> Arc<FileFacts> {
-        let id = IndexedFileId::new(self.next_file_id);
-        self.next_file_id += 1;
-        let facts = Arc::new(match source {
-            Some(source) => index_file_at(id, &key, source, includes).0,
-            None => FileFacts::unparseable(id),
-        });
+    /// Record `facts` as the facts of `key`, unless another lookup recorded them
+    /// first; either way, the recorded facts.
+    fn publish(&mut self, key: PathBuf, facts: Arc<FileFacts>) -> Arc<FileFacts> {
+        self.pending.remove(&key);
+        if let Some(known) = self.facts.get(&key) {
+            return Arc::clone(known);
+        }
         // Both halves of one mapping, inserted together: `indexed_path` is only sound
         // because nothing can add an entry to one without adding it to the other.
         self.paths.insert(facts.file, key.clone());
@@ -717,9 +802,15 @@ impl Memo {
             let Ok(source) = includes.fs.read(path) else {
                 continue;
             };
-            if may_define_shared(&key, &source, includes) {
-                let file = self.insert_facts(key, Some(&source), includes).file;
-                self.seeded.insert(file);
+            if self.pending.contains_key(&key) || may_define_shared(&key, &source, includes) {
+                let pending = match self.claim(&key) {
+                    Ok(known) => known.file,
+                    Err(pending) => {
+                        let facts = pending.index(&key, || Some(source), includes);
+                        self.publish(key, facts).file
+                    }
+                };
+                self.seeded.insert(pending);
             }
         }
     }
@@ -738,8 +829,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
     }
 
     fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
-        let mut memo = self.memo();
-        if let Some(hit) = memo.programs.get(target.as_written_atom()) {
+        if let Some(hit) = self.memo_read().programs.get(target.as_written_atom()) {
             return hit.clone();
         }
 
@@ -750,7 +840,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
                 // an unusable file, and a program a file `RUN`s is the realistic
                 // producer of the `SHARED` names that file consumes — indexing it
                 // here is what gives `shared_producer` something true to say.
-                let facts = memo.facts_for(&self.includes(&self.predefined()), &path);
+                let facts = self.facts_for(&path);
                 if facts.parsed {
                     IndexAnswer::Found(facts.file)
                 } else {
@@ -763,9 +853,11 @@ impl WorkspaceIndex for BatchIndex<'_> {
             IndexAnswer::Unusable => IndexAnswer::Unusable,
             IndexAnswer::Unknowable => IndexAnswer::Unknowable,
         };
-        memo.programs
-            .insert(target.as_written_atom().clone(), answer.clone());
-        answer
+        self.memo()
+            .programs
+            .entry(target.as_written_atom().clone())
+            .or_insert(answer)
+            .clone()
     }
 
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
@@ -793,11 +885,7 @@ impl WorkspaceIndex for BatchIndex<'_> {
             LocateKind::Program => search::NameKind::Program,
         };
         match self.find_path(name, kind) {
-            IndexAnswer::Found(path) => Located::In(
-                self.memo()
-                    .facts_for(&self.includes(&self.predefined()), &path)
-                    .file,
-            ),
+            IndexAnswer::Found(path) => Located::In(self.facts_for(&path).file),
             _ => Located::Nowhere,
         }
     }
@@ -858,6 +946,9 @@ pub struct ExcludingFile<'v, 'a> {
     index: &'v BatchIndex<'a>,
     /// The analysed file, or `None` for a client with no path for its buffer.
     path: Option<&'v Path>,
+    /// Whether answers that name `path` are withheld; see
+    /// [`BatchIndex::searching_from`].
+    excludes: bool,
     /// Every file this view's own lookups answered with: the files besides the
     /// seeded set that `shared_producer` may name.
     reached: Mutex<FxHashSet<IndexedFileId>>,
@@ -876,6 +967,7 @@ impl ExcludingFile<'_, '_> {
     /// behavior identical to an unexcluded index.
     fn is_analysed(&self, file: IndexedFileId) -> bool {
         self.path
+            .filter(|_| self.excludes)
             .and_then(|path| self.index.indexed_id(path))
             .is_some_and(|analysed| analysed == file)
     }
@@ -1049,6 +1141,105 @@ mod tests {
 
     fn dirs(entries: &[&str]) -> Vec<PathBuf> {
         entries.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn a_known_file_scan_cut_short_by_a_panic_answers_unknowable_and_is_not_run_again() {
+        /// Panics on every read of one path.
+        struct PanicsOn {
+            inner: CountingFs,
+            path: &'static str,
+        }
+        impl FileSystem for PanicsOn {
+            fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+                let read = self.inner.read(path);
+                assert!(
+                    path != Path::new(self.path),
+                    "cannot read {}",
+                    path.display()
+                );
+                read
+            }
+            fn exists(&self, path: &Path) -> bool {
+                self.inner.exists(path)
+            }
+        }
+        let fs = PanicsOn {
+            inner: CountingFs::new(&[
+                (
+                    "/src/a.p",
+                    "DEFINE NEW SHARED VARIABLE g AS INTEGER NO-UNDO.",
+                ),
+                (
+                    "/src/b.p",
+                    "DEFINE NEW SHARED VARIABLE h AS INTEGER NO-UNDO.",
+                ),
+            ]),
+            path: "/src/b.p",
+        };
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/a.p", "/src/b.p"]);
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+        let name = IndexName::new("g");
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            index.shared_producer(&name)
+        }));
+        assert!(first.is_err(), "the scan reads the file that panics");
+        for _ in 0..3 {
+            assert_eq!(index.shared_producer(&name), IndexAnswer::Unknowable);
+        }
+        assert_eq!(
+            fs.inner.reads_of("/src/b.p"),
+            1,
+            "the scan is not run again"
+        );
+        assert_eq!(fs.inner.reads_of("/src/a.p"), 1);
+    }
+
+    #[test]
+    fn threads_sharing_one_index_index_each_file_once_and_agree() {
+        let fs = CountingFs::new(&[
+            ("/src/orders/calc-base.cls", PARENT),
+            ("/src/orders/post.p", "MESSAGE \"posted\"."),
+        ]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let class = IndexName::new("orders.calc-base");
+        let program = IndexName::new("orders/post.p");
+        let answers: Vec<_> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let view = index.excluding(Some(Path::new("/src/main.p")));
+                        let IndexAnswer::Found(class) = view.class(&class) else {
+                            panic!("the class is on the paths");
+                        };
+                        (class.file, view.program(&program))
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+        assert!(answers.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(fs.reads_of("/src/orders/calc-base.cls"), 1);
+        assert_eq!(fs.reads_of("/src/orders/post.p"), 1);
+    }
+
+    #[test]
+    fn a_view_searching_from_a_file_does_not_exclude_it() {
+        let fs = CountingFs::new(&[("/src/orders/calc-base.cls", PARENT)]);
+        let paths = dirs(&["/src"]);
+        let index = BatchIndex::new(&fs, &paths);
+        let name = IndexName::new("orders.calc-base");
+        let own = Path::new("/src/orders/calc-base.cls");
+        assert!(matches!(
+            index.searching_from(Some(own)).class(&name),
+            IndexAnswer::Found(_)
+        ));
+        assert_eq!(
+            index.excluding(Some(own)).class(&name),
+            IndexAnswer::Unusable
+        );
     }
 
     #[test]
