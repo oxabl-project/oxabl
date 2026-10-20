@@ -380,6 +380,9 @@ fn main() {
         for name in names.split(',') {
             let of = producers.producers_of(&oxabl_semantic::IndexName::new(name));
             println!("producers of {name}: {}", of.len());
+            for path in of.iter().take(5) {
+                println!("  {}", path.display());
+            }
         }
     }
 
