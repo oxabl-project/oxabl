@@ -26,11 +26,14 @@ const SHARDS: usize = 32;
 /// existence checks and failed reads are kept at once.
 ///
 /// Every answer is kept for the life of the value, so build one per run and
-/// drop it when the files may have changed. It is `Sync`, so the threads of a
-/// run share one.
-pub struct CachedFileSystem<F> {
-    inner: F,
+/// drop it when the files may have changed; it is not for a client that lives
+/// across edits. It is `Sync`, so the threads of a run share one.
+///
+/// It owns what it wraps. `F` may be unsized, so a boxed
+/// `CachedFileSystem<SomeFs>` coerces to `Box<CachedFileSystem<dyn FileSystem>>`.
+pub struct CachedFileSystem<F: ?Sized> {
     shards: Box<[RwLock<Shard>]>,
+    inner: F,
 }
 
 #[derive(Default)]
@@ -62,11 +65,13 @@ impl<F: FileSystem> CachedFileSystem<F> {
     /// Remember what `inner` answers.
     pub fn new(inner: F) -> Self {
         CachedFileSystem {
-            inner,
             shards: (0..SHARDS).map(|_| RwLock::default()).collect(),
+            inner,
         }
     }
+}
 
+impl<F: FileSystem + ?Sized> CachedFileSystem<F> {
     /// The wrapped filesystem.
     pub fn inner(&self) -> &F {
         &self.inner
@@ -89,7 +94,7 @@ fn write_lock(shard: &RwLock<Shard>) -> std::sync::RwLockWriteGuard<'_, Shard> {
     shard.write().unwrap_or_else(|e| e.into_inner())
 }
 
-impl<F: FileSystem> FileSystem for CachedFileSystem<F> {
+impl<F: FileSystem + ?Sized> FileSystem for CachedFileSystem<F> {
     fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
         let shard = self.shard_of(path);
         let seen = match read_lock(shard).reads.get(path) {
@@ -271,6 +276,14 @@ mod tests {
         }
         assert_eq!(fs.inner().calls("exists"), 1);
         assert_eq!(fs.inner().calls("ignoring_case"), 1);
+    }
+
+    #[test]
+    fn a_boxed_cache_coerces_to_one_over_any_filesystem() {
+        let boxed: Box<CachedFileSystem<dyn FileSystem>> = Box::new(fs());
+        assert_eq!(&*boxed.read(Path::new("/a/x.i")).unwrap(), "/* a */");
+        let erased: Box<dyn FileSystem> = Box::new(fs());
+        assert!(erased.exists(Path::new("/b/Y.i")));
     }
 
     #[test]

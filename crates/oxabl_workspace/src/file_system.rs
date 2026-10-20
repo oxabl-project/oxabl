@@ -66,39 +66,6 @@ pub trait FileSystem: Send + Sync {
     }
 }
 
-/// Forwards every question, so a wrapper such as
-/// [`CachedFileSystem`](crate::CachedFileSystem) can borrow or box the
-/// filesystem it wraps.
-macro_rules! forward_file_system {
-    ($ty:ty) => {
-        impl<F: FileSystem + ?Sized> FileSystem for $ty {
-            fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
-                (**self).read(path)
-            }
-
-            fn exists(&self, path: &Path) -> bool {
-                (**self).exists(path)
-            }
-
-            fn resolve_include(&self, include_paths: &[PathBuf], name: &str) -> Option<PathBuf> {
-                (**self).resolve_include(include_paths, name)
-            }
-
-            fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
-                (**self).find_ignoring_case(dir, relative)
-            }
-
-            fn with_decoding(&self, decoding: SourceDecoding) -> Option<Arc<dyn FileSystem>> {
-                (**self).with_decoding(decoding)
-            }
-        }
-    };
-}
-
-forward_file_system!(&F);
-forward_file_system!(Box<F>);
-forward_file_system!(Arc<F>);
-
 /// Components of `relative` as text; `None` when one is not a plain name.
 fn plain_components(relative: &Path) -> Option<Vec<&std::ffi::OsStr>> {
     relative

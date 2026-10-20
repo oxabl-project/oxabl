@@ -8,7 +8,9 @@
 //! `root/warm` is one root on a run that has already seen the others.
 
 use std::hint::black_box;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use oxabl_pipeline::{LintPipeline, PipelineConfig, SharedRun};
@@ -123,6 +125,23 @@ fn config() -> PipelineConfig {
     }
 }
 
+/// The workspace, borrowed, for a cache that owns what it wraps.
+struct Borrowed<'a>(&'a InMemoryFileSystem);
+
+impl FileSystem for Borrowed<'_> {
+    fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+        self.0.read(path)
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.0.exists(path)
+    }
+
+    fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        self.0.find_ignoring_case(dir, relative)
+    }
+}
+
 fn walk(run: &LintPipeline<'_>, fs: &dyn FileSystem, roots: &[PathBuf]) -> usize {
     roots
         .iter()
@@ -159,7 +178,7 @@ fn bench_edges(c: &mut Criterion) {
 
     group.bench_function("walk/shared_run_cached_fs", |b| {
         b.iter(|| {
-            let cached = CachedFileSystem::new(&fs);
+            let cached = CachedFileSystem::new(Borrowed(&fs));
             let shared = SharedRun::new(&config, &cached);
             let run = shared.handle().with_conditional_include_closure(true);
             black_box(walk(&run, &cached, &roots))
