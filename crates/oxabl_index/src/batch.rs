@@ -163,6 +163,9 @@ struct Memo {
     /// else from the list. A flag rather than "is `facts` empty": the list may
     /// add nothing, and the scan must not run again on every lookup.
     known_indexed: bool,
+    /// Whether the scan of [`ProducerSource::Files`] stopped part-way (a file
+    /// panicked while it was indexed).
+    known_failed: bool,
     /// The ids of the [`ProducerSource::Files`] list, once `known_indexed` is
     /// set: the files any view may find a producer in.
     seeded: FxHashSet<IndexedFileId>,
@@ -198,6 +201,7 @@ impl<'a> BatchIndex<'a> {
                 procedure_names: None,
                 next_file_id: 1,
                 known_indexed: false,
+                known_failed: false,
                 seeded: FxHashSet::default(),
             }),
         }
@@ -630,10 +634,16 @@ impl<'a> BatchIndex<'a> {
             // name from reading the whole walk.
             ProducerSource::Files(files) => {
                 let mut memo = self.memo();
-                // Marked only once the scan completes, so a scan cut short by a
-                // panic runs again on the next lookup.
+                // A scan cut short by a panic leaves `known_failed` set: the
+                // files it did not reach may produce any name, so every later
+                // lookup is `Unknowable`, and the scan is not run again.
+                if memo.known_failed {
+                    return IndexAnswer::Unknowable;
+                }
                 if !memo.known_indexed {
+                    memo.known_failed = true;
                     memo.index_possible_producers(&self.includes(&predefined), files);
+                    memo.known_failed = false;
                     memo.known_indexed = true;
                 }
             }
@@ -1131,6 +1141,59 @@ mod tests {
 
     fn dirs(entries: &[&str]) -> Vec<PathBuf> {
         entries.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn a_known_file_scan_cut_short_by_a_panic_answers_unknowable_and_is_not_run_again() {
+        /// Panics on every read of one path.
+        struct PanicsOn {
+            inner: CountingFs,
+            path: &'static str,
+        }
+        impl FileSystem for PanicsOn {
+            fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+                let read = self.inner.read(path);
+                assert!(
+                    path != Path::new(self.path),
+                    "cannot read {}",
+                    path.display()
+                );
+                read
+            }
+            fn exists(&self, path: &Path) -> bool {
+                self.inner.exists(path)
+            }
+        }
+        let fs = PanicsOn {
+            inner: CountingFs::new(&[
+                (
+                    "/src/a.p",
+                    "DEFINE NEW SHARED VARIABLE g AS INTEGER NO-UNDO.",
+                ),
+                (
+                    "/src/b.p",
+                    "DEFINE NEW SHARED VARIABLE h AS INTEGER NO-UNDO.",
+                ),
+            ]),
+            path: "/src/b.p",
+        };
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/a.p", "/src/b.p"]);
+        let index = BatchIndex::new(&fs, &paths).seeded_with(&known);
+        let name = IndexName::new("g");
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            index.shared_producer(&name)
+        }));
+        assert!(first.is_err(), "the scan reads the file that panics");
+        for _ in 0..3 {
+            assert_eq!(index.shared_producer(&name), IndexAnswer::Unknowable);
+        }
+        assert_eq!(
+            fs.inner.reads_of("/src/b.p"),
+            1,
+            "the scan is not run again"
+        );
+        assert_eq!(fs.inner.reads_of("/src/a.p"), 1);
     }
 
     #[test]
