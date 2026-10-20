@@ -125,14 +125,15 @@ impl SharedProducers {
         for (path, names) in files {
             listed.push(path.clone());
             for name in names {
-                let paths = by_name.entry(name.as_str().into()).or_default();
-                if !paths.contains(&path) {
-                    paths.push(path.clone());
-                }
+                by_name
+                    .entry(name.as_str().into())
+                    .or_default()
+                    .push(path.clone());
             }
         }
         for paths in by_name.values_mut() {
             paths.sort();
+            paths.dedup();
         }
         listed.sort();
         SharedProducers {
@@ -343,40 +344,87 @@ fn is_procedure_abbreviation(word: &str) -> bool {
 }
 
 /// Whether [`index_file_at`] can find a shared definition in `source`, the file
-/// at `path`: a superset test. A file whose text does not say `SHARED` is parsed
-/// only when it names an include, and expanded only when `index_file_at` may
-/// expand it.
+/// at `path`: a superset test. A file whose text does not say `NEW SHARED` or
+/// `NEW GLOBAL` is parsed only when it holds a `{`, and expanded only when
+/// `index_file_at` may expand it.
+///
+/// A definition the index reads from the text as written says the two words
+/// there. Text expansion can only bring them together through a `{...}`
+/// reference or include, or a directive or comment between them.
 pub(crate) fn may_define_shared(path: &Path, source: &str, includes: &IncludeContext<'_>) -> bool {
-    mentions_shared(source)
-        || (names_an_include(source)
+    says_new_shared(source)
+        || (source.contains('{')
             && crate::may_be_expanded(source)
             && crate::expanded_text_at(path, source, includes)
-                .is_some_and(|text| mentions_shared(&text)))
+                .is_some_and(|text| says_new_shared(&text)))
 }
 
-/// Whether `source` holds a `{` that does not open a `{&name}` reference. A
-/// superset of the files that name an include.
-fn names_an_include(source: &str) -> bool {
-    source
-        .as_bytes()
-        .windows(2)
-        .any(|pair| pair[0] == b'{' && pair[1] != b'&')
-}
-
-/// Whether `source` holds the word `SHARED` in any case, as part of any longer
-/// token or not. A superset of the files that define a shared name.
-pub(crate) fn mentions_shared(source: &str) -> bool {
-    const WORD: &[u8] = b"shared";
-    source
-        .as_bytes()
-        .windows(WORD.len())
-        .any(|window| window.eq_ignore_ascii_case(WORD))
+/// Whether `source` holds the word `NEW`, in any case, followed by `SHARED`,
+/// `GLOBAL`, or anything expansion may remove or replace (a comment, a
+/// directive, a `{...}` reference or a line continuation). A superset of the
+/// texts that hold a `NEW [GLOBAL] SHARED` definition.
+fn says_new_shared(source: &str) -> bool {
+    const NEW: &[u8] = b"new";
+    let bytes = source.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'#' | b'$' | b'%');
+    let mut at = 0;
+    while let Some(found) = bytes[at..]
+        .windows(NEW.len())
+        .position(|w| w.eq_ignore_ascii_case(NEW))
+    {
+        let start = at + found;
+        let end = start + NEW.len();
+        at = start + 1;
+        let alone = (start == 0 || !word(bytes[start - 1]) && bytes[start - 1] != b'&')
+            && bytes.get(end).is_none_or(|b| !word(*b));
+        if !alone {
+            continue;
+        }
+        let rest = &bytes[end..];
+        let next = rest
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .map_or(&[][..], |skip| &rest[skip..]);
+        let starts = |w: &[u8]| next.len() >= w.len() && next[..w.len()].eq_ignore_ascii_case(w);
+        if next.is_empty()
+            || matches!(next[0], b'/' | b'{' | b'&' | b'~')
+            || starts(b"shared")
+            || starts(b"global")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use oxabl_workspace::{InMemoryFileSystem, PreprocessorConfig};
+
+    #[test]
+    fn new_shared_is_said_with_anything_expansion_can_remove_between() {
+        for text in [
+            "DEFINE NEW SHARED VARIABLE x AS INTEGER.",
+            "def new global shared var x as int.",
+            "DEFINE NEW /* producer */ SHARED VARIABLE x AS INTEGER.",
+            "DEFINE NEW\n&IF DEFINED(x) &THEN\n&ENDIF\nSHARED VARIABLE x AS INTEGER.",
+            "DEFINE NEW {&shared-word} VARIABLE x AS INTEGER.",
+            "DEFINE new\n   Shared FRAME f.",
+            "DEFINE NEW",
+        ] {
+            assert!(says_new_shared(text), "{text}");
+        }
+        for text in [
+            "DEFINE SHARED VARIABLE x AS INTEGER.",
+            "o = NEW app.Thing(). DEFINE SHARED VARIABLE y AS INTEGER.",
+            "renew shared things",
+            "DEFINE VARIABLE new-shared AS LOGICAL.",
+            "{&new} SHARED",
+        ] {
+            assert!(!says_new_shared(text), "{text}");
+        }
+    }
 
     fn build(fs: &InMemoryFileSystem, files: &[PathBuf]) -> SharedProducers {
         let predefined = PreprocessorConfig::default();
