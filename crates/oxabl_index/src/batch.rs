@@ -470,7 +470,7 @@ impl<'a> BatchIndex<'a> {
     ///
     /// For a client that caches an answer for every file of one directory and
     /// checks, per file, whether the answer reached that file.
-    pub fn searching_from<'v>(&'v self, path: Option<&'v Path>) -> ExcludingFile<'v, 'a> {
+    pub fn searching_from<'v>(&'v self, path: Option<&'v Path>) -> SearchingFrom<'v, 'a> {
         ExcludingFile {
             excludes: false,
             ..self.excluding(path)
@@ -992,6 +992,9 @@ fn signature_in(
 /// thousand files still reads each dependency once while each file answers as if
 /// its own copy on disk were absent.
 ///
+/// [`BatchIndex::searching_from`] builds the same type, named
+/// [`SearchingFrom`] there, that searches from the file and excludes nothing.
+///
 /// # Why a file must not resolve a name to itself
 ///
 /// The client analyses a *buffer*, which for an editor is the unsaved text and
@@ -1020,6 +1023,13 @@ pub struct ExcludingFile<'v, 'a> {
     /// seeded set that `shared_producer` may name.
     reached: Mutex<FxHashSet<IndexedFileId>>,
 }
+
+/// A view of a [`BatchIndex`] that searches from one file and excludes
+/// nothing, built by [`BatchIndex::searching_from`].
+///
+/// The same type as [`ExcludingFile`], under a name that says what this view
+/// does.
+pub type SearchingFrom<'v, 'a> = ExcludingFile<'v, 'a>;
 
 impl ExcludingFile<'_, '_> {
     fn reach(&self, file: IndexedFileId) {

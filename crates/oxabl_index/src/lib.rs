@@ -64,7 +64,7 @@ mod producers;
 pub mod search;
 mod written;
 
-pub use batch::{BatchIndex, ExcludingFile};
+pub use batch::{BatchIndex, ExcludingFile, SearchingFrom};
 pub use closure::{
     ClosureExpansions, ClosureTarget, ConditionalIncludeName, conditional_include_closure,
     conditional_include_closure_cached, conditional_include_closure_with,
