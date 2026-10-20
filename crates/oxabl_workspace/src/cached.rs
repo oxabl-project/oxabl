@@ -21,9 +21,9 @@ const SHARDS: usize = 32;
 /// lists that directory. Wrapped in this, the walk reads, decodes and resolves
 /// each include once.
 ///
-/// A file's text is kept from its second read on, so a file read once, such
-/// as a compile root, costs no memory. Name resolutions, existence checks and
-/// failed reads are kept at once.
+/// A file's text is kept from its third read on, so a file a walk reads once
+/// or twice, such as a compile root, costs no memory. Name resolutions,
+/// existence checks and failed reads are kept at once.
 ///
 /// Every answer is kept for the life of the value, so build one per run and
 /// drop it when the files may have changed. It is `Sync`, so the threads of a
@@ -43,8 +43,11 @@ struct Shard {
     ignoring_case: FxHashMap<(PathBuf, PathBuf), Vec<PathBuf>>,
 }
 
+/// Reads before a file's text is kept.
+const READS_BEFORE_KEPT: u8 = 2;
+
 enum Read {
-    Once,
+    Seen(u8),
     Text(Arc<str>),
     Failed(io::ErrorKind, String),
 }
@@ -94,13 +97,13 @@ impl<F: FileSystem> FileSystem for CachedFileSystem<F> {
             Some(Read::Failed(kind, message)) => {
                 return Err(io::Error::new(*kind, message.clone()));
             }
-            Some(Read::Once) => true,
-            None => false,
+            Some(Read::Seen(count)) => *count,
+            None => 0,
         };
         let read = self.inner.read(path);
         let entry = match &read {
-            Ok(text) if seen => Read::Text(Arc::clone(text)),
-            Ok(_) => Read::Once,
+            Ok(text) if seen >= READS_BEFORE_KEPT => Read::Text(Arc::clone(text)),
+            Ok(_) => Read::Seen(seen + 1),
             Err(e) => Read::Failed(e.kind(), e.to_string()),
         };
         write_lock(shard).reads.insert(path.to_path_buf(), entry);
@@ -218,12 +221,12 @@ mod tests {
     }
 
     #[test]
-    fn a_text_is_kept_from_its_second_read() {
+    fn a_text_is_kept_from_its_third_read() {
         let fs = fs();
-        for _ in 0..4 {
+        for _ in 0..5 {
             assert_eq!(&*fs.read(Path::new("/a/x.i")).unwrap(), "/* a */");
         }
-        assert_eq!(fs.inner().calls("read"), 2);
+        assert_eq!(fs.inner().calls("read"), 3);
     }
 
     #[test]
