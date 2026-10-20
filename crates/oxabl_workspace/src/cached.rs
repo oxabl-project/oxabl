@@ -26,7 +26,9 @@ const SHARDS: usize = 32;
 /// existence checks and reads that fail for a reason the file itself gives
 /// (it is missing, a directory, or its bytes do not decode) are kept at once.
 /// Other failed reads, such as a denied or interrupted one, are not kept: the
-/// next read asks again, as it would without the cache.
+/// next read asks again, as it would without the cache. A name resolution or
+/// existence answer is kept even when a transient failure caused it: the
+/// filesystem answers those with no error to tell them apart.
 ///
 /// Every answer is kept for the life of the value, so build one per run and
 /// drop it when the run ends. Do not hold one across edits, or in a client

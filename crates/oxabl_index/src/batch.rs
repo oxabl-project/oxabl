@@ -60,6 +60,9 @@ pub struct BatchIndex<'a> {
     preprocessor: Option<&'a PreprocessorConfig>,
     /// Where `SHARED` producers come from. See [`ProducerSource`].
     producers: ProducerSource<'a>,
+    /// Threads the scans of [`ProducerSource::Files`] use; `None` is the
+    /// machine's parallelism.
+    scan_threads: Option<usize>,
     /// Interior mutability because [`WorkspaceIndex`] takes `&self` — it has to,
     /// since the language server shares one index behind an `Arc` across
     /// threads, so the trait cannot ask for `&mut`.
@@ -86,7 +89,7 @@ enum KnownProducers {
     /// The ids of the files of the list that may produce a `SHARED` name: the
     /// files any view may find a producer in.
     Seeded(FxHashSet<IndexedFileId>),
-    /// The scan stopped part-way: a file panicked while it was indexed. The
+    /// The scan panicked part-way. The
     /// files it did not reach may produce any name.
     Failed,
 }
@@ -192,6 +195,7 @@ impl<'a> BatchIndex<'a> {
             case_insensitive: false,
             preprocessor: None,
             producers: ProducerSource::None,
+            scan_threads: None,
             memo: RwLock::new(Memo {
                 facts: FxHashMap::default(),
                 pending: FxHashMap::default(),
@@ -421,10 +425,29 @@ impl<'a> BatchIndex<'a> {
     /// the browser) simply does not call this, and behavior is exactly as
     /// before: `shared_producer` then answers only from the files some other
     /// lookup pulled in.
+    ///
+    /// The scan runs on [`with_scan_threads`](Self::with_scan_threads) threads,
+    /// by default the machine's parallelism, and calls the filesystem from
+    /// those threads.
     #[must_use]
     pub fn seeded_with(mut self, known_files: &'a [PathBuf]) -> Self {
         self.producers = ProducerSource::Files(known_files);
         self
+    }
+
+    /// Scan the files of [`seeded_with`](Self::seeded_with) on at most
+    /// `threads` threads (at least one) instead of the machine's parallelism.
+    ///
+    /// Apply before any lookup.
+    #[must_use]
+    pub fn with_scan_threads(mut self, threads: usize) -> Self {
+        self.scan_threads = Some(threads.max(1));
+        self
+    }
+
+    fn scan_threads(&self) -> usize {
+        self.scan_threads
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
     }
 
     /// Answer `SHARED` producer lookups from a map built once over the run's
@@ -515,10 +538,9 @@ impl<'a> BatchIndex<'a> {
             ProducerSource::None => None,
             ProducerSource::Shared(map) => Some(map.defines_procedure(name, &includes)),
             ProducerSource::Files(files) => {
-                let names = self.procedure_names.get_or_init(|| {
-                    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-                    scan_procedures(files, &includes, threads)
-                });
+                let names = self
+                    .procedure_names
+                    .get_or_init(|| scan_procedures(files, &includes, self.scan_threads()));
                 Some(names.contains(name.as_str()))
             }
         }
@@ -695,12 +717,12 @@ impl<'a> BatchIndex<'a> {
     /// The prefilter skips only a file that [`index_file_at`] would find no
     /// definition in, so a file is a producer by the same rule whether an
     /// earlier lookup indexed it or not. Files are read, prefiltered and
-    /// indexed on the machine's threads, with no memo lock held, and claimed in
+    /// indexed on [`Self::scan_threads`] threads, with no memo lock held, and claimed in
     /// list order, so the ids they get do not depend on the thread count.
     fn index_possible_producers(&self, files: &[PathBuf]) -> FxHashSet<IndexedFileId> {
         let predefined = self.predefined();
         let includes = self.includes(&predefined);
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let threads = self.scan_threads();
         let candidates = map_parallel(files, threads, |path| {
             let key = search::normalize_lexically(path);
             if let Some(known) = self.memo_read().facts.get(&key) {
@@ -1218,6 +1240,55 @@ mod tests {
 
     fn dirs(entries: &[&str]) -> Vec<PathBuf> {
         entries.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn a_scan_on_one_thread_reads_on_the_callers_thread() {
+        struct ThreadsSeen {
+            inner: CountingFs,
+            threads: std::sync::Mutex<FxHashSet<std::thread::ThreadId>>,
+        }
+        impl FileSystem for ThreadsSeen {
+            fn read(&self, path: &Path) -> Result<Arc<str>, io::Error> {
+                self.threads
+                    .lock()
+                    .unwrap()
+                    .insert(std::thread::current().id());
+                self.inner.read(path)
+            }
+            fn exists(&self, path: &Path) -> bool {
+                self.inner.exists(path)
+            }
+        }
+        let fs = ThreadsSeen {
+            inner: CountingFs::new(&[
+                (
+                    "/src/a.p",
+                    "DEFINE NEW SHARED VARIABLE g AS INTEGER NO-UNDO.",
+                ),
+                (
+                    "/src/b.p",
+                    "DEFINE NEW SHARED VARIABLE h AS INTEGER NO-UNDO.",
+                ),
+                ("/src/c.p", "RUN a.p."),
+            ]),
+            threads: std::sync::Mutex::default(),
+        };
+        let paths = dirs(&["/src"]);
+        let known = dirs(&["/src/a.p", "/src/b.p", "/src/c.p"]);
+        let index = BatchIndex::new(&fs, &paths)
+            .seeded_with(&known)
+            .with_scan_threads(1);
+        assert!(matches!(
+            index.shared_producer(&IndexName::new("g")),
+            IndexAnswer::Found(_)
+        ));
+        assert!(index.defines_procedure(&IndexName::new("p")).is_some());
+        let threads = fs.threads.into_inner().unwrap();
+        assert_eq!(
+            threads.into_iter().collect::<Vec<_>>(),
+            vec![std::thread::current().id()]
+        );
     }
 
     #[test]
