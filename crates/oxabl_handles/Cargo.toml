@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_handles"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "Lifetimes of dynamic objects (handles, persistent procedures, MEMPTRs) per unit, for Progress ABL"
@@ -8,10 +8,10 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_handles"
 
 [dependencies]
 oxabl_ast = { path = "../oxabl_ast", version = "3.0.0" }
-oxabl_flow = { path = "../oxabl_flow", version = "0.3.1" }
+oxabl_flow = { path = "../oxabl_flow", version = "0.3.2" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.0" }
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union"] }
 
 [dev-dependencies]
-oxabl_parser = { path = "../oxabl_parser", version = "3.0.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "3.0.2" }

@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_flow"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 license = "MIT"
 description = "Control-flow graphs with ABL block semantics, plus a dataflow framework, for Progress ABL"
@@ -13,4 +13,4 @@ rustc-hash = "2"
 smallvec = { version = "1", features = ["union"] }
 
 [dev-dependencies]
-oxabl_parser = { path = "../oxabl_parser", version = "3.0.1" }
+oxabl_parser = { path = "../oxabl_parser", version = "3.0.2" }

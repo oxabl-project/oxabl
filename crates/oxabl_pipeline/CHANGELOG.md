@@ -1,5 +1,36 @@
 # Changelog
 
+## [3.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.1.0...oxabl_pipeline-v3.2.0) (2026-10-20)
+
+
+### Features
+
+* **index:** let a client cap the threads the known-file scans use ([950eae5](https://github.com/oxabl-project/oxabl/commit/950eae56a6af3b43288c2e66efefbe41ba219def))
+
+
+### Performance Improvements
+
+* **index:** scan known files outside the memo lock, and CachedFileSystem fixes ([e506994](https://github.com/oxabl-project/oxabl/commit/e506994ce48ac4f6dc98644cf9046ebb27d3e439))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.2.1 to 0.2.2
+    * oxabl_parser bumped from 3.0.1 to 3.0.2
+    * oxabl_flow bumped from 0.3.1 to 0.3.2
+    * oxabl_scope bumped from 0.2.1 to 0.2.2
+    * oxabl_analyze bumped from 3.0.1 to 3.0.2
+    * oxabl_formatter bumped from 2.0.1 to 2.0.2
+    * oxabl_index bumped from 3.0.1 to 3.1.0
+    * oxabl_lint bumped from 3.0.1 to 3.0.2
+    * oxabl_schema bumped from 0.4.1 to 0.4.2
+    * oxabl_semantic bumped from 3.0.1 to 3.0.2
+    * oxabl_workspace bumped from 3.1.0 to 3.2.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.1 to 0.4.2
+
 ## [3.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.0.0...oxabl_pipeline-v3.1.0) (2026-10-20)
 
 
