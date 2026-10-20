@@ -40,6 +40,11 @@
 //! cutoff needs) plus a guarded [`run`](LintPipeline::run) convenience, all
 //! producing one [`LintResult`] (R2, R3, KTD2, KTD6).
 //!
+//! [`SharedRun`] — what the run handles of a walk on several threads share:
+//! one cross-file index and the analyses of conditional include targets, so a
+//! build tool that asks for every file's dependency edges reads and analyses
+//! what the files share once.
+//!
 //! [`FormatPipeline`] — the format run, built from a resolved style guide and
 //! *nothing else*, so "the formatter never sees expanded macros" is a property
 //! of the type rather than a caller's discipline (R4, KTD4). Every client
@@ -70,7 +75,7 @@ mod reverse;
 
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
-pub use lint::{Expansion, LintPipeline, LintResult};
+pub use lint::{Expansion, LintPipeline, LintResult, SharedRun};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{

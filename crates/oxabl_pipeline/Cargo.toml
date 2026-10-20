@@ -52,6 +52,7 @@ test-support = ["oxabl_schema/test-support"]
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
 # NOTE: no self `oxabl_pipeline = { path = "." }` entry here. Feature-enabling a
 # crate for its own `tests/` target needs one, and Cargo accepts it, but
 # release-please's `cargo-workspace` plugin reads the `path = "."` edge as a
@@ -71,3 +72,7 @@ oxabl_common = { path = "../oxabl_common", version = "1.2.1", features = [
 oxabl_schema = { path = "../oxabl_schema", version = "0.4.0", features = [
     "test-support",
 ] }
+
+[[bench]]
+name = "edge_bench"
+harness = false
