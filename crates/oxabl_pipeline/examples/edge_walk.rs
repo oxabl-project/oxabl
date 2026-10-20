@@ -4,15 +4,19 @@
 //! ```text
 //! cargo run --release -p oxabl_pipeline --example edge_walk -- \
 //!     --root ~/work/sail-erp [--include DIR]... [--own-dir-first all|wms|none] \
-//!     [--schema] [--threads N] [--dump FILE] [--compare FILE]
+//!     [--schema] [--dlc DIR] [--threads N] [--api old|shared] [--fs-cache on|off] \
+//!     [--dump FILE] [--compare FILE]
 //! ```
 //!
 //! The settings are a build tool's: compile roots are `.p`, `.cls`, and `.t`
 //! under a `tr` or `trigger` directory; sources are Windows-1252; names resolve
 //! ignoring case; every edge set carries its conditional include closure; the
-//! `SHARED` producers come from one map over every ABL file. A root compiled
-//! own directory first searches `.` and `rf` below its directory ahead of the
-//! include paths. `--schema` loads the `.df` files of the tree's `oxabl.toml`.
+//! `SHARED` producers come from one map over every ABL file; the predefined
+//! names are a 64-bit Linux batch compile. A root compiled own directory first
+//! searches `.` and `rf` below its directory ahead of the include paths.
+//! `--schema` loads the `.df` files of the tree's `oxabl.toml`. `--dlc` adds
+//! the `psc/dlc/{tty,src,.,bin}` directories of a copy of an OpenEdge install
+//! to the include paths.
 //!
 //! `--dump` writes every root's whole edge set, targets as paths, so two runs
 //! (thread counts, builds) can be compared; `--compare` diffs against a dump.
@@ -55,6 +59,7 @@ struct Args {
     stride: usize,
     shared: bool,
     cache_fs: bool,
+    dlc: Option<PathBuf>,
 }
 
 fn args() -> Args {
@@ -70,6 +75,7 @@ fn args() -> Args {
         stride: 1,
         shared: true,
         cache_fs: true,
+        dlc: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -92,6 +98,7 @@ fn args() -> Args {
             "--stride" => out.stride = value().parse().expect("stride"),
             "--api" => out.shared = value() != "old",
             "--fs-cache" => out.cache_fs = value() != "off",
+            "--dlc" => out.dlc = Some(PathBuf::from(value())),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -110,6 +117,14 @@ fn args() -> Args {
             }
         })
         .collect();
+    if let Some(dlc) = &out.dlc {
+        for dir in ["psc/dlc/tty", "psc/dlc/src", "psc/dlc", "psc/dlc/bin"] {
+            let dir = dlc.join(dir);
+            if dir.is_dir() {
+                out.includes.push(dir);
+            }
+        }
+    }
     out
 }
 
@@ -215,6 +230,12 @@ fn config(args: &Args) -> PipelineConfig {
     config.root_extensions = ROOT_EXTENSIONS.iter().map(|e| e.to_string()).collect();
     config.case_insensitive_lookup = true;
     config.decoding = SourceDecoding::new(SourceEncoding::Windows1252, None);
+    // The batch compile in the container.
+    config.preprocessor.opsys = "UNIX".to_string();
+    config.preprocessor.window_system = "TTY".to_string();
+    config.preprocessor.batch_mode = true;
+    config.preprocessor.process_architecture = 64;
+    config.preprocessor.proversion = Some("12.8".to_string());
     config
 }
 
@@ -411,6 +432,8 @@ fn main() {
         stages.read, stages.expand, stages.analyze, stages.edges
     );
 
+    println!("process: {}", process_usage());
+
     if let Some(path) = &args.dump {
         let mut out = io::BufWriter::new(std::fs::File::create(path).expect("dump"));
         for (root, outcome) in &results {
@@ -428,6 +451,33 @@ fn main() {
     if let Some(path) = &args.compare {
         compare(path, &results);
     }
+}
+
+/// CPU time and peak memory of this process, from `/proc` (Linux only).
+fn process_usage() -> String {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    // The fields after the parenthesised command name; utime and stime are
+    // the 14th and 15th fields of the line, in clock ticks of 1/100 s.
+    let fields: Vec<&str> = stat
+        .rsplit_once(')')
+        .map_or(Vec::new(), |(_, rest)| rest.split_whitespace().collect());
+    let ticks = |i: usize| {
+        fields
+            .get(i)
+            .and_then(|f| f.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            / 100.0
+    };
+    let peak = std::fs::read_to_string("/proc/self/status")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:").map(|v| v.trim().to_string()))
+        .unwrap_or_default();
+    format!(
+        "user {:.1}s sys {:.1}s peak rss {peak}",
+        ticks(11),
+        ticks(12)
+    )
 }
 
 fn run_handle<'a>(
