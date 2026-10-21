@@ -1278,8 +1278,9 @@ fn run_check(
 
     // TX004 asks for the summaries of its callees. Built once over the walk and
     // shared, as each thread's handle would otherwise build its own.
-    let summaries = (!no_lint && lint.callee_summaries_enabled())
-        .then(|| std::sync::Arc::new(lint.build_workspace_effect_summaries(&indexed)));
+    let summaries = (!no_lint && lint.callee_summaries_enabled()).then(|| {
+        std::sync::Arc::new(lint.build_workspace_effect_summaries_parallel(&indexed, jobs))
+    });
     let lint = match &summaries {
         Some(s) => lint.with_effect_summaries(std::sync::Arc::clone(s)),
         None => lint,

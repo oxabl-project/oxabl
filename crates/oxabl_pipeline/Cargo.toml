@@ -76,3 +76,7 @@ oxabl_schema = { path = "../oxabl_schema", version = "0.4.2", features = [
 [[bench]]
 name = "edge_bench"
 harness = false
+
+[[bench]]
+name = "effects_bench"
+harness = false

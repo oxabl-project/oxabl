@@ -965,17 +965,21 @@ impl<'a> LintPipeline<'a> {
             .clone()
     }
 
+    /// The batch index that resolves effect callees: this run's own, or
+    /// `fallback` when the run answers from an external index.
+    pub(crate) fn effect_index<'s>(&'s self, fallback: &'s BatchIndex<'s>) -> &'s BatchIndex<'s> {
+        match &self.index {
+            RunIndex::Owned(index) => index,
+            RunIndex::Shared(index) => index,
+            RunIndex::External(_) => fallback,
+        }
+    }
+
     pub(crate) fn effect_program_path(
-        &self,
+        index: &BatchIndex<'_>,
         name: &str,
-        fallback: &BatchIndex<'_>,
     ) -> Result<PathBuf, oxabl_index::calls::UnknownCall> {
         use oxabl_index::calls::{ProgramAnswer, UnknownCall};
-        let index = match &self.index {
-            RunIndex::Owned(index) => &**index,
-            RunIndex::Shared(index) => *index,
-            RunIndex::External(_) => fallback,
-        };
         match oxabl_index::calls::resolve_program(index, name) {
             ProgramAnswer::Found(id) => index.indexed_path(id).ok_or(UnknownCall::Unusable),
             ProgramAnswer::Unknown(reason) => Err(reason),

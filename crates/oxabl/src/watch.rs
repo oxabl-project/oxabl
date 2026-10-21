@@ -197,8 +197,9 @@ fn cycle(
     // whole walk and share them, as each handle would otherwise build its own
     // from the one file it happens to see first. Rebuilt every pass, so the
     // next pass sees the edit.
-    let summaries = (!opts.no_lint && lint.callee_summaries_enabled())
-        .then(|| std::sync::Arc::new(lint.build_workspace_effect_summaries(&indexed)));
+    let summaries = (!opts.no_lint && lint.callee_summaries_enabled()).then(|| {
+        std::sync::Arc::new(lint.build_workspace_effect_summaries_parallel(&indexed, opts.jobs))
+    });
     let lint = match &summaries {
         Some(s) => lint.with_effect_summaries(std::sync::Arc::clone(s)),
         None => lint,
