@@ -311,6 +311,75 @@ fn check_no_longer_accepts_debug() {
     );
 }
 
+/// A tree whose report has every kind of row: passes, parse failures with
+/// tied pattern counts, an include-origin failure, a preprocessor failure, an
+/// unreadable file, and missing includes that print loud diagnostics.
+fn mixed_tree() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    for i in 0..12 {
+        let name = format!("f{i:02}");
+        let body = match i % 6 {
+            0 => CLEAN.to_string(),
+            1 => BROKEN.to_string(),
+            2 => "DISPLAY (1 + .\n".to_string(),
+            3 => format!("{{missing-{i}.i}}\n{CLEAN}"),
+            4 => "{bad.i}\n".to_string(),
+            _ => "&IF DEFINED(x) &THEN\nDISPLAY 1.\n".to_string(),
+        };
+        write(&root.join(format!("{name}.p")), &body);
+    }
+    write(&root.join("bad.i"), BROKEN);
+    fs::write(root.join("latin1.p"), b"DISPLAY \"caf\xe9\".\n").unwrap();
+    tmp
+}
+
+/// Drop the timing lines, the only part of a report that changes per run.
+fn without_timing(text: &[u8]) -> String {
+    String::from_utf8_lossy(text)
+        .lines()
+        .filter(|line| {
+            !line.starts_with("Total time:")
+                && !line.contains("\"elapsed_secs\"")
+                && !line.contains("\"files_per_sec\"")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_walk_is_the_same_at_any_job_count() {
+    let tmp = mixed_tree();
+    let run = |flags: &[&str], jobs: &str| {
+        let out = oxabl()
+            .current_dir(tmp.path())
+            .args(["conformance", ".", "-I", ".", "-j", jobs])
+            .args(flags)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            without_timing(&out.stdout),
+            without_timing(&out.stderr),
+        )
+    };
+    for flags in [
+        &[][..],
+        &["--json"],
+        &["--preprocess"],
+        &["--preprocess", "--json"],
+    ] {
+        let serial = run(flags, "1");
+        assert_eq!(serial.0, Some(1), "{flags:?}: {}", serial.2);
+        if flags.contains(&"--preprocess") {
+            assert!(serial.2.contains("missing-3.i"), "{}", serial.2);
+        }
+        for jobs in ["2", "5", "64"] {
+            assert_eq!(run(flags, jobs), serial, "-j {jobs} {flags:?}");
+        }
+    }
+}
+
 #[test]
 fn tied_error_patterns_are_ranked_by_text() {
     let tmp = TempDir::new().unwrap();
@@ -333,4 +402,15 @@ fn tied_error_patterns_are_ranked_by_text() {
     sorted.sort_unstable();
     assert_eq!(patterns.len(), 2, "{patterns:?}");
     assert_eq!(patterns, sorted);
+}
+
+#[test]
+fn zero_jobs_is_a_usage_error() {
+    let tmp = fixture();
+    let out = oxabl()
+        .args(["conformance", "-j", "0"])
+        .arg(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
 }

@@ -472,3 +472,96 @@ fn empty_directory_exits_2() {
     let out = oxabl().arg("format").arg(root).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// A tree with every kind of `format` row: files to rewrite, conforming
+/// files, refusals and an unreadable file.
+fn mixed_tree() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    for i in 0..12 {
+        let body = match i % 3 {
+            0 => MIS_INDENTED,
+            1 => FORMATTED_4,
+            _ => "DO:\n  MESSAGE \"unterminated\".\n",
+        };
+        write(&root.join(format!("d{}/f{i:02}.p", i % 2)), body);
+    }
+    fs::write(root.join("latin1.p"), b"DISPLAY \"caf\xe9\".\n").unwrap();
+    tmp
+}
+
+/// Every file under `root`, by relative path.
+fn tree_contents(root: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let name = path.strip_prefix(root).unwrap().display().to_string();
+                files.push((name, fs::read(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn a_directory_run_is_the_same_at_any_job_count() {
+    for mode in [&["--check"][..], &[]] {
+        let run = |jobs: &str| {
+            let tmp = mixed_tree();
+            let out = oxabl()
+                .current_dir(tmp.path())
+                .args(["format", ".", "-j", jobs])
+                .args(mode)
+                .output()
+                .unwrap();
+            (
+                out.status.code(),
+                out.stdout,
+                out.stderr,
+                tree_contents(tmp.path()),
+            )
+        };
+        let serial = run("1");
+        assert_eq!(serial.0, Some(1), "the unreadable file fails the run");
+        assert!(String::from_utf8_lossy(&serial.2).contains("cannot read"));
+        for jobs in ["2", "5", "64"] {
+            assert_eq!(run(jobs), serial, "-j {jobs} {mode:?}");
+        }
+    }
+}
+
+#[test]
+fn stdout_is_the_same_at_any_job_count() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("a.p");
+    write(&file, MIS_INDENTED);
+    for jobs in ["1", "4"] {
+        let out = oxabl()
+            .args(["format", "--stdout", "-j", jobs])
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), FORMATTED_4);
+    }
+}
+
+#[test]
+fn zero_jobs_is_a_usage_error() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("a.p");
+    write(&file, MIS_INDENTED);
+    let out = oxabl()
+        .args(["format", "-j", "0"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(&file).unwrap(), MIS_INDENTED);
+}
