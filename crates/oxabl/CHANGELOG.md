@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl-v3.0.2...oxabl-v3.0.3) (2026-10-21)
+
+
+### Bug Fixes
+
+* **cli:** rank tied conformance error patterns by text ([fb695c7](https://github.com/oxabl-project/oxabl/commit/fb695c7e914373034c3e700e082124e4818e2af8))
+
+
+### Performance Improvements
+
+* **cli:** run format and conformance on all cores ([37d4a55](https://github.com/oxabl-project/oxabl/commit/37d4a55361fe400c569e9d7573b13273e4a1605f))
+* **cli:** run format and conformance on all cores ([d195735](https://github.com/oxabl-project/oxabl/commit/d195735f6d30e52be7ebd8f806697f52d228f24c))
+
 ## [3.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl-v3.0.1...oxabl-v3.0.2) (2026-10-20)
 
 

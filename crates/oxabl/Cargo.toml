@@ -1,6 +1,6 @@
 [package]
 name = "oxabl"
-version = "3.0.2"
+version = "3.0.3"
 edition = "2024"
 license = "MIT"
 description = "High-performance tooling suite for Progress ABL"
