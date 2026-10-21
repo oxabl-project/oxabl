@@ -195,6 +195,14 @@ enum Cli {
         /// Show AST context on parse failure (single-file mode only)
         #[arg(long)]
         debug: bool,
+
+        /// Number of files parsed at once. Defaults to the available cores;
+        /// `1` parses one file at a time.
+        ///
+        /// Output and exit code are the same at every value: results are
+        /// reported in file order. `--debug` always runs on one thread.
+        #[arg(long, short = 'j', value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        jobs: Option<u32>,
     },
     /// Parse + semantic-analyze a single ABL file and dump the resolved model.
     ///
@@ -291,6 +299,14 @@ enum Cli {
         /// discovered `oxabl.toml [workspace.style]` wholesale.
         #[arg(long)]
         style: Option<String>,
+
+        /// Number of files formatted at once. Defaults to the available cores;
+        /// `1` formats one file at a time.
+        ///
+        /// Output and exit code are the same at every value: results are
+        /// reported in file order.
+        #[arg(long, short = 'j', value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        jobs: Option<u32>,
     },
     /// Run the language server over stdio (LSP), publishing live diagnostics.
     Lsp,
@@ -355,9 +371,8 @@ struct JsonErrorPattern {
     count: usize,
 }
 
-/// Surface *loud* preprocessor diagnostics — errors plus selected warnings —
-/// to stderr via the shared [`render_diagnostics`] renderer, and return them as
-/// [`Diagnostic`]s for machine-readable output.
+/// Render *loud* preprocessor diagnostics — errors plus selected warnings —
+/// for stderr via the shared [`render_diagnostics`] renderer.
 ///
 /// Always-loud warning codes:
 /// - `PREPROC007` unresolvable include (symbol loss)
@@ -370,21 +385,20 @@ struct JsonErrorPattern {
 /// over the root file: root-file diagnostics get a `path:line:col` position and
 /// a snippet; diagnostics from a nested include (a different `FileId`) render
 /// without a misleading root-relative position.
-fn surface_preproc_diagnostics(
+fn render_preproc_diagnostics(
     path: &Path,
     root_source: &str,
     root_file_id: FileId,
     diagnostics: &[Diagnostic],
-) -> Vec<Diagnostic> {
+) -> String {
     // Share the surfacing rule with the collector so the two never drift (U4).
     let is_loud = oxabl_analyze::is_loud;
     let loud: Vec<Diagnostic> = diagnostics.iter().filter(|d| is_loud(d)).cloned().collect();
     if loud.is_empty() {
-        return loud;
+        return String::new();
     }
     let resolver = SourceResolver::new(root_file_id, path.display().to_string(), root_source);
-    eprint!("{}", render_diagnostics(&loud, &resolver));
-    loud
+    render_diagnostics(&loud, &resolver)
 }
 
 /// Surface loud, root-origin preprocessor diagnostics from the shared collector
@@ -478,10 +492,7 @@ fn main() -> ExitCode {
             jobs,
             watch,
         } => {
-            let jobs = jobs.map_or_else(
-                || std::thread::available_parallelism().map_or(1, usize::from),
-                |n| n as usize,
-            );
+            let jobs = job_count(jobs);
             if watch {
                 return watch::run(&watch::Options {
                     path: &path,
@@ -516,7 +527,15 @@ fn main() -> ExitCode {
             preprocess,
             include_paths,
             debug,
-        } => run_conformance(&path, json, preprocess, &include_paths, debug),
+            jobs,
+        } => run_conformance(
+            &path,
+            json,
+            preprocess,
+            &include_paths,
+            debug,
+            job_count(jobs),
+        ),
         Cli::Analyze {
             path,
             format,
@@ -543,11 +562,20 @@ fn main() -> ExitCode {
             check,
             stdout,
             style,
-        } => run_format(&path, check, stdout, style.as_deref()),
+            jobs,
+        } => run_format(&path, check, stdout, style.as_deref(), job_count(jobs)),
         Cli::Lsp => run_lsp(),
         Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
         Cli::Schema => run_schema(),
     }
+}
+
+/// The `-j` value, or the available cores when it is absent.
+fn job_count(jobs: Option<u32>) -> usize {
+    jobs.map_or_else(
+        || std::thread::available_parallelism().map_or(1, usize::from),
+        |n| n as usize,
+    )
 }
 
 /// `oxabl schema`: serialize the `oxabl.toml` JSON Schema (derived from
@@ -693,7 +721,16 @@ fn resolve_style_arg(value: &str) -> Result<StyleGuide, String> {
 ///
 /// I/O failure — a file that cannot be read or written — is the one non-usage
 /// failure, and it counts in both modes.
-fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> ExitCode {
+///
+/// Files are formatted on `jobs` threads and reported in file order. Each
+/// discovered file is a distinct file, so no two threads write the same one.
+fn run_format(
+    path: &Path,
+    check: bool,
+    stdout: bool,
+    style: Option<&str>,
+    jobs: usize,
+) -> ExitCode {
     // Resolve the style once, up front (KTD1/KTD2). An unresolvable --style is a
     // usage error (exit 2) before any file is touched.
     let cli_style = match style {
@@ -767,58 +804,25 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
 
     let mut any_would_change = false;
     let mut any_io_error = false;
-
-    for file in &files {
-        let stored = match config.decoding.read_file(file) {
-            Ok(stored) => stored,
-            Err(e) => {
-                eprintln!("error: cannot read {}: {e}", file.display());
-                any_io_error = true;
-                continue;
-            }
-        };
-        let source = &stored.text;
-
-        let outcome = pipeline.format(source);
-        if let Some(formatted) = outcome.output() {
-            if check {
-                eprintln!("{}: would reformat", file.display());
-                any_would_change = true;
-            } else if stdout {
-                if let Err(e) = write_stored(&stored, formatted, &mut std::io::stdout()) {
-                    eprintln!("error: cannot write {}: {e}", file.display());
-                    any_io_error = true;
-                }
-            } else if let Err(e) = stored
-                .encode(formatted)
-                .and_then(|bytes| std::fs::write(file, bytes))
-            {
-                eprintln!("error: cannot write {}: {e}", file.display());
+    in_task_order(
+        jobs.min(files.len()),
+        &files,
+        (),
+        || (),
+        |(), file| format_one(&pipeline, config.decoding, file, check, stdout),
+        |formatted| {
+            eprint!("{}", formatted.messages);
+            any_would_change |= formatted.would_change;
+            any_io_error |= formatted.io_error;
+            let written = formatted.stdout.map(|bytes| {
+                bytes.and_then(|bytes| std::io::Write::write_all(&mut std::io::stdout(), &bytes))
+            });
+            if let Some(Err(e)) = written {
+                eprintln!("error: cannot write {}: {e}", formatted.file.display());
                 any_io_error = true;
             }
-        } else {
-            // Unchanged or a refusal: nothing to write in any mode, and --stdout
-            // still emits the original bytes so a pipeline never loses the file.
-            if let Some(not_formatted) = outcome.not_formatted() {
-                // A contained panic keeps its own wording — the reason alone
-                // reads as an ordinary refusal, and an oxabl bug should not
-                // (R5).
-                if not_formatted.is_internal_panic() {
-                    eprintln!(
-                        "{}: internal panic while formatting; left unchanged ({})",
-                        file.display(),
-                        not_formatted.reason()
-                    );
-                } else {
-                    eprintln!("{}: {}", file.display(), not_formatted.reason());
-                }
-            }
-            if stdout && let Err(e) = write_stored(&stored, source, &mut std::io::stdout()) {
-                eprintln!("error: cannot write {}: {e}", file.display());
-                any_io_error = true;
-            }
-        }
-    }
+        },
+    );
 
     if check {
         // Exit 0 iff no file would change and none failed to read.
@@ -833,6 +837,87 @@ fn run_format(path: &Path, check: bool, stdout: bool, style: Option<&str>) -> Ex
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// One file's `format` result, reported by the calling thread.
+struct FormattedFile<'a> {
+    file: &'a Path,
+    /// The stderr lines for this file.
+    messages: String,
+    /// The bytes `--stdout` prints, or why they could not be encoded.
+    stdout: Option<std::io::Result<Vec<u8>>>,
+    would_change: bool,
+    io_error: bool,
+}
+
+/// Read, format and (in write mode) rewrite one file for `run_format`.
+fn format_one<'a>(
+    pipeline: &FormatPipeline,
+    decoding: SourceDecoding,
+    file: &'a Path,
+    check: bool,
+    stdout: bool,
+) -> FormattedFile<'a> {
+    use std::fmt::Write as _;
+    let mut result = FormattedFile {
+        file,
+        messages: String::new(),
+        stdout: None,
+        would_change: false,
+        io_error: false,
+    };
+    let messages = &mut result.messages;
+    let stored = match decoding.read_file(file) {
+        Ok(stored) => stored,
+        Err(e) => {
+            let _ = writeln!(messages, "error: cannot read {}: {e}", file.display());
+            result.io_error = true;
+            return result;
+        }
+    };
+    let source = &stored.text;
+    let encoded = |text: &str| {
+        let mut bytes = Vec::new();
+        write_stored(&stored, text, &mut bytes).map(|()| bytes)
+    };
+
+    let outcome = pipeline.format(source);
+    if let Some(formatted) = outcome.output() {
+        if check {
+            let _ = writeln!(messages, "{}: would reformat", file.display());
+            result.would_change = true;
+        } else if stdout {
+            result.stdout = Some(encoded(formatted));
+        } else if let Err(e) = stored
+            .encode(formatted)
+            .and_then(|bytes| std::fs::write(file, bytes))
+        {
+            let _ = writeln!(messages, "error: cannot write {}: {e}", file.display());
+            result.io_error = true;
+        }
+    } else {
+        // Unchanged or a refusal: nothing to write in any mode, and --stdout
+        // still emits the original bytes so a pipeline never loses the file.
+        if let Some(not_formatted) = outcome.not_formatted() {
+            // A contained panic keeps its own wording — the reason alone
+            // reads as an ordinary refusal, and an oxabl bug should not
+            // (R5).
+            if not_formatted.is_internal_panic() {
+                let _ = writeln!(
+                    messages,
+                    "{}: internal panic while formatting; left unchanged ({})",
+                    file.display(),
+                    not_formatted.reason()
+                );
+            } else {
+                let _ = writeln!(messages, "{}: {}", file.display(), not_formatted.reason());
+            }
+        }
+        if stdout {
+            result.stdout = Some(encoded(source));
+        }
+    }
+    result
 }
 
 /// `oxabl check`'s machine-readable report — **two findings keys**, not one
@@ -1707,41 +1792,70 @@ fn run_ordered<'a>(
     own_lint: impl Fn() -> LintPipeline<'a> + Sync,
     tasks: &[Task<'_>],
     work: impl Fn(&LintPipeline<'_>, &mut IncludeTexts, &Task<'_>) -> Unit + Sync,
-    mut absorb: impl FnMut(Unit),
+    absorb: impl FnMut(Unit),
+) {
+    // The calling thread's pipeline is not `Sync`, so it travels in the serial
+    // state rather than in `work`.
+    in_task_order(
+        jobs,
+        tasks,
+        (Err(run_lint), IncludeTexts::new(decoding)),
+        || (Ok(own_lint()), IncludeTexts::new(decoding)),
+        |(lint, texts), task| {
+            let lint = match lint {
+                Ok(own) => &*own,
+                Err(run) => *run,
+            };
+            work(lint, texts, task)
+        },
+        absorb,
+    );
+}
+
+/// Run `work` over `tasks` on `jobs` threads and hand every result to
+/// `absorb`, on the calling thread, in task order.
+///
+/// Each thread works on a state of its own from `thread_state`. `jobs <= 1`
+/// runs on the calling thread with `serial_state` and no thread at all.
+fn in_task_order<'t, T: Sync, S, R: Send>(
+    jobs: usize,
+    tasks: &'t [T],
+    mut serial_state: S,
+    thread_state: impl Fn() -> S + Sync,
+    work: impl Fn(&mut S, &'t T) -> R + Sync,
+    mut absorb: impl FnMut(R),
 ) {
     if jobs <= 1 {
-        let mut texts = IncludeTexts::new(decoding);
         for task in tasks {
-            absorb(work(run_lint, &mut texts, task));
+            absorb(work(&mut serial_state, task));
         }
         return;
     }
     let next = AtomicUsize::new(0);
-    let (sender, receiver) = std::sync::mpsc::channel::<(usize, Unit)>();
+    let (sender, receiver) = std::sync::mpsc::channel::<(usize, R)>();
     std::thread::scope(|scope| {
         for _ in 0..jobs {
             let sender = sender.clone();
-            let (next, own_lint, work) = (&next, &own_lint, &work);
+            let (next, thread_state, work) = (&next, &thread_state, &work);
             scope.spawn(move || {
-                let lint = own_lint();
-                let mut texts = IncludeTexts::new(decoding);
+                let mut state = thread_state();
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(task) = tasks.get(i) else { break };
-                    let unit = work(&lint, &mut texts, task);
-                    if sender.send((i, unit)).is_err() {
+                    let result = work(&mut state, task);
+                    if sender.send((i, result)).is_err() {
                         break;
                     }
                 }
             });
         }
         drop(sender);
-        let mut waiting: HashMap<usize, Unit> = HashMap::new();
+        let mut waiting: HashMap<usize, R> = HashMap::new();
         let mut want = 0;
-        for (i, unit) in receiver {
-            waiting.insert(i, unit);
-            while let Some(unit) = waiting.remove(&want) {
-                absorb(unit);
+        for (i, result) in receiver {
+            waiting.insert(i, result);
+            while let Some(result) = waiting.remove(&want) {
+                absorb(result);
                 want += 1;
             }
         }
@@ -2138,6 +2252,7 @@ fn run_conformance(
     preprocess: bool,
     include_paths: &[PathBuf],
     debug: bool,
+    jobs: usize,
 ) -> ExitCode {
     // Discovery through the shared walker, the same one `check` and `format` use:
     // an explicitly named file is accepted whatever its extension, a directory is
@@ -2226,22 +2341,31 @@ fn run_conformance(
     // Set up filesystem for preprocessing
     let real_fs = path_config.file_system();
 
-    // Parse all files
+    // Parse all files, on `jobs` threads, reported in file order.
     let start = Instant::now();
     let mut results = Vec::with_capacity(files.len());
-
-    for file in &files {
-        if preprocess {
-            results.push(parse_file_with_preprocess(
-                file,
-                &real_fs,
-                &path_config.include_paths_for(Some(file)),
-            ));
-        } else {
-            results.push(parse_file(file, path_config.decoding));
-        }
-        progress.inc(1);
-    }
+    in_task_order(
+        jobs.min(files.len()),
+        &files,
+        (),
+        || (),
+        |(), file| {
+            if preprocess {
+                parse_file_with_preprocess(
+                    file,
+                    &real_fs,
+                    &path_config.include_paths_for(Some(file)),
+                )
+            } else {
+                (parse_file(file, path_config.decoding), String::new())
+            }
+        },
+        |(result, messages)| {
+            eprint!("{messages}");
+            results.push(result);
+            progress.inc(1);
+        },
+    );
 
     progress.finish_and_clear();
     let elapsed = start.elapsed();
@@ -2307,19 +2431,22 @@ fn parse_file(path: &Path, decoding: SourceDecoding) -> FileResult {
     }
 }
 
+/// Preprocess and parse one root for `conformance`. The text is the root's
+/// rendered loud preprocessor diagnostics, for stderr.
 fn parse_file_with_preprocess(
     path: &Path,
     fs: &EncodedFileSystem,
     include_paths: &[PathBuf],
-) -> FileResult {
+) -> (FileResult, String) {
     // Read the file
     let source = match fs.read(path).map(|text| text.to_string()) {
         Ok(s) => s,
         Err(e) => {
-            return FileResult::IoError {
+            let result = FileResult::IoError {
                 path: path.to_path_buf(),
                 error: e.to_string(),
             };
+            return (result, String::new());
         }
     };
 
@@ -2340,12 +2467,13 @@ fn parse_file_with_preprocess(
                 .map(|d| d.span.span.start as usize)
                 .unwrap_or(0);
             let (line, col) = source_map.lookup(span_start);
-            return FileResult::ParseError {
+            let result = FileResult::ParseError {
                 path: path.to_path_buf(),
                 line,
                 col,
                 message: format!("[preprocess] {msg}"),
             };
+            return (result, String::new());
         }
     };
 
@@ -2353,7 +2481,7 @@ fn parse_file_with_preprocess(
     // (unresolvable include), PREPROC008 (unterminated include), PREPROC009
     // (valueless predefined name), PREPROC010 (unevaluated condition) and PREPROC002 (unclosed &IF) — so true
     // preproc problems aren't hidden. Other warnings stay quiet.
-    surface_preproc_diagnostics(path, &source, file_id, &preprocessed.diagnostics);
+    let messages = render_preproc_diagnostics(path, &source, file_id, &preprocessed.diagnostics);
 
     // Get the expanded source text
     let expanded = preprocessed.to_text();
@@ -2362,14 +2490,15 @@ fn parse_file_with_preprocess(
     let program = match oxabl::try_parse(&expanded) {
         Ok(program) => program,
         Err(_) => {
-            return FileResult::LexerPanic {
+            let result = FileResult::LexerPanic {
                 path: path.to_path_buf(),
             };
+            return (result, messages);
         }
     };
 
     // Fail-fast reporting: surface the first recovered error.
-    match program.first_error() {
+    let result = match program.first_error() {
         None => FileResult::Success,
         Some(e) => {
             // Resolve the virtual offset back to the real source location
@@ -2398,7 +2527,8 @@ fn parse_file_with_preprocess(
                 }
             }
         }
-    }
+    };
+    (result, messages)
 }
 
 fn render_human_report(results: &[FileResult], elapsed_secs: f64) {
@@ -2496,7 +2626,8 @@ fn render_human_report(results: &[FileResult], elapsed_secs: f64) {
     // Top error patterns
     if !error_counts.is_empty() {
         let mut patterns: Vec<_> = error_counts.into_iter().collect();
-        patterns.sort_by_key(|p| std::cmp::Reverse(p.1));
+        // Ties by text, so the report does not follow the map's random order.
+        patterns.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
         println!();
         println!("Top error patterns:");
@@ -2566,7 +2697,8 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) -> Result<(), E
     };
 
     let mut patterns: Vec<_> = error_counts.into_iter().collect();
-    patterns.sort_by_key(|p| std::cmp::Reverse(p.1));
+    // Ties by text, so the report does not follow the map's random order.
+    patterns.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let report = JsonReport {
         total,
