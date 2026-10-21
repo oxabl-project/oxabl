@@ -310,3 +310,27 @@ fn check_no_longer_accepts_debug() {
         "unknown flag → clap usage error"
     );
 }
+
+#[test]
+fn tied_error_patterns_are_ranked_by_text() {
+    let tmp = TempDir::new().unwrap();
+    write(&tmp.path().join("a.p"), "DISPLAY (1 + .\n");
+    write(&tmp.path().join("b.p"), BROKEN);
+
+    let out = oxabl()
+        .args(["conformance", "--json"])
+        .arg(tmp.path())
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let patterns: Vec<&str> = v["error_patterns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["pattern"].as_str().unwrap())
+        .collect();
+    let mut sorted = patterns.clone();
+    sorted.sort_unstable();
+    assert_eq!(patterns.len(), 2, "{patterns:?}");
+    assert_eq!(patterns, sorted);
+}
