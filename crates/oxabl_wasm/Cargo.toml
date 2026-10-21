@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_wasm"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2024"
 license = "MIT"
 description = "Thin WebAssembly client for the shared Oxabl analysis and formatting pipelines"
@@ -10,7 +10,7 @@ repository = "https://github.com/oxabl-project/oxabl"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-oxabl = { path = "../oxabl", version = "3.0.2", default-features = false, features = ["serde"] }
+oxabl = { path = "../oxabl", version = "3.0.3", default-features = false, features = ["serde"] }
 # The shared lint/format pipelines and the shared position helper. A direct edge
 # rather than the umbrella's `oxabl::pipeline` re-export, which names the
 # configuration surface only; the umbrella depends on this crate unconditionally
