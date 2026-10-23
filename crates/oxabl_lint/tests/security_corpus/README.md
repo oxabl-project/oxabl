@@ -1,6 +1,6 @@
 # Security corpus
 
-Synthetic ABL for the `security` rules ABLSEC001 to ABLSEC009 and ABLSEC013 to ABLSEC017. `tests/security_rules/corpus.rs` runs it.
+Synthetic ABL for the `security` rules ABLSEC001 to ABLSEC010 and ABLSEC013 to ABLSEC017. `tests/security_rules/corpus.rs` runs it. ABLSEC011 and ABLSEC012 need the files an entry point reaches: their corpus is the synthetic web application in `crates/oxabl_pipeline/tests/reach_corpus`, scored by `crates/oxabl_pipeline/tests/reach.rs`.
 
 - `ablsecNNN/vulnerable/*.p` starts with `/* expect: N */`. The rule gives exactly N findings.
 - `ablsecNNN/safe/*.p` gives no finding from any security rule.
@@ -29,6 +29,12 @@ False negatives (a sink the rules do not see):
 - `DYNAMIC-INVOKE(cClassName, "Method")` where the first argument is a character variable that names the class.
 - A clause that a modelled statement discards, and a `FILL-WHERE-STRING` assignment inside a statement that the parser does not model.
 - An include argument that is empty in a fragment: `QUERY-PREPARE({1})` expands to `QUERY-PREPARE()` when the include is checked alone.
+
+### ABLSEC010
+
+False positives: a decision on a request key that names an identity but is not one (`get-value("username-hint")`); a value the session set that a project function returns under a name in `identity-sources`; a check of an identity against the session (`IF cUser <> session-user() THEN RETURN.`), which is a correct check but reads the client's claim.
+
+False negatives: a key that is not a literal (`get-value(cKey)`); a key with no word of `identity-keys` (`get-value("cono")` until it is configured); an identity read in another file and passed in (the parameter is a source, but not an identity); a decision in a statement the parser does not model.
 
 ### ABLSEC006 to ABLSEC009, ABLSEC013 to ABLSEC017
 

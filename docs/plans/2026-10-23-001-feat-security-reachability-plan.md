@@ -1,5 +1,10 @@
 # Security stage 3: entry-point reachability — Plan
 
+Status: implemented. The design as built, with the measurements, is
+`docs/design/security-reachability.md`. Two changes from this plan: the
+editor and the daemon do not build the graph yet, and the JSON object model
+also covers `Insert`.
+
 ## Goal
 
 Stage 1 of the `security` group reports every non-literal sink. Stage 2

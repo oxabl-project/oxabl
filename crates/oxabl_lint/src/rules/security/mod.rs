@@ -28,10 +28,31 @@
 //! labels of a security finding are that path and nothing else, which is how
 //! SARIF output reads them. ABLSEC008, ABLSEC009, ABLSEC013 and ABLSEC017 do
 //! not ask where a value comes from and have no taint mode. See [`taint`] for
-//! the analysis. A later stage adds reachability from entry points.
+//! the analysis.
 //!
-//! All rules are in preview, context-free ([`crate::RuleMeta::context_free`])
-//! and report in the file where the sink text is written, so a sink inside an
+//! # Stage 3: entry points
+//!
+//! With an entry-point file (`[workspace.lint.security.reach]`), a client that
+//! reads the workspace builds the call graph from the entries and answers,
+//! for the file under analysis, how each routine is reached ([`reach`]). The
+//! registry labels every finding of this group with it: the status
+//! (reachable, unknown, unreachable), the entries, one path, and a note on the
+//! message; the severity moves only when configured. Three rules need more
+//! than one file or the identity of a value:
+//!
+//! - `client-identity` (ABLSEC010): a decision on a user, company or role the
+//!   client sent, followed with the taint analysis in every mode;
+//! - `missing-authorization` (ABLSEC011): a sensitive operation an entry
+//!   reaches past no authorisation check;
+//! - `cross-request-state` (ABLSEC012): session state a request reads before
+//!   it sets it.
+//!
+//! ABLSEC011 and ABLSEC012 are not context-free: their answer depends on the
+//! files that reach this one.
+//!
+//! All rules are in preview, all but ABLSEC011 and ABLSEC012 are context-free
+//! ([`crate::RuleMeta::context_free`]), and they report in the file where the
+//! sink text is written, so a sink inside an
 //! include file or a `&GLOBAL-DEFINE` body is reported once, at its origin.
 //!
 //! # Severity
@@ -39,7 +60,8 @@
 //! oxabl has `error`, `warning`, `info` and `hint`. A catalogue entry of
 //! critical impact reports as `error`. So do ABLSEC001 and ABLSEC008, which are
 //! high impact and rarely benign. The other high and medium impact entries
-//! report as `warning`: the pattern is often benign (path traversal), or the rule reads
+//! (ABLSEC010 and ABLSEC011 high, ABLSEC012 medium among them) report as
+//! `warning`: the pattern is often benign (path traversal), or the rule reads
 //! names and guesses (weak crypto, information leak). An entry that needs a
 //! review (untrusted XML) or that depends on a limit the rule cannot see
 //! (resource exhaustion) reports as `info`. The impact word is not carried into

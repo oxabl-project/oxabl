@@ -77,11 +77,13 @@
 //! and only when one of its rules is enabled.
 //!
 //! The `security` group ([`security`]) is opt-in as well and holds the sink
-//! rules ABLSEC001 to ABLSEC009 and ABLSEC013 to ABLSEC017. They are in
-//! preview and context-free like the strict rules above; see the module for the design,
-//! [`security::literal`] for the shared "is this a literal" decision, and
-//! [`security::taint`] for the taint mode (stage 2) that `[workspace.lint.security]`
-//! turns on:
+//! rules ABLSEC001 to ABLSEC009 and ABLSEC013 to ABLSEC017 and the
+//! entry-point rules ABLSEC010 to ABLSEC012. They are in preview, and all but
+//! ABLSEC011 and ABLSEC012 are context-free like the strict rules above; see
+//! the module for the design, [`security::literal`] for the shared "is this a
+//! literal" decision, [`security::taint`] for the taint mode (stage 2) that
+//! `[workspace.lint.security]` turns on, and [`security::reach`] for
+//! reachability from entry points (stage 3):
 //!
 //! | Code      | Module                        | What it fires on                                         |
 //! |-----------|-------------------------------|----------------------------------------------------------|
@@ -94,6 +96,9 @@
 //! | ABLSEC007 | [`security::header_injection`] | response headers, cookies and `Location` from a non-literal |
 //! | ABLSEC008 | [`security::hardcoded_secret`] | a literal `-P`, `oech1::`, key material, or a password-like name set to a literal |
 //! | ABLSEC009 | [`security::weak_crypto`]     | `ENCODE`, `MD5-DIGEST`, `SHA1-DIGEST` of secrets, and `RANDOM` for tokens |
+//! | ABLSEC010 | [`security::client_identity`] | a decision on a user, company or role the client sent |
+//! | ABLSEC011 | [`security::missing_authorization`] | a database write or sensitive call an entry point reaches with no check |
+//! | ABLSEC012 | [`security::cross_request_state`] | session state a request reads before it sets it |
 //! | ABLSEC013 | [`security::information_leak`] | error text to a client, and secrets in `MESSAGE` or the log |
 //! | ABLSEC014 | [`security::unsafe_deserialization`] | `Deserialize` of a non-literal |
 //! | ABLSEC015 | [`security::untrusted_xml`]   | `X-DOCUMENT:LOAD`, `SAX-PARSE` (info) |

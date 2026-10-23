@@ -139,7 +139,7 @@ See `docs/design/strict-analysis-open-questions.md` for the reasons and for the 
 
 #### Security rules
 
-The `security` group finds code where a value that is not a literal reaches a dangerous call. Turn it on with `enable = ["security"]`; `enable = ["strict"]` does not select it. The rules are in preview. By default they are sink rules (stage 1): each one reports every call whose argument is not a literal, and does not follow the value back to its source. They are complete and noisy on purpose. Use a baseline for the code that exists, and see `crates/oxabl_lint/src/rules/security/mod.rs` for the design. Ten of the rules also have a taint mode (stage 2, below) that reports a sink only when untrusted input reaches it.
+The `security` group finds code where a value that is not a literal reaches a dangerous call. Turn it on with `enable = ["security"]`; `enable = ["strict"]` does not select it. The rules are in preview. By default they are sink rules (stage 1): each one reports every call whose argument is not a literal, and does not follow the value back to its source. They are complete and noisy on purpose. Use a baseline for the code that exists, and see `crates/oxabl_lint/src/rules/security/mod.rs` for the design. Ten of the rules also have a taint mode (stage 2, below) that reports a sink only when untrusted input reaches it. With an entry-point file (stage 3, below), every finding says how a remote caller reaches it, and three more rules read the call graph.
 
 | Code | Name | Reports | Severity |
 |---|---|---|---|
@@ -152,13 +152,16 @@ The `security` group finds code where a value that is not a literal reaches a da
 | ABLSEC007 | `header-injection` | `SetHeader`, `AddHeader`, `SetCookie`, `Location`, `HttpHeader` and `Cookie` objects, `HttpHeaderBuilder`, and WebSpeed `output-http-header` and `set-cookie` given a value that is not a literal | `warning` |
 | ABLSEC008 | `hardcoded-secret` | `CONNECT` with a literal `-P`, an `oech1::` string, `ENCRYPT`, `DECRYPT` and `GENERATE-PBE-KEY` with a literal key, and a literal assigned to a password-like name | `error` |
 | ABLSEC009 | `weak-crypto` | `ENCODE`, `MD5-DIGEST`, `SHA1-DIGEST` and `MESSAGE-DIGEST("MD5")` of a password-like or token-like name, and `RANDOM` that feeds a token, nonce or identifier | `warning` |
+| ABLSEC010 | `client-identity` | an `IF`, `CASE`, `WHILE` or `WHERE` that decides on a user, company or role that the client sent (`get-value("role")`, `poRequest:GetPathParameter("tenant")`), and such a value passed to an `auth-routines` routine | `warning` |
+| ABLSEC011 | `missing-authorization` | a database write or a `sensitive-calls` call that an entry point reaches on a path with no `auth-routines` check (needs entry points) | `warning` |
+| ABLSEC012 | `cross-request-state` | a read of `NEW GLOBAL SHARED` or `STATIC` state that a request makes before it sets it, where other reached code writes it (needs entry points) | `warning` |
 | ABLSEC013 | `information-leak` | `ERROR-STATUS:GET-MESSAGE`, `GetMessage` and `CallStack` of a caught error assigned to an output parameter or written to a web response, and a password-like name passed to `MESSAGE` or `LOG-MANAGER:WRITE-MESSAGE` | `warning` |
 | ABLSEC014 | `unsafe-deserialization` | `Deserialize` of a value that is not a literal | `warning` |
 | ABLSEC015 | `untrusted-xml` | `X-DOCUMENT:LOAD` of a source that is not a literal, and `SAX-PARSE`, `SAX-PARSE-FIRST` | `info` |
 | ABLSEC016 | `resource-exhaustion` | `SET-SIZE(m) = expr`, a socket `READ` with a byte count that is not a literal and has no cap, and `FILL` with no `BATCH-SIZE` in the file | `info` |
 | ABLSEC017 | `integrity-bypass` | `DISABLE TRIGGERS`, and `CREATE`, `DELETE` and field assignments on `_User` | `warning` |
 
-The catalogue rates ABLSEC002 to ABLSEC004 critical; ABLSEC001, ABLSEC005, ABLSEC006, ABLSEC008, ABLSEC009 and ABLSEC014 high; ABLSEC007, ABLSEC013, ABLSEC016 and ABLSEC017 medium; and ABLSEC015 "needs review". oxabl has `error`, `warning`, `info` and `hint`, so critical impact and ABLSEC001 and ABLSEC008 report as `error`; the other high and medium impact rules report as `warning`, because their patterns are often benign or heuristic; and ABLSEC015 and ABLSEC016 report as `info`. Change that per rule in `oxabl.toml` as for any rule. SARIF output also carries the catalogue rating as `security-severity`: `9.5` for critical, `8.0` for high, `5.5` for medium and `3.0` for needs review. `// oxabl-ignore ABLSEC001: <reason>` suppresses one finding.
+The catalogue rates ABLSEC002 to ABLSEC004 critical; ABLSEC001, ABLSEC005, ABLSEC006, ABLSEC008, ABLSEC009, ABLSEC010, ABLSEC011 and ABLSEC014 high; ABLSEC007, ABLSEC012, ABLSEC013, ABLSEC016 and ABLSEC017 medium; and ABLSEC015 "needs review". oxabl has `error`, `warning`, `info` and `hint`, so critical impact and ABLSEC001 and ABLSEC008 report as `error`; the other high and medium impact rules report as `warning`, because their patterns are often benign or heuristic; and ABLSEC015 and ABLSEC016 report as `info`. Change that per rule in `oxabl.toml` as for any rule. SARIF output also carries the catalogue rating as `security-severity`: `9.5` for critical, `8.0` for high, `5.5` for medium and `3.0` for needs review. `// oxabl-ignore ABLSEC001: <reason>` suppresses one finding.
 
 An argument counts as a literal when it is a string or number literal, a `+` of literals, or text that a preprocessor name expanded to one. A variable, a field and a function call are not literals. `QUOTER(x)` around a value does not make a string a literal: in stage 1 the rules still report it, and the help of the finding says so. Taint mode accepts sanitisers.
 
@@ -217,17 +220,78 @@ A guard cleans a variable on the path it holds on: `IF x = "a" OR x = "b"`, `IF 
 
 A variable that a unit reads and does not declare (a main block variable in a procedure, a class member in a method) and every temp-table or database field holds what any unit of the file writes to it. A main block also sees what an internal procedure writes to its variables after it runs that procedure.
 
+Calls of the file's own procedures, functions and methods are followed: a call returns what the routine returns for these arguments (so `f(pc)` is tainted when `f` returns `pc`, and `f("x")` is not), an `OUTPUT` parameter brings back what the routine set it to, and a `PRIVATE` routine sees what its callers pass. A `JsonObject` or `JsonArray` (or a variable whose type the file does not declare) takes what `Add`, `Set` and `Insert` give it, and `Write(target)` puts it into `target`, so a request value added to a JSON object and written to the response is an XSS finding.
+
 A taint finding names its path in the message, `` `QUERY-PREPARE` takes a query built from untrusted input: input parameter `pcName` → `cWhere` ``, and each step is a label of the diagnostic, source first. SARIF output turns the steps into `codeFlows`.
 
 When the analysis cannot judge a sink, the finding is reported as in stage 1: the argument holds an unexpanded `{...}` reference or text the preprocessor removed, the parse recovered, or the unit costs more than its work budget.
 
 Limits of stage 2 (the corpus under `crates/oxabl_lint/tests/security_corpus/taint` has a case for each):
 
-- A value that a function or procedure of the same file returns is clean unless an argument of the call is tainted: there is no taint across calls yet. A `PRIVATE` procedure that its own file calls with untrusted input is not seen either.
+- Taint does not cross files: what a program of another file returns (`RUN other.p (OUTPUT c)`) is what an unknown call returns. The external `INPUT` parameters of that program are sources of their own.
 - A check in a project function is not seen unless `validators` names it, so the sink after it is still reported. An allow-list held in a variable is not a literal list.
 - A main block does not see what a function or a method writes to its variables, only what a `RUN` of an internal procedure writes. `SHARED` variables are clean.
 - Statements that the parser does not model change no variable, except `COPY-LOB`.
 - A validator is trusted by name; the analysis does not check it.
+
+##### Entry points and reachability (stage 3)
+
+A finding matters more when a remote caller can reach it. Name the entry points of the application in a JSON file and point `oxabl.toml` at it:
+
+```toml
+[workspace.lint.security.reach]
+entry-points = "security/entry-points.json"   # relative to oxabl.toml
+auth-routines = ["auth/require-role.p", "check-access", "auth/guard.i", "Guard:Require"]
+sensitive-calls = ["post-ledger"]             # sensitive besides database writes
+raise-reachable = false                       # a reachable finding reports one level up
+lower-unreachable = false                     # an unreachable finding reports one level down
+```
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "kind": "REST", "name": "GET /orders/{id}", "program": "web/orders.p", "procedure": "get-order" },
+    { "kind": "WebSpeed", "name": "/report.w", "program": "web/report.w" },
+    { "kind": "REST", "name": "POST /orders", "class": "app.OrderService", "method": "Create" },
+    { "kind": "REST", "name": "GET /status", "class": "app.StatusService", "auth": true }
+  ]
+}
+```
+
+- An entry names a `program` (found over the search path as `RUN` finds it), optionally with one of its internal `procedure`s, or a `class`, optionally with one `method`. A class with no method stands for its constructors and every method that is not `PRIVATE`.
+- `kind` and `name` are free text; findings name the entry as `kind name`. `auth: true` says that the framework authorises the caller before the entry runs (a PASOE security configuration, an API gateway).
+- An unknown key, a wrong `version` or an entry with no target makes the file a config warning, and no entry is read. An entry whose target is not found is a warning of `check` (`entry point ... its target was not found`).
+
+From the entries, the pipeline reads every file they reach once (`RUN p`, `RUN p IN h` for a persistent handle the file sets, internal procedures and functions, methods on `THIS-OBJECT`, `NEW pkg.Cls(...)`, `o:Method(...)` where the file declares `o` as a class, and `pkg.Cls:Method(...)`), and builds the graph of their routines. Includes need no edge: the rules read the expanded text. A call into a `Progress.*`, `OpenEdge.*` or .NET class is no edge. Every other call that does not resolve is an edge to Unknown, with its reason: `dynamic` (`RUN VALUE`, `DYNAMIC-*`), `handle`, `super`, `event` (`PUBLISH`), `method` (an object whose class the file does not declare), `not-found`, `ambiguous`, `no-routine`.
+
+Every finding of the `security` group then has a status:
+
+- **reachable**: `(reachable from REST GET /orders/{id})` is added to the message, with up to four entries; the JSON report and SARIF also carry one call path from the nearest entry.
+- **unknown**: no entry reaches the routine through a known call, but a reached routine makes an Unknown call: `(reachability unknown: dynamic call)`. A front controller that runs `RUN VALUE(page)` makes every page it can run unknown; list each page as an entry to make it reachable.
+- **unreachable**: no entry reaches it and every reached call is known: `(unreachable from the entry points)`.
+
+`raise-reachable` and `lower-unreachable` move the severity one level (`info` → `warning` → `error`, and back); an unknown finding never moves. Without an entry-point file nothing is labelled.
+
+Three rules use what stage 3 knows:
+
+- **ABLSEC010 `client-identity`** needs no entry points. It follows request values in taint mode whatever `mode` says. A value is an identity when the key it is read by has a word of `identity-keys` (`[workspace.lint.security]`; the default list is `user`, `username`, `userid`, `login`, `company`, `tenant`, `role`, `roles`, `owner`, `admin`), as in `get-value("user")`, `get-field("company-id")`, `poRequest:GetHeader("X-User-Id")` and `oBody:GetCharacter("ownerId")` on a body read from the request. `identity-sources` names project functions whose result is the client's claim. A comparison, a number and a guard do not clean an identity; a validator with `protects = ["identity"]` does (`"all"` is every injection kind and does not).
+- **ABLSEC011 `missing-authorization`** reports, once per routine, a database write (`CREATE`, `DELETE`, a field assignment; not a temp-table) or a `sensitive-calls` call that an entry reaches on a path that passes no `auth-routines` check. A check counts when its statement comes before the operation on every path through its routine (it dominates it), or before the call that leads there. An `auth-routines` entry names a procedure, function, method (`method` or `Cls:method`), program (with or without its extension) or include file.
+- **ABLSEC012 `cross-request-state`** reports a read of session state (a `NEW GLOBAL SHARED` variable and its `SHARED` consumers; a `STATIC` variable or property, as `name` in its class and `Cls:name` elsewhere) when other reached code writes it and an entry reaches the read on a path that writes it nowhere before.
+
+```toml
+[workspace.lint.security]
+identity-keys = ["user", "company", "cono"]   # replaces the default list
+identity-sources = ["request-user"]
+```
+
+Limits of stage 3 (the synthetic web application in `crates/oxabl_pipeline/tests/reach_corpus` has a case for each rule):
+
+- A check is trusted by name and by position: one that does not stop the request when it fails still counts.
+- A method call on an object whose class the file does not declare is Unknown, and a call is resolved to the declared class only: an override in a subclass or an interface implementation is not followed.
+- Taint does not cross files, and the labels say how a routine is reached, not whether the tainted value came from that entry.
+- State held inside a singleton's own instance variables, a persistent procedure's variables and `SESSION` attributes is not session state to ABLSEC012. A static member is named by its class's last name segment, so two classes of that name in different packages share their statics.
+- `oxabl check` builds the graph once per run. The editor and the daemon do not build it yet, so there they show the findings with no reachability, and ABLSEC011 and ABLSEC012 are silent. On a generated project of 30 000 files the graph takes about 2.5 seconds to build, and a lint of every file with entry points takes about twice as long as one without.
 
 Limits:
 
@@ -235,7 +299,7 @@ Limits:
 - Rules read the text after preprocessing. A sink in an include file is reported once, in the include file, like a strict finding; the include-file notes above apply. A sink written in your own file whose argument is `{&NAME}` is reported at the sink, and is a literal only when `NAME` expands to one. A sink whose whole text is the body of a `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` is not reported by `check`: the expansion does not belong to the file that uses it.
 - `OS-COMMAND`, `UNIX`, `DOS`, `OS-DELETE`, `OS-COPY`, `OS-RENAME`, `OS-CREATE-DIR`, `COPY-LOB` and `COMPILE` are not modelled by the parser. The rules read their text, and look only at the operands listed above.
 - Method names such as `FIND-FIRST` and `CommandText` are matched by spelling, because the rules have no type information.
-- Embedded SQL (`EXEC SQL`), a command or path set through a class the table does not list, and a value that is built in one procedure and used in another are not seen.
+- Embedded SQL (`EXEC SQL`) and a command or path set through a class the table does not list are not seen. In stage 1, a value that is built in one procedure and used in another is a finding only where it is used.
 - ABLSEC008 is the one rule that reports a literal. A finding never repeats the secret: the message shows `"****"` and `oech1::****`. The text output of `oxabl check` still prints the source line of a finding, as it does for every rule, so a secret is visible there; the JSON and SARIF reports hold the message only. A name is password-like when one of its words is `password`, `pwd`, `passphrase`, `secret`, `apikey` or one of a few more; a name that also holds a word such as `label` or `prompt` is not. The lists are in `oxabl_lint::security::names::Heuristics`, and a program that embeds `oxabl_lint` passes its own to `run_with`; `oxabl.toml` does not set them yet.
 - ABLSEC009 and ABLSEC013 read names with the same lists. They are heuristics: a hash of a password in a variable with a neutral name is not seen, and a digest of a value named `cTokenCacheKey` is reported.
 - ABLSEC013 follows error text only inside one statement, to an `OUTPUT` parameter of the file or to a web response. A detail kept in a local variable and returned later is not seen.
@@ -327,6 +391,7 @@ RUN VALUE(c). // oxabl-ignore CL001: c comes from a fixed list
 - With `--baseline`, a result that the baseline does not cover has `baselineState: "new"`, and one that it covers has `"unchanged"`. Without `--baseline`, results have no `baselineState`.
 - A finding that an `oxabl-ignore` comment suppresses stays in `results` with `suppressions: [{ "kind": "inSource", "justification": "<reason>" }]`.
 - A security finding of taint mode has `codeFlows` with one `threadFlow`: each step of the path in the checked file, source first, with its label as the message, and the sink last. A finding in an include file has no `codeFlows`.
+- With an entry-point file, a security finding has `properties.reachability` (`status`, `entries` with `label` and `target`, `moreEntries`, `unknownCalls`, and `path` with its `entry` and `calls`) and a `relatedLocations` entry for each call on that path, by file and line.
 - A failed file is a `toolExecutionNotifications` entry of level `error`; format drift is one of level `warning`.
 - The exit code does not change with the format. A suppressed or baselined finding does not fail the run.
 

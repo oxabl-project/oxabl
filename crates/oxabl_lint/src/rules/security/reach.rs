@@ -17,7 +17,7 @@
 //!   variables (and their `SHARED` consumers), and `STATIC` variables and
 //!   properties of a class (by name in the class, as `Cls:name` elsewhere).
 //!
-//! Every finding of a `security` rule is labelled in [`annotate`], which the
+//! Every finding of a `security` rule is labelled in `annotate`, which the
 //! registry calls: the status, the entries, one path, and a note on the
 //! message. With `raise-reachable` or `lower-unreachable` the severity moves
 //! one level.
