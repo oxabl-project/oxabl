@@ -88,6 +88,14 @@
             "$ref": "#/definitions/LintOverride"
           },
           "type": "array"
+        },
+        "security": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SecurityConfig"
+            }
+          ],
+          "description": "Options of the `security` rules (`[workspace.lint.security]`). Global: an override does not read it."
         }
       },
       "type": "object"
@@ -150,6 +158,32 @@
         "PLowercase"
       ],
       "type": "string"
+    },
+    "ParameterSourcesSetting": {
+      "description": "Which input parameters the taint stage counts as untrusted.",
+      "oneOf": [
+        {
+          "description": "Parameters of the main block, of a procedure or function that is not `PRIVATE`, and of a method or constructor that is not `PRIVATE`.",
+          "enum": [
+            "external"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Every input parameter.",
+          "enum": [
+            "all"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No parameter.",
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "PeriodPlacement": {
       "enum": [
@@ -227,6 +261,96 @@
         "files": {
           "default": [],
           "description": "Paths to `.df` schema dump files.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SecurityConfig": {
+      "additionalProperties": false,
+      "description": "The `[workspace.lint.security]` table.\n\n`mode` chooses stage 1 (`sink`, the default) or stage 2 (`taint`) for every security rule that has a taint mode; `modes` sets one rule, by code or kebab name. The other keys say what the taint stage counts as a source and as a sanitiser.",
+      "properties": {
+        "database-fields": {
+          "default": false,
+          "description": "Whether a database field read is untrusted. Default `false`.",
+          "type": "boolean"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SecurityModeSetting"
+            }
+          ],
+          "default": "sink",
+          "description": "The mode of every rule that `modes` does not name."
+        },
+        "modes": {
+          "additionalProperties": {
+            "$ref": "#/definitions/SecurityModeSetting"
+          },
+          "description": "Per-rule modes, keyed by code (`ABLSEC005`) or kebab name.",
+          "type": "object"
+        },
+        "parameters": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ParameterSourcesSetting"
+            }
+          ],
+          "default": "external",
+          "description": "Which input parameters are untrusted."
+        },
+        "sources": {
+          "description": "Project functions and methods whose result is untrusted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "validators": {
+          "description": "Project functions that validate or clean a value, with the sink kinds each protects.",
+          "items": {
+            "$ref": "#/definitions/SecurityValidatorConfig"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SecurityModeSetting": {
+      "description": "How a `security` rule decides that a sink is a finding.",
+      "oneOf": [
+        {
+          "description": "Stage 1: every sink whose argument is not a literal.",
+          "enum": [
+            "sink"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Stage 2: a sink that untrusted input can reach inside one procedure without a sanitiser for that sink.",
+          "enum": [
+            "taint"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "SecurityValidatorConfig": {
+      "additionalProperties": false,
+      "description": "A project function that validates or cleans a value.",
+      "properties": {
+        "name": {
+          "default": "",
+          "description": "Function or method name, compared case-insensitively.",
+          "type": "string"
+        },
+        "protects": {
+          "default": [],
+          "description": "Sink kinds it protects: `query`, `sql`, `command`, `code`, `path`, `html`, `header`, `deserialize`, `xml`, `size`, or `all`.",
           "items": {
             "type": "string"
           },
