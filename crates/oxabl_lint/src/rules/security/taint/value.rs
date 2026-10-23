@@ -493,9 +493,9 @@ impl Compiler<'_> {
         match &e.kind {
             E::Literal(_) => Value::default(),
             E::Identifier(id) => self.var(&id.name),
-            E::FieldAccess { qualifier, field } => match &qualifier.kind {
-                E::Identifier(q) => self.field(&q.name, &field.name, e.span, false),
-                _ => Value::default(),
+            E::FieldAccess { .. } => match field_parts(e) {
+                Some((q, f)) => self.field(q, f, e.span, false),
+                None => Value::default(),
             },
             E::Add(a, b) => Value::union([self.expr(a), self.expr(b)]),
             E::Minus(a, b) | E::Multiply(a, b) | E::Divide(a, b) | E::Modulo(a, b) => {
@@ -550,9 +550,9 @@ impl Compiler<'_> {
             E::Identifier(id) => (Some(id.name.clone()), self.var(&id.name)),
             // A dotted name before `:` is a class (`Progress.Lang.Class`) or a
             // buffer field holding an object.
-            E::FieldAccess { qualifier, field } => match &qualifier.kind {
-                E::Identifier(q) => (None, self.field(&q.name, &field.name, object.span, true)),
-                _ => (None, Value::default()),
+            E::FieldAccess { .. } => match field_parts(object) {
+                Some((q, f)) => (None, self.field(q, f, object.span, true)),
+                None => (None, Value::default()),
             },
             _ => (None, self.expr(object)),
         }
@@ -572,14 +572,11 @@ impl Compiler<'_> {
                 .into_iter()
                 .map(|(s, _)| (s, false))
                 .collect(),
-            E::FieldAccess { qualifier, field } => match &qualifier.kind {
-                E::Identifier(q) => self
-                    .field_slot(&q.name, &field.name)
-                    .map(|s| (s, false))
-                    .into_iter()
-                    .collect(),
-                _ => Vec::new(),
-            },
+            E::FieldAccess { .. } => field_parts(target)
+                .and_then(|(q, f)| self.field_slot(q, f))
+                .map(|s| (s, false))
+                .into_iter()
+                .collect(),
             E::MemberAccess { object, member } => match &object.kind {
                 E::Identifier(o) if o.name.eq_ignore_ascii_case("THIS-OBJECT") => self
                     .var_slot(&member.name)
@@ -610,10 +607,7 @@ impl Compiler<'_> {
     pub fn guarded(&mut self, e: &Expression) -> Option<u32> {
         match &e.kind {
             E::Identifier(id) => self.var_slot(&id.name),
-            E::FieldAccess { qualifier, field } => match &qualifier.kind {
-                E::Identifier(q) => self.field_slot(&q.name, &field.name),
-                _ => None,
-            },
+            E::FieldAccess { .. } => field_parts(e).and_then(|(q, f)| self.field_slot(q, f)),
             _ => None,
         }
     }
@@ -749,7 +743,6 @@ impl Compiler<'_> {
                 i = then + 1;
                 continue;
             }
-            let span = st.span(i..i + 1);
             if st.is(i + 1, Kind::LeftParen)
                 && let Some(close) = st.close_of(i + 1).filter(|&c| c < end)
             {
@@ -768,17 +761,18 @@ impl Compiler<'_> {
                 i = next;
                 continue;
             }
-            if st.is(i + 1, Kind::Period)
-                && adjacent(st, i)
-                && adjacent(st, i + 1)
-                && is_word(st, i + 2)
-            {
-                let field = self.field(word, st.word(i + 2), st.span(i..i + 3), false);
+            if dotted(st, i) {
+                // `t.f`, or `db.t.f`.
+                let (mut q, mut j) = (i, i + 2);
+                while dotted(st, j) {
+                    q = j;
+                    j += 2;
+                }
+                let field = self.field(st.word(q), st.word(j), st.span(i..j + 1), false);
                 v = Value::union([v, field]);
-                i += 3;
+                i = j + 1;
                 continue;
             }
-            let _ = span;
             v = Value::union([v, self.var(word)]);
             i += 1;
         }
@@ -812,6 +806,18 @@ impl Compiler<'_> {
             j = next;
         }
         (value, j)
+    }
+}
+
+/// The table and field of `t.f` or `db.t.f`.
+fn field_parts(e: &Expression) -> Option<(&str, &str)> {
+    let E::FieldAccess { qualifier, field } = &e.kind else {
+        return None;
+    };
+    match &qualifier.kind {
+        E::Identifier(q) => Some((&q.name, &field.name)),
+        E::FieldAccess { field: table, .. } => Some((&table.name, &field.name)),
+        _ => None,
     }
 }
 
@@ -849,6 +855,15 @@ fn is_operator_word(word: &str) -> bool {
     ]
     .iter()
     .any(|w| w.eq_ignore_ascii_case(word))
+}
+
+/// Whether the word at `i` is followed by `.` and a word, with no space.
+fn dotted(st: &StatementText, i: usize) -> bool {
+    is_word(st, i)
+        && st.is(i + 1, Kind::Period)
+        && adjacent(st, i)
+        && adjacent(st, i + 1)
+        && is_word(st, i + 2)
 }
 
 /// Whether the token at `i` ends where the next one starts.

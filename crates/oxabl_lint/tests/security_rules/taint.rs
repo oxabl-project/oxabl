@@ -548,3 +548,30 @@ END PROCEDURE.
         diags[0].message
     );
 }
+
+#[test]
+fn a_field_is_one_slot_whatever_buffer_or_database_name_reaches_it() {
+    let src = "\
+DEFINE TEMP-TABLE ttJob NO-UNDO FIELD cArg AS CHARACTER.
+DEFINE BUFFER bJob FOR TEMP-TABLE ttJob.
+DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+CREATE ttJob.
+ttJob.cArg = pc.
+FOR EACH bJob:
+    OS-COMMAND SILENT VALUE(\"lpr \" + bJob.cArg).
+END.
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+    let src = "\
+DEFINE VARIABLE hQ AS HANDLE NO-UNDO.
+FIND FIRST Customer NO-LOCK.
+hQ:QUERY-PREPARE(\"FOR EACH Order WHERE Order.Note = '\" + sports.Customer.Comments + \"'\").
+OS-COMMAND SILENT VALUE(\"echo \" + sports.Customer.Comments).
+";
+    let options = SecurityOptions {
+        database_fields: true,
+        ..taint()
+    };
+    assert_eq!(run_with("ABLSEC001", src, options.clone()).len(), 1);
+    assert_eq!(run_with("ABLSEC003", src, options).len(), 1);
+}
