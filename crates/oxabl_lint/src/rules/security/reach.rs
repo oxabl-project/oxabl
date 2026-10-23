@@ -675,10 +675,7 @@ impl Visitor for Accesses<'_> {
                 if self.locals.contains(&root) || is_system_handle(class) {
                     return;
                 }
-                let written = self
-                    .source_of(object.span)
-                    .unwrap_or(class)
-                    .to_string();
+                let written = self.source_of(object.span).unwrap_or(class).to_string();
                 if !self.classes.contains(&written) {
                     self.classes.push(written);
                 }

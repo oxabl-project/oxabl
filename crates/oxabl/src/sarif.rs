@@ -6,7 +6,9 @@
 //! suppression, so a viewer can show it with its reason.
 //!
 //! A security finding with a taint path carries it as one `codeFlows` thread:
-//! each step in order, source first, ending at the sink.
+//! each step in order, source first, ending at the sink. One that entry points
+//! reach carries `properties.reachability` (the status, the entries, the
+//! path) and a `relatedLocations` entry for each call on that path.
 //!
 //! Columns count UTF-16 code units, which is the SARIF default.
 
@@ -67,6 +69,19 @@ pub struct Finding {
     pub suppressed: Option<String>,
     /// The steps of a taint path, source first, without the sink.
     pub flow: Vec<FlowStep>,
+    /// How the entry points reach the finding.
+    pub reach: Option<oxabl_common::Reachability>,
+    /// The calls on that path.
+    pub related: Vec<Related>,
+}
+
+/// A call on the reachability path of a finding.
+#[derive(Debug, Clone)]
+pub struct Related {
+    pub uri: String,
+    /// 1-based.
+    pub line: usize,
+    pub message: String,
 }
 
 /// One step of a taint path.
@@ -183,6 +198,26 @@ fn result(finding: &Finding) -> Value {
     if let Some(reason) = &finding.suppressed {
         out["suppressions"] = json!([{ "kind": "inSource", "justification": reason }]);
     }
+    if let Some(reach) = &finding.reach {
+        out["properties"] = json!({ "reachability": reachability(reach) });
+    }
+    if !finding.related.is_empty() {
+        out["relatedLocations"] = finding
+            .related
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                json!({
+                    "id": i,
+                    "physicalLocation": {
+                        "artifactLocation": { "uri": r.uri, "uriBaseId": "%SRCROOT%" },
+                        "region": { "startLine": r.line },
+                    },
+                    "message": { "text": r.message },
+                })
+            })
+            .collect();
+    }
     if !finding.flow.is_empty() {
         let artifact = json!({ "uri": finding.uri, "uriBaseId": "%SRCROOT%" });
         let mut locations: Vec<Value> = finding
@@ -203,6 +238,28 @@ fn result(finding: &Finding) -> Value {
             "message": { "text": "sink" },
         } }));
         out["codeFlows"] = json!([{ "threadFlows": [{ "locations": locations }] }]);
+    }
+    out
+}
+
+/// `properties.reachability` of a result.
+fn reachability(r: &oxabl_common::Reachability) -> Value {
+    let entry = |e: &oxabl_common::ReachEntry| json!({ "label": e.label, "target": e.target });
+    let mut out = json!({
+        "status": r.status.as_str(),
+        "entries": r.entries.iter().map(entry).collect::<Vec<_>>(),
+    });
+    if r.more_entries {
+        out["moreEntries"] = true.into();
+    }
+    if !r.unknown.is_empty() {
+        out["unknownCalls"] = r.unknown.clone().into();
+    }
+    if let Some(p) = &r.path {
+        out["path"] = json!({
+            "entry": entry(&p.entry),
+            "calls": p.steps.iter().map(|s| s.routine.clone()).collect::<Vec<_>>(),
+        });
     }
     out
 }
@@ -313,12 +370,62 @@ mod tests {
             baseline_state: None,
             suppressed: None,
             flow: Vec::new(),
+            reach: None,
+            related: Vec::new(),
         };
         let doc = document(&Registry::empty(), &[finding], &[]);
+        assert!(doc["runs"][0]["results"][0].get("properties").is_none());
         let rules = doc["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
             .unwrap();
         assert_eq!(rules[0]["id"], "PARSE001");
+    }
+
+    #[test]
+    fn a_reachable_finding_carries_its_entries_path_and_related_calls() {
+        use oxabl_common::{ReachEntry, ReachPath, ReachStatus, ReachStep, Reachability};
+        let entry = ReachEntry {
+            label: "REST GET /orders/{id}".into(),
+            target: "web/orders.p:get-order".into(),
+        };
+        let mut reach = Reachability::of(ReachStatus::Reachable, Vec::new());
+        reach.entries = vec![entry.clone()];
+        reach.path = Some(ReachPath {
+            entry,
+            steps: vec![ReachStep {
+                routine: "web/orders.p:get-order".into(),
+                file: None,
+                line: Some(9),
+            }],
+        });
+        let finding = Finding {
+            rule_id: "ABLSEC001".into(),
+            severity: "error",
+            text: "t".into(),
+            uri: "lib/filter.p".into(),
+            region: None,
+            fingerprint: "x".into(),
+            baseline_state: None,
+            suppressed: None,
+            flow: Vec::new(),
+            reach: Some(reach),
+            related: vec![Related {
+                uri: "web/orders.p".into(),
+                line: 9,
+                message: "web/orders.p:get-order calls".into(),
+            }],
+        };
+        let doc = document(&Registry::empty(), &[finding], &[]);
+        let result = &doc["runs"][0]["results"][0];
+        let r = &result["properties"]["reachability"];
+        assert_eq!(r["status"], "reachable");
+        assert_eq!(r["entries"][0]["label"], "REST GET /orders/{id}");
+        assert_eq!(r["entries"][0]["target"], "web/orders.p:get-order");
+        assert_eq!(r["path"]["calls"][0], "web/orders.p:get-order");
+        assert!(r.get("unknownCalls").is_none());
+        let related = &result["relatedLocations"][0]["physicalLocation"];
+        assert_eq!(related["artifactLocation"]["uri"], "web/orders.p");
+        assert_eq!(related["region"]["startLine"], 9);
     }
 
     #[test]
@@ -348,6 +455,8 @@ mod tests {
                     message: "`c` takes the untrusted value".into(),
                 },
             ],
+            reach: None,
+            related: Vec::new(),
         };
         let doc = document(&Registry::empty(), &[finding], &[]);
         let locations =

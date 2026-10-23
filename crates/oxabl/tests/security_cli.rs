@@ -420,3 +420,84 @@ fn taint_mode_reports_only_what_untrusted_input_reaches_with_its_path() {
         .collect();
     assert_eq!(codes.len(), 2);
 }
+
+/// A two-file web app with an entry-point file: a handler that runs a
+/// program with a dynamic query.
+fn reach_app(dir: &Path, reach: &str) {
+    write(
+        &dir.join("oxabl.toml"),
+        &config(&format!(
+            "[workspace.lint]\nenable = [\"security\"]\n\
+             [workspace.lint.security.reach]\nentry-points = \"entries.json\"\n{reach}"
+        )),
+    );
+    write(
+        &dir.join("entries.json"),
+        r#"{"version": 1, "entries": [
+            {"kind": "REST", "name": "GET /orders", "program": "web/orders.p"},
+            {"kind": "REST", "name": "GET /gone", "program": "web/gone.p"}
+        ]}"#,
+    );
+    write(
+        &dir.join("src/web/orders.p"),
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nc = get-value(\"q\").\nRUN lib/find.p (INPUT c).\n",
+    );
+    write(
+        &dir.join("src/lib/find.p"),
+        "DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.\nDEFINE VARIABLE hQ AS HANDLE NO-UNDO.\n\
+         hQ:QUERY-PREPARE(\"FOR EACH Customer WHERE \" + pc).\n",
+    );
+    write(
+        &dir.join("src/batch/job.p"),
+        "DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.\nOS-COMMAND SILENT VALUE(pc).\n",
+    );
+}
+
+#[test]
+fn a_security_finding_says_how_the_entry_points_reach_it() {
+    let dir = TempDir::new().unwrap();
+    reach_app(dir.path(), "lower-unreachable = true\n");
+    let (_, stdout, stderr) = check(dir.path(), &["."]);
+    assert!(
+        stdout.contains("(reachable from REST GET /orders)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("(unreachable from the entry points)"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("entry point `REST GET /gone`: its target was not found"),
+        "{stderr}"
+    );
+
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    let report = json(&stdout);
+    let find = |code: &str| {
+        report["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["code"] == code)
+            .cloned()
+            .unwrap_or_else(|| panic!("{code}: {report}"))
+    };
+    let q = find("ABLSEC001");
+    assert_eq!(q["reach"]["status"], "reachable");
+    assert_eq!(q["reach"]["entries"][0]["label"], "REST GET /orders");
+    let job = find("ABLSEC003");
+    assert_eq!(job["reach"]["status"], "unreachable");
+    assert_eq!(job["severity"], "warning", "lowered from error");
+
+    let (_, stdout, _) = check(dir.path(), &[".", "--format", "sarif"]);
+    let log = json(&stdout);
+    let results = log["runs"][0]["results"].as_array().unwrap();
+    let q = results.iter().find(|r| r["ruleId"] == "ABLSEC001").unwrap();
+    assert_eq!(
+        q["properties"]["reachability"]["entries"][0]["label"],
+        "REST GET /orders"
+    );
+    let related = &q["relatedLocations"][0]["physicalLocation"];
+    assert_eq!(related["artifactLocation"]["uri"], "src/web/orders.p");
+    assert_eq!(related["region"]["startLine"], 3);
+}

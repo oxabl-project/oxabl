@@ -1043,6 +1043,10 @@ struct CheckJsonDiagnostic {
     start: Option<CheckJsonPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end: Option<CheckJsonPosition>,
+    /// How the entry points reach a security finding, when entry points are
+    /// configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reach: Option<oxabl_common::Reachability>,
 }
 
 /// One finding in an include, as a result for one root's compilation unit.
@@ -1326,6 +1330,19 @@ fn run_check(
         Some(s) => lint.with_effect_summaries(std::sync::Arc::clone(s)),
         None => lint,
     };
+    // The security rules ask how the entry points reach each file: one graph
+    // for the walk.
+    let reach = (!no_lint && lint.security_reach_enabled()).then(|| {
+        let reach = lint.build_security_reach(None);
+        for label in &reach.unresolved {
+            eprintln!("warning: entry point `{label}`: its target was not found");
+        }
+        std::sync::Arc::new(reach)
+    });
+    let lint = match &reach {
+        Some(r) => lint.with_security_reach(std::sync::Arc::clone(r)),
+        None => lint,
+    };
 
     let mut totals = Totals::default();
     run_ordered(
@@ -1336,8 +1353,12 @@ fn run_check(
             let handle = LintPipeline::new(&config, &fs)
                 .with_preprocess(preprocess)
                 .with_shared_producers(&producers);
-            match &summaries {
+            let handle = match &summaries {
                 Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
+                None => handle,
+            };
+            match &reach {
+                Some(r) => handle.with_security_reach(std::sync::Arc::clone(r)),
                 None => handle,
             }
         },
@@ -2019,8 +2040,32 @@ fn report_findings(
             baseline_state,
             suppressed: reason.map(str::to_string),
             flow: sarif::flow_of(Registry::builtin_shared(), d, source, ROOT_FILE_ID),
+            reach: d.reach.as_deref().cloned(),
+            related: related_locations(d, &pass.root),
         });
     }
+}
+
+/// The calls on the reachability path of a finding, as SARIF related
+/// locations: each in its own file, by line.
+fn related_locations(d: &Diagnostic, root: &Path) -> Vec<sarif::Related> {
+    let Some(path) = d.reach.as_deref().and_then(|r| r.path.as_ref()) else {
+        return Vec::new();
+    };
+    path.steps
+        .iter()
+        .filter_map(|s| {
+            let file = s.file.as_ref()?;
+            let line = s.line?;
+            let key =
+                baseline::relative_path(root, file).unwrap_or_else(|| file.display().to_string());
+            Some(sarif::Related {
+                uri: sarif::uri(&key),
+                line: line as usize,
+                message: format!("{} calls on the way from {}", s.routine, path.entry.label),
+            })
+        })
+        .collect()
 }
 
 /// Split `reported` into the findings that stay and those that an
@@ -2238,6 +2283,8 @@ fn report_include_findings(
                 suppressed: None,
                 // The labels of a finding in an include point into other files.
                 flow: Vec::new(),
+                reach: diagnostic.reach.as_deref().cloned(),
+                related: related_locations(&diagnostic, &pass.root),
             });
         }
         if pass.output == CheckFormat::Text {
@@ -2362,6 +2409,7 @@ fn check_json_diagnostic(
         },
         start: resolved.map(|r| r.start.into()),
         end: resolved.map(|r| r.end.into()),
+        reach: d.reach.as_deref().cloned(),
     }
 }
 
