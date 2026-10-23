@@ -18,6 +18,9 @@ pub use lint_severity::{LintLayer, LintRuleRef, LintSeverityMap};
 pub use panic_guard::{
     InternalPanic, TEST_PANIC_MARKER, catch_panic, panic_if_injected, panic_sites,
 };
-pub use security_options::{ParameterSources, SecurityMode, SecurityOptions, SecurityValidator};
+pub use security_options::{
+    EntryPoint, EntryTarget, ParameterSources, ReachOptions, SecurityMode, SecurityOptions,
+    SecurityValidator,
+};
 pub use source_map::SourceMap;
 pub use virtual_span::VirtualSpan;

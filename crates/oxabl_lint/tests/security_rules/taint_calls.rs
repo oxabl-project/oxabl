@@ -48,7 +48,11 @@ hQ:QUERY-PREPARE(\"FOR EACH Customer WHERE Name = \" + quoted(pcName)).
 OS-COMMAND SILENT VALUE(\"echo \" + quoted(pcName)).
 ";
     assert!(check("ABLSEC001", src).is_empty());
-    assert_eq!(check("ABLSEC003", src).len(), 1, "QUOTER does not clean a command");
+    assert_eq!(
+        check("ABLSEC003", src).len(),
+        1,
+        "QUOTER does not clean a command"
+    );
 }
 
 #[test]
@@ -81,10 +85,21 @@ RUN compress (INPUT pcFile).
 ";
     let diags = check("ABLSEC003", src);
     assert_eq!(diags.len(), 1, "{diags:?}");
-    assert!(diags[0].message.contains("`pcName`"), "{}", diags[0].message);
-    assert!(diags[0].message.contains("`pcFile`"), "{}", diags[0].message);
+    assert!(
+        diags[0].message.contains("`pcName`"),
+        "{}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("`pcFile`"),
+        "{}",
+        diags[0].message
+    );
 
-    let fixed = src.replace("RUN compress (INPUT pcFile).", "RUN compress (INPUT \"a.log\").");
+    let fixed = src.replace(
+        "RUN compress (INPUT pcFile).",
+        "RUN compress (INPUT \"a.log\").",
+    );
     assert!(check("ABLSEC003", &fixed).is_empty());
 }
 
@@ -209,7 +224,11 @@ PUT STREAM WebStream UNFORMATTED lcFixed.
 fn a_json_object_carries_what_is_added_to_it_to_its_text() {
     let diags = check("ABLSEC006", JSON);
     assert_eq!(lines(JSON, &diags), [11, 15], "{diags:?}");
-    assert!(diags[0].message.contains("`lcBody`"), "{}", diags[0].message);
+    assert!(
+        diags[0].message.contains("`lcBody`"),
+        "{}",
+        diags[0].message
+    );
     assert!(
         diags[0].message.contains("web input `get-value`"),
         "{}",

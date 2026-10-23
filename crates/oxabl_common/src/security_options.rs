@@ -1,5 +1,6 @@
 //! Resolved options of the `security` lint rules: the stage each rule runs,
-//! and what the taint stage counts as a source and a sanitiser.
+//! what the taint stage counts as a source and a sanitiser, and the entry
+//! points that reachability starts from.
 //!
 //! The user-facing shape is `[workspace.lint.security]` in `oxabl.toml`
 //! (`oxabl_workspace`). It is lowered into this value and carried on
@@ -41,6 +42,80 @@ pub struct SecurityValidator {
     pub protects: Vec<String>,
 }
 
+/// What an entry point runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryTarget {
+    /// A program, as a `RUN` names it, and optionally one of its internal
+    /// procedures.
+    Program {
+        program: String,
+        procedure: Option<String>,
+    },
+    /// A class, and optionally one of its methods. With no method, its
+    /// constructors and every method that is not `PRIVATE`.
+    Class {
+        class: String,
+        method: Option<String>,
+    },
+}
+
+impl EntryTarget {
+    /// The target as written: `web/orders.p`, `web/orders.p:get-order`,
+    /// `app.OrderService:Create`.
+    pub fn describe(&self) -> String {
+        let (outer, inner) = match self {
+            EntryTarget::Program { program, procedure } => (program, procedure),
+            EntryTarget::Class { class, method } => (class, method),
+        };
+        match inner {
+            Some(i) => format!("{outer}:{i}"),
+            None => outer.clone(),
+        }
+    }
+}
+
+/// One remotely reachable entry point: a REST route, a WebSpeed program, a
+/// service method.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPoint {
+    /// Free text naming the channel: `REST`, `WebSpeed`, `SOAP`.
+    pub kind: String,
+    /// Free text naming the entry within it: `GET /orders/{id}`.
+    pub name: String,
+    pub target: EntryTarget,
+    /// The framework authorises the caller before the entry runs.
+    pub auth: bool,
+}
+
+impl EntryPoint {
+    /// `REST GET /orders/{id}`.
+    pub fn label(&self) -> String {
+        match (self.kind.is_empty(), self.name.is_empty()) {
+            (true, _) => self.name.clone(),
+            (false, true) => self.kind.clone(),
+            (false, false) => format!("{} {}", self.kind, self.name),
+        }
+    }
+}
+
+/// The options of entry-point reachability.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReachOptions {
+    /// An entry-point file is configured. The rules that need entry points
+    /// are silent without one.
+    pub configured: bool,
+    pub entries: Vec<EntryPoint>,
+    /// Routines and include files whose call (or inclusion) authorises the
+    /// rest of a request.
+    pub auth_routines: Vec<String>,
+    /// Routines whose call is a sensitive operation.
+    pub sensitive_calls: Vec<String>,
+    /// A finding reachable from an entry point reports one level more severe.
+    pub raise_reachable: bool,
+    /// A finding no entry point can reach reports one level less severe.
+    pub lower_unreachable: bool,
+}
+
 /// The options of the security rules.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SecurityOptions {
@@ -54,6 +129,13 @@ pub struct SecurityOptions {
     /// Project functions and methods whose result is untrusted.
     pub sources: Vec<String>,
     pub validators: Vec<SecurityValidator>,
+    /// Words that make a request key an identity (`user`, `company`, ...).
+    /// Empty: the built-in list.
+    pub identity_keys: Vec<String>,
+    /// Project functions and methods whose result is an identity the client
+    /// supplied.
+    pub identity_sources: Vec<String>,
+    pub reach: ReachOptions,
 }
 
 impl SecurityOptions {

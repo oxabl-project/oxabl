@@ -272,7 +272,12 @@ pub(crate) fn analyze(
             .map(|(cfg, ir)| unit::solve(cfg, ir, env))
             .collect();
         let mut next = summaries.clone();
-        for (i, (cfg, (ir, sol))) in flow.units().iter().zip(units.iter().zip(&solutions)).enumerate() {
+        for (i, (cfg, (ir, sol))) in flow
+            .units()
+            .iter()
+            .zip(units.iter().zip(&solutions))
+            .enumerate()
+        {
             let i = i as u32;
             if let Some(sol) = sol {
                 unit::contribute(ir, sol, &mut next);
@@ -285,7 +290,14 @@ pub(crate) fn analyze(
             // not what one caller passes.
             let seeded = summaries.seeds.keys().any(|(u, _)| *u == i);
             let own = if seeded {
-                unit::solve(cfg, ir, Env { seeds: false, ..env })
+                unit::solve(
+                    cfg,
+                    ir,
+                    Env {
+                        seeds: false,
+                        ..env
+                    },
+                )
             } else {
                 None
             };
@@ -417,9 +429,7 @@ impl FileTaint {
                 .or_else(|| origins.get(o))
                 .is_some_and(|x| !x.placeholder)
         };
-        let Some(&(origin, _)) = labels
-            .iter()
-            .find(|(o, m)| m & kind.bit() != 0 && real(*o))
+        let Some(&(origin, _)) = labels.iter().find(|(o, m)| m & kind.bit() != 0 && real(*o))
         else {
             return Reach::Clean;
         };

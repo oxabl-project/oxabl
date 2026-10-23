@@ -772,7 +772,8 @@ impl Builder<'_, '_> {
     /// from its tokens.
     fn scan_calls(&mut self, s: &Statement) {
         if !self.c.routines.any_callable()
-            || !crate::rules::syntactic::source_of(self.source, s.span).is_some_and(|t| t.contains('('))
+            || !crate::rules::syntactic::source_of(self.source, s.span)
+                .is_some_and(|t| t.contains('('))
         {
             return;
         }
@@ -1200,7 +1201,11 @@ pub(super) fn refresh_after_runs(
 
 /// What a routine returns and leaves in its output parameters, from a solve
 /// in which its parameters hold only their own origins.
-pub(super) fn summarize(cfg: &Cfg, ir: &UnitIr, solution: Option<&Solution<Provenance>>) -> UnitSummary {
+pub(super) fn summarize(
+    cfg: &Cfg,
+    ir: &UnitIr,
+    solution: Option<&Solution<Provenance>>,
+) -> UnitSummary {
     let params = ir.params.iter().map(|p| p.origin).collect();
     let Some(sol) = solution else {
         return UnitSummary {

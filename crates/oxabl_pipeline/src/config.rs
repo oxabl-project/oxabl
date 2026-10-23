@@ -403,7 +403,24 @@ fn derive(
         .clone()
         .unwrap_or_else(|| config.workspace.style.clone());
 
-    let (lint_severities, rejected_patterns) = config.workspace.lint.to_severity_map_at(root);
+    let (mut lint_severities, rejected_patterns) = config.workspace.lint.to_severity_map_at(root);
+    if let Some(file) = &config.workspace.lint.security.reach.entry_points {
+        let file = anchor_to(root, file);
+        let read = std::fs::read_to_string(&file)
+            .map_err(|e| e.to_string())
+            .and_then(|text| oxabl_workspace::parse_entry_points(&text));
+        match read {
+            Ok(entries) => {
+                let mut security = lint_severities.security().clone();
+                security.reach.entries = entries;
+                lint_severities.set_security(security);
+            }
+            Err(e) => warnings.push(ConfigWarning::Lint(format!(
+                "entry points `{}`: {e}",
+                file.display()
+            ))),
+        }
+    }
     warnings.extend(rejected_patterns.into_iter().map(|r| {
         ConfigWarning::Lint(if r.pattern.is_empty() {
             format!("ignoring override: {}", r.reason)
@@ -745,6 +762,46 @@ mod tests {
                 "lint: unknown sink kind `sqli` for validator `v`",
             ]
         );
+    }
+
+    #[test]
+    fn the_entry_point_file_is_read_relative_to_the_config() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join("security")).unwrap();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.lint.security.reach]\nentry-points = \"security/entries.json\"\n",
+        );
+        write(
+            root,
+            "security/entries.json",
+            r#"{"version": 1, "entries": [{"kind": "REST", "name": "GET /a", "program": "web/a.p"}]}"#,
+        );
+        write(root, "main.p", "");
+        let (config, warnings) =
+            PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let reach = &config.lint_severities.security().reach;
+        assert!(reach.configured);
+        assert_eq!(reach.entries.len(), 1);
+        assert_eq!(reach.entries[0].label(), "REST GET /a");
+
+        write(
+            root,
+            "security/entries.json",
+            r#"{"version": 1, "entries": [{}]}"#,
+        );
+        let (config, warnings) =
+            PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+        let warnings: Vec<String> = warnings.iter().map(|w| w.to_string()).collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("entries.json"), "{warnings:?}");
+        assert!(warnings[0].contains("entry 0"), "{warnings:?}");
+        assert!(config.lint_severities.security().reach.configured);
+        assert!(config.lint_severities.security().reach.entries.is_empty());
     }
 
     #[test]

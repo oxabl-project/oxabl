@@ -101,7 +101,10 @@ pub(super) enum Term {
         args: Vec<Value>,
     },
     /// What the callers of a unit pass to its parameter at this position.
-    Param { unit: u32, pos: u32 },
+    Param {
+        unit: u32,
+        pos: u32,
+    },
     /// Text the analysis cannot read, such as an unexpanded reference.
     Unknown,
 }
@@ -176,7 +179,11 @@ impl Value {
                     provenance::clear(&mut inner, *mask);
                     provenance::merge(out, &inner);
                 }
-                Term::Call { callees, out: o, args } => {
+                Term::Call {
+                    callees,
+                    out: o,
+                    args,
+                } => {
                     unknown |= call_into(callees, *o, args, fact, env, out);
                 }
                 Term::Param { unit, pos } => {

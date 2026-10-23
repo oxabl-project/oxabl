@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use oxabl_common::{
-    LintLayer, LintSeverityMap, ParameterSources, SecurityMode, SecurityOptions, SecurityValidator,
-    Severity,
+    LintLayer, LintSeverityMap, ParameterSources, ReachOptions, SecurityMode, SecurityOptions,
+    SecurityValidator, Severity,
 };
 use oxabl_style::StyleGuide;
 use schemars::JsonSchema;
@@ -297,6 +297,69 @@ pub struct SecurityConfig {
     /// each protects.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub validators: Vec<SecurityValidatorConfig>,
+    /// Words that make a request key a client-supplied identity for
+    /// `client-identity` (ABLSEC010). Empty: `user`, `username`, `userid`,
+    /// `login`, `company`, `tenant`, `role`, `roles`, `owner`, `admin`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub identity_keys: Vec<String>,
+    /// Project functions and methods whose result is an identity the client
+    /// supplied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub identity_sources: Vec<String>,
+    /// Entry-point reachability (`[workspace.lint.security.reach]`).
+    #[serde(skip_serializing_if = "SecurityReachConfig::is_default")]
+    pub reach: SecurityReachConfig,
+}
+
+/// The `[workspace.lint.security.reach]` table: where reachability starts and
+/// what counts as authorisation and as a sensitive operation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SecurityReachConfig {
+    /// The entry-point file (JSON), relative to `oxabl.toml`. Without one,
+    /// findings carry no reachability and the rules that need entry points
+    /// (ABLSEC011, ABLSEC012) are silent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_points: Option<PathBuf>,
+    /// Procedures, functions, methods, programs and include files whose call
+    /// (or inclusion) authorises the rest of the request.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auth_routines: Vec<String>,
+    /// Routines whose call is a sensitive operation, besides database
+    /// writes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sensitive_calls: Vec<String>,
+    /// A security finding reachable from an entry point reports one level
+    /// more severe. Default `false`.
+    pub raise_reachable: bool,
+    /// A security finding that no entry point can reach reports one level
+    /// less severe. Default `false`.
+    pub lower_unreachable: bool,
+}
+
+impl SecurityReachConfig {
+    fn is_default(&self) -> bool {
+        *self == SecurityReachConfig::default()
+    }
+
+    /// Lower to the application form. The entries are read by the caller,
+    /// which knows where the file is.
+    pub fn to_options(&self) -> ReachOptions {
+        let trimmed = |v: &[String]| -> Vec<String> {
+            v.iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        ReachOptions {
+            configured: self.entry_points.is_some(),
+            entries: Vec::new(),
+            auth_routines: trimmed(&self.auth_routines),
+            sensitive_calls: trimmed(&self.sensitive_calls),
+            raise_reachable: self.raise_reachable,
+            lower_unreachable: self.lower_unreachable,
+        }
+    }
 }
 
 impl SecurityConfig {
@@ -332,6 +395,14 @@ impl SecurityConfig {
                         .collect(),
                 })
                 .collect(),
+            identity_keys: self
+                .identity_keys
+                .iter()
+                .map(|k| k.trim().to_ascii_lowercase())
+                .filter(|k| !k.is_empty())
+                .collect(),
+            identity_sources: self.identity_sources.clone(),
+            reach: self.reach.to_options(),
         }
     }
 }
@@ -1017,6 +1088,48 @@ protects = ["Query", "path"]
         assert!(options.database_fields);
         assert_eq!(options.sources, ["read-body"]);
         assert_eq!(options.validators[0].protects, ["query", "path"]);
+    }
+
+    #[test]
+    fn the_reach_table_and_identity_keys_reach_the_lint_map() {
+        let lint = lint_of(
+            r#"
+[workspace.lint]
+enable = ["security"]
+
+[workspace.lint.security]
+identity-keys = ["User", " cono "]
+identity-sources = ["session-user"]
+
+[workspace.lint.security.reach]
+entry-points = "security/entries.json"
+auth-routines = ["check-access", "auth/guard.i"]
+sensitive-calls = ["post-ledger"]
+raise-reachable = true
+"#,
+        );
+        let (map, _) = lint.to_severity_map_at(Path::new("/ws"));
+        let options = map.for_path(Path::new("/ws/a.p")).security().clone();
+        assert_eq!(options.identity_keys, ["user", "cono"]);
+        assert_eq!(options.identity_sources, ["session-user"]);
+        assert!(options.reach.configured);
+        assert!(
+            options.reach.entries.is_empty(),
+            "the caller reads the file"
+        );
+        assert_eq!(
+            options.reach.auth_routines,
+            ["check-access", "auth/guard.i"]
+        );
+        assert_eq!(options.reach.sensitive_calls, ["post-ledger"]);
+        assert!(options.reach.raise_reachable);
+        assert!(!options.reach.lower_unreachable);
+        assert_eq!(
+            lint.security.reach.entry_points.as_deref(),
+            Some(Path::new("security/entries.json"))
+        );
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint.security.reach]\nentry = \"a\"\n";
+        assert!(toml::from_str::<WorkspaceConfig>(toml).is_err());
     }
 
     #[test]
