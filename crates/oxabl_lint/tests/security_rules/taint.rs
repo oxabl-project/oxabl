@@ -575,3 +575,27 @@ OS-COMMAND SILENT VALUE(\"echo \" + sports.Customer.Comments).
     assert_eq!(run_with("ABLSEC001", src, options.clone()).len(), 1);
     assert_eq!(run_with("ABLSEC003", src, options).len(), 1);
 }
+
+#[test]
+fn a_preprocessor_constant_is_a_literal() {
+    let src = "\
+&GLOBAL-DEFINE BACKUP-CMD \"backup.sh --all\"
+DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+c = pc.
+c = {&BACKUP-CMD}.
+OS-COMMAND SILENT VALUE(c).
+OS-COMMAND SILENT VALUE({&BACKUP-CMD} + \" \" + pc).
+";
+    let fs = oxabl_workspace::InMemoryFileSystem::new();
+    let expanded = oxabl_preprocessor::Preprocessor::new(&fs, &[])
+        .process(FileId::new(1), src)
+        .unwrap()
+        .to_text();
+    let diags = check_taint("ABLSEC003", &expanded);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        expanded[diags[0].span.span.start as usize..]
+            .starts_with("VALUE(\"backup.sh --all\" + \" \" + pc)")
+    );
+}
