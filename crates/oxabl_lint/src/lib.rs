@@ -12,6 +12,8 @@
 //! | LINT0004 | `type-mismatch-assignment` | Warning  | Assignment type mismatches / narrowing conversions     |
 //! | LINT0005 | `block-var-used-outside`   | Info     | Block-defined variable read outside its block, unset   |
 //! | LINT0006 | `assigned-but-never-read`  | Warning  | Dead store: written, never read; at the write site      |
+//! | LINT0007 | `invalid-suppression`      | Warning  | `oxabl-ignore` comment with no reason or an unknown rule ([`suppress`]) |
+//! | LINT0008 | `unused-suppression`       | Info     | `oxabl-ignore` comment that suppresses no finding ([`suppress`]) |
 //!
 //! LINT0002 and LINT0006 divide one population — symbols nothing reads — by
 //! whether anything ever wrote to them, so a symbol yields exactly one
@@ -91,6 +93,7 @@ pub mod fragment;
 mod registry;
 mod rules;
 mod shared;
+pub mod suppress;
 
 pub use registry::{
     BUILTIN_GROUPS, BUILTIN_RULES, EffectsFn, FnRule, HandlesFn, NullsFn, Registry, RegistryError,

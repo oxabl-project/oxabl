@@ -25,6 +25,7 @@ use crate::rules::{
     unknown_propagation, unknown_table_or_field, unresolved_call, unused_variable,
 };
 use crate::shared::RunShared;
+use crate::suppress::{self, LINT0007, LINT0008};
 
 /// Names of the built-in rule groups.
 pub mod groups {
@@ -85,6 +86,13 @@ pub struct RuleMeta {
     /// of being dropped. The rule's answer needs the includer: it creates,
     /// names or frees an object that the include alone does not see.
     pub use_site_in_includer: bool,
+    /// Longer remediation text for the rule, for output formats that carry
+    /// rule help. `None` falls back to [`description`](Self::description).
+    pub help: Option<&'static str>,
+    /// The rule's security severity on the 0.0 to 10.0 scale, as a decimal
+    /// string, which is how SARIF carries it. `None` for a rule that is not a
+    /// security rule.
+    pub security_severity: Option<&'static str>,
 }
 
 impl RuleMeta {
@@ -106,6 +114,8 @@ impl RuleMeta {
             requires_compilation_unit: false,
             context_free: false,
             use_site_in_includer: false,
+            help: None,
+            security_severity: None,
         }
     }
 
@@ -131,6 +141,18 @@ impl RuleMeta {
     /// when the include's own run cannot produce them.
     pub const fn reported_at_use_site(mut self) -> Self {
         self.use_site_in_includer = true;
+        self
+    }
+
+    /// Set the rule's help text.
+    pub const fn with_help(mut self, help: &'static str) -> Self {
+        self.help = Some(help);
+        self
+    }
+
+    /// Set the security severity, a decimal string from `"0.0"` to `"10.0"`.
+    pub const fn with_security_severity(mut self, severity: &'static str) -> Self {
+        self.security_severity = Some(severity);
         self
     }
 
@@ -476,6 +498,28 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         .requiring_compilation_unit(),
         assigned_but_never_read::run,
     ),
+    FnRule::new(
+        RuleMeta::new(
+            LINT0007,
+            suppress::INVALID_NAME,
+            groups::DEFAULT,
+            "An `oxabl-ignore` comment with no reason or an unknown rule; it suppresses nothing.",
+        )
+        .with_help(
+            "Write `oxabl-ignore <CODE>: <reason>` with a registered rule code and a reason.",
+        ),
+        no_findings,
+    ),
+    FnRule::new(
+        RuleMeta::new(
+            LINT0008,
+            suppress::UNUSED_NAME,
+            groups::DEFAULT,
+            "An `oxabl-ignore` comment that suppresses no finding.",
+        )
+        .with_default_severity(Severity::Info),
+        no_findings,
+    ),
     strict_rule(
         CL001,
         run_value::NAME,
@@ -708,6 +752,12 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         nullable_db_field::check,
     ),
 ];
+
+/// The run of a rule whose diagnostics come from the suppression pass
+/// ([`suppress`]), which reads comments, not the program.
+fn no_findings(_: &[Statement], _: &Semantic, _: &AnalysisContext) -> Vec<Diagnostic> {
+    Vec::new()
+}
 
 /// A syntactic strict rule: context-free, and in preview until its
 /// false-positive rate on a real corpus is measured.

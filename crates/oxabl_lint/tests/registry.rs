@@ -94,6 +94,8 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
                 Severity::Info
             ),
             ("LINT0006", "assigned-but-never-read", "default", warning),
+            ("LINT0007", "invalid-suppression", "default", warning),
+            ("LINT0008", "unused-suppression", "default", Severity::Info),
             ("CL001", "run-value", "strict.calls", warning),
             ("CL002", "dynamic-invoke", "strict.calls", warning),
             ("CL003", "signature-mismatch", "strict.calls", warning),

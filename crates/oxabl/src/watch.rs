@@ -253,7 +253,9 @@ fn cycle(
 
     let format = FormatPipeline::new(config.style.clone());
     let pass = CheckPass {
-        json_output: false,
+        output: crate::CheckFormat::Text,
+        root: crate::baseline::workspace_root(opts.path, None),
+        severities: &config.lint_severities,
         no_lint: opts.no_lint,
         no_format: opts.no_format,
         include_findings: opts.include_findings,

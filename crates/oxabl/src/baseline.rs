@@ -68,7 +68,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
-use oxabl_analyze::CollectedDiagnostics;
+use oxabl_analyze::{CollectedDiagnostic, CollectedDiagnostics};
 use oxabl_common::Diagnostic;
 use oxabl_pipeline::ROOT_FILE_ID;
 use serde::{Deserialize, Serialize};
@@ -218,6 +218,22 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
+/// The workspace root for a run over `target`: the directory holding
+/// `oxabl.toml`, else the directory of `fallback`, else the target itself.
+pub fn workspace_root(target: &Path, fallback: Option<&Path>) -> PathBuf {
+    let target = absolute(target);
+    let start = if target.is_dir() {
+        target.clone()
+    } else {
+        target.parent().map_or(target.clone(), Path::to_path_buf)
+    };
+    oxabl_workspace::find_workspace_root(&start).unwrap_or_else(|| {
+        fallback
+            .and_then(|f| absolute(f).parent().map(Path::to_path_buf))
+            .unwrap_or(start)
+    })
+}
+
 /// One `check` run's use of a baseline file.
 ///
 /// Shared by the run's worker threads: the file and its entries are read-only,
@@ -249,17 +265,7 @@ impl Run {
             Err(e) if update && e.kind() == std::io::ErrorKind::NotFound => Baseline::default(),
             Err(e) => return Err(format!("cannot read baseline {}: {e}", file.display())),
         };
-        let target = absolute(target);
-        let start = if target.is_dir() {
-            target.clone()
-        } else {
-            target.parent().map_or(target.clone(), Path::to_path_buf)
-        };
-        let root = oxabl_workspace::find_workspace_root(&start).unwrap_or_else(|| {
-            absolute(file)
-                .parent()
-                .map_or_else(|| start.clone(), Path::to_path_buf)
-        });
+        let root = workspace_root(target, Some(file));
         Ok(Run {
             file: file.to_path_buf(),
             update,
@@ -269,23 +275,28 @@ impl Run {
         })
     }
 
-    /// Record the findings of one checked file and keep only those the
-    /// baseline does not cover. With `--update-baseline` nothing is kept: every
-    /// finding is about to be recorded. A file outside the root has no
-    /// baseline path, so all its findings are kept and none is recorded.
-    pub fn filter(
+    /// Record the findings of one checked file. Returns those the baseline
+    /// does not cover, and those it covers. With `--update-baseline` nothing is
+    /// kept: every finding is about to be recorded, and none is covered. A file
+    /// outside the root has no baseline path, so all its findings are kept and
+    /// none is recorded.
+    pub fn split(
         &self,
         file: &Path,
         source: &str,
         mut reported: CollectedDiagnostics,
-    ) -> CollectedDiagnostics {
+    ) -> (CollectedDiagnostics, Vec<CollectedDiagnostic>) {
         let Some(path) = relative_path(&self.root, file) else {
             self.tally().outside_root += reported.diagnostics.len();
-            return reported;
+            return (reported, Vec::new());
         };
         let entries = fingerprint(&path, source, reported.all().map(|c| &c.diagnostic));
-        let mut keep = entries.iter().map(|e| !self.baseline.contains(e));
-        reported.diagnostics.retain(|_| keep.next().unwrap_or(true));
+        let (kept, covered): (Vec<_>, Vec<_>) = std::mem::take(&mut reported.diagnostics)
+            .into_iter()
+            .zip(&entries)
+            .partition(|(_, e)| !self.baseline.contains(e));
+        reported.diagnostics = kept.into_iter().map(|(d, _)| d).collect();
+        let covered: Vec<CollectedDiagnostic> = covered.into_iter().map(|(d, _)| d).collect();
         let new = reported.diagnostics.len();
         {
             let mut tally = self.tally();
@@ -296,8 +307,9 @@ impl Run {
         }
         if self.update {
             reported.diagnostics.clear();
+            return (reported, Vec::new());
         }
-        reported
+        (reported, covered)
     }
 
     fn tally(&self) -> std::sync::MutexGuard<'_, Tally> {
@@ -372,6 +384,13 @@ pub fn fingerprint<'a>(
         .into_iter()
         .map(|e| e.expect("every index is filled"))
         .collect()
+}
+
+/// A stable identity for an entry: the rule, path and flagged text, plus the
+/// occurrence among identical findings. No line number goes in.
+pub fn finding_fingerprint(entry: &Entry) -> String {
+    let id = format!("{}\0{}\0{}", entry.code, entry.path, entry.hash);
+    format!("{:016x}:{}", fnv1a(&id), entry.occurrence)
 }
 
 /// The workspace-relative spelling of `file` under `root`, with `/`, or `None`

@@ -1,0 +1,279 @@
+//! `oxabl check --format sarif`: the run as one SARIF 2.1.0 log.
+//!
+//! The log has one run. `tool.driver.rules` lists every rule of the registry,
+//! plus a bare entry for any other code a result carries (parse errors, for
+//! example). A suppressed finding stays in `results` with an `inSource`
+//! suppression, so a viewer can show it with its reason.
+//!
+//! Columns count UTF-16 code units, which is the SARIF default.
+
+use oxabl_lint::{Registry, Rule};
+use serde_json::{Map, Value, json};
+
+const INFORMATION_URI: &str = "https://github.com/oxabl-project/oxabl";
+
+/// A finding's location in the checked file. All numbers are 1-based; the end
+/// column is the one after the last character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub start_line: usize,
+    pub start_column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+}
+
+impl Region {
+    /// The region of byte span `start..end` in `source`.
+    pub fn of_span(source: &str, start: u32, end: u32) -> Region {
+        let (start_line, start_column) = locate(source, start as usize);
+        let (end_line, end_column) = locate(source, (end as usize).max(start as usize));
+        Region {
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+        }
+    }
+}
+
+/// 1-based line and UTF-16 column of byte offset `at`.
+fn locate(source: &str, at: usize) -> (usize, usize) {
+    let mut at = at.min(source.len());
+    while !source.is_char_boundary(at) {
+        at -= 1;
+    }
+    let before = &source[..at];
+    let line = before.matches('\n').count() + 1;
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    let column = before[line_start..].encode_utf16().count() + 1;
+    (line, column)
+}
+
+/// One `results[]` entry.
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub rule_id: String,
+    pub severity: &'static str,
+    pub text: String,
+    pub uri: String,
+    pub region: Option<Region>,
+    pub fingerprint: String,
+    /// `new` or `unchanged`, set only when a baseline is in use.
+    pub baseline_state: Option<&'static str>,
+    /// The reason of the `oxabl-ignore` comment that suppresses the finding.
+    pub suppressed: Option<String>,
+}
+
+/// A run-level problem that is not a finding: a file that failed, or one that
+/// would be reformatted.
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub level: &'static str,
+    pub text: String,
+}
+
+/// The SARIF `level` for a diagnostic severity.
+pub fn level(severity: &str) -> &'static str {
+    match severity {
+        "error" => "error",
+        "warning" => "warning",
+        _ => "note",
+    }
+}
+
+/// A relative URI for a `/`-separated path: bytes outside the unreserved set
+/// are percent-encoded.
+pub fn uri(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.replace('\\', "/").bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn rule_descriptor(rule: &dyn Rule) -> Value {
+    let meta = rule.meta();
+    let mut tags = vec![Value::from(meta.group)];
+    if meta.stability == oxabl_lint::Stability::Preview {
+        tags.push(Value::from("preview"));
+    }
+    let mut properties = Map::new();
+    properties.insert("tags".into(), Value::Array(tags));
+    if let Some(severity) = meta.security_severity {
+        properties.insert("security-severity".into(), Value::from(severity));
+    }
+    json!({
+        "id": meta.code,
+        "name": meta.name,
+        "shortDescription": { "text": meta.description },
+        "help": { "text": meta.help.unwrap_or(meta.description) },
+        "defaultConfiguration": { "level": level(meta.default_severity.as_str()) },
+        "properties": Value::Object(properties),
+    })
+}
+
+fn result(finding: &Finding) -> Value {
+    let mut physical = Map::new();
+    physical.insert(
+        "artifactLocation".into(),
+        json!({ "uri": finding.uri, "uriBaseId": "%SRCROOT%" }),
+    );
+    if let Some(r) = finding.region {
+        physical.insert(
+            "region".into(),
+            json!({
+                "startLine": r.start_line,
+                "startColumn": r.start_column,
+                "endLine": r.end_line,
+                "endColumn": r.end_column,
+            }),
+        );
+    }
+    let mut out = json!({
+        "ruleId": finding.rule_id,
+        "level": finding.severity,
+        "message": { "text": finding.text },
+        "locations": [{ "physicalLocation": Value::Object(physical) }],
+        "partialFingerprints": { "oxablFinding/v1": finding.fingerprint },
+    });
+    if let Some(state) = finding.baseline_state {
+        out["baselineState"] = state.into();
+    }
+    if let Some(reason) = &finding.suppressed {
+        out["suppressions"] = json!([{ "kind": "inSource", "justification": reason }]);
+    }
+    out
+}
+
+/// The log for `findings`, with rules from `registry`.
+pub fn document(
+    registry: &Registry,
+    findings: &[Finding],
+    notifications: &[Notification],
+) -> Value {
+    let mut rules: Vec<Value> = registry.rules().map(rule_descriptor).collect();
+    let mut extra: Vec<&str> = Vec::new();
+    for f in findings {
+        let known = registry.rules().any(|r| r.meta().code == f.rule_id);
+        if !known && !extra.contains(&f.rule_id.as_str()) {
+            extra.push(&f.rule_id);
+        }
+    }
+    extra.sort_unstable();
+    rules.extend(extra.into_iter().map(|id| {
+        json!({
+            "id": id,
+            "shortDescription": { "text": id },
+            "defaultConfiguration": { "level": "error" },
+            "properties": { "tags": ["core"] },
+        })
+    }));
+
+    let mut invocation = json!({
+        "executionSuccessful": !notifications.iter().any(|n| n.level == "error"),
+    });
+    if !notifications.is_empty() {
+        invocation["toolExecutionNotifications"] = notifications
+            .iter()
+            .map(|n| json!({ "level": n.level, "message": { "text": n.text } }))
+            .collect();
+    }
+
+    json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": { "driver": {
+                "name": "oxabl",
+                "version": env!("CARGO_PKG_VERSION"),
+                "informationUri": INFORMATION_URI,
+                "rules": rules,
+            } },
+            "columnKind": "utf16CodeUnits",
+            "invocations": [invocation],
+            "results": findings.iter().map(result).collect::<Vec<_>>(),
+        }],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxabl_common::Severity;
+    use oxabl_lint::{FnRule, RuleMeta};
+
+    fn none(
+        _: &[oxabl_ast::Statement],
+        _: &oxabl_semantic::Semantic,
+        _: &oxabl_semantic::AnalysisContext,
+    ) -> Vec<oxabl_common::Diagnostic> {
+        Vec::new()
+    }
+
+    #[test]
+    fn a_rule_with_a_security_severity_carries_it_and_others_do_not() {
+        let mut registry = Registry::empty();
+        registry
+            .register(FnRule::new(
+                RuleMeta::new("SEC001", "sec-rule", "default", "A security rule.")
+                    .with_default_severity(Severity::Error)
+                    .with_help("Use the safe pattern.")
+                    .with_security_severity("9.1"),
+                none,
+            ))
+            .unwrap();
+        registry
+            .register(FnRule::new(
+                RuleMeta::new("PLAIN01", "plain-rule", "default", "A plain rule."),
+                none,
+            ))
+            .unwrap();
+        let doc = document(&registry, &[], &[]);
+        let rules = doc["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rules[0]["properties"]["security-severity"], "9.1");
+        assert_eq!(rules[0]["help"]["text"], "Use the safe pattern.");
+        assert_eq!(rules[0]["defaultConfiguration"]["level"], "error");
+        assert!(rules[1]["properties"].get("security-severity").is_none());
+        assert_eq!(rules[1]["help"]["text"], "A plain rule.");
+    }
+
+    #[test]
+    fn a_code_outside_the_registry_gets_a_bare_rule() {
+        let finding = Finding {
+            rule_id: "PARSE001".into(),
+            severity: "error",
+            text: "bad".into(),
+            uri: "a.p".into(),
+            region: None,
+            fingerprint: "x".into(),
+            baseline_state: None,
+            suppressed: None,
+        };
+        let doc = document(&Registry::empty(), &[finding], &[]);
+        let rules = doc["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rules[0]["id"], "PARSE001");
+    }
+
+    #[test]
+    fn columns_count_utf16_units_and_lines_start_at_one() {
+        let src = "a\nb\u{1F600}c\n";
+        let at = src.find('c').unwrap() as u32;
+        let r = Region::of_span(src, at, at + 1);
+        assert_eq!((r.start_line, r.start_column), (2, 4));
+        assert_eq!((r.end_line, r.end_column), (2, 5));
+    }
+
+    #[test]
+    fn a_uri_is_percent_encoded() {
+        assert_eq!(uri("src/my file#1.p"), "src/my%20file%231.p");
+        assert_eq!(uri("src\\a.p"), "src/a.p");
+    }
+}
