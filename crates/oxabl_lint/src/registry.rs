@@ -245,6 +245,7 @@ enum Body {
     NullFields(NullsFn),
     Shared(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
     Calls(fn(&[Statement], &Semantic, &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
+    Security(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
 }
 
 /// A [`Rule`] made of metadata and a plain function — how every built-in rule
@@ -299,6 +300,18 @@ impl FnRule {
         FnRule {
             meta,
             body: Body::Nulls(check),
+        }
+    }
+
+    /// Pair `meta` with a security rule that may read the file's taint
+    /// facts ([`RunShared`]), which one registry run computes once.
+    pub(crate) const fn security(
+        meta: RuleMeta,
+        check: fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>,
+    ) -> Self {
+        FnRule {
+            meta,
+            body: Body::Security(check),
         }
     }
 
@@ -359,6 +372,7 @@ impl Rule for FnRule {
         match self.body {
             Body::Shared(check) => check(program, ctx, shared),
             Body::Calls(check) => check(program, sem, ctx, shared),
+            Body::Security(check) => check(program, ctx, shared),
             Body::Plain(run) => run(program, sem, ctx),
             Body::Handles(check) => check(shared.handles(program, ctx), ctx),
             Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
@@ -764,20 +778,20 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         nullable_db_field::check,
     ),
     // Security, stage 1: sink rules.
-    FnRule::new(dynamic_query::META, dynamic_query::run),
-    FnRule::new(foreign_sql::META, foreign_sql::run),
-    FnRule::new(os_command::META, os_command::run),
-    FnRule::new(dynamic_code::META, dynamic_code::run),
-    FnRule::new(path_traversal::META, path_traversal::run),
+    FnRule::security(dynamic_query::META, dynamic_query::check),
+    FnRule::security(foreign_sql::META, foreign_sql::check),
+    FnRule::security(os_command::META, os_command::check),
+    FnRule::security(dynamic_code::META, dynamic_code::check),
+    FnRule::security(path_traversal::META, path_traversal::check),
     // Security, ABLSEC006 to ABLSEC009 and ABLSEC013 to ABLSEC017.
-    FnRule::new(xss_output::META, xss_output::run),
-    FnRule::new(header_injection::META, header_injection::run),
+    FnRule::security(xss_output::META, xss_output::check),
+    FnRule::security(header_injection::META, header_injection::check),
     FnRule::new(hardcoded_secret::META, hardcoded_secret::run),
     FnRule::new(weak_crypto::META, weak_crypto::run),
     FnRule::new(information_leak::META, information_leak::run),
-    FnRule::new(unsafe_deserialization::META, unsafe_deserialization::run),
-    FnRule::new(untrusted_xml::META, untrusted_xml::run),
-    FnRule::new(resource_exhaustion::META, resource_exhaustion::run),
+    FnRule::security(unsafe_deserialization::META, unsafe_deserialization::check),
+    FnRule::security(untrusted_xml::META, untrusted_xml::check),
+    FnRule::security(resource_exhaustion::META, resource_exhaustion::check),
     FnRule::new(integrity_bypass::META, integrity_bypass::run),
     // Security, ABLSEC010 and later: add entries below this line.
 ];

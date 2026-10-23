@@ -92,6 +92,7 @@ pub mod names;
 pub mod os_command;
 pub mod path_traversal;
 pub mod resource_exhaustion;
+pub mod taint;
 pub mod unsafe_deserialization;
 pub mod untrusted_xml;
 pub mod weak_crypto;

@@ -58,9 +58,11 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant, is_text_read, mentions};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC001, finding, meta};
 use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "dynamic-query";
@@ -99,8 +101,14 @@ fn sink_method(name: &str) -> Option<&'static str> {
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
     let mut v = DynamicQueries {
         ctx,
+        gate: Gate::new(ABLSEC001, NAME, program, ctx, shared),
         diags: Vec::new(),
     };
     walk_block(&mut v, program);
@@ -109,19 +117,24 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 struct DynamicQueries<'a> {
     ctx: &'a AnalysisContext<'a>,
+    gate: Gate<'a>,
     diags: Vec<Diagnostic>,
 }
 
 impl DynamicQueries<'_> {
-    fn report(&mut self, span: Span, what: &str) {
-        self.diags.push(finding(
+    fn report(&mut self, span: Span, what: &str, operand: Span) {
+        let Some(j) = self.gate.judge(&[operand], SinkKind::Query) else {
+            return;
+        };
+        let d = finding(
             self.ctx,
             DEFAULT_SEVERITY,
             ABLSEC001,
             span,
-            format!("`{what}` takes a query built from a non-literal value"),
+            format!("`{what}` takes a query built from {}", j.subject),
             HELP,
-        ));
+        );
+        self.diags.push(j.attach(d));
     }
 
     fn assignment(&mut self, stmt: &Statement, target: &Expression, value: &Expression) {
@@ -130,7 +143,7 @@ impl DynamicQueries<'_> {
             && !is_constant(value)
         {
             let span = cover(target.span, value.span, stmt.span);
-            self.report(span, "FILL-WHERE-STRING");
+            self.report(span, "FILL-WHERE-STRING", value.span);
         }
     }
 
@@ -156,7 +169,7 @@ impl DynamicQueries<'_> {
                 && !st.is_constant(first.clone())
                 && let Some(close) = st.close_of(i + 2)
             {
-                self.report(st.span(i + 1..close + 1), method);
+                self.report(st.span(i + 1..close + 1), method, st.span(first));
             }
         }
     }
@@ -188,7 +201,7 @@ impl Visitor for DynamicQueries<'_> {
             && let Some(first) = arguments.first()
             && !is_constant(first)
         {
-            self.report(cover(method.span, expr.span, expr.span), name);
+            self.report(cover(method.span, expr.span, expr.span), name, first.span);
         }
     }
 }

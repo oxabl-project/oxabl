@@ -63,9 +63,11 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::calls::{Site, constant, last_name, scan};
 use super::literal::cover;
+use super::taint::{Gate, SinkKind};
 use super::web::{is_body_write, is_response, stream_write};
 use super::{ABLSEC006, finding, meta};
 use crate::registry::RuleMeta;
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "xss-output";
@@ -95,16 +97,26 @@ pub const META: RuleMeta = meta(
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
+    let gate = Gate::new(ABLSEC006, NAME, program, ctx, shared);
     let mut diags = Vec::new();
-    let mut report = |span: Span, what: &str| {
-        diags.push(finding(
+    let mut report = |span: Span, what: &str, operands: &[Span]| {
+        let Some(j) = gate.judge(operands, SinkKind::Html) else {
+            return;
+        };
+        let d = finding(
             ctx,
             DEFAULT_SEVERITY,
             ABLSEC006,
             span,
-            format!("`{what}` writes a non-literal value to the response body"),
+            format!("`{what}` writes {} to the response body", j.subject),
             HELP,
-        ));
+        );
+        diags.push(j.attach(d));
     };
     scan(ctx, program, &["Write"], &mut |site| match site {
         Site::Statement(stmt) => {
@@ -115,7 +127,11 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
                     } else {
                         "{&OUT}"
                     };
-                    report(write.text.span(0..write.text.len()), what);
+                    report(
+                        write.text.span(0..write.text.len()),
+                        what,
+                        &[write.text.span(write.args.clone())],
+                    );
                 }
             } else {
                 match &stmt.kind {
@@ -132,8 +148,10 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
             }
         }
         Site::Call(call) => {
-            if is_body_write(&call) && call.args.first().is_some_and(|a| !a.constant) {
-                report(call.span, "Write");
+            if is_body_write(&call)
+                && let Some(first) = call.args.first().filter(|a| !a.constant)
+            {
+                report(call.span, "Write", &[first.span]);
             }
         }
     });
@@ -146,7 +164,7 @@ fn entity(
     stmt: &Statement,
     target: &Expression,
     value: &Expression,
-    report: &mut impl FnMut(Span, &str),
+    report: &mut impl FnMut(Span, &str, &[Span]),
 ) {
     if let ExpressionKind::MemberAccess { object, member } = &target.kind
         && member.name.eq_ignore_ascii_case("Entity")
@@ -154,7 +172,11 @@ fn entity(
         && !constant(value)
         && !is_json_model(value)
     {
-        report(cover(target.span, value.span, stmt.span), "Entity");
+        report(
+            cover(target.span, value.span, stmt.span),
+            "Entity",
+            &[value.span],
+        );
     }
 }
 

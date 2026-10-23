@@ -29,13 +29,15 @@
 //! parser has no types. `SAX-PARSE-NEXT` continues a parse and is not reported.
 //! `READ-XML` on a dataset or temp-table is not reported.
 
-use oxabl_ast::Statement;
+use oxabl_ast::{Span, Statement};
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::calls::{Call, CallKind, Site, scan};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC015, finding, meta};
 use crate::registry::RuleMeta;
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "untrusted-xml";
@@ -69,20 +71,39 @@ const SOURCES: [&str; 3] = ["file", "memptr", "longchar"];
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
+    let gate = Gate::new(ABLSEC015, NAME, program, ctx, shared);
     let mut diags = Vec::new();
     scan(ctx, program, &["LOAD", "SAX-PARSE"], &mut |site| {
-        if let Site::Call(call) = site
-            && let Some(what) = sink(&call)
-        {
-            diags.push(finding(
-                ctx,
-                DEFAULT_SEVERITY,
-                ABLSEC015,
-                call.span,
-                format!("`{what}` parses XML that may come from outside; review entity handling"),
-                HELP,
-            ));
-        }
+        let Site::Call(call) = site else {
+            return;
+        };
+        let Some(what) = sink(&call) else {
+            return;
+        };
+        // `SAX-PARSE` reads a source set elsewhere: it stays a review.
+        let operands: Vec<Span> = (what == "LOAD")
+            .then(|| call.args.get(1).map(|a| a.span))
+            .flatten()
+            .into_iter()
+            .collect();
+        let Some(j) = gate.judge(&operands, SinkKind::Xml) else {
+            return;
+        };
+        let message = if j.tainted {
+            format!(
+                "`{what}` parses XML from {}; review entity handling",
+                j.subject
+            )
+        } else {
+            format!("`{what}` parses XML that may come from outside; review entity handling")
+        };
+        let d = finding(ctx, DEFAULT_SEVERITY, ABLSEC015, call.span, message, HELP);
+        diags.push(j.attach(d));
     });
     diags
 }

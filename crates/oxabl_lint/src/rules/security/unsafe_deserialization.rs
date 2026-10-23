@@ -45,8 +45,10 @@ use oxabl_common::{Diagnostic, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::calls::{Site, scan};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC014, finding, meta};
 use crate::registry::RuleMeta;
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "unsafe-deserialization";
@@ -76,20 +78,28 @@ pub const META: RuleMeta = meta(
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
+    let gate = Gate::new(ABLSEC014, NAME, program, ctx, shared);
     let mut diags = Vec::new();
     scan(ctx, program, &["Deserialize"], &mut |site| {
         if let Site::Call(call) = site
             && call.is("Deserialize")
-            && call.args.first().is_some_and(|a| !a.constant)
+            && let Some(first) = call.args.first().filter(|a| !a.constant)
+            && let Some(j) = gate.judge(&[first.span], SinkKind::Deserialize)
         {
-            diags.push(finding(
+            let d = finding(
                 ctx,
                 DEFAULT_SEVERITY,
                 ABLSEC014,
                 call.span,
-                "`Deserialize` rebuilds objects from a non-literal value".to_string(),
+                format!("`Deserialize` rebuilds objects from {}", j.subject),
                 HELP,
-            ));
+            );
+            diags.push(j.attach(d));
         }
     });
     diags

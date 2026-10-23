@@ -65,11 +65,13 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant, is_text_read, mentions};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC004, finding, meta};
 use crate::registry::RuleMeta;
 use crate::rules::dynamic_invoke::dynamic_name;
 use crate::rules::run_value::dynamic_target;
 use crate::rules::syntactic::{Visitor, walk_block};
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "dynamic-code";
@@ -101,8 +103,14 @@ pub const META: RuleMeta = meta(
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
     let mut v = DynamicCode {
         ctx,
+        gate: Gate::new(ABLSEC004, NAME, program, ctx, shared),
         diags: Vec::new(),
     };
     walk_block(&mut v, program);
@@ -139,19 +147,24 @@ fn is_class_type(expr: &Expression) -> bool {
 
 struct DynamicCode<'a> {
     ctx: &'a AnalysisContext<'a>,
+    gate: Gate<'a>,
     diags: Vec<Diagnostic>,
 }
 
 impl DynamicCode<'_> {
-    fn report(&mut self, span: Span, what: &str) {
-        self.diags.push(finding(
+    fn report(&mut self, span: Span, what: &str, operands: &[Span]) {
+        let Some(j) = self.gate.judge(operands, SinkKind::Code) else {
+            return;
+        };
+        let d = finding(
             self.ctx,
             DEFAULT_SEVERITY,
             ABLSEC004,
             span,
-            format!("`{what}` runs code chosen by a non-literal value"),
+            format!("`{what}` runs code chosen by {}", j.subject),
             HELP,
-        ));
+        );
+        self.diags.push(j.attach(d));
     }
 
     fn assignment(&mut self, stmt: &Statement, target: &Expression, value: &Expression) {
@@ -160,18 +173,18 @@ impl DynamicCode<'_> {
             && !is_constant(value)
         {
             let span = cover(target.span, value.span, stmt.span);
-            self.report(span, "CALL-NAME");
+            self.report(span, "CALL-NAME", &[value.span]);
         }
     }
 
     /// Report the argument at `index` of the call whose `(` is at `open`.
     fn token_call(&mut self, st: &StatementText, open: usize, index: usize, what: &str) {
         if let Some(arg) = st.call_args(open).into_iter().nth(index)
-            && !st.is_constant(arg)
+            && !st.is_constant(arg.clone())
             && let Some(close) = st.close_of(open)
         {
             // From the keyword before `(` to the closing parenthesis.
-            self.report(st.span(open - 1..close + 1), what);
+            self.report(st.span(open - 1..close + 1), what, &[st.span(arg)]);
         }
     }
 
@@ -188,7 +201,11 @@ impl DynamicCode<'_> {
             && let Some(operand) = st.value_operands(1..st.len()).into_iter().next()
             && !st.is_constant(operand.clone())
         {
-            self.report(st.span(operand.start - 2..operand.end + 1), "COMPILE VALUE");
+            self.report(
+                st.span(operand.start - 2..operand.end + 1),
+                "COMPILE VALUE",
+                &[st.span(operand)],
+            );
         }
         for i in 0..st.len() {
             if let Some(canonical) = dynamic_name(st.word(i))
@@ -224,7 +241,7 @@ impl DynamicCode<'_> {
         if let Some(operand) = operand
             && !st.is_constant(operand.clone())
         {
-            self.report(st.span(i..operand.end), canonical);
+            self.report(st.span(i..operand.end), canonical, &[st.span(operand)]);
         }
     }
 }
@@ -238,7 +255,7 @@ impl Visitor for DynamicCode<'_> {
                     start: stmt.span.start,
                     end: target.span.end.max(stmt.span.start),
                 };
-                self.report(span, "RUN VALUE");
+                self.report(span, "RUN VALUE", &[target.span]);
             }
             return true;
         }
@@ -266,7 +283,7 @@ impl Visitor for DynamicCode<'_> {
                     && let Some(arg) = arguments.get(index)
                     && !is_constant(arg)
                 {
-                    self.report(expr.span, canonical);
+                    self.report(expr.span, canonical, &[arg.span]);
                 }
             }
             ExpressionKind::MethodCall {
@@ -277,7 +294,11 @@ impl Visitor for DynamicCode<'_> {
                 if let Some(arg) = arguments.first()
                     && !is_constant(arg)
                 {
-                    self.report(cover(method.span, expr.span, expr.span), "Class:GetClass");
+                    self.report(
+                        cover(method.span, expr.span, expr.span),
+                        "Class:GetClass",
+                        &[arg.span],
+                    );
                 }
             }
             _ => {}

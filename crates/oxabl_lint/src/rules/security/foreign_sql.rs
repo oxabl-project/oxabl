@@ -45,9 +45,11 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC002, finding, meta};
 use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "foreign-sql";
@@ -92,8 +94,14 @@ const SQL_CLASSES: [&str; 12] = [
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
     let mut v = ForeignSql {
         ctx,
+        gate: Gate::new(ABLSEC002, NAME, program, ctx, shared),
         diags: Vec::new(),
     };
     walk_block(&mut v, program);
@@ -102,19 +110,24 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 struct ForeignSql<'a> {
     ctx: &'a AnalysisContext<'a>,
+    gate: Gate<'a>,
     diags: Vec<Diagnostic>,
 }
 
 impl ForeignSql<'_> {
-    fn report(&mut self, span: Span, what: &str) {
-        self.diags.push(finding(
+    fn report(&mut self, span: Span, what: &str, operands: &[Span]) {
+        let Some(j) = self.gate.judge(operands, SinkKind::Sql) else {
+            return;
+        };
+        let d = finding(
             self.ctx,
             DEFAULT_SEVERITY,
             ABLSEC002,
             span,
-            format!("`{what}` takes SQL text built from a non-literal value"),
+            format!("`{what}` takes SQL text built from {}", j.subject),
             HELP,
-        ));
+        );
+        self.diags.push(j.attach(d));
     }
 
     fn scan_send_sql(&mut self, stmt: &Statement) {
@@ -141,7 +154,11 @@ impl ForeignSql<'_> {
                 value.start += 2;
             }
             if !st.is_constant(value.clone()) {
-                self.report(st.span(lead..value.end), "send-sql-statement");
+                self.report(
+                    st.span(lead..value.end),
+                    "send-sql-statement",
+                    &[st.span(value.clone())],
+                );
             }
         }
     }
@@ -152,7 +169,7 @@ impl ForeignSql<'_> {
             && !is_constant(value)
         {
             let span = cover(target.span, value.span, stmt.span);
-            self.report(span, "CommandText");
+            self.report(span, "CommandText", &[value.span]);
         }
     }
 }
@@ -187,7 +204,7 @@ impl Visitor for ForeignSql<'_> {
             && let Some(first) = arguments.first()
             && !is_constant(first)
         {
-            self.report(expr.span, class);
+            self.report(expr.span, class, &[first.span]);
         }
     }
 }

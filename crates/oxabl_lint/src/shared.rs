@@ -29,6 +29,7 @@ pub struct RunShared<'a> {
     nulls: OnceCell<FileNulls>,
     null_values: OnceCell<FileNulls>,
     null_fields: OnceCell<FileNulls>,
+    taint: OnceCell<crate::rules::security::taint::FileTaint>,
 }
 
 /// Answers in expanded byte coordinates. Missing and partial answers are Unknown.
@@ -168,7 +169,24 @@ impl<'a> RunShared<'a> {
             .get_or_init(|| oxabl_lexer::tokenize(ctx.source))
     }
 
-    fn flow(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileFlow {
+    /// The taint facts of the file, analysed once under the context's
+    /// security options.
+    pub(crate) fn taint(
+        &self,
+        program: &[Statement],
+        ctx: &AnalysisContext,
+    ) -> &crate::rules::security::taint::FileTaint {
+        self.taint.get_or_init(|| {
+            crate::rules::security::taint::analyze(
+                program,
+                ctx.source,
+                self.flow(program, ctx),
+                ctx.lint_severities.security(),
+            )
+        })
+    }
+
+    pub(crate) fn flow(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileFlow {
         self.flow.get_or_init(|| {
             oxabl_flow::build_file_tokens(
                 program,

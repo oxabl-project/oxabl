@@ -58,9 +58,11 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::calls::{CallKind, Site, scan};
 use super::literal::{StatementText, cover};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC016, finding, meta};
 use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "resource-exhaustion";
@@ -92,19 +94,27 @@ pub const META: RuleMeta = meta(
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
     let mut batch = BatchSize::default();
     walk_block(&mut batch, program);
 
+    let gate = Gate::new(ABLSEC016, NAME, program, ctx, shared);
     let mut diags = Vec::new();
-    let mut report = |span: Span, message: &str| {
-        diags.push(finding(
-            ctx,
-            DEFAULT_SEVERITY,
-            ABLSEC016,
-            span,
-            message.to_string(),
-            HELP,
-        ));
+    let mut report = |span: Span, message: &str, operands: &[Span]| {
+        let Some(j) = gate.judge(operands, SinkKind::Size) else {
+            return;
+        };
+        let message = if j.tainted {
+            format!("{message}: it comes from {}", j.subject)
+        } else {
+            message.to_string()
+        };
+        let d = finding(ctx, DEFAULT_SEVERITY, ABLSEC016, span, message, HELP);
+        diags.push(j.attach(d));
     };
     socket_reads(ctx.source, &mut report);
     scan(ctx, program, &["FILL"], &mut |site| match site {
@@ -128,6 +138,7 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
                 report(
                     call.span,
                     "`FILL` reads every row: no `BATCH-SIZE` is set in this file",
+                    &[],
                 );
             }
         }
@@ -153,7 +164,7 @@ fn set_size(
     stmt: &Statement,
     target: &Expression,
     value: &Expression,
-    report: &mut impl FnMut(Span, &str),
+    report: &mut impl FnMut(Span, &str, &[Span]),
 ) {
     if let ExpressionKind::FunctionCall { name, .. } = &target.kind
         && name.name.eq_ignore_ascii_case("SET-SIZE")
@@ -162,6 +173,7 @@ fn set_size(
         report(
             cover(target.span, value.span, stmt.span),
             "`SET-SIZE` allocates a buffer whose size is not a literal",
+            &[value.span],
         );
     }
 }
@@ -199,7 +211,7 @@ impl Visitor for BatchSize {
 }
 
 /// Report each `:READ(buffer, offset, bytes, ...)` whose `bytes` has no cap.
-fn socket_reads(source: &str, report: &mut impl FnMut(Span, &str)) {
+fn socket_reads(source: &str, report: &mut impl FnMut(Span, &str, &[Span])) {
     if !source
         .as_bytes()
         .windows(5)
@@ -241,6 +253,7 @@ fn socket_reads(source: &str, report: &mut impl FnMut(Span, &str)) {
             report(
                 st.span(i..close + 1),
                 "`READ` takes a byte count that is not a literal and has no cap",
+                &[st.span(bytes.clone())],
             );
         }
     }

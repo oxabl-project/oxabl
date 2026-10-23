@@ -49,9 +49,11 @@ use oxabl_common::{Diagnostic, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, leading_word};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC003, finding, meta};
 use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "os-command";
@@ -81,8 +83,14 @@ pub const META: RuleMeta = meta(
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
     let mut v = OsCommands {
         ctx,
+        gate: Gate::new(ABLSEC003, NAME, program, ctx, shared),
         diags: Vec::new(),
     };
     walk_block(&mut v, program);
@@ -91,19 +99,24 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 struct OsCommands<'a> {
     ctx: &'a AnalysisContext<'a>,
+    gate: Gate<'a>,
     diags: Vec<Diagnostic>,
 }
 
 impl OsCommands<'_> {
-    fn report(&mut self, span: Span, what: &str) {
-        self.diags.push(finding(
+    fn report(&mut self, span: Span, what: &str, operands: &[Span]) {
+        let Some(j) = self.gate.judge(operands, SinkKind::Command) else {
+            return;
+        };
+        let d = finding(
             self.ctx,
             DEFAULT_SEVERITY,
             ABLSEC003,
             span,
-            format!("`{what}` runs a command built from a non-literal value"),
+            format!("`{what}` runs a command built from {}", j.subject),
             HELP,
-        ));
+        );
+        self.diags.push(j.attach(d));
     }
 
     /// Report each non-literal `VALUE(...)` operand after the first token, up
@@ -115,7 +128,11 @@ impl OsCommands<'_> {
         for operand in st.value_operands(1..end) {
             if !st.is_constant(operand.clone()) {
                 // From `VALUE` to its closing parenthesis.
-                self.report(st.span(operand.start - 2..operand.end + 1), what);
+                self.report(
+                    st.span(operand.start - 2..operand.end + 1),
+                    what,
+                    &[st.span(operand)],
+                );
             }
         }
     }

@@ -58,9 +58,11 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant, leading_word};
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC005, finding, meta};
 use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "path-traversal";
@@ -106,8 +108,14 @@ const COPY_LOB_CLAUSES: [&str; 9] = [
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
     let mut v = Paths {
         ctx,
+        gate: Gate::new(ABLSEC005, NAME, program, ctx, shared),
         diags: Vec::new(),
     };
     walk_block(&mut v, program);
@@ -139,19 +147,24 @@ fn is_file_info(expr: &Expression) -> bool {
 
 struct Paths<'a> {
     ctx: &'a AnalysisContext<'a>,
+    gate: Gate<'a>,
     diags: Vec<Diagnostic>,
 }
 
 impl Paths<'_> {
-    fn report(&mut self, span: Span, what: &str) {
-        self.diags.push(finding(
+    fn report(&mut self, span: Span, what: &str, operands: &[Span]) {
+        let Some(j) = self.gate.judge(operands, SinkKind::Path) else {
+            return;
+        };
+        let d = finding(
             self.ctx,
             DEFAULT_SEVERITY,
             ABLSEC005,
             span,
-            format!("`{what}` takes a file path built from a non-literal value"),
+            format!("`{what}` takes a file path built from {}", j.subject),
             HELP,
-        ));
+        );
+        self.diags.push(j.attach(d));
     }
 
     fn assignment(&mut self, stmt: &Statement, target: &Expression, value: &Expression) {
@@ -161,7 +174,7 @@ impl Paths<'_> {
             && !is_constant(value)
         {
             let span = cover(target.span, value.span, stmt.span);
-            self.report(span, "FILE-INFO:FILE-NAME");
+            self.report(span, "FILE-INFO:FILE-NAME", &[value.span]);
         }
     }
 
@@ -177,7 +190,7 @@ impl Paths<'_> {
             } else {
                 stmt.span
             };
-            self.report(span, what);
+            self.report(span, what, &[path.span]);
         }
     }
 
@@ -200,7 +213,7 @@ impl Paths<'_> {
                 })
                 .unwrap_or(st.len());
             if i + 1 < end && !st.is_constant(i + 1..end) {
-                self.report(st.span(i..end), "COPY-LOB FILE");
+                self.report(st.span(i..end), "COPY-LOB FILE", &[st.span(i + 1..end)]);
             }
         }
     }
@@ -219,7 +232,11 @@ impl Paths<'_> {
             for operand in st.value_operands(1..st.len()) {
                 if !st.is_constant(operand.clone()) {
                     // From `VALUE` to its closing parenthesis.
-                    self.report(st.span(operand.start - 2..operand.end + 1), &word);
+                    self.report(
+                        st.span(operand.start - 2..operand.end + 1),
+                        &word,
+                        &[st.span(operand)],
+                    );
                 }
             }
         } else if word == "COPY-LOB" {

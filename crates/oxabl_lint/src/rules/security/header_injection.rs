@@ -55,8 +55,10 @@ use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::calls::{Arg, Call, CallKind, Site, arg_of, scan};
 use super::literal::cover;
+use super::taint::{Gate, SinkKind};
 use super::{ABLSEC007, finding, meta};
 use crate::registry::RuleMeta;
+use crate::shared::RunShared;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "header-injection";
@@ -112,16 +114,26 @@ fn dynamic(arg: &Arg) -> bool {
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    check(program, ctx, &RunShared::default())
+}
+
+/// [`run`] with the facts of a registry run.
+pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
+    let gate = Gate::new(ABLSEC007, NAME, program, ctx, shared);
     let mut diags = Vec::new();
-    let mut report = |span: Span, what: &str| {
-        diags.push(finding(
+    let mut report = |span: Span, what: &str, operands: &[Span]| {
+        let Some(j) = gate.judge(operands, SinkKind::Header) else {
+            return;
+        };
+        let d = finding(
             ctx,
             DEFAULT_SEVERITY,
             ABLSEC007,
             span,
-            format!("`{what}` sets a header or redirect from a non-literal value"),
+            format!("`{what}` sets a header or redirect from {}", j.subject),
             HELP,
-        ));
+        );
+        diags.push(j.attach(d));
     };
     scan(
         ctx,
@@ -131,7 +143,14 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
             Site::Statement(stmt) => statement(stmt, &mut report),
             Site::Call(call) => {
                 if let Some(what) = sink(&call) {
-                    report(call.span, what);
+                    let operands: Vec<Span> = call
+                        .args
+                        .iter()
+                        .take(if what == "Build" { 1 } else { usize::MAX })
+                        .filter(|a| dynamic(a))
+                        .map(|a| a.span)
+                        .collect();
+                    report(call.span, what, &operands);
                 }
             }
         },
@@ -161,7 +180,7 @@ fn sink(call: &Call) -> Option<&'static str> {
     }
 }
 
-fn statement(stmt: &Statement, report: &mut impl FnMut(Span, &str)) {
+fn statement(stmt: &Statement, report: &mut impl FnMut(Span, &str, &[Span])) {
     match &stmt.kind {
         StatementKind::Assignment { target, value } => location(stmt, target, value, report),
         StatementKind::Assign { assignments } => {
@@ -176,7 +195,12 @@ fn statement(stmt: &Statement, report: &mut impl FnMut(Span, &str)) {
         } if is_any(name, &PROCEDURES)
             && arguments.iter().any(|a| !arg_of(&a.expression).constant) =>
         {
-            report(stmt.span, name);
+            let operands: Vec<Span> = arguments
+                .iter()
+                .filter(|a| !arg_of(&a.expression).constant)
+                .map(|a| a.expression.span)
+                .collect();
+            report(stmt.span, name, &operands);
         }
         _ => {}
     }
@@ -186,12 +210,16 @@ fn location(
     stmt: &Statement,
     target: &Expression,
     value: &Expression,
-    report: &mut impl FnMut(Span, &str),
+    report: &mut impl FnMut(Span, &str, &[Span]),
 ) {
     if let ExpressionKind::MemberAccess { member, .. } = &target.kind
         && member.name.eq_ignore_ascii_case("Location")
         && !arg_of(value).constant
     {
-        report(cover(target.span, value.span, stmt.span), "Location");
+        report(
+            cover(target.span, value.span, stmt.span),
+            "Location",
+            &[value.span],
+        );
     }
 }
