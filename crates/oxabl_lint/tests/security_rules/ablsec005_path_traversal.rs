@@ -16,14 +16,19 @@ INPUT STREAM s FROM VALUE(c) NO-ECHO.
     assert_eq!(diags.len(), 4, "{diags:?}");
     assert_eq!(
         flagged(src, &diags),
-        ["pcFile", "cDir + \"/x.txt\"", "c", "c"]
+        [
+            "VALUE(pcFile)",
+            "VALUE(cDir + \"/x.txt\")",
+            "VALUE(c)",
+            "VALUE(c)"
+        ]
     );
 }
 
 #[test]
 fn reports_os_dir() {
     let src = "INPUT FROM OS-DIR(pcDir).";
-    assert_eq!(flagged(src, &check(run, src)), ["pcDir"]);
+    assert_eq!(flagged(src, &check(run, src)), ["OS-DIR(pcDir)"]);
     assert!(check(run, "INPUT FROM OS-DIR(\"/tmp\") NO-ATTR-LIST.").is_empty());
 }
 
@@ -38,7 +43,12 @@ OS-COPY VALUE(a) VALUE(b).
 ";
     let diags = check(run, src);
     assert_eq!(diags.len(), 6, "{diags:?}");
-    assert_eq!(flagged(src, &diags), ["c", "c", "c", "a", "a", "b"]);
+    assert_eq!(
+        flagged(src, &diags),
+        [
+            "VALUE(c)", "VALUE(c)", "VALUE(c)", "VALUE(a)", "VALUE(a)", "VALUE(b)"
+        ]
+    );
 }
 
 #[test]
@@ -49,7 +59,10 @@ COPY-LOB FILE pcPath TO cData.
 COPY-LOB FROM FILE \"x\" TO FILE cDir + \"/x\" APPEND.
 ";
     let diags = check(run, src);
-    assert_eq!(flagged(src, &diags), ["pcPath", "pcPath", "cDir + \"/x\""]);
+    assert_eq!(
+        flagged(src, &diags),
+        ["FILE pcPath", "FILE pcPath", "FILE cDir + \"/x\""]
+    );
 }
 
 #[test]

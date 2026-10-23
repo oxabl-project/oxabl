@@ -17,7 +17,12 @@ RUN VALUE(c) PERSISTENT SET h.
     assert_eq!(diags.len(), 4, "{diags:?}");
     assert_eq!(
         flagged(src, &diags),
-        ["pcProg", "\"post-\" + pcKind + \".p\"", "c", "c"]
+        [
+            "RUN VALUE(pcProg",
+            "RUN VALUE(\"post-\" + pcKind + \".p\"",
+            "RUN VALUE(c",
+            "RUN VALUE(c"
+        ]
     );
 }
 
@@ -41,7 +46,11 @@ z = DYNAMIC-FUNC(c).
 ";
     assert_eq!(
         flagged(src, &check(run, src)),
-        ["pcName", "\"calc-\" + c", "c"]
+        [
+            "DYNAMIC-FUNCTION(pcName, 1)",
+            "DYNAMIC-FUNCTION(\"calc-\" + c)",
+            "DYNAMIC-FUNC(c)"
+        ]
     );
 }
 
@@ -60,7 +69,13 @@ fn reports_dynamic_invoke_by_method_name_argument() {
 DYNAMIC-INVOKE(h, pcMethod).
 x = DYNAMIC-INVOKE(\"Acme.Foo\", c, 1).
 ";
-    assert_eq!(flagged(src, &check(run, src)), ["pcMethod", "c"]);
+    assert_eq!(
+        flagged(src, &check(run, src)),
+        [
+            "DYNAMIC-INVOKE(h, pcMethod)",
+            "DYNAMIC-INVOKE(\"Acme.Foo\", c, 1)"
+        ]
+    );
 }
 
 #[test]
@@ -73,7 +88,7 @@ fn dynamic_invoke_on_a_variable_handle_with_a_literal_method_is_not_reported() {
 fn reports_dynamic_new_of_a_non_literal_class() {
     let src = "\
 oObj = DYNAMIC-NEW pcClass ().
-oObj2 = DYNAMIC-NEW \"Acme.\" + c ().
+oObj2 = DYNAMIC-NEW (\"Acme.\" + c) ().
 ";
     let diags = check(run, src);
     assert_eq!(diags.len(), 2, "{diags:?}");
@@ -107,7 +122,10 @@ COMPILE VALUE(pcFile) SAVE.
 COMPILE VALUE(\"/src/\" + c) SAVE INTO VALUE(\"/out\").
 ";
     let diags = check(run, src);
-    assert_eq!(flagged(src, &diags), ["pcFile", "\"/src/\" + c"]);
+    assert_eq!(
+        flagged(src, &diags),
+        ["VALUE(pcFile)", "VALUE(\"/src/\" + c)"]
+    );
 }
 
 #[test]
@@ -134,7 +152,10 @@ PUT UNFORMATTED DYNAMIC-FUNCTION(pcName).
 PUT UNFORMATTED DYNAMIC-FUNCTION(\"calc-tax\").
 PUT UNFORMATTED DYNAMIC-INVOKE(h, pcMethod).
 ";
-    assert_eq!(flagged(src, &check(run, src)), ["pcName", "pcMethod"]);
+    assert_eq!(
+        flagged(src, &check(run, src)),
+        ["DYNAMIC-FUNCTION(pcName)", "DYNAMIC-INVOKE(h, pcMethod)"]
+    );
 }
 
 #[test]
@@ -194,4 +215,21 @@ RUN VALUE({&PROG}).
 fn a_sink_in_an_include_is_reported() {
     let files = [("go.i", "RUN VALUE(cProg).\n")];
     assert_eq!(check_expanded(run, &files, "{go.i}\n").len(), 1);
+}
+
+#[test]
+fn a_dynamic_function_with_an_in_clause_still_reads_the_name() {
+    let src = "x = DYNAMIC-FUNCTION(pcName IN hProc, 1).";
+    assert_eq!(
+        flagged(src, &check(run, src)),
+        ["DYNAMIC-FUNCTION(pcName IN hProc, 1)"]
+    );
+    assert!(check(run, "x = DYNAMIC-FUNCTION(\"f\" IN hProc, c).").is_empty());
+}
+
+#[test]
+fn reports_dynamic_new_inside_a_skipped_statement() {
+    let src = "PUT UNFORMATTED DYNAMIC-NEW pcClass ().";
+    assert_eq!(check(run, src).len(), 1);
+    assert!(check(run, "PUT UNFORMATTED DYNAMIC-NEW \"Acme.Foo\" ().").is_empty());
 }

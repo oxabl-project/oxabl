@@ -13,14 +13,17 @@ OS-COMMAND NO-WAIT VALUE(cCmd).
 ";
     let diags = check(run, src);
     assert_eq!(diags.len(), 3, "{diags:?}");
-    assert_eq!(flagged(src, &diags), ["\"ls \" + c", "cCmd", "cCmd"]);
+    assert_eq!(
+        flagged(src, &diags),
+        ["VALUE(\"ls \" + c)", "VALUE(cCmd)", "VALUE(cCmd)"]
+    );
 }
 
 #[test]
 fn reports_each_non_literal_operand() {
     let src = "OS-COMMAND SILENT VALUE(\"tar\") VALUE(cArg) VALUE(\"-x\") VALUE(\"a\" + c).";
     let diags = check(run, src);
-    assert_eq!(flagged(src, &diags), ["cArg", "\"a\" + c"]);
+    assert_eq!(flagged(src, &diags), ["VALUE(cArg)", "VALUE(\"a\" + c)"]);
 }
 
 #[test]
@@ -39,7 +42,7 @@ OUTPUT STREAM s THROUGH VALUE(cCmd) APPEND.
 fn reports_an_argument_after_a_literal_program() {
     let src = "INPUT THROUGH cat VALUE(pcFile) NO-ECHO.";
     let diags = check(run, src);
-    assert_eq!(flagged(src, &diags), ["pcFile"]);
+    assert_eq!(flagged(src, &diags), ["VALUE(pcFile)"]);
 }
 
 #[test]

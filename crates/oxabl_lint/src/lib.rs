@@ -76,6 +76,19 @@
 //! (`oxabl_nulls`) over them too. Each is made once per [`Registry::run_where`] through [`RunShared`]
 //! and only when one of its rules is enabled.
 //!
+//! The `security` group ([`security`]) is opt-in as well and holds the sink
+//! rules ABLSEC001 to ABLSEC005. They are in preview and context-free like the
+//! strict rules above; see the module for the design and
+//! [`security::literal`] for the shared "is this a literal" decision:
+//!
+//! | Code      | Module                        | What it fires on                                         |
+//! |-----------|-------------------------------|----------------------------------------------------------|
+//! | ABLSEC001 | [`security::dynamic_query`]   | `QUERY-PREPARE`, buffer `FIND-*` and `FILL-WHERE-STRING` from a non-literal |
+//! | ABLSEC002 | [`security::foreign_sql`]     | `send-sql-statement` and .NET command text from a non-literal |
+//! | ABLSEC003 | [`security::os_command`]      | `OS-COMMAND`, `UNIX`, `DOS` and `THROUGH` with a non-literal `VALUE` |
+//! | ABLSEC004 | [`security::dynamic_code`]    | `RUN VALUE`, `DYNAMIC-*`, `GetClass` and `COMPILE VALUE` of a non-literal |
+//! | ABLSEC005 | [`security::path_traversal`]  | file paths for streams, `OS-*`, `COPY-LOB` and `FILE-INFO` from a non-literal |
+//!
 //! A finding that sits in an include file is dropped when the includer is
 //! linted. A context-free rule reports it once, in the include file itself,
 //! when a client lints that file as a root (`oxabl check <dir>` does so for

@@ -11,7 +11,7 @@ fn reports_query_prepare_with_a_non_literal() {
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert_eq!(
         flagged(src, &diags),
-        ["\"FOR EACH Customer WHERE Name = '\" + c + \"'\""]
+        ["QUERY-PREPARE(\"FOR EACH Customer WHERE Name = '\" + c + \"'\")"]
     );
 }
 
@@ -43,7 +43,14 @@ hBuf:FIND-UNIQUE(c) NO-ERROR.
 ";
     let diags = check(run, src);
     assert_eq!(diags.len(), 3, "{diags:?}");
-    assert_eq!(flagged(src, &diags), ["\"WHERE a = \" + c", "c", "c"]);
+    assert_eq!(
+        flagged(src, &diags),
+        [
+            "FIND-FIRST(\"WHERE a = \" + c)",
+            "FIND-LAST(c, NO-LOCK)",
+            "FIND-UNIQUE(c)"
+        ]
+    );
 }
 
 #[test]
@@ -144,6 +151,6 @@ fn a_sink_in_an_include_is_reported() {
 #[test]
 fn an_include_argument_is_constant_when_the_caller_passes_a_literal() {
     let files = [("prep.i", "hQ:QUERY-PREPARE({1}).\n")];
-    assert!(check_expanded(run, &files, "{prep.i \"FOR EACH Customer\"}\n").is_empty());
+    assert!(check_expanded(run, &files, "{prep.i \"'FOR EACH Customer'\"}\n").is_empty());
     assert_eq!(check_expanded(run, &files, "{prep.i cWhere}\n").len(), 1);
 }

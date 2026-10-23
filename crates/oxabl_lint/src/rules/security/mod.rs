@@ -41,6 +41,12 @@
 //! register it in `registry.rs`. Reuse [`literal`] for the "is this a
 //! literal" decision, so every rule agrees on it.
 
+use oxabl_ast::Span;
+use oxabl_common::{Diagnostic, Severity};
+use oxabl_semantic::AnalysisContext;
+
+use super::syntactic::file_span;
+
 pub mod dynamic_code;
 pub mod dynamic_query;
 pub mod foreign_sql;
@@ -62,3 +68,21 @@ pub const ABLSEC004: &str = "ABLSEC004";
 pub const ABLSEC005: &str = "ABLSEC005";
 
 // --- Stage 1, ABLSEC006+: modules and codes are added below this line ------
+
+/// A finding at `span` with its suggestion. The registry replaces `severity`
+/// with the configured one, so a rule passes its own default.
+pub(super) fn finding(
+    ctx: &AnalysisContext,
+    severity: Severity,
+    code: &'static str,
+    span: Span,
+    message: String,
+    help: &str,
+) -> Diagnostic {
+    let span = file_span(ctx, span);
+    let diagnostic = match severity {
+        Severity::Error => Diagnostic::error(code, message, span),
+        _ => Diagnostic::warning(code, message, span),
+    };
+    diagnostic.with_help(help.to_string())
+}

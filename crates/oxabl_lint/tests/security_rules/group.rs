@@ -105,3 +105,29 @@ OUTPUT TO VALUE(c).
     }
     assert_eq!(seen, 5, "each snippet line belongs to exactly one rule");
 }
+
+#[test]
+fn the_call_rules_and_the_security_rule_both_report_a_dynamic_run() {
+    use oxabl_common::FileId;
+    use oxabl_lexer::tokenize;
+    use oxabl_parser::Parser;
+    use oxabl_schema::Schema;
+    use oxabl_semantic::{AnalysisContext, analyze_file};
+
+    let source = "RUN VALUE(c).\n";
+    let tokens = tokenize(source);
+    let program = Parser::new(&tokens, source).parse_program();
+    let mut map = LintSeverityMap::default();
+    map.base_mut().enable_group("strict.calls");
+    map.base_mut().enable_group("security");
+    let schema = Schema::empty();
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema).with_lint_severities(map);
+    let sem = analyze_file(&program.statements, &ctx);
+    let codes: Vec<_> = Registry::builtin()
+        .run(&program.statements, &sem, &ctx)
+        .into_iter()
+        .map(|d| d.code.0)
+        .filter(|c| *c == "CL001" || *c == "ABLSEC004")
+        .collect();
+    assert_eq!(codes, ["CL001", "ABLSEC004"]);
+}

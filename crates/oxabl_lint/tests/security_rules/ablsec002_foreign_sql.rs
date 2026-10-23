@@ -11,7 +11,7 @@ fn reports_send_sql_statement_built_by_concatenation() {
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert_eq!(
         flagged(src, &diags),
-        ["\"SELECT * FROM t WHERE n = '\" + c + \"'\""]
+        ["(\"SELECT * FROM t WHERE n = '\" + c + \"'\""]
     );
 }
 
@@ -24,7 +24,7 @@ RUN STORED-PROC dbname.send-sql-statement hP = PROC-HANDLE NO-ERROR (cSql).
 ";
     let diags = check(run, src);
     assert_eq!(diags.len(), 3, "{diags:?}");
-    assert_eq!(flagged(src, &diags), ["cSql", "cSql", "cSql"]);
+    assert_eq!(flagged(src, &diags), ["(cSql", "(INPUT cSql", "(cSql"]);
 }
 
 #[test]

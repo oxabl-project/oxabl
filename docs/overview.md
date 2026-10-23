@@ -103,7 +103,7 @@ Current Work: continued dogfood-driven trust-hardening, and typing `:`-qualified
 
 ### Lint configuration
 
-Lint rules are in groups. The `LINT` rules are in the `default` group, which is always on. The `strict.transactions`, `strict.locks`, `strict.access`, `strict.handles`, `strict.nulls` and `strict.calls` groups are off until you enable them. The plan for all strict rules is in `docs/design/strict-analysis-plan.md`. These strict rules are available now. They are in preview and report at `warn`:
+Lint rules are in groups. The `LINT` rules are in the `default` group, which is always on. The `strict.transactions`, `strict.locks`, `strict.access`, `strict.handles`, `strict.nulls`, `strict.calls` and `security` groups are off until you enable them. The plan for all strict rules is in `docs/design/strict-analysis-plan.md`. These strict rules are available now. They are in preview and report at `warn`:
 
 | Code | Name | Group | Reports |
 |---|---|---|---|
@@ -136,6 +136,30 @@ The four rules before `HD001` are context-free: each finding depends only on the
 - The text summary and `--json` count these files apart from the roots (`include_files_checked`).
 
 See `docs/design/strict-analysis-open-questions.md` for the reasons and for the plan for rules that depend on the includer.
+
+#### Security rules
+
+The `security` group finds code where a value that is not a literal reaches a dangerous call. Turn it on with `enable = ["security"]`; `enable = ["strict"]` does not select it. The rules are in preview. They are sink rules: each one reports every call whose argument is not a literal, and does not follow the value back to its source. They are complete and noisy on purpose. Use a baseline for the code that exists, and see `crates/oxabl_lint/src/rules/security/mod.rs` for the design.
+
+| Code | Name | Reports | Severity |
+|---|---|---|---|
+| ABLSEC001 | `dynamic-query` | `QUERY-PREPARE`, `FIND-FIRST`, `FIND-LAST` and `FIND-UNIQUE` on a buffer, and `FILL-WHERE-STRING`, given a query string that is not a literal | `error` |
+| ABLSEC002 | `foreign-sql` | `RUN STORED-PROC send-sql-statement`, `NEW SqlCommand(...)` (and the ODBC, OLE DB, Oracle, MySQL and Npgsql classes and data adapters) and `CommandText` set from a string that is not a literal | `error` |
+| ABLSEC003 | `os-command` | `OS-COMMAND`, `UNIX`, `DOS` and `INPUT`, `OUTPUT` or `INPUT-OUTPUT THROUGH` with a `VALUE(...)` that is not a literal | `error` |
+| ABLSEC004 | `dynamic-code` | `RUN VALUE`, `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `Progress.Lang.Class:GetClass`, `COMPILE VALUE` and `CALL-NAME` with a name that is not a literal | `error` |
+| ABLSEC005 | `path-traversal` | `INPUT FROM` and `OUTPUT TO` with `VALUE(...)` or `OS-DIR(...)`, `OS-DELETE`, `OS-COPY`, `OS-RENAME`, `OS-CREATE-DIR`, `COPY-LOB ... FILE` and `FILE-INFO:FILE-NAME` with a path that is not a literal | `warning` |
+
+The catalogue rates ABLSEC001 to ABLSEC004 critical or high and ABLSEC005 high; oxabl has `error`, `warning`, `info` and `hint`, so the first four report as `error` and ABLSEC005 as `warning`. Change that per rule in `oxabl.toml` as for any rule.
+
+An argument counts as a literal when it is a string or number literal, a `+` of literals, or text that a preprocessor name expanded to one. A variable, a field and a function call are not literals. `QUOTER(x)` around a value does not make a string a literal: the rules still report it, and the help of the finding says so. A later stage will accept sanitisers.
+
+Limits:
+
+- ABLSEC004 reports a subset of what `run-value` (CL001) and `dynamic-invoke` (CL002) report. Those rules are about analysis: a callee that is not in the text hides from tools, including `RUN VALUE("a" + ".p")`. ABLSEC004 is about injection and reports only a name that is not a literal. With both groups on, `RUN VALUE(c)` has two findings, and a fix to the name clears both.
+- Rules read the text after preprocessing. A sink in an include file is reported once, in the include file, like a strict finding; the include-file notes above apply. A sink written in your own file whose argument is `{&NAME}` is reported at the sink, and is a literal only when `NAME` expands to one. A sink whose whole text is the body of a `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` is not reported by `check`: the expansion does not belong to the file that uses it.
+- `OS-COMMAND`, `UNIX`, `DOS`, `OS-DELETE`, `OS-COPY`, `OS-RENAME`, `OS-CREATE-DIR`, `COPY-LOB` and `COMPILE` are not modelled by the parser. The rules read their text, and look only at the operands listed above.
+- Method names such as `FIND-FIRST` and `CommandText` are matched by spelling, because the rules have no type information.
+- Embedded SQL (`EXEC SQL`), a command or path set through a class the table does not list, and a value that is built in one procedure and used in another are not seen.
 
 Configure lint in `[workspace.lint]` in `oxabl.toml`:
 

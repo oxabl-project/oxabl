@@ -22,7 +22,7 @@
 
 use std::ops::Range;
 
-use oxabl_ast::{Expression, ExpressionKind, Span, Statement};
+use oxabl_ast::{Expression, ExpressionKind, Span, Statement, StatementKind};
 use oxabl_lexer::{Kind, Token, tokenize};
 
 /// Whether `expr` is a literal or built only from literals.
@@ -41,21 +41,79 @@ pub fn is_constant(expr: &Expression) -> bool {
     }
 }
 
-/// The span to report for `expr`: its own, or `fallback` when the node has no
-/// real extent (a hand-built tree).
-pub fn report_span(expr: &Expression, fallback: Span) -> Span {
-    if expr.span.start < expr.span.end {
-        expr.span
+/// The span from the start of `lead` to the end of `to`, or `fallback` when
+/// either node has no real extent (a hand-built tree).
+///
+/// A finding starts at the sink keyword and not at its argument. When the
+/// argument is the expansion of a preprocessor name, its own text does not
+/// belong to the file, and a finding that starts there is not reported.
+pub fn cover(lead: Span, to: Span, fallback: Span) -> Span {
+    if lead.start < lead.end && lead.start < to.end {
+        Span {
+            start: lead.start,
+            end: to.end.max(lead.end),
+        }
     } else {
         fallback
     }
 }
 
+/// Whether the text of `stmt` holds any of `needles`, ignoring ASCII case.
+///
+/// A cheap check before lexing a skipped statement: most hold none of the
+/// words a rule looks for.
+pub fn mentions(source: &str, stmt: &Statement, needles: &[&str]) -> bool {
+    let Some(text) = super::super::syntactic::source_of(source, stmt.span) else {
+        return false;
+    };
+    let bytes = text.as_bytes();
+    needles.iter().any(|needle| {
+        let n = needle.as_bytes();
+        bytes.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+    })
+}
+
+/// Whether the rules read `stmt` by lexing its text: a statement the parser
+/// skips, or one it models only in part (`PUT`, `EXPORT`, `UPDATE`, ...), whose
+/// options stay unparsed. A rule that reads the text of such a statement does
+/// not also walk its tree, so a call is seen once.
+pub fn is_text_read(stmt: &Statement) -> bool {
+    matches!(
+        stmt.kind,
+        StatementKind::Skipped { .. }
+            | StatementKind::Put { .. }
+            | StatementKind::Export { .. }
+            | StatementKind::Import { .. }
+            | StatementKind::Pause { .. }
+            | StatementKind::Down { .. }
+            | StatementKind::Form { .. }
+            | StatementKind::Update { .. }
+            | StatementKind::Set { .. }
+            | StatementKind::Apply { .. }
+            | StatementKind::WaitFor { .. }
+            | StatementKind::Enable { .. }
+            | StatementKind::Disable { .. }
+            | StatementKind::Hide { .. }
+            | StatementKind::View { .. }
+            | StatementKind::Up { .. }
+            | StatementKind::DeleteWidgetPool { .. }
+            | StatementKind::CreateWidgetPool { .. }
+            | StatementKind::ReleaseObject { .. }
+    )
+}
+
+/// The first word of `stmt`, upper-cased, or `None` when it has no tokens.
+pub fn leading_word(source: &str, stmt: &Statement) -> Option<String> {
+    super::super::syntactic::leading_tokens(source, stmt.span, 1)
+        .first()
+        .map(|(_, word)| word.to_ascii_uppercase())
+}
+
 /// The tokens of one statement, for rules that read an unmodelled statement.
 ///
-/// Comments and the end-of-file token are dropped. Token indices are into
-/// [`tokens`](Self::tokens); [`span`](Self::span) maps a range of them back to
-/// the file under analysis.
+/// Comments, the end-of-file token and the closing period are dropped. A token
+/// is named by its position among the rest; [`span`](Self::span) maps a range
+/// of positions back to the file under analysis.
 pub struct StatementText<'a> {
     text: &'a str,
     base: u32,
@@ -66,10 +124,13 @@ impl<'a> StatementText<'a> {
     /// Lex `stmt`, or `None` when its span does not fall inside `source`.
     pub fn of(source: &'a str, stmt: &Statement) -> Option<Self> {
         let text = super::super::syntactic::source_of(source, stmt.span)?;
-        let tokens = tokenize(text)
+        let mut tokens: Vec<Token> = tokenize(text)
             .into_iter()
             .filter(|t| !matches!(t.kind, Kind::Eof | Kind::Comment))
             .collect();
+        if tokens.last().is_some_and(|t| t.kind == Kind::Period) {
+            tokens.pop();
+        }
         Some(StatementText {
             text,
             base: stmt.span.start,
