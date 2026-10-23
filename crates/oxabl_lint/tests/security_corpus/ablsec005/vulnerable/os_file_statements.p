@@ -1,0 +1,8 @@
+/* expect: 6 */
+DEFINE INPUT PARAMETER pcFile AS CHARACTER NO-UNDO.
+
+OS-DELETE VALUE(pcFile).
+OS-DELETE VALUE(pcFile) RECURSIVE.
+OS-CREATE-DIR VALUE(pcFile).
+OS-RENAME VALUE(pcFile) VALUE("archive.txt").
+OS-COPY VALUE(pcFile) VALUE(pcFile + ".bak").

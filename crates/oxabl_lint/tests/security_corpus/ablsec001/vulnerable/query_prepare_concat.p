@@ -1,0 +1,8 @@
+/* expect: 1 */
+DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+
+CREATE QUERY hQuery.
+hQuery:SET-BUFFERS(BUFFER Customer:HANDLE).
+hQuery:QUERY-PREPARE("FOR EACH Customer WHERE Customer.Name = '" + pcName + "'").
+hQuery:QUERY-OPEN().

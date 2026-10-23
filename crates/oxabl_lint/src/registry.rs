@@ -13,16 +13,18 @@ use oxabl_scope::FileScopes;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
-    CL001, CL002, CL003, CL004, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001,
-    LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003,
-    NL004, TX001, TX002, TX003, TX004, TX005, TX006, assigned_but_never_read,
-    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
-    field_after_failed_find, find_in_loop, handle_not_deleted, implicit_transaction,
-    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
-    missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
-    run_value, scope_widened, shared_state, signature_mismatch, transaction_spans_call,
-    transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
-    unknown_propagation, unknown_table_or_field, unresolved_call, unused_variable,
+    ABLSEC001, ABLSEC002, ABLSEC003, ABLSEC004, ABLSEC005, CL001, CL002, CL003, CL004, CL005,
+    DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005,
+    LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, NL004, TX001, TX002, TX003, TX004, TX005,
+    TX006, assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
+    dynamic_invoke, field_after_failed_find, find_in_loop, handle_not_deleted,
+    implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
+    missing_no_undo, missing_widget_pool, nullable_db_field, persistent_procedure_leak,
+    procedure_wide_transaction, run_value, scope_widened,
+    security::{dynamic_code, dynamic_query, foreign_sql, os_command, path_traversal},
+    shared_state, signature_mismatch, transaction_spans_call, transaction_spans_ui,
+    type_mismatch_assignment, undefined_symbol, unknown_in_comparison, unknown_propagation,
+    unknown_table_or_field, unresolved_call, unused_variable,
 };
 use crate::shared::RunShared;
 use crate::suppress::{self, LINT0007, LINT0008};
@@ -43,6 +45,8 @@ pub mod groups {
     pub const STRICT_NULLS: &str = "strict.nulls";
     /// Call and shared-state rules (`CL`).
     pub const STRICT_CALLS: &str = "strict.calls";
+    /// Injection and unsafe-resource rules (`ABLSEC`).
+    pub const SECURITY: &str = "security";
 }
 
 /// How settled a rule is.
@@ -435,6 +439,10 @@ pub const BUILTIN_GROUPS: &[RuleGroup] = &[
     RuleGroup::opt_in(groups::STRICT_HANDLES, "Leaked dynamic objects."),
     RuleGroup::opt_in(groups::STRICT_NULLS, "Unknown values reaching sinks."),
     RuleGroup::opt_in(groups::STRICT_CALLS, "Dynamic calls and shared state."),
+    RuleGroup::opt_in(
+        groups::SECURITY,
+        "Injection and unsafe-resource sinks fed by non-literal values.",
+    ),
 ];
 
 /// The built-in rules, in run order.
@@ -751,6 +759,48 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         .reported_at_use_site(),
         nullable_db_field::check,
     ),
+    // Security, stage 1: sink rules.
+    security_rule(
+        ABLSEC001,
+        dynamic_query::NAME,
+        dynamic_query::GROUP,
+        dynamic_query::DESCRIPTION,
+        dynamic_query::DEFAULT_SEVERITY,
+        dynamic_query::run,
+    ),
+    security_rule(
+        ABLSEC002,
+        foreign_sql::NAME,
+        foreign_sql::GROUP,
+        foreign_sql::DESCRIPTION,
+        foreign_sql::DEFAULT_SEVERITY,
+        foreign_sql::run,
+    ),
+    security_rule(
+        ABLSEC003,
+        os_command::NAME,
+        os_command::GROUP,
+        os_command::DESCRIPTION,
+        os_command::DEFAULT_SEVERITY,
+        os_command::run,
+    ),
+    security_rule(
+        ABLSEC004,
+        dynamic_code::NAME,
+        dynamic_code::GROUP,
+        dynamic_code::DESCRIPTION,
+        dynamic_code::DEFAULT_SEVERITY,
+        dynamic_code::run,
+    ),
+    security_rule(
+        ABLSEC005,
+        path_traversal::NAME,
+        path_traversal::GROUP,
+        path_traversal::DESCRIPTION,
+        path_traversal::DEFAULT_SEVERITY,
+        path_traversal::run,
+    ),
+    // Security, ABLSEC006 and later: add entries below this line.
 ];
 
 /// The run of a rule whose diagnostics come from the suppression pass
@@ -834,6 +884,25 @@ const fn effects_rule(
             .context_free()
             .reported_at_use_site(),
         check,
+    )
+}
+
+/// A `security` rule: context-free, and in preview until its false-positive
+/// rate on a real corpus is measured.
+const fn security_rule(
+    code: &'static str,
+    name: &'static str,
+    group: &'static str,
+    description: &'static str,
+    severity: Severity,
+    run: RuleFn,
+) -> FnRule {
+    FnRule::new(
+        RuleMeta::new(code, name, group, description)
+            .with_default_severity(severity)
+            .with_stability(Stability::Preview)
+            .context_free(),
+        run,
     )
 }
 

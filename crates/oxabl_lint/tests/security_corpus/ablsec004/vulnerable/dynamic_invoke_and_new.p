@@ -1,0 +1,8 @@
+/* expect: 3 */
+DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+DEFINE VARIABLE hObj AS HANDLE NO-UNDO.
+DEFINE VARIABLE oObj AS Progress.Lang.Object NO-UNDO.
+
+DYNAMIC-INVOKE(hObj, pcName).
+DYNAMIC-INVOKE("Acme.Handler", pcName, 1).
+oObj = DYNAMIC-NEW pcName ().

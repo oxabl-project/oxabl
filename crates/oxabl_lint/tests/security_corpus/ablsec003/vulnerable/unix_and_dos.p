@@ -1,0 +1,5 @@
+/* expect: 2 */
+DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+
+UNIX SILENT VALUE("rm -rf /tmp/" + pcName).
+DOS SILENT VALUE(pcName).

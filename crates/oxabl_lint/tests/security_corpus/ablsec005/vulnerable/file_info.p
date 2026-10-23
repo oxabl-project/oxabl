@@ -1,0 +1,5 @@
+/* expect: 2 */
+DEFINE INPUT PARAMETER pcPath AS CHARACTER NO-UNDO.
+
+FILE-INFO:FILE-NAME = pcPath.
+FILE-INFORMATION:FILE-NAME = "/data/" + pcPath.

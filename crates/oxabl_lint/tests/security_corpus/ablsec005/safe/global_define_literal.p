@@ -1,0 +1,3 @@
+&GLOBAL-DEFINE TARGET "/tmp/report.txt"
+
+OUTPUT TO VALUE({&TARGET}).

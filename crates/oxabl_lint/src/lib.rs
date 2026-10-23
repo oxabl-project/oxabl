@@ -100,16 +100,17 @@ pub use registry::{
     Rule, RuleFn, RuleGroup, RuleMeta, ScopesFn, Stability, groups,
 };
 pub use rules::{
-    CL001, CL002, CL003, CL004, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001,
-    LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003,
-    NL004, TX001, TX002, TX003, TX004, TX005, TX006, assigned_but_never_read,
-    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
-    field_after_failed_find, find_in_loop, handle_not_deleted, implicit_transaction,
-    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
-    missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
-    run_value, scope_widened, shared_state, signature_mismatch, transaction_spans_call,
-    transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
-    unknown_propagation, unknown_table_or_field, unresolved_call, unused_variable,
+    ABLSEC001, ABLSEC002, ABLSEC003, ABLSEC004, ABLSEC005, CL001, CL002, CL003, CL004, CL005,
+    DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005,
+    LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, NL004, TX001, TX002, TX003, TX004, TX005,
+    TX006, assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
+    dynamic_invoke, field_after_failed_find, find_in_loop, handle_not_deleted,
+    implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
+    missing_no_undo, missing_widget_pool, nullable_db_field, persistent_procedure_leak,
+    procedure_wide_transaction, run_value, scope_widened, security, shared_state,
+    signature_mismatch, transaction_spans_call, transaction_spans_ui, type_mismatch_assignment,
+    undefined_symbol, unknown_in_comparison, unknown_propagation, unknown_table_or_field,
+    unresolved_call, unused_variable,
 };
 pub use shared::{CalleeSummaries, RunShared};
 
