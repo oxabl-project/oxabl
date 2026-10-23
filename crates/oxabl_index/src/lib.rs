@@ -55,6 +55,7 @@ mod closure;
 mod deps;
 mod facts;
 mod producers;
+pub mod reach;
 // Public because a second cache lives outside this crate: the language server's
 // salsa-backed index does its own memoization but must use the *same*
 // name-to-path policy — two spellings tried in order, exactly one match, `.i`

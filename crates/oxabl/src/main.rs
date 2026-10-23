@@ -2140,6 +2140,7 @@ fn diagnostic(
         span,
         labels: Vec::new(),
         help: None,
+        reach: None,
     }
 }
 /// Include files read for `--include-findings`, each at most once per worker.

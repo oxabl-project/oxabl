@@ -451,6 +451,36 @@ impl ImportContext {
         Some(IndexName::new(&format!("Progress.Lang.{raw}")))
     }
 
+    /// The class `raw` names under these imports, as `index` knows it: the
+    /// first spelling it finds. `None` when no spelling is a workspace class.
+    pub fn find_class(
+        &self,
+        index: &dyn WorkspaceIndex,
+        raw: &str,
+    ) -> Option<Arc<ClassDescriptor>> {
+        for candidate in self.candidates(raw) {
+            match candidate {
+                ImportCandidate::Name(name) => {
+                    if let IndexAnswer::Found(d) = index.class(&name) {
+                        return Some(d);
+                    }
+                }
+                ImportCandidate::Assembly => return None,
+            }
+        }
+        None
+    }
+
+    /// Whether `raw` may name a class of the ABL runtime (`Progress.*`,
+    /// `OpenEdge.*`) or of .NET under these imports.
+    pub fn may_be_builtin(&self, raw: &str) -> bool {
+        const PREFIXES: [&str; 3] = ["progress.", "openedge.", "system."];
+        self.candidates(raw).any(|c| match c {
+            ImportCandidate::Name(n) => PREFIXES.iter().any(|p| n.as_str().starts_with(p)),
+            ImportCandidate::Assembly => true,
+        })
+    }
+
     /// The spellings `raw` may stand for, in the order the AVM tries them:
     ///
     /// 1. A dotted name as a qualified name.

@@ -67,6 +67,10 @@ pub struct Diagnostic {
     pub span: FileSpan,
     pub labels: Vec<Label>,
     pub help: Option<String>,
+    /// How an entry point reaches the finding, for the `security` rules when
+    /// entry points are configured.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reach: Option<Box<crate::Reachability>>,
 }
 
 impl Diagnostic {
@@ -79,6 +83,7 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            reach: None,
         }
     }
 
@@ -91,6 +96,7 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            reach: None,
         }
     }
 
@@ -103,6 +109,7 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            reach: None,
         }
     }
 
