@@ -579,6 +579,24 @@ impl ExpandedFile {
         ))
     }
 
+    /// Where each include expansion, at any depth, starts in the expanded
+    /// text, with the path it was read from, in expansion order. An include
+    /// that expanded to no text is not listed.
+    pub fn include_starts(&self) -> Vec<(u32, &Path)> {
+        let mut seen = vec![false; self.included.len()];
+        let mut out = Vec::new();
+        for c in &self.chunks {
+            if let ChunkOrigin::Include(i) = c.origin
+                && let Some(s) = seen.get_mut(i as usize)
+                && !*s
+            {
+                *s = true;
+                out.push((c.virt_start, self.included[i as usize].path.as_path()));
+            }
+        }
+        out
+    }
+
     /// The parts of the expanded text that include files wrote, in order.
     pub fn include_spans(&self) -> Vec<Span> {
         self.include_regions
@@ -1371,6 +1389,44 @@ pub fn collect_from_expanded_with_summaries(
     selection: RuleSelection,
     summaries: Option<&dyn oxabl_lint::CalleeSummaries>,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    collect_from_expanded_with(
+        expanded,
+        schema,
+        schema_loaded,
+        lint_severities,
+        index,
+        source_context,
+        selection,
+        CrossFile {
+            summaries,
+            reach: None,
+        },
+    )
+}
+
+/// What a client that reads the workspace gives the rules of one file, in
+/// expanded byte coordinates.
+#[derive(Clone, Copy, Default)]
+pub struct CrossFile<'a> {
+    /// Database effect summaries of the callees (TX004).
+    pub summaries: Option<&'a dyn oxabl_lint::CalleeSummaries>,
+    /// Entry-point reachability (the `security` rules).
+    pub reach: Option<&'a dyn oxabl_lint::security::reach::SecurityReach>,
+}
+
+/// Collect with what a client knows about other files.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_from_expanded_with(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    selection: RuleSelection,
+    cross: CrossFile<'_>,
+) -> (Option<Semantic>, CollectedDiagnostics) {
+    let summaries = cross.summaries;
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
     let everything = selection == RuleSelection::All;
@@ -1428,9 +1484,18 @@ pub fn collect_from_expanded_with_summaries(
         }
     }
 
-    let shared = oxabl_lint::RunShared::default();
+    let includes: Vec<(u32, PathBuf)> = expanded
+        .include_starts()
+        .into_iter()
+        .map(|(at, p)| (at, p.to_path_buf()))
+        .collect();
+    let shared = oxabl_lint::RunShared::default().with_includes(&includes);
     let shared = match summaries {
         Some(provider) => shared.with_summaries(provider),
+        None => shared,
+    };
+    let shared = match cross.reach {
+        Some(reach) => shared.with_reach(reach),
         None => shared,
     };
     let linted = oxabl_lint::Registry::builtin_shared().run_where_shared(

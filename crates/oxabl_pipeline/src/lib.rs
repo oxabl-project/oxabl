@@ -71,11 +71,13 @@ mod lint;
 #[cfg(test)]
 mod parity;
 pub mod position;
+mod reach;
 mod reverse;
 
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult, SharedRun};
+pub use reach::{FileReach, WorkspaceReach};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{
