@@ -21,6 +21,7 @@ mod ablsec017_integrity_bypass;
 mod corpus;
 mod group;
 mod literal;
+mod taint;
 
 use std::path::PathBuf;
 
