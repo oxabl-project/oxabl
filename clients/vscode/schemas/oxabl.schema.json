@@ -278,6 +278,20 @@
           "description": "Whether a database field read is untrusted. Default `false`.",
           "type": "boolean"
         },
+        "identity-keys": {
+          "description": "Words that make a request key a client-supplied identity for `client-identity` (ABLSEC010). Empty: `user`, `username`, `userid`, `login`, `company`, `tenant`, `role`, `roles`, `owner`, `admin`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "identity-sources": {
+          "description": "Project functions and methods whose result is an identity the client supplied.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "mode": {
           "allOf": [
             {
@@ -302,6 +316,14 @@
           ],
           "default": "external",
           "description": "Which input parameters are untrusted."
+        },
+        "reach": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SecurityReachConfig"
+            }
+          ],
+          "description": "Entry-point reachability (`[workspace.lint.security.reach]`)."
         },
         "sources": {
           "description": "Project functions and methods whose result is untrusted.",
@@ -338,6 +360,44 @@
           "type": "string"
         }
       ]
+    },
+    "SecurityReachConfig": {
+      "additionalProperties": false,
+      "description": "The `[workspace.lint.security.reach]` table: where reachability starts and what counts as authorisation and as a sensitive operation.",
+      "properties": {
+        "auth-routines": {
+          "description": "Procedures, functions, methods, programs and include files whose call (or inclusion) authorises the rest of the request.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entry-points": {
+          "description": "The entry-point file (JSON), relative to `oxabl.toml`. Without one, findings carry no reachability and the rules that need entry points (ABLSEC011, ABLSEC012) are silent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lower-unreachable": {
+          "default": false,
+          "description": "A security finding that no entry point can reach reports one level less severe. Default `false`.",
+          "type": "boolean"
+        },
+        "raise-reachable": {
+          "default": false,
+          "description": "A security finding reachable from an entry point reports one level more severe. Default `false`.",
+          "type": "boolean"
+        },
+        "sensitive-calls": {
+          "description": "Routines whose call is a sensitive operation, besides database writes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     },
     "SecurityValidatorConfig": {
       "additionalProperties": false,
