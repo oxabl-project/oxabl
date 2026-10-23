@@ -139,7 +139,7 @@ See `docs/design/strict-analysis-open-questions.md` for the reasons and for the 
 
 #### Security rules
 
-The `security` group finds code where a value that is not a literal reaches a dangerous call. Turn it on with `enable = ["security"]`; `enable = ["strict"]` does not select it. The rules are in preview. They are sink rules: each one reports every call whose argument is not a literal, and does not follow the value back to its source. They are complete and noisy on purpose. Use a baseline for the code that exists, and see `crates/oxabl_lint/src/rules/security/mod.rs` for the design.
+The `security` group finds code where a value that is not a literal reaches a dangerous call. Turn it on with `enable = ["security"]`; `enable = ["strict"]` does not select it. The rules are in preview. By default they are sink rules (stage 1): each one reports every call whose argument is not a literal, and does not follow the value back to its source. They are complete and noisy on purpose. Use a baseline for the code that exists, and see `crates/oxabl_lint/src/rules/security/mod.rs` for the design. Ten of the rules also have a taint mode (stage 2, below) that reports a sink only when untrusted input reaches it.
 
 | Code | Name | Reports | Severity |
 |---|---|---|---|
@@ -160,7 +160,74 @@ The `security` group finds code where a value that is not a literal reaches a da
 
 The catalogue rates ABLSEC002 to ABLSEC004 critical; ABLSEC001, ABLSEC005, ABLSEC006, ABLSEC008, ABLSEC009 and ABLSEC014 high; ABLSEC007, ABLSEC013, ABLSEC016 and ABLSEC017 medium; and ABLSEC015 "needs review". oxabl has `error`, `warning`, `info` and `hint`, so critical impact and ABLSEC001 and ABLSEC008 report as `error`; the other high and medium impact rules report as `warning`, because their patterns are often benign or heuristic; and ABLSEC015 and ABLSEC016 report as `info`. Change that per rule in `oxabl.toml` as for any rule. SARIF output also carries the catalogue rating as `security-severity`: `9.5` for critical, `8.0` for high, `5.5` for medium and `3.0` for needs review. `// oxabl-ignore ABLSEC001: <reason>` suppresses one finding.
 
-An argument counts as a literal when it is a string or number literal, a `+` of literals, or text that a preprocessor name expanded to one. A variable, a field and a function call are not literals. `QUOTER(x)` around a value does not make a string a literal: the rules still report it, and the help of the finding says so. A later stage will accept sanitisers.
+An argument counts as a literal when it is a string or number literal, a `+` of literals, or text that a preprocessor name expanded to one. A variable, a field and a function call are not literals. `QUOTER(x)` around a value does not make a string a literal: in stage 1 the rules still report it, and the help of the finding says so. Taint mode accepts sanitisers.
+
+##### Taint mode (stage 2)
+
+In taint mode a rule reports a sink only when a value from an untrusted source can reach its argument, on some path, without a sanitiser that protects that kind of sink. The analysis looks at one procedure, function or method at a time, over its control-flow graph. Stage 1 stays the default until the precision of stage 2 is measured on real code. Turn taint mode on in `oxabl.toml`:
+
+```toml
+[workspace.lint]
+enable = ["security"]
+
+[workspace.lint.security]
+mode = "taint"                 # "sink" (stage 1, the default) or "taint"
+parameters = "external"        # which INPUT parameters are untrusted: "external" (default), "all", "none"
+database-fields = false        # a database field read is untrusted
+sources = ["read-request-body"]  # project functions and methods whose result is untrusted
+
+[workspace.lint.security.modes]
+ABLSEC005 = "sink"             # one rule, by code or name; beats `mode`
+
+[[workspace.lint.security.validators]]
+name = "is-valid-code"         # a project function that validates or cleans a value
+protects = ["query", "path"]   # the sink kinds it protects, or "all"
+```
+
+The table is global: an override does not read it. `check` warns about a rule in `modes` that is unknown or not a security rule, and about an unknown sink kind.
+
+| Rule | Sink kind | In taint mode |
+|---|---|---|
+| ABLSEC001 `dynamic-query` | `query` | the query or where string |
+| ABLSEC002 `foreign-sql` | `sql` | the SQL text |
+| ABLSEC003 `os-command` | `command` | each `VALUE(...)` |
+| ABLSEC004 `dynamic-code` | `code` | the name of what runs |
+| ABLSEC005 `path-traversal` | `path` | the path |
+| ABLSEC006 `xss-output` | `html` | the written value |
+| ABLSEC007 `header-injection` | `header` | each non-literal argument |
+| ABLSEC014 `unsafe-deserialization` | `deserialize` | the data |
+| ABLSEC015 `untrusted-xml` | `xml` | the `LOAD` source; `SAX-PARSE` stays a review |
+| ABLSEC016 `resource-exhaustion` | `size` | the `SET-SIZE` length and the socket `READ` byte count; `FILL` stays a review |
+
+ABLSEC008, ABLSEC009, ABLSEC013 and ABLSEC017 do not ask where a value comes from, so they are the same in both modes. A taint finding is always a stage 1 finding too: stage 2 only removes findings.
+
+Sources: the `INPUT` and `INPUT-OUTPUT` parameters of a unit that code outside the file can call (the main block, a `PROCEDURE` or `FUNCTION` that is not `PRIVATE`, a `METHOD`, `CONSTRUCTOR` or property setter that is not `PRIVATE`), including `INPUT TABLE`; WebSpeed input (`get-value`, `get-field`, `get-cgi`, `get-user-field`, `get-cookie`, `get-long-value`, and any `WEB-CONTEXT:` member); a member or method of an object whose name has the word `request` or `req` (`poRequest:GetPathParameter(...)`); `IMPORT`, `SET`, `UPDATE` and `MESSAGE ... UPDATE` targets; `COPY-LOB FROM FILE`; a socket `READ` into a `MEMPTR`; `OS-GETENV`; `SESSION:PARAMETER`; configured `sources`; and database fields when `database-fields = true`.
+
+Sanitisers are specific to a sink kind:
+
+| Code | Clears |
+|---|---|
+| `QUOTER(x)` | `query` only; not a command, a path or foreign SQL |
+| `INTEGER`, `INT64`, `DECIMAL`, `DATE`, `DATETIME` conversions, arithmetic, and functions that return a number (`LENGTH`, `NUM-ENTRIES`, `LOOKUP`, `INDEX`, ...) | every kind but `size`: a number cannot inject text, but it can still be a huge size |
+| a comparison or a function that returns a logical | every kind |
+| `html-encode(x)`, `url-encode(x)` | `html`, `header` |
+| a configured validator used as a wrapper, `v(x)` | the kinds it protects |
+
+A guard cleans a variable on the path it holds on: `IF x = "a" OR x = "b"`, `IF LOOKUP(x, "a,b") > 0` (or `= 0 THEN RETURN`), `IF CAN-DO("a,b", x)` with no pattern characters, `IF v(x)` for a validator, combined with `NOT`, `AND` and `OR`; and `CASE x` in a `WHEN` whose values are all literals. A literal has no taint, and assigning one replaces the taint of a variable. An unknown call (a user function, a method, `RUN`, `NEW`) returns what its arguments and receiver carry, and its `OUTPUT` arguments take the same.
+
+A variable that a unit reads and does not declare (a main block variable in a procedure, a class member in a method) and every temp-table or database field holds what any unit of the file writes to it. A main block also sees what an internal procedure writes to its variables after it runs that procedure.
+
+A taint finding names its path in the message, `` `QUERY-PREPARE` takes a query built from untrusted input: input parameter `pcName` → `cWhere` ``, and each step is a label of the diagnostic, source first. SARIF output turns the steps into `codeFlows`.
+
+When the analysis cannot judge a sink, the finding is reported as in stage 1: the argument holds an unexpanded `{...}` reference or text the preprocessor removed, the parse recovered, or the unit costs more than its work budget.
+
+Limits of stage 2 (the corpus under `crates/oxabl_lint/tests/security_corpus/taint` has a case for each):
+
+- A value that a function or procedure of the same file returns is clean unless an argument of the call is tainted: there is no taint across calls yet. A `PRIVATE` procedure that its own file calls with untrusted input is not seen either.
+- A check in a project function is not seen unless `validators` names it, so the sink after it is still reported. An allow-list held in a variable is not a literal list.
+- A main block does not see what a function or a method writes to its variables, only what a `RUN` of an internal procedure writes. `SHARED` variables are clean.
+- Statements that the parser does not model change no variable, except `COPY-LOB`.
+- A validator is trusted by name; the analysis does not check it.
 
 Limits:
 
@@ -259,6 +326,7 @@ RUN VALUE(c). // oxabl-ignore CL001: c comes from a fixed list
 - The `oxablFinding/v1` fingerprint is a hash of the rule, the workspace-relative path, the normalised text of the flagged line and span, and an occurrence number. It has no line number, so it does not change when the finding moves.
 - With `--baseline`, a result that the baseline does not cover has `baselineState: "new"`, and one that it covers has `"unchanged"`. Without `--baseline`, results have no `baselineState`.
 - A finding that an `oxabl-ignore` comment suppresses stays in `results` with `suppressions: [{ "kind": "inSource", "justification": "<reason>" }]`.
+- A security finding of taint mode has `codeFlows` with one `threadFlow`: each step of the path in the checked file, source first, with its label as the message, and the sink last. A finding in an include file has no `codeFlows`.
 - A failed file is a `toolExecutionNotifications` entry of level `error`; format drift is one of level `warning`.
 - The exit code does not change with the format. A suppressed or baselined finding does not fail the run.
 

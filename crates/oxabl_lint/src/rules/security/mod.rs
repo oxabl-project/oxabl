@@ -13,8 +13,22 @@
 //! The rules are complete and noisy on purpose. They do not follow a value
 //! back to where it came from, and they do not know a sanitiser: `QUOTER(x)`
 //! around a value still leaves the string non-constant. A baseline holds the
-//! findings of existing code; later stages add taint tracking inside a
-//! procedure and reachability from entry points.
+//! findings of existing code.
+//!
+//! # Stage 2: taint mode
+//!
+//! A rule whose finding depends on where a value comes from also has a taint
+//! mode, chosen by `[workspace.lint.security]` (`mode`, `modes`). At each
+//! stage 1 finding the rule asks a [`taint::Gate`] with the span of the
+//! argument and its [`taint::SinkKind`]. The gate keeps the finding when
+//! untrusted input reaches the argument without a sanitiser for that kind,
+//! drops it when nothing does, and keeps it as stage 1 when the analysis
+//! cannot judge it. So stage 2 only removes findings. A kept finding names its
+//! path in the message and carries each step as a label, source first; the
+//! labels of a security finding are that path and nothing else, which is how
+//! SARIF output reads them. ABLSEC008, ABLSEC009, ABLSEC013 and ABLSEC017 do
+//! not ask where a value comes from and have no taint mode. See [`taint`] for
+//! the analysis. A later stage adds reachability from entry points.
 //!
 //! All rules are in preview, context-free ([`crate::RuleMeta::context_free`])
 //! and report in the file where the sink text is written, so a sink inside an
@@ -70,7 +84,10 @@
 //! Put the rule in its own file, name it in the block for its stage below, and
 //! register it in `registry.rs`. Reuse [`literal`] for the "is this a
 //! literal" decision, so every rule agrees on it, and [`calls`] to find calls.
-//! Add a corpus under `tests/security_corpus` and a line to its precision note.
+//! A rule about where a value comes from takes a [`taint::Gate`] and registers
+//! with its `check` entry point. Add a corpus under `tests/security_corpus`
+//! (and `tests/security_corpus/taint` for a taint mode) and a line to its
+//! precision note.
 
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, Severity};

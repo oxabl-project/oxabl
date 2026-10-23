@@ -78,8 +78,10 @@
 //!
 //! The `security` group ([`security`]) is opt-in as well and holds the sink
 //! rules ABLSEC001 to ABLSEC009 and ABLSEC013 to ABLSEC017. They are in
-//! preview and context-free like the strict rules above; see the module for the design and
-//! [`security::literal`] for the shared "is this a literal" decision:
+//! preview and context-free like the strict rules above; see the module for the design,
+//! [`security::literal`] for the shared "is this a literal" decision, and
+//! [`security::taint`] for the taint mode (stage 2) that `[workspace.lint.security]`
+//! turns on:
 //!
 //! | Code      | Module                        | What it fires on                                         |
 //! |-----------|-------------------------------|----------------------------------------------------------|

@@ -32,12 +32,13 @@
 //! If the query has to be dynamic, `QUOTER()` every value and take field and
 //! table names from a literal allow-list.
 //!
-//! # `QUOTER` and stage 1
+//! # `QUOTER` and the two stages
 //!
 //! `QUOTER(x)` is the right fix, and stage 1 still reports a string that holds
 //! it. A concatenation is constant only when every part is a literal
-//! ([`literal`](super::literal)), and the rule does not yet know a sanitiser.
-//! The help of each finding says so. Use a baseline for code that is checked.
+//! ([`literal`](super::literal)), and stage 1 knows no sanitiser. The help of
+//! each finding says so. In taint mode (sink kind `query`) `QUOTER` clears the
+//! value, and so does a number conversion or a literal allow-list guard.
 //!
 //! # Where the rule looks
 //!
@@ -79,8 +80,8 @@ pub const DESCRIPTION: &str = "QUERY-PREPARE, FIND-FIRST, FIND-LAST, FIND-UNIQUE
 pub const HELP: &str = "Use a static `FOR EACH`, `FIND` or `OPEN QUERY` with variables, which bind values \
      instead of splicing them. If the query must be dynamic, wrap every value in `QUOTER()` and \
      take field and table names from a literal allow-list. `QUOTER()` does not make a \
-     concatenated string a literal: this check still reports it until a later stage accepts \
-     sanitisers.";
+     concatenated string a literal: in stage 1 this check still reports it; taint mode \
+     (`[workspace.lint.security] mode = \"taint\"`) accepts it.";
 
 /// Registry metadata.
 pub const META: RuleMeta = meta(

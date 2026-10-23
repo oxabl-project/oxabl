@@ -54,3 +54,37 @@ False negatives (a sink the rules do not see):
 - ABLSEC015: `X-DOCUMENT:LOAD` with a literal source; the XML library of a .NET class.
 - ABLSEC016: sizes that reach `SET-SIZE` through a `MEMPTR` copy; a `FILL` with a `BATCH-SIZE` that is set on another object; other unbounded reads (`COPY-LOB`, `IMPORT`).
 - ABLSEC017: `UPDATE`, `SET`, `IMPORT` and `INSERT` into `_User`, and a buffer of `_User` that a handle reaches.
+
+## Stage 2: the taint corpus
+
+`taint/ablsecNNN/*.p` holds the cases of the taint mode, for the ten rules that have one. Each program marks every line where a rule reports in either mode: `/* taint: real */` when untrusted input reaches the sink, `/* taint: safe */` when it does not. A finding on a line with no mark fails the test, so the marks are the whole truth of the corpus. `tests/security_rules/taint_corpus.rs` scores both modes against the marks.
+
+Each `cases.p` has, where the rule allows it: a tainted value used directly, through an assignment chain, through a temp-table field and through an unknown call; a value sanitised for the sink, and one sanitised for the wrong sink; a constant held in a variable; an unknown call with constant arguments; and a guard. Stage 2 must match every mark of a `cases.p`. A `limits.p` holds what stage 2 is known to get wrong, and the test pins those counts.
+
+The result, from `cargo test -p oxabl_lint --test security_rules taint_corpus -- --nocapture`:
+
+| Rule | Stage 1 TP / FP / FN | Precision | Recall | Stage 2 TP / FP / FN | Precision | Recall |
+|---|---|---|---|---|---|---|
+| ABLSEC001 | 6 / 6 / 0 | 0.50 | 1.00 | 5 / 1 / 1 | 0.83 | 0.83 |
+| ABLSEC002 | 6 / 4 / 0 | 0.60 | 1.00 | 6 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC003 | 6 / 5 / 0 | 0.55 | 1.00 | 5 / 1 / 1 | 0.83 | 0.83 |
+| ABLSEC004 | 6 / 4 / 0 | 0.60 | 1.00 | 6 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC005 | 6 / 3 / 0 | 0.67 | 1.00 | 6 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC006 | 5 / 4 / 0 | 0.56 | 1.00 | 5 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC007 | 5 / 4 / 0 | 0.56 | 1.00 | 5 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC014 | 3 / 2 / 0 | 0.60 | 1.00 | 3 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC015 | 2 / 1 / 0 | 0.67 | 1.00 | 2 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC016 | 2 / 2 / 0 | 0.50 | 1.00 | 2 / 0 / 0 | 1.00 | 1.00 |
+| All | 47 / 35 / 0 | 0.57 | 1.00 | 45 / 2 / 2 | 0.96 | 0.96 |
+
+The corpus is small and was written with the analysis, so these numbers say that the analysis does what it was designed to do. They do not measure real code. The two misses and the two false alarms are the known limits of stage 2:
+
+- Missed: a value that a function of the same file returns (no taint across calls), and a `PRIVATE` procedure that its own file calls with untrusted input.
+- Reported: a check in a project function that `validators` does not name, and an allow-list held in a variable instead of a literal.
+
+Other classes, not in the corpus:
+
+- False negatives: what a function or method writes to a main block variable; `SHARED` variables; statements the parser does not model (only `COPY-LOB` is read); a value inside an object (`oFilter:Where = pc` taints `oFilter` as a whole, so a later read of another member is tainted too).
+- False positives: an unknown call whose result does not carry its argument (`LENGTH` and other number functions are known; a user function that returns a fixed string from a tainted key is not); a guard the analysis does not read (`IF INDEX(x, "..") > 0 THEN RETURN.`, a regular-expression check, `MATCHES`); and a request-named object that is not a web request.
+
+`crates/oxabl/examples/security_corpus.rs` runs both modes over a tree (`OXABL_SECURITY_CORPUS=<dir>`). Over this directory, stage 2 reports 160 findings where stage 1 reports 230 (30% fewer); the rules without a taint mode do not change. Most stage 1 programs here have no untrusted source at all, because stage 1 does not need one.
