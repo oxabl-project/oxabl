@@ -15,7 +15,7 @@ use oxabl_parser::Parser;
 use oxabl_schema::Schema;
 use oxabl_semantic::{AnalysisContext, analyze_file};
 
-fn taint() -> SecurityOptions {
+pub fn taint() -> SecurityOptions {
     SecurityOptions {
         mode: SecurityMode::Taint,
         ..SecurityOptions::default()
@@ -23,7 +23,7 @@ fn taint() -> SecurityOptions {
 }
 
 /// Run the rule `code` over `src` with the security group on and `options`.
-fn run_with(code: &str, src: &str, options: SecurityOptions) -> Vec<Diagnostic> {
+pub fn run_with(code: &str, src: &str, options: SecurityOptions) -> Vec<Diagnostic> {
     let tokens = tokenize(src);
     let program = Parser::new(&tokens, src).parse_program();
     assert!(

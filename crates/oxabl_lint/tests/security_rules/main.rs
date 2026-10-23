@@ -22,6 +22,7 @@ mod corpus;
 mod group;
 mod literal;
 mod taint;
+mod taint_corpus;
 
 use std::path::PathBuf;
 
