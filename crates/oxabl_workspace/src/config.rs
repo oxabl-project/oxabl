@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use oxabl_common::{LintLayer, LintSeverityMap, Severity};
+use oxabl_common::{
+    LintLayer, LintSeverityMap, ParameterSources, SecurityMode, SecurityOptions, SecurityValidator,
+    Severity,
+};
 use oxabl_style::StyleGuide;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
@@ -216,6 +219,121 @@ pub struct LintConfig {
     /// ones.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub overrides: Vec<LintOverride>,
+
+    /// Options of the `security` rules (`[workspace.lint.security]`). Global:
+    /// an override does not read it.
+    #[serde(skip_serializing_if = "SecurityConfig::is_default")]
+    pub security: SecurityConfig,
+}
+
+/// How a `security` rule decides that a sink is a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityModeSetting {
+    /// Stage 1: every sink whose argument is not a literal.
+    #[default]
+    Sink,
+    /// Stage 2: a sink that untrusted input can reach inside one procedure
+    /// without a sanitiser for that sink.
+    Taint,
+}
+
+impl SecurityModeSetting {
+    fn lower(self) -> SecurityMode {
+        match self {
+            SecurityModeSetting::Sink => SecurityMode::Sink,
+            SecurityModeSetting::Taint => SecurityMode::Taint,
+        }
+    }
+}
+
+/// Which input parameters the taint stage counts as untrusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ParameterSourcesSetting {
+    /// Parameters of the main block, of a procedure or function that is not
+    /// `PRIVATE`, and of a method or constructor that is not `PRIVATE`.
+    #[default]
+    External,
+    /// Every input parameter.
+    All,
+    /// No parameter.
+    None,
+}
+
+/// A project function that validates or cleans a value.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecurityValidatorConfig {
+    /// Function or method name, compared case-insensitively.
+    pub name: String,
+    /// Sink kinds it protects: `query`, `sql`, `command`, `code`, `path`,
+    /// `html`, `header`, `deserialize`, `xml`, `size`, or `all`.
+    pub protects: Vec<String>,
+}
+
+/// The `[workspace.lint.security]` table.
+///
+/// `mode` chooses stage 1 (`sink`, the default) or stage 2 (`taint`) for every
+/// security rule that has a taint mode; `modes` sets one rule, by code or kebab
+/// name. The other keys say what the taint stage counts as a source and as a
+/// sanitiser.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SecurityConfig {
+    /// The mode of every rule that `modes` does not name.
+    pub mode: SecurityModeSetting,
+    /// Per-rule modes, keyed by code (`ABLSEC005`) or kebab name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub modes: BTreeMap<String, SecurityModeSetting>,
+    /// Which input parameters are untrusted.
+    pub parameters: ParameterSourcesSetting,
+    /// Whether a database field read is untrusted. Default `false`.
+    pub database_fields: bool,
+    /// Project functions and methods whose result is untrusted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+    /// Project functions that validate or clean a value, with the sink kinds
+    /// each protects.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub validators: Vec<SecurityValidatorConfig>,
+}
+
+impl SecurityConfig {
+    fn is_default(&self) -> bool {
+        *self == SecurityConfig::default()
+    }
+
+    /// Lower to the application form.
+    pub fn to_options(&self) -> SecurityOptions {
+        SecurityOptions {
+            mode: self.mode.lower(),
+            modes: self
+                .modes
+                .iter()
+                .map(|(k, m)| (k.trim().to_ascii_lowercase(), m.lower()))
+                .collect(),
+            parameters: match self.parameters {
+                ParameterSourcesSetting::External => ParameterSources::External,
+                ParameterSourcesSetting::All => ParameterSources::All,
+                ParameterSourcesSetting::None => ParameterSources::None,
+            },
+            database_fields: self.database_fields,
+            sources: self.sources.clone(),
+            validators: self
+                .validators
+                .iter()
+                .map(|v| SecurityValidator {
+                    name: v.name.clone(),
+                    protects: v
+                        .protects
+                        .iter()
+                        .map(|k| k.trim().to_ascii_lowercase())
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A problem in the `files` of a `[[workspace.lint.overrides]]` entry that makes
@@ -238,6 +356,7 @@ impl LintConfig {
     pub fn to_severity_map_at(&self, root: &Path) -> (LintSeverityMap, Vec<RejectedLintPattern>) {
         let mut map = LintSeverityMap::new();
         *map.base_mut() = self.settings.to_layer();
+        map.set_security(self.security.to_options());
         let mut rejected = Vec::new();
         for entry in &self.overrides {
             if entry.files.is_empty() {
@@ -862,6 +981,50 @@ proversion = "12.8"
             WorkspaceConfig::from_toml(toml).is_err(),
             "enable is a list"
         );
+    }
+
+    #[test]
+    fn the_security_table_reaches_the_lint_map_and_holds_no_rule_keys() {
+        let lint = lint_of(
+            r#"
+[workspace.lint]
+enable = ["security"]
+ABLSEC003 = "warn"
+
+[workspace.lint.security]
+mode = "taint"
+parameters = "all"
+database-fields = true
+sources = ["read-body"]
+
+[workspace.lint.security.modes]
+path-traversal = "sink"
+
+[[workspace.lint.security.validators]]
+name = "valid-code"
+protects = ["Query", "path"]
+"#,
+        );
+        assert_eq!(lint.rule_selectors().collect::<Vec<_>>(), ["ABLSEC003"]);
+        let (map, _) = lint.to_severity_map_at(Path::new("/ws"));
+        let options = map.for_path(Path::new("/ws/a.p")).security().clone();
+        assert_eq!(options.mode, SecurityMode::Taint);
+        assert_eq!(
+            options.mode_for("ABLSEC005", "path-traversal"),
+            SecurityMode::Sink
+        );
+        assert_eq!(options.parameters, ParameterSources::All);
+        assert!(options.database_fields);
+        assert_eq!(options.sources, ["read-body"]);
+        assert_eq!(options.validators[0].protects, ["query", "path"]);
+    }
+
+    #[test]
+    fn a_misspelled_security_key_is_an_error() {
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint.security]\nmod = \"taint\"\n";
+        assert!(toml::from_str::<WorkspaceConfig>(toml).is_err());
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint.security]\nmode = \"strict\"\n";
+        assert!(toml::from_str::<WorkspaceConfig>(toml).is_err());
     }
 
     #[test]

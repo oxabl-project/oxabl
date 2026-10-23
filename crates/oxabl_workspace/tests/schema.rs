@@ -25,7 +25,7 @@ fn lint_schema_declares_groups_and_overrides() {
     let lint = &schema["definitions"]["LintConfig"];
     assert_eq!(
         object_keys(&lint["properties"]),
-        ["disable", "enable", "overrides"]
+        ["disable", "enable", "overrides", "security"]
             .into_iter()
             .map(String::from)
             .collect()
