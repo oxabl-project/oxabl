@@ -525,3 +525,26 @@ hQ:QUERY-PREPARE({&UNDEFINED}).
 ";
     assert_eq!(check_taint("ABLSEC001", src).len(), 1);
 }
+
+#[test]
+fn a_main_block_sees_what_an_internal_procedure_writes_after_running_it() {
+    let src = "\
+DEFINE VARIABLE cCmd AS CHARACTER NO-UNDO.
+cCmd = \"ls\".
+OS-COMMAND SILENT VALUE(cCmd).
+RUN read-command.
+OS-COMMAND SILENT VALUE(cCmd).
+PROCEDURE read-command:
+    cCmd = get-value(\"cmd\").
+END PROCEDURE.
+";
+    let diags = check_taint("ABLSEC003", src);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(src[diags[0].span.span.start as usize..].starts_with("VALUE(cCmd).\nPROCEDURE"));
+    assert!(diags[0].message.contains("`cCmd`"), "{}", diags[0].message);
+    assert!(
+        diags[0].message.contains("web input `get-value`"),
+        "{}",
+        diags[0].message
+    );
+}

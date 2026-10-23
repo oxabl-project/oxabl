@@ -71,11 +71,10 @@ pub(super) struct Value(pub Vec<Term>);
 pub(super) enum Term {
     Slot(u32),
     Origin(u32),
-    /// A file-level variable or field the unit never used, at its summary.
-    Summary {
+    /// A file-level variable or field, at its summary.
+    File {
         name: String,
         key: String,
-        labels: Labels,
     },
     /// The sub-value with these kinds removed.
     Clear(u32, Value),
@@ -100,14 +99,15 @@ impl Value {
         }
     }
 
-    /// The labels of the value against `fact`, and whether it holds Unknown.
-    pub fn eval(&self, fact: &Provenance) -> (Labels, bool) {
+    /// The labels of the value against `fact` and the file-level `files`,
+    /// and whether it holds Unknown.
+    pub fn eval(&self, fact: &Provenance, files: &Summaries) -> (Labels, bool) {
         let mut out = Labels::new();
-        let unknown = self.eval_into(fact, &mut out);
+        let unknown = self.eval_into(fact, files, &mut out);
         (out, unknown)
     }
 
-    fn eval_into(&self, fact: &Provenance, out: &mut Labels) -> bool {
+    fn eval_into(&self, fact: &Provenance, files: &Summaries, out: &mut Labels) -> bool {
         let mut unknown = false;
         for t in &self.0 {
             match t {
@@ -117,12 +117,14 @@ impl Value {
                 Term::Origin(o) => {
                     provenance::merge(out, &[(*o, ALL)]);
                 }
-                Term::Summary { labels, .. } => {
-                    provenance::merge(out, labels);
+                Term::File { key, .. } => {
+                    if let Some(l) = files.labels.get(key) {
+                        provenance::merge(out, l);
+                    }
                 }
                 Term::Clear(mask, v) => {
                     let mut inner = Labels::new();
-                    unknown |= v.eval_into(fact, &mut inner);
+                    unknown |= v.eval_into(fact, files, &mut inner);
                     provenance::clear(&mut inner, *mask);
                     provenance::merge(out, &inner);
                 }
@@ -141,13 +143,18 @@ impl Value {
         })
     }
 
-    /// The summary term that carries `origin`: its name and key.
-    pub fn summary_with(&self, origin: u32) -> Option<(&str, &str)> {
+    /// The file-level term that carries `origin`: its name and key.
+    pub fn file_with(&self, files: &Summaries, origin: u32) -> Option<(&str, &str)> {
         self.0.iter().find_map(|t| match t {
-            Term::Summary { name, key, labels } if labels.iter().any(|(o, _)| *o == origin) => {
+            Term::File { name, key }
+                if files
+                    .labels
+                    .get(key)
+                    .is_some_and(|l| l.iter().any(|(o, _)| *o == origin)) =>
+            {
                 Some((name.as_str(), key.as_str()))
             }
-            Term::Clear(_, v) => v.summary_with(origin),
+            Term::Clear(_, v) => v.file_with(files, origin),
             _ => None,
         })
     }
@@ -224,7 +231,7 @@ pub(super) struct Compiler<'c> {
     pub declared: &'c FxHashSet<String>,
     /// Reading an operand after the solve: a slot the unit never used is not
     /// added, and a file-level one reads its summary.
-    pub frozen: Option<&'c Summaries>,
+    pub frozen: bool,
 }
 
 /// How a function name changes the value of its arguments.
@@ -326,7 +333,7 @@ impl Compiler<'_> {
         if let Some(s) = self.slots.get(&key) {
             return Some(s);
         }
-        if self.frozen.is_some() {
+        if self.frozen {
             return None;
         }
         let id = self.slots.info.len() as u32;
@@ -372,13 +379,13 @@ impl Compiler<'_> {
 
     /// After the solve, a name the unit never used: its file-level summary.
     fn summary(&self, name: &str, key: &str) -> Value {
-        match self.frozen.and_then(|s| s.labels.get(key)) {
-            Some(l) if !self.declared.contains(key) => Value(vec![Term::Summary {
+        if self.frozen && !self.declared.contains(key) {
+            Value(vec![Term::File {
                 name: name.to_string(),
                 key: key.to_string(),
-                labels: l.clone(),
-            }]),
-            _ => Value::default(),
+            }])
+        } else {
+            Value::default()
         }
     }
 

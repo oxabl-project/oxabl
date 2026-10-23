@@ -13,7 +13,7 @@ use oxabl_lexer::Kind;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, is_constant};
-use super::value::{Compiler, Origins, Slots, Summaries, Tables, Value};
+use super::value::{Compiler, Origins, Slots, Summaries, Tables, Term, Value};
 use super::{ALL, Options};
 
 /// The most work the solve of one unit may do. Past it the unit is Unknown.
@@ -711,7 +711,7 @@ pub(super) fn compile(
                 slots: &mut slots,
                 origins,
                 declared: &declared,
-                frozen: None,
+                frozen: false,
             },
             source,
             external: is_external(unit, unit_stmt, source, options),
@@ -745,20 +745,21 @@ pub(super) fn compile(
 /// The forward problem of one unit.
 struct Problem<'a> {
     ir: &'a UnitIr,
+    files: &'a Summaries,
     seeds: Provenance,
 }
 
 impl Problem<'_> {
     fn apply(&self, node: NodeIx, fact: &mut Provenance) {
         for op in &self.ir.ops[node.index()] {
-            apply(op, fact);
+            apply(op, fact, self.files);
         }
     }
 }
 
 /// Apply one write to `fact`.
-pub(super) fn apply(op: &Op, fact: &mut Provenance) {
-    let (labels, _) = op.value.eval(fact);
+pub(super) fn apply(op: &Op, fact: &mut Provenance, files: &Summaries) {
+    let (labels, _) = op.value.eval(fact, files);
     if op.strong {
         fact.set(op.slot as usize, labels);
     } else {
@@ -824,12 +825,61 @@ pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, summaries: &Summaries) -> Option<Sol
             seeds.set(i, l.clone());
         }
     }
-    let problem = Problem { ir, seeds };
+    let problem = Problem {
+        ir,
+        files: summaries,
+        seeds,
+    };
     let limits = Limits {
         visits: default_budget(cfg),
         work: WORK_LIMIT,
     };
     solve_bounded(cfg, &problem, limits).ok()
+}
+
+/// At each `RUN` of an internal procedure in a main block, the main block
+/// variables that another unit writes take what that unit wrote.
+pub(super) fn refresh_after_runs(
+    cfg: &Cfg,
+    main: &mut UnitIr,
+    stmts: &FxHashMap<NodeId, &Statement>,
+    procedures: &FxHashSet<String>,
+    written: &FxHashSet<String>,
+) {
+    let keys: Vec<(u32, String, String)> = main
+        .slots
+        .info
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| written.contains(&s.key))
+        .map(|(i, s)| (i as u32, s.name.clone(), s.key.clone()))
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    for (i, n) in cfg.nodes() {
+        let Some(S::Run {
+            target: RunTarget::Literal { name, .. },
+            ..
+        }) = n.stmt.and_then(|id| stmts.get(&id)).map(|s| &s.kind)
+        else {
+            continue;
+        };
+        if !procedures.contains(&name.to_ascii_lowercase()) {
+            continue;
+        }
+        for (slot, name, key) in &keys {
+            main.ops[i.index()].push(Op {
+                slot: *slot,
+                value: Value(vec![Term::File {
+                    name: name.clone(),
+                    key: key.clone(),
+                }]),
+                strong: false,
+                span: n.span,
+            });
+        }
+    }
 }
 
 /// Add what `ir` writes to file-level slots to `into`.

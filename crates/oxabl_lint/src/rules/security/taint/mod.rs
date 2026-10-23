@@ -54,12 +54,13 @@ mod unit;
 mod value;
 mod witness;
 
-use oxabl_ast::{Span, Statement};
+use oxabl_ast::{Span, Statement, StatementKind};
 use oxabl_common::{Label, ParameterSources, SecurityMode, SecurityOptions};
 use oxabl_flow::FileFlow;
 use oxabl_flow::dataflow::Solution;
 use oxabl_flow::provenance::Provenance;
 use oxabl_semantic::AnalysisContext;
+use rustc_hash::FxHashSet;
 
 use super::literal::StatementText;
 use crate::rules::syntactic::file_span;
@@ -200,11 +201,35 @@ pub(crate) fn analyze(
     let stmts = unit::statements(program);
     let tables = unit::tables(&stmts);
     let mut origins = Origins::default();
-    let units: Vec<UnitIr> = flow
+    let mut units: Vec<UnitIr> = flow
         .units()
         .iter()
         .map(|cfg| unit::compile(cfg, &stmts, &tables, source, &options, &mut origins))
         .collect();
+    let procedures: FxHashSet<String> = stmts
+        .values()
+        .filter_map(|s| match &s.kind {
+            StatementKind::Procedure { name, .. } => Some(name.name.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let written: FxHashSet<String> = units
+        .iter()
+        .filter(|ir| !ir.main)
+        .flat_map(|ir| {
+            ir.ops
+                .iter()
+                .flatten()
+                .map(|op| &ir.slots.info[op.slot as usize])
+        })
+        .filter(|s| s.global)
+        .map(|s| s.key.clone())
+        .collect();
+    if let (Some(cfg), Some(main)) = (flow.units().first(), units.first_mut())
+        && main.main
+    {
+        unit::refresh_after_runs(cfg, main, &stmts, &procedures, &written);
+    }
     let mut summaries = Summaries::default();
     let mut solutions = Vec::new();
     for _ in 0..ROUNDS {
@@ -296,7 +321,7 @@ impl FileTaint {
             slots: &mut slots,
             origins: &mut origins,
             declared: &ir.declared,
-            frozen: Some(&self.summaries),
+            frozen: true,
         }
         .tokens(&st, 0..st.len());
         let mut fact = Provenance::new(ir.slots.len());
@@ -306,11 +331,11 @@ impl FileTaint {
                 .iter()
                 .filter(|op| op.span.end <= operand.start)
             {
-                unit::apply(op, &mut f);
+                unit::apply(op, &mut f, &self.summaries);
             }
             fact.join(&f);
         }
-        let (labels, unknown) = value.eval(&fact);
+        let (labels, unknown) = value.eval(&fact, &self.summaries);
         if unknown {
             return Reach::Unknown;
         }

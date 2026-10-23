@@ -58,7 +58,7 @@ pub(super) fn path(
     if !value.holds_origin(origin) {
         slot = slot_with(value, fact, origin);
         if slot.is_none()
-            && let Some((name, key)) = value.summary_with(origin)
+            && let Some((name, key)) = value.file_with(&ft.summaries, origin)
         {
             steps.push(global(name, key));
         }
@@ -70,7 +70,7 @@ pub(super) fn path(
             break;
         }
         let info = &ir.slots.info[s as usize];
-        let Some((node, k)) = find_def(cfg, ir, sol, &starts, limit, s, origin) else {
+        let Some((node, k)) = find_def(ft, cfg, ir, sol, &starts, limit, s, origin) else {
             if info.global {
                 steps.push(global(&info.name, &info.key));
             }
@@ -87,7 +87,11 @@ pub(super) fn path(
         if op.value.holds_origin(origin) {
             break;
         }
-        slot = slot_with(&op.value, &fact_before(sol, ir, node, k), origin);
+        if let Some((name, key)) = op.value.file_with(&ft.summaries, origin) {
+            steps.push(global(name, key));
+            break;
+        }
+        slot = slot_with(&op.value, &fact_before(ft, sol, ir, node, k), origin);
         starts = vec![node];
         limit = op.span.start;
     }
@@ -112,25 +116,40 @@ fn slot_with(value: &Value, fact: &Provenance, origin: u32) -> Option<u32> {
 }
 
 /// The fact before the `k`-th write of `node`.
-fn fact_before(sol: &Solution<Provenance>, ir: &UnitIr, node: NodeIx, k: usize) -> Provenance {
+fn fact_before(
+    ft: &FileTaint,
+    sol: &Solution<Provenance>,
+    ir: &UnitIr,
+    node: NodeIx,
+    k: usize,
+) -> Provenance {
     let mut f = sol.before(node).clone();
     for op in &ir.ops[node.index()][..k] {
-        apply(op, &mut f);
+        apply(op, &mut f, &ft.summaries);
     }
     f
 }
 
 /// Whether the `k`-th write of `node` puts `origin` into its slot.
-fn writes(sol: &Solution<Provenance>, ir: &UnitIr, node: NodeIx, k: usize, origin: u32) -> bool {
+fn writes(
+    ft: &FileTaint,
+    sol: &Solution<Provenance>,
+    ir: &UnitIr,
+    node: NodeIx,
+    k: usize,
+    origin: u32,
+) -> bool {
     let (labels, _) = ir.ops[node.index()][k]
         .value
-        .eval(&fact_before(sol, ir, node, k));
+        .eval(&fact_before(ft, sol, ir, node, k), &ft.summaries);
     labels.iter().any(|(o, _)| *o == origin)
 }
 
 /// The nearest write of `slot` before `starts` (before `limit` within them)
 /// that carries `origin`.
+#[allow(clippy::too_many_arguments)]
 fn find_def(
+    ft: &FileTaint,
     cfg: &Cfg,
     ir: &UnitIr,
     sol: &Solution<Provenance>,
@@ -147,7 +166,7 @@ fn find_def(
             .find(|(k, op)| {
                 op.slot == slot
                     && (!within || op.span.end <= limit)
-                    && writes(sol, ir, n, *k, origin)
+                    && writes(ft, sol, ir, n, *k, origin)
             })
             .map(|(k, _)| (n, k))
     };
