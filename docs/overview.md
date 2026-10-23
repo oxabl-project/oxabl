@@ -148,8 +148,17 @@ The `security` group finds code where a value that is not a literal reaches a da
 | ABLSEC003 | `os-command` | `OS-COMMAND`, `UNIX`, `DOS` and `INPUT`, `OUTPUT` or `INPUT-OUTPUT THROUGH` with a `VALUE(...)` that is not a literal | `error` |
 | ABLSEC004 | `dynamic-code` | `RUN VALUE`, `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `Progress.Lang.Class:GetClass`, `COMPILE VALUE` and `CALL-NAME` with a name that is not a literal | `error` |
 | ABLSEC005 | `path-traversal` | `INPUT FROM` and `OUTPUT TO` with `VALUE(...)` or `OS-DIR(...)`, `OS-DELETE`, `OS-COPY`, `OS-RENAME`, `OS-CREATE-DIR`, `COPY-LOB ... FILE` and `FILE-INFO:FILE-NAME` with a path that is not a literal | `warning` |
+| ABLSEC006 | `xss-output` | `{&OUT}`, `PUT STREAM WebStream`, `Write` on a response writer and `Entity` of a response given a value that is not a literal | `warning` |
+| ABLSEC007 | `header-injection` | `SetHeader`, `AddHeader`, `SetCookie`, `Location`, `HttpHeader` and `Cookie` objects, `HttpHeaderBuilder`, and WebSpeed `output-http-header` and `set-cookie` given a value that is not a literal | `warning` |
+| ABLSEC008 | `hardcoded-secret` | `CONNECT` with a literal `-P`, an `oech1::` string, `ENCRYPT`, `DECRYPT` and `GENERATE-PBE-KEY` with a literal key, and a literal assigned to a password-like name | `error` |
+| ABLSEC009 | `weak-crypto` | `ENCODE`, `MD5-DIGEST`, `SHA1-DIGEST` and `MESSAGE-DIGEST("MD5")` of a password-like or token-like name, and `RANDOM` that feeds a token, nonce or identifier | `warning` |
+| ABLSEC013 | `information-leak` | `ERROR-STATUS:GET-MESSAGE`, `GetMessage` and `CallStack` of a caught error assigned to an output parameter or written to a web response, and a password-like name passed to `MESSAGE` or `LOG-MANAGER:WRITE-MESSAGE` | `warning` |
+| ABLSEC014 | `unsafe-deserialization` | `Deserialize` of a value that is not a literal | `warning` |
+| ABLSEC015 | `untrusted-xml` | `X-DOCUMENT:LOAD` of a source that is not a literal, and `SAX-PARSE`, `SAX-PARSE-FIRST` | `info` |
+| ABLSEC016 | `resource-exhaustion` | `SET-SIZE(m) = expr`, a socket `READ` with a byte count that is not a literal and has no cap, and `FILL` with no `BATCH-SIZE` in the file | `info` |
+| ABLSEC017 | `integrity-bypass` | `DISABLE TRIGGERS`, and `CREATE`, `DELETE` and field assignments on `_User` | `warning` |
 
-The catalogue rates ABLSEC002 to ABLSEC004 critical and ABLSEC001 and ABLSEC005 high; oxabl has `error`, `warning`, `info` and `hint`, so the first four report as `error` and ABLSEC005 as `warning`. Change that per rule in `oxabl.toml` as for any rule. SARIF output also carries the catalogue rating as `security-severity`: `9.5` for critical and `8.0` for high. `// oxabl-ignore ABLSEC001: <reason>` suppresses one finding.
+The catalogue rates ABLSEC002 to ABLSEC004 critical; ABLSEC001, ABLSEC005, ABLSEC006, ABLSEC008, ABLSEC009 and ABLSEC014 high; ABLSEC007, ABLSEC013, ABLSEC016 and ABLSEC017 medium; and ABLSEC015 "needs review". oxabl has `error`, `warning`, `info` and `hint`, so critical impact and ABLSEC001 and ABLSEC008 report as `error`; the other high and medium impact rules report as `warning`, because their patterns are often benign or heuristic; and ABLSEC015 and ABLSEC016 report as `info`. Change that per rule in `oxabl.toml` as for any rule. SARIF output also carries the catalogue rating as `security-severity`: `9.5` for critical, `8.0` for high, `5.5` for medium and `3.0` for needs review. `// oxabl-ignore ABLSEC001: <reason>` suppresses one finding.
 
 An argument counts as a literal when it is a string or number literal, a `+` of literals, or text that a preprocessor name expanded to one. A variable, a field and a function call are not literals. `QUOTER(x)` around a value does not make a string a literal: the rules still report it, and the help of the finding says so. A later stage will accept sanitisers.
 
@@ -160,6 +169,14 @@ Limits:
 - `OS-COMMAND`, `UNIX`, `DOS`, `OS-DELETE`, `OS-COPY`, `OS-RENAME`, `OS-CREATE-DIR`, `COPY-LOB` and `COMPILE` are not modelled by the parser. The rules read their text, and look only at the operands listed above.
 - Method names such as `FIND-FIRST` and `CommandText` are matched by spelling, because the rules have no type information.
 - Embedded SQL (`EXEC SQL`), a command or path set through a class the table does not list, and a value that is built in one procedure and used in another are not seen.
+- ABLSEC008 is the one rule that reports a literal. A finding never repeats the secret: the message shows `"****"` and `oech1::****`. The text output of `oxabl check` still prints the source line of a finding, as it does for every rule, so a secret is visible there; the JSON and SARIF reports hold the message only. A name is password-like when one of its words is `password`, `pwd`, `passphrase`, `secret`, `apikey` or one of a few more; a name that also holds a word such as `label` or `prompt` is not. The lists are in `oxabl_lint::security::names::Heuristics`, and a program that embeds `oxabl_lint` passes its own to `run_with`; `oxabl.toml` does not set them yet.
+- ABLSEC009 and ABLSEC013 read names with the same lists. They are heuristics: a hash of a password in a variable with a neutral name is not seen, and a digest of a value named `cTokenCacheKey` is reported.
+- ABLSEC013 follows error text only inside one statement, to an `OUTPUT` parameter of the file or to a web response. A detail kept in a local variable and returned later is not seen.
+- ABLSEC006 and ABLSEC013 take a web response from the name of the object (`oResp`, `oResponse`, `oWriter`) and from `{&OUT}`, which the web include defines as `PUT STREAM WebStream UNFORMATTED`. When the include that defines `{&OUT}` is not on the include path, the preprocessor expands the name to nothing and the write is not seen.
+- A class name that comes from data (`Progress.Lang.Class:GetClass`, `DYNAMIC-NEW`) is reported by ABLSEC004 only. ABLSEC014 reports `Deserialize`, so each call has one owner.
+- ABLSEC015 reports every `SAX-PARSE` and `SAX-PARSE-FIRST`, because the input is set by an earlier call that the rule does not follow. It is a prompt for review.
+- ABLSEC016 treats one `BATCH-SIZE` assignment (other than `0`) anywhere in the file as the cap of every `FILL` in it. The parser drops a statement with a `READ-AVAILABLE` or `READ-EXACT-NUM` argument, so socket reads are found by lexing the file for `:READ(`.
+- ABLSEC017 does not know where a program lives. List the programs where `DISABLE TRIGGERS` and `_User` writes are expected in an override: `[[workspace.lint.overrides]]` with `files = ["utils/load/**"]` and `ABLSEC017 = "off"`.
 
 Configure lint in `[workspace.lint]` in `oxabl.toml`:
 

@@ -1,0 +1,7 @@
+/* expect: 3 */
+DEFINE INPUT PARAMETER piLen AS INTEGER NO-UNDO.
+DEFINE VARIABLE mBuf AS MEMPTR NO-UNDO.
+
+SET-SIZE(mBuf) = piLen.
+SET-SIZE(mBuf) = piLen + 4.
+ASSIGN SET-SIZE(mBuf) = piLen.

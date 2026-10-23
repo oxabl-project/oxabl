@@ -1,0 +1,1 @@
+oResp:SetHeader("Location", cUrl).

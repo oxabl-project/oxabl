@@ -233,3 +233,124 @@ fn sarif_carries_the_security_severity_of_each_security_rule() {
         .collect();
     assert!(results.contains(&"ABLSEC001".to_string()), "{results:?}");
 }
+
+const MORE_SINKS: &str = "\
+DEFINE OUTPUT PARAMETER pcError AS CHARACTER NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO.
+oWriter:Write(c).
+oResp:SetHeader(\"Location\", c).
+cPassword = \"hunter2hunter2\".
+cHash = MD5-DIGEST(cPassword).
+pcError = ERROR-STATUS:GET-MESSAGE(1).
+oSer:Deserialize(c).
+hDoc:LOAD(\"file\", c, FALSE).
+SET-SIZE(m) = n.
+DISABLE TRIGGERS FOR LOAD OF Customer.
+";
+
+#[test]
+fn the_remaining_sink_rules_report_at_their_default_severities() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    write(&dir.path().join("a.p"), MORE_SINKS);
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    let mut sec: Vec<_> = findings(&json(&stdout))
+        .into_iter()
+        .filter(|(_, c, _)| c.starts_with("ABLSEC"))
+        .map(|(_, c, s)| (c, s))
+        .collect();
+    sec.sort();
+    let want = [
+        ("ABLSEC006", "warning"),
+        ("ABLSEC007", "warning"),
+        ("ABLSEC008", "error"),
+        ("ABLSEC009", "warning"),
+        ("ABLSEC013", "warning"),
+        ("ABLSEC014", "warning"),
+        ("ABLSEC015", "info"),
+        ("ABLSEC016", "info"),
+        ("ABLSEC017", "warning"),
+    ];
+    let want: Vec<_> = want
+        .iter()
+        .map(|(c, s)| (c.to_string(), s.to_string()))
+        .collect();
+    assert_eq!(sec, want);
+}
+
+#[test]
+fn a_hard_coded_secret_is_not_in_the_message_of_a_report() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    write(&dir.path().join("a.p"), MORE_SINKS);
+    for args in [&[".", "--json"][..], &[".", "--format", "sarif"]] {
+        let (_, stdout, stderr) = check(dir.path(), args);
+        assert!(!stdout.contains("hunter2"), "{args:?}: {stdout}");
+        assert!(!stderr.contains("hunter2"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn an_override_lists_the_programs_where_integrity_statements_are_expected() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config(
+            "[workspace.lint]\nenable = [\"security\"]\n\
+             [[workspace.lint.overrides]]\nfiles = [\"utils/**\"]\nABLSEC017 = \"off\"\n",
+        ),
+    );
+    let load = "DISABLE TRIGGERS FOR LOAD OF Customer.\n";
+    write(&dir.path().join("utils/load.p"), load);
+    write(&dir.path().join("app/run.p"), load);
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    let found: Vec<_> = findings(&json(&stdout))
+        .into_iter()
+        .filter(|(_, c, _)| c == "ABLSEC017")
+        .collect();
+    assert_eq!(found.len(), 1, "{found:?} {stderr}");
+    assert!(found[0].0.ends_with("app/run.p"), "{found:?}");
+}
+
+#[test]
+fn sarif_carries_the_security_severity_of_the_remaining_rules() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    write(&dir.path().join("a.p"), MORE_SINKS);
+    let (_, stdout, _) = check(dir.path(), &[".", "--format", "sarif"]);
+    let doc = json(&stdout);
+    let rules = doc["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    let severity = |id: &str| {
+        rules
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is listed"))["properties"]["security-severity"]
+            .clone()
+    };
+    for (id, want) in [
+        ("ABLSEC006", "8.0"),
+        ("ABLSEC007", "5.5"),
+        ("ABLSEC008", "8.0"),
+        ("ABLSEC009", "8.0"),
+        ("ABLSEC013", "5.5"),
+        ("ABLSEC014", "8.0"),
+        ("ABLSEC015", "3.0"),
+        ("ABLSEC016", "5.5"),
+        ("ABLSEC017", "5.5"),
+    ] {
+        assert_eq!(severity(id), want, "{id}");
+    }
+}

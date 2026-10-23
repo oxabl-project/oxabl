@@ -21,7 +21,11 @@ use crate::rules::{
     lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
     missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
     run_value, scope_widened,
-    security::{dynamic_code, dynamic_query, foreign_sql, os_command, path_traversal},
+    security::{
+        dynamic_code, dynamic_query, foreign_sql, hardcoded_secret, header_injection,
+        information_leak, integrity_bypass, os_command, path_traversal, resource_exhaustion,
+        unsafe_deserialization, untrusted_xml, weak_crypto, xss_output,
+    },
     shared_state, signature_mismatch, transaction_spans_call, transaction_spans_ui,
     type_mismatch_assignment, undefined_symbol, unknown_in_comparison, unknown_propagation,
     unknown_table_or_field, unresolved_call, unused_variable,
@@ -765,7 +769,17 @@ pub const BUILTIN_RULES: &[FnRule] = &[
     FnRule::new(os_command::META, os_command::run),
     FnRule::new(dynamic_code::META, dynamic_code::run),
     FnRule::new(path_traversal::META, path_traversal::run),
-    // Security, ABLSEC006 and later: add entries below this line.
+    // Security, ABLSEC006 to ABLSEC009 and ABLSEC013 to ABLSEC017.
+    FnRule::new(xss_output::META, xss_output::run),
+    FnRule::new(header_injection::META, header_injection::run),
+    FnRule::new(hardcoded_secret::META, hardcoded_secret::run),
+    FnRule::new(weak_crypto::META, weak_crypto::run),
+    FnRule::new(information_leak::META, information_leak::run),
+    FnRule::new(unsafe_deserialization::META, unsafe_deserialization::run),
+    FnRule::new(untrusted_xml::META, untrusted_xml::run),
+    FnRule::new(resource_exhaustion::META, resource_exhaustion::run),
+    FnRule::new(integrity_bypass::META, integrity_bypass::run),
+    // Security, ABLSEC010 and later: add entries below this line.
 ];
 
 /// The run of a rule whose diagnostics come from the suppression pass

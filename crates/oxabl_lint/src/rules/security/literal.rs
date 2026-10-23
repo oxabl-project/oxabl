@@ -123,7 +123,14 @@ pub struct StatementText<'a> {
 impl<'a> StatementText<'a> {
     /// Lex `stmt`, or `None` when its span does not fall inside `source`.
     pub fn of(source: &'a str, stmt: &Statement) -> Option<Self> {
-        let text = super::super::syntactic::source_of(source, stmt.span)?;
+        Self::over(source, stmt.span)
+    }
+
+    /// Lex the text of `span`, or `None` when it does not fall inside
+    /// `source`. For a statement whose tokens the parser did not keep in its
+    /// own span.
+    pub fn over(source: &'a str, span: Span) -> Option<Self> {
+        let text = super::super::syntactic::source_of(source, span)?;
         let mut tokens: Vec<Token> = tokenize(text)
             .into_iter()
             .filter(|t| !matches!(t.kind, Kind::Eof | Kind::Comment))
@@ -133,7 +140,7 @@ impl<'a> StatementText<'a> {
         }
         Some(StatementText {
             text,
-            base: stmt.span.start,
+            base: span.start,
             tokens,
         })
     }

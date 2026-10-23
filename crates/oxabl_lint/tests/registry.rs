@@ -155,6 +155,20 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ("ABLSEC003", "os-command", "security", error),
             ("ABLSEC004", "dynamic-code", "security", error),
             ("ABLSEC005", "path-traversal", "security", warning),
+            ("ABLSEC006", "xss-output", "security", warning),
+            ("ABLSEC007", "header-injection", "security", warning),
+            ("ABLSEC008", "hardcoded-secret", "security", error),
+            ("ABLSEC009", "weak-crypto", "security", warning),
+            ("ABLSEC013", "information-leak", "security", warning),
+            ("ABLSEC014", "unsafe-deserialization", "security", warning),
+            ("ABLSEC015", "untrusted-xml", "security", Severity::Info),
+            (
+                "ABLSEC016",
+                "resource-exhaustion",
+                "security",
+                Severity::Info
+            ),
+            ("ABLSEC017", "integrity-bypass", "security", warning),
         ]
     );
     for rule in registry.rules() {

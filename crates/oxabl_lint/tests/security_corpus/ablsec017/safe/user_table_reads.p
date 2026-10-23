@@ -1,0 +1,4 @@
+FIND FIRST _User NO-LOCK NO-ERROR.
+FOR EACH _User NO-LOCK:
+    DISPLAY _User._Userid.
+END.
