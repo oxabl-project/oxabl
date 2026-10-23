@@ -24,13 +24,13 @@ fn the_group_exists_and_is_opt_in() {
 fn metadata_follows_the_catalog() {
     let registry = Registry::builtin();
     let expected = [
-        (ABLSEC001, "dynamic-query", Severity::Error),
-        (ABLSEC002, "foreign-sql", Severity::Error),
-        (ABLSEC003, "os-command", Severity::Error),
-        (ABLSEC004, "dynamic-code", Severity::Error),
-        (ABLSEC005, "path-traversal", Severity::Warning),
+        (ABLSEC001, "dynamic-query", Severity::Error, "8.0"),
+        (ABLSEC002, "foreign-sql", Severity::Error, "9.5"),
+        (ABLSEC003, "os-command", Severity::Error, "9.5"),
+        (ABLSEC004, "dynamic-code", Severity::Error, "9.5"),
+        (ABLSEC005, "path-traversal", Severity::Warning, "8.0"),
     ];
-    for (code, name, severity) in expected {
+    for (code, name, severity, security_severity) in expected {
         let rule = registry
             .rule(code)
             .unwrap_or_else(|| panic!("{code} registered"));
@@ -39,6 +39,8 @@ fn metadata_follows_the_catalog() {
         assert_eq!(meta.group, "security");
         assert_eq!(meta.default_severity, severity, "{code}");
         assert_eq!(meta.stability, Stability::Preview, "{code}");
+        assert_eq!(meta.security_severity, Some(security_severity), "{code}");
+        assert!(meta.help.is_some_and(|h| h.contains("literal")), "{code}");
         assert!(meta.context_free, "{code}");
         assert!(!meta.description.is_empty() && !meta.description.contains('\n'));
         assert!(registry.rule(name).is_some());

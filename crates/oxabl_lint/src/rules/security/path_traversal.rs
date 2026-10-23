@@ -58,7 +58,8 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant, leading_word};
-use super::{ABLSEC005, finding};
+use super::{ABLSEC005, finding, meta};
+use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
 
 /// Kebab-case rule name.
@@ -67,12 +68,25 @@ pub const NAME: &str = "path-traversal";
 pub const GROUP: &str = "security";
 /// Severity when the config does not set one.
 pub const DEFAULT_SEVERITY: Severity = Severity::Warning;
+/// Security severity on the 0.0 to 10.0 scale, as a decimal string.
+pub const SECURITY_SEVERITY: &str = "8.0";
 /// One-line description for listings.
 pub const DESCRIPTION: &str =
     "a file path for a stream, OS-* statement, COPY-LOB or FILE-INFO is built at run time";
 
-const HELP: &str = "Resolve the full path (`FILE-INFO:FULL-PATHNAME`) and confirm that it is under an \
+/// Remediation text, shown with each finding and in rule listings.
+pub const HELP: &str = "Resolve the full path (`FILE-INFO:FULL-PATHNAME`) and confirm that it is under an \
      approved base directory before use, or take the file name from a literal allow-list.";
+
+/// Registry metadata.
+pub const META: RuleMeta = meta(
+    ABLSEC005,
+    NAME,
+    DESCRIPTION,
+    DEFAULT_SEVERITY,
+    SECURITY_SEVERITY,
+    HELP,
+);
 
 /// Statements whose `VALUE(...)` operands are paths.
 const OS_STATEMENTS: [&str; 4] = ["OS-DELETE", "OS-CREATE-DIR", "OS-COPY", "OS-RENAME"];

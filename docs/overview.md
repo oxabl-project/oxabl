@@ -149,7 +149,7 @@ The `security` group finds code where a value that is not a literal reaches a da
 | ABLSEC004 | `dynamic-code` | `RUN VALUE`, `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `Progress.Lang.Class:GetClass`, `COMPILE VALUE` and `CALL-NAME` with a name that is not a literal | `error` |
 | ABLSEC005 | `path-traversal` | `INPUT FROM` and `OUTPUT TO` with `VALUE(...)` or `OS-DIR(...)`, `OS-DELETE`, `OS-COPY`, `OS-RENAME`, `OS-CREATE-DIR`, `COPY-LOB ... FILE` and `FILE-INFO:FILE-NAME` with a path that is not a literal | `warning` |
 
-The catalogue rates ABLSEC001 to ABLSEC004 critical or high and ABLSEC005 high; oxabl has `error`, `warning`, `info` and `hint`, so the first four report as `error` and ABLSEC005 as `warning`. Change that per rule in `oxabl.toml` as for any rule.
+The catalogue rates ABLSEC002 to ABLSEC004 critical and ABLSEC001 and ABLSEC005 high; oxabl has `error`, `warning`, `info` and `hint`, so the first four report as `error` and ABLSEC005 as `warning`. Change that per rule in `oxabl.toml` as for any rule. SARIF output also carries the catalogue rating as `security-severity`: `9.5` for critical and `8.0` for high. `// oxabl-ignore ABLSEC001: <reason>` suppresses one finding.
 
 An argument counts as a literal when it is a string or number literal, a `+` of literals, or text that a preprocessor name expanded to one. A variable, a field and a function call are not literals. `QUOTER(x)` around a value does not make a string a literal: the rules still report it, and the help of the finding says so. A later stage will accept sanitisers.
 

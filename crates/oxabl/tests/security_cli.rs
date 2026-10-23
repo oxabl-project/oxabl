@@ -171,3 +171,65 @@ fn a_sink_from_a_define_is_reported_where_the_define_is_used() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].0.ends_with("a.p"), "{found:?}");
 }
+
+#[test]
+fn an_oxabl_ignore_comment_suppresses_a_security_finding() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    write(
+        &dir.path().join("a.p"),
+        "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n\
+         DEFINE VARIABLE hQ AS HANDLE NO-UNDO.\n\
+         // oxabl-ignore ABLSEC001: c comes from a fixed list\n\
+         hQ:QUERY-PREPARE(c).\n\
+         hQ:QUERY-PREPARE(c).\n",
+    );
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    let report = json(&stdout);
+    let lines: Vec<_> = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "ABLSEC001")
+        .map(|d| d["start"]["line"].as_u64().unwrap())
+        .collect();
+    assert_eq!(lines, [5], "{report}");
+}
+
+#[test]
+fn sarif_carries_the_security_severity_of_each_security_rule() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    write(&dir.path().join("a.p"), SINKS);
+    let (_, stdout, _) = check(dir.path(), &[".", "--format", "sarif"]);
+    let doc = json(&stdout);
+    let rules = doc["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    let severity = |id: &str| {
+        rules
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is listed"))["properties"]["security-severity"]
+            .clone()
+    };
+    assert_eq!(severity("ABLSEC001"), "8.0");
+    assert_eq!(severity("ABLSEC002"), "9.5");
+    assert_eq!(severity("ABLSEC003"), "9.5");
+    assert_eq!(severity("ABLSEC004"), "9.5");
+    assert_eq!(severity("ABLSEC005"), "8.0");
+    let results: Vec<_> = doc["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["ruleId"].as_str().unwrap().to_string())
+        .filter(|id| id.starts_with("ABLSEC"))
+        .collect();
+    assert!(results.contains(&"ABLSEC001".to_string()), "{results:?}");
+}

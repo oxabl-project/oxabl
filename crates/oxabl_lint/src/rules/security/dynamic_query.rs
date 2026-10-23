@@ -58,7 +58,8 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant, is_text_read, mentions};
-use super::{ABLSEC001, finding};
+use super::{ABLSEC001, finding, meta};
+use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
 
 /// Kebab-case rule name.
@@ -67,14 +68,27 @@ pub const NAME: &str = "dynamic-query";
 pub const GROUP: &str = "security";
 /// Severity when the config does not set one.
 pub const DEFAULT_SEVERITY: Severity = Severity::Error;
+/// Security severity on the 0.0 to 10.0 scale, as a decimal string.
+pub const SECURITY_SEVERITY: &str = "8.0";
 /// One-line description for listings.
 pub const DESCRIPTION: &str = "QUERY-PREPARE, FIND-FIRST, FIND-LAST, FIND-UNIQUE and FILL-WHERE-STRING take a query built at run time";
 
-const HELP: &str = "Use a static `FOR EACH`, `FIND` or `OPEN QUERY` with variables, which bind values \
+/// Remediation text, shown with each finding and in rule listings.
+pub const HELP: &str = "Use a static `FOR EACH`, `FIND` or `OPEN QUERY` with variables, which bind values \
      instead of splicing them. If the query must be dynamic, wrap every value in `QUOTER()` and \
      take field and table names from a literal allow-list. `QUOTER()` does not make a \
      concatenated string a literal: this check still reports it until a later stage accepts \
      sanitisers.";
+
+/// Registry metadata.
+pub const META: RuleMeta = meta(
+    ABLSEC001,
+    NAME,
+    DESCRIPTION,
+    DEFAULT_SEVERITY,
+    SECURITY_SEVERITY,
+    HELP,
+);
 
 /// Methods whose first argument is a query or where string.
 const METHODS: [&str; 4] = ["QUERY-PREPARE", "FIND-FIRST", "FIND-LAST", "FIND-UNIQUE"];

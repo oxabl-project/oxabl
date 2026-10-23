@@ -13,14 +13,14 @@ use oxabl_scope::FileScopes;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use crate::rules::{
-    ABLSEC001, ABLSEC002, ABLSEC003, ABLSEC004, ABLSEC005, CL001, CL002, CL003, CL004, CL005,
-    DB001, HD001, HD002, HD003, HD004, HD005, LINT0001, LINT0002, LINT0003, LINT0004, LINT0005,
-    LINT0006, LK001, LK002, LK003, NL001, NL002, NL003, NL004, TX001, TX002, TX003, TX004, TX005,
-    TX006, assigned_but_never_read, block_var_used_outside, default_lock, delete_not_in_finally,
-    dynamic_invoke, field_after_failed_find, find_in_loop, handle_not_deleted,
-    implicit_transaction, lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed,
-    missing_no_undo, missing_widget_pool, nullable_db_field, persistent_procedure_leak,
-    procedure_wide_transaction, run_value, scope_widened,
+    CL001, CL002, CL003, CL004, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001,
+    LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003,
+    NL004, TX001, TX002, TX003, TX004, TX005, TX006, assigned_but_never_read,
+    block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
+    field_after_failed_find, find_in_loop, handle_not_deleted, implicit_transaction,
+    lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
+    missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
+    run_value, scope_widened,
     security::{dynamic_code, dynamic_query, foreign_sql, os_command, path_traversal},
     shared_state, signature_mismatch, transaction_spans_call, transaction_spans_ui,
     type_mismatch_assignment, undefined_symbol, unknown_in_comparison, unknown_propagation,
@@ -760,46 +760,11 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         nullable_db_field::check,
     ),
     // Security, stage 1: sink rules.
-    security_rule(
-        ABLSEC001,
-        dynamic_query::NAME,
-        dynamic_query::GROUP,
-        dynamic_query::DESCRIPTION,
-        dynamic_query::DEFAULT_SEVERITY,
-        dynamic_query::run,
-    ),
-    security_rule(
-        ABLSEC002,
-        foreign_sql::NAME,
-        foreign_sql::GROUP,
-        foreign_sql::DESCRIPTION,
-        foreign_sql::DEFAULT_SEVERITY,
-        foreign_sql::run,
-    ),
-    security_rule(
-        ABLSEC003,
-        os_command::NAME,
-        os_command::GROUP,
-        os_command::DESCRIPTION,
-        os_command::DEFAULT_SEVERITY,
-        os_command::run,
-    ),
-    security_rule(
-        ABLSEC004,
-        dynamic_code::NAME,
-        dynamic_code::GROUP,
-        dynamic_code::DESCRIPTION,
-        dynamic_code::DEFAULT_SEVERITY,
-        dynamic_code::run,
-    ),
-    security_rule(
-        ABLSEC005,
-        path_traversal::NAME,
-        path_traversal::GROUP,
-        path_traversal::DESCRIPTION,
-        path_traversal::DEFAULT_SEVERITY,
-        path_traversal::run,
-    ),
+    FnRule::new(dynamic_query::META, dynamic_query::run),
+    FnRule::new(foreign_sql::META, foreign_sql::run),
+    FnRule::new(os_command::META, os_command::run),
+    FnRule::new(dynamic_code::META, dynamic_code::run),
+    FnRule::new(path_traversal::META, path_traversal::run),
     // Security, ABLSEC006 and later: add entries below this line.
 ];
 
@@ -884,25 +849,6 @@ const fn effects_rule(
             .context_free()
             .reported_at_use_site(),
         check,
-    )
-}
-
-/// A `security` rule: context-free, and in preview until its false-positive
-/// rate on a real corpus is measured.
-const fn security_rule(
-    code: &'static str,
-    name: &'static str,
-    group: &'static str,
-    description: &'static str,
-    severity: Severity,
-    run: RuleFn,
-) -> FnRule {
-    FnRule::new(
-        RuleMeta::new(code, name, group, description)
-            .with_default_severity(severity)
-            .with_stability(Stability::Preview)
-            .context_free(),
-        run,
     )
 }
 

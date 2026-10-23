@@ -45,7 +45,8 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant};
-use super::{ABLSEC002, finding};
+use super::{ABLSEC002, finding, meta};
+use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
 
 /// Kebab-case rule name.
@@ -54,11 +55,24 @@ pub const NAME: &str = "foreign-sql";
 pub const GROUP: &str = "security";
 /// Severity when the config does not set one.
 pub const DEFAULT_SEVERITY: Severity = Severity::Error;
+/// Security severity on the 0.0 to 10.0 scale, as a decimal string.
+pub const SECURITY_SEVERITY: &str = "9.5";
 /// One-line description for listings.
 pub const DESCRIPTION: &str = "SQL text for a foreign database is built at run time";
 
-const HELP: &str = "Keep the SQL text a literal and pass values as parameters (`@name` with \
+/// Remediation text, shown with each finding and in rule listings.
+pub const HELP: &str = "Keep the SQL text a literal and pass values as parameters (`@name` with \
      `Parameters:AddWithValue`, or a stored procedure with named parameters).";
+
+/// Registry metadata.
+pub const META: RuleMeta = meta(
+    ABLSEC002,
+    NAME,
+    DESCRIPTION,
+    DEFAULT_SEVERITY,
+    SECURITY_SEVERITY,
+    HELP,
+);
 
 /// `.NET` classes whose first constructor argument is SQL text.
 const SQL_CLASSES: [&str; 12] = [

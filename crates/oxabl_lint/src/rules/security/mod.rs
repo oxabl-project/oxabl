@@ -46,6 +46,7 @@ use oxabl_common::{Diagnostic, Severity};
 use oxabl_semantic::AnalysisContext;
 
 use super::syntactic::file_span;
+use crate::registry::{RuleMeta, Stability};
 
 pub mod dynamic_code;
 pub mod dynamic_query;
@@ -68,6 +69,25 @@ pub const ABLSEC004: &str = "ABLSEC004";
 pub const ABLSEC005: &str = "ABLSEC005";
 
 // --- Stage 1, ABLSEC006+: modules and codes are added below this line ------
+
+/// Metadata shared by the security rules: preview, context-free, and carrying
+/// the safe pattern and the security severity for output formats that show
+/// them. `NAME` and `GROUP` stay constants of each rule module.
+pub(super) const fn meta(
+    code: &'static str,
+    name: &'static str,
+    description: &'static str,
+    severity: Severity,
+    security_severity: &'static str,
+    help: &'static str,
+) -> RuleMeta {
+    RuleMeta::new(code, name, "security", description)
+        .with_default_severity(severity)
+        .with_stability(Stability::Preview)
+        .with_help(help)
+        .with_security_severity(security_severity)
+        .context_free()
+}
 
 /// A finding at `span` with its suggestion. The registry replaces `severity`
 /// with the configured one, so a rule passes its own default.

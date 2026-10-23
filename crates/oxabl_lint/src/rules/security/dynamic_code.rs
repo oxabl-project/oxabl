@@ -65,7 +65,8 @@ use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, cover, is_constant, is_text_read, mentions};
-use super::{ABLSEC004, finding};
+use super::{ABLSEC004, finding, meta};
+use crate::registry::RuleMeta;
 use crate::rules::dynamic_invoke::dynamic_name;
 use crate::rules::run_value::dynamic_target;
 use crate::rules::syntactic::{Visitor, walk_block};
@@ -76,14 +77,27 @@ pub const NAME: &str = "dynamic-code";
 pub const GROUP: &str = "security";
 /// Severity when the config does not set one.
 pub const DEFAULT_SEVERITY: Severity = Severity::Error;
+/// Security severity on the 0.0 to 10.0 scale, as a decimal string.
+pub const SECURITY_SEVERITY: &str = "9.5";
 /// One-line description for listings.
 pub const DESCRIPTION: &str = "code to run or a class to load is chosen by a run-time string";
 
-const HELP: &str = "Map an input key to a literal name (a `CASE` with a static call for each choice) \
+/// Remediation text, shown with each finding and in rule listings.
+pub const HELP: &str = "Map an input key to a literal name (a `CASE` with a static call for each choice) \
      instead of passing text as a procedure, function, method or class name. `run-value` (CL001) \
      and `dynamic-invoke` (CL002) report the same calls because analysis cannot follow them; this \
      check reports only a name that is not a literal, because that is what a caller can steer. \
      Fixing the name clears both.";
+
+/// Registry metadata.
+pub const META: RuleMeta = meta(
+    ABLSEC004,
+    NAME,
+    DESCRIPTION,
+    DEFAULT_SEVERITY,
+    SECURITY_SEVERITY,
+    HELP,
+);
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {

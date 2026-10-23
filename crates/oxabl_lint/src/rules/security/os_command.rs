@@ -49,7 +49,8 @@ use oxabl_common::{Diagnostic, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::literal::{StatementText, leading_word};
-use super::{ABLSEC003, finding};
+use super::{ABLSEC003, finding, meta};
+use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, walk_block};
 
 /// Kebab-case rule name.
@@ -58,12 +59,25 @@ pub const NAME: &str = "os-command";
 pub const GROUP: &str = "security";
 /// Severity when the config does not set one.
 pub const DEFAULT_SEVERITY: Severity = Severity::Error;
+/// Security severity on the 0.0 to 10.0 scale, as a decimal string.
+pub const SECURITY_SEVERITY: &str = "9.5";
 /// One-line description for listings.
 pub const DESCRIPTION: &str =
     "OS-COMMAND, UNIX, DOS and THROUGH streams run a command built at run time";
 
-const HELP: &str = "Run a fixed command. If an argument must vary, choose it from a literal allow-list \
+/// Remediation text, shown with each finding and in rule listings.
+pub const HELP: &str = "Run a fixed command. If an argument must vary, choose it from a literal allow-list \
      with a `CASE`, and never pass user text through a shell.";
+
+/// Registry metadata.
+pub const META: RuleMeta = meta(
+    ABLSEC003,
+    NAME,
+    DESCRIPTION,
+    DEFAULT_SEVERITY,
+    SECURITY_SEVERITY,
+    HELP,
+);
 
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
