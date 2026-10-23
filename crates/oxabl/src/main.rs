@@ -4,11 +4,19 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 mod baseline;
+mod sarif;
 
-use clap::Parser as ClapParser;
+use clap::{Parser as ClapParser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
-use oxabl_analyze::{CollectedDiagnostics, dump_json_with_diagnostics, dump_text_with_diagnostics};
-use oxabl_common::{Diagnostic, FileId, SourceMap, SourceResolver, render_diagnostics};
+use oxabl_analyze::{
+    CollectedDiagnostic, CollectedDiagnostics, dump_json_with_diagnostics,
+    dump_text_with_diagnostics,
+};
+use oxabl_common::{
+    Diagnostic, DiagnosticCode, FileId, FileSpan, LintSeverityMap, SourceMap, SourceResolver,
+    render_diagnostics,
+};
+use oxabl_lint::{Registry, suppress};
 use oxabl_pipeline::{
     ConfigOverrides, ConfigWarning, FormatPipeline, LintPipeline, PipelineConfig, ROOT_FILE_ID,
     position,
@@ -17,6 +25,17 @@ use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{RealFileSystem, discover_path, walk_include_fragments};
 use serde::Serialize;
+
+/// How `check` writes its result.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CheckFormat {
+    /// Human-readable findings (the default).
+    Text,
+    /// The versioned report document, same as `--json`.
+    Json,
+    /// One SARIF 2.1.0 log, for code review tools.
+    Sarif,
+}
 
 #[derive(ClapParser)]
 #[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
@@ -56,6 +75,15 @@ enum Cli {
         /// Output results as JSON
         #[arg(long)]
         json: bool,
+
+        /// Output format: `text`, `json` (same as `--json`) or `sarif`.
+        ///
+        /// `sarif` writes one SARIF 2.1.0 log to stdout. Findings that an
+        /// `oxabl-ignore` comment suppresses stay in it, marked as suppressed;
+        /// with `--baseline`, each result also has a `baselineState`. The format
+        /// changes what is printed and nothing else: the exit code is the same.
+        #[arg(long, value_enum, conflicts_with = "json")]
+        format: Option<CheckFormat>,
 
         /// Skip preprocessing: do not expand includes or evaluate `&IF`.
         ///
@@ -405,6 +433,7 @@ fn main() -> ExitCode {
         Cli::Check {
             path,
             json,
+            format,
             no_preprocess,
             // Accepted and ignored — preprocessing is the default now.
             preprocess: _,
@@ -416,7 +445,11 @@ fn main() -> ExitCode {
             update_baseline,
         } => run_check(
             &path,
-            json,
+            match format {
+                Some(f) => f,
+                None if json => CheckFormat::Json,
+                None => CheckFormat::Text,
+            },
             // On by default (R19): the language server always preprocesses, and a
             // gate that does not would report every include-declared symbol as
             // undefined.
@@ -782,6 +815,10 @@ struct CheckJsonReport {
     /// only.
     #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<baseline::Report>,
+    /// Findings that an `oxabl-ignore` comment suppressed. Omitted when none
+    /// was.
+    #[serde(skip_serializing_if = "is_zero")]
+    suppressed: usize,
 }
 
 /// One lint finding, carrying the pipeline's **byte** span and, when the span is
@@ -891,7 +928,7 @@ struct CheckJsonFailure {
 #[allow(clippy::too_many_arguments)]
 fn run_check(
     path: &Path,
-    json_output: bool,
+    format_choice: CheckFormat,
     preprocess: bool,
     include_paths: &[PathBuf],
     schema_path: Option<&Path>,
@@ -899,6 +936,9 @@ fn run_check(
     no_format: bool,
     baseline_file: Option<(&Path, bool)>,
 ) -> ExitCode {
+    let json_output = format_choice == CheckFormat::Json;
+    let sarif_output = format_choice == CheckFormat::Sarif;
+
     // Discovery through the shared walker: a named file is checked regardless of
     // extension, a directory is walked under the root-extension policy. A
     // missing path and an empty tree are distinct facts but the same usage
@@ -1005,7 +1045,13 @@ fn run_check(
         return ExitCode::from(2);
     }
 
-    let mut diagnostics: Vec<CheckJsonDiagnostic> = Vec::new();
+    let env = CheckEnv {
+        format: format_choice,
+        suppress: !no_lint,
+        root: baseline::workspace_root(path, None),
+        severities: &config.lint_severities,
+    };
+    let mut out = Output::default();
     let mut preproc: Vec<CheckJsonDiagnostic> = Vec::new();
     let mut failures: Vec<CheckJsonFailure> = Vec::new();
     let mut drifted: Vec<String> = Vec::new();
@@ -1076,14 +1122,18 @@ fn run_check(
             } else {
                 reported
             };
+            let fragment_root = result
+                .semantic()
+                .is_some_and(|sem| sem.source_context.is_include_fragment());
             report_findings(
                 &display,
                 indexed_path,
                 &source,
                 reported,
+                fragment_root,
                 baseline.as_mut(),
-                json_output,
-                &mut diagnostics,
+                &env,
+                &mut out,
             );
 
             // The unjudged-symbol note is a statement about the *count-gated lint
@@ -1160,10 +1210,19 @@ fn run_check(
             indexed_path,
             &source,
             result.into_diagnostics(),
+            true,
             baseline.as_mut(),
-            json_output,
-            &mut diagnostics,
+            &env,
+            &mut out,
         );
+    }
+    let Output {
+        rows: diagnostics,
+        results: sarif_results,
+        suppressed,
+    } = out;
+    if suppressed > 0 {
+        eprintln!("suppressed: {suppressed} finding(s) by oxabl-ignore comments");
     }
 
     let baseline = match baseline.map(|run| run.finish(!no_lint)) {
@@ -1181,6 +1240,29 @@ fn run_check(
             None
         }
     };
+
+    if sarif_output {
+        let mut notifications: Vec<sarif::Notification> = failures
+            .iter()
+            .map(|f| sarif::Notification {
+                level: "error",
+                text: format!("{}: {}", f.path, f.reason),
+            })
+            .collect();
+        notifications.extend(drifted.iter().map(|d| sarif::Notification {
+            level: "warning",
+            text: format!("{d}: would be reformatted; run `oxabl format`"),
+        }));
+        let log = sarif::document(Registry::builtin_shared(), &sarif_results, &notifications);
+        match serde_json::to_string_pretty(&log) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                eprintln!("error: json serialize: {e}");
+                return ExitCode::from(6);
+            }
+        }
+        return check_exit_code(diagnostics.len(), drifted.len(), failures.len());
+    }
 
     if json_output {
         let report = CheckJsonReport {
@@ -1202,6 +1284,7 @@ fn run_check(
             fragment_roots,
             failures,
             baseline,
+            suppressed,
         };
         match serde_json::to_string_pretty(&report) {
             Ok(s) => println!("{s}"),
@@ -1321,32 +1404,223 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// Apply the baseline to one file's findings, then print them (text mode) and
-/// add them to the report rows.
+/// What the file loop needs to know about the run, beyond one file.
+struct CheckEnv<'a> {
+    format: CheckFormat,
+    /// Whether `oxabl-ignore` comments apply (not under `--no-lint`).
+    suppress: bool,
+    root: PathBuf,
+    severities: &'a LintSeverityMap,
+}
+
+/// What the file loop collects.
+#[derive(Default)]
+struct Output {
+    /// The findings that gate: the `diagnostics` of `--json`.
+    rows: Vec<CheckJsonDiagnostic>,
+    /// Every finding, for `--format sarif`.
+    results: Vec<sarif::Finding>,
+    /// Findings that an `oxabl-ignore` comment suppressed.
+    suppressed: usize,
+}
+
+/// Apply suppressions and the baseline to one file's findings, then print them
+/// (text mode) and add them to the report.
+///
+/// `context_free_only` says that the file ran only the context-free rules, so
+/// a suppression of any other rule cannot be judged unused.
+#[allow(clippy::too_many_arguments)]
 fn report_findings(
     display: &str,
     indexed_path: &Path,
     source: &str,
     reported: CollectedDiagnostics,
+    context_free_only: bool,
     baseline: Option<&mut baseline::Run>,
-    json_output: bool,
-    rows: &mut Vec<CheckJsonDiagnostic>,
+    env: &CheckEnv,
+    out: &mut Output,
 ) {
-    let reported = match baseline {
-        Some(run) => run.filter(indexed_path, source, reported),
-        None => reported,
+    let sarif_output = env.format == CheckFormat::Sarif;
+    let (reported, suppressed) = if env.suppress {
+        apply_suppressions(source, reported, indexed_path, env, context_free_only)
+    } else {
+        (reported, Vec::new())
     };
-    if reported.diagnostics.is_empty() {
+    out.suppressed += suppressed.len();
+    let has_baseline = baseline.is_some();
+    let (reported, covered) = match baseline {
+        Some(run) => run.split(indexed_path, source, reported),
+        None => (reported, Vec::new()),
+    };
+    if reported.diagnostics.is_empty() && covered.is_empty() && suppressed.is_empty() {
         return;
     }
-    if !json_output {
+    if env.format == CheckFormat::Text && !reported.diagnostics.is_empty() {
         let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), source);
         let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
         print!("{}", render_diagnostics(&rendered, &resolver));
     }
     let map = SourceMap::new(source);
     for collected in reported.all() {
-        rows.push(check_json_diagnostic(display, &map, collected));
+        out.rows
+            .push(check_json_diagnostic(display, &map, collected));
+    }
+    if !sarif_output {
+        return;
+    }
+
+    // One fingerprint pass over every finding of the file, so the occurrence
+    // numbers do not move when a finding is suppressed or baselined.
+    let mut all: Vec<(&CollectedDiagnostic, Option<&'static str>, Option<&str>)> = Vec::new();
+    let state = |s| has_baseline.then_some(s);
+    all.extend(reported.all().map(|c| (c, state("new"), None)));
+    all.extend(covered.iter().map(|c| (c, state("unchanged"), None)));
+    all.extend(
+        suppressed
+            .iter()
+            .map(|(c, why)| (c, None, Some(why.as_str()))),
+    );
+    let path = baseline::relative_path(&env.root, indexed_path);
+    let key = path.clone().unwrap_or_else(|| display.to_string());
+    let entries = baseline::fingerprint(&key, source, all.iter().map(|(c, _, _)| &c.diagnostic));
+    let uri = sarif::uri(&key);
+    for ((c, baseline_state, reason), entry) in all.into_iter().zip(&entries) {
+        let d = &c.diagnostic;
+        let region = (d.span.file == ROOT_FILE_ID)
+            .then(|| sarif::Region::of_span(source, d.span.span.start, d.span.span.end));
+        out.results.push(sarif::Finding {
+            rule_id: d.code.0.to_string(),
+            severity: sarif::level(d.severity.as_str()),
+            text: match &d.help {
+                Some(help) => format!("{}\n{help}", d.message),
+                None => d.message.clone(),
+            },
+            uri: uri.clone(),
+            region,
+            fingerprint: baseline::finding_fingerprint(entry),
+            baseline_state,
+            suppressed: reason.map(str::to_string),
+        });
+    }
+}
+
+/// Split `reported` into the findings that stay and those that an
+/// `oxabl-ignore` comment suppresses (with its reason). The stay set gains a
+/// LINT0007 for each comment that cannot suppress and a LINT0008 for each valid
+/// one that matched nothing.
+fn apply_suppressions(
+    source: &str,
+    mut reported: CollectedDiagnostics,
+    indexed_path: &Path,
+    env: &CheckEnv,
+    context_free_only: bool,
+) -> (CollectedDiagnostics, Vec<(CollectedDiagnostic, String)>) {
+    let registry = Registry::builtin_shared();
+    let directives = suppress::scan(source, registry);
+    if directives.is_empty() {
+        return (reported, Vec::new());
+    }
+    let severities = env.severities.for_path(indexed_path);
+    let severity_of = |code: &str| {
+        registry
+            .rule(code)
+            .and_then(|rule| registry.severity_for(rule, &severities))
+    };
+    let mut used = vec![false; directives.len()];
+    let mut suppressed = Vec::new();
+    let mut kept = Vec::new();
+    for collected in std::mem::take(&mut reported.diagnostics) {
+        let d = &collected.diagnostic;
+        let hit = (collected.source == oxabl_analyze::DiagnosticSource::Lint
+            && d.span.file == ROOT_FILE_ID)
+            .then(|| suppress::suppressor(&directives, source, d.code.0, d.span.span.start))
+            .flatten();
+        match hit {
+            Some(i) => {
+                used[i] = true;
+                let suppress::DirectiveKind::Valid { reason, .. } = &directives[i].kind else {
+                    unreachable!("only a valid directive covers a finding");
+                };
+                suppressed.push((collected, reason.clone()));
+            }
+            None => kept.push(collected),
+        }
+    }
+    let span = |d: &suppress::Directive| {
+        FileSpan::from((
+            ROOT_FILE_ID,
+            oxabl_ast::Span {
+                start: d.start,
+                end: d.end,
+            },
+        ))
+    };
+    for (i, d) in directives.iter().enumerate() {
+        let found = match &d.kind {
+            suppress::DirectiveKind::Invalid(why) => {
+                let Some(severity) = severity_of(suppress::LINT0007) else {
+                    continue;
+                };
+                let message = match why {
+                    suppress::Invalid::NoCode => "`oxabl-ignore` names no rule".to_string(),
+                    suppress::Invalid::NoReason(code) => {
+                        format!("`oxabl-ignore {code}` has no reason, so it suppresses nothing")
+                    }
+                    suppress::Invalid::UnknownCode(code) => {
+                        format!(
+                            "`oxabl-ignore` names unknown rule `{code}`, so it suppresses nothing"
+                        )
+                    }
+                };
+                diagnostic(severity, suppress::LINT0007, message, span(d)).with_help(
+                    "Write `oxabl-ignore <CODE>: <reason>` with a rule code and a reason."
+                        .to_string(),
+                )
+            }
+            suppress::DirectiveKind::Valid { code, .. } if !used[i] => {
+                let Some(severity) = severity_of(suppress::LINT0008) else {
+                    continue;
+                };
+                let judged = severity_of(code).is_some()
+                    && (!context_free_only
+                        || registry.rule(code).is_some_and(|r| r.meta().context_free));
+                if !judged {
+                    continue;
+                }
+                diagnostic(
+                    severity,
+                    suppress::LINT0008,
+                    format!(
+                        "`oxabl-ignore {code}` suppresses no finding on line {}",
+                        d.target_line
+                    ),
+                    span(d),
+                )
+            }
+            suppress::DirectiveKind::Valid { .. } => continue,
+        };
+        kept.push(CollectedDiagnostic {
+            diagnostic: found,
+            source: oxabl_analyze::DiagnosticSource::Lint,
+        });
+    }
+    reported.diagnostics = kept;
+    (reported, suppressed)
+}
+
+fn diagnostic(
+    severity: oxabl_common::Severity,
+    code: &'static str,
+    message: String,
+    span: FileSpan,
+) -> Diagnostic {
+    Diagnostic {
+        severity,
+        code: DiagnosticCode(code),
+        message,
+        span,
+        labels: Vec::new(),
+        help: None,
     }
 }
 
