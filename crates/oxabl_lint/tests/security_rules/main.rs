@@ -13,6 +13,7 @@ mod ablsec006_xss_output;
 mod ablsec007_header_injection;
 mod ablsec008_hardcoded_secret;
 mod ablsec009_weak_crypto;
+mod ablsec010_client_identity;
 mod ablsec013_information_leak;
 mod ablsec014_unsafe_deserialization;
 mod ablsec015_untrusted_xml;
@@ -30,9 +31,9 @@ use std::path::PathBuf;
 use oxabl_common::{Diagnostic, FileId};
 use oxabl_lexer::tokenize;
 use oxabl_lint::security::{
-    dynamic_code, dynamic_query, foreign_sql, hardcoded_secret, header_injection, information_leak,
-    integrity_bypass, os_command, path_traversal, resource_exhaustion, unsafe_deserialization,
-    untrusted_xml, weak_crypto, xss_output,
+    client_identity, dynamic_code, dynamic_query, foreign_sql, hardcoded_secret, header_injection,
+    information_leak, integrity_bypass, os_command, path_traversal, resource_exhaustion,
+    unsafe_deserialization, untrusted_xml, weak_crypto, xss_output,
 };
 use oxabl_parser::Parser;
 use oxabl_preprocessor::Preprocessor;
@@ -44,7 +45,7 @@ pub type RuleFn =
     fn(&[oxabl_ast::Statement], &oxabl_semantic::Semantic, &AnalysisContext) -> Vec<Diagnostic>;
 
 /// The rules, in code order.
-pub const RULES: [(&str, RuleFn); 14] = [
+pub const RULES: [(&str, RuleFn); 15] = [
     ("ABLSEC001", dynamic_query::run),
     ("ABLSEC002", foreign_sql::run),
     ("ABLSEC003", os_command::run),
@@ -54,6 +55,7 @@ pub const RULES: [(&str, RuleFn); 14] = [
     ("ABLSEC007", header_injection::run),
     ("ABLSEC008", hardcoded_secret::run),
     ("ABLSEC009", weak_crypto::run),
+    ("ABLSEC010", client_identity::run),
     ("ABLSEC013", information_leak::run),
     ("ABLSEC014", unsafe_deserialization::run),
     ("ABLSEC015", untrusted_xml::run),

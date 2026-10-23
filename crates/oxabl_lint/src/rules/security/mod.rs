@@ -97,6 +97,8 @@ use super::syntactic::file_span;
 use crate::registry::{RuleMeta, Stability};
 
 pub mod calls;
+pub mod client_identity;
+pub mod cross_request_state;
 pub mod dynamic_code;
 pub mod dynamic_query;
 pub mod foreign_sql;
@@ -105,9 +107,11 @@ pub mod header_injection;
 pub mod information_leak;
 pub mod integrity_bypass;
 pub mod literal;
+pub mod missing_authorization;
 pub mod names;
 pub mod os_command;
 pub mod path_traversal;
+pub mod reach;
 pub mod resource_exhaustion;
 pub mod taint;
 pub mod unsafe_deserialization;
@@ -150,7 +154,14 @@ pub const ABLSEC016: &str = "ABLSEC016";
 /// Diagnostic code for `integrity-bypass` (ABLSEC017).
 pub const ABLSEC017: &str = "ABLSEC017";
 
-// --- Stage 1, ABLSEC010 and later: modules and codes are added below this line
+// --- Stage 3, entry points: ABLSEC010-ABLSEC012 ------------------------------
+
+/// Diagnostic code for `client-identity` (ABLSEC010).
+pub const ABLSEC010: &str = "ABLSEC010";
+/// Diagnostic code for `missing-authorization` (ABLSEC011).
+pub const ABLSEC011: &str = "ABLSEC011";
+/// Diagnostic code for `cross-request-state` (ABLSEC012).
+pub const ABLSEC012: &str = "ABLSEC012";
 
 /// Metadata shared by the security rules: preview, context-free, and carrying
 /// the safe pattern and the security severity for output formats that show

@@ -2,14 +2,14 @@
 
 use oxabl_common::{LintSeverityMap, Severity};
 use oxabl_lint::security::{
-    dynamic_code, dynamic_query, foreign_sql, hardcoded_secret, header_injection, information_leak,
-    integrity_bypass, os_command, path_traversal, resource_exhaustion, unsafe_deserialization,
-    untrusted_xml, weak_crypto, xss_output,
+    client_identity, dynamic_code, dynamic_query, foreign_sql, hardcoded_secret, header_injection,
+    information_leak, integrity_bypass, os_command, path_traversal, resource_exhaustion,
+    unsafe_deserialization, untrusted_xml, weak_crypto, xss_output,
 };
 use oxabl_lint::{
     ABLSEC001, ABLSEC002, ABLSEC003, ABLSEC004, ABLSEC005, ABLSEC006, ABLSEC007, ABLSEC008,
-    ABLSEC009, ABLSEC013, ABLSEC014, ABLSEC015, ABLSEC016, ABLSEC017, BUILTIN_GROUPS, Registry,
-    Stability, groups,
+    ABLSEC009, ABLSEC010, ABLSEC013, ABLSEC014, ABLSEC015, ABLSEC016, ABLSEC017, BUILTIN_GROUPS,
+    Registry, Stability, groups,
 };
 
 use super::{RULES, check};
@@ -38,6 +38,7 @@ fn metadata_follows_the_catalog() {
         (ABLSEC007, "header-injection", Severity::Warning, "5.5"),
         (ABLSEC008, "hardcoded-secret", Severity::Error, "8.0"),
         (ABLSEC009, "weak-crypto", Severity::Warning, "8.0"),
+        (ABLSEC010, "client-identity", Severity::Warning, "8.0"),
         (ABLSEC013, "information-leak", Severity::Warning, "5.5"),
         (
             ABLSEC014,
@@ -73,6 +74,7 @@ fn metadata_follows_the_catalog() {
     assert_eq!(header_injection::NAME, "header-injection");
     assert_eq!(hardcoded_secret::NAME, "hardcoded-secret");
     assert_eq!(weak_crypto::NAME, "weak-crypto");
+    assert_eq!(client_identity::NAME, "client-identity");
     assert_eq!(information_leak::NAME, "information-leak");
     assert_eq!(unsafe_deserialization::NAME, "unsafe-deserialization");
     assert_eq!(untrusted_xml::NAME, "untrusted-xml");

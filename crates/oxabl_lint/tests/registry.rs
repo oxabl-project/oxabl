@@ -169,13 +169,18 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
                 Severity::Info
             ),
             ("ABLSEC017", "integrity-bypass", "security", warning),
+            ("ABLSEC010", "client-identity", "security", warning),
+            ("ABLSEC011", "missing-authorization", "security", warning),
+            ("ABLSEC012", "cross-request-state", "security", warning),
         ]
     );
     for rule in registry.rules() {
         let m = rule.meta();
         let strict = m.group.starts_with("strict.") || m.group == "security";
         assert!(!m.description.is_empty(), "{}", m.code);
-        assert_eq!(m.context_free, strict, "{}", m.code);
+        // The rules that read the entry-point graph depend on other files.
+        let graph = matches!(m.code, "ABLSEC011" | "ABLSEC012");
+        assert_eq!(m.context_free, strict && !graph, "{}", m.code);
         assert_eq!(
             m.use_site_in_includer,
             m.group == "strict.handles"

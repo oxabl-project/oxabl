@@ -93,6 +93,8 @@ pub(super) enum Term {
     },
     /// The sub-value with these kinds removed.
     Clear(u32, Value),
+    /// The sub-value with these kinds added to each of its labels.
+    Tag(u32, Value),
     /// What a routine of the file returns (or leaves in an output parameter)
     /// for these arguments, by its summary.
     Call {
@@ -149,6 +151,15 @@ impl Value {
         }
     }
 
+    /// The value with the identity kind added to its labels.
+    pub fn identity(self) -> Self {
+        if self.0.is_empty() {
+            self
+        } else {
+            Value(vec![Term::Tag(SinkKind::Identity.bit(), self)])
+        }
+    }
+
     /// The labels of the value against `fact` and the file-level summaries,
     /// and whether it holds Unknown.
     pub fn eval(&self, fact: &Provenance, env: Env) -> (Labels, bool) {
@@ -179,6 +190,12 @@ impl Value {
                     provenance::clear(&mut inner, *mask);
                     provenance::merge(out, &inner);
                 }
+                Term::Tag(mask, v) => {
+                    let mut inner = Labels::new();
+                    unknown |= v.eval_into(fact, env, &mut inner);
+                    inner.iter_mut().for_each(|l| l.1 |= mask);
+                    provenance::merge(out, &inner);
+                }
                 Term::Call {
                     callees,
                     out: o,
@@ -203,7 +220,7 @@ impl Value {
     pub fn holds_origin(&self, origin: u32) -> bool {
         self.0.iter().any(|t| match t {
             Term::Origin(o) => *o == origin,
-            Term::Clear(_, v) => v.holds_origin(origin),
+            Term::Clear(_, v) | Term::Tag(_, v) => v.holds_origin(origin),
             _ => false,
         })
     }
@@ -219,7 +236,7 @@ impl Value {
             {
                 Some((name.as_str(), key.as_str()))
             }
-            Term::Clear(_, v) => v.file_with(files, origin),
+            Term::Clear(_, v) | Term::Tag(_, v) => v.file_with(files, origin),
             _ => None,
         })
     }
@@ -229,7 +246,7 @@ impl Value {
         for t in &self.0 {
             match t {
                 Term::Slot(s) => out.push(*s),
-                Term::Clear(_, v) => v.slots(out),
+                Term::Clear(_, v) | Term::Tag(_, v) => v.slots(out),
                 Term::Call { args, .. } => args.iter().for_each(|a| a.slots(out)),
                 _ => {}
             }
@@ -441,6 +458,9 @@ pub(super) struct Compiler<'c> {
     pub routines: &'c Routines,
     /// Calls of routines of the file met while building values.
     pub calls: Vec<CallIr>,
+    /// Reading a decision: a logical function passes on its arguments, so the
+    /// value is what the decision reads.
+    pub decision: bool,
 }
 
 /// How a function name changes the value of its arguments.
@@ -645,10 +665,16 @@ impl Compiler<'_> {
         }])
     }
 
-    /// A call of the function `name`.
-    fn call(&mut self, name: &str, args: Vec<Value>, span: Span) -> Value {
+    /// A call of the function `name`; `key` is its first argument when that
+    /// is a string literal.
+    fn call(&mut self, name: &str, args: Vec<Value>, span: Span, key: Option<&str>) -> Value {
         if let Some(mask) = self.options.validator(name) {
             return Value::union(args).cleared(mask);
+        }
+        if self.options.is_identity_source(name) {
+            return self
+                .origin(format!("client identity `{name}`"), span)
+                .identity();
         }
         if self.options.is_source(name) {
             return self.origin(format!("project source `{name}`"), span);
@@ -661,13 +687,19 @@ impl Compiler<'_> {
             Builtin::Source if name.eq_ignore_ascii_case("OS-GETENV") => {
                 self.origin(format!("environment `{name}`"), span)
             }
-            Builtin::Source => self.origin(format!("web input `{name}`"), span),
+            Builtin::Source => match key.filter(|k| self.options.is_identity_key(k)) {
+                Some(k) => self
+                    .origin(format!("web input `{name}` for `{k}`"), span)
+                    .identity(),
+                None => self.origin(format!("web input `{name}`"), span),
+            },
             Builtin::Quoter => args
                 .into_iter()
                 .next()
                 .unwrap_or_default()
                 .cleared(SinkKind::Query.bit()),
             Builtin::Numeric => Value::union(args).cleared(NUMERIC_SAFE),
+            Builtin::Logical if self.decision => Value::union(args),
             Builtin::Logical => Value::default(),
             Builtin::Encode => {
                 Value::union(args).cleared(SinkKind::Html.bit() | SinkKind::Header.bit())
@@ -679,6 +711,23 @@ impl Compiler<'_> {
     /// `object:member`, or `object:member(args)` when `args` is given.
     /// `object_name` is the receiver when it is a plain name.
     fn access(
+        &mut self,
+        object_name: Option<&str>,
+        object: Value,
+        member: &str,
+        args: Option<Vec<Value>>,
+        span: Span,
+        key: Option<&str>,
+    ) -> Value {
+        let identity = args.is_some()
+            && member.len() > 3
+            && member[..3].eq_ignore_ascii_case("get")
+            && key.is_some_and(|k| self.options.is_identity_key(k));
+        let value = self.access_value(object_name, object, member, args, span);
+        if identity { value.identity() } else { value }
+    }
+
+    fn access_value(
         &mut self,
         object_name: Option<&str>,
         object: Value,
@@ -753,11 +802,11 @@ impl Compiler<'_> {
             E::IfThenElse(_, a, b) => Value::union([self.expr(a), self.expr(b)]),
             E::FunctionCall { name, arguments } => {
                 let args = arguments.iter().map(|a| self.expr(a)).collect();
-                self.call(&name.name, args, e.span)
+                self.call(&name.name, args, e.span, literal_key(arguments))
             }
             E::MemberAccess { object, member } => {
                 let (name, value) = self.receiver(object);
-                self.access(name.as_deref(), value, &member.name, None, e.span)
+                self.access(name.as_deref(), value, &member.name, None, e.span, None)
             }
             E::MethodCall {
                 object,
@@ -766,7 +815,15 @@ impl Compiler<'_> {
             } => {
                 let (name, value) = self.receiver(object);
                 let args = arguments.iter().map(|a| self.expr(a)).collect();
-                self.access(name.as_deref(), value, &method.name, Some(args), e.span)
+                let key = literal_key(arguments);
+                self.access(
+                    name.as_deref(),
+                    value,
+                    &method.name,
+                    Some(args),
+                    e.span,
+                    key,
+                )
             }
             E::ArrayAccess { array, .. } => self.expr(array),
             E::New { arguments, .. } => {
@@ -981,12 +1038,10 @@ impl Compiler<'_> {
             if st.is(i + 1, Kind::LeftParen)
                 && let Some(close) = st.close_of(i + 1).filter(|&c| c < end)
             {
-                let args = st
-                    .call_args(i + 1)
-                    .into_iter()
-                    .map(|a| self.tokens(st, a))
-                    .collect();
-                v = Value::union([v, self.call(word, args, st.span(i..close + 1))]);
+                let ranges = st.call_args(i + 1);
+                let key = ranges.first().and_then(|r| token_key(st, r.clone()));
+                let args = ranges.into_iter().map(|a| self.tokens(st, a)).collect();
+                v = Value::union([v, self.call(word, args, st.span(i..close + 1), key)]);
                 i = close + 1;
                 continue;
             }
@@ -1023,25 +1078,44 @@ impl Compiler<'_> {
         while j + 1 < end && st.is(j, Kind::Colon) && is_word(st, j + 1) {
             let member = st.word(j + 1);
             let mut args = None;
+            let mut key = None;
             let mut next = j + 2;
             if st.is(j + 2, Kind::LeftParen)
                 && let Some(close) = st.close_of(j + 2).filter(|&c| c < end)
             {
-                args = Some(
-                    st.call_args(j + 2)
-                        .into_iter()
-                        .map(|a| self.tokens(st, a))
-                        .collect(),
-                );
+                let ranges = st.call_args(j + 2);
+                key = ranges.first().and_then(|r| token_key(st, r.clone()));
+                args = Some(ranges.into_iter().map(|a| self.tokens(st, a)).collect());
                 next = close + 1;
             }
             let span = st.span(i..next);
-            value = self.access(name.as_deref(), value, member, args, span);
+            value = self.access(name.as_deref(), value, member, args, span, key);
             name = None;
             j = next;
         }
         (value, j)
     }
+}
+
+/// The text of a first argument that is a string literal.
+fn literal_key(arguments: &[Expression]) -> Option<&str> {
+    match &arguments.first()?.kind {
+        E::Literal(oxabl_ast::Literal::String(s)) => Some(s.value.as_str()),
+        _ => None,
+    }
+}
+
+/// The text of the tokens `range` when they are one string literal.
+fn token_key<'s>(st: &'s StatementText, range: Range<usize>) -> Option<&'s str> {
+    if range.len() != 1 || st.token(range.start).kind != Kind::StringLiteral {
+        return None;
+    }
+    let w = st.word(range.start);
+    let body = match w.rfind(['"', '\'']) {
+        Some(i) => &w[..=i],
+        None => w,
+    };
+    Some(body.trim_matches(|c| c == '"' || c == '\''))
 }
 
 /// The table and field of `t.f` or `db.t.f`.

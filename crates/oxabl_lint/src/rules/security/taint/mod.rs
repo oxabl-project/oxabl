@@ -102,14 +102,18 @@ pub enum SinkKind {
     Deserialize,
     Xml,
     Size,
+    /// Not a sink: a decision that reads who the client says it is
+    /// (`client-identity`). No sanitiser removes it but a validator that
+    /// protects `identity`.
+    Identity,
 }
 
-/// Every kind.
+/// Every injection kind; [`SinkKind::Identity`] is not one.
 pub const ALL: u32 = (1 << 10) - 1;
 
 impl SinkKind {
     /// Every kind, in bit order.
-    pub const EVERY: [SinkKind; 10] = [
+    pub const EVERY: [SinkKind; 11] = [
         SinkKind::Query,
         SinkKind::Sql,
         SinkKind::Command,
@@ -120,6 +124,7 @@ impl SinkKind {
         SinkKind::Deserialize,
         SinkKind::Xml,
         SinkKind::Size,
+        SinkKind::Identity,
     ];
 
     /// The bit of the kind in a label mask.
@@ -140,10 +145,12 @@ impl SinkKind {
             SinkKind::Deserialize => "deserialize",
             SinkKind::Xml => "xml",
             SinkKind::Size => "size",
+            SinkKind::Identity => "identity",
         }
     }
 
-    /// The mask of a configured kind name, `all` included.
+    /// The mask of a configured kind name, `all` (every injection kind)
+    /// included.
     pub fn mask_of(name: &str) -> Option<u32> {
         if name.eq_ignore_ascii_case("all") {
             return Some(ALL);
@@ -162,7 +169,15 @@ pub(crate) struct Options {
     database_fields: bool,
     sources: Vec<String>,
     validators: Vec<(String, u32)>,
+    identity_keys: Vec<String>,
+    identity_sources: Vec<String>,
 }
+
+/// The words of a request key that make it a client-supplied identity, when
+/// the options name none.
+pub const IDENTITY_KEYS: [&str; 10] = [
+    "user", "username", "userid", "login", "company", "tenant", "role", "roles", "owner", "admin",
+];
 
 impl Options {
     fn new(o: &SecurityOptions) -> Self {
@@ -182,7 +197,27 @@ impl Options {
                     (v.name.clone(), mask)
                 })
                 .collect(),
+            identity_keys: if o.identity_keys.is_empty() {
+                IDENTITY_KEYS.iter().map(|k| k.to_string()).collect()
+            } else {
+                o.identity_keys.clone()
+            },
+            identity_sources: o.identity_sources.clone(),
         }
+    }
+
+    /// Whether a request key names an identity: one of its words is an
+    /// identity key.
+    fn is_identity_key(&self, key: &str) -> bool {
+        super::names::segments(key)
+            .iter()
+            .any(|w| self.identity_keys.iter().any(|k| k == w))
+    }
+
+    fn is_identity_source(&self, name: &str) -> bool {
+        self.identity_sources
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(name))
     }
 
     fn validator(&self, name: &str) -> Option<u32> {
@@ -351,17 +386,19 @@ pub(crate) enum Reach {
 }
 
 impl FileTaint {
-    /// What reaches any of `operands` for a sink of `kind`.
+    /// What reaches any of `operands` for a sink of `kind`. A `decision`
+    /// reads the operands of logical functions too.
     pub(crate) fn reach(
         &self,
         flow: &FileFlow,
         source: &str,
         operands: &[Span],
         kind: SinkKind,
+        decision: bool,
     ) -> Reach {
         let mut tainted = None;
         for &op in operands {
-            match self.reach_one(flow, source, op, kind) {
+            match self.reach_one(flow, source, op, kind, decision) {
                 Reach::Unknown => return Reach::Unknown,
                 Reach::Clean => {}
                 t @ Reach::Tainted(_) => {
@@ -372,7 +409,14 @@ impl FileTaint {
         tainted.unwrap_or(Reach::Clean)
     }
 
-    fn reach_one(&self, flow: &FileFlow, source: &str, operand: Span, kind: SinkKind) -> Reach {
+    fn reach_one(
+        &self,
+        flow: &FileFlow,
+        source: &str,
+        operand: Span,
+        kind: SinkKind,
+        decision: bool,
+    ) -> Reach {
         // The innermost statement over every unit: a class statement is a
         // node of the file's main block and holds every method.
         let found = flow
@@ -405,6 +449,7 @@ impl FileTaint {
             frozen: true,
             routines: &self.routines,
             calls: Vec::new(),
+            decision,
         }
         .tokens(&st, 0..st.len());
         let env = Env::new(&self.summaries);
@@ -455,6 +500,8 @@ pub(crate) struct Judgement {
     pub labels: Vec<Label>,
     /// The taint analysis found a source, so the subject names it.
     pub tainted: bool,
+    /// The path in words, source first: "web input `get-value` → `c`".
+    pub chain: String,
 }
 
 impl Judgement {
@@ -463,6 +510,7 @@ impl Judgement {
             subject: "a non-literal value".to_string(),
             labels: Vec::new(),
             tainted: false,
+            chain: String::new(),
         }
     }
 
@@ -512,32 +560,53 @@ impl<'g> Gate<'g> {
         if operands.iter().any(elided) {
             return Some(Judgement::stage_one());
         }
-        let flow = self.shared.flow(self.program, self.ctx);
-        let taint = self.shared.taint(self.program, self.ctx);
-        match taint.reach(flow, self.ctx.source, operands, kind) {
+        match self.reach(operands, kind, false) {
             Reach::Clean => None,
             Reach::Unknown => Some(Judgement::stage_one()),
-            Reach::Tainted(steps) => {
-                let mut chain: Vec<&str> = Vec::new();
-                for s in &steps {
-                    if chain.last() != Some(&s.chain.as_str()) {
-                        chain.push(&s.chain);
-                    }
-                }
-                Some(Judgement {
-                    tainted: true,
-                    subject: format!("untrusted input: {}", chain.join(" → ")),
-                    labels: steps
-                        .iter()
-                        .filter_map(|s| {
-                            s.span.map(|span| Label {
-                                span: file_span(self.ctx, span),
-                                message: s.label.clone(),
-                            })
-                        })
-                        .collect(),
-                })
+            Reach::Tainted(steps) => Some(self.tainted(&steps)),
+        }
+    }
+
+    /// Judge a decision whose operands are at `operands`: the path when a
+    /// value of `kind` reaches them. A decision the analysis cannot judge is
+    /// not reported; neither is any in a file whose parse recovered.
+    pub fn judge_decision(&self, operands: &[Span], kind: SinkKind) -> Option<Judgement> {
+        if operands.is_empty() || self.ctx.parse_recovered {
+            return None;
+        }
+        match self.reach(operands, kind, true) {
+            Reach::Tainted(steps) => Some(self.tainted(&steps)),
+            Reach::Clean | Reach::Unknown => None,
+        }
+    }
+
+    fn reach(&self, operands: &[Span], kind: SinkKind, decision: bool) -> Reach {
+        let flow = self.shared.flow(self.program, self.ctx);
+        let taint = self.shared.taint(self.program, self.ctx);
+        taint.reach(flow, self.ctx.source, operands, kind, decision)
+    }
+
+    fn tainted(&self, steps: &[witness::Step]) -> Judgement {
+        let mut chain: Vec<&str> = Vec::new();
+        for s in steps {
+            if chain.last() != Some(&s.chain.as_str()) {
+                chain.push(&s.chain);
             }
+        }
+        let chain = chain.join(" → ");
+        Judgement {
+            tainted: true,
+            subject: format!("untrusted input: {chain}"),
+            chain,
+            labels: steps
+                .iter()
+                .filter_map(|s| {
+                    s.span.map(|span| Label {
+                        span: file_span(self.ctx, span),
+                        message: s.label.clone(),
+                    })
+                })
+                .collect(),
         }
     }
 }

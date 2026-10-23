@@ -22,8 +22,9 @@ use crate::rules::{
     missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
     run_value, scope_widened,
     security::{
-        dynamic_code, dynamic_query, foreign_sql, hardcoded_secret, header_injection,
-        information_leak, integrity_bypass, os_command, path_traversal, resource_exhaustion,
+        client_identity, cross_request_state, dynamic_code, dynamic_query, foreign_sql,
+        hardcoded_secret, header_injection, information_leak, integrity_bypass,
+        missing_authorization, os_command, path_traversal, resource_exhaustion,
         unsafe_deserialization, untrusted_xml, weak_crypto, xss_output,
     },
     shared_state, signature_mismatch, transaction_spans_call, transaction_spans_ui,
@@ -793,7 +794,10 @@ pub const BUILTIN_RULES: &[FnRule] = &[
     FnRule::security(untrusted_xml::META, untrusted_xml::check),
     FnRule::security(resource_exhaustion::META, resource_exhaustion::check),
     FnRule::new(integrity_bypass::META, integrity_bypass::run),
-    // Security, ABLSEC010 and later: add entries below this line.
+    // Security, stage 3: ABLSEC010 to ABLSEC012.
+    FnRule::security(client_identity::META, client_identity::check),
+    FnRule::security(missing_authorization::META, missing_authorization::check),
+    FnRule::security(cross_request_state::META, cross_request_state::check),
 ];
 
 /// The run of a rule whose diagnostics come from the suppression pass
@@ -1104,11 +1108,15 @@ impl Registry {
                     .any(|r| r.reads_scopes() && enabled(r).is_some());
                 shared.share_flow(scopes);
             }
+            let security = rule.meta().group == groups::SECURITY;
             out.extend(
                 rule.run_shared(program, sem, ctx, shared)
                     .into_iter()
                     .map(|mut d| {
                         d.severity = severity;
+                        if security {
+                            crate::rules::security::reach::annotate(&mut d, program, ctx, shared);
+                        }
                         d
                     }),
             );

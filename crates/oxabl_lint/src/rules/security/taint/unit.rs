@@ -1026,6 +1026,7 @@ pub(super) fn compile(
                 frozen: false,
                 routines,
                 calls: Vec::new(),
+                decision: false,
             },
             source,
             external: is_external(unit, unit_stmt, source, options),
