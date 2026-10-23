@@ -92,12 +92,12 @@ MESSAGE get-value(\"user\").
 #[test]
 fn identity_keys_and_sources_are_configurable() {
     let src = "\
-IF get-value(\"cono\") = \"1\" THEN RUN a.
+IF get-value(\"branch\") = \"1\" THEN RUN a.
 IF get-value(\"user\") = \"x\" THEN RUN b.
 IF request-user() = \"admin\" THEN RUN c.
 ";
     let options = SecurityOptions {
-        identity_keys: vec!["cono".into()],
+        identity_keys: vec!["branch".into()],
         identity_sources: vec!["request-user".into()],
         ..SecurityOptions::default()
     };

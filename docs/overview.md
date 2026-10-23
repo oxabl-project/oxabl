@@ -281,7 +281,7 @@ Three rules use what stage 3 knows:
 
 ```toml
 [workspace.lint.security]
-identity-keys = ["user", "company", "cono"]   # replaces the default list
+identity-keys = ["user", "company", "branch"]   # replaces the default list
 identity-sources = ["request-user"]
 ```
 

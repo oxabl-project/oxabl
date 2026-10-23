@@ -34,7 +34,7 @@ False negatives (a sink the rules do not see):
 
 False positives: a decision on a request key that names an identity but is not one (`get-value("username-hint")`); a value the session set that a project function returns under a name in `identity-sources`; a check of an identity against the session (`IF cUser <> session-user() THEN RETURN.`), which is a correct check but reads the client's claim.
 
-False negatives: a key that is not a literal (`get-value(cKey)`); a key with no word of `identity-keys` (`get-value("cono")` until it is configured); an identity read in another file and passed in (the parameter is a source, but not an identity); a decision in a statement the parser does not model.
+False negatives: a key that is not a literal (`get-value(cKey)`); a key with no word of `identity-keys` (`get-value("branch")` until it is configured); an identity read in another file and passed in (the parameter is a source, but not an identity); a decision in a statement the parser does not model.
 
 ### ABLSEC006 to ABLSEC009, ABLSEC013 to ABLSEC017
 

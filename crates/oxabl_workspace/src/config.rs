@@ -1098,7 +1098,7 @@ protects = ["Query", "path"]
 enable = ["security"]
 
 [workspace.lint.security]
-identity-keys = ["User", " cono "]
+identity-keys = ["User", " branch "]
 identity-sources = ["session-user"]
 
 [workspace.lint.security.reach]
@@ -1110,7 +1110,7 @@ raise-reachable = true
         );
         let (map, _) = lint.to_severity_map_at(Path::new("/ws"));
         let options = map.for_path(Path::new("/ws/a.p")).security().clone();
-        assert_eq!(options.identity_keys, ["user", "cono"]);
+        assert_eq!(options.identity_keys, ["user", "branch"]);
         assert_eq!(options.identity_sources, ["session-user"]);
         assert!(options.reach.configured);
         assert!(
