@@ -5,6 +5,9 @@
 //! example). A suppressed finding stays in `results` with an `inSource`
 //! suppression, so a viewer can show it with its reason.
 //!
+//! A security finding with a taint path carries it as one `codeFlows` thread:
+//! each step in order, source first, ending at the sink.
+//!
 //! Columns count UTF-16 code units, which is the SARIF default.
 
 use oxabl_lint::{Registry, Rule};
@@ -62,6 +65,39 @@ pub struct Finding {
     pub baseline_state: Option<&'static str>,
     /// The reason of the `oxabl-ignore` comment that suppresses the finding.
     pub suppressed: Option<String>,
+    /// The steps of a taint path, source first, without the sink.
+    pub flow: Vec<FlowStep>,
+}
+
+/// One step of a taint path.
+#[derive(Debug, Clone)]
+pub struct FlowStep {
+    pub region: Region,
+    pub message: String,
+}
+
+/// The taint path of a security finding: its labels that sit in the checked
+/// file, in order. Other findings have none: their labels are not a path.
+pub fn flow_of(
+    registry: &Registry,
+    d: &oxabl_common::Diagnostic,
+    source: &str,
+    file: oxabl_common::FileId,
+) -> Vec<FlowStep> {
+    let security = registry
+        .rule(d.code.0)
+        .is_some_and(|r| r.meta().security_severity.is_some());
+    if !security {
+        return Vec::new();
+    }
+    d.labels
+        .iter()
+        .filter(|l| l.span.file == file)
+        .map(|l| FlowStep {
+            region: Region::of_span(source, l.span.span.start, l.span.span.end),
+            message: l.message.clone(),
+        })
+        .collect()
 }
 
 /// A run-level problem that is not a finding: a file that failed, or one that
@@ -116,6 +152,15 @@ fn rule_descriptor(rule: &dyn Rule) -> Value {
     })
 }
 
+fn region(r: Region) -> Value {
+    json!({
+        "startLine": r.start_line,
+        "startColumn": r.start_column,
+        "endLine": r.end_line,
+        "endColumn": r.end_column,
+    })
+}
+
 fn result(finding: &Finding) -> Value {
     let mut physical = Map::new();
     physical.insert(
@@ -123,21 +168,13 @@ fn result(finding: &Finding) -> Value {
         json!({ "uri": finding.uri, "uriBaseId": "%SRCROOT%" }),
     );
     if let Some(r) = finding.region {
-        physical.insert(
-            "region".into(),
-            json!({
-                "startLine": r.start_line,
-                "startColumn": r.start_column,
-                "endLine": r.end_line,
-                "endColumn": r.end_column,
-            }),
-        );
+        physical.insert("region".into(), region(r));
     }
     let mut out = json!({
         "ruleId": finding.rule_id,
         "level": finding.severity,
         "message": { "text": finding.text },
-        "locations": [{ "physicalLocation": Value::Object(physical) }],
+        "locations": [{ "physicalLocation": Value::Object(physical.clone()) }],
         "partialFingerprints": { "oxablFinding/v1": finding.fingerprint },
     });
     if let Some(state) = finding.baseline_state {
@@ -145,6 +182,27 @@ fn result(finding: &Finding) -> Value {
     }
     if let Some(reason) = &finding.suppressed {
         out["suppressions"] = json!([{ "kind": "inSource", "justification": reason }]);
+    }
+    if !finding.flow.is_empty() {
+        let artifact = json!({ "uri": finding.uri, "uriBaseId": "%SRCROOT%" });
+        let mut locations: Vec<Value> = finding
+            .flow
+            .iter()
+            .map(|step| {
+                json!({ "location": {
+                    "physicalLocation": {
+                        "artifactLocation": artifact,
+                        "region": region(step.region),
+                    },
+                    "message": { "text": step.message },
+                } })
+            })
+            .collect();
+        locations.push(json!({ "location": {
+            "physicalLocation": Value::Object(physical),
+            "message": { "text": "sink" },
+        } }));
+        out["codeFlows"] = json!([{ "threadFlows": [{ "locations": locations }] }]);
     }
     out
 }
@@ -254,12 +312,61 @@ mod tests {
             fingerprint: "x".into(),
             baseline_state: None,
             suppressed: None,
+            flow: Vec::new(),
         };
         let doc = document(&Registry::empty(), &[finding], &[]);
         let rules = doc["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
             .unwrap();
         assert_eq!(rules[0]["id"], "PARSE001");
+    }
+
+    #[test]
+    fn a_taint_path_becomes_one_thread_flow_ending_at_the_sink() {
+        let at = |line| Region {
+            start_line: line,
+            start_column: 1,
+            end_line: line,
+            end_column: 5,
+        };
+        let finding = Finding {
+            rule_id: "ABLSEC001".into(),
+            severity: "error",
+            text: "t".into(),
+            uri: "a.p".into(),
+            region: Some(at(5)),
+            fingerprint: "x".into(),
+            baseline_state: None,
+            suppressed: None,
+            flow: vec![
+                FlowStep {
+                    region: at(1),
+                    message: "untrusted source: input parameter `pc`".into(),
+                },
+                FlowStep {
+                    region: at(3),
+                    message: "`c` takes the untrusted value".into(),
+                },
+            ],
+        };
+        let doc = document(&Registry::empty(), &[finding], &[]);
+        let locations =
+            &doc["runs"][0]["results"][0]["codeFlows"][0]["threadFlows"][0]["locations"];
+        let lines: Vec<u64> = locations
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                l["location"]["physicalLocation"]["region"]["startLine"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(lines, [1, 3, 5]);
+        assert_eq!(
+            locations[0]["location"]["message"]["text"],
+            "untrusted source: input parameter `pc`"
+        );
     }
 
     #[test]

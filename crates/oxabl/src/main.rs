@@ -2018,6 +2018,7 @@ fn report_findings(
             fingerprint: baseline::finding_fingerprint(entry),
             baseline_state,
             suppressed: reason.map(str::to_string),
+            flow: sarif::flow_of(Registry::builtin_shared(), d, source, ROOT_FILE_ID),
         });
     }
 }
@@ -2234,6 +2235,8 @@ fn report_include_findings(
                 fingerprint: baseline::finding_fingerprint(&entries[0]),
                 baseline_state: None,
                 suppressed: None,
+                // The labels of a finding in an include point into other files.
+                flow: Vec::new(),
             });
         }
         if pass.output == CheckFormat::Text {

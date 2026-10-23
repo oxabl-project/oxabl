@@ -354,3 +354,69 @@ fn sarif_carries_the_security_severity_of_the_remaining_rules() {
         assert_eq!(severity(id), want, "{id}");
     }
 }
+
+const TAINTED: &str = "\
+DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cWhere AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cFixed AS CHARACTER NO-UNDO.
+cWhere = \"FOR EACH Customer WHERE Customer.Name = '\" + pcName + \"'\".
+hQ:QUERY-PREPARE(cWhere).
+cFixed = \"FOR EACH Customer\".
+hQ:QUERY-PREPARE(cFixed).
+";
+
+#[test]
+fn taint_mode_reports_only_what_untrusted_input_reaches_with_its_path() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config(
+            "[workspace.lint]\nenable = [\"security\"]\n\
+             [workspace.lint.security]\nmode = \"taint\"\n",
+        ),
+    );
+    write(&dir.path().join("a.p"), TAINTED);
+    let (_, stdout, _) = check(dir.path(), &[".", "--format", "sarif"]);
+    let doc = json(&stdout);
+    let results: Vec<&serde_json::Value> = doc["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["ruleId"] == "ABLSEC001")
+        .collect();
+    assert_eq!(results.len(), 1, "{results:?}");
+    let r = results[0];
+    assert_eq!(
+        r["locations"][0]["physicalLocation"]["region"]["startLine"],
+        5
+    );
+    let text = r["message"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("input parameter `pcName` → `cWhere`"),
+        "{text}"
+    );
+    let steps: Vec<u64> = r["codeFlows"][0]["threadFlows"][0]["locations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            l["location"]["physicalLocation"]["region"]["startLine"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(steps, [1, 4, 5]);
+
+    // The default mode is stage 1: both sinks.
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    let codes: Vec<String> = findings(&json(&stdout))
+        .into_iter()
+        .map(|(_, code, _)| code)
+        .filter(|c| c == "ABLSEC001")
+        .collect();
+    assert_eq!(codes.len(), 2);
+}
