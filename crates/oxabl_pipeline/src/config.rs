@@ -545,6 +545,28 @@ fn lint_name_warnings(lint: &LintConfig) -> Vec<ConfigWarning> {
             warnings.push(ConfigWarning::Lint(message));
         }
     }
+    let table = "`[workspace.lint.security.modes]`";
+    for rule in lint.security.modes.keys() {
+        match registry.rule(rule) {
+            None => warnings.push(ConfigWarning::Lint(format!(
+                "unknown rule `{rule}` in {table}"
+            ))),
+            Some(r) if r.meta().group != oxabl_lint::groups::SECURITY => warnings.push(
+                ConfigWarning::Lint(format!("rule `{rule}` in {table} is not a security rule")),
+            ),
+            Some(_) => {}
+        }
+    }
+    for v in &lint.security.validators {
+        for kind in &v.protects {
+            if oxabl_lint::security::taint::SinkKind::mask_of(kind.trim()).is_none() {
+                warnings.push(ConfigWarning::Lint(format!(
+                    "unknown sink kind `{kind}` for validator `{}`",
+                    v.name
+                )));
+            }
+        }
+    }
     warnings
 }
 
@@ -701,6 +723,26 @@ mod tests {
                 "lint: ignoring override: the override has no `files` patterns, so it applies \
                  to no file",
                 "lint: ignoring override: empty pattern",
+            ]
+        );
+    }
+
+    #[test]
+    fn security_options_name_known_rules_and_sink_kinds() {
+        let warnings = lint_warnings(
+            "[workspace.lint.security]\nmode = \"taint\"\n\
+             [workspace.lint.security.modes]\nABLSEC005 = \"sink\"\nno-such-rule = \"sink\"\n\
+             unused-variable = \"taint\"\n\
+             [[workspace.lint.security.validators]]\nname = \"ok\"\nprotects = [\"query\", \"ALL\"]\n\
+             [[workspace.lint.security.validators]]\nname = \"v\"\nprotects = [\"sqli\"]\n",
+        );
+        assert_eq!(
+            warnings,
+            [
+                "lint: unknown rule `no-such-rule` in `[workspace.lint.security.modes]`",
+                "lint: rule `unused-variable` in `[workspace.lint.security.modes]` is not a \
+                 security rule",
+                "lint: unknown sink kind `sqli` for validator `v`",
             ]
         );
     }
