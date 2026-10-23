@@ -18,12 +18,12 @@ use super::taint::{run_with, taint};
 /// The rules with a taint mode, and the expected stage 2 result:
 /// (true positives, false positives, false negatives).
 const RULES: [(&str, (usize, usize, usize)); 10] = [
-    ("ABLSEC001", (5, 1, 1)),
+    ("ABLSEC001", (6, 1, 0)),
     ("ABLSEC002", (6, 0, 0)),
-    ("ABLSEC003", (5, 1, 1)),
+    ("ABLSEC003", (6, 1, 0)),
     ("ABLSEC004", (6, 0, 0)),
-    ("ABLSEC005", (6, 0, 0)),
-    ("ABLSEC006", (5, 0, 0)),
+    ("ABLSEC005", (7, 0, 0)),
+    ("ABLSEC006", (7, 0, 0)),
     ("ABLSEC007", (5, 0, 0)),
     ("ABLSEC014", (3, 0, 0)),
     ("ABLSEC015", (2, 0, 0)),

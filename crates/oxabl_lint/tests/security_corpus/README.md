@@ -65,26 +65,27 @@ The result, from `cargo test -p oxabl_lint --test security_rules taint_corpus --
 
 | Rule | Stage 1 TP / FP / FN | Precision | Recall | Stage 2 TP / FP / FN | Precision | Recall |
 |---|---|---|---|---|---|---|
-| ABLSEC001 | 6 / 6 / 0 | 0.50 | 1.00 | 5 / 1 / 1 | 0.83 | 0.83 |
+| ABLSEC001 | 6 / 7 / 0 | 0.46 | 1.00 | 6 / 1 / 0 | 0.86 | 1.00 |
 | ABLSEC002 | 6 / 4 / 0 | 0.60 | 1.00 | 6 / 0 / 0 | 1.00 | 1.00 |
-| ABLSEC003 | 6 / 5 / 0 | 0.55 | 1.00 | 5 / 1 / 1 | 0.83 | 0.83 |
+| ABLSEC003 | 6 / 6 / 0 | 0.50 | 1.00 | 6 / 1 / 0 | 0.86 | 1.00 |
 | ABLSEC004 | 6 / 4 / 0 | 0.60 | 1.00 | 6 / 0 / 0 | 1.00 | 1.00 |
-| ABLSEC005 | 6 / 3 / 0 | 0.67 | 1.00 | 6 / 0 / 0 | 1.00 | 1.00 |
-| ABLSEC006 | 5 / 4 / 0 | 0.56 | 1.00 | 5 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC005 | 7 / 4 / 0 | 0.64 | 1.00 | 7 / 0 / 0 | 1.00 | 1.00 |
+| ABLSEC006 | 7 / 5 / 0 | 0.58 | 1.00 | 7 / 0 / 0 | 1.00 | 1.00 |
 | ABLSEC007 | 5 / 4 / 0 | 0.56 | 1.00 | 5 / 0 / 0 | 1.00 | 1.00 |
 | ABLSEC014 | 3 / 2 / 0 | 0.60 | 1.00 | 3 / 0 / 0 | 1.00 | 1.00 |
 | ABLSEC015 | 2 / 1 / 0 | 0.67 | 1.00 | 2 / 0 / 0 | 1.00 | 1.00 |
 | ABLSEC016 | 2 / 2 / 0 | 0.50 | 1.00 | 2 / 0 / 0 | 1.00 | 1.00 |
-| All | 47 / 35 / 0 | 0.57 | 1.00 | 45 / 2 / 2 | 0.96 | 0.96 |
+| All | 50 / 39 / 0 | 0.56 | 1.00 | 50 / 2 / 0 | 0.96 | 1.00 |
 
-The corpus is small and was written with the analysis, so these numbers say that the analysis does what it was designed to do. They do not measure real code. The two misses and the two false alarms are the known limits of stage 2:
+The corpus is small and was written with the analysis, so these numbers say that the analysis does what it was designed to do. They do not measure real code. The two false alarms are the known limits of stage 2:
 
-- Missed: a value that a function of the same file returns (no taint across calls), and a `PRIVATE` procedure that its own file calls with untrusted input.
 - Reported: a check in a project function that `validators` does not name, and an allow-list held in a variable instead of a literal.
+
+The cases of calls inside one file (a function that returns web input, a function that quotes its argument, a `PRIVATE` procedure run with untrusted input, an `OUTPUT` parameter) and of JSON objects (`Add` then `Write`, an array that holds the object, an object of constants) are in the `cases.p` of ABLSEC001, ABLSEC003, ABLSEC005 and ABLSEC006. Before calls were followed, stage 2 missed the first and the third.
 
 Other classes, not in the corpus:
 
-- False negatives: what a function or method writes to a main block variable; `SHARED` variables; statements the parser does not model (only `COPY-LOB` is read); a value inside an object (`oFilter:Where = pc` taints `oFilter` as a whole, so a later read of another member is tainted too).
-- False positives: an unknown call whose result does not carry its argument (`LENGTH` and other number functions are known; a user function that returns a fixed string from a tainted key is not); a guard the analysis does not read (`IF INDEX(x, "..") > 0 THEN RETURN.`, a regular-expression check, `MATCHES`); and a request-named object that is not a web request.
+- False negatives: what a program of another file returns; what a function or method writes to a main block variable; `SHARED` variables; statements the parser does not model (only `COPY-LOB` is read); a value inside an object (`oFilter:Where = pc` taints `oFilter` as a whole, so a later read of another member is tainted too).
+- False positives: an unknown call whose result does not carry its argument (`LENGTH` and other number functions are known, and so are the routines of the same file; a function of another file that returns a fixed string from a tainted key is not); a guard the analysis does not read (`IF INDEX(x, "..") > 0 THEN RETURN.`, a regular-expression check, `MATCHES`); and a request-named object that is not a web request.
 
 `crates/oxabl/examples/security_corpus.rs` runs both modes over a tree (`OXABL_SECURITY_CORPUS=<dir>`). Over this directory, stage 2 reports 160 findings where stage 1 reports 230 (30% fewer); the rules without a taint mode do not change. Most stage 1 programs here have no untrusted source at all, because stage 1 does not need one.

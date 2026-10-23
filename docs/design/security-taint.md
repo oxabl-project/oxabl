@@ -28,7 +28,7 @@ at a time. Stage 3 (later) adds the call graph and entry-point reachability.
 
 ## Non-goals
 
-- Taint across procedures, files or the network (stage 3).
+- Taint across files or the network.
 - Proving that a sanitiser is correct. A configured validator is trusted.
 - Taint inside objects: a field of an object is not a variable.
 
@@ -99,7 +99,7 @@ rule hands over by span).
   block variable read in a procedure, a class member read in a method). Its
   value at the unit entry is a flow-insensitive summary: the union of what every
   unit of the file writes to it (a main block counts for its own variables).
-  The summaries and the unit solves iterate to a fixed point (at most four
+  The summaries and the unit solves iterate to a fixed point (at most eight
   rounds; the summaries only grow).
 - At a `RUN` of an internal procedure, a main block adds to each of its
   variables what other units write to it, so `RUN read-input. OS-COMMAND
@@ -195,6 +195,40 @@ The table is global: it is not read inside `[[workspace.lint.overrides]]`. The
 resolved value travels on `LintSeverityMap`, which every client already passes
 to the rules, so the CLI, the daemon, the LSP and wasm need no new plumbing.
 
+### Calls of the file
+
+Each procedure, function and method of a file has a **summary**: the labels
+of its result (a `$return` slot that each `RETURN expr` sets) and of each
+`OUTPUT`/`INPUT-OUTPUT` parameter at its exit. An input parameter has an
+origin of its own: the source "input parameter `pc`" for a unit that code
+outside the file can call, and a **placeholder** for any other. A call
+replaces the callee's parameter origins in the summary with its argument
+values, so the summary serves every caller: `f(pc)` is tainted when `f`
+returns `pc`, `f("x")` is not. A placeholder is never a source at a sink.
+
+A caller also passes its argument values to the callee's parameters (the
+**seeds**), so the sinks inside a `PRIVATE` procedure see what the file runs
+it with. The summary itself is solved without the seeds, so one caller's
+input does not leak into another caller's result. Summaries and seeds join
+the file-level summaries in the round loop, which stops when nothing changes
+and after at most eight rounds, so a chain of calls deeper than that may stop
+short.
+
+A call is read in modelled statements and expressions, in block headers, and
+in the tokens of the statements that are not modelled. A method is called on
+`THIS-OBJECT` or with no receiver; a call on another object is unknown.
+
+### JSON objects
+
+The object model is a common way for request values to reach a response
+without passing a variable the analysis can see. A variable declared as a
+`Json...` class (`JsonObject`, `JsonArray`), or one the file does not
+declare, takes what `o:Add(...)`, `o:Set(...)` and `o:Insert(...)` give it
+(a weak update), and `o:Write(target, ...)` writes it into `target`. A read
+through the object (`o:GetJsonText()`, `o:GetCharacter("k")`) is already the
+union of the receiver and the arguments. JSON serialisation clears no kind: a
+JSON text written into an HTML response is still an XSS finding.
+
 ## Measurement
 
 `tests/security_corpus/taint/<rule>/*.p` holds synthetic programs. Each sink line
@@ -213,8 +247,8 @@ their counts.
 
 ## Known limits
 
-- One unit at a time: a value that a callee returns, or that a caller passes to
-  a non-external unit, is clean.
+- Calls cross the units of one file only (see "Calls of the file"). A
+  program run with `RUN other.p` returns what an unknown call returns.
 - A main block sees what an internal procedure writes to its variables only
   after a `RUN` of that procedure; a function or method that writes one is not
   seen.
@@ -224,7 +258,8 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.57 (stage 1) to 0.96 (stage 2) and
-recall from 1.00 to 0.96; the corpus README has the table per rule. Over the
-whole security corpus, stage 2 reports 30% fewer findings.
+On the taint corpus, precision goes from 0.56 (stage 1) to 0.96 (stage 2) and
+recall stays at 1.00 (it was 0.96 before calls of the file were followed);
+the corpus README has the table per rule. Over the whole security corpus,
+stage 2 reports 30% fewer findings.
 

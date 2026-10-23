@@ -47,3 +47,17 @@ hQ:QUERY-PREPARE("FOR EACH Customer WHERE Customer.Name = '" + html-encode(pcNam
 /* An allow-list guard. */
 IF LOOKUP(pcName, "Name,City") > 0 THEN
     hQ:QUERY-PREPARE("FOR EACH Customer BY Customer." + pcName). /* taint: safe */
+
+/* Tainted through a function of the file that returns web input. */
+hQ:QUERY-PREPARE("FOR EACH Customer WHERE " + get-filter()). /* taint: real */
+
+/* A function of the file that quotes its argument. */
+hQ:QUERY-PREPARE("FOR EACH Customer WHERE Customer.Name = " + quoted(pcName)). /* taint: safe */
+
+FUNCTION get-filter RETURNS CHARACTER PRIVATE ():
+    RETURN get-value("filter").
+END FUNCTION.
+
+FUNCTION quoted RETURNS CHARACTER PRIVATE (INPUT pc AS CHARACTER):
+    RETURN QUOTER(pc).
+END FUNCTION.

@@ -41,3 +41,24 @@ PUT STREAM WebStream UNFORMATTED cHtml. /* taint: safe */
 /* An unknown call with constant arguments. */
 cHtml = render-row("header").
 oWriter:Write(cHtml). /* taint: safe */
+
+/* Tainted through a JSON object written to text. */
+DEFINE VARIABLE oJson AS Progress.Json.ObjectModel.JsonObject NO-UNDO.
+DEFINE VARIABLE oList AS Progress.Json.ObjectModel.JsonArray NO-UNDO.
+DEFINE VARIABLE lcJson AS LONGCHAR NO-UNDO.
+oJson = NEW Progress.Json.ObjectModel.JsonObject().
+oJson:Add("name", get-value("name")).
+oJson:Write(lcJson).
+PUT STREAM WebStream UNFORMATTED lcJson. /* taint: real */
+
+/* Through an array that holds the object. */
+oList = NEW Progress.Json.ObjectModel.JsonArray().
+oList:Add(oJson).
+lcJson = oList:GetJsonText().
+oWriter:Write(lcJson). /* taint: real */
+
+/* A JSON object of constants. */
+oJson = NEW Progress.Json.ObjectModel.JsonObject().
+oJson:Set("status", "ok").
+oJson:Write(lcJson, TRUE).
+PUT STREAM WebStream UNFORMATTED lcJson. /* taint: safe */

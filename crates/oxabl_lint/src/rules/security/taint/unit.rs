@@ -8,12 +8,15 @@ use oxabl_ast::{
 use oxabl_common::ParameterSources;
 use oxabl_flow::dataflow::{Analysis, Direction, Limits, Solution, default_budget, solve_bounded};
 use oxabl_flow::provenance::Provenance;
-use oxabl_flow::{Cfg, Edge, EdgeKind, NodeIx, NodeKind, Unit, UnitKind};
+use oxabl_flow::{Cfg, Edge, EdgeKind, ExitKind, NodeIx, NodeKind, Unit, UnitKind};
 use oxabl_lexer::Kind;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, is_constant};
-use super::value::{Compiler, Origins, Slots, Summaries, Tables, Term, Value};
+use super::value::{
+    CallIr, Compiler, Env, Origins, Out, Routines, Slots, Summaries, Tables, Term, UnitSummary,
+    Value,
+};
 use super::{ALL, Options};
 
 /// The most work the solve of one unit may do. Past it the unit is Unknown.
@@ -39,6 +42,19 @@ pub(super) struct Guard {
     pub when: Vec<Vec<(u32, u32)>>,
 }
 
+/// One parameter position of a unit.
+#[derive(Debug, Clone, Default)]
+pub(super) struct ParamInfo {
+    /// The origin a call replaces with its argument.
+    pub origin: Option<u32>,
+    pub slot: Option<u32>,
+    /// `OUTPUT` or `INPUT-OUTPUT`: its value at the exit goes back.
+    pub output: bool,
+}
+
+/// The slot of a function or method result.
+const RETURN_SLOT: &str = "$return";
+
 /// A unit compiled for the solve.
 #[derive(Debug, Default)]
 pub(super) struct UnitIr {
@@ -50,6 +66,10 @@ pub(super) struct UnitIr {
     /// A main block: the variables it declares are file-level for the units
     /// inside it.
     pub main: bool,
+    /// By position.
+    pub params: Vec<ParamInfo>,
+    /// The calls of routines of the file, with the node that makes each.
+    pub calls: Vec<(NodeIx, CallIr)>,
 }
 
 /// The statements of a file by id.
@@ -166,6 +186,31 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>) -> Tables {
                     target.name.to_ascii_lowercase(),
                 );
             }
+            S::VariableDeclaration {
+                name, type_source, ..
+            }
+            | S::DefineParameter {
+                param_type:
+                    ParameterType::Variable {
+                        name, type_source, ..
+                    },
+                ..
+            } => {
+                let ty = match type_source {
+                    oxabl_ast::TypeSource::Explicit(d) => d.class_name().unwrap_or(""),
+                    oxabl_ast::TypeSource::Like { .. } => "",
+                };
+                t.types
+                    .insert(name.name.to_ascii_lowercase(), ty.to_ascii_lowercase());
+            }
+            S::Property {
+                name, data_type, ..
+            } => {
+                t.types.insert(
+                    name.name.to_ascii_lowercase(),
+                    data_type.class_name().unwrap_or("").to_ascii_lowercase(),
+                );
+            }
             _ => {}
         }
     }
@@ -273,6 +318,10 @@ struct Builder<'c, 'a> {
     c: Compiler<'c>,
     source: &'a str,
     external: bool,
+    unit: u32,
+    /// Parameter position by the id of its definition.
+    positions: FxHashMap<NodeId, u32>,
+    params: Vec<ParamInfo>,
 }
 
 impl Builder<'_, '_> {
@@ -295,10 +344,16 @@ impl Builder<'_, '_> {
         else {
             return;
         };
-        let input = matches!(
+        let inbound = matches!(
             direction,
             ParameterDirection::Input | ParameterDirection::InputOutput
-        ) && self.external;
+        );
+        let input = inbound && self.external;
+        let pos = self.positions.get(&stmt.id).copied();
+        let output = matches!(
+            direction,
+            ParameterDirection::Output | ParameterDirection::InputOutput
+        );
         match param_type {
             ParameterType::Variable { name, .. }
             | ParameterType::Handle {
@@ -309,15 +364,41 @@ impl Builder<'_, '_> {
                 let Some(slot) = self.c.var_slot(&name.name) else {
                     return;
                 };
+                let mut origin = None;
                 let value = if input {
-                    Value::origin(
-                        self.c
-                            .origins
-                            .add(format!("input parameter `{}`", name.name), stmt.span),
-                    )
+                    let id = self
+                        .c
+                        .origins
+                        .add(format!("input parameter `{}`", name.name), stmt.span);
+                    origin = Some(id);
+                    Value::origin(id)
+                } else if inbound && pos.is_some() {
+                    let id = self
+                        .c
+                        .origins
+                        .placeholder(format!("parameter `{}`", name.name), stmt.span);
+                    origin = Some(id);
+                    Value::origin(id)
                 } else {
                     Value::default()
                 };
+                let value = match pos {
+                    Some(p) if inbound => Value::union([
+                        value,
+                        Value(vec![Term::Param {
+                            unit: self.unit,
+                            pos: p,
+                        }]),
+                    ]),
+                    _ => value,
+                };
+                if let Some(p) = pos {
+                    self.params[p as usize] = ParamInfo {
+                        origin,
+                        slot: Some(slot),
+                        output,
+                    };
+                }
                 out.push(Op {
                     slot,
                     value,
@@ -368,6 +449,32 @@ impl Builder<'_, '_> {
             .filter(|a| written_direction(self.source, a.span.start).is_some())
             .collect();
         if outputs.is_empty() {
+            return;
+        }
+        let callees = match &e.kind {
+            E::FunctionCall { name, .. } => self.c.routines.callable(&name.name),
+            E::MethodCall { object, method, .. } if is_this_object(object) => {
+                self.c.routines.method(&method.name)
+            }
+            _ => None,
+        }
+        .map(<[u32]>::to_vec);
+        if let Some(callees) = callees {
+            let args: Vec<Value> = arguments
+                .iter()
+                .map(|a| match written_direction(self.source, a.span.start) {
+                    Some(ParameterDirection::Output) => Value::default(),
+                    _ => self.c.expr(a),
+                })
+                .collect();
+            for (i, a) in arguments.iter().enumerate() {
+                if written_direction(self.source, a.span.start).is_some() {
+                    let v = self
+                        .c
+                        .routine_call(&callees, Out::Param(i as u32), args.clone());
+                    self.set(out, a, v, span);
+                }
+            }
             return;
         }
         let mut inputs = Vec::new();
@@ -439,8 +546,60 @@ impl Builder<'_, '_> {
             (S::ExpressionStatement(e), _) => {
                 self.output_arguments(&mut out, e, s.span);
                 self.socket_read(&mut out, e, s.span);
+                self.json(&mut out, e, s.span);
+                self.c.expr(e);
             }
-            (S::Return(Some(e)), _) => self.output_arguments(&mut out, e, s.span),
+            (S::Return(Some(e)), _) => {
+                self.output_arguments(&mut out, e, s.span);
+                let v = self.c.expr(e);
+                if self.c.declared.contains(RETURN_SLOT)
+                    && let Some(slot) = self.c.var_slot(RETURN_SLOT)
+                {
+                    out.push(Op {
+                        slot,
+                        value: v,
+                        strong: true,
+                        span: s.span,
+                    });
+                }
+            }
+            (
+                S::Run {
+                    target: RunTarget::Literal { name, .. },
+                    arguments,
+                    in_handle,
+                    ..
+                },
+                _,
+            ) if in_handle.as_ref().is_none_or(|h| self.is_this_procedure(h))
+                && self.c.routines.procedure(name).is_some() =>
+            {
+                let callees = self.c.routines.procedure(name).unwrap_or_default().to_vec();
+                let args: Vec<Value> = arguments
+                    .iter()
+                    .map(|a| match a.direction {
+                        ParameterDirection::Output => Value::default(),
+                        _ => self.c.expr(&a.expression),
+                    })
+                    .collect();
+                self.c.calls.push(CallIr {
+                    callees: callees.clone(),
+                    args: args.clone(),
+                });
+                for (i, a) in arguments.iter().enumerate() {
+                    if matches!(
+                        a.direction,
+                        ParameterDirection::Output | ParameterDirection::InputOutput
+                    ) {
+                        let v = Value(vec![Term::Call {
+                            callees: callees.clone(),
+                            out: Out::Param(i as u32),
+                            args: args.clone(),
+                        }]);
+                        self.set(&mut out, &a.expression, v, s.span);
+                    }
+                }
+            }
             (
                 S::Run {
                     target,
@@ -505,7 +664,12 @@ impl Builder<'_, '_> {
                     }
                 }
             }
-            (S::Skipped { .. }, _) => self.copy_lob(&mut out, s),
+            (S::Skipped { .. }, _) => {
+                self.copy_lob(&mut out, s);
+                if let Some(st) = StatementText::of(self.source, s) {
+                    self.c.tokens(&st, 0..st.len());
+                }
+            }
             (
                 S::Do {
                     loop_var: Some(v),
@@ -536,6 +700,7 @@ impl Builder<'_, '_> {
             }
             (S::If { condition, .. }, NodeKind::Stmt) => {
                 self.output_arguments(&mut out, condition, s.span);
+                self.c.expr(condition);
                 guard = Some(Guard {
                     on_true: self.c.guard(condition, true),
                     on_false: self.c.guard(condition, false),
@@ -550,6 +715,7 @@ impl Builder<'_, '_> {
                 },
                 NodeKind::Stmt,
             ) => {
+                self.c.expr(expression);
                 let when = when_branches
                     .iter()
                     .map(|w| {
@@ -569,9 +735,96 @@ impl Builder<'_, '_> {
                     ..Guard::default()
                 });
             }
+            (S::Do { .. } | S::Repeat { .. } | S::ForEach { .. }, NodeKind::Head) => {
+                self.header_calls(s);
+            }
+            (kind, _) if !has_body(kind) => self.scan_calls(s),
             _ => {}
         }
         (out, guard)
+    }
+
+    /// The calls of routines in the header expressions of a block.
+    fn header_calls(&mut self, s: &Statement) {
+        let exprs: Vec<&Expression> = match &s.kind {
+            S::Do {
+                from,
+                to,
+                by,
+                while_condition,
+                ..
+            } => [from, to, by, while_condition]
+                .into_iter()
+                .flatten()
+                .collect(),
+            S::Repeat {
+                while_condition, ..
+            } => while_condition.iter().collect(),
+            S::ForEach { where_clause, .. } => where_clause.iter().collect(),
+            _ => Vec::new(),
+        };
+        for e in exprs {
+            self.c.expr(e);
+        }
+    }
+
+    /// The calls of routines in a statement that is not modelled here, read
+    /// from its tokens.
+    fn scan_calls(&mut self, s: &Statement) {
+        if !self.c.routines.any_callable()
+            || !crate::rules::syntactic::source_of(self.source, s.span).is_some_and(|t| t.contains('('))
+        {
+            return;
+        }
+        if let Some(st) = StatementText::of(self.source, s) {
+            self.c.tokens(&st, 0..st.len());
+        }
+    }
+
+    fn is_this_procedure(&self, h: &Expression) -> bool {
+        self.source
+            .get(h.span.start as usize..h.span.end as usize)
+            .is_some_and(|t| t.trim().eq_ignore_ascii_case("THIS-PROCEDURE"))
+    }
+
+    /// `o:Add(k, v)`, `o:Set(k, v)` and `o:Insert(i, v)` put the value in
+    /// the JSON object `o`; `o:Write(target, ...)` puts `o` into `target`.
+    fn json(&mut self, out: &mut Vec<Op>, e: &Expression, span: Span) {
+        let E::MethodCall {
+            object,
+            method,
+            arguments,
+        } = &e.kind
+        else {
+            return;
+        };
+        let E::Identifier(o) = &object.kind else {
+            return;
+        };
+        if !self.c.tables.may_be_json(&o.name) {
+            return;
+        }
+        let m = method.name.as_str();
+        if ["Add", "Set", "Insert"]
+            .iter()
+            .any(|w| w.eq_ignore_ascii_case(m))
+        {
+            let value = Value::union(arguments.iter().map(|a| self.c.expr(a)).collect::<Vec<_>>());
+            if let Some(slot) = self.c.var_slot(&o.name) {
+                out.push(Op {
+                    slot,
+                    value,
+                    strong: false,
+                    span,
+                });
+            }
+        } else if m.eq_ignore_ascii_case("Write")
+            && let Some(first) = arguments.first()
+            && written_direction(self.source, first.span.start).is_none()
+        {
+            let value = self.c.expr(object);
+            self.set(out, first, value, span);
+        }
     }
 
     /// `IMPORT` or `SET` into `t`: a field, a variable, or a whole record.
@@ -653,6 +906,37 @@ impl Builder<'_, '_> {
     }
 }
 
+/// Whether a statement holds other statements, which have nodes of their own.
+fn has_body(kind: &S) -> bool {
+    matches!(
+        kind,
+        S::Do { .. }
+            | S::Repeat { .. }
+            | S::ForEach { .. }
+            | S::If { .. }
+            | S::Case { .. }
+            | S::Procedure { .. }
+            | S::Function { .. }
+            | S::Class { .. }
+            | S::Interface { .. }
+            | S::Method { .. }
+            | S::Constructor { .. }
+            | S::Destructor { .. }
+            | S::Property { .. }
+            | S::Block(_)
+            | S::Catch { .. }
+            | S::Finally { .. }
+            | S::On { .. }
+            | S::Label { .. }
+            | S::PreprocIf(_)
+            | S::VariableDeclarationList(_)
+    )
+}
+
+fn is_this_object(e: &Expression) -> bool {
+    matches!(&e.kind, E::Identifier(i) if i.name.eq_ignore_ascii_case("THIS-OBJECT"))
+}
+
 fn for_each_child<'e>(e: &'e Expression, f: &mut impl FnMut(&'e Expression)) {
     match &e.kind {
         E::Add(a, b)
@@ -687,22 +971,49 @@ fn for_each_child<'e>(e: &'e Expression, f: &mut impl FnMut(&'e Expression)) {
     }
 }
 
+/// The parameter positions of a unit, by the id of each definition. A main
+/// block has none: no routine of the file calls it.
+fn positions(unit: &Unit, stmt: Option<&Statement>, entry: &[Statement]) -> FxHashMap<NodeId, u32> {
+    let list: &[Statement] = match (unit.kind, stmt.map(|s| &s.kind)) {
+        (UnitKind::Main, _) => &[],
+        (UnitKind::Procedure, Some(S::Procedure { body, .. }))
+        | (UnitKind::Function, Some(S::Function { body, .. })) => body,
+        _ => entry,
+    };
+    list.iter()
+        .filter(|s| matches!(s.kind, S::DefineParameter { .. }))
+        .enumerate()
+        .map(|(i, s)| (s.id, i as u32))
+        .collect()
+}
+
 /// Compile one unit. Origins are added to `origins`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn compile(
     cfg: &Cfg,
     stmts: &FxHashMap<NodeId, &Statement>,
     tables: &Tables,
     source: &str,
     options: &Options,
+    routines: &Routines,
     origins: &mut Origins,
 ) -> UnitIr {
     let unit = cfg.unit();
     let unit_stmt = stmts.get(&unit.stmt).copied();
     let entry = entry_parameters(unit, unit_stmt);
-    let declared = declared(cfg, stmts, entry);
+    let mut declared = declared(cfg, stmts, entry);
+    if matches!(
+        unit.kind,
+        UnitKind::Function | UnitKind::Method | UnitKind::PropertyGet
+    ) {
+        declared.insert(RETURN_SLOT.to_string());
+    }
+    let positions = positions(unit, unit_stmt, entry);
     let mut slots = Slots::default();
     let mut ops = vec![Vec::new(); cfg.node_count()];
     let mut guards = FxHashMap::default();
+    let mut calls = Vec::new();
+    let params;
     {
         let mut b = Builder {
             c: Compiler {
@@ -712,9 +1023,14 @@ pub(super) fn compile(
                 origins,
                 declared: &declared,
                 frozen: false,
+                routines,
+                calls: Vec::new(),
             },
             source,
             external: is_external(unit, unit_stmt, source, options),
+            unit: cfg.id().index() as u32,
+            params: vec![ParamInfo::default(); positions.len()],
+            positions,
         };
         for p in entry {
             b.parameter(&mut ops[cfg.entry().index()], p);
@@ -731,7 +1047,9 @@ pub(super) fn compile(
             if let Some(g) = g {
                 guards.insert(i.index() as u32, g);
             }
+            calls.extend(b.c.calls.drain(..).map(|c| (i, c)));
         }
+        params = b.params;
     }
     UnitIr {
         slots,
@@ -739,27 +1057,29 @@ pub(super) fn compile(
         ops,
         guards,
         main: unit.kind == UnitKind::Main,
+        params,
+        calls,
     }
 }
 
 /// The forward problem of one unit.
 struct Problem<'a> {
     ir: &'a UnitIr,
-    files: &'a Summaries,
+    env: Env<'a>,
     seeds: Provenance,
 }
 
 impl Problem<'_> {
     fn apply(&self, node: NodeIx, fact: &mut Provenance) {
         for op in &self.ir.ops[node.index()] {
-            apply(op, fact, self.files);
+            apply(op, fact, self.env);
         }
     }
 }
 
 /// Apply one write to `fact`.
-pub(super) fn apply(op: &Op, fact: &mut Provenance, files: &Summaries) {
-    let (labels, _) = op.value.eval(fact, files);
+pub(super) fn apply(op: &Op, fact: &mut Provenance, env: Env) {
+    let (labels, _) = op.value.eval(fact, env);
     if op.strong {
         fact.set(op.slot as usize, labels);
     } else {
@@ -816,20 +1136,16 @@ impl Analysis for Problem<'_> {
 
 /// Solve one unit with the file-level variables and fields at their
 /// summaries. `None` when the unit costs more than its budget.
-pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, summaries: &Summaries) -> Option<Solution<Provenance>> {
+pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provenance>> {
     let mut seeds = Provenance::new(ir.slots.len());
     for (i, slot) in ir.slots.info.iter().enumerate() {
         if slot.global
-            && let Some(l) = summaries.labels.get(&slot.key)
+            && let Some(l) = env.files.labels.get(&slot.key)
         {
             seeds.set(i, l.clone());
         }
     }
-    let problem = Problem {
-        ir,
-        files: summaries,
-        seeds,
-    };
+    let problem = Problem { ir, env, seeds };
     let limits = Limits {
         visits: default_budget(cfg),
         work: WORK_LIMIT,
@@ -878,6 +1194,67 @@ pub(super) fn refresh_after_runs(
                 strong: false,
                 span: n.span,
             });
+        }
+    }
+}
+
+/// What a routine returns and leaves in its output parameters, from a solve
+/// in which its parameters hold only their own origins.
+pub(super) fn summarize(cfg: &Cfg, ir: &UnitIr, solution: Option<&Solution<Provenance>>) -> UnitSummary {
+    let params = ir.params.iter().map(|p| p.origin).collect();
+    let Some(sol) = solution else {
+        return UnitSummary {
+            params,
+            unknown: true,
+            ..UnitSummary::default()
+        };
+    };
+    let Some(exit) = cfg.exit(ExitKind::Return) else {
+        return UnitSummary {
+            params,
+            ..UnitSummary::default()
+        };
+    };
+    let fact = sol.before(exit);
+    let ret = ir
+        .slots
+        .get(RETURN_SLOT)
+        .map(|s| fact.get(s as usize).iter().copied().collect())
+        .unwrap_or_default();
+    let outs = ir
+        .params
+        .iter()
+        .map(|p| match (p.output, p.slot) {
+            (true, Some(s)) => fact.get(s as usize).iter().copied().collect(),
+            _ => Default::default(),
+        })
+        .collect();
+    UnitSummary {
+        ret,
+        outs,
+        params,
+        unknown: false,
+    }
+}
+
+/// Add what the calls of `ir` pass to each parameter of their callees.
+pub(super) fn pass_arguments(
+    ir: &UnitIr,
+    solution: &Solution<Provenance>,
+    env: Env,
+    into: &mut Summaries,
+) {
+    for (node, call) in &ir.calls {
+        let fact = solution.before(*node);
+        for (pos, arg) in call.args.iter().enumerate() {
+            let (labels, _) = arg.eval(fact, env);
+            if labels.is_empty() {
+                continue;
+            }
+            for &c in &call.callees {
+                let entry = into.seeds.entry((c, pos as u32)).or_default();
+                oxabl_flow::provenance::merge(entry, &labels);
+            }
         }
     }
 }

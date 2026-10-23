@@ -14,7 +14,7 @@ use oxabl_flow::{Cfg, NodeIx};
 
 use super::FileTaint;
 use super::unit::{UnitIr, apply};
-use super::value::{Origins, Value};
+use super::value::{Env, Origins, Value};
 
 /// The most steps of a path, the source excluded.
 const MAX_STEPS: usize = 8;
@@ -125,7 +125,7 @@ fn fact_before(
 ) -> Provenance {
     let mut f = sol.before(node).clone();
     for op in &ir.ops[node.index()][..k] {
-        apply(op, &mut f, &ft.summaries);
+        apply(op, &mut f, Env::new(&ft.summaries));
     }
     f
 }
@@ -141,7 +141,7 @@ fn writes(
 ) -> bool {
     let (labels, _) = ir.ops[node.index()][k]
         .value
-        .eval(&fact_before(ft, sol, ir, node, k), &ft.summaries);
+        .eval(&fact_before(ft, sol, ir, node, k), Env::new(&ft.summaries));
     labels.iter().any(|(o, _)| *o == origin)
 }
 

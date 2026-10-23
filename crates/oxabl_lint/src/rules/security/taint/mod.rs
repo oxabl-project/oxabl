@@ -27,6 +27,24 @@
 //! An unknown call returns the union of its receiver and arguments, and its
 //! `OUTPUT` arguments take the same value.
 //!
+//! # Calls of the file's own routines
+//!
+//! A procedure, function or method of the file has a summary: what its
+//! result and each `OUTPUT` parameter hold at its exit, in terms of real
+//! origins and of the origins of its own parameters. A call (`RUN p (...)`,
+//! `f(...)`, `m(...)`, `THIS-OBJECT:m(...)`) puts its arguments in for those,
+//! so `f(pc)` is tainted when `f` returns `pc`, and `f("x")` is not. The
+//! summary is solved with the parameters holding only their own origins.
+//! Callers also pass their arguments to the parameters, so a `PRIVATE`
+//! procedure that the file runs with untrusted input sees it; a parameter of
+//! a unit that no caller outside the file reaches is a placeholder, never a
+//! source of its own.
+//!
+//! A JSON object or array (a variable declared as a `Json...` class, or not
+//! declared) takes what `o:Add`, `o:Set` and `o:Insert` give it, and
+//! `o:Write(target)` puts it into `target`; a read such as `o:GetJsonText()`
+//! returns it.
+//!
 //! # Sources
 //!
 //! `INPUT` parameters of a unit that code outside the file can call (see
@@ -40,9 +58,9 @@
 //!
 //! A variable that a unit reads and does not declare, and every field, is
 //! file-level. Its value at the unit entry is the union of what every unit of
-//! the file writes to it (a main block counts for its own variables). Units
-//! and these summaries are solved again until nothing changes, at most
-//! [`ROUNDS`] times.
+//! the file writes to it (a main block counts for its own variables). Units,
+//! these summaries and the routine summaries are solved again until nothing
+//! changes, at most [`ROUNDS`] times.
 //!
 //! # Unknown
 //!
@@ -66,10 +84,10 @@ use super::literal::StatementText;
 use crate::rules::syntactic::file_span;
 use crate::shared::RunShared;
 use unit::UnitIr;
-use value::{Compiler, Origins, Summaries, Tables};
+use value::{Compiler, Env, Origins, Routines, Summaries, Tables};
 
 /// The most rounds of unit solves and file-level summaries.
-pub const ROUNDS: usize = 4;
+pub const ROUNDS: usize = 8;
 
 /// The kind of sink a value is dangerous for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +206,7 @@ pub struct FileTaint {
     summaries: Summaries,
     tables: Tables,
     options: Options,
+    routines: Routines,
 }
 
 /// Analyse the units of a file.
@@ -200,12 +219,24 @@ pub(crate) fn analyze(
     let options = Options::new(options);
     let stmts = unit::statements(program);
     let tables = unit::tables(&stmts);
+    let routines = routines(flow);
     let mut origins = Origins::default();
     let mut units: Vec<UnitIr> = flow
         .units()
         .iter()
-        .map(|cfg| unit::compile(cfg, &stmts, &tables, source, &options, &mut origins))
+        .map(|cfg| {
+            unit::compile(
+                cfg,
+                &stmts,
+                &tables,
+                source,
+                &options,
+                &routines,
+                &mut origins,
+            )
+        })
         .collect();
+    let callable: FxHashSet<u32> = routines.units().collect();
     let procedures: FxHashSet<String> = stmts
         .values()
         .filter_map(|s| match &s.kind {
@@ -233,17 +264,33 @@ pub(crate) fn analyze(
     let mut summaries = Summaries::default();
     let mut solutions = Vec::new();
     for _ in 0..ROUNDS {
+        let env = Env::new(&summaries);
         solutions = flow
             .units()
             .iter()
             .zip(&units)
-            .map(|(cfg, ir)| unit::solve(cfg, ir, &summaries))
+            .map(|(cfg, ir)| unit::solve(cfg, ir, env))
             .collect();
         let mut next = summaries.clone();
-        for (ir, sol) in units.iter().zip(&solutions) {
+        for (i, (cfg, (ir, sol))) in flow.units().iter().zip(units.iter().zip(&solutions)).enumerate() {
+            let i = i as u32;
             if let Some(sol) = sol {
                 unit::contribute(ir, sol, &mut next);
+                unit::pass_arguments(ir, sol, env, &mut next);
             }
+            if !callable.contains(&i) {
+                continue;
+            }
+            // A routine's summary holds what it does with its own parameters,
+            // not what one caller passes.
+            let seeded = summaries.seeds.keys().any(|(u, _)| *u == i);
+            let own = if seeded {
+                unit::solve(cfg, ir, Env { seeds: false, ..env })
+            } else {
+                None
+            };
+            let sol = if seeded { own.as_ref() } else { sol.as_ref() };
+            next.units.insert(i, unit::summarize(cfg, ir, sol));
         }
         if next == summaries {
             break;
@@ -257,7 +304,29 @@ pub(crate) fn analyze(
         summaries,
         tables,
         options,
+        routines,
     }
+}
+
+/// The procedures, functions and methods of a file by name.
+fn routines(flow: &FileFlow) -> Routines {
+    let mut r = Routines::default();
+    for (i, cfg) in flow.units().iter().enumerate() {
+        let unit = cfg.unit();
+        let Some(name) = &unit.name else {
+            continue;
+        };
+        let map = match unit.kind {
+            oxabl_flow::UnitKind::Procedure => &mut r.procedures,
+            oxabl_flow::UnitKind::Function => &mut r.functions,
+            oxabl_flow::UnitKind::Method => &mut r.methods,
+            _ => continue,
+        };
+        map.entry(name.to_ascii_lowercase())
+            .or_default()
+            .push(i as u32);
+    }
+    r
 }
 
 /// What reaches a sink operand.
@@ -322,8 +391,11 @@ impl FileTaint {
             origins: &mut origins,
             declared: &ir.declared,
             frozen: true,
+            routines: &self.routines,
+            calls: Vec::new(),
         }
         .tokens(&st, 0..st.len());
+        let env = Env::new(&self.summaries);
         let mut fact = Provenance::new(ir.slots.len());
         for &n in &nodes {
             let mut f = sol.before(n).clone();
@@ -331,15 +403,24 @@ impl FileTaint {
                 .iter()
                 .filter(|op| op.span.end <= operand.start)
             {
-                unit::apply(op, &mut f, &self.summaries);
+                unit::apply(op, &mut f, env);
             }
             fact.join(&f);
         }
-        let (labels, unknown) = value.eval(&fact, &self.summaries);
+        let (labels, unknown) = value.eval(&fact, env);
         if unknown {
             return Reach::Unknown;
         }
-        let Some(&(origin, _)) = labels.iter().find(|(_, m)| m & kind.bit() != 0) else {
+        let real = |o: u32| {
+            self.origins
+                .get(o)
+                .or_else(|| origins.get(o))
+                .is_some_and(|x| !x.placeholder)
+        };
+        let Some(&(origin, _)) = labels
+            .iter()
+            .find(|(o, m)| m & kind.bit() != 0 && real(*o))
+        else {
             return Reach::Clean;
         };
         Reach::Tainted(witness::path(

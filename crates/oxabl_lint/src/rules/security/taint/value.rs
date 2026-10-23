@@ -24,6 +24,8 @@ pub(super) struct Origin {
     pub span: Span,
     /// A noun phrase: "input parameter `pc`".
     pub what: String,
+    /// Stands for what callers pass to a parameter: not a source of its own.
+    pub placeholder: bool,
 }
 
 /// The origins of a file, or of one operand on top of them.
@@ -44,7 +46,20 @@ impl Origins {
     }
 
     pub fn add(&mut self, what: String, span: Span) -> u32 {
-        self.list.push(Origin { span, what });
+        self.push(what, span, false)
+    }
+
+    /// An origin that stands for the argument of a parameter.
+    pub fn placeholder(&mut self, what: String, span: Span) -> u32 {
+        self.push(what, span, true)
+    }
+
+    fn push(&mut self, what: String, span: Span, placeholder: bool) -> u32 {
+        self.list.push(Origin {
+            span,
+            what,
+            placeholder,
+        });
         self.offset + self.list.len() as u32 - 1
     }
 
@@ -78,8 +93,40 @@ pub(super) enum Term {
     },
     /// The sub-value with these kinds removed.
     Clear(u32, Value),
+    /// What a routine of the file returns (or leaves in an output parameter)
+    /// for these arguments, by its summary.
+    Call {
+        callees: Vec<u32>,
+        out: Out,
+        args: Vec<Value>,
+    },
+    /// What the callers of a unit pass to its parameter at this position.
+    Param { unit: u32, pos: u32 },
     /// Text the analysis cannot read, such as an unexpanded reference.
     Unknown,
+}
+
+/// The result of a call that a [`Term::Call`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Out {
+    Return,
+    /// The parameter at this position.
+    Param(u32),
+}
+
+/// What [`Value::eval`] reads besides the fact.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Env<'a> {
+    pub files: &'a Summaries,
+    /// Whether parameters take what callers pass. A routine's summary is
+    /// solved without, so one caller's input does not reach another caller.
+    pub seeds: bool,
+}
+
+impl<'a> Env<'a> {
+    pub fn new(files: &'a Summaries) -> Self {
+        Env { files, seeds: true }
+    }
 }
 
 impl Value {
@@ -99,15 +146,16 @@ impl Value {
         }
     }
 
-    /// The labels of the value against `fact` and the file-level `files`,
+    /// The labels of the value against `fact` and the file-level summaries,
     /// and whether it holds Unknown.
-    pub fn eval(&self, fact: &Provenance, files: &Summaries) -> (Labels, bool) {
+    pub fn eval(&self, fact: &Provenance, env: Env) -> (Labels, bool) {
         let mut out = Labels::new();
-        let unknown = self.eval_into(fact, files, &mut out);
+        let unknown = self.eval_into(fact, env, &mut out);
         (out, unknown)
     }
 
-    fn eval_into(&self, fact: &Provenance, files: &Summaries, out: &mut Labels) -> bool {
+    fn eval_into(&self, fact: &Provenance, env: Env, out: &mut Labels) -> bool {
+        let files = env.files;
         let mut unknown = false;
         for t in &self.0 {
             match t {
@@ -124,9 +172,19 @@ impl Value {
                 }
                 Term::Clear(mask, v) => {
                     let mut inner = Labels::new();
-                    unknown |= v.eval_into(fact, files, &mut inner);
+                    unknown |= v.eval_into(fact, env, &mut inner);
                     provenance::clear(&mut inner, *mask);
                     provenance::merge(out, &inner);
+                }
+                Term::Call { callees, out: o, args } => {
+                    unknown |= call_into(callees, *o, args, fact, env, out);
+                }
+                Term::Param { unit, pos } => {
+                    if env.seeds
+                        && let Some(l) = files.seeds.get(&(*unit, *pos))
+                    {
+                        provenance::merge(out, l);
+                    }
                 }
                 Term::Unknown => unknown = true,
             }
@@ -165,10 +223,67 @@ impl Value {
             match t {
                 Term::Slot(s) => out.push(*s),
                 Term::Clear(_, v) => v.slots(out),
+                Term::Call { args, .. } => args.iter().for_each(|a| a.slots(out)),
                 _ => {}
             }
         }
     }
+}
+
+/// The labels of a call: each callee's summary with the arguments put in
+/// for its parameters. A callee past its work budget returns its arguments.
+fn call_into(
+    callees: &[u32],
+    o: Out,
+    args: &[Value],
+    fact: &Provenance,
+    env: Env,
+    out: &mut Labels,
+) -> bool {
+    let mut unknown = false;
+    let mut evaluated: Vec<Option<Labels>> = vec![None; args.len()];
+    let mut arg = |i: usize, unknown: &mut bool| -> Labels {
+        evaluated[i]
+            .get_or_insert_with(|| {
+                let (l, u) = args[i].eval(fact, env);
+                *unknown |= u;
+                l
+            })
+            .clone()
+    };
+    for &c in callees {
+        let Some(s) = env.files.units.get(&c) else {
+            continue;
+        };
+        if s.unknown {
+            for i in 0..args.len() {
+                provenance::merge(out, &arg(i, &mut unknown));
+            }
+            continue;
+        }
+        let labels = match o {
+            Out::Return => &s.ret,
+            Out::Param(p) => match s.outs.get(p as usize) {
+                Some(l) => l,
+                None => continue,
+            },
+        };
+        for &(origin, mask) in labels {
+            match s.params.iter().position(|p| *p == Some(origin)) {
+                Some(i) if i < args.len() => {
+                    let mut l = arg(i, &mut unknown);
+                    l.iter_mut().for_each(|x| x.1 &= mask);
+                    l.retain(|x| x.1 != 0);
+                    provenance::merge(out, &l);
+                }
+                Some(_) => {}
+                None => {
+                    provenance::merge(out, &[(origin, mask)]);
+                }
+            }
+        }
+    }
+    unknown
 }
 
 /// A variable, a field or a whole table that a value can sit in.
@@ -204,9 +319,21 @@ pub(super) struct Tables {
     pub temp_tables: FxHashSet<String>,
     /// Lower-cased buffer name to the table it is for.
     pub buffers: FxHashMap<String, String>,
+    /// Lower-cased variable, parameter and property names to their class
+    /// type, lower-cased; empty for a primitive type.
+    pub types: FxHashMap<String, String>,
 }
 
 impl Tables {
+    /// Whether `name` may hold a JSON object or array: its declared class is
+    /// one, or the file does not declare it.
+    pub fn may_be_json(&self, name: &str) -> bool {
+        match self.types.get(&name.to_ascii_lowercase()) {
+            None => true,
+            Some(t) => t.rsplit('.').next().is_some_and(|s| s.starts_with("json")),
+        }
+    }
+
     /// The table a buffer or table name stands for, lower-cased.
     pub fn table_of(&self, name: &str) -> String {
         let lower = name.to_ascii_lowercase();
@@ -215,11 +342,83 @@ impl Tables {
 }
 
 /// File-level summaries: the labels every unit writes to a variable or field
-/// that other units see, and one place each was written.
+/// that other units see, and one place each was written; what each routine
+/// returns; and what callers pass to each parameter.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Summaries {
     pub labels: FxHashMap<String, Labels>,
     pub sites: FxHashMap<String, Span>,
+    /// By unit index. A unit not here returns nothing yet.
+    pub units: FxHashMap<u32, UnitSummary>,
+    /// By unit index and parameter position.
+    pub seeds: FxHashMap<(u32, u32), Labels>,
+}
+
+/// What a routine returns and leaves in its output parameters, in terms of
+/// real origins and of the origins of its own parameters.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct UnitSummary {
+    pub ret: Labels,
+    /// By parameter position; empty for an input parameter.
+    pub outs: Vec<Labels>,
+    /// The origin of each parameter position, which a call replaces with its
+    /// argument.
+    pub params: Vec<Option<u32>>,
+    /// The unit ran out of its work budget.
+    pub unknown: bool,
+}
+
+/// The units of a file that a call can name, by lower-cased name.
+#[derive(Debug, Default)]
+pub(super) struct Routines {
+    pub procedures: FxHashMap<String, Vec<u32>>,
+    pub functions: FxHashMap<String, Vec<u32>>,
+    pub methods: FxHashMap<String, Vec<u32>>,
+}
+
+impl Routines {
+    /// Every routine unit.
+    pub fn units(&self) -> impl Iterator<Item = u32> + '_ {
+        self.procedures
+            .values()
+            .chain(self.functions.values())
+            .chain(self.methods.values())
+            .flatten()
+            .copied()
+    }
+
+    /// Whether an expression can call a routine of the file.
+    pub fn any_callable(&self) -> bool {
+        !self.functions.is_empty() || !self.methods.is_empty()
+    }
+
+    /// A function, or a method called without a receiver.
+    pub fn callable(&self, name: &str) -> Option<&[u32]> {
+        let key = name.to_ascii_lowercase();
+        self.functions
+            .get(&key)
+            .or_else(|| self.methods.get(&key))
+            .map(Vec::as_slice)
+    }
+
+    pub fn method(&self, name: &str) -> Option<&[u32]> {
+        self.methods
+            .get(&name.to_ascii_lowercase())
+            .map(Vec::as_slice)
+    }
+
+    pub fn procedure(&self, name: &str) -> Option<&[u32]> {
+        self.procedures
+            .get(&name.to_ascii_lowercase())
+            .map(Vec::as_slice)
+    }
+}
+
+/// A call of a routine of the file: what each position receives.
+#[derive(Debug, Clone)]
+pub(super) struct CallIr {
+    pub callees: Vec<u32>,
+    pub args: Vec<Value>,
 }
 
 /// Builds values for one unit.
@@ -232,6 +431,9 @@ pub(super) struct Compiler<'c> {
     /// Reading an operand after the solve: a slot the unit never used is not
     /// added, and a file-level one reads its summary.
     pub frozen: bool,
+    pub routines: &'c Routines,
+    /// Calls of routines of the file met while building values.
+    pub calls: Vec<CallIr>,
 }
 
 /// How a function name changes the value of its arguments.
@@ -421,6 +623,21 @@ impl Compiler<'_> {
         Value::origin(self.origins.add(what, span))
     }
 
+    /// A call of a routine of the file: its result, by its summary.
+    pub fn routine_call(&mut self, callees: &[u32], out: Out, args: Vec<Value>) -> Value {
+        if out == Out::Return {
+            self.calls.push(CallIr {
+                callees: callees.to_vec(),
+                args: args.clone(),
+            });
+        }
+        Value(vec![Term::Call {
+            callees: callees.to_vec(),
+            out,
+            args,
+        }])
+    }
+
     /// A call of the function `name`.
     fn call(&mut self, name: &str, args: Vec<Value>, span: Span) -> Value {
         if let Some(mask) = self.options.validator(name) {
@@ -428,6 +645,10 @@ impl Compiler<'_> {
         }
         if self.options.is_source(name) {
             return self.origin(format!("project source `{name}`"), span);
+        }
+        if let Some(callees) = self.routines.callable(name) {
+            let callees = callees.to_vec();
+            return self.routine_call(&callees, Out::Return, args);
         }
         match builtin(name) {
             Builtin::Source if name.eq_ignore_ascii_case("OS-GETENV") => {
@@ -469,8 +690,15 @@ impl Compiler<'_> {
             {
                 return self.origin(format!("`SESSION:{member}`"), span);
             }
-            if o.eq_ignore_ascii_case("THIS-OBJECT") && args.is_none() {
-                return self.var(member);
+            if o.eq_ignore_ascii_case("THIS-OBJECT") {
+                match (&args, self.routines.method(member)) {
+                    (None, _) => return self.var(member),
+                    (Some(_), Some(callees)) => {
+                        let callees = callees.to_vec();
+                        return self.routine_call(&callees, Out::Return, args.unwrap_or_default());
+                    }
+                    _ => {}
+                }
             }
             if is_request(o) {
                 return self.origin(format!("web request `{o}:{member}`"), span);

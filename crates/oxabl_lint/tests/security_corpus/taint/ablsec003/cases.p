@@ -41,3 +41,17 @@ OS-COMMAND SILENT VALUE(cCmd). /* taint: safe */
 CASE pcFile:
     WHEN "daily" OR WHEN "weekly" THEN OS-COMMAND SILENT VALUE("backup-" + pcFile + ".sh"). /* taint: safe */
 END CASE.
+
+/* Tainted in a private procedure that the file runs with untrusted input. */
+RUN compress (INPUT pcFile).
+RUN compress-fixed (INPUT "app.log").
+
+PROCEDURE compress PRIVATE:
+    DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+    OS-COMMAND SILENT VALUE("gzip " + pcName). /* taint: real */
+END PROCEDURE.
+
+PROCEDURE compress-fixed PRIVATE:
+    DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+    OS-COMMAND SILENT VALUE("gzip " + pcName). /* taint: safe */
+END PROCEDURE.
