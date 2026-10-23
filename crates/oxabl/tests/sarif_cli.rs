@@ -380,6 +380,32 @@ fn text_is_the_default_format() {
 }
 
 #[test]
+fn an_integer_literal_beyond_i64_keeps_stdout_valid_sarif() {
+    let dir = workspace("DEFINE VARIABLE i AS DECIMAL NO-UNDO.\ni = 99999999999999999999999.\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxabl"))
+        .current_dir(dir.path())
+        .args(["check", ".", "--format", "sarif"])
+        .output()
+        .expect("run oxabl");
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+    serde_json::from_str::<Value>(&stdout).expect("stdout is exactly one SARIF document");
+}
+
+#[test]
+fn a_decimal_literal_beyond_range_keeps_stdout_valid_sarif() {
+    let dir = workspace(
+        "DEFINE VARIABLE d AS DECIMAL NO-UNDO.\nd = 99999999999999999999999999999999999999.5.\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_oxabl"))
+        .current_dir(dir.path())
+        .args(["check", ".", "--format", "sarif"])
+        .output()
+        .expect("run oxabl");
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+    serde_json::from_str::<Value>(&stdout).expect("stdout is exactly one SARIF document");
+}
+
+#[test]
 fn include_findings_are_sarif_results_in_the_include_file() {
     let dir = TempDir::new().unwrap();
     write(
