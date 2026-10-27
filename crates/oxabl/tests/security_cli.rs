@@ -291,11 +291,31 @@ fn a_hard_coded_secret_is_not_in_the_message_of_a_report() {
         &config("[workspace.lint]\nenable = [\"security\"]\n"),
     );
     write(&dir.path().join("a.p"), MORE_SINKS);
-    for args in [&[".", "--json"][..], &[".", "--format", "sarif"]] {
+    for args in [&["."][..], &[".", "--json"], &[".", "--format", "sarif"]] {
         let (_, stdout, stderr) = check(dir.path(), args);
         assert!(!stdout.contains("hunter2"), "{args:?}: {stdout}");
         assert!(!stderr.contains("hunter2"), "{args:?}: {stderr}");
     }
+}
+
+#[test]
+fn the_text_report_masks_a_secret_in_the_line_of_every_finding() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    // An unused variable whose initial value is a secret: two findings on one
+    // line, and the secret one suppressed.
+    write(
+        &dir.path().join("a.p"),
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"s3cret-value\". \
+         /* oxabl-ignore ABLSEC008: a fixture */\n",
+    );
+    let (_, stdout, stderr) = check(dir.path(), &["."]);
+    assert!(stdout.contains("LINT0002"), "{stdout}{stderr}");
+    assert!(!stdout.contains("s3cret-value"), "{stdout}");
+    assert!(stdout.contains("INITIAL **************."), "{stdout}");
 }
 
 #[test]

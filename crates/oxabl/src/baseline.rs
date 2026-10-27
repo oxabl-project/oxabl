@@ -8,7 +8,7 @@
 //!
 //! ```json
 //! {
-//!   "version": 2,
+//!   "version": 3,
 //!   "entries": [
 //!     {
 //!       "path": "src/orders.p",
@@ -37,13 +37,11 @@
 //!   has no path: it is reported but never recorded. A file below the root
 //!   only through a symlink that points out of it keeps its walk path, unless
 //!   the path given has a `..`.
-//! - `hash` is a 64-bit FNV-1a hash, in hex, of the flagged line and the first
-//!   line of the flagged span, each with whitespace runs collapsed and ASCII
-//!   letters folded to lower case, so a change of keyword case (`DEFINE` to
-//!   `define`) keeps the match. A finding reported inside an include has no
-//!   text in the root file, so its message is hashed instead. A finding in an
-//!   include file that was checked as a file of its own (strict rules that are
-//!   context-free) is keyed by that include's path like any other file.
+//! - `hash` is a 64-bit FNV-1a hash, in hex, of the flagged line and the whole
+//!   flagged span, with hard-coded secrets masked (see [the hash](#the-hash)).
+//!   A finding in an include file that was checked as a file of its own
+//!   (strict rules that are context-free) is keyed by that include's path like
+//!   any other file.
 //! - `occurrence` numbers findings that share `path`, `code` and `hash`, in
 //!   source order, from 0.
 //!
@@ -57,13 +55,52 @@
 //! in the file, which would make every edit that moves code change the file.
 //! The hash makes the case rare: it needs the same text on both lines.
 //!
+//! # The hash
+//!
+//! Version 3, byte for byte, for the text `S` of the checked file and one
+//! finding with byte span `start..end`:
+//!
+//! 1. Clamp the span: `start = min(start, len(S))`, `end = clamp(end, start,
+//!    len(S))`.
+//! 2. The flagged line is `S[ls..le]`: `ls` is just after the last `\n` before
+//!    `start` (or 0), `le` is the first `\n` at or after `start` (or `len(S)`).
+//!    The flagged span is `S[start..end]`, every line of it.
+//! 3. Mask the secrets of the file. A secret is each string literal that the
+//!    oxabl lexer finds in `S[a..b]` for each `ABLSEC008` finding `a..b` of
+//!    the file, offset by `a`, or the whole `a..b` when it holds none. In the
+//!    flagged line and in the flagged span, each part that lies inside a
+//!    secret becomes the three bytes `***`, once per secret.
+//! 4. Normalise each of the two texts: split on Unicode whitespace
+//!    (`str::split_whitespace`), join the words with one space, and fold ASCII
+//!    letters to lower case. A change of keyword case (`DEFINE` to `define`)
+//!    or of indentation keeps the hash.
+//! 5. Hash `line + "\0" + span` with 64-bit FNV-1a (offset basis
+//!    `0xcbf29ce484222325`, prime `0x100000001b3`, over the UTF-8 bytes), and
+//!    write it as 16 lower-case hex digits.
+//!
+//! A finding whose span is not in `S` (one reported inside an include) hashes
+//! its normalised message instead, without the reachability note that
+//! `(reachable from ...)` appends.
+//!
+//! The SARIF `partialFingerprints` take the same hash, so neither a baseline
+//! nor a SARIF log holds a hash of a hard-coded secret that could be brute
+//! forced offline.
+//!
 //! # Versions
 //!
-//! Version 2 folds the case of the hashed text. A version 1 file hashes it
-//! with case kept, so its entries cannot match and are not read: `check`
-//! reports an error that names the fix, which is to delete the file and record
-//! it again with `--update-baseline`.
+//! - Version 3 hashes the whole flagged span and masks secrets. `check` writes
+//!   it.
+//! - Version 2 hashes only the first line of the flagged span, so a changed
+//!   argument on a later line of a multi-line statement kept its match. It is
+//!   still read, and its entries match as before. `--update-baseline` rewrites
+//!   the file as version 3. Entries of files that the updating run did not
+//!   check cannot be rehashed and are dropped, so update over the whole tree
+//!   once. Those findings are new on the next run until they are recorded.
+//! - Version 1 hashes with case kept, so its entries cannot match and are not
+//!   read: `check` reports an error that names the fix, which is to delete the
+//!   file and record it again with `--update-baseline`.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -73,8 +110,11 @@ use oxabl_common::Diagnostic;
 use oxabl_pipeline::ROOT_FILE_ID;
 use serde::{Deserialize, Serialize};
 
-/// The format version this build reads and writes.
-const VERSION: u32 = 2;
+/// The format version this build writes. It reads version 2 too.
+const VERSION: u32 = 3;
+
+/// The code of the rule whose findings hold a secret.
+const SECRET_RULE: &str = "ABLSEC008";
 
 /// One recorded finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,9 +149,20 @@ struct BaselineFile {
 }
 
 /// A loaded baseline: key → message.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Baseline {
     entries: BTreeMap<Key, String>,
+    /// The version its hashes were taken with.
+    version: u32,
+}
+
+impl Default for Baseline {
+    fn default() -> Self {
+        Baseline {
+            entries: BTreeMap::new(),
+            version: VERSION,
+        }
+    }
 }
 
 impl Baseline {
@@ -127,9 +178,9 @@ impl Baseline {
                     .to_string(),
             );
         }
-        if file.version != VERSION {
+        if file.version != VERSION && file.version != 2 {
             return Err(format!(
-                "baseline version {} is not supported (expected {VERSION})",
+                "baseline version {} is not supported (expected 2 or {VERSION})",
                 file.version
             ));
         }
@@ -139,6 +190,7 @@ impl Baseline {
                 .into_iter()
                 .map(|e| (e.key(), e.message))
                 .collect(),
+            version: file.version,
         })
     }
 
@@ -178,17 +230,34 @@ impl Baseline {
     }
 
     /// This baseline with every entry for a path in `checked` replaced by
-    /// `current`. Entries for files this run did not check are kept, so a run
-    /// over part of a tree does not drop the rest.
+    /// `current`, at the current version. Entries for files this run did not
+    /// check are kept, so a run over part of a tree does not drop the rest;
+    /// those of an older version cannot be rehashed and are dropped (see
+    /// [`dropped`](Self::dropped)).
     pub fn updated(&self, checked: &HashSet<String>, current: &[Entry]) -> Baseline {
         let mut entries: BTreeMap<Key, String> = self
             .entries
             .iter()
-            .filter(|(k, _)| !checked.contains(&k.0))
+            .filter(|(k, _)| self.version == VERSION && !checked.contains(&k.0))
             .map(|(k, m)| (k.clone(), m.clone()))
             .collect();
         entries.extend(current.iter().map(|e| (e.key(), e.message.clone())));
-        Baseline { entries }
+        Baseline {
+            entries,
+            version: VERSION,
+        }
+    }
+
+    /// The entries [`updated`](Self::updated) drops: those of an older version
+    /// for files not in `checked`.
+    pub fn dropped(&self, checked: &HashSet<String>) -> usize {
+        if self.version == VERSION {
+            return 0;
+        }
+        self.entries
+            .keys()
+            .filter(|k| !checked.contains(&k.0))
+            .count()
     }
 }
 
@@ -208,6 +277,14 @@ pub struct Report {
     pub stale: Option<usize>,
     /// Whether this run rewrote the file.
     pub updated: bool,
+    /// The version the file was read at, when it is older than the one this
+    /// build writes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_version: Option<u32>,
+    /// With `--update-baseline` over an older version: the entries of files
+    /// this run did not check, which could not be rehashed and were dropped.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub dropped: usize,
     /// Findings in files outside the workspace root. They are reported, never
     /// recorded or matched.
     #[serde(skip_serializing_if = "is_zero")]
@@ -249,7 +326,10 @@ pub struct Run {
 #[derive(Default)]
 struct Tally {
     checked: HashSet<String>,
+    /// At the current version, to write.
     current: Vec<Entry>,
+    /// At the version of the file read, to match.
+    found: HashSet<Key>,
     new: usize,
     baselined: usize,
     outside_root: usize,
@@ -290,10 +370,16 @@ impl Run {
             self.tally().outside_root += reported.diagnostics.len();
             return (reported, Vec::new());
         };
-        let entries = fingerprint(&path, source, reported.all().map(|c| &c.diagnostic));
+        let diagnostics: Vec<&Diagnostic> = reported.all().map(|c| &c.diagnostic).collect();
+        let entries = fingerprint(&path, source, diagnostics.iter().copied());
+        let matched = if self.baseline.version == VERSION {
+            entries.clone()
+        } else {
+            fingerprint_at(self.baseline.version, &path, source, diagnostics)
+        };
         let (kept, covered): (Vec<_>, Vec<_>) = std::mem::take(&mut reported.diagnostics)
             .into_iter()
-            .zip(&entries)
+            .zip(&matched)
             .partition(|(_, e)| !self.baseline.contains(e));
         reported.diagnostics = kept.into_iter().map(|(d, _)| d).collect();
         let covered: Vec<CollectedDiagnostic> = covered.into_iter().map(|(d, _)| d).collect();
@@ -304,6 +390,7 @@ impl Run {
             tally.baselined += entries.len() - new;
             tally.checked.insert(path);
             tally.current.extend(entries);
+            tally.found.extend(matched.iter().map(Entry::key));
         }
         if self.update {
             reported.diagnostics.clear();
@@ -320,8 +407,12 @@ impl Run {
     /// write the file.
     pub fn finish(self, lint_collected: bool) -> Result<Report, String> {
         let tally = self.tally.into_inner().unwrap_or_else(|e| e.into_inner());
-        let found: HashSet<Key> = tally.current.iter().map(Entry::key).collect();
-        let stale = lint_collected.then(|| self.baseline.stale(&tally.checked, &found));
+        let stale = lint_collected.then(|| self.baseline.stale(&tally.checked, &tally.found));
+        let dropped = if self.update {
+            self.baseline.dropped(&tally.checked)
+        } else {
+            0
+        };
         if self.update {
             let updated = self.baseline.updated(&tally.checked, &tally.current);
             std::fs::write(&self.file, updated.render())
@@ -333,6 +424,8 @@ impl Run {
             baselined: tally.baselined,
             stale,
             updated: self.update,
+            old_version: (self.baseline.version != VERSION).then_some(self.baseline.version),
+            dropped,
             outside_root: tally.outside_root,
         })
     }
@@ -345,7 +438,22 @@ pub fn fingerprint<'a>(
     source: &str,
     diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
 ) -> Vec<Entry> {
+    fingerprint_at(VERSION, path, source, diagnostics)
+}
+
+/// [`fingerprint`] with the hash of baseline `version`, 2 or 3.
+fn fingerprint_at<'a>(
+    version: u32,
+    path: &str,
+    source: &str,
+    diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+) -> Vec<Entry> {
     let diagnostics: Vec<&Diagnostic> = diagnostics.into_iter().collect();
+    let secrets = if version >= 3 {
+        secrets(source, diagnostics.iter().copied())
+    } else {
+        Vec::new()
+    };
     let mut order: Vec<usize> = (0..diagnostics.len()).collect();
     // Occurrences count in source order, whatever order the rules reported in.
     order.sort_by_key(|&i| {
@@ -361,7 +469,12 @@ pub fn fingerprint<'a>(
     for i in order {
         let d = diagnostics[i];
         let code = d.code.0.to_string();
-        let hash = format!("{:016x}", fnv1a(&content(source, d)));
+        let text = if version >= 3 {
+            content(source, d, &secrets)
+        } else {
+            content_v2(source, d)
+        };
+        let hash = format!("{:016x}", fnv1a(&text));
         let occurrence = match seen.iter_mut().find(|(c, h, _)| *c == code && *h == hash) {
             Some(slot) => {
                 slot.2 += 1;
@@ -476,8 +589,104 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The text a diagnostic's hash is taken over.
-fn content(source: &str, d: &Diagnostic) -> String {
+/// The byte ranges of the hard-coded secrets that the `ABLSEC008` findings
+/// in `diagnostics` flag in `source`, sorted: each string literal of a
+/// finding's span, or the whole span when it holds none.
+pub fn secrets<'a>(
+    source: &str,
+    diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    for d in diagnostics {
+        if d.code.0 != SECRET_RULE || d.span.file != ROOT_FILE_ID {
+            continue;
+        }
+        let start = (d.span.span.start as usize).min(source.len());
+        let end = (d.span.span.end as usize).clamp(start, source.len());
+        let Some(text) = source.get(start..end) else {
+            continue;
+        };
+        let before = out.len();
+        out.extend(
+            oxabl_lexer::tokenize(text)
+                .iter()
+                .filter(|t| t.kind == oxabl_lexer::Kind::StringLiteral)
+                .map(|t| start + t.start..start + t.end),
+        );
+        if out.len() == before {
+            out.push(start..end);
+        }
+    }
+    out.sort_by_key(|r| (r.start, r.end));
+    out
+}
+
+/// `source` with every byte of `secrets` replaced by `*`, so offsets and
+/// lines stay where they were.
+pub fn masked<'s>(source: &'s str, secrets: &[std::ops::Range<usize>]) -> Cow<'s, str> {
+    if secrets.is_empty() {
+        return Cow::Borrowed(source);
+    }
+    let mut bytes = source.as_bytes().to_vec();
+    for r in secrets {
+        bytes[r.start.min(r.end)..r.end.min(source.len())].fill(b'*');
+    }
+    // Each replaced span starts and ends at a token boundary, so no character
+    // is cut in two; a lossy conversion keeps that true for any span.
+    Cow::Owned(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `source[range]` with each part inside a secret replaced by `***`.
+fn masked_slice(
+    source: &str,
+    range: std::ops::Range<usize>,
+    secrets: &[std::ops::Range<usize>],
+) -> String {
+    let mut out = String::new();
+    let mut at = range.start;
+    for s in secrets {
+        let (a, b) = (s.start.max(range.start), s.end.min(range.end));
+        if a >= b || a < at {
+            continue;
+        }
+        out.push_str(source.get(at..a).unwrap_or_default());
+        out.push_str("***");
+        at = b;
+    }
+    out.push_str(source.get(at..range.end).unwrap_or_default());
+    out
+}
+
+/// The text a diagnostic's version 3 hash is taken over.
+fn content(source: &str, d: &Diagnostic, secrets: &[std::ops::Range<usize>]) -> String {
+    if d.span.file != ROOT_FILE_ID {
+        return normalize(&message_without_reach(d));
+    }
+    let start = (d.span.span.start as usize).min(source.len());
+    let end = (d.span.span.end as usize).clamp(start, source.len());
+    let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |i| start + i);
+    let line = masked_slice(source, line_start..line_end, secrets);
+    let flagged = masked_slice(source, start..end, secrets);
+    format!("{}\0{}", normalize(&line), normalize(&flagged))
+}
+
+/// The message of a finding without the reachability note at its end.
+fn message_without_reach(d: &Diagnostic) -> Cow<'_, str> {
+    match d.reach.as_deref() {
+        Some(r) => match d.message.strip_suffix(&format!(" ({r})")) {
+            Some(m) => Cow::Borrowed(m),
+            None => Cow::Borrowed(&d.message),
+        },
+        None => Cow::Borrowed(&d.message),
+    }
+}
+
+/// The text a diagnostic's version 2 hash is taken over: the flagged line
+/// and the first line of the flagged span.
+fn content_v2(source: &str, d: &Diagnostic) -> String {
     if d.span.file != ROOT_FILE_ID {
         return normalize(&d.message);
     }
@@ -626,8 +835,94 @@ mod tests {
 
     #[test]
     fn a_wrong_version_or_shape_is_an_error() {
-        assert!(Baseline::parse("{\"version\": 3, \"entries\": []}").is_err());
+        assert!(Baseline::parse("{\"version\": 4, \"entries\": []}").is_err());
         assert!(Baseline::parse("[]").is_err());
+    }
+
+    const MULTI: &str = "hQ:QUERY-PREPARE(\n  \"FOR EACH c WHERE n = \" + QUOTER(pcA)).\n";
+
+    #[test]
+    fn the_hash_covers_every_line_of_the_flagged_span() {
+        let changed = MULTI.replace("QUOTER(pcA)", "pcB");
+        let span = |s: &str| diag("ABLSEC001", s, "QUERY-PREPARE", 0);
+        let whole = |s: &str| {
+            let mut d = span(s);
+            d.span.span.end = s.find(").").unwrap() as u32 + 1;
+            d
+        };
+        let before = fingerprint("a.p", MULTI, &[whole(MULTI)]);
+        let after = fingerprint("a.p", &changed, &[whole(&changed)]);
+        assert_ne!(before[0].hash, after[0].hash);
+        // Version 2 saw only the first line.
+        let v2 = |s: &str| fingerprint_at(2, "a.p", s, &[whole(s)]);
+        assert_eq!(v2(MULTI)[0].hash, v2(&changed)[0].hash);
+    }
+
+    #[test]
+    fn a_version_2_file_still_matches_and_an_update_rewrites_it_as_version_3() {
+        let d = diag("LINT0002", BEFORE, "a AS", 0);
+        let old = fingerprint_at(2, "a.p", BEFORE, [&d]);
+        let other = fingerprint_at(2, "b.p", BEFORE, [&d]);
+        let text = format!(
+            "{{\"version\": 2, \"entries\": [{}, {}]}}",
+            serde_json::to_string(&old[0]).unwrap(),
+            serde_json::to_string(&other[0]).unwrap()
+        );
+        let baseline = Baseline::parse(&text).unwrap();
+        assert!(baseline.contains(&old[0]));
+        let checked: HashSet<String> = ["a.p".to_string()].into();
+        let current = fingerprint("a.p", BEFORE, [&d]);
+        assert_eq!(baseline.dropped(&checked), 1, "b.p cannot be rehashed");
+        let updated = Baseline::parse(&baseline.updated(&checked, &current).render()).unwrap();
+        assert_eq!(updated.version, 3);
+        assert!(updated.contains(&current[0]));
+        assert_eq!(updated.entries.len(), 1);
+    }
+
+    #[test]
+    fn a_hard_coded_secret_is_masked_out_of_every_hash_of_its_line() {
+        let hash = |secret: &str| {
+            let source = format!("cPassword = \"{secret}\". /* x */\n");
+            let found = [
+                diag(
+                    "ABLSEC008",
+                    &source,
+                    &format!("cPassword = \"{secret}\""),
+                    0,
+                ),
+                diag("LINT0006", &source, "cPassword", 0),
+            ];
+            let entries = fingerprint("a.p", &source, &found);
+            (entries[0].hash.clone(), entries[1].hash.clone())
+        };
+        assert_eq!(hash("hunter2"), hash("s3cret-and-longer"));
+        let unmasked = {
+            let source = "cPassword = \"hunter2\". /* x */\n";
+            fingerprint("a.p", source, &[diag("LINT0006", source, "cPassword", 0)])
+        };
+        assert_ne!(hash("hunter2").1, unmasked[0].hash);
+    }
+
+    #[test]
+    fn masking_keeps_offsets_and_hides_only_the_literal() {
+        let source = "cPassword = \"hunter2\".\nx = 1.\n";
+        let d = diag("ABLSEC008", source, "cPassword = \"hunter2\"", 0);
+        let secrets = secrets(source, [&d]);
+        assert_eq!(secrets, vec![12..21]);
+        let text = masked(source, &secrets);
+        assert_eq!(text, "cPassword = *********.\nx = 1.\n");
+    }
+
+    #[test]
+    fn an_include_finding_hashes_its_message_without_the_reach_note() {
+        let mut d = diag("ABLSEC011", BEFORE, "a AS", 0);
+        d.span.file = oxabl_common::FileId::new(7);
+        let plain = fingerprint("a.p", BEFORE, [&d]);
+        let reach =
+            oxabl_common::Reachability::of(oxabl_common::ReachStatus::Unreachable, Vec::new());
+        d.message = format!("{} ({reach})", d.message);
+        d.reach = Some(Box::new(reach));
+        assert_eq!(fingerprint("a.p", BEFORE, [&d])[0].hash, plain[0].hash);
     }
 
     #[test]

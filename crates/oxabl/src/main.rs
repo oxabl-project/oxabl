@@ -1549,6 +1549,13 @@ fn surface_baseline(report: &baseline::Report) {
             "baseline: updated {} ({} added, {stale} removed)",
             report.path, report.new
         );
+        if let Some(v) = report.old_version {
+            eprintln!(
+                "baseline: rewrote version {v} as version 3; {} entries of files this run did \
+                 not check could not be rehashed and were dropped",
+                report.dropped
+            );
+        }
         if report.outside_root > 0 {
             eprintln!("{}", outside_root_note(report));
         }
@@ -1563,6 +1570,13 @@ fn surface_baseline(report: &baseline::Report) {
         "baseline: {} new, {} baselined, {stale_note}",
         report.new, report.baselined
     );
+    if let Some(v) = report.old_version {
+        eprintln!(
+            "baseline: {} is version {v}; run --update-baseline over the whole tree to rewrite \
+             it as version 3",
+            report.path
+        );
+    }
     if report.outside_root > 0 {
         eprintln!("{}", outside_root_note(report));
     }
@@ -2015,7 +2029,18 @@ fn report_findings(
         return;
     }
     if pass.output == CheckFormat::Text && !reported.diagnostics.is_empty() {
-        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), source);
+        // The source line of every finding prints, so a hard-coded secret
+        // that any finding flags is masked first, whatever finding shows it.
+        let secrets = baseline::secrets(
+            source,
+            reported
+                .all()
+                .chain(&covered)
+                .chain(suppressed.iter().map(|(c, _)| c))
+                .map(|c| &c.diagnostic),
+        );
+        let shown = baseline::masked(source, &secrets);
+        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), &shown);
         let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
         unit.output.out(render_diagnostics(&rendered, &resolver));
     }

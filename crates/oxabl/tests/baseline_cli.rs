@@ -70,7 +70,7 @@ fn a_baselined_tree_passes_and_only_a_new_finding_fails() {
     );
     let written = fs::read_to_string(root.join("b.json")).unwrap();
     let doc = json(&written);
-    assert_eq!(doc["version"], 2);
+    assert_eq!(doc["version"], 3);
     let paths: Vec<_> = doc["entries"]
         .as_array()
         .unwrap()
@@ -368,6 +368,29 @@ fn a_file_outside_the_root_is_reported_and_never_recorded() {
     assert_eq!(exit, Some(1));
     assert_eq!(report["baseline"]["outside_root"], 1);
     assert_eq!(report["baseline"]["new"], 0);
+}
+
+#[test]
+fn a_version_2_baseline_is_read_and_an_update_rewrites_it_as_version_3() {
+    let dir = workspace();
+    let root = dir.path();
+    write(&root.join("old.json"), "{\"version\": 2, \"entries\": []}");
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "old.json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert!(stderr.contains("old.json is version 2"), "{stderr}");
+    let (exit, _, stderr) = check(
+        root,
+        &["src", "--baseline", "old.json", "--update-baseline"],
+    );
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("rewrote version 2 as version 3"),
+        "{stderr}"
+    );
+    let doc = json(&fs::read_to_string(root.join("old.json")).unwrap());
+    assert_eq!(doc["version"], 3);
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "old.json"]);
+    assert_eq!(exit, Some(0), "{stderr}");
 }
 
 #[test]
