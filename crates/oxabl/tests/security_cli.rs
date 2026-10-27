@@ -537,6 +537,21 @@ fn client_identity_is_one_finding_with_its_other_decisions_related() {
     let related = &r["relatedLocations"][0]["physicalLocation"];
     assert_eq!(related["artifactLocation"]["uri"], "a.p");
     assert_eq!(related["region"]["startLine"], 4);
+
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    let report = json(&stdout);
+    let d = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "ABLSEC010")
+        .unwrap();
+    assert_eq!(d["start"]["line"], 3);
+    let related = d["related"].as_array().expect("related in --json");
+    assert_eq!(related.len(), 1, "{d}");
+    assert_eq!(related[0]["start"]["line"], 4);
+    assert_eq!(related[0]["message"], "`FOR` decides on the same identity");
+    assert!(related[0]["span"]["start"].is_u64());
 }
 
 #[test]

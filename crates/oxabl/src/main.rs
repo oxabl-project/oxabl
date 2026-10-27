@@ -1047,6 +1047,22 @@ struct CheckJsonDiagnostic {
     /// configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     reach: Option<oxabl_common::Reachability>,
+    /// Other places of the same finding, in this file (the further decisions
+    /// of a `client-identity` finding). Present since version 3, when not
+    /// empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related: Vec<CheckJsonRelated>,
+}
+
+/// One other place of a finding.
+#[derive(Serialize)]
+struct CheckJsonRelated {
+    message: String,
+    span: CheckJsonSpan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<CheckJsonPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<CheckJsonPosition>,
 }
 
 /// One finding in an include, as a result for one root's compilation unit.
@@ -2428,6 +2444,23 @@ fn check_json_diagnostic(
         start: resolved.map(|r| r.start.into()),
         end: resolved.map(|r| r.end.into()),
         reach: d.reach.as_deref().cloned(),
+        related: d
+            .related()
+            .iter()
+            .map(|l| {
+                let resolved = (l.span.file == ROOT_FILE_ID)
+                    .then(|| position::resolve_file_span(map, &l.span));
+                CheckJsonRelated {
+                    message: l.message.clone(),
+                    span: CheckJsonSpan {
+                        start: l.span.span.start,
+                        end: l.span.span.end,
+                    },
+                    start: resolved.map(|r| r.start.into()),
+                    end: resolved.map(|r| r.end.into()),
+                }
+            })
+            .collect(),
     }
 }
 
