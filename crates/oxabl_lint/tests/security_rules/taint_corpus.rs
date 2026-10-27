@@ -24,7 +24,7 @@ const RULES: [(&str, (usize, usize, usize)); 10] = [
     ("ABLSEC004", (6, 0, 0)),
     ("ABLSEC005", (7, 0, 0)),
     ("ABLSEC006", (7, 0, 0)),
-    ("ABLSEC007", (5, 0, 0)),
+    ("ABLSEC007", (7, 0, 0)),
     ("ABLSEC014", (3, 0, 0)),
     ("ABLSEC015", (2, 0, 0)),
     ("ABLSEC016", (2, 0, 0)),

@@ -16,7 +16,7 @@
 //! | `QUOTER(x)` | `query` |
 //! | a number: `INTEGER(x)`, `DECIMAL(x)`, `LENGTH(x)`, arithmetic, ... | every kind but `size` |
 //! | a logical: a comparison, `CAN-DO`, `VALID-HANDLE`, ... | every kind |
-//! | `html-encode(x)`, `url-encode(x)` | `html`, `header` |
+//! | `html-encode(x)` | `html` |
 //! | a configured validator `v(x)` | the kinds it protects |
 //!
 //! A guard narrows a variable on the edge it holds on: `IF x = "lit"`, `IF

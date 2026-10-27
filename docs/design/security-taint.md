@@ -134,9 +134,14 @@ its receiver and its arguments: it is tainted when any argument is. Its
 | `QUOTER(x)` | `query` |
 | `INTEGER`, `INT64`, `DECIMAL`, `DATE`, `DATETIME`, `DATETIME-TZ`, `LOGICAL` conversion, arithmetic, and functions that return a number (`LENGTH`, `NUM-ENTRIES`, `LOOKUP`, `INDEX`, ...) | every kind but `size` |
 | a function that returns a logical, a comparison | every kind |
-| `html-encode(x)`, `url-encode(x)` | `html`, `header` |
+| `html-encode(x)` | `html` |
 | `IF x = "lit"`, `IF LOOKUP(x, "a,b") > 0`, `IF CAN-DO("a,b", x)`, `CASE x: WHEN "a"` — on the guarded edge | every kind, for `x` |
 | a configured validator `v(x)`: as a wrapper, its result; as a guard `IF v(x)`, `x` on the true edge | the kinds it is configured for |
+
+No built-in function protects a header: `html-encode` keeps CR and LF, so a
+value can still split the response, and neither it nor `url-encode` stops a
+redirect to another site. `url-encode` protects no kind; a project that has a
+header check names it as a validator with `protects = ["header"]`.
 
 A guard narrows on the CFG edge: the `True`/`False` edges of an `IF` and the
 `When(n)` edges of a `CASE` whose values are all literals. `NOT`, `AND` and `OR`

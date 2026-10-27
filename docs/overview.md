@@ -213,8 +213,10 @@ Sanitisers are specific to a sink kind:
 | `QUOTER(x)` | `query` only; not a command, a path or foreign SQL |
 | `INTEGER`, `INT64`, `DECIMAL`, `DATE`, `DATETIME` conversions, arithmetic, and functions that return a number (`LENGTH`, `NUM-ENTRIES`, `LOOKUP`, `INDEX`, ...) | every kind but `size`: a number cannot inject text, but it can still be a huge size |
 | a comparison or a function that returns a logical | every kind |
-| `html-encode(x)`, `url-encode(x)` | `html`, `header` |
+| `html-encode(x)` | `html` only; it keeps CR and LF, so it does not protect a header |
 | a configured validator used as a wrapper, `v(x)` | the kinds it protects |
+
+`url-encode(x)` clears nothing: it does not stop a redirect to another site, and it is not HTML encoding. A project header check goes in `validators` with `protects = ["header"]`.
 
 A guard cleans a variable on the path it holds on: `IF x = "a" OR x = "b"`, `IF LOOKUP(x, "a,b") > 0` (or `= 0 THEN RETURN`), `IF CAN-DO("a,b", x)` with no pattern characters, `IF v(x)` for a validator, combined with `NOT`, `AND` and `OR`; and `CASE x` in a `WHEN` whose values are all literals. A literal has no taint, and assigning one replaces the taint of a variable. An unknown call (a user function, a method, `RUN`, `NEW`) returns what its arguments and receiver carry, and its `OUTPUT` arguments take the same.
 

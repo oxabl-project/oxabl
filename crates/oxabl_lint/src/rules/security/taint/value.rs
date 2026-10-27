@@ -537,7 +537,7 @@ fn builtin(name: &str) -> Builtin {
         Builtin::Source
     } else if name.eq_ignore_ascii_case("QUOTER") {
         Builtin::Quoter
-    } else if name.eq_ignore_ascii_case("HTML-ENCODE") || name.eq_ignore_ascii_case("URL-ENCODE") {
+    } else if name.eq_ignore_ascii_case("HTML-ENCODE") {
         Builtin::Encode
     } else if NUMERIC.iter().any(|(f, m)| abbrev(name, f, *m)) {
         Builtin::Numeric
@@ -701,9 +701,7 @@ impl Compiler<'_> {
             Builtin::Numeric => Value::union(args).cleared(NUMERIC_SAFE),
             Builtin::Logical if self.decision => Value::union(args),
             Builtin::Logical => Value::default(),
-            Builtin::Encode => {
-                Value::union(args).cleared(SinkKind::Html.bit() | SinkKind::Header.bit())
-            }
+            Builtin::Encode => Value::union(args).cleared(SinkKind::Html.bit()),
             Builtin::Other => Value::union(args),
         }
     }

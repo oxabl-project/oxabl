@@ -22,8 +22,10 @@ oResp:SetCookie("next", ttLink.cUrl). /* taint: real */
 cUrl = absolute-url(cNext).
 oResp:SetHeader("Location", cUrl). /* taint: real */
 
-/* Sanitised for this sink. */
-oResp:SetHeader("X-Next", url-encode(cNext)). /* taint: safe */
+/* Encoded, but no encoder protects a header: HTML-ENCODE keeps CR and LF,
+   and URL-ENCODE keeps a redirect to another site. */
+oResp:SetHeader("X-Next", html-encode(cNext)). /* taint: real */
+oResp:SetHeader("Location", url-encode(cNext)). /* taint: real */
 
 /* Sanitised for the wrong sink. */
 oResp:SetHeader("X-Next", QUOTER(cNext)). /* taint: real */

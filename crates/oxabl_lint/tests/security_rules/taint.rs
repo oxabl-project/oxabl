@@ -378,7 +378,7 @@ OS-COMMAND SILENT VALUE(d).
 }
 
 #[test]
-fn html_encoding_clears_xss_and_header_taint() {
+fn html_encoding_clears_xss_taint_only() {
     let src = "\
 DEFINE VARIABLE c AS CHARACTER NO-UNDO.
 c = get-value(\"name\").
@@ -388,7 +388,32 @@ oResponse:SetHeader(\"X-Name\", url-encode(c)).
 oResponse:SetHeader(\"X-Other\", c).
 ";
     assert_eq!(check_taint("ABLSEC006", src).len(), 1);
-    assert_eq!(check_taint("ABLSEC007", src).len(), 1);
+    // Neither encoder stops a CR, an LF or a redirect to another site.
+    assert_eq!(check_taint("ABLSEC007", src).len(), 2);
+}
+
+#[test]
+fn html_encode_does_not_protect_a_header() {
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE d AS CHARACTER NO-UNDO.
+c = html-encode(get-value(\"next\")).
+RUN output-http-header (\"Location\", c).
+d = url-encode(get-value(\"next\"), \"default\").
+RUN output-http-header (\"Location\", d).
+";
+    assert_eq!(check_taint("ABLSEC007", src).len(), 2);
+}
+
+#[test]
+fn url_encode_does_not_protect_html() {
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+c = get-value(\"name\").
+PUT STREAM WebStream UNFORMATTED url-encode(c, \"query\").
+PUT STREAM WebStream UNFORMATTED html-encode(c).
+";
+    assert_eq!(check_taint("ABLSEC006", src).len(), 1);
 }
 
 #[test]
