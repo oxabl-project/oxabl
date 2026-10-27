@@ -173,3 +173,38 @@ fn the_help_names_the_safe_pattern() {
         "{HELP}"
     );
 }
+
+#[test]
+fn markup_templates_and_labels_held_in_a_password_name_are_not_secrets() {
+    let src = "\
+DEFINE VARIABLE vPassword AS CHARACTER NO-UNDO INITIAL '<input type=\"password\" name=\"pw\">'.
+vPassword = '<input type=\"password\" name=\"pw\">'.
+cPwdHtml = \"</td><td>\".
+cPassword = \"&lt;hidden&gt;\".
+cPassword = \"Password for &1 expires on &2\".
+cPassword = \"%s/%s\".
+cPassword = \"{{password}}\".
+cPassword = \"${PASSWORD}\".
+cPassword = \"Password:\".
+cPassword = \"Enter your new password\".
+";
+    let diags = check(run, src);
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn a_secret_with_a_markup_or_template_character_alone_is_still_reported() {
+    let src = "\
+cPassword = \"a<3b\".
+cPassword = \"x&y1\".
+cPassword = \"password\".
+cPassword = \"p4ss w0rd!\".
+cPassword = \"{s3cret}\".
+";
+    let diags = check(run, src);
+    assert_eq!(diags.len(), 5, "{diags:?}");
+    for d in &diags {
+        assert!(d.message.contains("****"), "{}", d.message);
+        assert!(!d.message.contains("a<3b") && !d.message.contains("s3cret"));
+    }
+}

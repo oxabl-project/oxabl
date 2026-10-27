@@ -44,7 +44,7 @@ False positives (a finding on code that is safe):
 
 - ABLSEC006: a value that was HTML-encoded (stage 1 knows no sanitiser); a `Write` on an object whose name holds `resp`, `response` or `writer` but that is not a web response (for example `oJsonWriter` or `oLogWriter`); a variable that holds a JSON object assigned to `Entity`.
 - ABLSEC007: `SetHeader`, `AddHeader`, `SetCookie` and `SetLocation` are matched by spelling, so a user method of the same name is checked; a header passed as an object built elsewhere (`SetHeader(oHeader)`).
-- ABLSEC008: a literal assigned to a name with a password word that is not a secret (a default of a policy field, a test value); a placeholder such as `"changeme"` is still a literal and is reported.
+- ABLSEC008: a literal assigned to a name with a password word that is not a secret (a default of a policy field, a test value); a placeholder such as `"changeme"` is still a literal and is reported. Markup, templates and labels are not reported (`safe/password_markup.p`, `safe/password_templates.p`); a real secret with a lone `<`, `&` or `{` still is (`vulnerable/password_lookalikes.p`). A secret that looks like a template (`"ab&1cd"`, `"x%sy"`) is missed.
 - ABLSEC009: a digest of a value whose name holds `token`, `session`, `salt`, `password` and that is not secret (a cache key); `RANDOM` for an identifier that is only a display number.
 - ABLSEC013: a `CATCH` variable and an `OUTPUT` parameter share one set of names for the whole file, so a local variable that reuses the name of another procedure's output parameter is reported.
 - ABLSEC014: `Deserialize` is matched by spelling, so a user method of that name is checked.

@@ -45,7 +45,22 @@
 //! `cPassenger` and `cKey`. A name that also holds a word such as `label`,
 //! `prompt`, `field` or `message` is text about a password, and is not
 //! reported (`cPasswordLabel = "Password"`). An empty string and `?` are not
-//! secrets. Code that embeds the linter can pass its own lists to
+//! secrets.
+//!
+//! # Text that is about a password
+//!
+//! A password-like name often holds text for a page or a message instead of
+//! the secret. Such a literal is not reported:
+//!
+//! - markup: a tag (`<` with a letter, `/` or `!` after it, and a later `>`),
+//!   or an HTML entity (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&nbsp;`, `&#`);
+//! - a template: a `SUBSTITUTE` marker `&1` to `&9`, a `%s`-style format, or a
+//!   `{{name}}` or `${name}` placeholder;
+//! - a label or prompt: text that ends with `:`, or that holds a space and one
+//!   of the secret words (`"Enter your new password"`).
+//!
+//! A single `<`, `&` or `{` in a value does not make it text: `"a<3b"` and
+//! `"{s3cret}"` are still reported, and so is the word `"password"` alone. Code that embeds the linter can pass its own lists to
 //! [`run_with`].
 //!
 //! # Where the rule looks
@@ -180,6 +195,35 @@ fn has_oech1(text: &str) -> bool {
         .any(|w| w.eq_ignore_ascii_case(b"oech1::"))
 }
 
+/// Whether a literal is markup, a template or a label rather than a secret;
+/// see the module docs.
+fn is_text_about_secret(text: &str, heuristics: &Heuristics) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let b = lower.as_bytes();
+    let tag = b.iter().enumerate().any(|(i, &c)| {
+        c == b'<'
+            && b.get(i + 1)
+                .is_some_and(|n| n.is_ascii_alphabetic() || *n == b'/' || *n == b'!')
+            && b[i + 1..].contains(&b'>')
+    });
+    let entity = ["&lt;", "&gt;", "&amp;", "&quot;", "&nbsp;", "&#"]
+        .iter()
+        .any(|e| lower.contains(e));
+    let marker = b.windows(2).any(|w| {
+        (w[0] == b'&' && (b'1'..=b'9').contains(&w[1]))
+            || (w[0] == b'%' && (w[1] == b's' || w[1] == b'd' || w[1].is_ascii_digit()))
+    });
+    let placeholder = (lower.contains("{{") && lower.contains("}}"))
+        || lower.find("${").is_some_and(|i| lower[i..].contains('}'));
+    let trimmed = text.trim();
+    let label = trimmed.ends_with(':')
+        || (trimmed.contains(char::is_whitespace)
+            && super::names::segments(trimmed)
+                .iter()
+                .any(|w| heuristics.secret_words.contains(w)));
+    tag || entity || marker || placeholder || label
+}
+
 /// Whether a connection string holds `-P` and a word after it.
 fn has_password_option(text: &str) -> bool {
     let mut words = text.split_whitespace();
@@ -249,6 +293,7 @@ fn statement(
         } => {
             if let Some(text) = string_literal(value)
                 && is_secret_text(&text)
+                && !is_text_about_secret(&text, heuristics)
                 && heuristics.is_secret_value(&name.name)
             {
                 report(
@@ -275,7 +320,9 @@ fn assignment(
     heuristics: &Heuristics,
     report: &mut impl FnMut(Span, String),
 ) {
-    if !string_literal(value).is_some_and(|t| is_secret_text(&t)) {
+    if !string_literal(value)
+        .is_some_and(|t| is_secret_text(&t) && !is_text_about_secret(&t, heuristics))
+    {
         return;
     }
     let Some(name) = last_name(target) else {
