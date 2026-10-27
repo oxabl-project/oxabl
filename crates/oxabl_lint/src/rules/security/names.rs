@@ -95,6 +95,15 @@ impl Default for Heuristics {
                 "button",
                 "btn",
                 "link",
+                "href",
+                "hide",
+                "show",
+                "visible",
+                "display",
+                "style",
+                "class",
+                "css",
+                "id",
             ]),
         }
     }
@@ -202,6 +211,8 @@ mod tests {
         assert!(!h.is_secret_value("cPasswordLabel"));
         assert!(!h.is_secret_value("lcPasswordPrompt"));
         assert!(h.is_secret("cPasswordLabel"));
+        assert!(!h.is_secret_value("cForgotPasswordHref"));
+        assert!(!h.is_secret_value("cHideChngPwd"));
     }
 
     #[test]

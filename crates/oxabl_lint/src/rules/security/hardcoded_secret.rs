@@ -59,6 +59,11 @@
 //! - a label or prompt: text that ends with `:`, or that holds a space and one
 //!   of the secret words (`"Enter your new password"`).
 //!
+//! - a link: a `javascript:` value, or an `http://` or `https://` URL with no
+//!   user and password before the host and no query parameter named like a
+//!   password (`https://example.com/reset` is a link,
+//!   `https://bob:pw@host/` and `https://host/?pwd=x` are not).
+//!
 //! A single `<`, `&` or `{` in a value does not make it text: `"a<3b"` and
 //! `"{s3cret}"` are still reported, and so is the word `"password"` alone. Code that embeds the linter can pass its own lists to
 //! [`run_with`].
@@ -221,7 +226,30 @@ fn is_text_about_secret(text: &str, heuristics: &Heuristics) -> bool {
             && super::names::segments(trimmed)
                 .iter()
                 .any(|w| heuristics.secret_words.contains(w)));
-    tag || entity || marker || placeholder || label
+    tag || entity || marker || placeholder || label || is_plain_link(trimmed, heuristics)
+}
+
+/// A `javascript:` value, or an HTTP URL that carries no credentials.
+fn is_plain_link(text: &str, heuristics: &Heuristics) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("javascript:") {
+        return true;
+    }
+    let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    let query = rest.split_once('?').map_or("", |(_, q)| q);
+    !query.split('&').any(|pair| {
+        pair.split_once('=')
+            .is_some_and(|(k, v)| !v.is_empty() && heuristics.is_secret(k))
+    })
 }
 
 /// Whether a connection string holds `-P` and a word after it.

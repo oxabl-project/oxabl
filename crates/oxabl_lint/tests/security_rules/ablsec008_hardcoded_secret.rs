@@ -208,3 +208,43 @@ cPassword = \"{s3cret}\".
         assert!(!d.message.contains("a<3b") && !d.message.contains("s3cret"));
     }
 }
+
+#[test]
+fn names_that_mark_a_role_beside_the_password_are_not_password_names() {
+    let src = "\
+cForgotPasswordHref = \"reset.html\".
+cHideChngPwd = \"none\".
+cShowPassword = \"yes\".
+cPwdCss = \"hidden\".
+cPasswordStyle = \"bold\".
+cPasswordClass = \"masked\".
+cPasswordDisplay = \"block\".
+cPasswordVisible = \"no\".
+iPasswordId = \"pw1\".
+";
+    let diags = check(run, src);
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn a_url_without_credentials_is_not_a_secret() {
+    let src = "\
+cForgotPassword = \"javascript:openReset();\".
+cPasswordReset = \"https://example.com/account/reset\".
+cPassword = \"http://example.com/pw?step=2\".
+";
+    let diags = check(run, src);
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+#[test]
+fn a_url_with_credentials_is_still_a_secret() {
+    let src = "\
+cPassword = \"https://bob:hunter2@example.com/\".
+cPassword = \"https://example.com/login?password=hunter2\".
+cPassword = \"hunter2\".
+";
+    let diags = check(run, src);
+    assert_eq!(diags.len(), 3, "{diags:?}");
+    assert!(diags.iter().all(|d| !d.message.contains("hunter2")));
+}
