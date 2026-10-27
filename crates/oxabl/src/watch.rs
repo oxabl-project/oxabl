@@ -175,10 +175,11 @@ fn cycle(
     };
     let (config, warnings) = PipelineConfig::resolve(opts.path, &overrides);
     if let Some(msg) = warnings.iter().find_map(|w| match w {
-        ConfigWarning::Config(msg) => Some(msg),
+        ConfigWarning::Config(msg) => Some(msg.clone()),
+        ConfigWarning::EntryPoints(_) => Some(w.to_string()),
         _ => None,
     }) {
-        return Err(msg.clone());
+        return Err(msg);
     }
     if changed.is_none() {
         for warning in &warnings {

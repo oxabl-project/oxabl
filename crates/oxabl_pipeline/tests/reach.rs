@@ -292,3 +292,42 @@ fn without_entry_points_nothing_is_labelled_and_the_graph_rules_are_silent() {
     }
     assert!(!find(&out, "web/orders.p", "ABLSEC010").is_empty());
 }
+
+#[test]
+fn an_entry_that_does_not_resolve_leaves_unreached_findings_unlabelled() {
+    let mut options = entries();
+    options
+        .reach
+        .entries
+        .retain(|e| !e.target.describe().starts_with("web/front.p"));
+    let missing = parse_entry_points(
+        r#"{"version": 1, "entries": [{"kind": "REST", "name": "GET /gone", "program": "web/gone.p"}]}"#,
+    )
+    .unwrap();
+    options.reach.entries.extend(missing);
+    options.reach.lower_unreachable = true;
+    let out = run(options);
+    let purge = find(&out, "batch/purge.p", "ABLSEC003");
+    assert!(purge[0].reach.is_none(), "{:?}", purge[0]);
+    assert_eq!(purge[0].severity, Severity::Error, "not lowered");
+    let q = find(&out, "lib/filter.p", "ABLSEC001");
+    assert_eq!(
+        q[0].reach.as_deref().map(|r| r.status),
+        Some(ReachStatus::Reachable)
+    );
+}
+
+#[test]
+fn when_no_entry_resolves_nothing_is_labelled_unreachable() {
+    let mut options = entries();
+    options.reach.entries = parse_entry_points(
+        r#"{"version": 1, "entries": [{"kind": "REST", "name": "GET /a", "program": "web/aa.p"}]}"#,
+    )
+    .unwrap();
+    options.reach.lower_unreachable = true;
+    for (path, _, diags) in &run(options) {
+        for d in diags {
+            assert!(d.reach.is_none(), "{}: {d:?}", path.display());
+        }
+    }
+}

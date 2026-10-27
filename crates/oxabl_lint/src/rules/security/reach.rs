@@ -46,8 +46,9 @@ use crate::shared::RunShared;
 /// coordinates.
 pub trait SecurityReach {
     /// How the unit whose span starts at `start` is reached. A unit the graph
-    /// does not know has the file's status.
-    fn unit(&self, start: u32) -> &Reachability;
+    /// does not know has the file's status. `None` when it cannot be known:
+    /// the finding is not labelled.
+    fn unit(&self, start: u32) -> Option<&Reachability>;
 
     /// A path from an entry point to the unit that passes no authorisation.
     fn unauthorised(&self, start: u32) -> Option<&ReachPath>;
@@ -743,7 +744,9 @@ pub(crate) fn annotate(
         .or_else(|| unit_spanning(flow, at))
         .map(|u| flow.units()[u].unit().span.start)
         .unwrap_or(0);
-    let r = reach.unit(start).clone();
+    let Some(r) = reach.unit(start).cloned() else {
+        return;
+    };
     let options = &ctx.lint_severities.security().reach;
     match r.status {
         ReachStatus::Reachable if options.raise_reachable => d.severity = raised(d.severity),

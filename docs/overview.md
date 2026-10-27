@@ -264,7 +264,8 @@ lower-unreachable = false                     # an unreachable finding reports o
 
 - An entry names a `program` (found over the search path as `RUN` finds it), optionally with one of its internal `procedure`s, or a `class`, optionally with one `method`. A class with no method stands for its constructors and every method that is not `PRIVATE`.
 - `kind` and `name` are free text; findings name the entry as `kind name`. `auth: true` says that the framework authorises the caller before the entry runs (a PASOE security configuration, an API gateway).
-- An unknown key, a wrong `version` or an entry with no target makes the file a config warning, and no entry is read. An entry whose target is not found is a warning of `check` (`entry point ... its target was not found`).
+- A file that is missing, or has an unknown key, a wrong `version` or an entry with no target, is a config error of `check` (exit 2). Other clients warn, and turn reachability off: no finding is labelled, and ABLSEC011 and ABLSEC012 are silent.
+- An entry whose target is not found is a warning of `check` (`entry point ... its target was not found`). That entry may reach any routine, so a finding that no other entry reaches is not labelled at all, rather than labelled unreachable.
 
 From the entries, the pipeline reads every file they reach once (`RUN p`, `RUN p IN h` for a persistent handle the file sets, internal procedures and functions, methods on `THIS-OBJECT`, `NEW pkg.Cls(...)`, `o:Method(...)` where the file declares `o` as a class, and `pkg.Cls:Method(...)`), and builds the graph of their routines. Includes need no edge: the rules read the expanded text. A call into a `Progress.*`, `OpenEdge.*` or .NET class is no edge. Every other call that does not resolve is an edge to Unknown, with its reason: `dynamic` (`RUN VALUE`, `DYNAMIC-*`), `handle`, `super`, `event` (`PUBLISH`), `method` (an object whose class the file does not declare), `not-found`, `ambiguous`, `no-routine`.
 
@@ -274,7 +275,7 @@ Every finding of the `security` group then has a status:
 - **unknown**: no entry reaches the routine through a known call, but a reached routine makes an Unknown call: `(reachability unknown: dynamic call)`. A front controller that runs `RUN VALUE(page)` makes every page it can run unknown; list each page as an entry to make it reachable.
 - **unreachable**: no entry reaches it and every reached call is known: `(unreachable from the entry points)`.
 
-`raise-reachable` and `lower-unreachable` move the severity one level (`info` → `warning` → `error`, and back); an unknown finding never moves. Without an entry-point file nothing is labelled.
+`raise-reachable` and `lower-unreachable` move the severity one level (`info` → `warning` → `error`, and back); an unknown or unlabelled finding never moves. Without an entry-point file that loads, nothing is labelled.
 
 Three rules use what stage 3 knows:
 

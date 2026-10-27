@@ -97,6 +97,13 @@ pub enum ConfigWarning {
     /// group, or an override pattern that is not a valid glob. The entry is
     /// ignored and the rest of the table applies.
     Lint(String),
+
+    /// The entry-point file of `[workspace.lint.security.reach]` could not be
+    /// read or parsed. Reachability is off for the run: no finding is labelled
+    /// and the rules that need entry points are silent. `check` treats it as
+    /// a config error, because it would gate on findings that are not
+    /// labelled as configured.
+    EntryPoints(String),
 }
 
 impl std::fmt::Display for ConfigWarning {
@@ -114,6 +121,7 @@ impl std::fmt::Display for ConfigWarning {
                 "root_extensions: ignoring `{entry}`, which cannot be a root file extension"
             ),
             ConfigWarning::Lint(msg) => write!(f, "lint: {msg}"),
+            ConfigWarning::EntryPoints(msg) => write!(f, "lint: {msg}"),
         }
     }
 }
@@ -415,10 +423,15 @@ fn derive(
                 security.reach.entries = entries;
                 lint_severities.set_security(security);
             }
-            Err(e) => warnings.push(ConfigWarning::Lint(format!(
-                "entry points `{}`: {e}",
-                file.display()
-            ))),
+            Err(e) => {
+                let mut security = lint_severities.security().clone();
+                security.reach.configured = false;
+                lint_severities.set_security(security);
+                warnings.push(ConfigWarning::EntryPoints(format!(
+                    "entry points `{}`: {e}",
+                    file.display()
+                )));
+            }
         }
     }
     warnings.extend(rejected_patterns.into_iter().map(|r| {
@@ -800,8 +813,35 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("entries.json"), "{warnings:?}");
         assert!(warnings[0].contains("entry 0"), "{warnings:?}");
-        assert!(config.lint_severities.security().reach.configured);
+        assert!(!config.lint_severities.security().reach.configured);
         assert!(config.lint_severities.security().reach.entries.is_empty());
+    }
+
+    /// An entry-point file that is missing or of another version turns
+    /// reachability off, so no finding is labelled from an empty entry list.
+    #[test]
+    fn an_entry_point_file_that_does_not_load_turns_reachability_off() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.lint.security.reach]\nentry-points = \"entries.json\"\n",
+        );
+        write(root, "main.p", "");
+        let resolve = || PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+        for text in [None, Some(r#"{"version": 2, "entries": []}"#)] {
+            if let Some(t) = text {
+                write(root, "entries.json", t);
+            }
+            let (config, warnings) = resolve();
+            assert!(
+                matches!(warnings.as_slice(), [ConfigWarning::EntryPoints(m)] if m.contains("entries.json")),
+                "{warnings:?}"
+            );
+            assert!(!config.lint_severities.security().reach.configured);
+        }
     }
 
     #[test]

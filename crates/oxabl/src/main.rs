@@ -1232,8 +1232,12 @@ fn run_check(
     // Every other warning stays a warning. A `.df` that would not load, or a
     // `--schema` directory that matched nothing (A2), leaves the rest of the
     // configuration intact, so the run still means what it says.
+    //
+    // An entry-point file that does not load is one too: the run would gate on
+    // security findings without the reachability the project configured.
     if let Some(msg) = warnings.iter().find_map(|w| match w {
-        ConfigWarning::Config(msg) => Some(msg),
+        ConfigWarning::Config(msg) => Some(msg.clone()),
+        ConfigWarning::EntryPoints(_) => Some(w.to_string()),
         _ => None,
     }) {
         eprintln!("error: {msg}");

@@ -422,8 +422,13 @@ fn taint_mode_reports_only_what_untrusted_input_reaches_with_its_path() {
 }
 
 /// A two-file web app with an entry-point file: a handler that runs a
-/// program with a dynamic query.
+/// program with a dynamic query, and a batch program no entry reaches.
 fn reach_app(dir: &Path, reach: &str) {
+    reach_app_with(dir, reach, "");
+}
+
+/// [`reach_app`] with more entries, written as JSON objects after a comma.
+fn reach_app_with(dir: &Path, reach: &str, more: &str) {
     write(
         &dir.join("oxabl.toml"),
         &config(&format!(
@@ -433,10 +438,11 @@ fn reach_app(dir: &Path, reach: &str) {
     );
     write(
         &dir.join("entries.json"),
-        r#"{"version": 1, "entries": [
-            {"kind": "REST", "name": "GET /orders", "program": "web/orders.p"},
-            {"kind": "REST", "name": "GET /gone", "program": "web/gone.p"}
-        ]}"#,
+        &format!(
+            r#"{{"version": 1, "entries": [
+            {{"kind": "REST", "name": "GET /orders", "program": "web/orders.p"}}{more}
+        ]}}"#
+        ),
     );
     write(
         &dir.join("src/web/orders.p"),
@@ -466,10 +472,7 @@ fn a_security_finding_says_how_the_entry_points_reach_it() {
         stdout.contains("(unreachable from the entry points)"),
         "{stdout}"
     );
-    assert!(
-        stderr.contains("entry point `REST GET /gone`: its target was not found"),
-        "{stderr}"
-    );
+    assert!(!stderr.contains("warning"), "{stderr}");
 
     let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
     let report = json(&stdout);
@@ -500,6 +503,58 @@ fn a_security_finding_says_how_the_entry_points_reach_it() {
     let related = &q["relatedLocations"][0]["physicalLocation"];
     assert_eq!(related["artifactLocation"]["uri"], "src/web/orders.p");
     assert_eq!(related["region"]["startLine"], 3);
+}
+
+#[test]
+fn an_entry_that_does_not_resolve_leaves_unreached_findings_unlabelled() {
+    let dir = TempDir::new().unwrap();
+    reach_app_with(
+        dir.path(),
+        "lower-unreachable = true\n",
+        r#", {"kind": "REST", "name": "GET /gone", "program": "web/gone.p"}"#,
+    );
+    let (_, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    assert!(
+        stderr.contains("entry point `REST GET /gone`: its target was not found"),
+        "{stderr}"
+    );
+    let report = json(&stdout);
+    let find = |code: &str| {
+        report["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["code"] == code)
+            .cloned()
+            .unwrap_or_else(|| panic!("{code}: {report}"))
+    };
+    assert_eq!(find("ABLSEC001")["reach"]["status"], "reachable");
+    let job = find("ABLSEC003");
+    assert!(job["reach"].is_null(), "{job}");
+    assert_eq!(job["severity"], "error", "not lowered");
+    assert!(
+        !job["message"].as_str().unwrap().contains("unreachable"),
+        "{job}"
+    );
+}
+
+#[test]
+fn an_entry_point_file_that_does_not_load_is_a_config_error() {
+    let dir = TempDir::new().unwrap();
+    reach_app(dir.path(), "lower-unreachable = true\n");
+    fs::remove_file(dir.path().join("entries.json")).unwrap();
+    let (code, stdout, stderr) = check(dir.path(), &["."]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(stderr.contains("error: lint: entry points"), "{stderr}");
+    assert!(!stdout.contains("unreachable"), "{stdout}");
+
+    write(
+        &dir.path().join("entries.json"),
+        r#"{"version": 2, "entries": []}"#,
+    );
+    let (code, _, stderr) = check(dir.path(), &["."]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("entries.json"), "{stderr}");
 }
 
 const IDENTITY: &str = "\

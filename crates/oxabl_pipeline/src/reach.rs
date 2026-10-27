@@ -34,12 +34,14 @@ pub struct FileReach {
     units: HashMap<u32, Reachability>,
     unauthorised: HashMap<u32, ReachPath>,
     unreset: HashMap<(u32, String), ReachPath>,
-    outside: Reachability,
+    /// The answer for a unit no entry reaches; `None` when it cannot be
+    /// known.
+    outside: Option<Reachability>,
     fingerprint: u64,
 }
 
 impl FileReach {
-    fn outside(status: Reachability) -> Self {
+    fn outside(status: Option<Reachability>) -> Self {
         FileReach {
             units: HashMap::new(),
             unauthorised: HashMap::new(),
@@ -57,8 +59,8 @@ impl FileReach {
 }
 
 impl SecurityReach for FileReach {
-    fn unit(&self, start: u32) -> &Reachability {
-        self.units.get(&start).unwrap_or(&self.outside)
+    fn unit(&self, start: u32) -> Option<&Reachability> {
+        self.units.get(&start).or(self.outside.as_ref())
     }
 
     fn unauthorised(&self, start: u32) -> Option<&ReachPath> {
@@ -87,7 +89,7 @@ impl Default for WorkspaceReach {
     fn default() -> Self {
         WorkspaceReach {
             files: BTreeMap::new(),
-            elsewhere: FileReach::outside(Reachability::of(ReachStatus::Unreachable, Vec::new())),
+            elsewhere: FileReach::outside(None),
             unresolved: Vec::new(),
             files_read: 0,
         }
@@ -270,12 +272,17 @@ impl LintPipeline<'_> {
             .iter()
             .map(|r| r.as_str().to_string())
             .collect();
-        let status_elsewhere = if unknown.is_empty() {
-            ReachStatus::Unreachable
+        // An entry that did not resolve may reach any routine: what no other
+        // entry reaches is not known to be unreachable, so it is not labelled.
+        let status_elsewhere = if !out.unresolved.is_empty() {
+            None
+        } else if unknown.is_empty() {
+            Some(ReachStatus::Unreachable)
         } else {
-            ReachStatus::Unknown
+            Some(ReachStatus::Unknown)
         };
-        out.elsewhere = FileReach::outside(Reachability::of(status_elsewhere, unknown.clone()));
+        let elsewhere = status_elsewhere.map(|s| Reachability::of(s, unknown.clone()));
+        out.elsewhere = FileReach::outside(elsewhere.clone());
 
         // Locate each unit back in its file.
         let mut where_of: Vec<(usize, usize)> = Vec::with_capacity(count);
@@ -344,7 +351,7 @@ impl LintPipeline<'_> {
             .iter()
             .map(|n| FileReach {
                 fingerprint: n.fingerprint,
-                ..FileReach::outside(Reachability::of(status_elsewhere, unknown.clone()))
+                ..FileReach::outside(elsewhere.clone())
             })
             .collect();
         for node in 0..count as u32 {
@@ -352,17 +359,19 @@ impl LintPipeline<'_> {
             let start = unit_facts(f, u).span.start;
             let r = if reach.is_reached(node) {
                 let set = reach.entries(node);
-                Reachability {
+                Some(Reachability {
                     status: ReachStatus::Reachable,
                     entries: set.ids().iter().map(|&e| entry_of(e)).collect(),
                     more_entries: set.more(),
                     unknown: Vec::new(),
                     path: to_path(&auth, node, false).or_else(|| to_path(&auth, node, true)),
-                }
+                })
             } else {
-                Reachability::of(status_elsewhere, unknown.clone())
+                elsewhere.clone()
             };
-            files[f].units.insert(start, r);
+            if let Some(r) = r {
+                files[f].units.insert(start, r);
+            }
             if let Some(p) = to_path(&auth, node, false) {
                 files[f].unauthorised.insert(start, p);
             }

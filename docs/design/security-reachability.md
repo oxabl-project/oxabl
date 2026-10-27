@@ -87,7 +87,11 @@ the Unknown calls of the reached nodes. A node is:
 - **unknown** when no entry does but some reached call is Unknown;
 - **unreachable** otherwise.
 
-A file outside the graph takes the same test. A finding is labelled in the
+A file outside the graph takes the same test. When an entry does not resolve,
+a node that no other entry reaches has no status at all: the missing entry may
+reach it, so it is not known to be unreachable, and its finding is not
+labelled. An entry-point file that does not load turns reachability off for
+the run, and `check` stops on it as on any config error. A finding is labelled in the
 registry, after its rule runs, so every `security` rule is labelled the same
 way: the innermost unit that holds the finding gives the status, the entries
 and one path (the shortest found). The note goes on the message, the whole
