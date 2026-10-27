@@ -2043,6 +2043,9 @@ fn report_findings(
         apply_suppressions(source, reported, indexed_path, pass, context_free_only)
     };
     unit.suppressed += suppressed.len();
+    // Every hard-coded secret of the file, so no shown line and no hash holds
+    // one, whatever finding covers it.
+    let secrets = baseline::secrets(source, reported.secrets.iter().copied());
     let has_baseline = pass.baseline.is_some();
     let (reported, covered) = match pass.baseline {
         Some(run) => run.split(indexed_path, source, reported),
@@ -2052,16 +2055,6 @@ fn report_findings(
         return;
     }
     if pass.output == CheckFormat::Text && !reported.diagnostics.is_empty() {
-        // The source line of every finding prints, so a hard-coded secret
-        // that any finding flags is masked first, whatever finding shows it.
-        let secrets = baseline::secrets(
-            source,
-            reported
-                .all()
-                .chain(&covered)
-                .chain(suppressed.iter().map(|(c, _)| c))
-                .map(|c| &c.diagnostic),
-        );
         let shown = baseline::masked(source, &secrets);
         let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), &shown);
         let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
@@ -2089,7 +2082,12 @@ fn report_findings(
     );
     let path = baseline::relative_path(&pass.root, indexed_path);
     let key = path.clone().unwrap_or_else(|| display.to_string());
-    let entries = baseline::fingerprint(&key, source, all.iter().map(|(c, _, _)| &c.diagnostic));
+    let entries = baseline::fingerprint(
+        &key,
+        source,
+        all.iter().map(|(c, _, _)| &c.diagnostic),
+        &secrets,
+    );
     let uri = sarif::uri(&key);
     for ((c, baseline_state, reason), entry) in all.into_iter().zip(&entries) {
         let d = &c.diagnostic;
@@ -2350,11 +2348,10 @@ fn report_include_findings(
             });
             // The root is part of the identity: one include reached from two
             // roots is two findings.
-            let entries = baseline::fingerprint(
-                &format!("{key}\0{root}"),
-                text.as_deref().unwrap_or(""),
-                [&diagnostic],
-            );
+            let text = text.as_deref().unwrap_or("");
+            let secrets = baseline::secrets(text, baseline::secret_spans([&diagnostic]));
+            let entries =
+                baseline::fingerprint(&format!("{key}\0{root}"), text, [&diagnostic], &secrets);
             unit.sarif_results.push(sarif::Finding {
                 rule_id: diagnostic.code.0.to_string(),
                 severity: sarif::level(diagnostic.severity.as_str()),

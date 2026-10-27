@@ -116,6 +116,10 @@ pub struct CollectedDiagnostics {
     ///
     /// [`RuleMeta::use_site_in_includer`]: oxabl_lint::RuleMeta::use_site_in_includer
     pub include_findings: Vec<IncludeFinding>,
+    /// The spans in the root's own bytes that `ABLSEC008` flags as hard-coded
+    /// secrets, whether or not the configuration enables it. A client that
+    /// hashes or shows source text masks them.
+    pub secrets: Vec<Span>,
 }
 
 /// A finding whose anchor is in an include file, with where it would show.
@@ -149,6 +153,7 @@ impl CollectedDiagnostics {
             parse_recovered: false,
             include_origin: Vec::new(),
             include_findings: Vec::new(),
+            secrets: Vec::new(),
         }
     }
 
@@ -195,6 +200,7 @@ impl CollectedDiagnostics {
             } else {
                 self.include_findings.clone()
             },
+            secrets: self.secrets.clone(),
         }
     }
 }
@@ -1527,6 +1533,11 @@ pub fn collect_from_expanded_with(
             Err(_) => {}
         }
     }
+    out.secrets = oxabl_lint::security::hardcoded_secret::run(&program.statements, &sem, &ctx)
+        .into_iter()
+        .filter_map(|d| resolve_diagnostic(d, expanded).ok())
+        .map(|d| d.span.span)
+        .collect();
 
     (Some(sem), out)
 }

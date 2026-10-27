@@ -66,10 +66,13 @@
 //!    `start` (or 0), `le` is the first `\n` at or after `start` (or `len(S)`).
 //!    The flagged span is `S[start..end]`, every line of it.
 //! 3. Mask the secrets of the file. A secret is each string literal that the
-//!    oxabl lexer finds in `S[a..b]` for each `ABLSEC008` finding `a..b` of
-//!    the file, offset by `a`, or the whole `a..b` when it holds none. In the
-//!    flagged line and in the flagged span, each part that lies inside a
-//!    secret becomes the three bytes `***`, once per secret.
+//!    oxabl lexer finds in `S[a..b]` for each span `a..b` that `ABLSEC008`
+//!    flags in the file, offset by `a`, or the whole `a..b` when it holds
+//!    none. `ABLSEC008` is run for this whether or not the configuration
+//!    enables it, and a finding that an `oxabl-ignore` comment suppresses
+//!    still counts. In the flagged line and in the flagged span, each part
+//!    that lies inside a secret becomes the three bytes `***`, once per
+//!    secret.
 //! 4. Normalise each of the two texts: split on Unicode whitespace
 //!    (`str::split_whitespace`), join the words with one space, and fold ASCII
 //!    letters to lower case. A change of keyword case (`DEFINE` to `define`)
@@ -108,6 +111,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use oxabl_analyze::{CollectedDiagnostic, CollectedDiagnostics};
+use oxabl_ast::Span;
 use oxabl_common::Diagnostic;
 use oxabl_pipeline::ROOT_FILE_ID;
 use serde::{Deserialize, Serialize};
@@ -391,11 +395,12 @@ impl Run {
             return (reported, Vec::new());
         };
         let diagnostics: Vec<&Diagnostic> = reported.all().map(|c| &c.diagnostic).collect();
-        let entries = fingerprint(&path, source, diagnostics.iter().copied());
+        let secrets = secrets(source, reported.secrets.iter().copied());
+        let entries = fingerprint(&path, source, diagnostics.iter().copied(), &secrets);
         let legacy = if self.baseline.legacy.is_empty() {
             Vec::new()
         } else {
-            fingerprint_at(2, &path, source, diagnostics)
+            fingerprint_at(2, &path, source, diagnostics, &[])
         };
         let recorded = |i: usize| {
             self.baseline.contains(&entries[i])
@@ -462,23 +467,21 @@ pub fn fingerprint<'a>(
     path: &str,
     source: &str,
     diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+    secrets: &[std::ops::Range<usize>],
 ) -> Vec<Entry> {
-    fingerprint_at(VERSION, path, source, diagnostics)
+    fingerprint_at(VERSION, path, source, diagnostics, secrets)
 }
 
-/// [`fingerprint`] with the hash of baseline `version`, 2 or 3.
+/// [`fingerprint`] with the hash of baseline `version`, 2 or 3. Version 2
+/// masks nothing.
 fn fingerprint_at<'a>(
     version: u32,
     path: &str,
     source: &str,
     diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+    secrets: &[std::ops::Range<usize>],
 ) -> Vec<Entry> {
     let diagnostics: Vec<&Diagnostic> = diagnostics.into_iter().collect();
-    let secrets = if version >= 3 {
-        secrets(source, diagnostics.iter().copied())
-    } else {
-        Vec::new()
-    };
     let mut order: Vec<usize> = (0..diagnostics.len()).collect();
     // Occurrences count in source order, whatever order the rules reported in.
     order.sort_by_key(|&i| {
@@ -495,7 +498,7 @@ fn fingerprint_at<'a>(
         let d = diagnostics[i];
         let code = d.code.0.to_string();
         let text = if version >= 3 {
-            content(source, d, &secrets)
+            content(source, d, secrets)
         } else {
             content_v2(source, d)
         };
@@ -614,20 +617,25 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The byte ranges of the hard-coded secrets that the `ABLSEC008` findings
-/// in `diagnostics` flag in `source`, sorted: each string literal of a
-/// finding's span, or the whole span when it holds none.
-pub fn secrets<'a>(
-    source: &str,
+/// The spans of the `ABLSEC008` findings among `diagnostics` that are in the
+/// checked file.
+pub fn secret_spans<'a>(
     diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
-) -> Vec<std::ops::Range<usize>> {
+) -> impl Iterator<Item = Span> {
+    diagnostics
+        .into_iter()
+        .filter(|d| d.code.0 == SECRET_RULE && d.span.file == ROOT_FILE_ID)
+        .map(|d| d.span.span)
+}
+
+/// The byte ranges of the hard-coded secrets in `source` that `ABLSEC008`
+/// flags at `spans`, sorted: each string literal of a span, or the whole span
+/// when it holds none.
+pub fn secrets(source: &str, spans: impl IntoIterator<Item = Span>) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
-    for d in diagnostics {
-        if d.code.0 != SECRET_RULE || d.span.file != ROOT_FILE_ID {
-            continue;
-        }
-        let start = (d.span.span.start as usize).min(source.len());
-        let end = (d.span.span.end as usize).clamp(start, source.len());
+    for span in spans {
+        let start = (span.start as usize).min(source.len());
+        let end = (span.end as usize).clamp(start, source.len());
         let Some(text) = source.get(start..end) else {
             continue;
         };
@@ -749,6 +757,18 @@ mod tests {
     use oxabl_ast::Span;
     use oxabl_common::FileSpan;
 
+    /// [`fingerprint`] with the secrets that the `ABLSEC008` findings among
+    /// `diagnostics` flag.
+    fn fingerprint_of<'a>(
+        path: &str,
+        source: &str,
+        diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+    ) -> Vec<Entry> {
+        let diagnostics: Vec<&Diagnostic> = diagnostics.into_iter().collect();
+        let secrets = secrets(source, secret_spans(diagnostics.iter().copied()));
+        fingerprint(path, source, diagnostics, &secrets)
+    }
+
     fn diag(code: &'static str, source: &str, needle: &str, nth: usize) -> Diagnostic {
         let start = source.match_indices(needle).nth(nth).unwrap().0 as u32;
         Diagnostic::warning(
@@ -770,7 +790,7 @@ mod tests {
 
     #[test]
     fn a_fingerprint_survives_moved_lines_and_whitespace() {
-        let before = fingerprint(
+        let before = fingerprint_of(
             "src/a.p",
             BEFORE,
             &[
@@ -778,7 +798,7 @@ mod tests {
                 diag("LINT0002", BEFORE, "b ", 0),
             ],
         );
-        let after = fingerprint(
+        let after = fingerprint_of(
             "src/a.p",
             AFTER,
             &[
@@ -795,7 +815,7 @@ mod tests {
     fn identical_findings_get_successive_occurrences_in_source_order() {
         let source = "x = 1.\nx = 1.\nx = 1.\n";
         let d = |n| diag("LINT0006", source, "x", n);
-        let entries = fingerprint("a.p", source, &[d(2), d(0), d(1)]);
+        let entries = fingerprint_of("a.p", source, &[d(2), d(0), d(1)]);
         let occurrences: Vec<u32> = entries.iter().map(|e| e.occurrence).collect();
         assert_eq!(occurrences, [2, 0, 1]);
         assert!(entries.iter().all(|e| e.hash == entries[0].hash));
@@ -804,14 +824,14 @@ mod tests {
     #[test]
     fn an_edit_on_the_flagged_line_unmatches_it() {
         let changed = BEFORE.replace("a AS INTEGER", "a AS DECIMAL");
-        let before = fingerprint("a.p", BEFORE, &[diag("LINT0002", BEFORE, "a AS", 0)]);
-        let after = fingerprint("a.p", &changed, &[diag("LINT0002", &changed, "a AS", 0)]);
+        let before = fingerprint_of("a.p", BEFORE, &[diag("LINT0002", BEFORE, "a AS", 0)]);
+        let after = fingerprint_of("a.p", &changed, &[diag("LINT0002", &changed, "a AS", 0)]);
         assert_ne!(before[0].hash, after[0].hash);
     }
 
     #[test]
     fn a_baseline_round_trips_sorted() {
-        let entries = fingerprint(
+        let entries = fingerprint_of(
             "b.p",
             BEFORE,
             &[
@@ -831,7 +851,8 @@ mod tests {
 
     #[test]
     fn matching_ignores_the_message() {
-        let mut entry = fingerprint("a.p", BEFORE, &[diag("LINT0002", BEFORE, "b ", 0)]).remove(0);
+        let mut entry =
+            fingerprint_of("a.p", BEFORE, &[diag("LINT0002", BEFORE, "b ", 0)]).remove(0);
         let baseline = Baseline::default().updated(&HashSet::new(), std::slice::from_ref(&entry));
         entry.message = "reworded".to_string();
         assert!(baseline.contains(&entry));
@@ -839,8 +860,8 @@ mod tests {
 
     #[test]
     fn an_update_keeps_entries_for_files_not_checked_and_stale_counts_only_checked() {
-        let a = fingerprint("a.p", BEFORE, &[diag("LINT0002", BEFORE, "a AS", 0)]);
-        let b = fingerprint("b.p", BEFORE, &[diag("LINT0002", BEFORE, "b ", 0)]);
+        let a = fingerprint_of("a.p", BEFORE, &[diag("LINT0002", BEFORE, "a AS", 0)]);
+        let b = fingerprint_of("b.p", BEFORE, &[diag("LINT0002", BEFORE, "b ", 0)]);
         let all: Vec<Entry> = a.iter().chain(&b).cloned().collect();
         let baseline = Baseline::default().updated(&HashSet::new(), &all);
 
@@ -875,19 +896,19 @@ mod tests {
             d.span.span.end = s.find(").").unwrap() as u32 + 1;
             d
         };
-        let before = fingerprint("a.p", MULTI, &[whole(MULTI)]);
-        let after = fingerprint("a.p", &changed, &[whole(&changed)]);
+        let before = fingerprint_of("a.p", MULTI, &[whole(MULTI)]);
+        let after = fingerprint_of("a.p", &changed, &[whole(&changed)]);
         assert_ne!(before[0].hash, after[0].hash);
         // Version 2 saw only the first line.
-        let v2 = |s: &str| fingerprint_at(2, "a.p", s, &[whole(s)]);
+        let v2 = |s: &str| fingerprint_at(2, "a.p", s, &[whole(s)], &[]);
         assert_eq!(v2(MULTI)[0].hash, v2(&changed)[0].hash);
     }
 
     #[test]
     fn a_version_2_file_still_matches_and_an_update_rewrites_it_as_version_3() {
         let d = diag("LINT0002", BEFORE, "a AS", 0);
-        let old = fingerprint_at(2, "a.p", BEFORE, [&d]);
-        let other = fingerprint_at(2, "b.p", BEFORE, [&d]);
+        let old = fingerprint_at(2, "a.p", BEFORE, [&d], &[]);
+        let other = fingerprint_at(2, "b.p", BEFORE, [&d], &[]);
         let text = format!(
             "{{\"version\": 2, \"entries\": [{}, {}]}}",
             serde_json::to_string(&old[0]).unwrap(),
@@ -896,7 +917,7 @@ mod tests {
         let baseline = Baseline::parse(&text).unwrap();
         assert!(baseline.contains_legacy(&old[0]));
         let checked: HashSet<String> = ["a.p".to_string()].into();
-        let current = fingerprint("a.p", BEFORE, [&d]);
+        let current = fingerprint_of("a.p", BEFORE, [&d]);
         let updated = Baseline::parse(&baseline.updated(&checked, &current).render()).unwrap();
         assert_eq!(updated.version, 3);
         assert!(updated.contains(&current[0]));
@@ -922,13 +943,13 @@ mod tests {
                 ),
                 diag("LINT0006", &source, "cPassword", 0),
             ];
-            let entries = fingerprint("a.p", &source, &found);
+            let entries = fingerprint_of("a.p", &source, &found);
             (entries[0].hash.clone(), entries[1].hash.clone())
         };
         assert_eq!(hash("hunter2"), hash("s3cret-and-longer"));
         let unmasked = {
             let source = "cPassword = \"hunter2\". /* x */\n";
-            fingerprint("a.p", source, &[diag("LINT0006", source, "cPassword", 0)])
+            fingerprint_of("a.p", source, &[diag("LINT0006", source, "cPassword", 0)])
         };
         assert_ne!(hash("hunter2").1, unmasked[0].hash);
     }
@@ -937,7 +958,7 @@ mod tests {
     fn masking_keeps_offsets_and_hides_only_the_literal() {
         let source = "cPassword = \"hunter2\".\nx = 1.\n";
         let d = diag("ABLSEC008", source, "cPassword = \"hunter2\"", 0);
-        let secrets = secrets(source, [&d]);
+        let secrets = secrets(source, secret_spans([&d]));
         assert_eq!(secrets, vec![12..21]);
         let text = masked(source, &secrets);
         assert_eq!(text, "cPassword = *********.\nx = 1.\n");
@@ -947,12 +968,12 @@ mod tests {
     fn an_include_finding_hashes_its_message_without_the_reach_note() {
         let mut d = diag("ABLSEC011", BEFORE, "a AS", 0);
         d.span.file = oxabl_common::FileId::new(7);
-        let plain = fingerprint("a.p", BEFORE, [&d]);
+        let plain = fingerprint_of("a.p", BEFORE, [&d]);
         let reach =
             oxabl_common::Reachability::of(oxabl_common::ReachStatus::Unreachable, Vec::new());
         d.message = format!("{} ({reach})", d.message);
         d.reach = Some(Box::new(reach));
-        assert_eq!(fingerprint("a.p", BEFORE, [&d])[0].hash, plain[0].hash);
+        assert_eq!(fingerprint_of("a.p", BEFORE, [&d])[0].hash, plain[0].hash);
     }
 
     #[test]
@@ -1084,8 +1105,8 @@ mod tests {
     fn a_fingerprint_survives_a_keyword_case_change() {
         let upper = "DEFINE VARIABLE c AS CHARACTER.\nRUN VALUE(c).\n";
         let lower = "define variable c as character.\nrun value(c).\n";
-        let before = fingerprint("a.p", upper, &[diag("CL001", upper, "RUN VALUE", 0)]);
-        let after = fingerprint("a.p", lower, &[diag("CL001", lower, "run value", 0)]);
+        let before = fingerprint_of("a.p", upper, &[diag("CL001", upper, "RUN VALUE", 0)]);
+        let after = fingerprint_of("a.p", lower, &[diag("CL001", lower, "run value", 0)]);
         assert_eq!(before[0].hash, after[0].hash);
         assert_eq!(before[0].key(), after[0].key());
     }
@@ -1102,13 +1123,13 @@ mod tests {
     fn identical_findings_match_by_order_so_a_line_added_above_shifts_the_report() {
         let old = "x = 1.\nx = 1.\n";
         let new = "x = 1.\nx = 1.\nx = 1.\n";
-        let recorded = fingerprint(
+        let recorded = fingerprint_of(
             "a.p",
             old,
             &[diag("LINT0006", old, "x", 0), diag("LINT0006", old, "x", 1)],
         );
         let baseline = Baseline::default().updated(&HashSet::new(), &recorded);
-        let now = fingerprint(
+        let now = fingerprint_of(
             "a.p",
             new,
             &(0..3)

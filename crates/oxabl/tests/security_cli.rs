@@ -318,6 +318,63 @@ fn the_text_report_masks_a_secret_in_the_line_of_every_finding() {
     assert!(stdout.contains("INITIAL **************."), "{stdout}");
 }
 
+/// The baseline hash and the SARIF fingerprint of the `LINT0002` finding on
+/// a line that sets a password variable to `secret`, under `lint`.
+fn hashes_beside(secret: &str, lint: &str) -> (String, String) {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), &config(lint));
+    write(
+        &dir.path().join("a.p"),
+        &format!(
+            "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"{secret}\". \
+             /* oxabl-ignore ABLSEC008: a fixture */\n"
+        ),
+    );
+    let (_, _, stderr) = check(
+        dir.path(),
+        &[".", "--baseline", "b.json", "--update-baseline"],
+    );
+    let doc = json(&fs::read_to_string(dir.path().join("b.json")).unwrap());
+    let baseline = doc["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["code"] == "LINT0002")
+        .unwrap_or_else(|| panic!("{doc} {stderr}"))["hash"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, stdout, _) = check(dir.path(), &[".", "--format", "sarif"]);
+    let sarif = json(&stdout);
+    let result = sarif["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ruleId"] == "LINT0002")
+        .unwrap_or_else(|| panic!("{sarif}"));
+    let fingerprint = result["partialFingerprints"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    (baseline, fingerprint)
+}
+
+#[test]
+fn no_hash_covers_a_secret_that_is_suppressed_or_whose_rule_is_off() {
+    for lint in ["[workspace.lint]\nenable = [\"security\"]\n", ""] {
+        assert_eq!(
+            hashes_beside("s3cret-value", lint),
+            hashes_beside("an0ther-longer-secret", lint),
+            "{lint:?}"
+        );
+    }
+}
+
 #[test]
 fn an_override_lists_the_programs_where_integrity_statements_are_expected() {
     let dir = TempDir::new().unwrap();
