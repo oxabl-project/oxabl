@@ -94,8 +94,10 @@
 //!   argument on a later line of a multi-line statement kept its match. It is
 //!   still read, and its entries match as before. `--update-baseline` rewrites
 //!   the file as version 3. Entries of files that the updating run did not
-//!   check cannot be rehashed and are dropped, so update over the whole tree
-//!   once. Those findings are new on the next run until they are recorded.
+//!   check cannot be rehashed, so they move as they are to the `legacy` list of
+//!   the version 3 file, and still match with the version 2 hash. An update
+//!   that checks their file replaces them, so one update over the whole tree
+//!   empties the list. Releases that write version 2 cannot read version 3.
 //! - Version 1 hashes with case kept, so its entries cannot match and are not
 //!   read: `check` reports an error that names the fix, which is to delete the
 //!   file and record it again with `--update-baseline`.
@@ -146,13 +148,20 @@ pub type Key = (String, String, String, u32);
 struct BaselineFile {
     version: u32,
     entries: Vec<Entry>,
+    /// Version 2 entries of files that no update has checked since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    legacy: Vec<Entry>,
 }
 
 /// A loaded baseline: key → message.
 #[derive(Debug)]
 pub struct Baseline {
+    /// Hashed at [`VERSION`].
     entries: BTreeMap<Key, String>,
-    /// The version its hashes were taken with.
+    /// Hashed at version 2: what an older file recorded for files that no
+    /// update has checked since.
+    legacy: BTreeMap<Key, String>,
+    /// The version of the file read.
     version: u32,
 }
 
@@ -160,6 +169,7 @@ impl Default for Baseline {
     fn default() -> Self {
         Baseline {
             entries: BTreeMap::new(),
+            legacy: BTreeMap::new(),
             version: VERSION,
         }
     }
@@ -184,22 +194,25 @@ impl Baseline {
                 file.version
             ));
         }
+        let map = |entries: Vec<Entry>| -> BTreeMap<Key, String> {
+            entries.into_iter().map(|e| (e.key(), e.message)).collect()
+        };
+        let (entries, legacy) = if file.version == 2 {
+            (BTreeMap::new(), map(file.entries))
+        } else {
+            (map(file.entries), map(file.legacy))
+        };
         Ok(Baseline {
-            entries: file
-                .entries
-                .into_iter()
-                .map(|e| (e.key(), e.message))
-                .collect(),
+            entries,
+            legacy,
             version: file.version,
         })
     }
 
     /// The document for these entries, sorted, with a trailing newline.
     pub fn render(&self) -> String {
-        let file = BaselineFile {
-            version: VERSION,
-            entries: self
-                .entries
+        let list = |entries: &BTreeMap<Key, String>| -> Vec<Entry> {
+            entries
                 .iter()
                 .map(|((path, code, hash, occurrence), message)| Entry {
                     path: path.clone(),
@@ -208,16 +221,31 @@ impl Baseline {
                     occurrence: *occurrence,
                     message: message.clone(),
                 })
-                .collect(),
+                .collect()
+        };
+        let file = BaselineFile {
+            version: VERSION,
+            entries: list(&self.entries),
+            legacy: list(&self.legacy),
         };
         let mut text = serde_json::to_string_pretty(&file).expect("a baseline serializes");
         text.push('\n');
         text
     }
 
-    /// Whether `entry` is recorded.
+    /// Whether `entry`, hashed at [`VERSION`], is recorded.
     pub fn contains(&self, entry: &Entry) -> bool {
         self.entries.contains_key(&entry.key())
+    }
+
+    /// Whether `entry`, hashed at version 2, is recorded.
+    pub fn contains_legacy(&self, entry: &Entry) -> bool {
+        self.legacy.contains_key(&entry.key())
+    }
+
+    /// The number of version 2 entries.
+    pub fn legacy_len(&self) -> usize {
+        self.legacy.len()
     }
 
     /// Entries for the paths in `checked` that no finding in `found` matches:
@@ -225,6 +253,7 @@ impl Baseline {
     pub fn stale(&self, checked: &HashSet<String>, found: &HashSet<Key>) -> usize {
         self.entries
             .keys()
+            .chain(self.legacy.keys())
             .filter(|k| checked.contains(&k.0) && !found.contains(*k))
             .count()
     }
@@ -232,32 +261,22 @@ impl Baseline {
     /// This baseline with every entry for a path in `checked` replaced by
     /// `current`, at the current version. Entries for files this run did not
     /// check are kept, so a run over part of a tree does not drop the rest;
-    /// those of an older version cannot be rehashed and are dropped (see
-    /// [`dropped`](Self::dropped)).
+    /// those of version 2 cannot be rehashed and stay at version 2.
     pub fn updated(&self, checked: &HashSet<String>, current: &[Entry]) -> Baseline {
-        let mut entries: BTreeMap<Key, String> = self
-            .entries
-            .iter()
-            .filter(|(k, _)| self.version == VERSION && !checked.contains(&k.0))
-            .map(|(k, m)| (k.clone(), m.clone()))
-            .collect();
+        let unchecked = |entries: &BTreeMap<Key, String>| -> BTreeMap<Key, String> {
+            entries
+                .iter()
+                .filter(|(k, _)| !checked.contains(&k.0))
+                .map(|(k, m)| (k.clone(), m.clone()))
+                .collect()
+        };
+        let mut entries = unchecked(&self.entries);
         entries.extend(current.iter().map(|e| (e.key(), e.message.clone())));
         Baseline {
             entries,
+            legacy: unchecked(&self.legacy),
             version: VERSION,
         }
-    }
-
-    /// The entries [`updated`](Self::updated) drops: those of an older version
-    /// for files not in `checked`.
-    pub fn dropped(&self, checked: &HashSet<String>) -> usize {
-        if self.version == VERSION {
-            return 0;
-        }
-        self.entries
-            .keys()
-            .filter(|k| !checked.contains(&k.0))
-            .count()
     }
 }
 
@@ -281,10 +300,10 @@ pub struct Report {
     /// build writes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_version: Option<u32>,
-    /// With `--update-baseline` over an older version: the entries of files
-    /// this run did not check, which could not be rehashed and were dropped.
+    /// Entries still at version 2: in the file read, or with
+    /// `--update-baseline`, in the file written.
     #[serde(skip_serializing_if = "is_zero")]
-    pub dropped: usize,
+    pub legacy: usize,
     /// Findings in files outside the workspace root. They are reported, never
     /// recorded or matched.
     #[serde(skip_serializing_if = "is_zero")]
@@ -328,7 +347,8 @@ struct Tally {
     checked: HashSet<String>,
     /// At the current version, to write.
     current: Vec<Entry>,
-    /// At the version of the file read, to match.
+    /// At the current version and, when the file has version 2 entries, at
+    /// version 2 too: what the file's entries are matched against.
     found: HashSet<Key>,
     new: usize,
     baselined: usize,
@@ -372,25 +392,33 @@ impl Run {
         };
         let diagnostics: Vec<&Diagnostic> = reported.all().map(|c| &c.diagnostic).collect();
         let entries = fingerprint(&path, source, diagnostics.iter().copied());
-        let matched = if self.baseline.version == VERSION {
-            entries.clone()
+        let legacy = if self.baseline.legacy.is_empty() {
+            Vec::new()
         } else {
-            fingerprint_at(self.baseline.version, &path, source, diagnostics)
+            fingerprint_at(2, &path, source, diagnostics)
+        };
+        let recorded = |i: usize| {
+            self.baseline.contains(&entries[i])
+                || legacy
+                    .get(i)
+                    .is_some_and(|e| self.baseline.contains_legacy(e))
         };
         let (kept, covered): (Vec<_>, Vec<_>) = std::mem::take(&mut reported.diagnostics)
             .into_iter()
-            .zip(&matched)
-            .partition(|(_, e)| !self.baseline.contains(e));
-        reported.diagnostics = kept.into_iter().map(|(d, _)| d).collect();
-        let covered: Vec<CollectedDiagnostic> = covered.into_iter().map(|(d, _)| d).collect();
+            .enumerate()
+            .partition(|(i, _)| !recorded(*i));
+        reported.diagnostics = kept.into_iter().map(|(_, d)| d).collect();
+        let covered: Vec<CollectedDiagnostic> = covered.into_iter().map(|(_, d)| d).collect();
         let new = reported.diagnostics.len();
         {
             let mut tally = self.tally();
             tally.new += new;
             tally.baselined += entries.len() - new;
             tally.checked.insert(path);
+            tally
+                .found
+                .extend(entries.iter().chain(&legacy).map(Entry::key));
             tally.current.extend(entries);
-            tally.found.extend(matched.iter().map(Entry::key));
         }
         if self.update {
             reported.diagnostics.clear();
@@ -408,13 +436,10 @@ impl Run {
     pub fn finish(self, lint_collected: bool) -> Result<Report, String> {
         let tally = self.tally.into_inner().unwrap_or_else(|e| e.into_inner());
         let stale = lint_collected.then(|| self.baseline.stale(&tally.checked, &tally.found));
-        let dropped = if self.update {
-            self.baseline.dropped(&tally.checked)
-        } else {
-            0
-        };
+        let mut legacy = self.baseline.legacy_len();
         if self.update {
             let updated = self.baseline.updated(&tally.checked, &tally.current);
+            legacy = updated.legacy_len();
             std::fs::write(&self.file, updated.render())
                 .map_err(|e| format!("cannot write baseline {}: {e}", self.file.display()))?;
         }
@@ -425,7 +450,7 @@ impl Run {
             stale,
             updated: self.update,
             old_version: (self.baseline.version != VERSION).then_some(self.baseline.version),
-            dropped,
+            legacy,
             outside_root: tally.outside_root,
         })
     }
@@ -869,14 +894,19 @@ mod tests {
             serde_json::to_string(&other[0]).unwrap()
         );
         let baseline = Baseline::parse(&text).unwrap();
-        assert!(baseline.contains(&old[0]));
+        assert!(baseline.contains_legacy(&old[0]));
         let checked: HashSet<String> = ["a.p".to_string()].into();
         let current = fingerprint("a.p", BEFORE, [&d]);
-        assert_eq!(baseline.dropped(&checked), 1, "b.p cannot be rehashed");
         let updated = Baseline::parse(&baseline.updated(&checked, &current).render()).unwrap();
         assert_eq!(updated.version, 3);
         assert!(updated.contains(&current[0]));
         assert_eq!(updated.entries.len(), 1);
+        // b.p cannot be rehashed: it stays at version 2 until an update checks it.
+        assert!(updated.contains_legacy(&other[0]));
+        assert!(!updated.contains_legacy(&old[0]));
+        assert_eq!(updated.legacy.len(), 1);
+        let all: HashSet<String> = ["a.p".to_string(), "b.p".to_string()].into();
+        assert!(updated.updated(&all, &current).legacy.is_empty());
     }
 
     #[test]

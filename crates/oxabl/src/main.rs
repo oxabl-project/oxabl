@@ -1564,10 +1564,13 @@ fn surface_baseline(report: &baseline::Report) {
             report.path, report.new
         );
         if let Some(v) = report.old_version {
+            eprintln!("baseline: rewrote version {v} as version 3");
+        }
+        if report.legacy > 0 {
             eprintln!(
-                "baseline: rewrote version {v} as version 3; {} entries of files this run did \
-                 not check could not be rehashed and were dropped",
-                report.dropped
+                "baseline: {} entries of files this run did not check stay at version 2 until \
+                 an update checks them",
+                report.legacy
             );
         }
         if report.outside_root > 0 {
@@ -1589,6 +1592,12 @@ fn surface_baseline(report: &baseline::Report) {
             "baseline: {} is version {v}; run --update-baseline over the whole tree to rewrite \
              it as version 3",
             report.path
+        );
+    } else if report.legacy > 0 {
+        eprintln!(
+            "baseline: {} entries of {} are version 2; run --update-baseline over the whole \
+             tree to rewrite them as version 3",
+            report.legacy, report.path
         );
     }
     if report.outside_root > 0 {

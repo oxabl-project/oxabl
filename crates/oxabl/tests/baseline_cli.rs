@@ -394,6 +394,44 @@ fn a_version_2_baseline_is_read_and_an_update_rewrites_it_as_version_3() {
 }
 
 #[test]
+fn a_partial_update_of_a_version_2_baseline_keeps_the_files_it_did_not_check() {
+    let dir = workspace();
+    let root = dir.path();
+    check(root, &["src", "--baseline", "b.json", "--update-baseline"]);
+    // A one-line finding with no secret hashes the same at version 2.
+    let text = fs::read_to_string(root.join("b.json")).unwrap();
+    write(
+        &root.join("b.json"),
+        &text.replace("\"version\": 3", "\"version\": 2"),
+    );
+
+    let (exit, _, stderr) = check(
+        root,
+        &["src/a.p", "--baseline", "b.json", "--update-baseline"],
+    );
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert!(stderr.contains("(0 added, 0 removed)"), "{stderr}");
+    assert!(
+        stderr.contains("1 entries of files this run did not check stay at version 2"),
+        "{stderr}"
+    );
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "b.json"]);
+    assert_eq!(exit, Some(0), "b.p is still baselined: {stderr}");
+    assert!(stderr.contains("0 new, 2 baselined, 0 stale"), "{stderr}");
+    assert!(
+        stderr.contains("1 entries of b.json are version 2"),
+        "{stderr}"
+    );
+
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "b.json", "--update-baseline"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert!(stderr.contains("(0 added, 0 removed)"), "{stderr}");
+    let doc = json(&fs::read_to_string(root.join("b.json")).unwrap());
+    assert_eq!(doc["entries"].as_array().unwrap().len(), 2);
+    assert!(doc.get("legacy").is_none(), "{doc}");
+}
+
+#[test]
 fn a_version_1_baseline_is_refused_with_the_fix() {
     let dir = workspace();
     let root = dir.path();

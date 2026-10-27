@@ -364,7 +364,7 @@ oxabl check src --baseline oxabl-baseline.json                     # fail only o
 }
 ```
 
-The `message` field is only for the reader; matching does not use it. A version 2 file (which hashed only the first line of the flagged span) is still read and matched, and `check` says so. `--update-baseline` rewrites it as version 3; it drops the entries of files that the run did not check, because they cannot be rehashed, so run the update over the whole tree once. A version 1 file (which hashed the text with its case kept) is refused with an error: delete it and record the baseline again with `--update-baseline`.
+The `message` field is only for the reader; matching does not use it. A version 2 file (which hashed only the first line of the flagged span) is still read and matched, and `check` says so. `--update-baseline` rewrites it as version 3. The entries of files that the run did not check cannot be rehashed, so they move as they are to a `legacy` list in the version 3 file and still match; an update that checks their file replaces them, so one update over the whole tree empties the list. A release that writes version 2 cannot read version 3, so update every copy of `oxabl` that reads the file first. A version 1 file (which hashed the text with its case kept) is refused with an error: delete it and record the baseline again with `--update-baseline`.
 
 #### Suppressing a finding
 
