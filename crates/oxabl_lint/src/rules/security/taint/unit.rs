@@ -160,8 +160,8 @@ pub(super) fn statements(program: &[Statement]) -> FxHashMap<NodeId, &Statement>
     out
 }
 
-/// The temp-tables of a file, what each buffer is for, and the names it
-/// defines.
+/// The temp-tables of a file, what each buffer and dataset is for, and the
+/// names it defines.
 pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tables {
     let mut t = Tables::default();
     for s in stmts.values() {
@@ -169,6 +169,15 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
         match &s.kind {
             S::DefineTempTable { name, .. } => {
                 t.temp_tables.insert(name.name.to_ascii_lowercase());
+            }
+            S::DefineDataset { name, buffers, .. } => {
+                t.datasets.insert(
+                    name.name.to_ascii_lowercase(),
+                    buffers
+                        .iter()
+                        .map(|b| b.name.to_ascii_lowercase())
+                        .collect(),
+                );
             }
             S::DefineBuffer { name, target, .. } => {
                 let table = match target {
@@ -448,21 +457,27 @@ impl Builder<'_, '_> {
                 });
             }
             ParameterType::Handle {
-                kind: HandleParamKind::Table,
+                kind: kind @ (HandleParamKind::Table | HandleParamKind::Dataset),
                 name,
                 ..
             } if input => {
-                if let Some(slot) = self.c.table_slot(&name.name) {
-                    let id = self
-                        .c
-                        .origins
-                        .add(format!("input table `{}`", name.name), stmt.span);
-                    out.push(Op {
-                        slot,
-                        value: Value::origin(id),
-                        strong: false,
-                        span: stmt.span,
-                    });
+                let (what, tables) = match kind {
+                    HandleParamKind::Table => ("table", vec![name.name.clone()]),
+                    _ => ("dataset", self.c.tables.tables_of(&name.name)),
+                };
+                let id = self
+                    .c
+                    .origins
+                    .add(format!("input {what} `{}`", name.name), stmt.span);
+                for table in tables {
+                    if let Some(slot) = self.c.table_slot(&table) {
+                        out.push(Op {
+                            slot,
+                            value: Value::origin(id),
+                            strong: false,
+                            span: stmt.span,
+                        });
+                    }
                 }
             }
             _ => {}
@@ -533,6 +548,59 @@ impl Builder<'_, '_> {
         }
     }
 
+    /// `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`, `COPY-DATASET` and
+    /// `BUFFER-COPY` methods fill their receiver with their arguments: the
+    /// tables of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the
+    /// handle variable a chain starts at.
+    fn fill(&mut self, out: &mut Vec<Op>, e: &Expression, span: Span) {
+        const FILLS: [&str; 5] = [
+            "READ-JSON",
+            "READ-XML",
+            "COPY-TEMP-TABLE",
+            "COPY-DATASET",
+            "BUFFER-COPY",
+        ];
+        for_each_child(e, &mut |c| self.fill(out, c, span));
+        let E::MethodCall {
+            object,
+            method,
+            arguments,
+        } = &e.kind
+        else {
+            return;
+        };
+        arguments.iter().for_each(|a| self.fill(out, a, span));
+        if !FILLS.iter().any(|f| f.eq_ignore_ascii_case(&method.name)) {
+            return;
+        }
+        let value = Value::union(arguments.iter().map(|a| self.c.expr(a)).collect::<Vec<_>>());
+        let mut base = &**object;
+        while let E::MemberAccess { object, .. } | E::MethodCall { object, .. } = &base.kind {
+            base = object;
+        }
+        let E::Identifier(id) = &base.kind else {
+            return;
+        };
+        let slots: Vec<u32> = if base.span.start < id.span.start {
+            self.c
+                .tables
+                .tables_of(&id.name)
+                .iter()
+                .filter_map(|t| self.c.table_slot(t))
+                .collect()
+        } else {
+            self.c.var_slot(&id.name).into_iter().collect()
+        };
+        for slot in slots {
+            out.push(Op {
+                slot,
+                value: value.clone(),
+                strong: false,
+                span,
+            });
+        }
+    }
+
     /// A socket `READ(memptr, ...)` fills its first argument.
     fn socket_read(&mut self, out: &mut Vec<Op>, e: &Expression, span: Span) {
         if let E::MethodCall {
@@ -569,6 +637,7 @@ impl Builder<'_, '_> {
             (S::DefineParameter { .. }, _) => self.parameter(&mut out, s),
             (S::Assignment { target, value }, _) => {
                 self.output_arguments(&mut out, value, s.span);
+                self.fill(&mut out, value, s.span);
                 let v = self.c.expr(value);
                 self.set(&mut out, target, v, s.span);
             }
@@ -580,14 +649,39 @@ impl Builder<'_, '_> {
                     };
                     let span = if span.start < span.end { span } else { s.span };
                     self.output_arguments(&mut out, &pair.value, span);
+                    self.fill(&mut out, &pair.value, span);
                     let v = self.c.expr(&pair.value);
                     self.set(&mut out, &pair.target, v, span);
+                }
+            }
+            (
+                S::BufferCopy {
+                    source,
+                    target,
+                    assignments,
+                    ..
+                },
+                _,
+            ) => {
+                if let Some(slot) = self.c.table_slot(&target.name) {
+                    let table = self.c.tables.table_of(&source.name);
+                    out.push(Op {
+                        slot,
+                        value: Value(vec![Term::Table(table)]),
+                        strong: false,
+                        span: s.span,
+                    });
+                }
+                for pair in assignments {
+                    let v = self.c.expr(&pair.value);
+                    self.set(&mut out, &pair.target, v, s.span);
                 }
             }
             (S::ExpressionStatement(e), _) => {
                 self.output_arguments(&mut out, e, s.span);
                 self.socket_read(&mut out, e, s.span);
                 self.json(&mut out, e, s.span);
+                self.fill(&mut out, e, s.span);
                 self.c.expr(e);
             }
             (S::Return(Some(e)), _) => {
@@ -741,6 +835,7 @@ impl Builder<'_, '_> {
             }
             (S::If { condition, .. }, NodeKind::Stmt) => {
                 self.output_arguments(&mut out, condition, s.span);
+                self.fill(&mut out, condition, s.span);
                 self.c.expr(condition);
                 guard = Some(Guard {
                     on_true: self.c.guard(condition, true),
@@ -1094,6 +1189,9 @@ pub(super) fn compile(
         }
         params = b.params;
     }
+    for op in ops.iter_mut().flatten() {
+        op.value.expand_tables(&slots);
+    }
     UnitIr {
         slots,
         declared,
@@ -1348,4 +1446,71 @@ pub(super) fn contribute_unknown(ir: &UnitIr, into: &mut Summaries) {
             }
         }
     }
+}
+
+/// A class member that code outside the file can set is a source: a
+/// `PUBLIC` or `PROTECTED` variable, and a property of that access whose
+/// `SET` is automatic and not `PRIVATE`. A computed `SET` is a unit whose
+/// parameter is a source already.
+pub(super) fn member_sources(
+    program: &[Statement],
+    source: &str,
+    options: &Options,
+    origins: &mut Origins,
+    into: &mut Summaries,
+) {
+    if options.parameters == ParameterSources::None {
+        return;
+    }
+    let all = options.parameters == ParameterSources::All;
+    for s in program {
+        let S::Class { body, .. } = &s.kind else {
+            continue;
+        };
+        for m in body {
+            let name = match &m.kind {
+                S::Property {
+                    name,
+                    access,
+                    set_body: Some(set),
+                    ..
+                } if set.is_empty()
+                    && (all
+                        || *access != AccessModifier::Private && !private_set(source, m.span)) =>
+                {
+                    name
+                }
+                S::VariableDeclaration { name, .. } if all || member_is_visible(source, m.span) => {
+                    name
+                }
+                _ => continue,
+            };
+            let id = origins.add(format!("class member `{}`", name.name), m.span);
+            let key = name.name.to_ascii_lowercase();
+            oxabl_flow::provenance::merge(
+                into.labels.entry(key.clone()).or_default(),
+                &[(id, ALL)],
+            );
+            into.sites.entry(key).or_insert(m.span);
+        }
+    }
+}
+
+/// Whether a property says `PRIVATE SET`.
+fn private_set(source: &str, span: Span) -> bool {
+    let Some(st) = StatementText::over(source, span) else {
+        return false;
+    };
+    (1..st.len()).any(|i| st.is_word(i, "SET") && st.is_word(i - 1, "PRIVATE"))
+}
+
+/// Whether a `DEFINE ... VARIABLE` says `PUBLIC` or `PROTECTED` before
+/// `VARIABLE`.
+fn member_is_visible(source: &str, span: Span) -> bool {
+    let Some(st) = StatementText::over(source, span) else {
+        return false;
+    };
+    (0..st.len())
+        .take_while(|&i| !st.is_word(i, "VARIABLE") && !st.is_word(i, "VAR"))
+        .any(|i| st.is_word(i, "PUBLIC") || st.is_word(i, "PROTECTED"))
 }

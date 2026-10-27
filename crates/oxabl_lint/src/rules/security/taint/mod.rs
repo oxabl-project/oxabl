@@ -45,10 +45,18 @@
 //! `o:Write(target)` puts it into `target`; a read such as `o:GetJsonText()`
 //! returns it.
 //!
+//! `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`, `COPY-DATASET` and the
+//! `BUFFER-COPY` method fill their receiver with their arguments: the tables
+//! of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the handle variable.
+//! The `BUFFER-COPY` statement gives its target what every field of its
+//! source holds.
+//!
 //! # Sources
 //!
 //! `INPUT` parameters of a unit that code outside the file can call (see
-//! [`ParameterSources`]), WebSpeed input (`get-value`, `get-field`, ...,
+//! [`ParameterSources`]), `INPUT TABLE` and `INPUT DATASET` parameters of such
+//! a unit, a `PUBLIC` or `PROTECTED` class variable or automatic property
+//! setter, WebSpeed input (`get-value`, `get-field`, ...,
 //! `WEB-CONTEXT:...`), a member of an object named like a request
 //! (`poRequest:...`), `IMPORT`, `SET`, `UPDATE`, `COPY-LOB FROM FILE`, a socket
 //! `READ`, `OS-GETENV`, `SESSION:PARAMETER`, configured project sources, and
@@ -313,6 +321,7 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
         unit::refresh_after_runs(cfg, main, &stmts, &procedures, &written);
     }
     let mut summaries = Summaries::default();
+    unit::member_sources(program, source, &options, &mut origins, &mut summaries);
     let mut solutions = Vec::new();
     let mut converged = false;
     for _ in 0..ROUNDS {
@@ -471,7 +480,7 @@ impl FileTaint {
         };
         let mut slots = ir.slots.clone();
         let mut origins = Origins::on_top_of(&self.origins);
-        let value = Compiler {
+        let mut value = Compiler {
             options: &self.options,
             tables: &self.tables,
             slots: &mut slots,
@@ -483,6 +492,7 @@ impl FileTaint {
             decision,
         }
         .tokens(&st, 0..st.len());
+        value.expand_tables(&ir.slots);
         let env = Env::new(&self.summaries);
         let mut fact = Provenance::new(ir.slots.len());
         for &n in &nodes {

@@ -109,7 +109,8 @@ rule hands over by span).
 
 | Source | Default |
 |---|---|
-| `INPUT` and `INPUT-OUTPUT` parameters of an externally callable unit | on |
+| `INPUT` and `INPUT-OUTPUT` parameters of an externally callable unit, `TABLE` and `DATASET` parameters too | on |
+| a `PUBLIC` or `PROTECTED` class variable, and such a property with an automatic `SET` that is not `PRIVATE` | on |
 | `WEB-CONTEXT:<anything>`, `get-value`, `get-field`, `get-cgi`, `get-user-field`, `get-cookie` | on |
 | a member or method of an object whose name says request (`poRequest`, `oWebRequest`) | on |
 | `IMPORT` targets, `SET`/`UPDATE`/`MESSAGE ... UPDATE` targets | on |
@@ -126,6 +127,14 @@ Externally callable: the main block of a procedure file, a `PROCEDURE` or
 An unknown call (a user function, a method, `RUN`, `NEW`) returns the union of
 its receiver and its arguments: it is tainted when any argument is. Its
 `OUTPUT` arguments get the same value.
+
+Request data often arrives as tables. An `INPUT DATASET` parameter taints
+every table of the dataset. `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`,
+`COPY-DATASET` and the `BUFFER-COPY` method add their arguments to their
+receiver: the tables of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the
+handle variable the chain starts at. The `BUFFER-COPY` statement adds what
+every field of its source holds to its target, and its `ASSIGN` pairs are
+assignments.
 
 ### Sanitisers
 
@@ -275,6 +284,11 @@ their counts.
   seen.
 - Statements the parser skips change no slot, except `COPY-LOB`.
 - `SHARED` variables are clean.
+- `RAW-TRANSFER`, a dynamic buffer field assignment
+  (`h:BUFFER-FIELD("f"):BUFFER-VALUE = x`) and a table bound to a handle
+  parameter (`BIND`) do not carry taint into the table. A table field read
+  without its table name holds no taint, and in a file that is open (see "The
+  gate") it is a defined name, not Unknown.
 - A validator is trusted by name.
 
 ## Result

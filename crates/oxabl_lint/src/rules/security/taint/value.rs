@@ -114,6 +114,8 @@ pub(super) enum Term {
         unit: u32,
         pos: u32,
     },
+    /// Every field of a table, at its summary.
+    Table(String),
     /// Text the analysis cannot read, such as an unexpanded reference.
     Unknown,
 }
@@ -194,7 +196,19 @@ impl Value {
                         provenance::merge(out, &UNKNOWN_LABELS);
                     }
                 }
-
+                Term::Table(table) => {
+                    for (key, l) in &files.labels {
+                        if key
+                            .strip_prefix(table.as_str())
+                            .is_some_and(|f| f.starts_with('.'))
+                        {
+                            provenance::merge(out, l);
+                        }
+                    }
+                    if files.unconverged {
+                        provenance::merge(out, &UNKNOWN_LABELS);
+                    }
+                }
                 Term::Clear(mask, v) => {
                     let mut inner = Labels::new();
                     unknown |= v.eval_into(fact, env, &mut inner);
@@ -257,6 +271,32 @@ impl Value {
             Term::Clear(_, v) | Term::Tag(_, v) => v.file_with(files, origin),
             _ => None,
         })
+    }
+
+    /// Add to each [`Term::Table`] the unit's slots of that table, which
+    /// hold what the unit wrote to them.
+    pub fn expand_tables(&mut self, slots: &Slots) {
+        let mut add = Vec::new();
+        for t in &mut self.0 {
+            match t {
+                Term::Table(table) => add.extend(
+                    slots
+                        .info
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| {
+                            s.key
+                                .strip_prefix(table.as_str())
+                                .is_some_and(|f| f.starts_with('.'))
+                        })
+                        .map(|(i, _)| Term::Slot(i as u32)),
+                ),
+                Term::Clear(_, v) | Term::Tag(_, v) => v.expand_tables(slots),
+                Term::Call { args, .. } => args.iter_mut().for_each(|a| a.expand_tables(slots)),
+                _ => {}
+            }
+        }
+        self.0.extend(add);
     }
 
     /// The slots the value reads, outermost first.
@@ -372,6 +412,8 @@ pub(super) struct Tables {
     /// Lower-cased variable, parameter and property names to their class
     /// type, lower-cased; empty for a primitive type.
     pub types: FxHashMap<String, String>,
+    /// Lower-cased dataset names to the tables of their buffers.
+    pub datasets: FxHashMap<String, Vec<String>>,
     /// Every lower-cased name the file defines: variables, parameters,
     /// properties, tables and their fields, buffers, datasets, streams, ...
     pub names: FxHashSet<String>,
@@ -395,6 +437,21 @@ impl Tables {
     pub fn table_of(&self, name: &str) -> String {
         let lower = name.to_ascii_lowercase();
         self.buffers.get(&lower).cloned().unwrap_or(lower)
+    }
+
+    /// The tables `name` stands for when it names a dataset, a temp-table or
+    /// a buffer of one, lower-cased.
+    pub fn tables_of(&self, name: &str) -> Vec<String> {
+        let lower = name.to_ascii_lowercase();
+        if let Some(tables) = self.datasets.get(&lower) {
+            return tables.iter().map(|t| self.table_of(t)).collect();
+        }
+        let table = self.table_of(&lower);
+        if self.temp_tables.contains(&table) {
+            vec![table]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Whether the variable `key` may come from outside the file: the file is
@@ -896,6 +953,11 @@ impl Compiler<'_> {
     /// The name and value of the receiver of a member access.
     fn receiver(&mut self, object: &Expression) -> (Option<String>, Value) {
         match &object.kind {
+            // `BUFFER b:...`, `TEMP-TABLE tt:...`, `DATASET ds:...`.
+            E::Identifier(id) if object.span.start < id.span.start => {
+                let tables = self.tables.tables_of(&id.name);
+                (None, Value(tables.into_iter().map(Term::Table).collect()))
+            }
             E::Identifier(id) => (Some(id.name.clone()), self.var(&id.name)),
             // A dotted name before `:` is a class (`Progress.Lang.Class`) or a
             // buffer field holding an object.

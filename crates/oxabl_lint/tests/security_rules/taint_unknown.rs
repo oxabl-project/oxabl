@@ -163,3 +163,75 @@ END CLASS.
 ";
     assert_eq!(check_taint("ABLSEC003", src).len(), 1);
 }
+
+#[test]
+fn an_input_dataset_fills_its_tables() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+DEFINE DATASET ds FOR tt.
+DEFINE INPUT PARAMETER DATASET FOR ds.
+FIND FIRST tt.
+OS-COMMAND VALUE(tt.f).
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+}
+
+#[test]
+fn read_json_fills_the_table_with_its_source() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+DEFINE INPUT PARAMETER plc AS LONGCHAR NO-UNDO.
+TEMP-TABLE tt:READ-JSON(\"longchar\", plc).
+FIND FIRST tt.
+OS-COMMAND VALUE(tt.f).
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+    let fixed = src.replace("plc)", "\"x\")");
+    assert!(check_taint("ABLSEC003", &fixed).is_empty());
+}
+
+#[test]
+fn read_xml_on_a_dataset_handle_fills_the_handle() {
+    let src = "\
+DEFINE INPUT PARAMETER plc AS LONGCHAR NO-UNDO.
+DEFINE VARIABLE hDs AS HANDLE NO-UNDO.
+hDs:READ-XML(\"longchar\", plc, \"empty\", ?, ?).
+OS-COMMAND VALUE(hDs:GET-BUFFER-HANDLE(1):BUFFER-FIELD(\"f\"):BUFFER-VALUE).
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+}
+
+#[test]
+fn buffer_copy_carries_the_fields_of_its_source() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+DEFINE TEMP-TABLE t2 NO-UNDO FIELD f AS CHARACTER.
+DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+CREATE tt. tt.f = pc.
+CREATE t2.
+BUFFER-COPY tt TO t2.
+OS-COMMAND VALUE(t2.f).
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+    let fixed = src.replace("tt.f = pc", "tt.f = \"ls\"");
+    assert!(check_taint("ABLSEC003", &fixed).is_empty());
+}
+
+#[test]
+fn a_public_property_or_variable_is_a_source() {
+    let src = "\
+CLASS p:
+  DEFINE PUBLIC PROPERTY Cmd AS CHARACTER NO-UNDO GET. SET.
+  DEFINE PROTECTED VARIABLE cArg AS CHARACTER NO-UNDO.
+  DEFINE PRIVATE PROPERTY Fixed AS CHARACTER NO-UNDO INITIAL \"ls\" GET. SET.
+  DEFINE PUBLIC PROPERTY ReadOnly AS CHARACTER NO-UNDO INITIAL \"ls\" GET. PRIVATE SET.
+  METHOD PUBLIC VOID Go():
+    OS-COMMAND VALUE(Cmd).
+    OS-COMMAND VALUE(cArg).
+    OS-COMMAND VALUE(Fixed).
+    OS-COMMAND VALUE(ReadOnly).
+  END METHOD.
+END CLASS.
+";
+    assert_eq!(lines(src, &check_taint("ABLSEC003", src)), [7, 8]);
+}
