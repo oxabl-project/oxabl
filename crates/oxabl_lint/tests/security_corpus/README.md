@@ -32,6 +32,8 @@ False negatives (a sink the rules do not see):
 
 ### ABLSEC010
 
+ABLSEC010 reports only in taint mode, so `corpus.rs` runs it in taint mode, and checks that every vulnerable program gives nothing in sink mode. It reports once per routine and identity source: `many_decisions.p` (one source, four decisions) expects 1, `two_origins.p` expects 2, and `company_filter.p` (one source, two decisions) went from 2 to 1.
+
 False positives: a decision on a request key that names an identity but is not one (`get-value("username-hint")`); a value the session set that a project function returns under a name in `identity-sources`; a check of an identity against the session (`IF cUser <> session-user() THEN RETURN.`), which is a correct check but reads the client's claim.
 
 False negatives: a key that is not a literal (`get-value(cKey)`); a key with no word of `identity-keys` (`get-value("branch")` until it is configured); an identity read in another file and passed in (the parameter is a source, but not an identity); a decision in a statement the parser does not model.

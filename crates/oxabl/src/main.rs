@@ -2041,7 +2041,10 @@ fn report_findings(
             suppressed: reason.map(str::to_string),
             flow: sarif::flow_of(Registry::builtin_shared(), d, source, ROOT_FILE_ID),
             reach: d.reach.as_deref().cloned(),
-            related: related_locations(d, &pass.root),
+            related: related_locations(d, &pass.root)
+                .into_iter()
+                .chain(decision_locations(d, source, &uri))
+                .collect(),
         });
     }
 }
@@ -2064,6 +2067,20 @@ fn related_locations(d: &Diagnostic, root: &Path) -> Vec<sarif::Related> {
                 line: line as usize,
                 message: format!("{} calls on the way from {}", s.routine, path.entry.label),
             })
+        })
+        .collect()
+}
+
+/// The other places of a finding in the checked file (`Diagnostic::related`),
+/// as SARIF related locations.
+fn decision_locations(d: &Diagnostic, source: &str, uri: &str) -> Vec<sarif::Related> {
+    d.related()
+        .iter()
+        .filter(|l| l.span.file == ROOT_FILE_ID)
+        .map(|l| sarif::Related {
+            uri: uri.to_string(),
+            line: sarif::Region::of_span(source, l.span.span.start, l.span.span.end).start_line,
+            message: l.message.clone(),
         })
         .collect()
 }
@@ -2186,6 +2203,7 @@ fn diagnostic(
         labels: Vec::new(),
         help: None,
         reach: None,
+        related: None,
     }
 }
 /// Include files read for `--include-findings`, each at most once per worker.

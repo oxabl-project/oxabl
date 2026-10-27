@@ -77,6 +77,7 @@ mod tests {
                 labels: Vec::new(),
                 help: None,
                 reach: None,
+                related: None,
             },
             source: DiagnosticSource::Parse,
         }

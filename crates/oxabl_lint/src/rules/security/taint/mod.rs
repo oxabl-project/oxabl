@@ -502,6 +502,8 @@ pub(crate) struct Judgement {
     pub tainted: bool,
     /// The path in words, source first: "web input `get-value` → `c`".
     pub chain: String,
+    /// The untrusted source: where it is, and what it is.
+    pub origin: Option<(Span, String)>,
 }
 
 impl Judgement {
@@ -511,6 +513,7 @@ impl Judgement {
             labels: Vec::new(),
             tainted: false,
             chain: String::new(),
+            origin: None,
         }
     }
 
@@ -594,7 +597,12 @@ impl<'g> Gate<'g> {
             }
         }
         let chain = chain.join(" → ");
+        let origin = steps
+            .first()
+            .filter(|s| s.label.starts_with("untrusted source:"))
+            .and_then(|s| s.span.map(|span| (span, s.chain.clone())));
         Judgement {
+            origin,
             tainted: true,
             subject: format!("untrusted input: {chain}"),
             chain,

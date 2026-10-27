@@ -38,6 +38,22 @@
 //! `auth-routines` routine (`[workspace.lint.security.reach]`). A value that
 //! is only displayed or stored is not reported.
 //!
+//! # One finding per routine and origin
+//!
+//! A value read once usually decides many statements of its routine: every
+//! `FIND` and `FOR EACH` of the company the caller named. The bug is the
+//! read, so the rule reports once per routine and source: at the first
+//! decision that uses it, with the number of decisions in the message and the
+//! others (at most [`MAX_RELATED`]) as related locations. A decision added or
+//! removed below the first does not move the finding, so a baseline keeps it.
+//!
+//! # Mode
+//!
+//! The rule asks where a value comes from, so it runs only in taint mode
+//! (`mode = "taint"`, or `ABLSEC010 = "taint"` in `modes`). In sink mode it
+//! is silent: turning on the `security` group in sink mode does not add it to
+//! a baseline.
+//!
 //! # What is not reported
 //!
 //! The identity of the session (`USERID`, the client principal), a decision
@@ -45,14 +61,14 @@
 //! budget), and any decision in a file whose parse recovered.
 
 use oxabl_ast::{Expression, ExpressionKind, RunTarget, Span, Statement, StatementKind};
-use oxabl_common::{Diagnostic, Severity};
+use oxabl_common::{Diagnostic, Label, SecurityMode, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
-use super::reach::names_routine;
+use super::reach::{names_routine, unit_at};
 use super::taint::{Gate, SinkKind};
 use super::{ABLSEC010, finding, meta};
 use crate::registry::RuleMeta;
-use crate::rules::syntactic::{Visitor, walk_block};
+use crate::rules::syntactic::{Visitor, file_span, walk_block};
 use crate::shared::RunShared;
 
 /// Kebab-case rule name.
@@ -81,6 +97,9 @@ pub const META: RuleMeta = meta(
     HELP,
 );
 
+/// The most further decisions a finding lists as related locations.
+pub const MAX_RELATED: usize = 20;
+
 /// Entry point.
 pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec<Diagnostic> {
     check(program, ctx, &RunShared::default())
@@ -88,29 +107,99 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 
 /// [`run`] with the facts of a registry run.
 pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -> Vec<Diagnostic> {
+    if ctx.lint_severities.security().mode_for(ABLSEC010, NAME) != SecurityMode::Taint {
+        return Vec::new();
+    }
     let mut v = Decisions {
-        ctx,
         gate: Gate::new(ABLSEC010, NAME, program, ctx, shared),
         auth: &ctx.lint_severities.security().reach.auth_routines,
         reported: Vec::new(),
-        diags: Vec::new(),
+        hits: Vec::new(),
     };
     walk_block(&mut v, program);
-    v.diags
+    let flow = shared.flow(program, ctx);
+    let mut hits = v.hits;
+    hits.sort_by_key(|h| h.span.start);
+    let mut groups: Vec<(Group, Vec<Hit>)> = Vec::new();
+    for h in hits {
+        let unit = unit_at(flow, h.span.start).map(|(u, _)| u);
+        let origin = match &h.judgement.origin {
+            Some((span, _)) => format!("{}:{}", span.start, span.end),
+            None => h.judgement.chain.clone(),
+        };
+        let key = (unit, origin);
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, list)) => list.push(h),
+            None => groups.push((key, vec![h])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, list)| report(ctx, list))
+        .collect()
+}
+
+/// A routine (its unit, when one holds the decision) and an origin.
+type Group = (Option<usize>, String);
+
+/// One decision an identity reaches.
+struct Hit {
+    span: Span,
+    word: String,
+    judgement: super::taint::Judgement,
+}
+
+/// The finding of one routine and origin: at its first decision.
+fn report(ctx: &AnalysisContext, mut list: Vec<Hit>) -> Diagnostic {
+    let count = list.len();
+    let rest: Vec<Label> = list
+        .iter()
+        .skip(1)
+        .take(MAX_RELATED)
+        .map(|h| Label {
+            span: file_span(ctx, h.span),
+            message: format!("`{}` decides on the same identity", h.word),
+        })
+        .collect();
+    let first = list.swap_remove(0);
+    let decisions = if count == 1 {
+        "1 decision".to_string()
+    } else {
+        format!("{count} decisions")
+    };
+    let origin = first
+        .judgement
+        .origin
+        .as_ref()
+        .map_or("the request", |(_, what)| what.as_str());
+    let d = finding(
+        ctx,
+        DEFAULT_SEVERITY,
+        ABLSEC010,
+        first.span,
+        format!(
+            "`{}` decides on an identity the client supplied: {}; {decisions} of this routine \
+             use {origin}",
+            first.word, first.judgement.chain
+        ),
+        HELP,
+    );
+    let mut d = first.judgement.attach(d);
+    d.related = (!rest.is_empty()).then(|| Box::new(rest));
+    d
 }
 
 struct Decisions<'a> {
-    ctx: &'a AnalysisContext<'a>,
     gate: Gate<'a>,
     auth: &'a [String],
-    /// The operands of the decisions reported: a `CAN-FIND` inside one is not
-    /// reported again.
+    /// The operands of the decisions found: a `CAN-FIND` inside one is not
+    /// counted again.
     reported: Vec<Span>,
-    diags: Vec<Diagnostic>,
+    hits: Vec<Hit>,
 }
 
 impl Decisions<'_> {
-    /// Report the decision whose keyword is `word` at `at` when an identity
+    /// Note the decision whose keyword is `word` at `at` when an identity
     /// reaches one of `operands`.
     fn decide(&mut self, at: u32, word: &str, operands: &[Span]) {
         let inside = |s: &Span| s.start <= at && at < s.end;
@@ -121,22 +210,14 @@ impl Decisions<'_> {
             return;
         };
         self.reported.extend_from_slice(operands);
-        let span = Span {
-            start: at,
-            end: at + word.len() as u32,
-        };
-        let d = finding(
-            self.ctx,
-            DEFAULT_SEVERITY,
-            ABLSEC010,
-            span,
-            format!(
-                "`{word}` decides on an identity the client supplied: {}",
-                j.chain
-            ),
-            HELP,
-        );
-        self.diags.push(j.attach(d));
+        self.hits.push(Hit {
+            span: Span {
+                start: at,
+                end: at + word.len() as u32,
+            },
+            word: word.to_string(),
+            judgement: j,
+        });
     }
 
     fn is_auth(&self, name: &str) -> bool {

@@ -501,3 +501,75 @@ fn a_security_finding_says_how_the_entry_points_reach_it() {
     assert_eq!(related["artifactLocation"]["uri"], "src/web/orders.p");
     assert_eq!(related["region"]["startLine"], 3);
 }
+
+const IDENTITY: &str = "\
+DEFINE VARIABLE cCompany AS CHARACTER NO-UNDO.
+cCompany = get-value(\"company\").
+FIND FIRST Customer NO-LOCK WHERE Customer.Company = cCompany NO-ERROR.
+FOR EACH Order NO-LOCK WHERE Order.Company = cCompany:
+END.
+";
+
+#[test]
+fn client_identity_is_one_finding_with_its_other_decisions_related() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config(
+            "[workspace.lint]\nenable = [\"security\"]\n[workspace.lint.security]\nmode = \"taint\"\n",
+        ),
+    );
+    write(&dir.path().join("a.p"), IDENTITY);
+    let (_, stdout, _) = check(dir.path(), &[".", "--format", "sarif"]);
+    let log = json(&stdout);
+    let results: Vec<_> = log["runs"][0]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["ruleId"] == "ABLSEC010")
+        .collect();
+    assert_eq!(results.len(), 1, "{log}");
+    let r = results[0];
+    assert_eq!(
+        r["locations"][0]["physicalLocation"]["region"]["startLine"],
+        3
+    );
+    let related = &r["relatedLocations"][0]["physicalLocation"];
+    assert_eq!(related["artifactLocation"]["uri"], "a.p");
+    assert_eq!(related["region"]["startLine"], 4);
+}
+
+#[test]
+fn client_identity_is_silent_in_sink_mode_and_its_baseline_survives_a_new_decision() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    write(&dir.path().join("a.p"), IDENTITY);
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    assert!(
+        findings(&json(&stdout))
+            .iter()
+            .all(|(_, c, _)| c != "ABLSEC010"),
+        "{stdout}"
+    );
+
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config(
+            "[workspace.lint]\nenable = [\"security\"]\n[workspace.lint.security]\nmode = \"taint\"\n",
+        ),
+    );
+    let (exit, _, stderr) = check(
+        dir.path(),
+        &[".", "--baseline", "b.json", "--update-baseline"],
+    );
+    assert_eq!(exit, Some(0), "{stderr}");
+    write(
+        &dir.path().join("a.p"),
+        &format!("{IDENTITY}IF cCompany = \"\" THEN RETURN.\n"),
+    );
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--baseline", "b.json", "--json"]);
+    assert_eq!(exit, Some(0), "{stdout}{stderr}");
+}

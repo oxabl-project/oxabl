@@ -125,7 +125,15 @@ search keeps the first one it found for the message.
   `identity` clears it: a comparison or a number conversion leaves the
   client's claim in place. A decision is read in "decision mode", where a
   logical function passes its arguments on (`CAN-DO(list, x)` reads `x`). The
-  rule needs no entry point.
+  rule needs no entry point, and runs only when its mode is `taint`: in sink
+  mode it is silent, so it never joins a sink-mode baseline. It reports once
+  per routine and origin, not once per decision: one company read from the
+  request typically decides every `FIND` and `FOR EACH` of its routine, and the
+  bug is the read. The finding sits at the first decision, its message counts
+  the decisions, and the others (at most 20) go into `Diagnostic::related`,
+  which SARIF writes as `relatedLocations`. The baseline fingerprint hashes the
+  flagged line, so decisions added or removed below the first do not change
+  it.
 - **ABLSEC011 `missing-authorization`**: per unit, the first sensitive
   operation that no gate of its unit covers, when an ungated state reaches the
   unit. One finding per unit.

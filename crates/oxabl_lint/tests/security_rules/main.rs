@@ -55,13 +55,27 @@ pub const RULES: [(&str, RuleFn); 15] = [
     ("ABLSEC007", header_injection::run),
     ("ABLSEC008", hardcoded_secret::run),
     ("ABLSEC009", weak_crypto::run),
-    ("ABLSEC010", client_identity::run),
+    ("ABLSEC010", client_identity_taint),
     ("ABLSEC013", information_leak::run),
     ("ABLSEC014", unsafe_deserialization::run),
     ("ABLSEC015", untrusted_xml::run),
     ("ABLSEC016", resource_exhaustion::run),
     ("ABLSEC017", integrity_bypass::run),
 ];
+
+/// `client-identity` in taint mode, the only mode it reports in.
+pub fn client_identity_taint(
+    program: &[oxabl_ast::Statement],
+    sem: &oxabl_semantic::Semantic,
+    ctx: &AnalysisContext,
+) -> Vec<Diagnostic> {
+    let mut severities = ctx.lint_severities.clone();
+    severities.set_security(taint::taint());
+    let schema = Schema::empty();
+    let taint_ctx =
+        AnalysisContext::new(ctx.file_id, ctx.source, &schema).with_lint_severities(severities);
+    client_identity::run(program, sem, &taint_ctx)
+}
 
 /// Run one rule over already-expanded `text`, requiring a clean parse.
 pub fn run_text(

@@ -41,7 +41,7 @@
 //! than one file or the identity of a value:
 //!
 //! - `client-identity` (ABLSEC010): a decision on a user, company or role the
-//!   client sent, followed with the taint analysis in every mode;
+//!   client sent, once per routine and source, in taint mode only;
 //! - `missing-authorization` (ABLSEC011): a sensitive operation an entry
 //!   reaches past no authorisation check;
 //! - `cross-request-state` (ABLSEC012): session state a request reads before

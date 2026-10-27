@@ -99,6 +99,22 @@ fn vulnerable_programs_fire_their_rule() {
 }
 
 #[test]
+fn client_identity_is_silent_in_sink_mode() {
+    let dir = corpus_root().join("ablsec010/vulnerable");
+    for path in programs(&dir) {
+        let source = std::fs::read_to_string(&path).unwrap();
+        let fs = RealFileSystem;
+        let include_paths = [corpus_root().join("include")];
+        let text = Preprocessor::new(&fs, &include_paths)
+            .process(FileId::new(1), &source)
+            .unwrap()
+            .to_text();
+        let got = run_text(oxabl_lint::security::client_identity::run, &text);
+        assert!(got.is_empty(), "{}: {got:?}", path.display());
+    }
+}
+
+#[test]
 fn safe_programs_fire_no_security_rule() {
     for (code, _) in RULES {
         let dir = corpus_root().join(format!("{}/safe", code.to_ascii_lowercase()));

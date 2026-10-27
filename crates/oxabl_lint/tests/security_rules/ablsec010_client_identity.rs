@@ -1,16 +1,32 @@
 //! `client-identity` (ABLSEC010): a decision that reads who the client says
-//! it is.
+//! it is. One finding per routine and identity origin, in taint mode only.
 
-use oxabl_common::{Diagnostic, SecurityOptions, SecurityValidator};
+use oxabl_common::{Diagnostic, SecurityMode, SecurityOptions, SecurityValidator};
 
-use super::taint::run_with;
+use super::taint::{run_with, taint};
 
+/// `options` in taint mode.
 fn check_with(src: &str, options: SecurityOptions) -> Vec<Diagnostic> {
-    run_with("ABLSEC010", src, options)
+    run_with(
+        "ABLSEC010",
+        src,
+        SecurityOptions {
+            mode: SecurityMode::Taint,
+            ..options
+        },
+    )
 }
 
 fn check(src: &str) -> Vec<Diagnostic> {
-    check_with(src, SecurityOptions::default())
+    run_with("ABLSEC010", src, taint())
+}
+
+/// The 1-based line of each related location of a finding.
+fn related(src: &str, d: &Diagnostic) -> Vec<usize> {
+    d.related()
+        .iter()
+        .map(|l| src[..l.span.span.start as usize].matches('\n').count() + 1)
+        .collect()
 }
 
 /// The 1-based line of each finding.
@@ -47,8 +63,20 @@ FIND FIRST Customer NO-LOCK WHERE Customer.CustNum = INTEGER(get-field(\"company
 IF CAN-FIND(FIRST Customer WHERE Customer.SalesRep = cUser) THEN MESSAGE \"x\".
 ";
     let diags = check(src);
-    assert_eq!(lines(src, &diags), [3, 6, 7], "{diags:?}");
+    assert_eq!(lines(src, &diags), [3, 6], "{diags:?}");
     assert!(diags[0].message.contains("`cUser`"), "{}", diags[0].message);
+    assert!(
+        diags[0].message.contains("2 decisions"),
+        "{}",
+        diags[0].message
+    );
+    assert_eq!(related(src, &diags[0]), [7]);
+    assert!(
+        diags[1].message.contains("1 decision"),
+        "{}",
+        diags[1].message
+    );
+    assert!(diags[1].related().is_empty());
 }
 
 #[test]
@@ -62,7 +90,9 @@ CASE cRole:
     WHEN \"admin\" THEN RUN grant.
 END CASE.
 ";
-    assert_eq!(lines(src, &check(src)), [3, 4, 5]);
+    let diags = check(src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(related(src, &diags[0]), [4, 5]);
 }
 
 #[test]
@@ -128,11 +158,13 @@ IF cUser = \"admin\" THEN RUN grant.
         }],
         ..SecurityOptions::default()
     };
+    let diags = check_with(src, other);
     assert_eq!(
-        lines(src, &check_with(src, other)),
-        [3, 4],
+        lines(src, &diags),
+        [3],
         "`all` is every injection kind, not identity"
     );
+    assert_eq!(related(src, &diags[0]), [4]);
 }
 
 #[test]
@@ -157,4 +189,107 @@ END FUNCTION.
 IF request-role() = \"admin\" THEN RUN grant.
 ";
     assert_eq!(lines(src, &check(src)), [4]);
+}
+
+#[test]
+fn many_decisions_on_one_origin_in_a_routine_are_one_finding() {
+    let src = "\
+DEFINE VARIABLE cCompany AS CHARACTER NO-UNDO.
+cCompany = get-value(\"company\").
+FIND FIRST Customer NO-LOCK WHERE Customer.Company = cCompany NO-ERROR.
+FOR EACH Order NO-LOCK WHERE Order.Company = cCompany:
+END.
+IF cCompany = \"\" THEN RETURN.
+FIND FIRST Item NO-LOCK WHERE Item.Company = cCompany NO-ERROR.
+";
+    let diags = check(src);
+    assert_eq!(lines(src, &diags), [3], "{diags:?}");
+    let d = &diags[0];
+    assert!(src[d.span.span.start as usize..].starts_with("FIND"));
+    assert!(
+        d.message.contains("web input `get-value` for `company`"),
+        "{}",
+        d.message
+    );
+    assert!(d.message.contains("4 decisions"), "{}", d.message);
+    assert_eq!(related(src, d), [4, 6, 7]);
+}
+
+#[test]
+fn two_origins_in_a_routine_are_two_findings() {
+    let src = "\
+DEFINE VARIABLE cUser AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cRole AS CHARACTER NO-UNDO.
+cUser = get-value(\"user\").
+cRole = get-value(\"role\").
+IF cUser = \"x\" THEN RETURN.
+IF cRole = \"admin\" THEN RUN grant.
+IF cUser = \"y\" THEN RETURN.
+";
+    let diags = check(src);
+    assert_eq!(lines(src, &diags), [5, 6], "{diags:?}");
+    assert_eq!(related(src, &diags[0]), [7]);
+}
+
+#[test]
+fn one_origin_read_in_two_routines_is_a_finding_in_each() {
+    let src = "\
+DEFINE VARIABLE cUser AS CHARACTER NO-UNDO.
+cUser = get-value(\"user\").
+IF cUser = \"x\" THEN RUN a.
+PROCEDURE a:
+    IF cUser = \"admin\" THEN RUN grant.
+    IF cUser = \"root\" THEN RUN grant.
+END PROCEDURE.
+";
+    let diags = check(src);
+    assert_eq!(lines(src, &diags), [3, 5], "{diags:?}");
+    assert_eq!(related(src, &diags[1]), [6]);
+}
+
+#[test]
+fn the_related_decisions_are_capped_and_the_message_has_the_count() {
+    let mut src =
+        String::from("DEFINE VARIABLE cUser AS CHARACTER NO-UNDO.\ncUser = get-value(\"user\").\n");
+    for i in 0..25 {
+        src.push_str(&format!("IF cUser = \"u{i}\" THEN RETURN.\n"));
+    }
+    let diags = check(&src);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].related().len(), 20);
+    assert!(
+        diags[0].message.contains("25 decisions"),
+        "{}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn a_decision_added_below_the_first_does_not_move_the_finding() {
+    let src = "\
+DEFINE VARIABLE cUser AS CHARACTER NO-UNDO.
+cUser = get-value(\"user\").
+IF cUser = \"x\" THEN RETURN.
+";
+    let more = format!("{src}IF cUser = \"y\" THEN RETURN.\n");
+    let (a, b) = (check(src), check(&more));
+    assert_eq!(a.len(), 1);
+    assert_eq!(b.len(), 1);
+    assert_eq!(a[0].span, b[0].span);
+}
+
+#[test]
+fn the_rule_is_silent_in_sink_mode() {
+    let src = "IF get-value(\"role\") = \"admin\" THEN RUN purge-all.\n";
+    assert!(run_with("ABLSEC010", src, SecurityOptions::default()).is_empty());
+    let mut per_rule = SecurityOptions::default();
+    per_rule
+        .modes
+        .push(("client-identity".into(), SecurityMode::Taint));
+    assert_eq!(run_with("ABLSEC010", src, per_rule).len(), 1);
+    let off = SecurityOptions {
+        modes: vec![("ablsec010".into(), SecurityMode::Sink)],
+        ..taint()
+    };
+    assert!(run_with("ABLSEC010", src, off).is_empty());
 }
