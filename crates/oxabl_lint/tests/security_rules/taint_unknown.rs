@@ -404,3 +404,50 @@ END PROCEDURE.
 ";
     assert!(check_fragment("ABLSEC003", own).is_empty());
 }
+
+#[test]
+fn a_shared_variable_or_table_is_unknown_where_code_outside_the_file_sets_it() {
+    let src = "\
+DEFINE SHARED VARIABLE gcShared AS CHARACTER NO-UNDO.
+DEFINE NEW GLOBAL SHARED VARIABLE gcGlobal AS CHARACTER NO-UNDO.
+DEFINE NEW SHARED VARIABLE gcNew AS CHARACTER NO-UNDO.
+DEFINE SHARED TEMP-TABLE ttShared NO-UNDO FIELD cArg AS CHARACTER.
+OS-COMMAND VALUE(gcShared).
+OS-COMMAND VALUE(gcGlobal).
+FIND FIRST ttShared.
+OS-COMMAND VALUE(ttShared.cArg).
+gcNew = \"ls\".
+OS-COMMAND VALUE(gcNew).
+RUN other.p.
+OS-COMMAND VALUE(gcNew).
+PROCEDURE p:
+  OS-COMMAND VALUE(gcShared).
+END PROCEDURE.
+";
+    assert_eq!(
+        lines(src, &check_taint("ABLSEC003", src)),
+        [5, 6, 8, 12, 14]
+    );
+    assert_eq!(check_sink("ABLSEC003", src).len(), 6);
+}
+
+#[test]
+fn a_call_of_a_function_takes_what_the_function_writes_to_the_file() {
+    let src = "\
+DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE gc AS CHARACTER NO-UNDO.
+FUNCTION setIt RETURNS LOGICAL ():
+  gc = pc.
+  RETURN TRUE.
+END FUNCTION.
+gc = \"ls\".
+OS-COMMAND VALUE(gc).
+setIt().
+OS-COMMAND VALUE(gc).
+PROCEDURE p:
+  gc = \"ls\".
+  IF setIt() THEN OS-COMMAND VALUE(gc).
+END PROCEDURE.
+";
+    assert_eq!(lines(src, &check_taint("ABLSEC003", src)), [10, 13]);
+}

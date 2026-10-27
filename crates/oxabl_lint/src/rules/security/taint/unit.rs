@@ -172,6 +172,29 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
     let locals = routine_statements(stmts);
     for s in stmts.values() {
         defined_names(s, source, locals.contains(&s.id), &mut t.names);
+        if let S::VariableDeclaration {
+            name,
+            is_new_shared,
+            is_shared,
+            is_new_global_shared,
+            ..
+        }
+        | S::DefineTempTable {
+            name,
+            is_new_shared,
+            is_shared,
+            is_new_global_shared,
+            ..
+        } = &s.kind
+        {
+            let name = name.name.to_ascii_lowercase();
+            if *is_shared || *is_new_global_shared {
+                t.shared_in.insert(name.clone());
+            }
+            if *is_new_shared || *is_shared || *is_new_global_shared {
+                t.shared.insert(name);
+            }
+        }
         match &s.kind {
             S::DefineTempTable { name, .. } => {
                 t.temp_tables.insert(name.name.to_ascii_lowercase());
@@ -722,7 +745,17 @@ impl Builder<'_, '_> {
         let mut out = Vec::new();
         let mut guard = None;
         match (&s.kind, node.kind) {
-            (S::VariableDeclaration { initial_value, .. }, _) => {
+            // A `SHARED` or `NEW GLOBAL SHARED` definition binds a value that
+            // may already exist.
+            (
+                S::VariableDeclaration {
+                    is_shared: false,
+                    is_new_global_shared: false,
+                    initial_value,
+                    ..
+                },
+                _,
+            ) => {
                 if let S::VariableDeclaration { name, .. } = &s.kind
                     && let Some(slot) = self.c.var_slot(&name.name)
                 {
@@ -1386,13 +1419,12 @@ pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provena
     let env = env.outside(ir.outside);
     let mut seeds = Provenance::new(ir.slots.len());
     for (i, slot) in ir.slots.info.iter().enumerate() {
-        if !slot.global {
-            continue;
-        }
-        if let Some(l) = env.files.labels.get(&slot.key) {
+        if slot.global
+            && let Some(l) = env.files.labels.get(&slot.key)
+        {
             seeds.set(i, l.clone());
         }
-        if slot.outside || env.unsure() {
+        if slot.outside || slot.global && env.unsure() {
             seeds.add(i, &[(UNKNOWN, ALL)]);
         }
     }
@@ -1404,39 +1436,66 @@ pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provena
     solve_bounded(cfg, &problem, limits).ok()
 }
 
-/// At each `RUN` of an internal procedure in a main block, the main block
-/// variables that another unit writes take what that unit wrote.
-pub(super) fn refresh_after_runs(
+/// After each call of a routine of the file (a `RUN` of an internal
+/// procedure, a function or a method), the file-level variables of `ir` that
+/// a routine writes take what the routines wrote; in a main block, every
+/// variable it declares is file-level. After any other `RUN`, the shared
+/// variables and temp-tables are Unknown: the program it runs may write them.
+pub(super) fn refresh_after_calls(
     cfg: &Cfg,
-    main: &mut UnitIr,
+    ir: &mut UnitIr,
     stmts: &FxHashMap<NodeId, &Statement>,
     procedures: &FxHashSet<String>,
     written: &FxHashSet<String>,
+    tables: &Tables,
 ) {
-    let keys: Vec<(u32, String, String)> = main
+    let keys: Vec<(u32, String, String)> = ir
         .slots
         .info
         .iter()
         .enumerate()
-        .filter(|(_, s)| written.contains(&s.key))
+        .filter(|(_, s)| (ir.main || s.global) && written.contains(&s.key))
         .map(|(i, s)| (i as u32, s.name.clone(), s.key.clone()))
         .collect();
-    if keys.is_empty() {
+    let shared: Vec<u32> = ir
+        .slots
+        .info
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            let name = s.key.split_once('.').map_or(s.key.as_str(), |(t, _)| t);
+            tables.shared.contains(name)
+        })
+        .map(|(i, _)| i as u32)
+        .collect();
+    if keys.is_empty() && shared.is_empty() {
         return;
     }
+    let calls: FxHashSet<usize> = ir.calls.iter().map(|(i, _)| i.index()).collect();
     for (i, n) in cfg.nodes() {
-        let Some(S::Run {
-            target: RunTarget::Literal { name, .. },
-            ..
-        }) = n.stmt.and_then(|id| stmts.get(&id)).map(|s| &s.kind)
-        else {
-            continue;
+        let run = match n.stmt.and_then(|id| stmts.get(&id)).map(|s| &s.kind) {
+            Some(S::Run {
+                target: RunTarget::Literal { name, .. },
+                ..
+            }) if procedures.contains(&name.to_ascii_lowercase()) => Some(false),
+            Some(S::Run { .. }) => Some(true),
+            _ => None,
         };
-        if !procedures.contains(&name.to_ascii_lowercase()) {
+        if run == Some(true) {
+            for &slot in &shared {
+                ir.ops[i.index()].push(Op {
+                    slot,
+                    value: Value::origin(UNKNOWN),
+                    strong: false,
+                    span: n.span,
+                });
+            }
+        }
+        if run != Some(false) && !calls.contains(&i.index()) {
             continue;
         }
         for (slot, name, key) in &keys {
-            main.ops[i.index()].push(Op {
+            ir.ops[i.index()].push(Op {
                 slot: *slot,
                 value: Value(vec![Term::File {
                     name: name.clone(),

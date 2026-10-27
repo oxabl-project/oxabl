@@ -398,8 +398,9 @@ pub(super) struct SlotInfo {
     /// Not declared in the unit: its value at the entry comes from the file.
     pub global: bool,
     /// A variable no unit of the file declares, or a field of a table the file
-    /// does not define, in a file whose names may come from outside it: its
-    /// value at the entry is Unknown.
+    /// does not define, in a file whose names may come from outside it, or a
+    /// variable or temp-table field that the file binds as `SHARED` or `NEW
+    /// GLOBAL SHARED`: its value at the entry is Unknown.
     pub outside: bool,
 }
 
@@ -444,6 +445,12 @@ pub(super) struct Tables {
     /// file is an include checked on its own, an include did not arrive, or a
     /// class inherits members.
     pub open: bool,
+    /// Lower-cased variables and temp-tables the file defines as shared, in
+    /// any form: a program that it runs may write them.
+    pub shared: FxHashSet<String>,
+    /// Those defined `SHARED` or `NEW GLOBAL SHARED`: code outside the file may
+    /// set them before the file runs.
+    pub shared_in: FxHashSet<String>,
 }
 
 impl Tables {
@@ -497,11 +504,12 @@ impl Tables {
     }
 
     /// Whether the table or buffer `qualifier` of a `q.f` read may come from
-    /// outside the file: the file is open, defines no such name, and the
-    /// schema knows no such table.
+    /// outside the file: the file binds it as a shared temp-table, or it is
+    /// open, defines no such name, and the schema knows no such table.
     pub fn outside_table(&self, qualifier: &str) -> bool {
         let q = qualifier.to_ascii_lowercase();
-        self.open && !self.names.contains(&q) && !self.database.contains(&q)
+        self.shared_in.contains(&self.table_of(&q))
+            || self.open && !self.names.contains(&q) && !self.database.contains(&q)
     }
 }
 
@@ -777,7 +785,7 @@ impl Compiler<'_> {
     pub fn var_slot(&mut self, name: &str) -> Option<u32> {
         let key = name.to_ascii_lowercase();
         let global = !self.declared.contains(&key);
-        let outside = global && self.tables.outside(&key);
+        let outside = self.tables.shared_in.contains(&key) || global && self.tables.outside(&key);
         self.slot(name, key, global, outside)
     }
 
@@ -813,7 +821,7 @@ impl Compiler<'_> {
             return Value(vec![Term::Slot(s)]);
         }
         let key = name.to_ascii_lowercase();
-        let outside = self.tables.outside(&key);
+        let outside = self.tables.shared_in.contains(&key) || self.tables.outside(&key);
         self.summary(name, &key, outside)
     }
 

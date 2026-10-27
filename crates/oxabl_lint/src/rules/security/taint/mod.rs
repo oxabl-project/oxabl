@@ -68,9 +68,10 @@
 //!
 //! A variable that a unit reads and does not declare, and every field, is
 //! file-level. Its value at the unit entry is the union of what every unit of
-//! the file writes to it (a main block counts for its own variables). Units,
-//! these summaries and the routine summaries are solved again until nothing
-//! changes, at most [`ROUNDS`] times.
+//! the file writes to it (a main block counts for its own variables), and a
+//! call of a routine of the file (`RUN`, a function, a method) adds it again
+//! after the call. Units, these summaries and the routine summaries are
+//! solved again until nothing changes, at most [`ROUNDS`] times.
 //!
 //! # Unknown
 //!
@@ -86,10 +87,12 @@
 //! before the summaries stop changing; every file-level read and parameter
 //! when code outside the file may run first (in every unit of a file where
 //! an include did not arrive, in the routines of an include checked on its
-//! own); and a variable that no unit of the file declares, or a field of a
-//! table that it does not define and the schema does not know, when the name
-//! may come from outside the file (an include checked on its own, an include
-//! that did not arrive, a class that inherits).
+//! own); a variable or temp-table the file binds as `SHARED` or `NEW GLOBAL
+//! SHARED`, and every shared one after a `RUN` of another program; and a
+//! variable that no unit of the file declares, or a field of a table that it
+//! does not define and the schema does not know, when the name may come from
+//! outside the file (an include checked on its own, an include that did not
+//! arrive, a class that inherits).
 
 mod unit;
 mod value;
@@ -332,10 +335,8 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
         .filter(|s| s.global)
         .map(|s| s.key.clone())
         .collect();
-    if let (Some(cfg), Some(main)) = (flow.units().first(), units.first_mut())
-        && main.main
-    {
-        unit::refresh_after_runs(cfg, main, &stmts, &procedures, &written);
+    for (cfg, ir) in flow.units().iter().zip(&mut units) {
+        unit::refresh_after_calls(cfg, ir, &stmts, &procedures, &written, &tables);
     }
     let mut summaries = Summaries::default();
     unit::member_sources(program, source, &options, &mut origins, &mut summaries);

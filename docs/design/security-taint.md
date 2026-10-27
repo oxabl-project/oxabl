@@ -192,6 +192,11 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
   file-level slot (a field included) or a parameter, in every unit of a file
   where an include did not arrive, and in the routines of an include checked
   on its own, which its includer can run after it sets their variables;
+- a variable or a temp-table that the file binds as `SHARED` or `NEW GLOBAL
+  SHARED`: code outside the file set it before the file runs. Every read of it
+  holds Unknown, and its definition sets no value. After a `RUN` of a program
+  that is not a procedure of the file, every shared variable and temp-table
+  (`NEW SHARED` too) holds Unknown: that program may write it;
 - a variable that no unit of the file declares, when its name may come from
   outside the file: an include checked on its own, a file where an include did
   not arrive, or a class that inherits. A system handle, a built-in function
@@ -252,12 +257,14 @@ returns `pc`, `f("x")` is not. A placeholder is never a source at a sink.
 
 A caller also passes its argument values to the callee's parameters (the
 **seeds**), so the sinks inside a `PRIVATE` procedure see what the file runs
-it with. The summary itself is solved without the seeds, so one caller's
-input does not leak into another caller's result. Summaries and seeds join
-the file-level summaries in the round loop, which stops when nothing changes
-and after at most eight rounds. A chain of calls or of file-level variables
-deeper than that leaves the summaries unconverged, and its sinks Unknown (see
-"The gate").
+it with. The summary itself is solved without the seeds, so one caller's input
+does not leak into another caller's result. After the call, the caller's
+file-level variables that a routine of the file writes take what the routines
+write to them, so a function that sets a main block variable is seen.
+Summaries and seeds join the file-level summaries in the round loop, which
+stops when nothing changes and after at most eight rounds. A chain of calls or
+of file-level variables deeper than that leaves the summaries unconverged, and
+its sinks Unknown (see "The gate").
 
 A call is read in modelled statements and expressions, in block headers, and
 in the tokens of the statements that are not modelled. A method is called on
@@ -294,11 +301,11 @@ their counts.
 
 - Calls cross the units of one file only (see "Calls of the file"). A
   program run with `RUN other.p` returns what an unknown call returns.
-- A main block sees what an internal procedure writes to its variables only
-  after a `RUN` of that procedure; a function or method that writes one is not
-  seen.
+- A unit sees what a routine of the file writes to a file-level variable
+  after the statement that calls it, not inside that statement.
 - Statements the parser skips change no slot, except `COPY-LOB`.
-- `SHARED` variables are clean.
+- A shared buffer or dataset holds what the file writes to it; only shared
+  variables and temp-tables are Unknown.
 - `RAW-TRANSFER`, a dynamic buffer field assignment
   (`h:BUFFER-FIELD("f"):BUFFER-VALUE = x`), a table bound to a handle
   parameter (`BIND`) and a handle that gets its table other than by
@@ -315,11 +322,12 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.60 (stage 1) to 0.97 (stage 2) and
+On the taint corpus, precision goes from 0.61 (stage 1) to 0.97 (stage 2) and
 recall stays at 1.00 (it was 0.96 before calls of the file were followed,
 0.89 on the cases of an include file, request tables and header encoders
-before they were modelled, and 0.93 on the cases of an includer's table, an
+before they were modelled, 0.93 on the cases of an includer's table, an
 unreserved keyword as a variable and `READ-JSON` through a handle or from a
-file); the corpus README has the table per rule. Over the
+file, and 0.94 on the cases of shared variables and of a function that writes
+a main block variable); the corpus README has the table per rule. Over the
 whole security corpus, stage 2 reports 22% fewer findings.
 
