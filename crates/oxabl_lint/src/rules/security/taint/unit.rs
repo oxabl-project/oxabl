@@ -14,8 +14,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, is_constant};
 use super::value::{
-    CallIr, Compiler, Env, Origins, Out, Routines, Slots, Summaries, Tables, Term, UnitSummary,
-    Value,
+    CallIr, Compiler, Env, Origins, Out, Routines, Slots, Summaries, Tables, Term, UNKNOWN,
+    UnitSummary, Value,
 };
 use super::{ALL, Options};
 
@@ -160,10 +160,12 @@ pub(super) fn statements(program: &[Statement]) -> FxHashMap<NodeId, &Statement>
     out
 }
 
-/// The temp-tables of a file and what each buffer is for.
-pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>) -> Tables {
+/// The temp-tables of a file, what each buffer is for, and the names it
+/// defines.
+pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tables {
     let mut t = Tables::default();
     for s in stmts.values() {
+        defined_names(s, source, &mut t.names);
         match &s.kind {
             S::DefineTempTable { name, .. } => {
                 t.temp_tables.insert(name.name.to_ascii_lowercase());
@@ -215,6 +217,45 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>) -> Tables {
         }
     }
     t
+}
+
+/// Add the names a statement defines to `out`, lower-cased.
+fn defined_names(s: &Statement, source: &str, out: &mut FxHashSet<String>) {
+    let mut add = |i: &oxabl_ast::Identifier| {
+        out.insert(i.name.to_ascii_lowercase());
+    };
+    match &s.kind {
+        S::VariableDeclaration { name, .. }
+        | S::Property { name, .. }
+        | S::DefineBuffer { name, .. }
+        | S::DefineDataset { name, .. }
+        | S::DefineDataSource { name, .. }
+        | S::DefineStream { name }
+        | S::DefineFrame { name, .. }
+        | S::DefineWidget { name }
+        | S::DefineEvent { name, .. } => add(name),
+        S::DefineTempTable { name, fields, .. } => {
+            add(name);
+            fields.iter().for_each(|f| add(&f.name));
+        }
+        S::DefineParameter { param_type, .. } => match param_type {
+            ParameterType::Variable { name, .. }
+            | ParameterType::Handle { name, .. }
+            | ParameterType::Buffer { name, .. } => add(name),
+        },
+        S::Catch { error_var, .. } => add(error_var),
+        // `DEFINE QUERY q ...` and other definitions the parser skips.
+        S::Skipped { names, .. }
+            if crate::rules::syntactic::source_of(source, s.span).is_some_and(|t| {
+                t.trim_start()
+                    .get(..6)
+                    .is_some_and(|w| w.eq_ignore_ascii_case("DEFINE"))
+            }) =>
+        {
+            names.iter().for_each(add);
+        }
+        _ => {}
+    }
 }
 
 /// The parameters a unit's statement declares outside its body.
@@ -1141,10 +1182,14 @@ impl Analysis for Problem<'_> {
 pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provenance>> {
     let mut seeds = Provenance::new(ir.slots.len());
     for (i, slot) in ir.slots.info.iter().enumerate() {
-        if slot.global
-            && let Some(l) = env.files.labels.get(&slot.key)
-        {
+        if !slot.global {
+            continue;
+        }
+        if let Some(l) = env.files.labels.get(&slot.key) {
             seeds.set(i, l.clone());
+        }
+        if slot.outside || env.files.unconverged {
+            seeds.add(i, &[(UNKNOWN, ALL)]);
         }
     }
     let problem = Problem { ir, env, seeds };
@@ -1280,6 +1325,27 @@ pub(super) fn contribute(ir: &UnitIr, solution: &Solution<Provenance>, into: &mu
             let entry = into.labels.entry(slot.key.clone()).or_default();
             oxabl_flow::provenance::merge(entry, labels);
             into.sites.entry(slot.key.clone()).or_insert(op.span);
+        }
+    }
+}
+
+/// What a unit past its work budget leaves: Unknown in every file-level slot
+/// it writes and in every parameter it passes to a routine of the file.
+pub(super) fn contribute_unknown(ir: &UnitIr, into: &mut Summaries) {
+    let unknown = [(UNKNOWN, ALL)];
+    for op in ir.ops.iter().flatten() {
+        let slot = &ir.slots.info[op.slot as usize];
+        if slot.global || ir.main {
+            let entry = into.labels.entry(slot.key.clone()).or_default();
+            oxabl_flow::provenance::merge(entry, &unknown);
+        }
+    }
+    for (_, call) in &ir.calls {
+        for pos in 0..call.args.len() {
+            for &c in &call.callees {
+                let entry = into.seeds.entry((c, pos as u32)).or_default();
+                oxabl_flow::provenance::merge(entry, &unknown);
+            }
         }
     }
 }

@@ -167,6 +167,21 @@ span and the sink kind:
   unit ran out of its work budget, or the file parse recovered. The finding is
   reported as in stage 1. Stage 2 never hides a finding it cannot judge.
 
+Unknown is also a label, with an origin that is never a source, so it flows
+like taint and a sanitiser for the sink's kind removes it. A sink that it
+reaches, and no real source does, is reported as in stage 1. It comes from:
+
+- a unit past its work budget: every file-level slot it writes, every
+  parameter it passes to a routine of the file, and its result as a callee;
+- the round loop ending before the summaries stop changing: every read of a
+  file-level slot, a routine result or a parameter, in one more solve;
+- a variable that no unit of the file declares, when its name may come from
+  outside the file: an include checked on its own, a file where an include did
+  not arrive, or a class that inherits. A system handle, a built-in function,
+  a keyword and a name the file defines (a table, a field, a buffer, a stream,
+  ...) are not variables. In a whole program that has all its includes, such
+  a name compiles only as a database field, which is no source by default.
+
 ### The path
 
 From the sink, the witness walks back: the nearest earlier node that wrote the
@@ -216,8 +231,9 @@ A caller also passes its argument values to the callee's parameters (the
 it with. The summary itself is solved without the seeds, so one caller's
 input does not leak into another caller's result. Summaries and seeds join
 the file-level summaries in the round loop, which stops when nothing changes
-and after at most eight rounds, so a chain of calls deeper than that may stop
-short.
+and after at most eight rounds. A chain of calls or of file-level variables
+deeper than that leaves the summaries unconverged, and its sinks Unknown (see
+"The gate").
 
 A call is read in modelled statements and expressions, in block headers, and
 in the tokens of the statements that are not modelled. A method is called on

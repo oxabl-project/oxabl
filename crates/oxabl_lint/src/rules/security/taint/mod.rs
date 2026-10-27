@@ -67,6 +67,15 @@
 //! When the analysis cannot judge a sink, the rule reports it as stage 1
 //! does: the operand holds an unexpanded reference, no statement of any unit
 //! holds it, the unit ran out of its work budget, or the parse recovered.
+//!
+//! What it cannot judge also travels as a value, the origin
+//! `UNKNOWN` (in `value`), so a sink it reaches is reported too: what a unit past
+//! its work budget writes to file-level slots, passes to routines or returns;
+//! every file-level read, routine result and parameter when the rounds end
+//! before the summaries stop changing; and a variable that no unit of the
+//! file declares, when its name may come from outside the file (an include
+//! checked on its own, an include that did not arrive, a class that
+//! inherits).
 
 mod unit;
 mod value;
@@ -245,15 +254,22 @@ pub struct FileTaint {
 }
 
 /// Analyse the units of a file.
-pub(crate) fn analyze(
-    program: &[Statement],
-    source: &str,
-    flow: &FileFlow,
-    options: &SecurityOptions,
-) -> FileTaint {
-    let options = Options::new(options);
+pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileFlow) -> FileTaint {
+    let source = ctx.source;
+    let options = Options::new(ctx.lint_severities.security());
     let stmts = unit::statements(program);
-    let tables = unit::tables(&stmts);
+    let mut tables = unit::tables(&stmts, source);
+    tables.open = ctx.source_context.is_include_fragment()
+        || !ctx.elided_includes.is_empty()
+        || program.iter().any(|s| {
+            matches!(
+                &s.kind,
+                StatementKind::Class {
+                    inherits: Some(_),
+                    ..
+                }
+            )
+        });
     let routines = routines(flow);
     let mut origins = Origins::default();
     let mut units: Vec<UnitIr> = flow
@@ -298,6 +314,7 @@ pub(crate) fn analyze(
     }
     let mut summaries = Summaries::default();
     let mut solutions = Vec::new();
+    let mut converged = false;
     for _ in 0..ROUNDS {
         let env = Env::new(&summaries);
         solutions = flow
@@ -314,9 +331,12 @@ pub(crate) fn analyze(
             .enumerate()
         {
             let i = i as u32;
-            if let Some(sol) = sol {
-                unit::contribute(ir, sol, &mut next);
-                unit::pass_arguments(ir, sol, env, &mut next);
+            match sol {
+                Some(sol) => {
+                    unit::contribute(ir, sol, &mut next);
+                    unit::pass_arguments(ir, sol, env, &mut next);
+                }
+                None => unit::contribute_unknown(ir, &mut next),
             }
             if !callable.contains(&i) {
                 continue;
@@ -340,9 +360,20 @@ pub(crate) fn analyze(
             next.units.insert(i, unit::summarize(cfg, ir, sol));
         }
         if next == summaries {
+            converged = true;
             break;
         }
         summaries = next;
+    }
+    if !converged {
+        summaries.unconverged = true;
+        let env = Env::new(&summaries);
+        solutions = flow
+            .units()
+            .iter()
+            .zip(&units)
+            .map(|(cfg, ir)| unit::solve(cfg, ir, env))
+            .collect();
     }
     FileTaint {
         units,
@@ -476,7 +507,14 @@ impl FileTaint {
         };
         let Some(&(origin, _)) = labels.iter().find(|(o, m)| m & kind.bit() != 0 && real(*o))
         else {
-            return Reach::Clean;
+            let unknown = labels
+                .iter()
+                .any(|(o, m)| *o == value::UNKNOWN && m & kind.bit() != 0);
+            return if unknown {
+                Reach::Unknown
+            } else {
+                Reach::Clean
+            };
         };
         Reach::Tainted(witness::path(
             self,

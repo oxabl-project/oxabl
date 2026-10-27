@@ -25,6 +25,7 @@ mod literal;
 mod taint;
 mod taint_calls;
 mod taint_corpus;
+mod taint_unknown;
 
 use std::path::PathBuf;
 

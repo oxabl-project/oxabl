@@ -13,14 +13,16 @@ use std::path::{Path, PathBuf};
 
 use oxabl_common::{Diagnostic, SecurityOptions};
 
-use super::taint::{run_with, taint};
+use oxabl_semantic::SourceContext;
+
+use super::taint::{run_in, taint};
 
 /// The rules with a taint mode, and the expected stage 2 result:
 /// (true positives, false positives, false negatives).
 const RULES: [(&str, (usize, usize, usize)); 10] = [
     ("ABLSEC001", (6, 1, 0)),
     ("ABLSEC002", (6, 0, 0)),
-    ("ABLSEC003", (6, 1, 0)),
+    ("ABLSEC003", (7, 1, 0)),
     ("ABLSEC004", (6, 0, 0)),
     ("ABLSEC005", (7, 0, 0)),
     ("ABLSEC006", (7, 0, 0)),
@@ -108,7 +110,7 @@ fn programs(code: &str) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "p"))
+        .filter(|p| p.extension().is_some_and(|e| e == "p" || e == "i"))
         .collect();
     out.sort();
     out
@@ -123,8 +125,14 @@ fn stage_two_meets_the_marks_and_beats_stage_one() {
         let (mut s1, mut s2) = (Score::default(), Score::default());
         for path in programs(code) {
             let src = std::fs::read_to_string(&path).unwrap();
-            let sink = run_with(code, &src, SecurityOptions::default());
-            let tainted = run_with(code, &src, taint());
+            // An include file is checked on its own, without its includer.
+            let context = if path.extension().is_some_and(|e| e == "i") {
+                SourceContext::IncludeFragment
+            } else {
+                SourceContext::CompilationUnit
+            };
+            let sink = run_in(code, &src, SecurityOptions::default(), context);
+            let tainted = run_in(code, &src, taint(), context);
             s1.add(score(&path, &src, &lines(&src, &sink)));
             let found = lines(&src, &tainted);
             // Where stage 2 and the marks disagree, for the table reader.

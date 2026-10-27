@@ -226,7 +226,7 @@ Calls of the file's own procedures, functions and methods are followed: a call r
 
 A taint finding names its path in the message, `` `QUERY-PREPARE` takes a query built from untrusted input: input parameter `pcName` → `cWhere` ``, and each step is a label of the diagnostic, source first. SARIF output turns the steps into `codeFlows`.
 
-When the analysis cannot judge a sink, the finding is reported as in stage 1: the argument holds an unexpanded `{...}` reference or text the preprocessor removed, the parse recovered, or the unit costs more than its work budget.
+When the analysis cannot judge a sink, the finding is reported as in stage 1: the argument holds an unexpanded `{...}` reference or text the preprocessor removed, the parse recovered, or the unit costs more than its work budget. So is a sink that a value it cannot judge reaches: a file-level variable or result of a unit past its work budget (a large main block holds most of them); any file-level variable, routine result or parameter when the summaries do not settle in eight rounds (a chain of calls or variables deeper than that); and, in an include file checked on its own, a file where an include did not arrive, or a class that inherits, a variable that the file does not declare.
 
 Limits of stage 2 (the corpus under `crates/oxabl_lint/tests/security_corpus/taint` has a case for each):
 

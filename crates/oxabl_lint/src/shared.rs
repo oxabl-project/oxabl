@@ -223,12 +223,7 @@ impl<'a> RunShared<'a> {
         ctx: &AnalysisContext,
     ) -> &crate::rules::security::taint::FileTaint {
         self.taint.get_or_init(|| {
-            crate::rules::security::taint::analyze(
-                program,
-                ctx.source,
-                self.flow(program, ctx),
-                ctx.lint_severities.security(),
-            )
+            crate::rules::security::taint::analyze(program, ctx, self.flow(program, ctx))
         })
     }
 

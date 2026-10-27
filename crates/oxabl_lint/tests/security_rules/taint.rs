@@ -13,7 +13,7 @@ use oxabl_lexer::tokenize;
 use oxabl_lint::Registry;
 use oxabl_parser::Parser;
 use oxabl_schema::Schema;
-use oxabl_semantic::{AnalysisContext, analyze_file};
+use oxabl_semantic::{AnalysisContext, SourceContext, analyze_file};
 
 pub fn taint() -> SecurityOptions {
     SecurityOptions {
@@ -24,6 +24,17 @@ pub fn taint() -> SecurityOptions {
 
 /// Run the rule `code` over `src` with the security group on and `options`.
 pub fn run_with(code: &str, src: &str, options: SecurityOptions) -> Vec<Diagnostic> {
+    run_in(code, src, options, SourceContext::CompilationUnit)
+}
+
+/// [`run_with`] for a source checked as `context`: a whole program, or an
+/// include file on its own.
+pub fn run_in(
+    code: &str,
+    src: &str,
+    options: SecurityOptions,
+    context: SourceContext,
+) -> Vec<Diagnostic> {
     let tokens = tokenize(src);
     let program = Parser::new(&tokens, src).parse_program();
     assert!(
@@ -35,7 +46,9 @@ pub fn run_with(code: &str, src: &str, options: SecurityOptions) -> Vec<Diagnost
     let mut severities = LintSeverityMap::new();
     severities.base_mut().enable_group("security");
     severities.set_security(options);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema).with_lint_severities(severities);
+    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema)
+        .with_lint_severities(severities)
+        .with_source_context(context);
     let sem = analyze_file(&program.statements, &ctx);
     Registry::builtin().run_where(&program.statements, &sem, &ctx, |m| m.code == code)
 }

@@ -18,6 +18,13 @@ use super::{ALL, Options, SinkKind};
 /// Every kind but `size`: what a number can no longer carry.
 pub(super) const NUMERIC_SAFE: u32 = ALL & !SinkKind::Size.bit();
 
+/// The origin of a value the analysis cannot judge. It is never a real
+/// source: a sink it reaches is reported as stage 1 reports it.
+pub(super) const UNKNOWN: u32 = u32::MAX;
+
+/// The labels of a value the analysis cannot judge.
+const UNKNOWN_LABELS: [(u32, u32); 1] = [(UNKNOWN, ALL)];
+
 /// An untrusted source site.
 #[derive(Debug, Clone)]
 pub(super) struct Origin {
@@ -183,7 +190,11 @@ impl Value {
                     if let Some(l) = files.labels.get(key) {
                         provenance::merge(out, l);
                     }
+                    if files.unconverged {
+                        provenance::merge(out, &UNKNOWN_LABELS);
+                    }
                 }
+
                 Term::Clear(mask, v) => {
                     let mut inner = Labels::new();
                     unknown |= v.eval_into(fact, env, &mut inner);
@@ -204,13 +215,20 @@ impl Value {
                     unknown |= call_into(callees, *o, args, fact, env, out);
                 }
                 Term::Param { unit, pos } => {
-                    if env.seeds
-                        && let Some(l) = files.seeds.get(&(*unit, *pos))
-                    {
+                    if !env.seeds {
+                        continue;
+                    }
+                    if let Some(l) = files.seeds.get(&(*unit, *pos)) {
                         provenance::merge(out, l);
                     }
+                    if files.unconverged {
+                        provenance::merge(out, &UNKNOWN_LABELS);
+                    }
                 }
-                Term::Unknown => unknown = true,
+                Term::Unknown => {
+                    unknown = true;
+                    provenance::merge(out, &UNKNOWN_LABELS);
+                }
             }
         }
         unknown
@@ -255,7 +273,8 @@ impl Value {
 }
 
 /// The labels of a call: each callee's summary with the arguments put in
-/// for its parameters. A callee past its work budget returns its arguments.
+/// for its parameters. A callee past its work budget returns its arguments
+/// and Unknown, and so does every call when the summaries did not converge.
 fn call_into(
     callees: &[u32],
     o: Out,
@@ -275,6 +294,9 @@ fn call_into(
             })
             .clone()
     };
+    if env.files.unconverged {
+        provenance::merge(out, &UNKNOWN_LABELS);
+    }
     for &c in callees {
         let Some(s) = env.files.units.get(&c) else {
             continue;
@@ -283,6 +305,7 @@ fn call_into(
             for i in 0..args.len() {
                 provenance::merge(out, &arg(i, &mut unknown));
             }
+            provenance::merge(out, &UNKNOWN_LABELS);
             continue;
         }
         let labels = match o {
@@ -318,6 +341,9 @@ pub(super) struct SlotInfo {
     pub key: String,
     /// Not declared in the unit: its value at the entry comes from the file.
     pub global: bool,
+    /// A variable no unit of the file declares, in a file whose names may come
+    /// from outside it: its value at the entry is Unknown.
+    pub outside: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -346,6 +372,13 @@ pub(super) struct Tables {
     /// Lower-cased variable, parameter and property names to their class
     /// type, lower-cased; empty for a primitive type.
     pub types: FxHashMap<String, String>,
+    /// Every lower-cased name the file defines: variables, parameters,
+    /// properties, tables and their fields, buffers, datasets, streams, ...
+    pub names: FxHashSet<String>,
+    /// Names the file reads and does not define may come from outside it: the
+    /// file is an include checked on its own, an include did not arrive, or a
+    /// class inherits members.
+    pub open: bool,
 }
 
 impl Tables {
@@ -363,6 +396,23 @@ impl Tables {
         let lower = name.to_ascii_lowercase();
         self.buffers.get(&lower).cloned().unwrap_or(lower)
     }
+
+    /// Whether the variable `key` may come from outside the file: the file is
+    /// open, defines no such name, and the name is no system handle, built-in
+    /// function or keyword.
+    pub fn outside(&self, key: &str) -> bool {
+        if !self.open
+            || self.names.contains(key)
+            || oxabl_semantic::SYSTEM_HANDLES.contains(&key)
+            || oxabl_lexer::is_builtin_function(key)
+        {
+            return false;
+        }
+        matches!(
+            oxabl_lexer::tokenize(key).as_slice(),
+            [t, end] if t.kind == Kind::Identifier && end.kind == Kind::Eof
+        )
+    }
 }
 
 /// File-level summaries: the labels every unit writes to a variable or field
@@ -376,6 +426,9 @@ pub(super) struct Summaries {
     pub units: FxHashMap<u32, UnitSummary>,
     /// By unit index and parameter position.
     pub seeds: FxHashMap<(u32, u32), Labels>,
+    /// The rounds ended before the summaries stopped changing: every read of
+    /// a file-level slot, a routine result or a parameter also holds Unknown.
+    pub unconverged: bool,
 }
 
 /// What a routine returns and leaves in its output parameters, in terms of
@@ -558,7 +611,7 @@ fn is_request(name: &str) -> bool {
 
 impl Compiler<'_> {
     /// The slot of `key`, added when the unit is compiled.
-    fn slot(&mut self, written: &str, key: String, global: bool) -> Option<u32> {
+    fn slot(&mut self, written: &str, key: String, global: bool, outside: bool) -> Option<u32> {
         if let Some(s) = self.slots.get(&key) {
             return Some(s);
         }
@@ -570,6 +623,7 @@ impl Compiler<'_> {
             name: written.to_string(),
             key: key.clone(),
             global,
+            outside,
         });
         self.slots.index.insert(key, id);
         Some(id)
@@ -579,7 +633,8 @@ impl Compiler<'_> {
     pub fn var_slot(&mut self, name: &str) -> Option<u32> {
         let key = name.to_ascii_lowercase();
         let global = !self.declared.contains(&key);
-        self.slot(name, key, global)
+        let outside = global && self.tables.outside(&key);
+        self.slot(name, key, global, outside)
     }
 
     /// The slot of field `field` of the table or buffer `qualifier`.
@@ -589,13 +644,13 @@ impl Compiler<'_> {
             self.tables.table_of(qualifier),
             field.to_ascii_lowercase()
         );
-        self.slot(&format!("{qualifier}.{field}"), key, true)
+        self.slot(&format!("{qualifier}.{field}"), key, true, false)
     }
 
     /// The slot that holds taint for every field of a table.
     pub fn table_slot(&mut self, table: &str) -> Option<u32> {
         let key = format!("{}.*", self.tables.table_of(table));
-        self.slot(table, key, true)
+        self.slot(table, key, true, false)
     }
 
     /// A read of the variable `name`.
@@ -606,16 +661,20 @@ impl Compiler<'_> {
         self.summary(name, &name.to_ascii_lowercase())
     }
 
-    /// After the solve, a name the unit never used: its file-level summary.
+    /// After the solve, a name the unit never used: its file-level summary,
+    /// and Unknown for a variable from outside the file.
     fn summary(&self, name: &str, key: &str) -> Value {
-        if self.frozen && !self.declared.contains(key) {
-            Value(vec![Term::File {
-                name: name.to_string(),
-                key: key.to_string(),
-            }])
-        } else {
-            Value::default()
+        if !self.frozen || self.declared.contains(key) {
+            return Value::default();
         }
+        let mut v = Value(vec![Term::File {
+            name: name.to_string(),
+            key: key.to_string(),
+        }]);
+        if self.tables.outside(key) {
+            v.0.push(Term::Origin(UNKNOWN));
+        }
+        v
     }
 
     /// A read of `qualifier.field`. A database field is a source when the
