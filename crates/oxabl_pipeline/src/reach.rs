@@ -34,6 +34,8 @@ pub struct FileReach {
     units: HashMap<u32, Reachability>,
     unauthorised: HashMap<u32, ReachPath>,
     unreset: HashMap<(u32, String), ReachPath>,
+    /// The name of each unit, as a path step names it.
+    routines: HashMap<u32, String>,
     /// The answer for a unit no entry reaches; `None` when it cannot be
     /// known.
     outside: Option<Reachability>,
@@ -46,6 +48,7 @@ impl FileReach {
             units: HashMap::new(),
             unauthorised: HashMap::new(),
             unreset: HashMap::new(),
+            routines: HashMap::new(),
             outside: status,
             fingerprint: 0,
         }
@@ -69,6 +72,10 @@ impl SecurityReach for FileReach {
 
     fn unreset(&self, start: u32, key: &str) -> Option<&ReachPath> {
         self.unreset.get(&(start, key.to_string()))
+    }
+
+    fn routine(&self, start: u32) -> Option<&str> {
+        self.routines.get(&start).map(String::as_str)
     }
 }
 
@@ -372,6 +379,7 @@ impl LintPipeline<'_> {
             if let Some(r) = r {
                 files[f].units.insert(start, r);
             }
+            files[f].routines.insert(start, graph.routine(f, u));
             if let Some(p) = to_path(&auth, node, false) {
                 files[f].unauthorised.insert(start, p);
             }

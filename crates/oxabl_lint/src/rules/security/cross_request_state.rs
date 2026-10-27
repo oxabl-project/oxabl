@@ -96,7 +96,10 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
                 continue;
             };
             seen.push(&read.key);
-            let here = unit.name.as_deref().unwrap_or("main block");
+            let here = reach
+                .routine(unit.span.start)
+                .or(unit.name.as_deref())
+                .unwrap_or("main block");
             out.push(finding(
                 ctx,
                 DEFAULT_SEVERITY,

@@ -57,6 +57,10 @@ pub trait SecurityReach {
     /// `key` nowhere before, when code reached from the entry points writes
     /// `key`.
     fn unreset(&self, start: u32, key: &str) -> Option<&ReachPath>;
+
+    /// The name of the unit as a path step names it: `lib/b.p`,
+    /// `lib/b.p:save`.
+    fn routine(&self, start: u32) -> Option<&str>;
 }
 
 /// What one file says about its routines.

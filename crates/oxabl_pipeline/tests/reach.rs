@@ -331,3 +331,21 @@ fn when_no_entry_resolves_nothing_is_labelled_unreachable() {
         }
     }
 }
+
+#[test]
+fn the_path_of_a_graph_finding_ends_at_a_routine_named_with_its_file() {
+    let out = run(entries());
+    let mut seen = 0;
+    for (path, _, diags) in &out {
+        for d in diags {
+            if !matches!(d.code.0, "ABLSEC011" | "ABLSEC012") {
+                continue;
+            }
+            seen += 1;
+            let last = d.message.rsplit(" → ").next().unwrap();
+            let file = path.strip_prefix("/src").unwrap().to_string_lossy();
+            assert!(last.starts_with(&format!("`{file}")), "{}", d.message);
+        }
+    }
+    assert!(seen > 0);
+}
