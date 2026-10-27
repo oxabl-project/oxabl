@@ -381,7 +381,7 @@ RUN VALUE(c). // oxabl-ignore CL001: c comes from a fixed list
 - The rule can be its code or its name. Only findings of that rule on that line are suppressed.
 - A comment with no reason, an unknown rule, or no rule does not suppress anything. `check` reports it as `invalid-suppression` (LINT0007, warning).
 - A valid comment that covers no finding is reported as `unused-suppression` (LINT0008, info). It is not reported when its rule is off for the file, so a suppression of a `strict` rule does not warn in a tree that does not enable the group.
-- Both are rules in the `default` group, so a severity in `[workspace.lint]` applies to them (`LINT0008 = "off"`).
+- Both are rules in the `default` group, so a severity in `[workspace.lint]` applies to them (`LINT0008 = "off"`). They are on without any configuration: a tree that already holds an `oxabl-ignore` comment with no rule or no reason gets a new LINT0007 warning, and `check` exits 1 on it. Fix the comment, or set `LINT0007 = "off"`.
 - Suppressed findings do not fail the gate and are not recorded in a baseline. `check` counts them on stderr; `--json` has a `suppressed` key; SARIF keeps them (see below).
 - Suppressions apply to `oxabl check`. The language server does not read them yet.
 
