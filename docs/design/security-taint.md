@@ -114,7 +114,7 @@ rule hands over by span).
 | `WEB-CONTEXT:<anything>`, `get-value`, `get-field`, `get-cgi`, `get-user-field`, `get-cookie` | on |
 | a member or method of an object whose name says request (`poRequest`, `oWebRequest`) | on |
 | `IMPORT` targets, `SET`/`UPDATE`/`MESSAGE ... UPDATE` targets | on |
-| `COPY-LOB FROM FILE ... TO target`, socket `READ(memptr, ...)` | on |
+| `COPY-LOB FROM FILE ... TO target`, `READ-JSON` and `READ-XML` with a source type of `"FILE"` or one that is not a literal, socket `READ(memptr, ...)` | on |
 | `OS-GETENV(...)`, `SESSION:PARAMETER`, `SESSION:STARTUP-PARAMETERS` | on |
 | database fields | off (`database-fields = true`) |
 | project functions and methods (`sources = [...]`) | none |
@@ -132,7 +132,9 @@ Request data often arrives as tables. An `INPUT DATASET` parameter taints
 every table of the dataset. `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`,
 `COPY-DATASET` and the `BUFFER-COPY` method add their arguments to their
 receiver: the tables of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the
-handle variable the chain starts at. The `BUFFER-COPY` statement adds what
+handle variable the chain starts at and every table that the file assigns to
+it as `TEMP-TABLE tt:HANDLE`, `DATASET ds:HANDLE` or `BUFFER b:HANDLE` (or
+`DEFAULT-BUFFER-HANDLE`). The `BUFFER-COPY` statement adds what
 every field of its source holds to its target, and its `ASSIGN` pairs are
 assignments.
 
@@ -298,8 +300,10 @@ their counts.
 - Statements the parser skips change no slot, except `COPY-LOB`.
 - `SHARED` variables are clean.
 - `RAW-TRANSFER`, a dynamic buffer field assignment
-  (`h:BUFFER-FIELD("f"):BUFFER-VALUE = x`) and a table bound to a handle
-  parameter (`BIND`) do not carry taint into the table. A table field read
+  (`h:BUFFER-FIELD("f"):BUFFER-VALUE = x`), a table bound to a handle
+  parameter (`BIND`) and a handle that gets its table other than by
+  `h = TEMP-TABLE tt:HANDLE` (a parameter, `GET-BUFFER-HANDLE`, an `ASSIGN`
+  through a function) do not carry taint into the table. A table field read
   without its table name holds no taint, and in a file that is open (see "The
   gate") it is a defined name, not Unknown.
 - An include that did not arrive makes its whole unit Unknown, and every
@@ -311,9 +315,11 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.59 (stage 1) to 0.97 (stage 2) and
-recall stays at 1.00 (it was 0.96 before calls of the file were followed, and
+On the taint corpus, precision goes from 0.60 (stage 1) to 0.97 (stage 2) and
+recall stays at 1.00 (it was 0.96 before calls of the file were followed,
 0.89 on the cases of an include file, request tables and header encoders
-before they were modelled); the corpus README has the table per rule. Over the
+before they were modelled, and 0.93 on the cases of an includer's table, an
+unreserved keyword as a variable and `READ-JSON` through a handle or from a
+file); the corpus README has the table per rule. Over the
 whole security corpus, stage 2 reports 22% fewer findings.
 

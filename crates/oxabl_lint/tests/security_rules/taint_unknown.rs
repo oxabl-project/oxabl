@@ -334,6 +334,50 @@ END PROCEDURE.
 }
 
 #[test]
+fn read_json_through_a_handle_fills_the_table_the_handle_was_set_to() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+DEFINE INPUT PARAMETER plc AS LONGCHAR NO-UNDO.
+DEFINE VARIABLE hTT AS HANDLE NO-UNDO.
+hTT = TEMP-TABLE tt:HANDLE.
+hTT:READ-JSON(\"longchar\", plc).
+FIND FIRST tt.
+OS-COMMAND VALUE(tt.f).
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+    let fixed = src.replace("plc)", "\"x\")");
+    assert!(check_taint("ABLSEC003", &fixed).is_empty());
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+DEFINE DATASET ds FOR tt.
+DEFINE INPUT PARAMETER plc AS LONGCHAR NO-UNDO.
+DEFINE VARIABLE hDs AS HANDLE NO-UNDO.
+ASSIGN hDs = DATASET ds:HANDLE.
+hDs:READ-XML(\"longchar\", plc, \"empty\", ?, ?).
+FIND FIRST tt.
+OS-COMMAND VALUE(tt.f).
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+}
+
+#[test]
+fn read_json_or_read_xml_from_a_file_is_a_file_read() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+TEMP-TABLE tt:READ-JSON(\"FILE\", \"/tmp/upload.json\").
+FIND FIRST tt.
+OS-COMMAND VALUE(tt.f).
+";
+    assert_eq!(check_taint("ABLSEC003", src).len(), 1);
+    let xml = src.replace("READ-JSON(\"FILE\"", "READ-XML(\"file\"");
+    assert_eq!(check_taint("ABLSEC003", &xml).len(), 1);
+    let unknown = src.replace("(\"FILE\"", "(cType");
+    assert_eq!(check_taint("ABLSEC003", &unknown).len(), 1);
+    let literal = src.replace("\"FILE\"", "\"longchar\"");
+    assert!(check_taint("ABLSEC003", &literal).is_empty());
+}
+
+#[test]
 fn an_unreserved_keyword_may_be_a_variable_of_the_includer() {
     for name in ["extent", "server", "method", "size", "total"] {
         let src = format!("OS-COMMAND VALUE({name}).\n");

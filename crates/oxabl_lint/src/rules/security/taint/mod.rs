@@ -47,9 +47,10 @@
 //!
 //! `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`, `COPY-DATASET` and the
 //! `BUFFER-COPY` method fill their receiver with their arguments: the tables
-//! of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the handle variable.
-//! The `BUFFER-COPY` statement gives its target what every field of its
-//! source holds.
+//! of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the handle variable
+//! and the tables the file sets it to (`h = TEMP-TABLE tt:HANDLE`). The
+//! `BUFFER-COPY` statement gives its target what every field of its source
+//! holds.
 //!
 //! # Sources
 //!
@@ -58,9 +59,10 @@
 //! a unit, a `PUBLIC` or `PROTECTED` class variable or automatic property
 //! setter, WebSpeed input (`get-value`, `get-field`, ...,
 //! `WEB-CONTEXT:...`), a member of an object named like a request
-//! (`poRequest:...`), `IMPORT`, `SET`, `UPDATE`, `COPY-LOB FROM FILE`, a socket
-//! `READ`, `OS-GETENV`, `SESSION:PARAMETER`, configured project sources, and
-//! database fields when the options say so.
+//! (`poRequest:...`), `IMPORT`, `SET`, `UPDATE`, `COPY-LOB FROM FILE`,
+//! `READ-JSON` and `READ-XML` from a file, a socket `READ`, `OS-GETENV`,
+//! `SESSION:PARAMETER`, configured project sources, and database fields when
+//! the options say so.
 //!
 //! # Variables the unit does not declare
 //!

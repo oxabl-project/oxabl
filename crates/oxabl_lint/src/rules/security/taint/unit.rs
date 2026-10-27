@@ -165,8 +165,8 @@ pub(super) fn statements(program: &[Statement]) -> FxHashMap<NodeId, &Statement>
     out
 }
 
-/// The temp-tables of a file, what each buffer and dataset is for, and the
-/// names it defines.
+/// The temp-tables of a file, what each buffer, dataset and handle variable
+/// is for, and the names it defines.
 pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tables {
     let mut t = Tables::default();
     let locals = routine_statements(stmts);
@@ -228,6 +228,10 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
                     data_type.class_name().unwrap_or("").to_ascii_lowercase(),
                 );
             }
+            S::Assignment { target, value } => handle_of(target, value, &mut t.handles),
+            S::Assign { assignments } => assignments
+                .iter()
+                .for_each(|p| handle_of(&p.target, &p.value, &mut t.handles)),
             _ => {}
         }
     }
@@ -269,6 +273,26 @@ fn routine_statements(stmts: &FxHashMap<NodeId, &Statement>) -> FxHashSet<NodeId
         }
     }
     out
+}
+
+/// `h = TEMP-TABLE tt:HANDLE`, `DATASET ds:HANDLE` or `BUFFER b:HANDLE`: `h`
+/// stands for those tables.
+fn handle_of(target: &Expression, value: &Expression, out: &mut FxHashMap<String, Vec<String>>) {
+    let (E::Identifier(h), E::MemberAccess { object, member }) = (&target.kind, &value.kind) else {
+        return;
+    };
+    let E::Identifier(table) = &object.kind else {
+        return;
+    };
+    if object.span.start < table.span.start
+        && ["HANDLE", "DEFAULT-BUFFER-HANDLE"]
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(&member.name))
+    {
+        out.entry(h.name.to_ascii_lowercase())
+            .or_default()
+            .push(table.name.clone());
+    }
 }
 
 /// Add the names a statement defines to `out`, lower-cased. A variable or
@@ -602,7 +626,8 @@ impl Builder<'_, '_> {
     /// `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`, `COPY-DATASET` and
     /// `BUFFER-COPY` methods fill their receiver with their arguments: the
     /// tables of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the
-    /// handle variable a chain starts at.
+    /// handle variable a chain starts at and the tables the file set it to.
+    /// `READ-JSON` and `READ-XML` from a file are a file read.
     fn fill(&mut self, out: &mut Vec<Op>, e: &Expression, span: Span) {
         const FILLS: [&str; 5] = [
             "READ-JSON",
@@ -624,7 +649,21 @@ impl Builder<'_, '_> {
         if !FILLS.iter().any(|f| f.eq_ignore_ascii_case(&method.name)) {
             return;
         }
-        let value = Value::union(arguments.iter().map(|a| self.c.expr(a)).collect::<Vec<_>>());
+        let mut value = Value::union(arguments.iter().map(|a| self.c.expr(a)).collect::<Vec<_>>());
+        // `READ-JSON("FILE", ...)`, or a source type that is not a literal.
+        let read = ["READ-JSON", "READ-XML"]
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(&method.name));
+        if read
+            && arguments.first().is_some_and(|a| {
+                !matches!(&a.kind, E::Literal(oxabl_ast::Literal::String(s))
+                    if !s.value.eq_ignore_ascii_case("FILE"))
+            })
+        {
+            let what = format!("file read `{}`", method.name.to_ascii_uppercase());
+            let id = self.c.origins.add(what, e.span);
+            value.0.push(Term::Origin(id));
+        }
         let mut base = &**object;
         while let E::MemberAccess { object, .. } | E::MethodCall { object, .. } = &base.kind {
             base = object;
@@ -640,7 +679,21 @@ impl Builder<'_, '_> {
                 .filter_map(|t| self.c.table_slot(t))
                 .collect()
         } else {
-            self.c.var_slot(&id.name).into_iter().collect()
+            // A handle variable, and the tables the file set it to.
+            let tables = self.c.tables;
+            let named = tables.handles.get(&id.name.to_ascii_lowercase());
+            self.c
+                .var_slot(&id.name)
+                .into_iter()
+                .chain(
+                    named
+                        .into_iter()
+                        .flatten()
+                        .flat_map(|n| tables.tables_of(n))
+                        .filter_map(|t| self.c.table_slot(&t))
+                        .collect::<Vec<_>>(),
+                )
+                .collect()
         };
         for slot in slots {
             out.push(Op {

@@ -437,6 +437,9 @@ pub(super) struct Tables {
     pub names: FxHashSet<String>,
     /// Lower-cased qualifiers of `q.f` reads that the schema knows as tables.
     pub database: FxHashSet<String>,
+    /// Lower-cased handle variables to the names of the tables, datasets or
+    /// buffers whose `:HANDLE` the file assigns to them.
+    pub handles: FxHashMap<String, Vec<String>>,
     /// Names the file reads and does not define may come from outside it: the
     /// file is an include checked on its own, an include did not arrive, or a
     /// class inherits members.
