@@ -135,11 +135,27 @@ pub(super) struct Env<'a> {
     /// Whether parameters take what callers pass. A routine's summary is
     /// solved without, so one caller's input does not reach another caller.
     pub seeds: bool,
+    /// Code outside the file may run before the unit: see `UnitIr::outside`.
+    pub outside: bool,
 }
 
 impl<'a> Env<'a> {
     pub fn new(files: &'a Summaries) -> Self {
-        Env { files, seeds: true }
+        Env {
+            files,
+            seeds: true,
+            outside: false,
+        }
+    }
+
+    /// The environment of a unit that code outside the file may run before.
+    pub fn outside(self, outside: bool) -> Self {
+        Env { outside, ..self }
+    }
+
+    /// Whether every read of a file-level slot or a parameter holds Unknown.
+    pub fn unsure(&self) -> bool {
+        self.files.unconverged || self.outside
     }
 }
 
@@ -192,7 +208,7 @@ impl Value {
                     if let Some(l) = files.labels.get(key) {
                         provenance::merge(out, l);
                     }
-                    if files.unconverged {
+                    if env.unsure() {
                         provenance::merge(out, &UNKNOWN_LABELS);
                     }
                 }
@@ -205,7 +221,7 @@ impl Value {
                             provenance::merge(out, l);
                         }
                     }
-                    if files.unconverged {
+                    if env.unsure() {
                         provenance::merge(out, &UNKNOWN_LABELS);
                     }
                 }
@@ -235,7 +251,7 @@ impl Value {
                     if let Some(l) = files.seeds.get(&(*unit, *pos)) {
                         provenance::merge(out, l);
                     }
-                    if files.unconverged {
+                    if env.unsure() {
                         provenance::merge(out, &UNKNOWN_LABELS);
                     }
                 }
@@ -381,8 +397,9 @@ pub(super) struct SlotInfo {
     pub key: String,
     /// Not declared in the unit: its value at the entry comes from the file.
     pub global: bool,
-    /// A variable no unit of the file declares, in a file whose names may come
-    /// from outside it: its value at the entry is Unknown.
+    /// A variable no unit of the file declares, or a field of a table the file
+    /// does not define, in a file whose names may come from outside it: its
+    /// value at the entry is Unknown.
     pub outside: bool,
 }
 
@@ -414,9 +431,12 @@ pub(super) struct Tables {
     pub types: FxHashMap<String, String>,
     /// Lower-cased dataset names to the tables of their buffers.
     pub datasets: FxHashMap<String, Vec<String>>,
-    /// Every lower-cased name the file defines: variables, parameters,
-    /// properties, tables and their fields, buffers, datasets, streams, ...
+    /// Every lower-cased name the file defines: variables and parameters of
+    /// its main block or class, properties, tables and their fields, buffers,
+    /// datasets, streams, ...
     pub names: FxHashSet<String>,
+    /// Lower-cased qualifiers of `q.f` reads that the schema knows as tables.
+    pub database: FxHashSet<String>,
     /// Names the file reads and does not define may come from outside it: the
     /// file is an include checked on its own, an include did not arrive, or a
     /// class inherits members.
@@ -455,22 +475,86 @@ impl Tables {
     }
 
     /// Whether the variable `key` may come from outside the file: the file is
-    /// open, defines no such name, and the name is no system handle, built-in
-    /// function or keyword.
+    /// open, defines no such name, and the name is one word and no system
+    /// handle, reserved keyword or built-in function that is called without
+    /// parentheses.
     pub fn outside(&self, key: &str) -> bool {
         if !self.open
             || self.names.contains(key)
             || oxabl_semantic::SYSTEM_HANDLES.contains(&key)
-            || oxabl_lexer::is_builtin_function(key)
+            || BARE_FUNCTIONS.contains(&key)
+            || oxabl_lexer::is_reserved_keyword(key)
         {
             return false;
         }
         matches!(
             oxabl_lexer::tokenize(key).as_slice(),
-            [t, end] if t.kind == Kind::Identifier && end.kind == Kind::Eof
+            [_, end] if end.kind == Kind::Eof
         )
     }
+
+    /// Whether the table or buffer `qualifier` of a `q.f` read may come from
+    /// outside the file: the file is open, defines no such name, and the
+    /// schema knows no such table.
+    pub fn outside_table(&self, qualifier: &str) -> bool {
+        let q = qualifier.to_ascii_lowercase();
+        self.open && !self.names.contains(&q) && !self.database.contains(&q)
+    }
 }
+
+/// Built-in functions that a program can call without parentheses. Any other
+/// built-in name, alone, is a variable (`extent`, `length`).
+const BARE_FUNCTIONS: [&str; 49] = [
+    "audit-enabled",
+    "current-language",
+    "dataservers",
+    "dbname",
+    "etime",
+    "frame-db",
+    "frame-field",
+    "frame-file",
+    "frame-index",
+    "frame-name",
+    "frame-value",
+    "gateways",
+    "generate-pbe-salt",
+    "generate-random-key",
+    "generate-uuid",
+    "get-codepages",
+    "guid",
+    "is-attr-space",
+    "lastkey",
+    "line-counter",
+    "message-lines",
+    "mtime",
+    "now",
+    "num-aliases",
+    "num-dbs",
+    "opsys",
+    "os-drives",
+    "os-error",
+    "page-number",
+    "page-size",
+    "proc-handle",
+    "proc-status",
+    "process-architecture",
+    "promsgs",
+    "propath",
+    "proversion",
+    "retry",
+    "return-value",
+    "screen-lines",
+    "tenant-id",
+    "tenant-name",
+    "term",
+    "terminal",
+    "time",
+    "timezone",
+    "today",
+    "transaction",
+    "user",
+    "userid",
+];
 
 /// File-level summaries: the labels every unit writes to a variable or field
 /// that other units see, and one place each was written; what each routine
@@ -696,18 +780,28 @@ impl Compiler<'_> {
 
     /// The slot of field `field` of the table or buffer `qualifier`.
     pub fn field_slot(&mut self, qualifier: &str, field: &str) -> Option<u32> {
+        let outside = self.tables.outside_table(qualifier);
+        self.field_slot_in(qualifier, field, outside)
+    }
+
+    fn field_slot_in(&mut self, qualifier: &str, field: &str, outside: bool) -> Option<u32> {
         let key = format!(
             "{}.{}",
             self.tables.table_of(qualifier),
             field.to_ascii_lowercase()
         );
-        self.slot(&format!("{qualifier}.{field}"), key, true, false)
+        self.slot(&format!("{qualifier}.{field}"), key, true, outside)
     }
 
     /// The slot that holds taint for every field of a table.
     pub fn table_slot(&mut self, table: &str) -> Option<u32> {
+        let outside = self.tables.outside_table(table);
+        self.table_slot_in(table, outside)
+    }
+
+    fn table_slot_in(&mut self, table: &str, outside: bool) -> Option<u32> {
         let key = format!("{}.*", self.tables.table_of(table));
-        self.slot(table, key, true, false)
+        self.slot(table, key, true, outside)
     }
 
     /// A read of the variable `name`.
@@ -715,12 +809,14 @@ impl Compiler<'_> {
         if let Some(s) = self.var_slot(name) {
             return Value(vec![Term::Slot(s)]);
         }
-        self.summary(name, &name.to_ascii_lowercase())
+        let key = name.to_ascii_lowercase();
+        let outside = self.tables.outside(&key);
+        self.summary(name, &key, outside)
     }
 
     /// After the solve, a name the unit never used: its file-level summary,
-    /// and Unknown for a variable from outside the file.
-    fn summary(&self, name: &str, key: &str) -> Value {
+    /// and Unknown for a name from `outside` the file.
+    fn summary(&self, name: &str, key: &str, outside: bool) -> Value {
         if !self.frozen || self.declared.contains(key) {
             return Value::default();
         }
@@ -728,7 +824,7 @@ impl Compiler<'_> {
             name: name.to_string(),
             key: key.to_string(),
         }]);
-        if self.tables.outside(key) {
+        if outside {
             v.0.push(Term::Origin(UNKNOWN));
         }
         v
@@ -738,17 +834,21 @@ impl Compiler<'_> {
     /// options say so; `receiver` reads the name of a class, not data.
     fn field(&mut self, qualifier: &str, field: &str, span: Span, receiver: bool) -> Value {
         let table = self.tables.table_of(qualifier);
+        let outside = !receiver && self.tables.outside_table(qualifier);
         let mut v = Value::default();
-        if let Some(s) = self.field_slot(qualifier, field) {
+        if let Some(s) = self.field_slot_in(qualifier, field, outside) {
             v.0.push(Term::Slot(s));
         } else {
             let key = format!("{table}.{}", field.to_ascii_lowercase());
-            v = Value::union([v, self.summary(&format!("{qualifier}.{field}"), &key)]);
+            v = Value::union([
+                v,
+                self.summary(&format!("{qualifier}.{field}"), &key, outside),
+            ]);
         }
-        if let Some(s) = self.table_slot(qualifier) {
+        if let Some(s) = self.table_slot_in(qualifier, outside) {
             v.0.push(Term::Slot(s));
         } else {
-            v = Value::union([v, self.summary(qualifier, &format!("{table}.*"))]);
+            v = Value::union([v, self.summary(qualifier, &format!("{table}.*"), outside)]);
         }
         if self.options.database_fields && !receiver && !self.tables.temp_tables.contains(&table) {
             let key = format!("{table}.{}", field.to_ascii_lowercase());
@@ -1177,7 +1277,9 @@ impl Compiler<'_> {
                     q = j;
                     j += 2;
                 }
-                let field = self.field(st.word(q), st.word(j), st.span(i..j + 1), false);
+                // A dotted name before `:` is a class.
+                let receiver = st.is(j + 1, Kind::Colon);
+                let field = self.field(st.word(q), st.word(j), st.span(i..j + 1), receiver);
                 v = Value::union([v, field]);
                 i = j + 1;
                 continue;

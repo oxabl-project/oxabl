@@ -3,9 +3,11 @@
 //! declares all leave the sink reported as stage 1 reports it.
 
 use oxabl_common::{Diagnostic, SecurityOptions};
+use oxabl_schema::Schema;
+use oxabl_schema::test_support::customer_schema;
 use oxabl_semantic::SourceContext;
 
-use super::taint::{run_in, run_with, taint};
+use super::taint::{run_in, run_on, run_with, taint};
 
 fn check_taint(code: &str, src: &str) -> Vec<Diagnostic> {
     run_with(code, src, taint())
@@ -18,6 +20,22 @@ fn check_sink(code: &str, src: &str) -> Vec<Diagnostic> {
 /// Run `code` in taint mode over an include file checked on its own.
 fn check_fragment(code: &str, src: &str) -> Vec<Diagnostic> {
     run_in(code, src, taint(), SourceContext::IncludeFragment)
+}
+
+/// Run `code` in taint mode over a whole program in which an include did not
+/// arrive at each `{}` of `src`.
+fn check_elided(code: &str, src: &str) -> Vec<Diagnostic> {
+    let mut at = Vec::new();
+    let mut text = String::new();
+    for (i, part) in src.split("{}").enumerate() {
+        if i > 0 {
+            at.push(text.len() as u32);
+        }
+        text.push_str(part);
+    }
+    run_on(code, &text, taint(), &Schema::empty(), |c| {
+        c.with_elided(&at).with_elided_includes(&at)
+    })
 }
 
 /// 1-based lines of the findings.
@@ -234,4 +252,111 @@ CLASS p:
 END CLASS.
 ";
     assert_eq!(lines(src, &check_taint("ABLSEC003", src)), [7, 8]);
+}
+
+#[test]
+fn a_field_of_a_table_an_include_file_does_not_define_is_unknown() {
+    // `ttReq` is a temp-table of the includer.
+    let src = "OS-COMMAND VALUE(ttReq.cmd).\n";
+    assert_eq!(check_fragment("ABLSEC003", src).len(), 1);
+    let src = "FIND FIRST ttReq.\nOS-COMMAND VALUE(\"ls \" + ttReq.cmd).\n";
+    assert_eq!(check_fragment("ABLSEC003", src).len(), 1);
+    // Without a schema, a database table cannot be told apart from it.
+    let src = "FIND FIRST Customer.\nOS-COMMAND VALUE(Customer.Name).\n";
+    assert_eq!(check_fragment("ABLSEC003", src).len(), 1);
+}
+
+#[test]
+fn a_field_of_a_table_the_include_defines_or_the_schema_knows_is_judged() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+CREATE tt.
+tt.f = \"ls\".
+OS-COMMAND VALUE(tt.f).
+";
+    assert!(check_fragment("ABLSEC003", src).is_empty());
+    let schema = customer_schema();
+    for src in [
+        "FIND FIRST Customer.\nOS-COMMAND VALUE(Customer.Name).\n",
+        "FIND FIRST Cust.\nOS-COMMAND VALUE(Cust.Name).\n",
+    ] {
+        let found = run_on("ABLSEC003", src, taint(), &schema, |c| {
+            c.with_source_context(SourceContext::IncludeFragment)
+        });
+        assert!(found.is_empty(), "{src}");
+    }
+    // A class name before `:` is no table.
+    let src = "OS-COMMAND VALUE(STRING(Progress.Lang.Class:GetClass(\"x\"))).\n";
+    assert!(check_fragment("ABLSEC003", src).is_empty());
+}
+
+#[test]
+fn an_include_that_did_not_arrive_may_set_a_declared_variable() {
+    let src = "\
+DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+{}
+OS-COMMAND VALUE(c).
+";
+    assert!(check_taint("ABLSEC003", &src.replace("{}", "")).is_empty());
+    assert_eq!(lines(src, &check_elided("ABLSEC003", src)), [4]);
+    // In a procedure, a main block variable.
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+{}
+PROCEDURE p:
+  OS-COMMAND VALUE(c).
+END PROCEDURE.
+";
+    assert_eq!(check_elided("ABLSEC003", src).len(), 1);
+    // The parameter of a routine that the include may run.
+    let src = "\
+PROCEDURE p PRIVATE:
+  DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+  OS-COMMAND VALUE(pc).
+END PROCEDURE.
+{}
+";
+    assert_eq!(check_elided("ABLSEC003", src).len(), 1);
+}
+
+#[test]
+fn an_include_that_did_not_arrive_leaves_the_locals_of_other_units_judged() {
+    let src = "\
+{}
+PROCEDURE p:
+  DEFINE VARIABLE d AS CHARACTER NO-UNDO.
+  d = \"ls\".
+  OS-COMMAND VALUE(d).
+END PROCEDURE.
+";
+    assert!(check_elided("ABLSEC003", src).is_empty());
+}
+
+#[test]
+fn an_unreserved_keyword_may_be_a_variable_of_the_includer() {
+    for name in ["extent", "server", "method", "size", "total"] {
+        let src = format!("OS-COMMAND VALUE({name}).\n");
+        assert_eq!(check_fragment("ABLSEC003", &src).len(), 1, "{name}");
+    }
+}
+
+#[test]
+fn a_local_of_another_routine_is_no_name_of_the_include_file() {
+    let src = "\
+PROCEDURE helper:
+  DEFINE VARIABLE pcArg AS CHARACTER NO-UNDO.
+  pcArg = \"x\".
+END PROCEDURE.
+OS-COMMAND VALUE(pcArg).
+";
+    assert_eq!(lines(src, &check_fragment("ABLSEC003", src)), [5]);
+    let own = "\
+PROCEDURE helper:
+  DEFINE VARIABLE pcArg AS CHARACTER NO-UNDO.
+  pcArg = \"x\".
+  OS-COMMAND VALUE(pcArg).
+END PROCEDURE.
+";
+    assert!(check_fragment("ABLSEC003", own).is_empty());
 }

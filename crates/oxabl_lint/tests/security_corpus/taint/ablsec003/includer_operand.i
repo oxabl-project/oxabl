@@ -4,5 +4,8 @@
 DEFINE VARIABLE cCmd AS CHARACTER NO-UNDO.
 OS-COMMAND SILENT VALUE("gzip " + pcFile). /* taint: real */
 
+/* SERVER is a keyword, but not a reserved one, so it can name a variable. */
+OS-COMMAND SILENT VALUE("ping " + server). /* taint: real */
+
 cCmd = "df -k".
 OS-COMMAND SILENT VALUE(cCmd). /* taint: safe */

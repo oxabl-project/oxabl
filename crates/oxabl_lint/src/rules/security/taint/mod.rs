@@ -74,16 +74,20 @@
 //!
 //! When the analysis cannot judge a sink, the rule reports it as stage 1
 //! does: the operand holds an unexpanded reference, no statement of any unit
-//! holds it, the unit ran out of its work budget, or the parse recovered.
+//! holds it, the unit ran out of its work budget or holds an include that did
+//! not arrive, or the parse recovered.
 //!
 //! What it cannot judge also travels as a value, the origin
 //! `UNKNOWN` (in `value`), so a sink it reaches is reported too: what a unit past
 //! its work budget writes to file-level slots, passes to routines or returns;
 //! every file-level read, routine result and parameter when the rounds end
-//! before the summaries stop changing; and a variable that no unit of the
-//! file declares, when its name may come from outside the file (an include
-//! checked on its own, an include that did not arrive, a class that
-//! inherits).
+//! before the summaries stop changing; every file-level read and parameter
+//! when code outside the file may run first (in every unit of a file where
+//! an include did not arrive, in the routines of an include checked on its
+//! own); and a variable that no unit of the file declares, or a field of a
+//! table that it does not define and the schema does not know, when the name
+//! may come from outside the file (an include checked on its own, an include
+//! that did not arrive, a class that inherits).
 
 mod unit;
 mod value;
@@ -259,6 +263,9 @@ pub struct FileTaint {
     tables: Tables,
     options: Options,
     routines: Routines,
+    /// The units an include that did not arrive sits in: it may write any of
+    /// their slots between any two statements.
+    elided: FxHashSet<usize>,
 }
 
 /// Analyse the units of a file.
@@ -267,8 +274,10 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
     let options = Options::new(ctx.lint_severities.security());
     let stmts = unit::statements(program);
     let mut tables = unit::tables(&stmts, source);
-    tables.open = ctx.source_context.is_include_fragment()
-        || !ctx.elided_includes.is_empty()
+    let fragment = ctx.source_context.is_include_fragment();
+    let elided = !ctx.elided_includes.is_empty();
+    tables.open = fragment
+        || elided
         || program.iter().any(|s| {
             matches!(
                 &s.kind,
@@ -278,6 +287,9 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
                 }
             )
         });
+    if tables.open {
+        tables.database = database_tables(ctx, &tables);
+    }
     let routines = routines(flow);
     let mut origins = Origins::default();
     let mut units: Vec<UnitIr> = flow
@@ -295,6 +307,9 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
             )
         })
         .collect();
+    for ir in &mut units {
+        ir.outside = elided || fragment && !ir.main;
+    }
     let callable: FxHashSet<u32> = routines.units().collect();
     let procedures: FxHashSet<String> = stmts
         .values()
@@ -392,7 +407,71 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
         tables,
         options,
         routines,
+        elided: units_at(flow, ctx.elided_includes),
     }
+}
+
+/// The qualifiers of `q.f` in the source that the file does not define and
+/// the schema (or the metaschema) knows as tables, lower-cased.
+fn database_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> {
+    let lexed;
+    let tokens = if ctx.tokens.is_empty() {
+        lexed = oxabl_lexer::tokenize(ctx.source);
+        &lexed[..]
+    } else {
+        ctx.tokens
+    };
+    let word = |t: &oxabl_lexer::Token| {
+        t.kind != oxabl_lexer::Kind::StringLiteral
+            && ctx
+                .source
+                .as_bytes()
+                .get(t.start)
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+    };
+    let mut out = FxHashSet::default();
+    for w in tokens.windows(3) {
+        let [q, dot, f] = w else { continue };
+        if !(word(q) && dot.kind == oxabl_lexer::Kind::Period && word(f))
+            || q.end != dot.start
+            || dot.end != f.start
+        {
+            continue;
+        }
+        let Some(name) = ctx.source.get(q.start..q.end) else {
+            continue;
+        };
+        let name = name.to_ascii_lowercase();
+        if tables.names.contains(&name) || out.contains(&name) {
+            continue;
+        }
+        let atom = oxabl_lexer::oxabl_atom::OxablAtom::from(name.as_str());
+        if ctx.schema.resolve_table_with_metaschema(&atom).is_some() {
+            out.insert(name);
+        }
+    }
+    out
+}
+
+/// The units that hold one of `offsets`: the innermost unit around each, or
+/// the main block.
+fn units_at(flow: &FileFlow, offsets: &[u32]) -> FxHashSet<usize> {
+    offsets
+        .iter()
+        .map(|&at| {
+            flow.units()
+                .iter()
+                .filter(|cfg| {
+                    let span = cfg.unit().span;
+                    span.start <= at && at <= span.end
+                })
+                .min_by_key(|cfg| {
+                    let span = cfg.unit().span;
+                    span.end - span.start
+                })
+                .map_or(0, |cfg| cfg.id().index())
+        })
+        .collect()
 }
 
 /// The procedures, functions and methods of a file by name.
@@ -475,6 +554,9 @@ impl FileTaint {
         let (Some(sol), ir) = (&self.solutions[u], &self.units[u]) else {
             return Reach::Unknown;
         };
+        if self.elided.contains(&u) {
+            return Reach::Unknown;
+        }
         let Some(st) = StatementText::over(source, operand) else {
             return Reach::Unknown;
         };
@@ -493,7 +575,7 @@ impl FileTaint {
         }
         .tokens(&st, 0..st.len());
         value.expand_tables(&ir.slots);
-        let env = Env::new(&self.summaries);
+        let env = Env::new(&self.summaries).outside(ir.outside);
         let mut fact = Provenance::new(ir.slots.len());
         for &n in &nodes {
             let mut f = sol.before(n).clone();

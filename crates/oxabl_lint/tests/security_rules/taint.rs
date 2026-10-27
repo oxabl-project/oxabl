@@ -35,6 +35,19 @@ pub fn run_in(
     options: SecurityOptions,
     context: SourceContext,
 ) -> Vec<Diagnostic> {
+    run_on(code, src, options, &Schema::empty(), |c| {
+        c.with_source_context(context)
+    })
+}
+
+/// [`run_with`] against `schema`, with the context changed by `with`.
+pub fn run_on<'a>(
+    code: &str,
+    src: &'a str,
+    options: SecurityOptions,
+    schema: &'a Schema,
+    with: impl FnOnce(AnalysisContext<'a>) -> AnalysisContext<'a>,
+) -> Vec<Diagnostic> {
     let tokens = tokenize(src);
     let program = Parser::new(&tokens, src).parse_program();
     assert!(
@@ -42,13 +55,11 @@ pub fn run_in(
         "must parse cleanly: {:?}",
         program.errors
     );
-    let schema = Schema::empty();
     let mut severities = LintSeverityMap::new();
     severities.base_mut().enable_group("security");
     severities.set_security(options);
-    let ctx = AnalysisContext::new(FileId::UNKNOWN, src, &schema)
-        .with_lint_severities(severities)
-        .with_source_context(context);
+    let ctx =
+        with(AnalysisContext::new(FileId::UNKNOWN, src, schema).with_lint_severities(severities));
     let sem = analyze_file(&program.statements, &ctx);
     Registry::builtin().run_where(&program.statements, &sem, &ctx, |m| m.code == code)
 }

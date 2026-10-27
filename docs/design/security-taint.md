@@ -173,8 +173,10 @@ span and the sink kind:
   the earlier pairs of an `ASSIGN`), evaluate the operand. Report when a label
   with the sink's kind is there, with the path; drop the finding when none is.
 - **Unknown**: the operand holds an unexpanded reference, no node holds it, the
-  unit ran out of its work budget, or the file parse recovered. The finding is
-  reported as in stage 1. Stage 2 never hides a finding it cannot judge.
+  unit ran out of its work budget or holds an include that did not arrive
+  (which can write any slot of the unit), or the file parse recovered. The
+  finding is reported as in stage 1. Stage 2 never hides a finding it cannot
+  judge.
 
 Unknown is also a label, with an origin that is never a source, so it flows
 like taint and a sanitiser for the sink's kind removes it. A sink that it
@@ -184,12 +186,23 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
   parameter it passes to a routine of the file, and its result as a callee;
 - the round loop ending before the summaries stop changing: every read of a
   file-level slot, a routine result or a parameter, in one more solve;
+- code outside the file that may run before a unit: every read of a
+  file-level slot (a field included) or a parameter, in every unit of a file
+  where an include did not arrive, and in the routines of an include checked
+  on its own, which its includer can run after it sets their variables;
 - a variable that no unit of the file declares, when its name may come from
   outside the file: an include checked on its own, a file where an include did
-  not arrive, or a class that inherits. A system handle, a built-in function,
-  a keyword and a name the file defines (a table, a field, a buffer, a stream,
-  ...) are not variables. In a whole program that has all its includes, such
-  a name compiles only as a database field, which is no source by default.
+  not arrive, or a class that inherits. A system handle, a built-in function
+  that can be called without parentheses (`TODAY`), a reserved keyword and a
+  name the file defines (a main block or class variable, a table, a field, a
+  buffer, a stream, ...) are not variables; an unreserved keyword (`SERVER`)
+  and a local of another routine are. In a whole program that has all its
+  includes, such a name compiles only as a database field, which is no source
+  by default;
+- in such a file, a field `q.f` whose qualifier the file does not define as a
+  table, buffer or other name and the schema (with the metaschema) does not
+  know as a table: a table of the includer. Without a schema, a database
+  field read in an include file checked on its own is Unknown too.
 
 ### The path
 
@@ -289,6 +302,11 @@ their counts.
   parameter (`BIND`) do not carry taint into the table. A table field read
   without its table name holds no taint, and in a file that is open (see "The
   gate") it is a defined name, not Unknown.
+- An include that did not arrive makes its whole unit Unknown, and every
+  file-level read and parameter of the file: the analysis does not know what
+  it writes. A missing include path so gives stage 1 findings back.
+- Which built-in functions can be called without parentheses is a fixed
+  list; a bare name not on it in an open file is Unknown, never clean.
 - A validator is trusted by name.
 
 ## Result

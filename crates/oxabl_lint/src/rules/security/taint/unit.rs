@@ -70,6 +70,11 @@ pub(super) struct UnitIr {
     pub params: Vec<ParamInfo>,
     /// The calls of routines of the file, with the node that makes each.
     pub calls: Vec<(NodeIx, CallIr)>,
+    /// Code outside the file may run before the unit and write what it reads:
+    /// an include that did not arrive, or the includer of an include checked
+    /// on its own, which may run its routines. Every read of a file-level slot
+    /// or a parameter also holds Unknown.
+    pub outside: bool,
 }
 
 /// The statements of a file by id.
@@ -164,8 +169,9 @@ pub(super) fn statements(program: &[Statement]) -> FxHashMap<NodeId, &Statement>
 /// names it defines.
 pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tables {
     let mut t = Tables::default();
+    let locals = routine_statements(stmts);
     for s in stmts.values() {
-        defined_names(s, source, &mut t.names);
+        defined_names(s, source, locals.contains(&s.id), &mut t.names);
         match &s.kind {
             S::DefineTempTable { name, .. } => {
                 t.temp_tables.insert(name.name.to_ascii_lowercase());
@@ -228,12 +234,57 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
     t
 }
 
-/// Add the names a statement defines to `out`, lower-cased.
-fn defined_names(s: &Statement, source: &str, out: &mut FxHashSet<String>) {
+/// The statements inside a routine: what they declare is not visible to the
+/// rest of the file.
+fn routine_statements(stmts: &FxHashMap<NodeId, &Statement>) -> FxHashSet<NodeId> {
+    let mut out = FxHashSet::default();
+    for s in stmts.values() {
+        let bodies: Vec<&[Statement]> = match &s.kind {
+            S::Procedure { body, .. } | S::Function { body, .. } | S::Destructor { body } => {
+                vec![body]
+            }
+            S::Method {
+                parameters, body, ..
+            }
+            | S::Constructor {
+                parameters, body, ..
+            } => vec![parameters, body],
+            S::Property {
+                get_body,
+                set_body,
+                set_parameters,
+                ..
+            } => std::iter::once(set_parameters.as_slice())
+                .chain(
+                    [get_body, set_body]
+                        .into_iter()
+                        .flatten()
+                        .map(Vec::as_slice),
+                )
+                .collect(),
+            _ => continue,
+        };
+        for body in bodies {
+            out.extend(statements(body).into_keys());
+        }
+    }
+    out
+}
+
+/// Add the names a statement defines to `out`, lower-cased. A variable or
+/// parameter `local` to a routine is not added.
+fn defined_names(s: &Statement, source: &str, local: bool, out: &mut FxHashSet<String>) {
     let mut add = |i: &oxabl_ast::Identifier| {
         out.insert(i.name.to_ascii_lowercase());
     };
     match &s.kind {
+        S::VariableDeclaration { .. }
+        | S::DefineParameter {
+            param_type: ParameterType::Variable { .. } | ParameterType::Handle { .. },
+            ..
+        }
+        | S::Catch { .. }
+            if local => {}
         S::VariableDeclaration { name, .. }
         | S::Property { name, .. }
         | S::DefineBuffer { name, .. }
@@ -1200,6 +1251,7 @@ pub(super) fn compile(
         main: unit.kind == UnitKind::Main,
         params,
         calls,
+        outside: false,
     }
 }
 
@@ -1278,6 +1330,7 @@ impl Analysis for Problem<'_> {
 /// Solve one unit with the file-level variables and fields at their
 /// summaries. `None` when the unit costs more than its budget.
 pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provenance>> {
+    let env = env.outside(ir.outside);
     let mut seeds = Provenance::new(ir.slots.len());
     for (i, slot) in ir.slots.info.iter().enumerate() {
         if !slot.global {
@@ -1286,7 +1339,7 @@ pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provena
         if let Some(l) = env.files.labels.get(&slot.key) {
             seeds.set(i, l.clone());
         }
-        if slot.outside || env.files.unconverged {
+        if slot.outside || env.unsure() {
             seeds.add(i, &[(UNKNOWN, ALL)]);
         }
     }
@@ -1393,6 +1446,7 @@ pub(super) fn pass_arguments(
     env: Env,
     into: &mut Summaries,
 ) {
+    let env = env.outside(ir.outside);
     for (node, call) in &ir.calls {
         let fact = solution.before(*node);
         for (pos, arg) in call.args.iter().enumerate() {

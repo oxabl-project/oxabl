@@ -125,7 +125,7 @@ fn fact_before(
 ) -> Provenance {
     let mut f = sol.before(node).clone();
     for op in &ir.ops[node.index()][..k] {
-        apply(op, &mut f, Env::new(&ft.summaries));
+        apply(op, &mut f, Env::new(&ft.summaries).outside(ir.outside));
     }
     f
 }
@@ -139,9 +139,10 @@ fn writes(
     k: usize,
     origin: u32,
 ) -> bool {
-    let (labels, _) = ir.ops[node.index()][k]
-        .value
-        .eval(&fact_before(ft, sol, ir, node, k), Env::new(&ft.summaries));
+    let (labels, _) = ir.ops[node.index()][k].value.eval(
+        &fact_before(ft, sol, ir, node, k),
+        Env::new(&ft.summaries).outside(ir.outside),
+    );
     labels.iter().any(|(o, _)| *o == origin)
 }
 
