@@ -1243,8 +1243,11 @@ fn run_check(
         eprintln!("error: {msg}");
         return ExitCode::from(2);
     }
+    // The warnings that qualify the run, for a SARIF log as well as stderr.
+    let mut run_warnings: Vec<String> = Vec::new();
     for warning in &warnings {
         eprintln!("warning: {warning}");
+        run_warnings.push(warning.to_string());
     }
 
     // Discovery through the shared walker: a named file is checked regardless of
@@ -1355,7 +1358,9 @@ fn run_check(
     let reach = (!no_lint && lint.security_reach_enabled()).then(|| {
         let reach = lint.build_security_reach(None);
         for label in &reach.unresolved {
-            eprintln!("warning: entry point `{label}`: its target was not found");
+            let text = format!("entry point `{label}`: its target was not found");
+            eprintln!("warning: {text}");
+            run_warnings.push(text);
         }
         std::sync::Arc::new(reach)
     });
@@ -1426,11 +1431,20 @@ fn run_check(
                 text: format!("{}: {}", f.path, f.reason),
             })
             .collect();
+        notifications.extend(run_warnings.iter().map(|w| sarif::Notification {
+            level: "warning",
+            text: w.clone(),
+        }));
         notifications.extend(drifted.iter().map(|d| sarif::Notification {
             level: "warning",
             text: format!("{d}: would be reformatted; run `oxabl format`"),
         }));
-        let log = sarif::document(Registry::builtin_shared(), &sarif_results, &notifications);
+        let log = sarif::document(
+            Registry::builtin_shared(),
+            &sarif_results,
+            &notifications,
+            Some(&baseline::workspace_root(path, None)),
+        );
         match serde_json::to_string_pretty(&log) {
             Ok(s) => println!("{s}"),
             Err(e) => {

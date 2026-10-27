@@ -264,11 +264,26 @@ fn reachability(r: &oxabl_common::Reachability) -> Value {
     out
 }
 
-/// The log for `findings`, with rules from `registry`.
+/// The `file:` URI of the directory `root`, ending in `/`.
+pub fn root_uri(root: &std::path::Path) -> String {
+    let path = root.to_string_lossy().replace('\\', "/");
+    let path = path.trim_end_matches('/');
+    // A drive letter keeps its colon: `file:///C:/src/`.
+    let (drive, rest) = match path.as_bytes() {
+        [d, b':', ..] if d.is_ascii_alphabetic() => path.split_at(2),
+        _ => ("", path),
+    };
+    let lead = if path.starts_with('/') { "" } else { "/" };
+    format!("file://{lead}{drive}{}/", uri(rest))
+}
+
+/// The log for `findings`, with rules from `registry`. `root` is the
+/// directory every result's `%SRCROOT%` URI is relative to.
 pub fn document(
     registry: &Registry,
     findings: &[Finding],
     notifications: &[Notification],
+    root: Option<&std::path::Path>,
 ) -> Value {
     let mut rules: Vec<Value> = registry.rules().map(rule_descriptor).collect();
     let mut extra: Vec<&str> = Vec::new();
@@ -298,20 +313,24 @@ pub fn document(
             .collect();
     }
 
+    let mut run = json!({
+        "tool": { "driver": {
+            "name": "oxabl",
+            "version": env!("CARGO_PKG_VERSION"),
+            "informationUri": INFORMATION_URI,
+            "rules": rules,
+        } },
+        "columnKind": "utf16CodeUnits",
+        "invocations": [invocation],
+        "results": findings.iter().map(result).collect::<Vec<_>>(),
+    });
+    if let Some(root) = root {
+        run["originalUriBaseIds"] = json!({ "%SRCROOT%": { "uri": root_uri(root) } });
+    }
     json!({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
-        "runs": [{
-            "tool": { "driver": {
-                "name": "oxabl",
-                "version": env!("CARGO_PKG_VERSION"),
-                "informationUri": INFORMATION_URI,
-                "rules": rules,
-            } },
-            "columnKind": "utf16CodeUnits",
-            "invocations": [invocation],
-            "results": findings.iter().map(result).collect::<Vec<_>>(),
-        }],
+        "runs": [run],
     })
 }
 
@@ -320,6 +339,18 @@ mod tests {
     use super::*;
     use oxabl_common::Severity;
     use oxabl_lint::{FnRule, RuleMeta};
+
+    #[test]
+    fn the_root_uri_is_a_file_uri_of_a_directory() {
+        assert_eq!(
+            root_uri(std::path::Path::new("/w s/repo")),
+            "file:///w%20s/repo/"
+        );
+        assert_eq!(
+            root_uri(std::path::Path::new("C:\\src\\repo\\")),
+            "file:///C:/src/repo/"
+        );
+    }
 
     fn none(
         _: &[oxabl_ast::Statement],
@@ -347,7 +378,7 @@ mod tests {
                 none,
             ))
             .unwrap();
-        let doc = document(&registry, &[], &[]);
+        let doc = document(&registry, &[], &[], None);
         let rules = doc["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
             .unwrap();
@@ -373,7 +404,7 @@ mod tests {
             reach: None,
             related: Vec::new(),
         };
-        let doc = document(&Registry::empty(), &[finding], &[]);
+        let doc = document(&Registry::empty(), &[finding], &[], None);
         assert!(doc["runs"][0]["results"][0].get("properties").is_none());
         let rules = doc["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
@@ -415,7 +446,7 @@ mod tests {
                 message: "web/orders.p:get-order calls".into(),
             }],
         };
-        let doc = document(&Registry::empty(), &[finding], &[]);
+        let doc = document(&Registry::empty(), &[finding], &[], None);
         let result = &doc["runs"][0]["results"][0];
         let r = &result["properties"]["reachability"];
         assert_eq!(r["status"], "reachable");
@@ -458,7 +489,7 @@ mod tests {
             reach: None,
             related: Vec::new(),
         };
-        let doc = document(&Registry::empty(), &[finding], &[]);
+        let doc = document(&Registry::empty(), &[finding], &[], None);
         let locations =
             &doc["runs"][0]["results"][0]["codeFlows"][0]["threadFlows"][0]["locations"];
         let lines: Vec<u64> = locations

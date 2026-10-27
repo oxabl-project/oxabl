@@ -556,6 +556,27 @@ fn an_entry_that_does_not_resolve_leaves_unreached_findings_unlabelled() {
         !job["message"].as_str().unwrap().contains("unreachable"),
         "{job}"
     );
+
+    // A SARIF consumer sees the warning, and where the URIs are relative to.
+    let (_, stdout, _) = check(dir.path(), &[".", "--format", "sarif"]);
+    let run = &json(&stdout)["runs"][0];
+    let notes = run["invocations"][0]["toolExecutionNotifications"]
+        .as_array()
+        .unwrap();
+    assert!(
+        notes.iter().any(|n| n["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("entry point `REST GET /gone`: its target was not found")),
+        "{notes:?}"
+    );
+    let root = run["originalUriBaseIds"]["%SRCROOT%"]["uri"]
+        .as_str()
+        .unwrap();
+    assert!(
+        root.starts_with("file:///") && root.ends_with('/'),
+        "{root}"
+    );
 }
 
 #[test]

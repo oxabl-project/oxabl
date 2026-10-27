@@ -391,12 +391,13 @@ RUN VALUE(c). // oxabl-ignore CL001: c comes from a fixed list
 
 - `tool.driver` has the name, version and `informationUri`. `rules` lists every rule of `oxabl_lint::Registry`: `id` (the code), `name`, `shortDescription`, `help`, `defaultConfiguration.level`, and `properties.tags` (the group, and `preview` for a preview rule). A rule that declares a security severity (`RuleMeta::with_security_severity`) also has `properties.security-severity`.
 - Each result has `ruleId`, `level` (`error`, `warning` or `note` for `info` and `hint`), `message`, a `physicalLocation` with a workspace-relative URI and a 1-based region (columns count UTF-16 code units), and `partialFingerprints`. A finding in an include file has no region.
-- The `oxablFinding/v1` fingerprint is a hash of the rule, the workspace-relative path, the normalised text of the flagged line and span, and an occurrence number. It has no line number, so it does not change when the finding moves.
+- Every URI is relative to `%SRCROOT%`, which `run.originalUriBaseIds` gives as the `file:` URI of the workspace root.
+- The `oxablFinding/v1` fingerprint is a hash of the rule, the workspace-relative path, the baseline hash of the finding (the normalised flagged line and span, with hard-coded secrets masked), and an occurrence number. It has no line number, so it does not change when the finding moves.
 - With `--baseline`, a result that the baseline does not cover has `baselineState: "new"`, and one that it covers has `"unchanged"`. Without `--baseline`, results have no `baselineState`.
 - A finding that an `oxabl-ignore` comment suppresses stays in `results` with `suppressions: [{ "kind": "inSource", "justification": "<reason>" }]`.
 - A security finding of taint mode has `codeFlows` with one `threadFlow`: each step of the path in the checked file, source first, with its label as the message, and the sink last. A finding in an include file has no `codeFlows`.
 - With an entry-point file, a security finding has `properties.reachability` (`status`, `entries` with `label` and `target`, `moreEntries`, `unknownCalls`, and `path` with its `entry` and `calls`) and a `relatedLocations` entry for each call on that path, by file and line.
-- A failed file is a `toolExecutionNotifications` entry of level `error`; format drift is one of level `warning`.
+- A failed file is a `toolExecutionNotifications` entry of level `error`. Format drift, a configuration warning and an entry point whose target was not found are entries of level `warning`, so a consumer sees when reachability labels are degraded.
 - The exit code does not change with the format. A suppressed or baselined finding does not fail the run.
 
 ### WebAssembly browser package
