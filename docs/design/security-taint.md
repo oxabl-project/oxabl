@@ -293,8 +293,9 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.56 (stage 1) to 0.96 (stage 2) and
-recall stays at 1.00 (it was 0.96 before calls of the file were followed);
-the corpus README has the table per rule. Over the whole security corpus,
-stage 2 reports 30% fewer findings.
+On the taint corpus, precision goes from 0.59 (stage 1) to 0.97 (stage 2) and
+recall stays at 1.00 (it was 0.96 before calls of the file were followed, and
+0.89 on the cases of an include file, request tables and header encoders
+before they were modelled); the corpus README has the table per rule. Over the
+whole security corpus, stage 2 reports 22% fewer findings.
 
