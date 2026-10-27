@@ -415,7 +415,9 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
 }
 
 /// The qualifiers of `q.f` in the source that the file does not define and
-/// the schema (or the metaschema) knows as tables, lower-cased.
+/// the schema (or the metaschema) knows as tables, lower-cased. A qualifier
+/// that names or abbreviates a table counts only when every `f` read through
+/// it is a field of that table: otherwise it is a buffer of another table.
 fn database_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> {
     let lexed;
     let tokens = if ctx.tokens.is_empty() {
@@ -433,6 +435,7 @@ fn database_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> 
                 .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
     };
     let mut out = FxHashSet::default();
+    let mut other = FxHashSet::default();
     for w in tokens.windows(3) {
         let [q, dot, f] = w else { continue };
         if !(word(q) && dot.kind == oxabl_lexer::Kind::Period && word(f))
@@ -441,16 +444,32 @@ fn database_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> 
         {
             continue;
         }
-        let Some(name) = ctx.source.get(q.start..q.end) else {
+        let (Some(name), Some(field)) = (
+            ctx.source.get(q.start..q.end),
+            ctx.source.get(f.start..f.end),
+        ) else {
             continue;
         };
         let name = name.to_ascii_lowercase();
-        if tables.names.contains(&name) || out.contains(&name) {
+        if tables.names.contains(&name) || other.contains(&name) {
             continue;
         }
         let atom = oxabl_lexer::oxabl_atom::OxablAtom::from(name.as_str());
-        if ctx.schema.resolve_table_with_metaschema(&atom).is_some() {
+        let known = ctx
+            .schema
+            .resolve_table_with_metaschema(&atom)
+            .and_then(|id| ctx.schema.get_by_id(id))
+            .is_some_and(|table| {
+                matches!(
+                    table.resolve_field_by_name(field),
+                    oxabl_schema::FieldResolution::Unique(_)
+                )
+            });
+        if known {
             out.insert(name);
+        } else {
+            out.remove(&name);
+            other.insert(name);
         }
     }
     out

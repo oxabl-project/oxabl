@@ -291,6 +291,24 @@ OS-COMMAND VALUE(tt.f).
 }
 
 #[test]
+fn a_qualifier_that_abbreviates_a_database_table_is_a_table_only_with_its_field() {
+    // `c` and `cust` abbreviate `Customer`, which has no field `cmd`: a buffer
+    // of the includer.
+    let schema = customer_schema();
+    for src in [
+        "OS-COMMAND VALUE(c.cmd).\n",
+        "OS-COMMAND VALUE(cust.cmd).\n",
+        "OS-COMMAND VALUE(Customer.cmd).\n",
+        "FIND FIRST Cust.\nOS-COMMAND VALUE(Cust.Name + cust.cmd).\n",
+    ] {
+        let found = run_on("ABLSEC003", src, taint(), &schema, |c| {
+            c.with_source_context(SourceContext::IncludeFragment)
+        });
+        assert_eq!(found.len(), 1, "{src}");
+    }
+}
+
+#[test]
 fn an_include_that_did_not_arrive_may_set_a_declared_variable() {
     let src = "\
 DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
