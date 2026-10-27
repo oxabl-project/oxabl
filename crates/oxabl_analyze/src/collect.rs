@@ -120,6 +120,9 @@ pub struct CollectedDiagnostics {
     /// secrets, whether or not the configuration enables it. A client that
     /// hashes or shows source text masks them.
     pub secrets: Vec<Span>,
+    /// The same for the includes the root expands: each include file and a
+    /// span in its own bytes that `ABLSEC008` flags.
+    pub include_secrets: Vec<(PathBuf, Span)>,
 }
 
 /// A finding whose anchor is in an include file, with where it would show.
@@ -154,6 +157,7 @@ impl CollectedDiagnostics {
             include_origin: Vec::new(),
             include_findings: Vec::new(),
             secrets: Vec::new(),
+            include_secrets: Vec::new(),
         }
     }
 
@@ -201,6 +205,7 @@ impl CollectedDiagnostics {
                 self.include_findings.clone()
             },
             secrets: self.secrets.clone(),
+            include_secrets: self.include_secrets.clone(),
         }
     }
 }
@@ -1533,11 +1538,17 @@ pub fn collect_from_expanded_with(
             Err(_) => {}
         }
     }
-    out.secrets = oxabl_lint::security::hardcoded_secret::run(&program.statements, &sem, &ctx)
-        .into_iter()
-        .filter_map(|d| resolve_diagnostic(d, expanded).ok())
-        .map(|d| d.span.span)
-        .collect();
+    for d in oxabl_lint::security::hardcoded_secret::run(&program.statements, &sem, &ctx) {
+        match resolve_diagnostic(d, expanded) {
+            Ok(d) => out.secrets.push(d.span.span),
+            Err(d) => {
+                if let Some((include, _, span)) = expanded.resolve_include_origin(d.span.span) {
+                    let path = expanded.included[include as usize].path.clone();
+                    out.include_secrets.push((path, span));
+                }
+            }
+        }
+    }
 
     (Some(sem), out)
 }

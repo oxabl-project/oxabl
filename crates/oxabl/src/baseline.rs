@@ -85,9 +85,25 @@
 //! its normalised message instead, without the reachability note that
 //! `(reachable from ...)` appends.
 //!
-//! The SARIF `partialFingerprints` take the same hash, so neither a baseline
-//! nor a SARIF log holds a hash of a hard-coded secret that could be brute
-//! forced offline.
+//! The text output of `check` shows each line with the same secrets masked:
+//! every byte of a secret becomes `*`, so columns do not move.
+//!
+//! # The SARIF fingerprint
+//!
+//! `partialFingerprints["oxablFinding/v1"]` is `F:occurrence`. `F` is the
+//! 64-bit FNV-1a hash above, as 16 lower-case hex digits, of
+//! `code + "\0" + path + "\0" + hash`, and `path`, `hash` and `occurrence` are
+//! those of the finding's baseline entry.
+//!
+//! A finding that `--include-findings` reports in an include file `I` takes
+//! the same steps over the text of `I`, with occurrence 0 and `path` set to
+//! `I + "\0" + root` (the workspace-relative path of `I`, then the root as the
+//! run names it). Its secrets in step 3 are the spans that `ABLSEC008` flags
+//! in `I` when the root expands it, found the same way as for a root, and the
+//! text output masks them in the lines of `I`.
+//!
+//! So neither a baseline, a SARIF log nor the text output holds a hard-coded
+//! secret or a hash of one that could be brute forced offline.
 //!
 //! # Versions
 //!
@@ -118,9 +134,6 @@ use serde::{Deserialize, Serialize};
 
 /// The format version this build writes. It reads version 2 too.
 const VERSION: u32 = 3;
-
-/// The code of the rule whose findings hold a secret.
-const SECRET_RULE: &str = "ABLSEC008";
 
 /// One recorded finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -617,17 +630,6 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The spans of the `ABLSEC008` findings among `diagnostics` that are in the
-/// checked file.
-pub fn secret_spans<'a>(
-    diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
-) -> impl Iterator<Item = Span> {
-    diagnostics
-        .into_iter()
-        .filter(|d| d.code.0 == SECRET_RULE && d.span.file == ROOT_FILE_ID)
-        .map(|d| d.span.span)
-}
-
 /// The byte ranges of the hard-coded secrets in `source` that `ABLSEC008`
 /// flags at `spans`, sorted: each string literal of a span, or the whole span
 /// when it holds none.
@@ -756,6 +758,17 @@ mod tests {
     use super::*;
     use oxabl_ast::Span;
     use oxabl_common::FileSpan;
+
+    /// The spans of the `ABLSEC008` findings among `diagnostics` that are in
+    /// the checked file.
+    fn secret_spans<'a>(
+        diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+    ) -> impl Iterator<Item = Span> {
+        diagnostics
+            .into_iter()
+            .filter(|d| d.code.0 == "ABLSEC008" && d.span.file == ROOT_FILE_ID)
+            .map(|d| d.span.span)
+    }
 
     /// [`fingerprint`] with the secrets that the `ABLSEC008` findings among
     /// `diagnostics` flag.

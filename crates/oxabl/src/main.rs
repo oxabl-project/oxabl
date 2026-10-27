@@ -1847,7 +1847,15 @@ impl CheckPass<'_> {
                 if self.no_lint {
                     shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
                 }
-                report_include_findings(&display, &source, &shown, texts, self, &mut unit);
+                report_include_findings(
+                    &display,
+                    &source,
+                    &shown,
+                    &result.diagnostics().include_secrets,
+                    texts,
+                    self,
+                    &mut unit,
+                );
             }
 
             // The unjudged-symbol note is a statement about the *count-gated lint
@@ -2326,11 +2334,14 @@ fn site_label(path: &str, text: Option<&str>, at: Option<oxabl_ast::Span>) -> St
 /// `root`'s expansion produced.
 ///
 /// Positions come from the physical include file, read from disk. A file that
-/// cannot be read keeps its byte span and loses line and column.
+/// cannot be read keeps its byte span and loses line and column. Every
+/// hard-coded secret of an include (`include_secrets`) is masked in its shown
+/// lines and in its hashes, whatever finding covers it.
 fn report_include_findings(
     root: &str,
     root_source: &str,
     found: &[oxabl_analyze::IncludeOriginDiagnostic],
+    include_secrets: &[(PathBuf, oxabl_ast::Span)],
     texts: &mut IncludeTexts,
     pass: &CheckPass,
     unit: &mut Unit,
@@ -2340,6 +2351,15 @@ fn report_include_findings(
         let mut diagnostic = finding.diagnostic.clone();
         diagnostic.span.file = ROOT_FILE_ID;
         let text = texts.get(&finding.path).map(str::to_owned);
+        let secrets = text.as_deref().map_or_else(Vec::new, |text| {
+            baseline::secrets(
+                text,
+                include_secrets
+                    .iter()
+                    .filter(|(path, _)| *path == finding.path)
+                    .map(|(_, span)| *span),
+            )
+        });
         if pass.output == CheckFormat::Sarif {
             let key = baseline::relative_path(&pass.root, &finding.path)
                 .unwrap_or_else(|| display.clone());
@@ -2349,7 +2369,6 @@ fn report_include_findings(
             // The root is part of the identity: one include reached from two
             // roots is two findings.
             let text = text.as_deref().unwrap_or("");
-            let secrets = baseline::secrets(text, baseline::secret_spans([&diagnostic]));
             let entries =
                 baseline::fingerprint(&format!("{key}\0{root}"), text, [&diagnostic], &secrets);
             unit.sarif_results.push(sarif::Finding {
@@ -2371,6 +2390,7 @@ fn report_include_findings(
             });
         }
         if pass.output == CheckFormat::Text {
+            let shown = baseline::masked(text.as_deref().unwrap_or(""), &secrets);
             let resolver = SourceResolver::new(
                 if text.is_some() {
                     ROOT_FILE_ID
@@ -2378,7 +2398,7 @@ fn report_include_findings(
                     FileId::UNKNOWN
                 },
                 display.clone(),
-                text.as_deref().unwrap_or(""),
+                &shown,
             );
             unit.output
                 .out(render_diagnostics(&[diagnostic.clone()], &resolver));

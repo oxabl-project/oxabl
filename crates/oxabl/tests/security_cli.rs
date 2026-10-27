@@ -375,6 +375,75 @@ fn no_hash_covers_a_secret_that_is_suppressed_or_whose_rule_is_off() {
     }
 }
 
+/// Every output of `check` over a root and an include that each hold `secret`
+/// on a line with two more findings, and the hashes of each output.
+fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        &config("[workspace.lint]\nenable = [\"security\"]\n"),
+    );
+    let line = format!(
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"{secret}\". \
+         RUN VALUE(cPassword).\n"
+    );
+    write(&dir.path().join("inc.i"), &line);
+    write(&dir.path().join("a.p"), &format!("{{inc.i}}\n{line}"));
+    let mut outputs = Vec::new();
+    let mut hashes = Vec::new();
+    for args in [
+        &["."][..],
+        &[".", "--json"],
+        &[".", "--format", "sarif"],
+        &[".", "--include-findings"],
+        &[".", "--include-findings", "--json"],
+        &[".", "--include-findings", "--format", "sarif"],
+    ] {
+        let (_, stdout, stderr) = check(dir.path(), args);
+        if args.contains(&"sarif") {
+            let sarif = json(&stdout);
+            for result in sarif["runs"][0]["results"].as_array().unwrap() {
+                hashes.push(format!(
+                    "{args:?} {} {}",
+                    result["ruleId"], result["partialFingerprints"]
+                ));
+            }
+        }
+        outputs.push(format!("{args:?}\n{stdout}{stderr}"));
+    }
+    let (_, stdout, stderr) = check(
+        dir.path(),
+        &[".", "--baseline", "b.json", "--update-baseline"],
+    );
+    let baseline = fs::read_to_string(dir.path().join("b.json")).unwrap();
+    for entry in json(&baseline)["entries"].as_array().unwrap() {
+        hashes.push(format!(
+            "{} {} {}",
+            entry["path"], entry["code"], entry["hash"]
+        ));
+    }
+    outputs.push(format!("baseline\n{stdout}{stderr}{baseline}"));
+    (outputs, hashes)
+}
+
+#[test]
+fn no_output_holds_a_secret_of_the_file_or_of_an_include_or_a_hash_of_one() {
+    let (outputs, hashes) = every_output("s3cret-value");
+    for output in &outputs {
+        assert!(!output.contains("s3cret-value"), "{output}");
+    }
+    // The include's findings are in the SARIF of `--include-findings`.
+    assert!(
+        hashes.iter().any(|h| h.contains("include-findings")),
+        "{hashes:?}"
+    );
+    let (outputs, other) = every_output("an0ther-longer-secret");
+    for output in &outputs {
+        assert!(!output.contains("an0ther-longer-secret"), "{output}");
+    }
+    assert_eq!(hashes, other);
+}
+
 #[test]
 fn an_override_lists_the_programs_where_integrity_statements_are_expected() {
     let dir = TempDir::new().unwrap();
