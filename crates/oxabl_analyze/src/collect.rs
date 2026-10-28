@@ -124,6 +124,11 @@ pub struct CollectedDiagnostics {
     pub secrets: Vec<Span>,
     /// The same for the includes the root expands: each include file and a
     /// part in its own bytes.
+    ///
+    /// A part that a `{&name}` or `{N}` substitution wrote is also masked
+    /// where the substitution was written, in the root or in an include: the
+    /// lines of each define value and the arguments of each include
+    /// reference it was made from, at every level.
     pub include_secrets: Vec<(PathBuf, Span)>,
     /// The text of every secret and of each part of one that a `{&name}` or
     /// `{N}` substitution wrote, which is in no file where the expansion put
@@ -521,6 +526,9 @@ pub struct ExpandedFile {
     /// The offsets of `elided_offsets` that are includes that did not
     /// arrive, sorted.
     elided_include_offsets: Vec<u32>,
+    /// Where the bytes of each substitution were written, by the file id of
+    /// its chunks: see `PreprocessedFile::written`.
+    written: HashMap<u32, Arc<[FileSpan]>>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -872,6 +880,32 @@ impl ExpandedFile {
             .collect()
     }
 
+    /// Where the substitution text in `span` was written: each define value
+    /// and include argument it was made from, in the root (`None`) or in an
+    /// include file, in that file's own bytes.
+    fn written_places(&self, span: Span) -> Vec<(Option<&Path>, Span)> {
+        let first = self
+            .chunks
+            .partition_point(|chunk| chunk.virt_start + chunk.len <= span.start);
+        self.chunks[first..]
+            .iter()
+            .take_while(|chunk| chunk.virt_start < span.end)
+            .filter(|chunk| chunk.origin == ChunkOrigin::Substitution)
+            .filter_map(|chunk| self.written.get(&chunk.file))
+            .flat_map(|places| places.iter())
+            .filter_map(|place| {
+                if place.file == self.root {
+                    return Some((None, place.span));
+                }
+                let (_, path) = self
+                    .file_paths
+                    .iter()
+                    .find(|(known, _)| *known == place.file.raw())?;
+                Some((Some(path.as_path()), place.span))
+            })
+            .collect()
+    }
+
     /// The include chain, root first, down to include expansion `include`.
     fn include_chain(&self, include: u32) -> Vec<IncludeStep> {
         let mut chain = Vec::new();
@@ -967,6 +1001,7 @@ pub fn expand_source_with(
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            written: HashMap::new(),
             root,
         });
     }
@@ -1091,6 +1126,11 @@ pub fn expand_source_with(
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
+                written: pf
+                    .written
+                    .iter()
+                    .map(|(file, places)| (file.raw(), Arc::clone(places)))
+                    .collect(),
                 root,
             })
         }
@@ -1675,6 +1715,15 @@ pub fn collect_from_expanded_with(
                     }
                 }
             }
+            // A part that a substitution wrote is masked where it was written:
+            // each define value and include argument it was made from, at
+            // every level, however the parts were split.
+            for (path, part) in expanded.written_places(literal) {
+                match path {
+                    None => out.secrets.push(part),
+                    Some(path) => out.include_secrets.push((path.to_path_buf(), part)),
+                }
+            }
         }
     }
     let masking = std::mem::take(&mut out.secret_text);
@@ -2019,6 +2068,7 @@ mod tests {
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            written: HashMap::new(),
             root: ROOT,
         }
     }

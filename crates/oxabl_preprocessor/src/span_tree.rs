@@ -242,6 +242,12 @@ pub struct PreprocessedFile {
     /// include file that could not be resolved) — callers should surface these
     /// to the user so the root cause is visible, even when parsing succeeds.
     pub diagnostics: Vec<Diagnostic>,
+    /// Where the bytes of each `{&name}` and `{N}` substitution were written,
+    /// by the file id of its value's chunks: the lines of each define value and
+    /// the arguments of each include reference that the value was made from,
+    /// at every level, in the files that hold them. A value no file wrote (a
+    /// predefined or computed name) has no entry.
+    pub written: FxHashMap<FileId, Arc<[FileSpan]>>,
     /// Cache of source texts keyed by FileId, needed for `to_text()` and
     /// `resolve()`. Populated during preprocessing.
     sources: Vec<(FileId, Arc<str>)>,
@@ -266,6 +272,7 @@ impl PreprocessedFile {
             skipped_text: Vec::new(),
             text_losses: Vec::new(),
             elided: Vec::new(),
+            written: FxHashMap::default(),
             diagnostics,
             sources,
         }

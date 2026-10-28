@@ -375,11 +375,20 @@ fn no_hash_covers_a_secret_that_is_suppressed_or_whose_rule_is_off() {
     }
 }
 
+/// `secret` in three parts.
+fn thirds(secret: &str) -> [&str; 3] {
+    let n = secret.len() / 3;
+    [&secret[..n], &secret[n..2 * n], &secret[2 * n..]]
+}
+
 /// Every output of `check` over a root and an include that each hold `secret`
 /// on a line with two more findings, roots and an include that pass it to an
 /// include as a named or a positional argument on a line with another
-/// finding, and a root that gives it to a `&GLOBAL-DEFINE` read in an `&IF`
-/// condition, and the hashes of each output.
+/// finding, a root that gives it to a `&GLOBAL-DEFINE` read in an `&IF`
+/// condition, a root that passes it with escaped quotes, and roots that build
+/// it from [`thirds`] across two levels of include arguments or of defines,
+/// with a finding on each line that holds a part; and the hashes of each
+/// output.
 fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
     let dir = TempDir::new().unwrap();
     write(
@@ -425,6 +434,40 @@ fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
              RUN VALUE(cPassword).\n"
         ),
     );
+    write(
+        &dir.path().join("f.p"),
+        &format!("{{tilde.i &PW=\"~\"{secret}~\"\"}}{run}"),
+    );
+    write(
+        &dir.path().join("tilde.i"),
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL {&PW}. \
+         RUN VALUE(cPassword).\n",
+    );
+    let [one, two, three] = thirds(secret);
+    write(
+        &dir.path().join("inner2.i"),
+        &format!(
+            "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"{{&PW}}{three}\". \
+             RUN VALUE(cPassword).\n"
+        ),
+    );
+    write(
+        &dir.path().join("outer2.i"),
+        &format!("{{inner2.i &PW=\"{{&X}}{two}\"}}{run}"),
+    );
+    write(
+        &dir.path().join("g.p"),
+        &format!("{{outer2.i &X={one}}}{run}"),
+    );
+    write(
+        &dir.path().join("h.p"),
+        &format!(
+            "&IF \"a\" AND {{&NOPE}} &THEN &ELSE &GLOBAL-DEFINE A {one} &ENDIF\n\
+             &IF \"b\" AND {{&NOPE}} &THEN &ELSE &GLOBAL-DEFINE B {{&A}}{two} &ENDIF\n\
+             DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"{{&B}}{three}\". \
+             RUN VALUE(cPassword).\n"
+        ),
+    );
     let mut outputs = Vec::new();
     let mut hashes = Vec::new();
     for args in [
@@ -462,32 +505,49 @@ fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
     (outputs, hashes)
 }
 
+/// The outputs that hold `secret` or one of its [`thirds`].
+fn leaks<'o>(outputs: &'o [String], secret: &str) -> Vec<&'o String> {
+    let [one, two, three] = thirds(secret);
+    outputs
+        .iter()
+        .filter(|o| [secret, one, two, three].iter().any(|s| o.contains(s)))
+        .collect()
+}
+
 #[test]
 fn no_output_holds_a_secret_of_the_file_or_of_an_include_or_a_hash_of_one() {
-    let (outputs, hashes) = every_output("s3cret-value");
-    for output in &outputs {
-        assert!(!output.contains("s3cret-value"), "{output}");
-    }
+    let secret = "s3cr3tQx9Zk7Wm";
+    let (outputs, hashes) = every_output(secret);
+    assert_eq!(leaks(&outputs, secret), Vec::<&String>::new());
     // Each shape shows the line that holds the secret, and only the literal
     // is masked.
     for shown in [
-        "2 | DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL **************. RUN",
+        "2 | DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL ****************. RUN",
         "b.p:1:",
         "c.p:1:",
         "outer.i:1:",
         "e.p:2:1: warning[PREPROC010]: the condition uses unexpected name",
+        "f.p:1:",
+        "g.p:1:",
+        "h.p:1:",
+        "h.p:2:",
     ] {
         assert!(outputs[0].contains(shown), "{shown}\n{}", outputs[0]);
     }
+    // The secret that `f.p` passes with escaped quotes is one.
+    assert!(
+        outputs[0].contains("tilde.i") || outputs[3].contains("tilde.i:1:"),
+        "{}",
+        outputs[3]
+    );
     // The include's findings are in the SARIF of `--include-findings`.
     assert!(
         hashes.iter().any(|h| h.contains("include-findings")),
         "{hashes:?}"
     );
-    let (outputs, other) = every_output("an0ther-longer-secret");
-    for output in &outputs {
-        assert!(!output.contains("an0ther-longer-secret"), "{output}");
-    }
+    let secret = "an0therL0ngerS3cr3tJv";
+    let (outputs, other) = every_output(secret);
+    assert_eq!(leaks(&outputs, secret), Vec::<&String>::new());
     assert_eq!(hashes, other);
 }
 

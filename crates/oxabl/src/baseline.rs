@@ -73,11 +73,18 @@
 //!    when it holds none. A secret is masked in `S`:
 //!    - where `S`'s own bytes wrote it, a part for each stretch of it that
 //!      came from `S` and not from an include or a substitution;
+//!    - where a `{&name}` or `{N}` substitution that wrote a stretch of it
+//!      was written in `S`: each line of the value of a `&GLOBAL-DEFINE` or
+//!      `&SCOPED-DEFINE` (from the first byte after its name to the end of
+//!      the value, without the white space around each line), and the
+//!      arguments of an include reference (from the first byte after the
+//!      include name to the `}`, the same way). This holds at every level: a
+//!      value that took in other values through `{&name}` or `{N}` masks
+//!      where each of those was written too, however the secret was split
+//!      among them;
 //!    - at every place in `S` that holds its text: the text between the
 //!      quotes of a literal (all of it when it is not quoted), and each
-//!      stretch of it that a `{&name}` or `{N}` substitution wrote (an include
-//!      argument or a `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` value, which the
-//!      expansion keeps no place for).
+//!      stretch of it that a substitution wrote.
 //!
 //!    In the flagged line and in the flagged span, each run of bytes inside
 //!    secrets (parts that overlap are one run) becomes the three bytes `***`.
