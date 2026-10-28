@@ -289,8 +289,15 @@ of file-level variables deeper than that leaves the summaries unconverged, and
 its sinks Unknown (see "The gate").
 
 A call is read in modelled statements and expressions, in block headers, and
-in the tokens of the statements that are not modelled. A method is called on
-`THIS-OBJECT` or with no receiver; a call on another object is unknown.
+in the tokens of the statements that are not modelled. Every operand of every
+expression is read for its calls, whatever the expression makes of its value:
+one walk over the operands of each expression kind covers the operands of a
+comparison, a logical operator, `CAN-FIND` and a subscript, and the condition
+of an `IF` expression. The same holds for the `WHEN` values of a `CASE`, the
+subscripts of an assignment target, and the `TO`, `BY`, `WHILE` and `ON`
+actions of a block header. An expression kind that the analysis does not
+model is Unknown. A method is called on `THIS-OBJECT` or with no receiver; a
+call on another object is unknown.
 
 ### JSON objects
 
@@ -359,6 +366,7 @@ before they were modelled, 0.93 on the cases of an includer's table, an
 unreserved keyword as a variable and `READ-JSON` through a handle or from a
 file, 0.94 on the cases of shared variables and of a function that writes
 a main block variable, and 0.96 on the cases of code that runs elsewhere and
-of a call in the statement of its sink); the corpus README has the table per rule. Over the
+of a call in the statement of its sink, and 0.93 on the cases of a call under
+a comparison, a `NOT`, a loop or a `WHERE` clause); the corpus README has the table per rule. Over the
 whole security corpus, stage 2 reports 22% fewer findings.
 

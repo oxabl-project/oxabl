@@ -960,8 +960,9 @@ impl Builder<'_, '_> {
                 },
                 NodeKind::Head,
             ) => {
+                let value = self.c.expr(from).cleared(super::value::NUMERIC_SAFE);
+                self.header_calls(s);
                 if let Some(slot) = self.c.var_slot(&v.name) {
-                    let value = self.c.expr(from).cleared(super::value::NUMERIC_SAFE);
                     out.push(Op {
                         slot,
                         value,
@@ -999,6 +1000,9 @@ impl Builder<'_, '_> {
                 NodeKind::Stmt,
             ) => {
                 self.c.expr(expression);
+                for v in when_branches.iter().flat_map(|w| &w.values) {
+                    self.c.expr(v);
+                }
                 let when = when_branches
                     .iter()
                     .map(|w| {
@@ -1027,23 +1031,38 @@ impl Builder<'_, '_> {
         (out, guard)
     }
 
-    /// The calls of routines in the header expressions of a block.
+    /// The calls in the header expressions of a block: its `ON` actions and
+    /// all but the `FROM` of a loop variable, which the caller reads.
     fn header_calls(&mut self, s: &Statement) {
         let exprs: Vec<&Expression> = match &s.kind {
             S::Do {
+                loop_var,
                 from,
                 to,
                 by,
                 while_condition,
+                on_actions,
                 ..
-            } => [from, to, by, while_condition]
-                .into_iter()
-                .flatten()
-                .collect(),
+            } => [
+                from.as_ref().filter(|_| loop_var.is_none()),
+                to.as_ref(),
+                by.as_ref(),
+                while_condition.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .chain(on_actions)
+            .collect(),
             S::Repeat {
-                while_condition, ..
-            } => while_condition.iter().collect(),
-            S::ForEach { where_clause, .. } => where_clause.iter().collect(),
+                while_condition,
+                on_actions,
+                ..
+            } => while_condition.iter().chain(on_actions).collect(),
+            S::ForEach {
+                where_clause,
+                on_actions,
+                ..
+            } => where_clause.iter().chain(on_actions).collect(),
             _ => Vec::new(),
         };
         for e in exprs {

@@ -572,3 +572,79 @@ END PROCEDURE.
 ";
     assert_eq!(lines(src, &check_taint("ABLSEC003", src)), [10, 13]);
 }
+
+/// Each form calls `{call}` somewhere inside an expression or a clause.
+const OPERAND_FORMS: [&str; 24] = [
+    "IF {call} = TRUE THEN.",
+    "IF {call} <> FALSE THEN.",
+    "IF NOT {call} THEN.",
+    "IF LENGTH(STRING({call})) > 0 THEN.",
+    "IF {call} AND TRUE THEN.",
+    "IF FALSE OR {call} THEN.",
+    "IF STRING({call}) BEGINS \"a\" THEN.",
+    "IF STRING({call}) MATCHES \"a*\" THEN.",
+    "IF INTEGER({call}) >= 1 THEN.",
+    "lX = {call} = TRUE.",
+    "cX = (IF {call} THEN \"x\" ELSE \"y\").",
+    "IF CAN-FIND(FIRST tt WHERE tt.k = STRING({call})) THEN.",
+    "FOR EACH tt WHERE tt.k = STRING({call}): END.",
+    "DO WHILE {call} = FALSE: END.",
+    "REPEAT WHILE NOT {call}: LEAVE. END.",
+    "DO iX = 1 TO INTEGER({call}): END.",
+    "CASE cX: WHEN STRING({call}) THEN. END CASE.",
+    "cArr[INTEGER({call})] = \"x\".",
+    "cX = cArr[INTEGER({call})].",
+    "iX = - INTEGER({call}).",
+    "iX = 2 * INTEGER({call}).",
+    "FIND FIRST tt WHERE tt.k = STRING({call}) NO-ERROR.",
+    "MESSAGE (IF {call} THEN \"a\" ELSE \"b\").",
+    "DISPLAY STRING({call}) = \"a\".",
+];
+
+const OPERAND_HEADER: &str = "\
+DEFINE INPUT PARAMETER hLib AS HANDLE NO-UNDO.
+DEFINE NEW SHARED VARIABLE gs AS CHARACTER NO-UNDO.
+DEFINE VARIABLE gc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cX AS CHARACTER NO-UNDO.
+DEFINE VARIABLE lX AS LOGICAL NO-UNDO.
+DEFINE VARIABLE iX AS INTEGER NO-UNDO.
+DEFINE VARIABLE cArr AS CHARACTER EXTENT 3 NO-UNDO.
+DEFINE TEMP-TABLE tt NO-UNDO FIELD k AS CHARACTER.
+FUNCTION setIt RETURNS LOGICAL ():
+  gc = get-value(\"cmd\").
+  RETURN TRUE.
+END FUNCTION.
+FUNCTION noop RETURNS LOGICAL ():
+  RETURN TRUE.
+END FUNCTION.
+";
+
+/// The forms whose sink on `var` gives other than `want` findings when the
+/// form calls `call`.
+fn operand_misses(var: &str, call: &str, want: usize) -> Vec<&'static str> {
+    OPERAND_FORMS
+        .into_iter()
+        .filter(|form| {
+            let src = format!(
+                "{OPERAND_HEADER}{var} = \"ls\".\n{}\nOS-COMMAND VALUE({var}).\n",
+                form.replace("{call}", call)
+            );
+            check_taint("ABLSEC003", &src).len() != want
+        })
+        .collect()
+}
+
+#[test]
+fn a_call_inside_any_operand_or_clause_writes_what_it_writes() {
+    assert_eq!(operand_misses("gc", "setIt()", 1), Vec::<&str>::new());
+    assert_eq!(operand_misses("gc", "TRUE", 0), Vec::<&str>::new());
+}
+
+#[test]
+fn a_call_of_code_elsewhere_inside_any_operand_or_clause_makes_shared_variables_unknown() {
+    assert_eq!(
+        operand_misses("gs", "DYNAMIC-FUNCTION(\"f\" IN hLib)", 1),
+        Vec::<&str>::new()
+    );
+    assert_eq!(operand_misses("gs", "noop()", 0), Vec::<&str>::new());
+}

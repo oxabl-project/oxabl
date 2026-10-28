@@ -1102,20 +1102,36 @@ impl Compiler<'_> {
         Value::union(std::iter::once(object).chain(args))
     }
 
-    /// The value of an expression.
+    /// The value of an expression. Every operand (see [`operands`]) is read
+    /// first, so the calls in it run whatever the kind makes of its value: a
+    /// comparison, a logical operator, `CAN-FIND`, the condition of an `IF`
+    /// expression and a subscript run their calls and pass on no value (see
+    /// [`Self::effects`]). A kind the compiler does not model is Unknown.
     pub fn expr(&mut self, e: &Expression) -> Value {
+        let receiver = match &e.kind {
+            E::MemberAccess { object, .. } | E::MethodCall { object, .. } => Some(&**object),
+            _ => None,
+        };
+        let values: Vec<Value> = operands(e)
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| match receiver {
+                Some(r) if std::ptr::eq(r, o) => self.receiver(o),
+                _ if passes_on(e, i) => self.expr(o),
+                _ => self.effects(o),
+            })
+            .collect();
         match &e.kind {
             E::Literal(_) => Value::default(),
             E::Identifier(id) => self.var(&id.name),
             E::FieldAccess { .. } => match field_parts(e) {
                 Some((q, f)) => self.field(q, f, e.span, false),
-                None => Value::default(),
+                None => Value(vec![Term::Unknown]),
             },
-            E::Add(a, b) => Value::union([self.expr(a), self.expr(b)]),
-            E::Minus(a, b) | E::Multiply(a, b) | E::Divide(a, b) | E::Modulo(a, b) => {
-                Value::union([self.expr(a), self.expr(b)]).cleared(NUMERIC_SAFE)
+            E::Add(..) => Value::union(values),
+            E::Minus(..) | E::Multiply(..) | E::Divide(..) | E::Modulo(..) | E::Negate(..) => {
+                Value::union(values).cleared(NUMERIC_SAFE)
             }
-            E::Negate(a) => self.expr(a).cleared(NUMERIC_SAFE),
             E::Equal(..)
             | E::NotEqual(..)
             | E::LessThan(..)
@@ -1129,17 +1145,17 @@ impl Compiler<'_> {
             | E::Or(..)
             | E::Not(..)
             | E::CanFind { .. } => Value::default(),
-            E::IfThenElse(_, a, b) => Value::union([self.expr(a), self.expr(b)]),
+            E::IfThenElse(..) => Value::union(values.into_iter().skip(1)),
             E::FunctionCall { name, arguments } => {
-                let args = arguments.iter().map(|a| self.expr(a)).collect();
-                self.call(&name.name, args, e.span, literal_key(arguments))
+                self.call(&name.name, values, e.span, literal_key(arguments))
             }
             E::MemberAccess { object, member } => {
                 if self.member_runs_elsewhere(object, &member.name, false) {
                     self.foreign.push(e.span);
                 }
-                let (name, value) = self.receiver(object);
-                self.access(name.as_deref(), value, &member.name, None, e.span, None)
+                let name = receiver_name(object);
+                let object = values.into_iter().next().unwrap_or_default();
+                self.access(name, object, &member.name, None, e.span, None)
             }
             E::MethodCall {
                 object,
@@ -1149,24 +1165,25 @@ impl Compiler<'_> {
                 if self.member_runs_elsewhere(object, &method.name, true) {
                     self.foreign.push(e.span);
                 }
-                let (name, value) = self.receiver(object);
-                let args = arguments.iter().map(|a| self.expr(a)).collect();
+                let name = receiver_name(object);
+                let mut values = values.into_iter();
+                let object = values.next().unwrap_or_default();
                 let key = literal_key(arguments);
                 self.access(
-                    name.as_deref(),
-                    value,
+                    name,
+                    object,
                     &method.name,
-                    Some(args),
+                    Some(values.collect()),
                     e.span,
                     key,
                 )
             }
-            E::ArrayAccess { array, .. } => self.expr(array),
-            E::New { arguments, .. } => {
+            E::ArrayAccess { .. } => values.into_iter().next().unwrap_or_default(),
+            E::New { .. } => {
                 if !self.tables.shared.is_empty() {
                     self.foreign.push(e.span);
                 }
-                Value::union(arguments.iter().map(|a| self.expr(a)).collect::<Vec<_>>())
+                Value::union(values)
             }
             E::IncludeReference { .. }
             | E::IncludeArgReference { .. }
@@ -1175,28 +1192,43 @@ impl Compiler<'_> {
         }
     }
 
-    /// The name and value of the receiver of a member access.
-    fn receiver(&mut self, object: &Expression) -> (Option<String>, Value) {
+    /// Run the calls in an operand whose value is not passed on. An operand
+    /// that holds no call, member access or `NEW` runs nothing, and is not
+    /// read, so it adds no slot to the unit.
+    fn effects(&mut self, e: &Expression) -> Value {
+        if may_run(e) {
+            self.expr(e);
+        }
+        Value::default()
+    }
+
+    /// The value of the receiver of a member access.
+    fn receiver(&mut self, object: &Expression) -> Value {
         match &object.kind {
             // `BUFFER b:...`, `TEMP-TABLE tt:...`, `DATASET ds:...`.
             E::Identifier(id) if object.span.start < id.span.start => {
                 let tables = self.tables.tables_of(&id.name);
-                (None, Value(tables.into_iter().map(Term::Table).collect()))
+                Value(tables.into_iter().map(Term::Table).collect())
             }
-            E::Identifier(id) => (Some(id.name.clone()), self.var(&id.name)),
             // A dotted name before `:` is a class (`Progress.Lang.Class`) or a
             // buffer field holding an object.
             E::FieldAccess { .. } => match field_parts(object) {
-                Some((q, f)) => (None, self.field(q, f, object.span, true)),
-                None => (None, Value::default()),
+                Some((q, f)) => self.field(q, f, object.span, true),
+                None => self.expr(object),
             },
-            _ => (None, self.expr(object)),
+            _ => self.expr(object),
         }
     }
 
     /// The slot an assignment to `target` writes, and whether it is a strong
-    /// update.
+    /// update. The calls in its operands that are not names, such as a
+    /// subscript, run.
     pub fn target(&mut self, target: &Expression) -> Vec<(u32, bool)> {
+        for o in operands(target) {
+            if !matches!(o.kind, E::Identifier(_) | E::FieldAccess { .. }) {
+                self.expr(o);
+            }
+        }
         match &target.kind {
             E::Identifier(id) => self
                 .var_slot(&id.name)
@@ -1383,10 +1415,12 @@ impl Compiler<'_> {
             {
                 self.foreign.push(st.span(i..i + 1));
             }
-            // The condition of `IF c THEN a ELSE b` picks a value; it is not one.
+            // The condition of `IF c THEN a ELSE b` picks a value; it is not
+            // one, but its calls run.
             if st.is_word(i, "IF")
                 && let Some(then) = (i + 1..end).find(|&j| st.is_word(j, "THEN"))
             {
+                self.tokens(st, i + 1..then);
                 i = then + 1;
                 continue;
             }
@@ -1463,6 +1497,93 @@ impl Compiler<'_> {
         }
         (value, j)
     }
+}
+
+/// The name of a receiver that is a plain name, not `BUFFER b`.
+fn receiver_name(object: &Expression) -> Option<&str> {
+    match &object.kind {
+        E::Identifier(id) if object.span.start >= id.span.start => Some(&id.name),
+        _ => None,
+    }
+}
+
+/// Every operand of `e`: each child expression whose value or calls it may
+/// read. The parts of a name (`t.f`, `db.t.f`) are not operands. Each kind is
+/// listed, so a new kind does not build until its operands are.
+pub(super) fn operands(e: &Expression) -> Vec<&Expression> {
+    match &e.kind {
+        E::Literal(_)
+        | E::Identifier(_)
+        | E::IncludeReference { .. }
+        | E::IncludeArgReference { .. }
+        | E::PreprocReference(_) => Vec::new(),
+        E::FieldAccess { qualifier, .. } => match field_parts(e) {
+            Some(_) => Vec::new(),
+            None => vec![&**qualifier],
+        },
+        E::Add(a, b)
+        | E::Minus(a, b)
+        | E::Multiply(a, b)
+        | E::Divide(a, b)
+        | E::Modulo(a, b)
+        | E::Equal(a, b)
+        | E::NotEqual(a, b)
+        | E::LessThan(a, b)
+        | E::LessThanOrEqual(a, b)
+        | E::GreaterThan(a, b)
+        | E::GreaterThanOrEqual(a, b)
+        | E::Begins(a, b)
+        | E::Matches(a, b)
+        | E::Contains(a, b)
+        | E::And(a, b)
+        | E::Or(a, b)
+        | E::ArrayAccess { array: a, index: b } => vec![&**a, &**b],
+        E::Negate(a) | E::Not(a) | E::MemberAccess { object: a, .. } => vec![&**a],
+        E::IfThenElse(c, a, b) => vec![&**c, &**a, &**b],
+        E::FunctionCall { arguments, .. } | E::New { arguments, .. } => arguments.iter().collect(),
+        E::MethodCall {
+            object, arguments, ..
+        } => std::iter::once(&**object).chain(arguments).collect(),
+        E::CanFind { where_clause, .. } => where_clause.iter().map(|w| &**w).collect(),
+        // The conditions are the preprocessor's; the branches are code.
+        E::PreprocIf(p) => std::iter::once(&p.then_branch)
+            .chain(p.elseif_branches.iter().map(|(_, b)| b))
+            .chain(&p.else_branch)
+            .collect(),
+    }
+}
+
+/// Whether `e` passes on the value of its operand at `i`: a comparison, a
+/// logical operator and `CAN-FIND` pass on none, an `IF` expression not its
+/// condition, and a subscript not its index.
+fn passes_on(e: &Expression, i: usize) -> bool {
+    match &e.kind {
+        E::Equal(..)
+        | E::NotEqual(..)
+        | E::LessThan(..)
+        | E::LessThanOrEqual(..)
+        | E::GreaterThan(..)
+        | E::GreaterThanOrEqual(..)
+        | E::Begins(..)
+        | E::Matches(..)
+        | E::Contains(..)
+        | E::And(..)
+        | E::Or(..)
+        | E::Not(..)
+        | E::CanFind { .. } => false,
+        E::IfThenElse(..) => i > 0,
+        E::ArrayAccess { .. } => i == 0,
+        _ => true,
+    }
+}
+
+/// Whether evaluating `e` may run code: it or an operand at any depth is a
+/// call, a member access or a `NEW`.
+fn may_run(e: &Expression) -> bool {
+    matches!(
+        e.kind,
+        E::FunctionCall { .. } | E::MethodCall { .. } | E::MemberAccess { .. } | E::New { .. }
+    ) || operands(e).into_iter().any(may_run)
 }
 
 /// The text of a first argument that is a string literal.
@@ -1560,4 +1681,250 @@ fn is_one(e: &Expression) -> bool {
 fn is_plain_list(e: &Expression) -> bool {
     matches!(&e.kind, E::Literal(oxabl_ast::Literal::String(s))
         if !s.value.contains(['*', '!', '.']))
+}
+
+#[cfg(test)]
+mod tests {
+    use oxabl_ast::{
+        ExpressionKind, FindType, Identifier, IntegerLiteral, Literal, LockType, PreprocIf,
+    };
+    use oxabl_common::SecurityOptions;
+
+    use super::*;
+
+    /// How many kinds [`ordinal`] numbers.
+    const KINDS: usize = 32;
+
+    /// A number for each kind. The match lists every kind, so a new kind does
+    /// not build until it has a number, and the test below fails until it
+    /// has a sample.
+    fn ordinal(k: &ExpressionKind) -> usize {
+        match k {
+            E::Literal(_) => 0,
+            E::Identifier(_) => 1,
+            E::Add(..) => 2,
+            E::Minus(..) => 3,
+            E::Multiply(..) => 4,
+            E::Divide(..) => 5,
+            E::Modulo(..) => 6,
+            E::Equal(..) => 7,
+            E::NotEqual(..) => 8,
+            E::LessThan(..) => 9,
+            E::LessThanOrEqual(..) => 10,
+            E::GreaterThan(..) => 11,
+            E::GreaterThanOrEqual(..) => 12,
+            E::Begins(..) => 13,
+            E::Matches(..) => 14,
+            E::Contains(..) => 15,
+            E::And(..) => 16,
+            E::Or(..) => 17,
+            E::Negate(_) => 18,
+            E::Not(_) => 19,
+            E::IfThenElse(..) => 20,
+            E::FunctionCall { .. } => 21,
+            E::MemberAccess { .. } => 22,
+            E::MethodCall { .. } => 23,
+            E::ArrayAccess { .. } => 24,
+            E::FieldAccess { .. } => 25,
+            E::IncludeReference { .. } => 26,
+            E::IncludeArgReference { .. } => 27,
+            E::PreprocReference(_) => 28,
+            E::PreprocIf(_) => 29,
+            E::New { .. } => 30,
+            E::CanFind { .. } => 31,
+        }
+    }
+
+    /// Whether the compiler models the kind; any other kind is Unknown.
+    fn modelled(k: &ExpressionKind) -> bool {
+        !matches!(
+            k,
+            E::IncludeReference { .. }
+                | E::IncludeArgReference { .. }
+                | E::PreprocReference(_)
+                | E::PreprocIf(_)
+        )
+    }
+
+    fn name(n: &str) -> Identifier {
+        Identifier {
+            span: Span::DUMMY,
+            name: n.to_string(),
+        }
+    }
+
+    /// A call of `f`, a function of the file.
+    fn call() -> Expression {
+        Expression::new(E::FunctionCall {
+            name: name("f"),
+            arguments: Vec::new(),
+        })
+    }
+
+    type Binary = fn(Box<Expression>, Box<Expression>) -> ExpressionKind;
+
+    fn b(e: Expression) -> Box<Expression> {
+        Box::new(e)
+    }
+
+    /// One expression of each kind, with a call of `f` in every operand, and
+    /// how many of those calls run.
+    fn samples() -> Vec<(ExpressionKind, usize)> {
+        let c = call;
+        let binary: [Binary; 16] = [
+            E::Add,
+            E::Minus,
+            E::Multiply,
+            E::Divide,
+            E::Modulo,
+            E::Equal,
+            E::NotEqual,
+            E::LessThan,
+            E::LessThanOrEqual,
+            E::GreaterThan,
+            E::GreaterThanOrEqual,
+            E::Begins,
+            E::Matches,
+            E::Contains,
+            E::And,
+            E::Or,
+        ];
+        let mut out: Vec<(ExpressionKind, usize)> =
+            binary.iter().map(|k| (k(b(c()), b(c())), 2)).collect();
+        out.extend([
+            (
+                E::Literal(Literal::Integer(IntegerLiteral {
+                    span: Span::DUMMY,
+                    value: 1,
+                })),
+                0,
+            ),
+            (E::Identifier(name("x")), 0),
+            (E::Negate(b(c())), 1),
+            (E::Not(b(c())), 1),
+            (E::IfThenElse(b(c()), b(c()), b(c())), 3),
+            (
+                E::FunctionCall {
+                    name: name("g"),
+                    arguments: vec![c(), c()],
+                },
+                2,
+            ),
+            (
+                E::MemberAccess {
+                    object: b(c()),
+                    member: name("m"),
+                },
+                1,
+            ),
+            (
+                E::MethodCall {
+                    object: b(c()),
+                    method: name("m"),
+                    arguments: vec![c(), c()],
+                },
+                3,
+            ),
+            (
+                E::ArrayAccess {
+                    array: b(c()),
+                    index: b(c()),
+                },
+                2,
+            ),
+            (
+                E::FieldAccess {
+                    qualifier: b(Expression::new(E::Identifier(name("t")))),
+                    field: name("k"),
+                },
+                0,
+            ),
+            (
+                E::IncludeReference {
+                    path_and_args: "x.i".to_string(),
+                    span: Span::DUMMY,
+                },
+                0,
+            ),
+            (
+                E::IncludeArgReference {
+                    index: 1,
+                    span: Span::DUMMY,
+                },
+                0,
+            ),
+            (E::PreprocReference("x".to_string()), 0),
+            // The conditions are the preprocessor's: only the branches run.
+            (
+                E::PreprocIf(Box::new(PreprocIf {
+                    condition: c(),
+                    then_branch: c(),
+                    elseif_branches: vec![(c(), c())],
+                    else_branch: Some(c()),
+                })),
+                3,
+            ),
+            (
+                E::New {
+                    class_name: "C".to_string(),
+                    type_arguments: None,
+                    arguments: vec![c(), c()],
+                },
+                2,
+            ),
+            (
+                E::CanFind {
+                    find_type: FindType::First,
+                    buffer: name("t"),
+                    where_clause: Some(b(c())),
+                    lock_type: LockType::NoLock,
+                    no_error: false,
+                },
+                1,
+            ),
+        ]);
+        out
+    }
+
+    fn has_unknown(v: &Value) -> bool {
+        v.0.iter().any(|t| match t {
+            Term::Unknown => true,
+            Term::Clear(_, v) | Term::Tag(_, v) => has_unknown(v),
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn every_kind_runs_the_calls_in_its_operands_and_is_modelled_or_unknown() {
+        let options = super::super::Options::new(&SecurityOptions::default());
+        let tables = Tables::default();
+        let mut routines = Routines::default();
+        routines.functions.insert("f".to_string(), vec![0]);
+        let declared = FxHashSet::default();
+        let samples = samples();
+        let mut seen = [false; KINDS];
+        for (kind, runs) in samples {
+            seen[ordinal(&kind)] = true;
+            let mut slots = Slots::default();
+            let mut origins = Origins::default();
+            let mut c = Compiler {
+                options: &options,
+                tables: &tables,
+                slots: &mut slots,
+                origins: &mut origins,
+                declared: &declared,
+                frozen: false,
+                routines: &routines,
+                calls: Vec::new(),
+                foreign: Vec::new(),
+                decision: false,
+            };
+            let modelled = modelled(&kind);
+            let value = c.expr(&Expression::new(kind.clone()));
+            assert_eq!(c.calls.len(), runs, "calls that run in {kind:?}");
+            assert_eq!(!has_unknown(&value), modelled, "value of {kind:?}");
+        }
+        let missing: Vec<usize> = (0..seen.len()).filter(|&i| !seen[i]).collect();
+        assert!(missing.is_empty(), "kinds with no sample: {missing:?}");
+    }
 }
