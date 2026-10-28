@@ -227,9 +227,10 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
   by default;
 - in such a file, a field `q.f` whose qualifier the file does not define as a
   table, buffer or other name and the schema (with the metaschema) does not
-  know as a table: a table of the includer. A qualifier that names or
-  abbreviates a database table is that table only when every field read
-  through it is a field of the table. Without a schema, a database
+  know as a table: a table of the includer. A qualifier that names a
+  database table is that table only when every field read through it is a
+  field of the table; one that abbreviates a table name is Unknown, since the
+  includer may define it as a buffer of a table with the same fields. Without a schema, a database
   field read in an include file checked on its own is Unknown too.
 
 ### The path

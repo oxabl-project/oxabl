@@ -409,9 +409,11 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
 }
 
 /// The qualifiers of `q.f` in the source that the file does not define and
-/// the schema (or the metaschema) knows as tables, lower-cased. A qualifier
-/// that names or abbreviates a table counts only when every `f` read through
-/// it is a field of that table: otherwise it is a buffer of another table.
+/// that name a table of the schema (or the metaschema), lower-cased. A
+/// qualifier that names a table counts only when every `f` read through it is
+/// a field of that table: otherwise it is a buffer of another table. One that
+/// abbreviates a table does not count: the includer may define it as a buffer
+/// of a table with the same fields.
 fn database_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> {
     let lexed;
     let tokens = if ctx.tokens.is_empty() {
@@ -454,10 +456,11 @@ fn database_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> 
             .resolve_table_with_metaschema(&atom)
             .and_then(|id| ctx.schema.get_by_id(id))
             .is_some_and(|table| {
-                matches!(
-                    table.resolve_field_by_name(field),
-                    oxabl_schema::FieldResolution::Unique(_)
-                )
+                table.display_name.eq_ignore_ascii_case(&name)
+                    && matches!(
+                        table.resolve_field_by_name(field),
+                        oxabl_schema::FieldResolution::Unique(_)
+                    )
             });
         if known {
             out.insert(name);

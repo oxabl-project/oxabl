@@ -278,7 +278,7 @@ OS-COMMAND VALUE(tt.f).
     let schema = customer_schema();
     for src in [
         "FIND FIRST Customer.\nOS-COMMAND VALUE(Customer.Name).\n",
-        "FIND FIRST Cust.\nOS-COMMAND VALUE(Cust.Name).\n",
+        "FIND FIRST customer.\nOS-COMMAND VALUE(CUSTOMER.Name).\n",
     ] {
         let found = run_on("ABLSEC003", src, taint(), &schema, |c| {
             c.with_source_context(SourceContext::IncludeFragment)
@@ -293,13 +293,17 @@ OS-COMMAND VALUE(tt.f).
 #[test]
 fn a_qualifier_that_abbreviates_a_database_table_is_a_table_only_with_its_field() {
     // `c` and `cust` abbreviate `Customer`, which has no field `cmd`: a buffer
-    // of the includer.
+    // of the includer. An abbreviation is one even with a field of
+    // `Customer`: the includer may define `c` as a buffer of a table with a
+    // field `Name`.
     let schema = customer_schema();
     for src in [
         "OS-COMMAND VALUE(c.cmd).\n",
         "OS-COMMAND VALUE(cust.cmd).\n",
         "OS-COMMAND VALUE(Customer.cmd).\n",
         "FIND FIRST Cust.\nOS-COMMAND VALUE(Cust.Name + cust.cmd).\n",
+        "OS-COMMAND VALUE(c.Name).\n",
+        "FIND FIRST Cust.\nOS-COMMAND VALUE(Cust.Name).\n",
     ] {
         let found = run_on("ABLSEC003", src, taint(), &schema, |c| {
             c.with_source_context(SourceContext::IncludeFragment)
