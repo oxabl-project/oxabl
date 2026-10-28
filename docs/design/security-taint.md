@@ -194,9 +194,28 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
   on its own, which its includer can run after it sets their variables;
 - a variable or a temp-table that the file binds as `SHARED` or `NEW GLOBAL
   SHARED`: code outside the file set it before the file runs. Every read of it
-  holds Unknown, and its definition sets no value. After a `RUN` of a program
-  that is not a procedure of the file, every shared variable and temp-table
-  (`NEW SHARED` too) holds Unknown: that program may write it;
+  holds Unknown, and its definition sets no value. After each call that may
+  run code the file does not hold, every shared variable and temp-table
+  (`NEW SHARED` too) holds Unknown: that code may write it. Such a call is:
+  - a `RUN` of anything but an internal procedure of the file in this
+    procedure: `RUN x.p`, `RUN VALUE(...)`, `RUN SUPER`, `RUN p IN h` (also
+    when the file has a procedure `p`), a `PERSISTENT` or `ASYNCHRONOUS` run;
+  - a call of a function the file does not define with a body (`FUNCTION f
+    ... IN h` or `IN SUPER`, or one it does not declare), and
+    `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`, `DYNAMIC-PROPERTY`
+    and `SUPER`;
+  - `NEW` of a class, a method or a property (read or set) of an object of a
+    class other than a JSON class, a static member of a class
+    (`pkg.Cls:m()`, `Cls:p`), and `INVOKE` of a handle. A built-in attribute
+    or method of a handle, a system handle, a buffer or a table is not;
+  - `PUBLISH`, which runs the subscribers; `APPLY`, `WAIT-FOR`,
+    `PROCESS EVENTS` and the statements that wait for input (`UPDATE`, `SET`,
+    `PROMPT-FOR`, `CHOOSE`, `INSERT`), which run triggers; `DELETE OBJECT` of
+    an object of a class, which runs its destructor;
+  - a call of a routine of the file that makes one of these calls, itself or
+    through the routines it calls.
+
+  A sink in the same statement, after the call, sees the Unknown;
 - a variable that no unit of the file declares, when its name may come from
   outside the file: an include checked on its own, a file where an include did
   not arrive, or a class that inherits. A system handle, a built-in function
@@ -303,8 +322,16 @@ their counts.
 
 - Calls cross the units of one file only (see "Calls of the file"). A
   program run with `RUN other.p` returns what an unknown call returns.
-- A unit sees what a routine of the file writes to a file-level variable
-  after the statement that calls it, not inside that statement.
+- A sink sees what a call in its own statement writes (a routine of the
+  file, or Unknown from code elsewhere) when the call starts inside the sink's
+  operand or ends before it; a call around the operand (`f(VALUE(c))`) writes
+  after it.
+- These run code elsewhere and do not make shared variables Unknown:
+  database triggers (a `CREATE`, `DELETE`, `FIND` or field assignment of a
+  database record), a destructor that garbage collection runs, a trigger that
+  a statement not listed in "The gate" fires (`ENABLE`, `VIEW`, a
+  widget attribute set), and a member whose name is a keyword of
+  a name the file does not declare.
 - Statements the parser skips change no slot, except `COPY-LOB`.
 - A shared buffer or dataset holds what the file writes to it; only shared
   variables and temp-tables are Unknown.
@@ -324,12 +351,13 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.61 (stage 1) to 0.97 (stage 2) and
+On the taint corpus, precision goes from 0.62 (stage 1) to 0.97 (stage 2) and
 recall stays at 1.00 (it was 0.96 before calls of the file were followed,
 0.89 on the cases of an include file, request tables and header encoders
 before they were modelled, 0.93 on the cases of an includer's table, an
 unreserved keyword as a variable and `READ-JSON` through a handle or from a
-file, and 0.94 on the cases of shared variables and of a function that writes
-a main block variable); the corpus README has the table per rule. Over the
+file, 0.94 on the cases of shared variables and of a function that writes
+a main block variable, and 0.96 on the cases of code that runs elsewhere and
+of a call in the statement of its sink); the corpus README has the table per rule. Over the
 whole security corpus, stage 2 reports 22% fewer findings.
 

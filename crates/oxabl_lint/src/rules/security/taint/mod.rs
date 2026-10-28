@@ -316,13 +316,6 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
         ir.outside = elided || fragment && !ir.main;
     }
     let callable: FxHashSet<u32> = routines.units().collect();
-    let procedures: FxHashSet<String> = stmts
-        .values()
-        .filter_map(|s| match &s.kind {
-            StatementKind::Procedure { name, .. } => Some(name.name.to_ascii_lowercase()),
-            _ => None,
-        })
-        .collect();
     let written: FxHashSet<String> = units
         .iter()
         .filter(|ir| !ir.main)
@@ -335,8 +328,9 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
         .filter(|s| s.global)
         .map(|s| s.key.clone())
         .collect();
-    for (cfg, ir) in flow.units().iter().zip(&mut units) {
-        unit::refresh_after_calls(cfg, ir, &stmts, &procedures, &written, &tables);
+    let elsewhere = unit::reaching_elsewhere(&units);
+    for ir in &mut units {
+        unit::refresh_after_calls(ir, &elsewhere, &written, &tables);
     }
     let mut summaries = Summaries::default();
     unit::member_sources(program, source, &options, &mut origins, &mut summaries);
@@ -593,6 +587,7 @@ impl FileTaint {
             frozen: true,
             routines: &self.routines,
             calls: Vec::new(),
+            foreign: Vec::new(),
             decision,
         }
         .tokens(&st, 0..st.len());
@@ -601,10 +596,12 @@ impl FileTaint {
         let mut fact = Provenance::new(ir.slots.len());
         for &n in &nodes {
             let mut f = sol.before(n).clone();
-            for op in ir.ops[n.index()]
-                .iter()
-                .filter(|op| op.span.end <= operand.start)
-            {
+            // A weak write inside the operand is a call there: what it writes
+            // may be read after it.
+            for op in ir.ops[n.index()].iter().filter(|op| {
+                op.span.end <= operand.start
+                    || !op.strong && op.span.start >= operand.start && op.span.start < operand.end
+            }) {
                 unit::apply(op, &mut f, env);
             }
             fact.join(&f);

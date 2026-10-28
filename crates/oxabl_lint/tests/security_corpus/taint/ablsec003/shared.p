@@ -4,6 +4,7 @@ DEFINE SHARED VARIABLE gcJob AS CHARACTER NO-UNDO.
 DEFINE NEW GLOBAL SHARED VARIABLE gcSpool AS CHARACTER NO-UNDO.
 DEFINE NEW SHARED VARIABLE gcArchive AS CHARACTER NO-UNDO.
 DEFINE VARIABLE cCmd AS CHARACTER NO-UNDO.
+DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
 
 FUNCTION use-file RETURNS LOGICAL ():
     cCmd = "gzip " + pcFile.
@@ -24,3 +25,18 @@ OS-COMMAND SILENT VALUE(gcArchive). /* taint: real */
 cCmd = "df -k".
 use-file().
 OS-COMMAND SILENT VALUE(cCmd). /* taint: real */
+
+/* Set here, then by a procedure of a persistent library and by a subscriber. */
+gcArchive = "tar -czf /backup/a.tgz /data".
+RUN archive-setup IN hLib.
+OS-COMMAND SILENT VALUE(gcArchive). /* taint: real */
+gcArchive = "tar -czf /backup/a.tgz /data".
+PUBLISH "archive-setup".
+OS-COMMAND SILENT VALUE(gcArchive). /* taint: real */
+
+/* Written by a function that the statement of the sink calls first. */
+cCmd = "df -k".
+OS-COMMAND SILENT VALUE(STRING(use-file()) + " " + cCmd). /* taint: real */
+
+PROCEDURE archive-setup:
+END PROCEDURE.

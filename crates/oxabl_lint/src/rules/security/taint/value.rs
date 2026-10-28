@@ -459,7 +459,7 @@ impl Tables {
     pub fn may_be_json(&self, name: &str) -> bool {
         match self.types.get(&name.to_ascii_lowercase()) {
             None => true,
-            Some(t) => t.rsplit('.').next().is_some_and(|s| s.starts_with("json")),
+            Some(t) => is_json_class(t),
         }
     }
 
@@ -648,6 +648,8 @@ impl Routines {
 pub(super) struct CallIr {
     pub callees: Vec<u32>,
     pub args: Vec<Value>,
+    /// The call.
+    pub span: Span,
 }
 
 /// Builds values for one unit.
@@ -663,9 +665,27 @@ pub(super) struct Compiler<'c> {
     pub routines: &'c Routines,
     /// Calls of routines of the file met while building values.
     pub calls: Vec<CallIr>,
+    /// Calls met while building values that may run code the file does not
+    /// hold, which may write its shared variables. See [`Self::runs_elsewhere`].
+    pub foreign: Vec<Span>,
     /// Reading a decision: a logical function passes on its arguments, so the
     /// value is what the decision reads.
     pub decision: bool,
+}
+
+/// Whether `word` is an ABL keyword, as a built-in attribute or method is.
+fn is_keyword(word: &str) -> bool {
+    oxabl_lexer::tokenize(word)
+        .first()
+        .is_some_and(|t| t.kind != Kind::Identifier)
+}
+
+/// Whether the lower-cased class name `class` is a JSON class.
+fn is_json_class(class: &str) -> bool {
+    class
+        .rsplit('.')
+        .next()
+        .is_some_and(|s| s.starts_with("json"))
 }
 
 /// How a function name changes the value of its arguments.
@@ -878,11 +898,18 @@ impl Compiler<'_> {
     }
 
     /// A call of a routine of the file: its result, by its summary.
-    pub fn routine_call(&mut self, callees: &[u32], out: Out, args: Vec<Value>) -> Value {
+    pub fn routine_call(
+        &mut self,
+        callees: &[u32],
+        out: Out,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Value {
         if out == Out::Return {
             self.calls.push(CallIr {
                 callees: callees.to_vec(),
                 args: args.clone(),
+                span,
             });
         }
         Value(vec![Term::Call {
@@ -890,6 +917,76 @@ impl Compiler<'_> {
             out,
             args,
         }])
+    }
+
+    /// Whether a call of the function `name`, which is not a routine of the
+    /// file, may run code the file does not hold: a function of another
+    /// program (`FUNCTION f ... IN h` or `IN SUPER`, or one the file does not
+    /// declare), `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`,
+    /// `DYNAMIC-PROPERTY` and `SUPER`. Only a file with shared variables asks.
+    fn runs_elsewhere(&self, name: &str) -> bool {
+        if self.tables.shared.is_empty() {
+            return false;
+        }
+        let name = name.to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            "dynamic-function" | "dynamic-invoke" | "dynamic-new" | "dynamic-property" | "super"
+        ) || !oxabl_lexer::is_builtin_function(&name) && !oxabl_lexer::is_reserved_keyword(&name)
+    }
+
+    /// Whether `object:member` (a call when `call`) may run code the file does
+    /// not hold: a method or property of an object of a class other than a
+    /// JSON class, a static member of a class, and `INVOKE` of a handle. A
+    /// member of a member is judged by the first object of the chain. Only a
+    /// file with shared variables asks.
+    fn member_runs_elsewhere(&self, object: &Expression, member: &str, call: bool) -> bool {
+        if self.tables.shared.is_empty() {
+            return false;
+        }
+        match &object.kind {
+            // `BUFFER b:...`, `TEMP-TABLE tt:...`, `DATASET ds:...`.
+            E::Identifier(id) if object.span.start < id.span.start => false,
+            E::Identifier(id) => self.name_runs_elsewhere(&id.name, member, call),
+            E::ArrayAccess { array, .. } => self.member_runs_elsewhere(array, member, call),
+            // A class (`pkg.Cls:Member`), or a field of a table.
+            E::FieldAccess { .. } => match field_parts(object) {
+                Some((q, _)) if self.is_table(q) => !is_keyword(member),
+                _ => true,
+            },
+            E::New { .. } => true,
+            // An object a function returns.
+            E::FunctionCall { name, .. } => {
+                let name = name.name.to_ascii_lowercase();
+                !oxabl_lexer::is_builtin_function(&name)
+                    || abbrev(&name, "cast", 4)
+                    || abbrev(&name, "dynamic-cast", 12)
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Self::member_runs_elsewhere`] for an object the source names `o`. A
+    /// name the file does not declare as a variable is a system handle, a
+    /// table, a buffer or a dataset, or else a class, or a name from outside
+    /// the file whose member is not a keyword.
+    fn name_runs_elsewhere(&self, o: &str, member: &str, call: bool) -> bool {
+        let o = o.to_ascii_lowercase();
+        match self.tables.types.get(&o) {
+            Some(class) if class.is_empty() => call && member.eq_ignore_ascii_case("INVOKE"),
+            Some(class) => !is_json_class(class),
+            None if oxabl_semantic::SYSTEM_HANDLES.contains(&o.as_str()) || self.is_table(&o) => {
+                false
+            }
+            None => !is_keyword(member),
+        }
+    }
+
+    /// Whether the file defines `name` as anything but a variable (a table, a
+    /// buffer, a dataset, ...), or the schema knows it as a table.
+    fn is_table(&self, name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        self.tables.names.contains(&name) || self.tables.database.contains(&name)
     }
 
     /// A call of the function `name`; `key` is its first argument when that
@@ -908,7 +1005,10 @@ impl Compiler<'_> {
         }
         if let Some(callees) = self.routines.callable(name) {
             let callees = callees.to_vec();
-            return self.routine_call(&callees, Out::Return, args);
+            return self.routine_call(&callees, Out::Return, args, span);
+        }
+        if self.runs_elsewhere(name) {
+            self.foreign.push(span);
         }
         match builtin(name) {
             Builtin::Source if name.eq_ignore_ascii_case("OS-GETENV") => {
@@ -976,7 +1076,12 @@ impl Compiler<'_> {
                     (None, _) => return self.var(member),
                     (Some(_), Some(callees)) => {
                         let callees = callees.to_vec();
-                        return self.routine_call(&callees, Out::Return, args.unwrap_or_default());
+                        return self.routine_call(
+                            &callees,
+                            Out::Return,
+                            args.unwrap_or_default(),
+                            span,
+                        );
                     }
                     _ => {}
                 }
@@ -1030,6 +1135,9 @@ impl Compiler<'_> {
                 self.call(&name.name, args, e.span, literal_key(arguments))
             }
             E::MemberAccess { object, member } => {
+                if self.member_runs_elsewhere(object, &member.name, false) {
+                    self.foreign.push(e.span);
+                }
                 let (name, value) = self.receiver(object);
                 self.access(name.as_deref(), value, &member.name, None, e.span, None)
             }
@@ -1038,6 +1146,9 @@ impl Compiler<'_> {
                 method,
                 arguments,
             } => {
+                if self.member_runs_elsewhere(object, &method.name, true) {
+                    self.foreign.push(e.span);
+                }
                 let (name, value) = self.receiver(object);
                 let args = arguments.iter().map(|a| self.expr(a)).collect();
                 let key = literal_key(arguments);
@@ -1052,6 +1163,9 @@ impl Compiler<'_> {
             }
             E::ArrayAccess { array, .. } => self.expr(array),
             E::New { arguments, .. } => {
+                if !self.tables.shared.is_empty() {
+                    self.foreign.push(e.span);
+                }
                 Value::union(arguments.iter().map(|a| self.expr(a)).collect::<Vec<_>>())
             }
             E::IncludeReference { .. }
@@ -1106,11 +1220,15 @@ impl Compiler<'_> {
                     .into_iter()
                     .collect(),
                 // The object now holds the value.
-                E::Identifier(o) => self
-                    .var_slot(&o.name)
-                    .map(|s| (s, false))
-                    .into_iter()
-                    .collect(),
+                E::Identifier(o) => {
+                    if self.member_runs_elsewhere(object, &member.name, false) {
+                        self.foreign.push(target.span);
+                    }
+                    self.var_slot(&o.name)
+                        .map(|s| (s, false))
+                        .into_iter()
+                        .collect()
+                }
                 _ => Vec::new(),
             },
             // `SUBSTRING(c, 1, 2) = x`, `ENTRY(1, c) = x`: part of `c` changes.
@@ -1258,6 +1376,13 @@ impl Compiler<'_> {
                 i += 1;
                 continue;
             }
+            // `NEW c(...)` runs the constructor of a class; `NEW(b)` is a function.
+            if st.is_word(i, "NEW")
+                && !st.is(i + 1, Kind::LeftParen)
+                && !self.tables.shared.is_empty()
+            {
+                self.foreign.push(st.span(i..i + 1));
+            }
             // The condition of `IF c THEN a ELSE b` picks a value; it is not one.
             if st.is_word(i, "IF")
                 && let Some(then) = (i + 1..end).find(|&j| st.is_word(j, "THEN"))
@@ -1290,6 +1415,12 @@ impl Compiler<'_> {
                 }
                 // A dotted name before `:` is a class.
                 let receiver = st.is(j + 1, Kind::Colon);
+                if receiver
+                    && !self.tables.shared.is_empty()
+                    && (!self.is_table(st.word(q)) || !is_keyword(st.word(j + 2)))
+                {
+                    self.foreign.push(st.span(i..j + 1));
+                }
                 let field = self.field(st.word(q), st.word(j), st.span(i..j + 1), receiver);
                 v = Value::union([v, field]);
                 i = j + 1;
@@ -1307,6 +1438,11 @@ impl Compiler<'_> {
         let mut name = Some(first.to_string());
         let mut value = self.var(first);
         let mut j = i + 1;
+        if !self.tables.shared.is_empty()
+            && self.name_runs_elsewhere(first, st.word(j + 1), st.is(j + 2, Kind::LeftParen))
+        {
+            self.foreign.push(st.span(i..j + 2));
+        }
         while j + 1 < end && st.is(j, Kind::Colon) && is_word(st, j + 1) {
             let member = st.word(j + 1);
             let mut args = None;

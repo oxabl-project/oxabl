@@ -70,6 +70,9 @@ pub(super) struct UnitIr {
     pub params: Vec<ParamInfo>,
     /// The calls of routines of the file, with the node that makes each.
     pub calls: Vec<(NodeIx, CallIr)>,
+    /// The calls that may run code the file does not hold, with the node that
+    /// makes each: see `foreign_statement` and `Compiler::runs_elsewhere`.
+    pub foreign: Vec<(NodeIx, Span)>,
     /// Code outside the file may run before the unit and write what it reads:
     /// an include that did not arrive, or the includer of an include checked
     /// on its own, which may run its routines. Every read of a file-level slot
@@ -623,9 +626,9 @@ impl Builder<'_, '_> {
                 .collect();
             for (i, a) in arguments.iter().enumerate() {
                 if written_direction(self.source, a.span.start).is_some() {
-                    let v = self
-                        .c
-                        .routine_call(&callees, Out::Param(i as u32), args.clone());
+                    let v =
+                        self.c
+                            .routine_call(&callees, Out::Param(i as u32), args.clone(), e.span);
                     self.set(out, a, v, span);
                 }
             }
@@ -744,6 +747,9 @@ impl Builder<'_, '_> {
     fn statement(&mut self, node: &oxabl_flow::Node, s: &Statement) -> (Vec<Op>, Option<Guard>) {
         let mut out = Vec::new();
         let mut guard = None;
+        if !self.c.tables.shared.is_empty() && foreign_statement(s, self.source, self.c.tables) {
+            self.c.foreign.push(s.span);
+        }
         match (&s.kind, node.kind) {
             // A `SHARED` or `NEW GLOBAL SHARED` definition binds a value that
             // may already exist.
@@ -857,6 +863,7 @@ impl Builder<'_, '_> {
                 self.c.calls.push(CallIr {
                     callees: callees.clone(),
                     args: args.clone(),
+                    span: s.span,
                 });
                 for (i, a) in arguments.iter().enumerate() {
                     if matches!(
@@ -881,6 +888,9 @@ impl Builder<'_, '_> {
                 },
                 _,
             ) => {
+                if !self.c.tables.shared.is_empty() {
+                    self.c.foreign.push(s.span);
+                }
                 let mut inputs = Vec::new();
                 if let RunTarget::Dynamic(t) = target {
                     inputs.push(self.c.expr(t));
@@ -1042,12 +1052,15 @@ impl Builder<'_, '_> {
     }
 
     /// The calls of routines in a statement that is not modelled here, read
-    /// from its tokens.
+    /// from its tokens; with shared variables, also the members it reads,
+    /// which may run code elsewhere.
     fn scan_calls(&mut self, s: &Statement) {
-        if !self.c.routines.any_callable()
-            || !crate::rules::syntactic::source_of(self.source, s.span)
-                .is_some_and(|t| t.contains('('))
-        {
+        let shared = !self.c.tables.shared.is_empty();
+        let Some(text) = crate::rules::syntactic::source_of(self.source, s.span) else {
+            return;
+        };
+        let calls = (self.c.routines.any_callable() || shared) && text.contains('(');
+        if !calls && !(shared && text.contains(':')) {
             return;
         }
         if let Some(st) = StatementText::of(self.source, s) {
@@ -1287,6 +1300,7 @@ pub(super) fn compile(
     let mut ops = vec![Vec::new(); cfg.node_count()];
     let mut guards = FxHashMap::default();
     let mut calls = Vec::new();
+    let mut foreign = Vec::new();
     let params;
     {
         let mut b = Builder {
@@ -1299,6 +1313,7 @@ pub(super) fn compile(
                 frozen: false,
                 routines,
                 calls: Vec::new(),
+                foreign: Vec::new(),
                 decision: false,
             },
             source,
@@ -1323,6 +1338,7 @@ pub(super) fn compile(
                 guards.insert(i.index() as u32, g);
             }
             calls.extend(b.c.calls.drain(..).map(|c| (i, c)));
+            foreign.extend(b.c.foreign.drain(..).map(|span| (i, span)));
         }
         params = b.params;
     }
@@ -1337,6 +1353,7 @@ pub(super) fn compile(
         main: unit.kind == UnitKind::Main,
         params,
         calls,
+        foreign,
         outside: false,
     }
 }
@@ -1436,16 +1453,84 @@ pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provena
     solve_bounded(cfg, &problem, limits).ok()
 }
 
+/// Whether running `s` may run code the file does not hold, which may write
+/// its shared variables: `PUBLISH`, which runs the subscribers; `APPLY`,
+/// `WAIT-FOR`, `PROCESS EVENTS` and the statements that wait for input
+/// (`UPDATE`, `SET`, `PROMPT-FOR`, `CHOOSE`, `INSERT`), which run triggers;
+/// and `DELETE OBJECT` of an object of a class (not a handle), which runs its
+/// destructor. The `RUN` of anything but an internal procedure of the file in
+/// this procedure and the calls in expressions are found where they are
+/// compiled (`Compiler::runs_elsewhere`, `Compiler::member_runs_elsewhere`).
+fn foreign_statement(s: &Statement, source: &str, tables: &Tables) -> bool {
+    match &s.kind {
+        S::Publish { .. }
+        | S::Apply { .. }
+        | S::WaitFor { .. }
+        | S::Update { .. }
+        | S::Set { .. } => true,
+        S::DeleteObject { target, .. } => match &target.kind {
+            E::Identifier(id) => match tables.types.get(&id.name.to_ascii_lowercase()) {
+                Some(class) => !class.is_empty() && !tables.may_be_json(&id.name),
+                None => !tables.names.contains(&id.name.to_ascii_lowercase()),
+            },
+            _ => false,
+        },
+        _ => crate::rules::syntactic::source_of(source, s.span).is_some_and(|t| {
+            let mut words = t
+                .split(|c: char| c.is_whitespace() || c == '.')
+                .filter(|w| !w.is_empty());
+            match words.next() {
+                Some(w) if w.eq_ignore_ascii_case("PROCESS") => words
+                    .next()
+                    .is_some_and(|w| w.eq_ignore_ascii_case("EVENTS")),
+                Some(w) => ["PROMPT-FOR", "CHOOSE", "INSERT"]
+                    .iter()
+                    .any(|k| k.eq_ignore_ascii_case(w)),
+                None => false,
+            }
+        }),
+    }
+}
+
+/// The routine units of the file that may run code the file does not hold,
+/// themselves or through the routines they call.
+pub(super) fn reaching_elsewhere(units: &[UnitIr]) -> FxHashSet<u32> {
+    let mut out: FxHashSet<u32> = units
+        .iter()
+        .enumerate()
+        .filter(|(_, ir)| !ir.foreign.is_empty())
+        .map(|(u, _)| u as u32)
+        .collect();
+    loop {
+        let before = out.len();
+        for (u, ir) in units.iter().enumerate() {
+            if ir
+                .calls
+                .iter()
+                .any(|(_, c)| c.callees.iter().any(|callee| out.contains(callee)))
+            {
+                out.insert(u as u32);
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
 /// After each call of a routine of the file (a `RUN` of an internal
 /// procedure, a function or a method), the file-level variables of `ir` that
 /// a routine writes take what the routines wrote; in a main block, every
-/// variable it declares is file-level. After any other `RUN`, the shared
-/// variables and temp-tables are Unknown: the program it runs may write them.
+/// variable it declares is file-level. After a call that may run code the
+/// file does not hold (see [`foreign_statement`]), or of a routine in
+/// `elsewhere` that may, the shared variables and temp-tables are Unknown:
+/// that code may write them.
+///
+/// Each write takes the span of its call, so that a sink in the same
+/// statement, after the call, sees it.
 pub(super) fn refresh_after_calls(
-    cfg: &Cfg,
     ir: &mut UnitIr,
-    stmts: &FxHashMap<NodeId, &Statement>,
-    procedures: &FxHashSet<String>,
+    elsewhere: &FxHashSet<u32>,
     written: &FxHashSet<String>,
     tables: &Tables,
 ) {
@@ -1471,38 +1556,38 @@ pub(super) fn refresh_after_calls(
     if keys.is_empty() && shared.is_empty() {
         return;
     }
-    let calls: FxHashSet<usize> = ir.calls.iter().map(|(i, _)| i.index()).collect();
-    for (i, n) in cfg.nodes() {
-        let run = match n.stmt.and_then(|id| stmts.get(&id)).map(|s| &s.kind) {
-            Some(S::Run {
-                target: RunTarget::Literal { name, .. },
-                ..
-            }) if procedures.contains(&name.to_ascii_lowercase()) => Some(false),
-            Some(S::Run { .. }) => Some(true),
-            _ => None,
-        };
-        if run == Some(true) {
-            for &slot in &shared {
-                ir.ops[i.index()].push(Op {
-                    slot,
-                    value: Value::origin(UNKNOWN),
-                    strong: false,
-                    span: n.span,
-                });
-            }
+    let mut foreign: Vec<(NodeIx, Span)> = ir.foreign.clone();
+    foreign.extend(
+        ir.calls
+            .iter()
+            .filter(|(_, c)| c.callees.iter().any(|callee| elsewhere.contains(callee)))
+            .map(|(n, c)| (*n, c.span)),
+    );
+    foreign.sort_by_key(|(n, span)| (n.index(), span.start, span.end));
+    foreign.dedup();
+    for (n, span) in foreign {
+        for &slot in &shared {
+            ir.ops[n.index()].push(Op {
+                slot,
+                value: Value::origin(UNKNOWN),
+                strong: false,
+                span,
+            });
         }
-        if run != Some(false) && !calls.contains(&i.index()) {
-            continue;
-        }
+    }
+    let mut calls: Vec<(NodeIx, Span)> = ir.calls.iter().map(|(n, c)| (*n, c.span)).collect();
+    calls.sort_by_key(|(n, span)| (n.index(), span.start, span.end));
+    calls.dedup();
+    for (n, span) in calls {
         for (slot, name, key) in &keys {
-            ir.ops[i.index()].push(Op {
+            ir.ops[n.index()].push(Op {
                 slot: *slot,
                 value: Value(vec![Term::File {
                     name: name.clone(),
                     key: key.clone(),
                 }]),
                 strong: false,
-                span: n.span,
+                span,
             });
         }
     }

@@ -450,6 +450,105 @@ END PROCEDURE.
 }
 
 #[test]
+fn a_shared_variable_is_unknown_after_any_call_of_code_the_file_does_not_hold() {
+    let forms = [
+        "RUN setup IN hLib.",
+        "RUN VALUE(\"setup.p\").",
+        "RUN SUPER.",
+        "IF libSet() THEN.",
+        "IF superSet() THEN.",
+        "DYNAMIC-FUNCTION(\"libSet\" IN hLib).",
+        "DYNAMIC-INVOKE(\"app.Lib\", \"Setup\").",
+        "PUBLISH \"setup\".",
+        "APPLY \"close\" TO hLib.",
+        "WAIT-FOR CLOSE OF THIS-PROCEDURE.",
+        "PROCESS EVENTS.",
+        "UPDATE cX.",
+        "PROMPT-FOR cX.",
+        "o = NEW app.Thing().",
+        "o:Setup().",
+        "o:Mode = \"x\".",
+        "cX = o:Mode.",
+        "app.Lib:Setup().",
+        "cX = Lib:Version.",
+        "DELETE OBJECT o.",
+        "RUN wrap.",
+        "hCall:INVOKE().",
+    ];
+    let mut src = String::from(
+        "DEFINE NEW SHARED VARIABLE gc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
+DEFINE VARIABLE hCall AS HANDLE NO-UNDO.
+DEFINE VARIABLE o AS app.Thing NO-UNDO.
+DEFINE VARIABLE cX AS CHARACTER NO-UNDO.
+FUNCTION libSet RETURNS LOGICAL () IN hLib.
+FUNCTION superSet RETURNS LOGICAL () IN SUPER.
+",
+    );
+    for form in forms {
+        src.push_str(&format!("gc = \"ls\".\n{form}\nOS-COMMAND VALUE(gc).\n"));
+    }
+    src.push_str(
+        "PROCEDURE setup:
+END PROCEDURE.
+PROCEDURE wrap:
+  RUN other.p.
+END PROCEDURE.
+",
+    );
+    let sinks: Vec<usize> = (0..forms.len()).map(|i| 10 + 3 * i).collect();
+    assert_eq!(lines(&src, &check_taint("ABLSEC003", &src)), sinks);
+}
+
+#[test]
+fn a_shared_variable_keeps_its_value_across_built_in_members_and_functions() {
+    let src = "\
+DEFINE NEW SHARED VARIABLE gc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE hQ AS HANDLE NO-UNDO.
+DEFINE VARIABLE hB AS HANDLE NO-UNDO.
+DEFINE VARIABLE cX AS CHARACTER NO-UNDO.
+DEFINE VARIABLE oJ AS Progress.Json.ObjectModel.JsonObject NO-UNDO.
+DEFINE TEMP-TABLE ttA NO-UNDO FIELD f AS CHARACTER.
+gc = \"ls\".
+CREATE QUERY hQ.
+hQ:QUERY-PREPARE(\"FOR EACH ttA\").
+hQ:QUERY-OPEN().
+hQ:PRIVATE-DATA = \"x\".
+cX = SUBSTRING(gc, 1, 2) + ENTRY(1, \"a,b\").
+oJ:Add(\"a\", 1).
+hB = BUFFER ttA:HANDLE.
+hB = Customer:HANDLE.
+cX = hB:BUFFER-FIELD(\"f\"):BUFFER-VALUE.
+hB = TEMP-TABLE ttA:DEFAULT-BUFFER-HANDLE.
+MESSAGE STRING(LENGTH(cX)) SESSION:TEMP-DIRECTORY.
+DELETE OBJECT hQ.
+FIND FIRST ttA NO-ERROR.
+OS-COMMAND VALUE(gc).
+";
+    assert!(check_taint("ABLSEC003", src).is_empty());
+    assert_eq!(check_sink("ABLSEC003", src).len(), 1);
+}
+
+#[test]
+fn a_call_and_its_sink_in_one_statement_see_what_the_call_writes() {
+    let src = "\
+DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+DEFINE NEW SHARED VARIABLE gs AS CHARACTER NO-UNDO.
+DEFINE VARIABLE gc AS CHARACTER NO-UNDO INITIAL \"ls\".
+DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
+FUNCTION setIt RETURNS CHARACTER ():
+  gc = pc.
+  RETURN \"\".
+END FUNCTION.
+FUNCTION libSet RETURNS CHARACTER () IN hLib.
+OS-COMMAND VALUE(setIt() + gc).
+gs = \"ls\".
+OS-COMMAND VALUE(libSet() + gs).
+";
+    assert_eq!(lines(src, &check_taint("ABLSEC003", src)), [10, 12]);
+}
+
+#[test]
 fn a_call_of_a_function_takes_what_the_function_writes_to_the_file() {
     let src = "\
 DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
