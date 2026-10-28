@@ -116,13 +116,86 @@ pub struct CollectedDiagnostics {
     ///
     /// [`RuleMeta::use_site_in_includer`]: oxabl_lint::RuleMeta::use_site_in_includer
     pub include_findings: Vec<IncludeFinding>,
-    /// The spans in the root's own bytes that `ABLSEC008` flags as hard-coded
-    /// secrets, whether or not the configuration enables it. A client that
-    /// hashes or shows source text masks them.
+    /// The parts of hard-coded secrets in the root's own bytes: each string
+    /// literal in a span that `ABLSEC008` flags (all of the span when it holds
+    /// none), whether or not the configuration enables it. A client that hashes
+    /// or shows source text masks them; [`Self::secrets_in`] adds the other
+    /// places that hold their text.
     pub secrets: Vec<Span>,
     /// The same for the includes the root expands: each include file and a
-    /// span in its own bytes that `ABLSEC008` flags.
+    /// part in its own bytes.
     pub include_secrets: Vec<(PathBuf, Span)>,
+    /// The text of every secret and of each part of one that a `{&name}` or
+    /// `{N}` substitution wrote, which is in no file where the expansion put
+    /// it. The messages of this set are masked with it already.
+    pub secret_text: SecretText,
+}
+
+/// The text of hard-coded secrets, to mask wherever it shows.
+///
+/// An include argument or a `&GLOBAL-DEFINE` value is written in a file, but
+/// the expansion keeps no place for it, so it is masked by its text: in the
+/// root, in each include, and in messages. Its `Debug` shows only a count.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SecretText(Vec<String>);
+
+impl std::fmt::Debug for SecretText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretText({} masked)", self.0.len())
+    }
+}
+
+impl SecretText {
+    /// No secrets.
+    pub const fn new() -> Self {
+        SecretText(Vec::new())
+    }
+
+    /// Add `text`, unless it is blank. The longest text comes first, so a
+    /// secret that holds another is masked whole.
+    fn add(&mut self, text: &str) {
+        if text.trim().is_empty() || self.0.iter().any(|known| known == text) {
+            return;
+        }
+        let at = self.0.partition_point(|known| known.len() >= text.len());
+        self.0.insert(at, text.to_string());
+    }
+
+    /// Every place in `text` that holds one of the secrets.
+    pub fn find_in(&self, text: &str) -> Vec<Span> {
+        self.0
+            .iter()
+            .flat_map(|secret| {
+                text.match_indices(secret.as_str()).map(|(at, found)| Span {
+                    start: at as u32,
+                    end: (at + found.len()) as u32,
+                })
+            })
+            .collect()
+    }
+
+    /// Replace each secret in `text` with `****`.
+    pub fn mask(&self, text: &mut String) {
+        for secret in &self.0 {
+            if text.contains(secret.as_str()) {
+                *text = text.replace(secret.as_str(), "****");
+            }
+        }
+    }
+
+    fn mask_diagnostic(&self, d: &mut Diagnostic) {
+        self.mask(&mut d.message);
+        if let Some(help) = &mut d.help {
+            self.mask(help);
+        }
+        for label in d
+            .labels
+            .iter_mut()
+            .chain(d.related.iter_mut().flat_map(|related| related.iter_mut()))
+        {
+            self.mask(&mut label.message);
+        }
+    }
 }
 
 /// A finding whose anchor is in an include file, with where it would show.
@@ -158,7 +231,25 @@ impl CollectedDiagnostics {
             include_findings: Vec::new(),
             secrets: Vec::new(),
             include_secrets: Vec::new(),
+            secret_text: SecretText::new(),
         }
+    }
+
+    /// Where the hard-coded secrets are in `text`, which is the root when
+    /// `include` is `None`, else that include file: the parts in its own
+    /// bytes, and every place that holds the text of a secret.
+    pub fn secrets_in(&self, include: Option<&Path>, text: &str) -> Vec<Span> {
+        let mut found = match include {
+            None => self.secrets.clone(),
+            Some(path) => self
+                .include_secrets
+                .iter()
+                .filter(|(known, _)| known == path)
+                .map(|(_, span)| *span)
+                .collect(),
+        };
+        found.extend(self.secret_text.find_in(text));
+        found
     }
 
     /// Every diagnostic (all stages), in pipeline order.
@@ -206,6 +297,7 @@ impl CollectedDiagnostics {
             },
             secrets: self.secrets.clone(),
             include_secrets: self.include_secrets.clone(),
+            secret_text: self.secret_text.clone(),
         }
     }
 }
@@ -750,6 +842,34 @@ impl ExpandedFile {
             FileId::new(chunk.file),
             self.real_span(span, real_start),
         ))
+    }
+
+    /// Where the bytes of `span`, in the expanded buffer, were written: a part
+    /// for each chunk it crosses, in the root's or the include's own bytes, or
+    /// in the expanded buffer for substitution text.
+    fn origins(&self, span: Span) -> Vec<(ChunkOrigin, Span)> {
+        if self.chunks.is_empty() {
+            return vec![(ChunkOrigin::Root, span)];
+        }
+        let first = self
+            .chunks
+            .partition_point(|chunk| chunk.virt_start + chunk.len <= span.start);
+        self.chunks[first..]
+            .iter()
+            .take_while(|chunk| chunk.virt_start < span.end)
+            .map(|chunk| {
+                let start = span.start.max(chunk.virt_start);
+                let end = span.end.min(chunk.virt_start + chunk.len);
+                let part = match chunk.origin {
+                    ChunkOrigin::Substitution => Span { start, end },
+                    _ => Span {
+                        start: chunk.real_start + (start - chunk.virt_start),
+                        end: chunk.real_start + (end - chunk.virt_start),
+                    },
+                };
+                (chunk.origin, part)
+            })
+            .collect()
     }
 
     /// The include chain, root first, down to include expansion `include`.
@@ -1539,18 +1659,72 @@ pub fn collect_from_expanded_with(
         }
     }
     for d in oxabl_lint::security::hardcoded_secret::run(&program.statements, &sem, &ctx) {
-        match resolve_diagnostic(d, expanded) {
-            Ok(d) => out.secrets.push(d.span.span),
-            Err(d) => {
-                if let Some((include, _, span)) = expanded.resolve_include_origin(d.span.span) {
-                    let path = expanded.included[include as usize].path.clone();
-                    out.include_secrets.push((path, span));
+        for literal in secret_literals(&expanded.text, d.span.span) {
+            let text = |span: Span| expanded.text.get(span.start as usize..span.end as usize);
+            out.secret_text
+                .add(text(literal).map(literal_content).unwrap_or_default());
+            for (origin, part) in expanded.origins(literal) {
+                match origin {
+                    ChunkOrigin::Root => out.secrets.push(part),
+                    ChunkOrigin::Include(include) => {
+                        let path = expanded.included[include as usize].path.clone();
+                        out.include_secrets.push((path, part));
+                    }
+                    ChunkOrigin::Substitution => {
+                        out.secret_text.add(text(part).unwrap_or_default());
+                    }
                 }
             }
         }
     }
+    let masking = std::mem::take(&mut out.secret_text);
+    for d in out.diagnostics.iter_mut() {
+        masking.mask_diagnostic(&mut d.diagnostic);
+    }
+    for d in out.include_origin.iter_mut() {
+        masking.mask_diagnostic(&mut d.diagnostic);
+    }
+    for d in out.include_findings.iter_mut() {
+        masking.mask_diagnostic(&mut d.diagnostic);
+    }
+    out.secret_text = masking;
 
     (Some(sem), out)
+}
+
+/// The string literals in `span` of `text`, or all of `span` when it holds
+/// none.
+fn secret_literals(text: &str, span: Span) -> Vec<Span> {
+    let start = (span.start as usize).min(text.len());
+    let end = (span.end as usize).clamp(start, text.len());
+    let whole = vec![Span {
+        start: start as u32,
+        end: end as u32,
+    }];
+    let Some(slice) = text.get(start..end) else {
+        return whole;
+    };
+    let found: Vec<Span> = tokenize(slice)
+        .iter()
+        .filter(|t| t.kind == oxabl_lexer::Kind::StringLiteral)
+        .map(|t| Span {
+            start: (start + t.start) as u32,
+            end: (start + t.end) as u32,
+        })
+        .collect();
+    if found.is_empty() { whole } else { found }
+}
+
+/// The text between the quotes of a string literal, without its `:U` or
+/// other attribute, or all of `literal` when it is not quoted.
+fn literal_content(literal: &str) -> &str {
+    let Some(quote @ ('"' | '\'')) = literal.chars().next() else {
+        return literal;
+    };
+    match literal.rfind(quote) {
+        Some(end) if end > 0 => &literal[1..end],
+        _ => &literal[1..],
+    }
 }
 
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree

@@ -453,7 +453,9 @@ fn surface_collected_preproc(
     if loud.is_empty() {
         return;
     }
-    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), source);
+    let secrets = baseline::secrets(source, collected.secrets_in(None, source));
+    let shown = baseline::masked(source, &secrets);
+    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), &shown);
     output.err(render_diagnostics(&loud, &resolver));
 }
 
@@ -1851,7 +1853,7 @@ impl CheckPass<'_> {
                     &display,
                     &source,
                     &shown,
-                    &result.diagnostics().include_secrets,
+                    result.diagnostics(),
                     texts,
                     self,
                     &mut unit,
@@ -2053,7 +2055,7 @@ fn report_findings(
     unit.suppressed += suppressed.len();
     // Every hard-coded secret of the file, so no shown line and no hash holds
     // one, whatever finding covers it.
-    let secrets = baseline::secrets(source, reported.secrets.iter().copied());
+    let secrets = baseline::secrets(source, reported.secrets_in(None, source));
     let has_baseline = pass.baseline.is_some();
     let (reported, covered) = match pass.baseline {
         Some(run) => run.split(indexed_path, source, reported),
@@ -2335,13 +2337,13 @@ fn site_label(path: &str, text: Option<&str>, at: Option<oxabl_ast::Span>) -> St
 ///
 /// Positions come from the physical include file, read from disk. A file that
 /// cannot be read keeps its byte span and loses line and column. Every
-/// hard-coded secret of an include (`include_secrets`) is masked in its shown
-/// lines and in its hashes, whatever finding covers it.
+/// hard-coded secret of an include (`collected.secrets_in`) is masked in its
+/// shown lines and in its hashes, whatever finding covers it.
 fn report_include_findings(
     root: &str,
     root_source: &str,
     found: &[oxabl_analyze::IncludeOriginDiagnostic],
-    include_secrets: &[(PathBuf, oxabl_ast::Span)],
+    collected: &CollectedDiagnostics,
     texts: &mut IncludeTexts,
     pass: &CheckPass,
     unit: &mut Unit,
@@ -2352,13 +2354,7 @@ fn report_include_findings(
         diagnostic.span.file = ROOT_FILE_ID;
         let text = texts.get(&finding.path).map(str::to_owned);
         let secrets = text.as_deref().map_or_else(Vec::new, |text| {
-            baseline::secrets(
-                text,
-                include_secrets
-                    .iter()
-                    .filter(|(path, _)| *path == finding.path)
-                    .map(|(_, span)| *span),
-            )
+            baseline::secrets(text, collected.secrets_in(Some(&finding.path), text))
         });
         if pass.output == CheckFormat::Sarif {
             let key = baseline::relative_path(&pass.root, &finding.path)

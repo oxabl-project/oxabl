@@ -66,8 +66,8 @@ mod collect;
 pub use collect::{
     CollectedDiagnostic, CollectedDiagnostics, CrossFile, DiagnosticSource, DirectInclude,
     ExpandedFile, IncludeFinding, IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic,
-    IncludeStep, RuleSelection, analyze_from_expanded, collect_diagnostics, collect_from_expanded,
-    collect_from_expanded_selecting, collect_from_expanded_with,
+    IncludeStep, RuleSelection, SecretText, analyze_from_expanded, collect_diagnostics,
+    collect_from_expanded, collect_from_expanded_selecting, collect_from_expanded_with,
     collect_from_expanded_with_source_context, collect_from_expanded_with_summaries,
     collect_with_model, expand_source, expand_source_with, is_loud,
 };

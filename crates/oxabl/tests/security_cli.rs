@@ -376,7 +376,10 @@ fn no_hash_covers_a_secret_that_is_suppressed_or_whose_rule_is_off() {
 }
 
 /// Every output of `check` over a root and an include that each hold `secret`
-/// on a line with two more findings, and the hashes of each output.
+/// on a line with two more findings, roots and an include that pass it to an
+/// include as a named or a positional argument on a line with another
+/// finding, and a root that gives it to a `&GLOBAL-DEFINE` read in an `&IF`
+/// condition, and the hashes of each output.
 fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
     let dir = TempDir::new().unwrap();
     write(
@@ -389,6 +392,39 @@ fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
     );
     write(&dir.path().join("inc.i"), &line);
     write(&dir.path().join("a.p"), &format!("{{inc.i}}\n{line}"));
+    let run = " RUN VALUE(\"x\" + STRING(1)).\n";
+    write(
+        &dir.path().join("named.i"),
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL {&PW}. \
+         RUN VALUE(cPassword).\n",
+    );
+    write(
+        &dir.path().join("b.p"),
+        &format!("{{named.i &PW=\"'{secret}'\"}}{run}"),
+    );
+    write(
+        &dir.path().join("positional.i"),
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL {1}. \
+         RUN VALUE(cPassword).\n",
+    );
+    write(
+        &dir.path().join("c.p"),
+        &format!("{{positional.i \"'{secret}'\"}}{run}"),
+    );
+    write(
+        &dir.path().join("outer.i"),
+        &format!("{{named.i &PW=\"'{secret}'\"}}{run}"),
+    );
+    write(&dir.path().join("d.p"), "{outer.i}\n");
+    write(
+        &dir.path().join("e.p"),
+        &format!(
+            "&GLOBAL-DEFINE PW \"{secret}\"\n\
+             &IF \"{{&PW}}\" = \"x\" AND {{&NOPE}} &THEN\n&ENDIF\n\
+             DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL {{&PW}}. \
+             RUN VALUE(cPassword).\n"
+        ),
+    );
     let mut outputs = Vec::new();
     let mut hashes = Vec::new();
     for args in [
@@ -431,6 +467,17 @@ fn no_output_holds_a_secret_of_the_file_or_of_an_include_or_a_hash_of_one() {
     let (outputs, hashes) = every_output("s3cret-value");
     for output in &outputs {
         assert!(!output.contains("s3cret-value"), "{output}");
+    }
+    // Each shape shows the line that holds the secret, and only the literal
+    // is masked.
+    for shown in [
+        "2 | DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL **************. RUN",
+        "b.p:1:",
+        "c.p:1:",
+        "outer.i:1:",
+        "e.p:2:1: warning[PREPROC010]: the condition uses unexpected name",
+    ] {
+        assert!(outputs[0].contains(shown), "{shown}\n{}", outputs[0]);
     }
     // The include's findings are in the SARIF of `--include-findings`.
     assert!(

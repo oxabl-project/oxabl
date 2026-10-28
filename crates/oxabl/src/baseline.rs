@@ -65,14 +65,22 @@
 //! 2. The flagged line is `S[ls..le]`: `ls` is just after the last `\n` before
 //!    `start` (or 0), `le` is the first `\n` at or after `start` (or `len(S)`).
 //!    The flagged span is `S[start..end]`, every line of it.
-//! 3. Mask the secrets of the file. A secret is each string literal that the
-//!    oxabl lexer finds in `S[a..b]` for each span `a..b` that `ABLSEC008`
-//!    flags in the file, offset by `a`, or the whole `a..b` when it holds
-//!    none. `ABLSEC008` is run for this whether or not the configuration
+//! 3. Mask the secrets of the file. `ABLSEC008` runs over the text `E` that
+//!    the preprocessor expands `S` to, whether or not the configuration
 //!    enables it, and a finding that an `oxabl-ignore` comment suppresses
-//!    still counts. In the flagged line and in the flagged span, each part
-//!    that lies inside a secret becomes the three bytes `***`, once per
-//!    secret.
+//!    still counts. For each span `a..b` it flags in `E`, each string literal
+//!    that the oxabl lexer finds in `E[a..b]` is a secret, or the whole `a..b`
+//!    when it holds none. A secret is masked in `S`:
+//!    - where `S`'s own bytes wrote it, a part for each stretch of it that
+//!      came from `S` and not from an include or a substitution;
+//!    - at every place in `S` that holds its text: the text between the
+//!      quotes of a literal (all of it when it is not quoted), and each
+//!      stretch of it that a `{&name}` or `{N}` substitution wrote (an include
+//!      argument or a `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` value, which the
+//!      expansion keeps no place for).
+//!
+//!    In the flagged line and in the flagged span, each run of bytes inside
+//!    secrets (parts that overlap are one run) becomes the three bytes `***`.
 //! 4. Normalise each of the two texts: split on Unicode whitespace
 //!    (`str::split_whitespace`), join the words with one space, and fold ASCII
 //!    letters to lower case. A change of keyword case (`DEFINE` to `define`)
@@ -85,8 +93,13 @@
 //! its normalised message instead, without the reachability note that
 //! `(reachable from ...)` appends.
 //!
+//! Every message (and help and label) of the run has the text of each secret
+//! of step 3 replaced by `****` before it is hashed or shown, longest text
+//! first.
+//!
 //! The text output of `check` shows each line with the same secrets masked:
-//! every byte of a secret becomes `*`, so columns do not move.
+//! every byte of a secret becomes `*`, so columns do not move. Preprocessor
+//! warnings on stderr show their line the same way.
 //!
 //! # The SARIF fingerprint
 //!
@@ -98,9 +111,9 @@
 //! A finding that `--include-findings` reports in an include file `I` takes
 //! the same steps over the text of `I`, with occurrence 0 and `path` set to
 //! `I + "\0" + root` (the workspace-relative path of `I`, then the root as the
-//! run names it). Its secrets in step 3 are the spans that `ABLSEC008` flags
-//! in `I` when the root expands it, found the same way as for a root, and the
-//! text output masks them in the lines of `I`.
+//! run names it). Its secrets in step 3 are those of the root's expansion,
+//! masked where `I`'s own bytes wrote them and wherever `I` holds their text,
+//! and the text output masks them in the lines of `I`.
 //!
 //! So neither a baseline, a SARIF log nor the text output holds a hard-coded
 //! secret or a hash of one that could be brute forced offline.
@@ -408,7 +421,7 @@ impl Run {
             return (reported, Vec::new());
         };
         let diagnostics: Vec<&Diagnostic> = reported.all().map(|c| &c.diagnostic).collect();
-        let secrets = secrets(source, reported.secrets.iter().copied());
+        let secrets = secrets(source, reported.secrets_in(None, source));
         let entries = fingerprint(&path, source, diagnostics.iter().copied(), &secrets);
         let legacy = if self.baseline.legacy.is_empty() {
             Vec::new()
@@ -630,28 +643,17 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The byte ranges of the hard-coded secrets in `source` that `ABLSEC008`
-/// flags at `spans`, sorted: each string literal of a span, or the whole span
-/// when it holds none.
+/// The byte ranges in `source` of the hard-coded secrets at `spans`, as
+/// [`CollectedDiagnostics::secrets_in`] gives them, clamped and sorted.
 pub fn secrets(source: &str, spans: impl IntoIterator<Item = Span>) -> Vec<std::ops::Range<usize>> {
-    let mut out = Vec::new();
-    for span in spans {
-        let start = (span.start as usize).min(source.len());
-        let end = (span.end as usize).clamp(start, source.len());
-        let Some(text) = source.get(start..end) else {
-            continue;
-        };
-        let before = out.len();
-        out.extend(
-            oxabl_lexer::tokenize(text)
-                .iter()
-                .filter(|t| t.kind == oxabl_lexer::Kind::StringLiteral)
-                .map(|t| start + t.start..start + t.end),
-        );
-        if out.len() == before {
-            out.push(start..end);
-        }
-    }
+    let mut out: Vec<std::ops::Range<usize>> = spans
+        .into_iter()
+        .map(|span| {
+            let start = (span.start as usize).min(source.len());
+            start..(span.end as usize).clamp(start, source.len())
+        })
+        .filter(|r| !r.is_empty())
+        .collect();
     out.sort_by_key(|r| (r.start, r.end));
     out
 }
@@ -671,7 +673,7 @@ pub fn masked<'s>(source: &'s str, secrets: &[std::ops::Range<usize>]) -> Cow<'s
     Cow::Owned(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// `source[range]` with each part inside a secret replaced by `***`.
+/// `source[range]` with each run of bytes inside secrets replaced by `***`.
 fn masked_slice(
     source: &str,
     range: std::ops::Range<usize>,
@@ -681,7 +683,12 @@ fn masked_slice(
     let mut at = range.start;
     for s in secrets {
         let (a, b) = (s.start.max(range.start), s.end.min(range.end));
-        if a >= b || a < at {
+        if a >= b || b <= at {
+            continue;
+        }
+        // A secret that overlaps the one before is in the same `***`.
+        if a < at {
+            at = b;
             continue;
         }
         out.push_str(source.get(at..a).unwrap_or_default());
@@ -968,13 +975,25 @@ mod tests {
     }
 
     #[test]
-    fn masking_keeps_offsets_and_hides_only_the_literal() {
+    fn masking_keeps_offsets_and_hides_only_the_secret() {
         let source = "cPassword = \"hunter2\".\nx = 1.\n";
-        let d = diag("ABLSEC008", source, "cPassword = \"hunter2\"", 0);
-        let secrets = secrets(source, secret_spans([&d]));
-        assert_eq!(secrets, vec![12..21]);
+        let at = |start, end| Span { start, end };
+        let secrets = secrets(source, [at(13, 20), at(12, 21), at(30, 40)]);
+        assert_eq!(secrets, vec![12..21, 13..20]);
         let text = masked(source, &secrets);
         assert_eq!(text, "cPassword = *********.\nx = 1.\n");
+    }
+
+    #[test]
+    fn secrets_that_overlap_hash_as_one() {
+        let source = "cPassword = \"hunter2\".\n";
+        let nested = masked_slice(source, 0..22, &[12..21, 13..20]);
+        assert_eq!(nested, "cPassword = ***.");
+        assert_eq!(masked_slice(source, 0..22, &[12..18, 15..21]), nested);
+        assert_eq!(
+            masked_slice(source, 0..22, &[12..16, 16..21]),
+            "cPassword = ******."
+        );
     }
 
     #[test]
