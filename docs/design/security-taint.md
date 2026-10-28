@@ -195,8 +195,16 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
 - a variable or a temp-table that the file binds as `SHARED` or `NEW GLOBAL
   SHARED`: code outside the file set it before the file runs. Every read of it
   holds Unknown, and its definition sets no value. After each call that may
-  run code the file does not hold, every shared variable and temp-table
-  (`NEW SHARED` too) holds Unknown: that code may write it. Such a call is:
+  run code the file does not hold, every name that such code may write holds
+  Unknown: a shared variable and temp-table (`NEW SHARED` too), and a class
+  member that code outside the class may set (a `PUBLIC` or `PROTECTED`
+  variable, a property with a `SET` that is not `PRIVATE`). The same call may
+  run back any routine or trigger of the file (a callback through
+  `THIS-PROCEDURE` or `SOURCE-PROCEDURE`, a trigger during `WAIT-FOR`, a
+  method of an object that was passed on), so the file-level variables that
+  a routine of the file writes hold Unknown after it too, by the same rule.
+  Only a file with such names, or with a routine or trigger, looks for these
+  calls. Such a call is:
   - a `RUN` of anything but an internal procedure of the file in this
     procedure: `RUN x.p`, `RUN VALUE(...)`, `RUN SUPER`, `RUN p IN h` (also
     when the file has a procedure `p`), a `PERSISTENT` or `ASYNCHRONOUS` run;
@@ -334,7 +342,8 @@ their counts.
   file, or Unknown from code elsewhere) when the call starts inside the sink's
   operand or ends before it; a call around the operand (`f(VALUE(c))`) writes
   after it.
-- These run code elsewhere and do not make shared variables Unknown:
+- These run code elsewhere and do not make the names that code may write
+  Unknown, nor count as a call of the routines and triggers of the file:
   database triggers (a `CREATE`, `DELETE`, `FIND` or field assignment of a
   database record), a destructor that garbage collection runs, a trigger that
   a statement not listed in "The gate" fires (`ENABLE`, `VIEW`, a

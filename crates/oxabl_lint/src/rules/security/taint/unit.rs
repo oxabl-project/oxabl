@@ -198,6 +198,21 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
                 t.shared.insert(name);
             }
         }
+        // A member that code outside the class may set.
+        match &s.kind {
+            S::VariableDeclaration { name, .. } if member_is_visible(source, s.span) => {
+                t.shared.insert(name.name.to_ascii_lowercase());
+            }
+            S::Property {
+                name,
+                access,
+                set_body: Some(_),
+                ..
+            } if *access != AccessModifier::Private && !private_set(source, s.span) => {
+                t.shared.insert(name.name.to_ascii_lowercase());
+            }
+            _ => {}
+        }
         match &s.kind {
             S::DefineTempTable { name, .. } => {
                 t.temp_tables.insert(name.name.to_ascii_lowercase());
@@ -747,7 +762,7 @@ impl Builder<'_, '_> {
     fn statement(&mut self, node: &oxabl_flow::Node, s: &Statement) -> (Vec<Op>, Option<Guard>) {
         let mut out = Vec::new();
         let mut guard = None;
-        if !self.c.tables.shared.is_empty() && foreign_statement(s, self.source, self.c.tables) {
+        if self.c.tables.exposed() && foreign_statement(s, self.source, self.c.tables) {
             self.c.foreign.push(s.span);
         }
         match (&s.kind, node.kind) {
@@ -888,7 +903,7 @@ impl Builder<'_, '_> {
                 },
                 _,
             ) => {
-                if !self.c.tables.shared.is_empty() {
+                if self.c.tables.exposed() {
                     self.c.foreign.push(s.span);
                 }
                 let mut inputs = Vec::new();
@@ -1074,12 +1089,12 @@ impl Builder<'_, '_> {
     /// from its tokens; with shared variables, also the members it reads,
     /// which may run code elsewhere.
     fn scan_calls(&mut self, s: &Statement) {
-        let shared = !self.c.tables.shared.is_empty();
+        let exposed = self.c.tables.exposed();
         let Some(text) = crate::rules::syntactic::source_of(self.source, s.span) else {
             return;
         };
-        let calls = (self.c.routines.any_callable() || shared) && text.contains('(');
-        if !calls && !(shared && text.contains(':')) {
+        let calls = (self.c.routines.any_callable() || exposed) && text.contains('(');
+        if !calls && !(exposed && text.contains(':')) {
             return;
         }
         if let Some(st) = StatementText::of(self.source, s) {
@@ -1542,8 +1557,10 @@ pub(super) fn reaching_elsewhere(units: &[UnitIr]) -> FxHashSet<u32> {
 /// a routine writes take what the routines wrote; in a main block, every
 /// variable it declares is file-level. After a call that may run code the
 /// file does not hold (see [`foreign_statement`]), or of a routine in
-/// `elsewhere` that may, the shared variables and temp-tables are Unknown:
-/// that code may write them.
+/// `elsewhere` that may, the [`Tables::shared`] names are Unknown: that code
+/// may write them. That code may also run back any routine or trigger of the
+/// file, so the file-level variables that a routine writes are Unknown by the
+/// same rule.
 ///
 /// Each write takes the span of its call, so that a sink in the same
 /// statement, after the call, sees it.
@@ -1584,8 +1601,14 @@ pub(super) fn refresh_after_calls(
     );
     foreign.sort_by_key(|(n, span)| (n.index(), span.start, span.end));
     foreign.dedup();
+    let mut refreshed: Vec<u32> = shared
+        .into_iter()
+        .chain(keys.iter().map(|(slot, ..)| *slot))
+        .collect();
+    refreshed.sort_unstable();
+    refreshed.dedup();
     for (n, span) in foreign {
-        for &slot in &shared {
+        for &slot in &refreshed {
             ir.ops[n.index()].push(Op {
                 slot,
                 value: Value::origin(UNKNOWN),

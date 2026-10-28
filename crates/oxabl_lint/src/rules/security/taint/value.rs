@@ -445,15 +445,30 @@ pub(super) struct Tables {
     /// file is an include checked on its own, an include did not arrive, or a
     /// class inherits members.
     pub open: bool,
-    /// Lower-cased variables and temp-tables the file defines as shared, in
-    /// any form: a program that it runs may write them.
+    /// Lower-cased names that code the file does not hold may write while
+    /// the file runs: variables and temp-tables the file defines as shared,
+    /// in any form, and class members that code outside the class may set
+    /// (`PUBLIC` or `PROTECTED` variables, properties with a `SET` that is
+    /// not `PRIVATE`). After a call of such code they are Unknown.
     pub shared: FxHashSet<String>,
     /// Those defined `SHARED` or `NEW GLOBAL SHARED`: code outside the file may
     /// set them before the file runs.
     pub shared_in: FxHashSet<String>,
+    /// The file has a routine or trigger, which code it does not hold may run
+    /// back while the file runs (a callback through `THIS-PROCEDURE` or
+    /// `SOURCE-PROCEDURE`, a trigger in `WAIT-FOR`, a method of an object
+    /// that was passed on).
+    pub callbacks: bool,
 }
 
 impl Tables {
+    /// Whether code the file does not hold may write what the file sees: it
+    /// has [`Self::shared`] names or [`Self::callbacks`]. Only such a file
+    /// looks for the calls of that code.
+    pub fn exposed(&self) -> bool {
+        self.callbacks || !self.shared.is_empty()
+    }
+
     /// Whether `name` may hold a JSON object or array: its declared class is
     /// one, or the file does not declare it.
     pub fn may_be_json(&self, name: &str) -> bool {
@@ -666,7 +681,8 @@ pub(super) struct Compiler<'c> {
     /// Calls of routines of the file met while building values.
     pub calls: Vec<CallIr>,
     /// Calls met while building values that may run code the file does not
-    /// hold, which may write its shared variables. See [`Self::runs_elsewhere`].
+    /// hold, which may write its shared names and run its routines. See
+    /// [`Self::runs_elsewhere`].
     pub foreign: Vec<Span>,
     /// Reading a decision: a logical function passes on its arguments, so the
     /// value is what the decision reads.
@@ -923,9 +939,10 @@ impl Compiler<'_> {
     /// file, may run code the file does not hold: a function of another
     /// program (`FUNCTION f ... IN h` or `IN SUPER`, or one the file does not
     /// declare), `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`,
-    /// `DYNAMIC-PROPERTY` and `SUPER`. Only a file with shared variables asks.
+    /// `DYNAMIC-PROPERTY` and `SUPER`. Only an exposed file asks
+    /// ([`Tables::exposed`]).
     fn runs_elsewhere(&self, name: &str) -> bool {
-        if self.tables.shared.is_empty() {
+        if !self.tables.exposed() {
             return false;
         }
         let name = name.to_ascii_lowercase();
@@ -938,10 +955,10 @@ impl Compiler<'_> {
     /// Whether `object:member` (a call when `call`) may run code the file does
     /// not hold: a method or property of an object of a class other than a
     /// JSON class, a static member of a class, and `INVOKE` of a handle. A
-    /// member of a member is judged by the first object of the chain. Only a
-    /// file with shared variables asks.
+    /// member of a member is judged by the first object of the chain. Only an
+    /// exposed file asks ([`Tables::exposed`]).
     fn member_runs_elsewhere(&self, object: &Expression, member: &str, call: bool) -> bool {
-        if self.tables.shared.is_empty() {
+        if !self.tables.exposed() {
             return false;
         }
         match &object.kind {
@@ -1180,7 +1197,7 @@ impl Compiler<'_> {
             }
             E::ArrayAccess { .. } => values.into_iter().next().unwrap_or_default(),
             E::New { .. } => {
-                if !self.tables.shared.is_empty() {
+                if self.tables.exposed() {
                     self.foreign.push(e.span);
                 }
                 Value::union(values)
@@ -1409,10 +1426,7 @@ impl Compiler<'_> {
                 continue;
             }
             // `NEW c(...)` runs the constructor of a class; `NEW(b)` is a function.
-            if st.is_word(i, "NEW")
-                && !st.is(i + 1, Kind::LeftParen)
-                && !self.tables.shared.is_empty()
-            {
+            if st.is_word(i, "NEW") && !st.is(i + 1, Kind::LeftParen) && self.tables.exposed() {
                 self.foreign.push(st.span(i..i + 1));
             }
             // The condition of `IF c THEN a ELSE b` picks a value; it is not
@@ -1450,7 +1464,7 @@ impl Compiler<'_> {
                 // A dotted name before `:` is a class.
                 let receiver = st.is(j + 1, Kind::Colon);
                 if receiver
-                    && !self.tables.shared.is_empty()
+                    && self.tables.exposed()
                     && (!self.is_table(st.word(q)) || !is_keyword(st.word(j + 2)))
                 {
                     self.foreign.push(st.span(i..j + 1));
@@ -1472,7 +1486,7 @@ impl Compiler<'_> {
         let mut name = Some(first.to_string());
         let mut value = self.var(first);
         let mut j = i + 1;
-        if !self.tables.shared.is_empty()
+        if self.tables.exposed()
             && self.name_runs_elsewhere(first, st.word(j + 1), st.is(j + 2, Kind::LeftParen))
         {
             self.foreign.push(st.span(i..j + 2));

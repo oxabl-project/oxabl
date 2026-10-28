@@ -2,7 +2,7 @@
 //! summaries that did not converge, and a variable no unit of the file
 //! declares all leave the sink reported as stage 1 reports it.
 
-use oxabl_common::{Diagnostic, SecurityOptions};
+use oxabl_common::{Diagnostic, ParameterSources, SecurityOptions};
 use oxabl_schema::Schema;
 use oxabl_schema::test_support::customer_schema;
 use oxabl_semantic::SourceContext;
@@ -647,4 +647,117 @@ fn a_call_of_code_elsewhere_inside_any_operand_or_clause_makes_shared_variables_
         Vec::<&str>::new()
     );
     assert_eq!(operand_misses("gs", "noop()", 0), Vec::<&str>::new());
+}
+
+/// Each program sets `gc` to a constant, makes the call `{call}`, then runs
+/// `gc`. Code elsewhere that the call runs may run a routine or trigger of the
+/// file, or set a member of the class, in between.
+const CALLBACKS: [&str; 6] = [
+    "\
+DEFINE VARIABLE gc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.
+gc = \"ls\".
+{call}
+OS-COMMAND VALUE(gc).
+PROCEDURE setGc:
+  DEFINE INPUT PARAMETER p AS CHARACTER NO-UNDO.
+  gc = p.
+END PROCEDURE.
+",
+    "\
+DEFINE VARIABLE gc AS CHARACTER NO-UNDO.
+DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.
+DEFINE BUTTON btn.
+ON CHOOSE OF btn DO:
+  gc = get-value(\"cmd\").
+END.
+gc = \"ls\".
+{call}
+OS-COMMAND VALUE(gc).
+",
+    "\
+CLASS Cb:
+  DEFINE PRIVATE VARIABLE o AS Progress.Lang.Object NO-UNDO.
+  DEFINE PRIVATE VARIABLE gc AS CHARACTER NO-UNDO.
+  METHOD PUBLIC VOID SetGc(INPUT p AS CHARACTER):
+    gc = p.
+  END METHOD.
+  METHOD PUBLIC VOID Go():
+    gc = \"ls\".
+    {call}
+    OS-COMMAND VALUE(gc).
+  END METHOD.
+END CLASS.
+",
+    "\
+CLASS Cfg:
+  DEFINE PRIVATE VARIABLE o AS Progress.Lang.Object NO-UNDO.
+  DEFINE PUBLIC STATIC VARIABLE gc AS CHARACTER NO-UNDO.
+  METHOD PUBLIC VOID Go():
+    gc = \"ls\".
+    {call}
+    OS-COMMAND VALUE(gc).
+  END METHOD.
+END CLASS.
+",
+    "\
+CLASS Cfg:
+  DEFINE PRIVATE VARIABLE o AS Progress.Lang.Object NO-UNDO.
+  DEFINE PROTECTED VARIABLE gc AS CHARACTER NO-UNDO.
+  METHOD PUBLIC VOID Go():
+    gc = \"ls\".
+    {call}
+    OS-COMMAND VALUE(gc).
+  END METHOD.
+END CLASS.
+",
+    "\
+CLASS Prop:
+  DEFINE PRIVATE VARIABLE o AS Progress.Lang.Object NO-UNDO.
+  DEFINE PUBLIC PROPERTY gc AS CHARACTER NO-UNDO GET. SET.
+  METHOD PUBLIC VOID Go():
+    gc = \"ls\".
+    {call}
+    OS-COMMAND VALUE(gc).
+  END METHOD.
+END CLASS.
+",
+];
+
+/// The programs of [`CALLBACKS`] whose sink gives other than `want` findings
+/// when they make the call `call`.
+fn callback_misses(call: &str, want: usize) -> Vec<usize> {
+    (0..CALLBACKS.len())
+        .filter(|&i| {
+            let src = CALLBACKS[i].replace("{call}", call);
+            check_taint("ABLSEC003", &src).len() != want
+        })
+        .collect()
+}
+
+#[test]
+fn a_routine_trigger_or_member_that_code_elsewhere_may_run_or_set_is_refreshed_after_its_call() {
+    for call in [
+        "RUN lib.p (THIS-PROCEDURE).",
+        "WAIT-FOR CLOSE OF THIS-PROCEDURE.",
+        "PROCESS EVENTS.",
+        "PUBLISH \"go\".",
+        "Other:Setup().",
+        "o:ToString().",
+        "DYNAMIC-FUNCTION(\"f\" IN SOURCE-PROCEDURE).",
+    ] {
+        assert_eq!(callback_misses(call, 1), Vec::<usize>::new(), "{call}");
+    }
+    assert_eq!(callback_misses("", 0), Vec::<usize>::new());
+    // With no parameter or member a source, a member that code outside the
+    // class may set is still Unknown after the call, as a shared variable is.
+    let trusted = SecurityOptions {
+        parameters: ParameterSources::None,
+        ..taint()
+    };
+    for (i, src) in CALLBACKS.iter().enumerate().skip(3) {
+        let run = |call: &str| run_with("ABLSEC003", &src.replace("{call}", call), trusted.clone());
+        assert_eq!(run("o:ToString().").len(), 1, "program {i}");
+        assert_eq!(run("").len(), 0, "program {i}");
+    }
 }

@@ -295,6 +295,7 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
     if tables.open {
         tables.database = database_tables(ctx, &tables);
     }
+    tables.callbacks = flow.units().len() > 1;
     let routines = routines(flow);
     let mut origins = Origins::default();
     let mut units: Vec<UnitIr> = flow
