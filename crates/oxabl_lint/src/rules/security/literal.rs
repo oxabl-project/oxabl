@@ -109,6 +109,18 @@ pub fn leading_word(source: &str, stmt: &Statement) -> Option<String> {
         .map(|(_, word)| word.to_ascii_uppercase())
 }
 
+/// Whether `text`, without its trailing whitespace, ends with the word `word`.
+pub fn ends_with_word(text: &str, word: &str) -> bool {
+    let text = text.trim_end();
+    text.len() >= word.len()
+        && text.is_char_boundary(text.len() - word.len())
+        && text[text.len() - word.len()..].eq_ignore_ascii_case(word)
+        && !text[..text.len() - word.len()]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// The tokens of one statement, for rules that read an unmodelled statement.
 ///
 /// Comments, the end-of-file token and the closing period are dropped. A token

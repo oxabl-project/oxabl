@@ -200,6 +200,55 @@ OS-COMMAND VALUE(STRING(l)).
     assert!(run_with("ABLSEC003", src, taint()).is_empty());
 }
 
+/// A condition that the parser does not put in a node is a decision too: of a
+/// joined record phrase, of `FOR EACH ... WHILE`, of `OPEN QUERY`, of
+/// `PRESELECT`, of an `ASSIGN` pair.
+#[test]
+fn a_condition_outside_the_node_is_a_decision() {
+    for (src, word) in [
+        (
+            "FOR EACH Customer NO-LOCK, EACH Order NO-LOCK WHERE Order.SalesRep = get-value(\"user\"):\nEND.\n",
+            "FOR",
+        ),
+        (
+            "FOR EACH Order NO-LOCK WHILE Order.SalesRep = get-value(\"user\"):\nEND.\n",
+            "FOR",
+        ),
+        (
+            "DEFINE QUERY q FOR Order.\nOPEN QUERY q FOR EACH Order NO-LOCK WHERE Order.SalesRep = get-value(\"user\").\n",
+            "OPEN",
+        ),
+        (
+            "REPEAT PRESELECT EACH Order NO-LOCK WHERE Order.SalesRep = get-value(\"user\"):\n  LEAVE.\nEND.\n",
+            "REPEAT",
+        ),
+        (
+            "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nASSIGN c = \"x\" WHEN get-value(\"role\") = \"admin\".\n",
+            "ASSIGN",
+        ),
+    ] {
+        let diags = check(src);
+        assert_eq!(diags.len(), 1, "{src}\n{diags:?}");
+        assert!(
+            src[diags[0].span.span.start as usize..].starts_with(word),
+            "{src}\n{diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("client supplied"),
+            "{}",
+            diags[0].message
+        );
+    }
+    // A value that is only stored or sorted on decides nothing.
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+ASSIGN c = get-value(\"role\").
+FOR EACH Order NO-LOCK BY get-value(\"user\"):
+END.
+";
+    assert!(check(src).is_empty());
+}
+
 #[test]
 fn request_objects_and_json_bodies_carry_identity_keys() {
     let src = "\

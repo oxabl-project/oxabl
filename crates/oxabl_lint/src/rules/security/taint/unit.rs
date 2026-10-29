@@ -12,7 +12,7 @@ use oxabl_flow::{Cfg, Edge, EdgeKind, ExitKind, NodeIx, NodeKind, Unit, UnitKind
 use oxabl_lexer::Kind;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::super::literal::{StatementText, is_constant};
+use super::super::literal::{StatementText, ends_with_word, is_constant};
 use super::value::{
     BUDGET_LABELS, CallIr, Compiler, Env, Origins, Out, PASSED, Routines, Slots, Summaries, Tables,
     Term, UNKNOWN, UnitSummary, Value,
@@ -767,6 +767,8 @@ impl Builder<'_, '_> {
     fn statement(&mut self, node: &oxabl_flow::Node, s: &Statement) -> (Vec<Op>, Option<Guard>) {
         let mut out = Vec::new();
         let mut guard = None;
+        // The statement is read from its tokens, whole.
+        let mut whole = false;
         if self.c.tables.exposed() && foreign_statement(s, self.source, self.c.tables) {
             self.c.foreign.push(s.span);
         }
@@ -967,6 +969,7 @@ impl Builder<'_, '_> {
                 }
             }
             (S::Skipped { .. }, _) => {
+                whole = true;
                 self.copy_lob(&mut out, s);
                 if let Some(st) = StatementText::of(self.source, s) {
                     self.c.tokens(&st, 0..st.len());
@@ -1045,10 +1048,55 @@ impl Builder<'_, '_> {
             (S::Do { .. } | S::Repeat { .. } | S::ForEach { .. }, NodeKind::Head) => {
                 self.header_calls(s);
             }
-            (kind, _) if !has_body(kind) => self.scan_calls(s),
+            (kind, _) if !has_body(kind) => {
+                whole = true;
+                self.scan_calls(s);
+            }
             _ => {}
         }
+        if !whole {
+            self.unmodelled(&mut out, s);
+        }
         (out, guard)
+    }
+
+    /// The ranges of a modelled statement that its node does not hold
+    /// (`SkippedTail::unmodelled`). Each runs its calls and makes the writes
+    /// of the statement weak, since it may decide whether they happen; one
+    /// that is not a condition or a sort key (`WHEN`, `WHERE`, `WHILE` or `BY`
+    /// before it) also adds its value to them. In an `ASSIGN`, a range touches
+    /// the pair it follows.
+    fn unmodelled(&mut self, out: &mut [Op], s: &Statement) {
+        let Some(tail) = &s.skipped_tail else {
+            return;
+        };
+        for &span in &tail.unmodelled {
+            let Some(st) = StatementText::over(self.source, span) else {
+                continue;
+            };
+            let value = self.c.tokens(&st, 0..st.len());
+            let before = self.source.get(..span.start as usize).unwrap_or_default();
+            let condition = ["WHEN", "WHERE", "WHILE", "BY"]
+                .iter()
+                .any(|w| ends_with_word(before, w));
+            let pair = match &s.kind {
+                S::Assign { .. } => out
+                    .iter()
+                    .filter(|op| op.span.end <= span.start)
+                    .map(|op| op.span)
+                    .max_by_key(|p| p.end),
+                _ => None,
+            };
+            for op in out
+                .iter_mut()
+                .filter(|op| pair.is_none_or(|p| op.span == p))
+            {
+                op.strong = false;
+                if !condition {
+                    op.value = Value::union([std::mem::take(&mut op.value), value.clone()]);
+                }
+            }
+        }
     }
 
     /// The calls in the header expressions of a block: its `ON` actions and

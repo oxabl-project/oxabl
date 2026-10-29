@@ -306,7 +306,13 @@ of file-level variables deeper than that leaves the summaries unconverged, and
 its sinks Unknown (see "The gate").
 
 A call is read in modelled statements and expressions, in block headers, and
-in the tokens of the statements that are not modelled. Every operand of every
+in the tokens of the statements that are not modelled. A modelled statement
+whose node does not hold part of it (`SkippedTail::unmodelled`: the `WHEN` of
+an `ASSIGN` pair, a joined record phrase, the `BY` and `WHILE` of `FOR EACH`,
+`PRESELECT`, ...) has that part read from its tokens too: its calls run, and
+the writes of the statement are weak, since it may decide whether they
+happen. A part that is not a condition or a sort key also adds its value to
+them. In an `ASSIGN`, a part touches only the pair it follows. Every operand of every
 expression is read for its calls, whatever the expression makes of its value:
 one walk over the operands of each expression kind covers the operands of a
 comparison, a logical operator, `CAN-FIND` and a subscript, and the condition

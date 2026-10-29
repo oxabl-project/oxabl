@@ -38,8 +38,11 @@
 //!
 //! The condition of `IF`, `CASE`, `DO WHILE` and `REPEAT WHILE`, the `WHERE`
 //! of `FOR EACH`, `FIND` and `CAN-FIND`, and an argument of an
-//! `auth-routines` routine (`[workspace.lint.security.reach]`). A value that
-//! is only displayed or stored is not reported.
+//! `auth-routines` routine (`[workspace.lint.security.reach]`). So is every
+//! `WHERE`, `WHILE` and `WHEN` that the parser does not put in a node: of a
+//! joined record phrase, of `FOR EACH ... WHILE`, of `PRESELECT` and `OPEN
+//! QUERY`, of an `ASSIGN` pair. A value that is only displayed or stored is
+//! not reported.
 //!
 //! # One finding per routine and origin
 //!
@@ -78,8 +81,10 @@
 
 use oxabl_ast::{Expression, ExpressionKind, RunTarget, Span, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Label, SecurityMode, Severity};
+use oxabl_lexer::Kind;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
+use super::literal::{StatementText, ends_with_word, leading_word};
 use super::reach::{names_routine, unit_at};
 use super::taint::{Gate, SinkKind, Unfinished};
 use super::{ABLSEC010, finding, meta};
@@ -138,6 +143,7 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
     }
     let mut v = Decisions {
         gate: Gate::new(ABLSEC010, NAME, program, ctx, shared),
+        source: ctx.source,
         auth: &ctx.lint_severities.security().reach.auth_routines,
         reported: Vec::new(),
         hits: Vec::new(),
@@ -246,6 +252,7 @@ fn report(ctx: &AnalysisContext, mut list: Vec<Hit>) -> Diagnostic {
 
 struct Decisions<'a> {
     gate: Gate<'a>,
+    source: &'a str,
     auth: &'a [String],
     /// The operands of the decisions found: a `CAN-FIND` inside one is not
     /// counted again.
@@ -278,6 +285,70 @@ impl Decisions<'_> {
     fn is_auth(&self, name: &str) -> bool {
         self.auth.iter().any(|p| names_routine(p, &[name]))
     }
+
+    /// The `WHERE`, `WHILE` and `WHEN` conditions of a statement that its node
+    /// does not hold: in the ranges the parser did not model, or anywhere in a
+    /// statement it skipped whole.
+    fn unmodelled(&mut self, s: &Statement) {
+        let ranges: Vec<Span> = match (&s.kind, &s.skipped_tail) {
+            (StatementKind::Skipped { .. }, _) => vec![s.span],
+            (_, Some(tail)) => tail.unmodelled.clone(),
+            _ => return,
+        };
+        let source = self.source;
+        let Some(word) = leading_word(source, s) else {
+            return;
+        };
+        for range in ranges {
+            let Some(st) = StatementText::over(source, range) else {
+                continue;
+            };
+            let before = source.get(..range.start as usize).unwrap_or_default();
+            let mut operands = Vec::new();
+            if CONDITIONS.iter().any(|w| ends_with_word(before, w)) {
+                operands.push(st.span(0..clause_end(&st, 0)));
+            }
+            let mut depth = 0usize;
+            for i in 0..st.len() {
+                match st.token(i).kind {
+                    Kind::LeftParen => depth += 1,
+                    Kind::RightParen => depth = depth.saturating_sub(1),
+                    _ if depth == 0 && CONDITIONS.iter().any(|w| st.is_word(i, w)) => {
+                        operands.push(st.span(i + 1..clause_end(&st, i + 1)));
+                    }
+                    _ => {}
+                }
+            }
+            for op in operands.into_iter().filter(|op| op.start < op.end) {
+                self.decide(s.span.start, &word, &[op]);
+            }
+        }
+    }
+}
+
+/// The words that start a condition.
+const CONDITIONS: [&str; 3] = ["WHERE", "WHILE", "WHEN"];
+
+/// Where the clause that starts at `from` ends: at the next condition, sort,
+/// or joined record phrase at the top level, or at the end.
+fn clause_end(st: &StatementText, from: usize) -> usize {
+    let mut depth = 0usize;
+    for i in from..st.len() {
+        match st.token(i).kind {
+            Kind::LeftParen => depth += 1,
+            Kind::RightParen => depth = depth.saturating_sub(1),
+            Kind::Comma if depth == 0 => return i,
+            _ if depth == 0
+                && ["WHERE", "WHILE", "WHEN", "BY", "BREAK"]
+                    .iter()
+                    .any(|w| st.is_word(i, w)) =>
+            {
+                return i;
+            }
+            _ => {}
+        }
+    }
+    st.len()
 }
 
 impl Visitor for Decisions<'_> {
@@ -312,6 +383,7 @@ impl Visitor for Decisions<'_> {
             }
             _ => {}
         }
+        self.unmodelled(s);
         true
     }
 
