@@ -20,8 +20,10 @@ use super::value::{
 use super::{ALL, Options};
 
 /// The most work the solve of one unit may do, unless the options set
-/// another. Past it the unit is not judged: see `value::BUDGET`.
-pub(super) const WORK_LIMIT: usize = 2_000_000;
+/// another. Past it the unit is not judged: see `value::BUDGET`. Measured on
+/// a large web tree: 2M leaves 0.05% of its units unjudged; 8M leaves a third
+/// of those for 1.4x the run time; 16M still leaves a fifth, for 1.8x.
+pub(super) const WORK_LIMIT: usize = 8_000_000;
 
 /// One write: `slot` takes `value`.
 #[derive(Debug, Clone)]

@@ -13,6 +13,18 @@ fn check_taint(code: &str, src: &str) -> Vec<Diagnostic> {
     run_with(code, src, taint())
 }
 
+/// Run `code` in taint mode with a work budget small enough for a short test.
+fn check_taint_budget(code: &str, src: &str) -> Vec<Diagnostic> {
+    run_with(
+        code,
+        src,
+        SecurityOptions {
+            work_budget: Some(5_000),
+            ..taint()
+        },
+    )
+}
+
 fn check_sink(code: &str, src: &str) -> Vec<Diagnostic> {
     run_with(code, src, SecurityOptions::default())
 }
@@ -49,7 +61,7 @@ fn lines(src: &str, diags: &[Diagnostic]) -> Vec<usize> {
 }
 
 /// A main block with an input parameter and `n` variables chained to each
-/// other, so that its solve runs past the work budget.
+/// other, so that its solve runs past a small work budget.
 fn heavy_main(n: usize) -> String {
     let mut src = String::from("DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.\n");
     for i in 0..n {
@@ -63,21 +75,21 @@ fn heavy_main(n: usize) -> String {
 
 #[test]
 fn a_main_block_past_its_budget_leaves_the_file_level_variables_unknown() {
-    let mut src = heavy_main(1600);
+    let mut src = heavy_main(100);
     src.push_str("PROCEDURE p:\n  OS-COMMAND VALUE(pc).\nEND PROCEDURE.\n");
     src.push_str("OS-COMMAND VALUE(pc).\n");
     let sink = lines(&src, &check_sink("ABLSEC003", &src));
     assert_eq!(sink.len(), 2);
-    assert_eq!(lines(&src, &check_taint("ABLSEC003", &src)), sink);
+    assert_eq!(lines(&src, &check_taint_budget("ABLSEC003", &src)), sink);
 }
 
 #[test]
 fn a_routine_past_its_budget_returns_unknown() {
     let mut src = String::from("FUNCTION f RETURNS CHARACTER PRIVATE ():\n");
-    src.push_str(&heavy_main(1600).replace("DEFINE INPUT PARAMETER", "DEFINE VARIABLE"));
+    src.push_str(&heavy_main(100).replace("DEFINE INPUT PARAMETER", "DEFINE VARIABLE"));
     src.push_str("  RETURN get-value(\"cmd\").\nEND FUNCTION.\n");
     src.push_str("DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nc = f().\nOS-COMMAND VALUE(c).\n");
-    assert_eq!(check_taint("ABLSEC003", &src).len(), 1);
+    assert_eq!(check_taint_budget("ABLSEC003", &src).len(), 1);
 }
 
 /// `f0` returns its parameter, each `fN` returns `f(N-1)` of its own.
