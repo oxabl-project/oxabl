@@ -436,7 +436,9 @@ their counts.
   it writes. A missing include path so gives stage 1 findings back.
 - Which built-in functions can be called without parentheses is a fixed
   list; a bare name not on it in an open file is Unknown, never clean.
-- A validator is trusted by name.
+- A validator is trusted by name. A check in a project function that
+  `validators` does not name is not seen, and an allow-list held in a
+  variable is not a literal list.
 - `RETURN-VALUE` at a unit entry, and after a procedure with no `RETURN` on
   some path, is Unknown, not what the caller held. The variable of a `CATCH`
   is Unknown, not what the block throws.
