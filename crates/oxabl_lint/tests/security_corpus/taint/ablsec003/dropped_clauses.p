@@ -9,6 +9,8 @@ DEFINE VARIABLE cWhen AS CHARACTER NO-UNDO.
 DEFINE VARIABLE cJoin AS CHARACTER NO-UNDO.
 DEFINE VARIABLE cWhile AS CHARACTER NO-UNDO.
 DEFINE VARIABLE cSort AS CHARACTER NO-UNDO.
+DEFINE VARIABLE hServer AS HANDLE NO-UNDO.
+DEFINE VARIABLE cServed AS CHARACTER NO-UNDO.
 DEFINE TEMP-TABLE ttJob NO-UNDO FIELD cArg AS CHARACTER.
 DEFINE TEMP-TABLE ttStep NO-UNDO FIELD cArg AS CHARACTER.
 
@@ -69,3 +71,9 @@ cSort = "ls".
 FOR EACH ttJob NO-LOCK BY readSort():
 END.
 OS-COMMAND SILENT VALUE(cSort). /* taint: real */
+
+/* The server a RUN runs on is part of the call, as a receiver is: what the
+   call gives back holds what chose the server. */
+hServer = WIDGET-HANDLE(get-value("server")).
+RUN job.p ON SERVER hServer (OUTPUT cServed).
+OS-COMMAND SILENT VALUE(cServed). /* taint: real */
