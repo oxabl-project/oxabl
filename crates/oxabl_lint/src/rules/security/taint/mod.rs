@@ -310,6 +310,7 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
     if tables.open {
         tables.database = database_tables(ctx, &tables);
     }
+    tables.receivers = receiver_tables(ctx, &tables);
     tables.callbacks = flow.units().len() > 1;
     let routines = routines(flow);
     let mut origins = Origins::default();
@@ -484,6 +485,44 @@ fn database_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> 
         } else {
             out.remove(&name);
             other.insert(name);
+        }
+    }
+    out
+}
+
+/// The receivers of `name:member` in the source that the file does not define
+/// and that the schema (or the metaschema) knows as tables, lower-cased.
+fn receiver_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> {
+    let lexed;
+    let tokens = if ctx.tokens.is_empty() {
+        lexed = oxabl_lexer::tokenize(ctx.source);
+        &lexed[..]
+    } else {
+        ctx.tokens
+    };
+    let mut out = FxHashSet::default();
+    for w in tokens.windows(2) {
+        let [name, colon] = w else { continue };
+        if colon.kind != oxabl_lexer::Kind::Colon || name.end != colon.start {
+            continue;
+        }
+        let Some(text) = ctx.source.get(name.start..name.end) else {
+            continue;
+        };
+        if !text
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        {
+            continue;
+        }
+        let text = text.to_ascii_lowercase();
+        if tables.names.contains(&text) || out.contains(&text) {
+            continue;
+        }
+        let atom = oxabl_lexer::oxabl_atom::OxablAtom::from(text.as_str());
+        if ctx.schema.resolve_table_with_metaschema(&atom).is_some() {
+            out.insert(text);
         }
     }
     out

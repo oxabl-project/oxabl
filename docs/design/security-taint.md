@@ -214,8 +214,11 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
     and `SUPER`;
   - `NEW` of a class, a method or a property (read or set) of an object of a
     class other than a JSON class, a static member of a class
-    (`pkg.Cls:m()`, `Cls:p`), and `INVOKE` of a handle. A built-in attribute
-    or method of a handle, a system handle, a buffer or a table is not;
+    (`pkg.Cls:m()`, `Cls:p`, `Cls:Run()`: any member of a name the file does
+    not declare, whatever it is called), and `INVOKE` of a handle. A built-in
+    attribute or method of a handle, a system handle, a buffer or a table is
+    not; a name the file does not declare is a table when the schema knows
+    it, and then a member named like a keyword is one of these;
   - `PUBLISH`, which runs the subscribers; `APPLY`, `WAIT-FOR`,
     `PROCESS EVENTS` and the statements that wait for input (`UPDATE`, `SET`,
     `PROMPT-FOR`, `CHOOSE`, `INSERT`), which run triggers; `DELETE OBJECT` of
@@ -362,8 +365,7 @@ their counts.
   database triggers (a `CREATE`, `DELETE`, `FIND` or field assignment of a
   database record), a destructor that garbage collection runs, a trigger that
   a statement not listed in "The gate" fires (`ENABLE`, `VIEW`, a
-  widget attribute set), and a member whose name is a keyword of
-  a name the file does not declare.
+  widget attribute set).
 - Statements the parser skips change no slot, except `COPY-LOB`.
 - A shared buffer or dataset holds what the file writes to it; only shared
   variables and temp-tables are Unknown.

@@ -497,6 +497,10 @@ pub(super) struct Tables {
     pub names: FxHashSet<String>,
     /// Lower-cased qualifiers of `q.f` reads that the schema knows as tables.
     pub database: FxHashSet<String>,
+    /// Lower-cased receivers of `name:member` that the file does not define
+    /// and the schema (with the metaschema) knows as tables: buffers, not
+    /// classes.
+    pub receivers: FxHashSet<String>,
     /// Lower-cased handle variables to the names of the tables, datasets or
     /// buffers whose `:HANDLE` the file assigns to them.
     pub handles: FxHashMap<String, Vec<String>>,
@@ -1044,8 +1048,9 @@ impl Compiler<'_> {
 
     /// [`Self::member_runs_elsewhere`] for an object the source names `o`. A
     /// name the file does not declare as a variable is a system handle, a
-    /// table, a buffer or a dataset, or else a class, or a name from outside
-    /// the file whose member is not a keyword.
+    /// table, a buffer or a dataset; a table the schema knows, whose member is
+    /// a keyword (a buffer attribute or method); or else a class, or a name
+    /// from outside the file, either of which may run code: `Other:Run()`.
     fn name_runs_elsewhere(&self, o: &str, member: &str, call: bool) -> bool {
         let o = o.to_ascii_lowercase();
         match self.tables.types.get(&o) {
@@ -1054,7 +1059,8 @@ impl Compiler<'_> {
             None if oxabl_semantic::SYSTEM_HANDLES.contains(&o.as_str()) || self.is_table(&o) => {
                 false
             }
-            None => !is_keyword(member),
+            None if self.tables.receivers.contains(&o) => !is_keyword(member),
+            None => true,
         }
     }
 

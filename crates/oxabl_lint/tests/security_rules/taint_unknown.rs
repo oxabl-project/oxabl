@@ -541,7 +541,10 @@ DELETE OBJECT hQ.
 FIND FIRST ttA NO-ERROR.
 OS-COMMAND VALUE(gc).
 ";
-    assert!(check_taint("ABLSEC003", src).is_empty());
+    // `Customer` is a table of the schema. Without one it may be a class, and
+    // its member may run code elsewhere.
+    let schema = customer_schema();
+    assert!(run_on("ABLSEC003", src, taint(), &schema, |c| c).is_empty());
     assert_eq!(check_sink("ABLSEC003", src).len(), 1);
 }
 
@@ -661,6 +664,31 @@ fn a_call_of_code_elsewhere_inside_any_operand_or_clause_makes_shared_variables_
     assert_eq!(operand_misses("gs", "noop()", 0), Vec::<&str>::new());
 }
 
+/// A name the file does not declare, before `:`, is a class or a name from
+/// outside the file, whatever its member is called; a table the schema knows
+/// is a buffer, whose keyword members run nothing elsewhere.
+#[test]
+fn a_keyword_member_of_an_undeclared_name_runs_code_elsewhere_unless_it_is_a_table() {
+    let src = |call: &str| {
+        format!(
+            "DEFINE NEW SHARED VARIABLE gs AS CHARACTER NO-UNDO.\n\
+             gs = \"ls\".\n{call}\nOS-COMMAND VALUE(gs).\n"
+        )
+    };
+    for call in ["Other:Save().", "Other:Update().", "x = Other:Validate()."] {
+        assert_eq!(check_taint("ABLSEC003", &src(call)).len(), 1, "{call}");
+    }
+    let schema = customer_schema();
+    let on = |call: &str| run_on("ABLSEC003", &src(call), taint(), &schema, |c| c).len();
+    assert_eq!(on("Customer:VALIDATE()."), 0);
+    assert_eq!(on("Other:VALIDATE()."), 1);
+    // Without a schema, the name may be a class.
+    assert_eq!(
+        check_taint("ABLSEC003", &src("Customer:VALIDATE().")).len(),
+        1
+    );
+}
+
 /// Each program sets `gc` to a constant, makes the call `{call}`, then runs
 /// `gc`. Code elsewhere that the call runs may run a routine or trigger of the
 /// file, or set a member of the class, in between.
@@ -755,6 +783,10 @@ fn a_routine_trigger_or_member_that_code_elsewhere_may_run_or_set_is_refreshed_a
         "PROCESS EVENTS.",
         "PUBLISH \"go\".",
         "Other:Setup().",
+        // A member named like a keyword of a class the file does not declare.
+        "Other:Run().",
+        "Other:Save().",
+        "IF Other:Validate() THEN .",
         "o:ToString().",
         "DYNAMIC-FUNCTION(\"f\" IN SOURCE-PROCEDURE).",
     ] {
