@@ -577,6 +577,9 @@ pub(crate) enum Unfinished {
     Budget,
     /// The rounds ended before the summaries of the file stopped changing.
     Unsettled,
+    /// The analysis cannot see the value: text it cannot read (an unexpanded
+    /// reference), or a unit an include that did not arrive may write.
+    Unseen,
 }
 
 /// What reaches a sink operand.
@@ -811,9 +814,9 @@ impl<'g> Gate<'g> {
     /// Judge a decision whose operands are at `operands`: the path when a
     /// value of `kind` reaches them, or [`Judgement::unjudged`] when the
     /// analysis did not finish a value that reaches them (a work budget, or
-    /// summaries that did not settle), so neither hides a decision. A decision the analysis cannot judge for
-    /// another reason is not reported; neither is any in a file whose parse
-    /// recovered.
+    /// summaries that did not settle) or cannot see it (Unknown), so none of
+    /// these hides a decision. No decision in a file whose parse recovered is
+    /// reported.
     pub fn judge_decision(&self, operands: &[Span], kind: SinkKind) -> Option<Judgement> {
         if operands.is_empty() || self.ctx.parse_recovered {
             return None;
@@ -821,7 +824,8 @@ impl<'g> Gate<'g> {
         match self.reach(operands, kind, true) {
             Reach::Tainted(steps) => Some(self.tainted(&steps)),
             Reach::Unjudged(why) => Some(Judgement::unjudged(why)),
-            Reach::Clean | Reach::Unknown => None,
+            Reach::Unknown => Some(Judgement::unjudged(Unfinished::Unseen)),
+            Reach::Clean => None,
         }
     }
 

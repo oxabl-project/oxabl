@@ -3,7 +3,7 @@
 
 use oxabl_common::{Diagnostic, SecurityMode, SecurityOptions, SecurityValidator};
 
-use super::taint::{run_with, taint};
+use super::taint::{run_on, run_with, taint};
 
 /// `options` in taint mode.
 fn check_with(src: &str, options: SecurityOptions) -> Vec<Diagnostic> {
@@ -247,6 +247,50 @@ FOR EACH Order NO-LOCK BY get-value(\"user\"):
 END.
 ";
     assert!(check(src).is_empty());
+}
+
+/// A decision on a value the analysis cannot see is not judged, and says so:
+/// an unexpanded reference, a unit where an include did not arrive.
+#[test]
+fn a_decision_on_a_value_the_analysis_cannot_see_is_not_judged() {
+    let src = "\
+IF {&ROLE} = \"admin\" THEN RUN purge.
+IF \"x\" = \"admin\" THEN RUN purge.
+";
+    let diags = check(src);
+    assert_eq!(lines(src, &diags), [1], "{diags:?}");
+    assert!(
+        diags[0].message.contains(
+            "authorization could not be judged: the analysis cannot see a value it reads"
+        ),
+        "{}",
+        diags[0].message
+    );
+    assert!(
+        diags[0]
+            .help
+            .as_deref()
+            .is_some_and(|h| h.contains("include paths")),
+        "{:?}",
+        diags[0].help
+    );
+    // An include that did not arrive at the start of line 2 may set `c`.
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+
+IF c = \"admin\" THEN RUN purge.
+";
+    let at = [src.find("\n\n").unwrap() as u32 + 1];
+    let schema = oxabl_schema::Schema::empty();
+    let diags = run_on("ABLSEC010", src, taint(), &schema, |c| {
+        c.with_elided(&at).with_elided_includes(&at)
+    });
+    assert_eq!(lines(src, &diags), [3], "{diags:?}");
+    assert!(
+        diags[0].message.contains("cannot see"),
+        "{}",
+        diags[0].message
+    );
 }
 
 #[test]

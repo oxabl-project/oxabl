@@ -251,7 +251,9 @@ rule reads either as Unknown. ABLSEC010, which reports no Unknown, reports a
 decision that one reaches as not judged, once per routine and reason
 ("authorization could not be judged: analysis budget exceeded", or "...: the
 values of this file did not settle in the analysis"), so neither bound hides a
-decision.
+decision. A decision on text it cannot read, or in a unit where an include did
+not arrive, is not judged either ("...: the analysis cannot see a value it
+reads").
 
 ### The path
 

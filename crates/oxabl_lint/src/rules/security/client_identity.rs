@@ -72,12 +72,18 @@
 //! judged: the values of this file did not settle in the analysis" when the
 //! summaries of the file did not stop changing in the rounds.
 //!
+//! A decision on a value the analysis cannot see (an unexpanded reference, a
+//! unit where an include did not arrive) is not judged either, and says
+//! "authorization could not be judged: the analysis cannot see a value it
+//! reads".
+//!
 //! # What is not reported
 //!
-//! The identity of the session (`USERID`, the client principal), a decision
-//! the analysis cannot judge for another reason (an unexpanded reference, an
-//! include that did not arrive, a shared variable), and any decision in a
-//! file whose parse recovered.
+//! The identity of the session (`USERID`, the client principal), a value of
+//! another program (a shared variable, a parameter of a routine that code
+//! outside the file calls, unless it is read by an identity key: the identity
+//! is followed inside one file), and any decision in a file whose parse
+//! recovered.
 
 use oxabl_ast::{Expression, ExpressionKind, RunTarget, Span, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Label, SecurityMode, Severity};
@@ -112,6 +118,12 @@ pub const HELP: &str = "Take the user, company and role from the session that au
 pub const UNJUDGED_HELP: &str = "The routine is too large for the analysis to follow its values. \
      Check by hand that its decisions take the user, company and role from the session, or split \
      it into smaller routines.";
+
+/// Remediation text of a decision on a value the analysis cannot see.
+pub const UNSEEN_HELP: &str = "A value that this decision reads comes from text the analysis \
+     cannot read: a preprocessor reference that did not expand, or an include that did not \
+     arrive (check the include paths). Check by hand that the decisions of this routine take the \
+     user, company and role from the session.";
 
 /// Remediation text of a routine in a file whose summaries did not settle.
 pub const UNSETTLED_HELP: &str = "The values of this file pass through more routines, one after \
@@ -211,6 +223,7 @@ fn report(ctx: &AnalysisContext, mut list: Vec<Hit>) -> Diagnostic {
                 "the values of this file did not settle in the analysis",
                 UNSETTLED_HELP,
             ),
+            Unfinished::Unseen => ("the analysis cannot see a value it reads", UNSEEN_HELP),
         };
         let mut d = finding(
             ctx,
