@@ -368,6 +368,17 @@ OS-COPY VALUE(SESSION:PARAMETER) VALUE(\"/tmp/x\").
 COPY-LOB FROM FILE WEB-CONTEXT:GET-CGI-VALUE(\"GET\", \"f\") TO m.
 ";
     assert_eq!(check_taint("ABLSEC005", src).len(), 4);
+    // `PARAM` abbreviates `PARAMETER`.
+    let src = "OS-DELETE VALUE(SESSION:PARAM).\n";
+    let diags = check_taint("ABLSEC005", src);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0]
+            .message
+            .contains("untrusted input: `SESSION:PARAM`"),
+        "{}",
+        diags[0].message
+    );
 }
 
 #[test]

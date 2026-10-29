@@ -115,7 +115,7 @@ rule hands over by span).
 | a member or method of an object whose name says request (`poRequest`, `oWebRequest`) | on |
 | `IMPORT` targets, `SET`/`UPDATE`/`MESSAGE ... UPDATE` targets | on |
 | `COPY-LOB FROM FILE ... TO target`, `READ-JSON` and `READ-XML` with a source type of `"FILE"` or one that is not a literal, socket `READ(memptr, ...)` | on |
-| `OS-GETENV(...)`, `SESSION:PARAMETER`, `SESSION:STARTUP-PARAMETERS` | on |
+| `OS-GETENV(...)`, `SESSION:PARAMETER` (or `SESSION:PARAM`), `SESSION:STARTUP-PARAMETERS` | on |
 | database fields | off (`database-fields = true`) |
 | project functions and methods (`sources = [...]`) | none |
 
@@ -127,6 +127,53 @@ Externally callable: the main block of a procedure file, a `PROCEDURE` or
 An unknown call (a user function, a method, `RUN`, `NEW`) returns the union of
 its receiver and its arguments: it is tainted when any argument is. Its
 `OUTPUT` arguments get the same value.
+
+### Built-in reads
+
+A value that the runtime fills, not the program, is Unknown unless a list
+names it: the default is inverted, so a read that nothing models is never
+clean. The lists are in `taint/value.rs`, and a guard test enumerates each
+registry against them.
+
+- **Built-in functions.** Each function of the registry
+  (`oxabl_lexer::BUILTIN_FUNCTIONS`) is a source, a sanitiser (`QUOTER`,
+  `html-encode`), a number or a logical, `RETURN-VALUE`, one whose result is
+  made of its arguments or holds no input (`ENTRY`, `SUBSTRING`, `STRING`,
+  `TODAY`, `GUID`, `PROGRAM-NAME`: the list `ARGS`), or Unknown
+  (`FRAME-VALUE`, `INPUT`, `OS-DIR`, `SSL-SERVER-NAME`). A function on no list
+  is Unknown. One that the program calls without parentheses (`TODAY`) is
+  read the same way.
+- **System handles.** A handle of the program or the session (`SESSION`,
+  `FILE-INFO`, `THIS-PROCEDURE`, `LOG-MANAGER`, ...) holds what the program set
+  on it. Any other one (`ERROR-STATUS`, `SELF`, `FOCUS`, `LAST-EVENT`,
+  `CLIPBOARD`, `SOURCE-PROCEDURE`, `TARGET-PROCEDURE`, and a system handle on
+  no list) is foreign: the runtime or another program fills it.
+- **Attributes and methods of a handle.** On a handle of the program (a
+  handle variable, `BUFFER b:`, a system handle of the program), a member on
+  the lists `MODELLED_MEMBERS` and `NO_INPUT_MEMBERS` gives what the handle
+  and the arguments hold: what the program set (`PRIVATE-DATA`,
+  `FULL-PATHNAME` after `FILE-NAME`), a handle it reaches (`BUFFER-FIELD`), a
+  logical of an action (`QUERY-PREPARE`), a number or a name. Any other member
+  (`BUFFER-VALUE`, `SCREEN-VALUE`, `NODE-VALUE`, `STRING-VALUE`,
+  `GET-MESSAGE`, ...) adds Unknown. `BUFFER-VALUE` read through `BUFFER b:`
+  gives what the tables of `b` hold. On a foreign handle only a member of
+  `NO_INPUT_MEMBERS` (a number, a logical, a name: `ERROR-STATUS:ERROR`,
+  `SELF:NAME`) is clean. A member of an object of a class is the unknown call
+  above.
+- **`RETURN-VALUE`** is a slot of every unit that reads or sets it and of
+  every procedure, in a file that reads it (a file that does not has no use
+  for it, and its summaries need not settle on it). A `RUN` of an internal procedure sets it to the
+  procedure's summary (see "Calls of the file"), and any other `RUN` to the
+  union of its inputs and Unknown. At a unit entry it holds Unknown (what the
+  caller's last `RUN` left). A call of code the file does not hold, and a
+  call of a function or method of the file, which may `RUN` something, add
+  Unknown to it.
+- **The variable of a `CATCH`** holds what was thrown, which may be any text:
+  Unknown.
+
+Unknown here is a label without the client identity (see "The gate"), so a
+sink rule reports such a read as stage 1 does, and ABLSEC010 does not report
+a decision on it, as it does not for a shared variable.
 
 Request data often arrives as tables. An `INPUT DATASET` parameter taints
 every table of the dataset. `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`,
@@ -243,6 +290,9 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
   field of the table; one that abbreviates a table name is Unknown, since the
   includer may define it as a buffer of a table with the same fields. Without a schema, a database
   field read in an include file checked on its own is Unknown too.
+- a read of a value that the runtime fills and no list names, `RETURN-VALUE`
+  where no `RUN` of the unit set it or after a `RUN` of another program, and
+  the variable of a `CATCH` (see "Built-in reads").
 
 What the first two leave has an origin of its own: the analysis did not
 finish the value. A unit past its budget, and what it leaves, has `BUDGET`;
@@ -291,7 +341,10 @@ to the rules, so the CLI, the daemon, the LSP and wasm need no new plumbing.
 ### Calls of the file
 
 Each procedure, function and method of a file has a **summary**: the labels
-of its result (a `$return` slot that each `RETURN expr` sets) and of each
+of its result (a `$return` slot that each `RETURN expr` sets; for a
+procedure, its `RETURN-VALUE` at its exit, also when it raises an error,
+which `RETURN expr`, `RETURN ERROR expr` and `UNDO, THROW expr` set, `RETURN.`
+empties, and which holds Unknown on a path with no `RETURN`) and of each
 `OUTPUT`/`INPUT-OUTPUT` parameter at its exit. An input parameter has an
 origin of its own: the source "input parameter `pc`" for a unit that code
 outside the file can call, and a **placeholder** for any other. A call
@@ -384,11 +437,20 @@ their counts.
 - Which built-in functions can be called without parentheses is a fixed
   list; a bare name not on it in an open file is Unknown, never clean.
 - A validator is trusted by name.
+- `RETURN-VALUE` at a unit entry, and after a procedure with no `RETURN` on
+  some path, is Unknown, not what the caller held. The variable of a `CATCH`
+  is Unknown, not what the block throws.
+- A built-in attribute or method that the lists do not name is Unknown,
+  even where the program set it (`BUFFER-VALUE` through a handle variable of
+  a table whose fields hold no taint).
+- The targets that `WRITE-JSON` and `WRITE-XML` fill (`h:WRITE-JSON("LONGCHAR",
+  lc)`) do not take the data of the table.
 
 ## Result
 
-On the taint corpus, precision goes from 0.62 (stage 1) to 0.97 (stage 2) and
-recall stays at 1.00 (it was 0.96 before calls of the file were followed,
+On the taint corpus, precision goes from 0.66 (stage 1) to 0.98 (stage 2) and
+recall stays at 1.00 (it was 0.93 before `RETURN-VALUE`, `RETURN ERROR`, a
+`CATCH` variable and the built-in reads were modelled, 0.96 before calls of the file were followed,
 0.89 on the cases of an include file, request tables and header encoders
 before they were modelled, 0.93 on the cases of an includer's table, an
 unreserved keyword as a variable and `READ-JSON` through a handle or from a

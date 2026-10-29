@@ -182,6 +182,24 @@ OS-COMMAND VALUE(f).
     assert!(check_fragment("ABLSEC003", src).is_empty());
 }
 
+/// The variable of a `CATCH` is an error object: its method may run code of
+/// a class elsewhere, which may set the shared variables of the file.
+#[test]
+fn a_method_of_a_caught_error_may_run_code_elsewhere() {
+    let src = "\
+DEFINE NEW SHARED VARIABLE c AS CHARACTER NO-UNDO.
+DO ON ERROR UNDO, THROW:
+  c = \"ls\".
+  CATCH e AS app.JobError:
+    c = \"ls\".
+    e:Describe().
+    OS-COMMAND VALUE(c).
+  END CATCH.
+END.
+";
+    assert_eq!(lines(src, &check_taint("ABLSEC003", src)), [7]);
+}
+
 #[test]
 fn a_member_a_class_inherits_is_unknown() {
     let src = "\

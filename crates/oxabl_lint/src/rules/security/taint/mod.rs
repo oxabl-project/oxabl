@@ -95,6 +95,13 @@
 //! outside the file (an include checked on its own, an include that did not
 //! arrive, a class that inherits).
 //!
+//! A value that the runtime fills is Unknown unless a list of `value` models
+//! it: a built-in function, a member of a system handle or of a handle, the
+//! variable of a `CATCH`. `RETURN-VALUE` is a slot: a `RUN` of a procedure of
+//! the file sets it to what the procedure gives back with `RETURN` or `RETURN
+//! ERROR`, any other `RUN` to its inputs and Unknown, and it is Unknown at a
+//! unit entry and after a call of code elsewhere.
+//!
 //! What a unit past its work budget leaves carries its own origin, `BUDGET`,
 //! and what the rounds leave when the summaries do not settle carries
 //! `UNSETTLED`: a sink rule reads either as Unknown, and ABLSEC010, which

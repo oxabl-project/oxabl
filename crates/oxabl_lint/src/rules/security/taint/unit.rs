@@ -14,8 +14,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, ends_with_word, is_constant};
 use super::value::{
-    BUDGET_LABELS, CallIr, Compiler, Env, Origins, Out, PASSED, Routines, Slots, Summaries, Tables,
-    Term, UNKNOWN, UnitSummary, Value,
+    BUDGET_LABELS, CallIr, Compiler, Env, Origins, Out, PASSED, RETURN_VALUE, Routines, Slots,
+    Summaries, Tables, Term, UNKNOWN, UnitSummary, Value,
 };
 use super::{ALL, Options};
 
@@ -69,6 +69,8 @@ pub(super) struct UnitIr {
     /// A main block: the variables it declares are file-level for the units
     /// inside it.
     pub main: bool,
+    /// A procedure: what it leaves in `RETURN-VALUE` is its result.
+    pub procedure: bool,
     /// By position.
     pub params: Vec<ParamInfo>,
     /// The calls of routines of the file, with the node that makes each.
@@ -174,7 +176,13 @@ pub(super) fn statements(program: &[Statement]) -> FxHashMap<NodeId, &Statement>
 /// The temp-tables of a file, what each buffer, dataset and handle variable
 /// is for, and the names it defines.
 pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tables {
-    let mut t = Tables::default();
+    let mut t = Tables {
+        return_value: source
+            .as_bytes()
+            .windows(10)
+            .any(|w| w.eq_ignore_ascii_case(b"return-val")),
+        ..Tables::default()
+    };
     let locals = routine_statements(stmts);
     for s in stmts.values() {
         defined_names(s, source, locals.contains(&s.id), &mut t.names);
@@ -270,6 +278,17 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
                 t.types.insert(
                     name.name.to_ascii_lowercase(),
                     data_type.class_name().unwrap_or("").to_ascii_lowercase(),
+                );
+            }
+            // An error object: its members are a class's.
+            S::Catch {
+                error_var,
+                error_type,
+                ..
+            } => {
+                t.types.insert(
+                    error_var.name.to_ascii_lowercase(),
+                    error_type.to_ascii_lowercase(),
                 );
             }
             S::Assignment { target, value } => handle_of(target, value, &mut t.handles),
@@ -488,12 +507,30 @@ struct Builder<'c, 'a> {
     source: &'a str,
     external: bool,
     unit: u32,
+    /// The unit is a procedure: `RETURN` and `RETURN ERROR` set its
+    /// `RETURN-VALUE`.
+    procedure: bool,
     /// Parameter position by the id of its definition.
     positions: FxHashMap<NodeId, u32>,
     params: Vec<ParamInfo>,
 }
 
 impl Builder<'_, '_> {
+    /// `RETURN-VALUE` takes `value`, in a file that reads it.
+    fn set_return_value(&mut self, out: &mut Vec<Op>, value: Value, span: Span) {
+        if !self.c.tables.return_value {
+            return;
+        }
+        if let Some(slot) = self.c.return_value_slot() {
+            out.push(Op {
+                slot,
+                value,
+                strong: true,
+                span,
+            });
+        }
+    }
+
     fn set(&mut self, out: &mut Vec<Op>, target: &Expression, value: Value, span: Span) {
         for (slot, strong) in self.c.target(target) {
             out.push(Op {
@@ -769,7 +806,7 @@ impl Builder<'_, '_> {
         let mut guard = None;
         // The statement is read from its tokens, whole.
         let mut whole = false;
-        if self.c.tables.exposed() && foreign_statement(s, self.source, self.c.tables) {
+        if self.c.tables.watches() && foreign_statement(s, self.source, self.c.tables) {
             self.c.foreign.push(s.span);
         }
         match (&s.kind, node.kind) {
@@ -852,6 +889,9 @@ impl Builder<'_, '_> {
             (S::Return(Some(e)), _) => {
                 self.output_arguments(&mut out, e, s.span);
                 let v = self.c.expr(e);
+                if self.procedure {
+                    self.set_return_value(&mut out, v.clone(), s.span);
+                }
                 if self.c.declared.contains(RETURN_SLOT)
                     && let Some(slot) = self.c.var_slot(RETURN_SLOT)
                 {
@@ -862,6 +902,18 @@ impl Builder<'_, '_> {
                         span: s.span,
                     });
                 }
+            }
+            // `RETURN.`: an empty `RETURN-VALUE`. `RETURN ERROR` with a value
+            // the parser does not hold reads it from the tail.
+            (S::Return(None), _) if self.procedure => {
+                self.set_return_value(&mut out, Value::default(), s.span);
+            }
+            // `RETURN ERROR x` and `UNDO, THROW x`: a procedure gives `x` back
+            // in `RETURN-VALUE`, also when it is an error object.
+            (S::Throw(e), _) if self.procedure => {
+                self.output_arguments(&mut out, e, s.span);
+                let v = self.c.expr(e);
+                self.set_return_value(&mut out, v, s.span);
             }
             (
                 S::Run {
@@ -886,7 +938,14 @@ impl Builder<'_, '_> {
                     callees: callees.clone(),
                     args: args.clone(),
                     span: s.span,
+                    run: true,
                 });
+                let result = Value(vec![Term::Call {
+                    callees: callees.clone(),
+                    out: Out::Return,
+                    args: args.clone(),
+                }]);
+                self.set_return_value(&mut out, result, s.span);
                 for (i, a) in arguments.iter().enumerate() {
                     if matches!(
                         a.direction,
@@ -910,7 +969,7 @@ impl Builder<'_, '_> {
                 },
                 _,
             ) => {
-                if self.c.tables.exposed() {
+                if self.c.tables.watches() {
                     self.c.foreign.push(s.span);
                 }
                 let mut inputs = Vec::new();
@@ -934,6 +993,10 @@ impl Builder<'_, '_> {
                         self.set(&mut out, &a.expression, value.clone(), s.span);
                     }
                 }
+                // What the program it runs returns: an unknown call's result,
+                // and Unknown.
+                let result = Value::union([value, Value::origin(UNKNOWN)]);
+                self.set_return_value(&mut out, result, s.span);
             }
             (S::Import { targets, .. }, _) => {
                 let id = self.c.origins.add("file read `IMPORT`".to_string(), s.span);
@@ -994,11 +1057,13 @@ impl Builder<'_, '_> {
                     });
                 }
             }
+            // The error object holds what was thrown, which may be text of any
+            // origin: Unknown.
             (S::Catch { error_var, .. }, NodeKind::Head) => {
                 if let Some(slot) = self.c.var_slot(&error_var.name) {
                     out.push(Op {
                         slot,
-                        value: Value::default(),
+                        value: Value::origin(UNKNOWN),
                         strong: true,
                         span: node.span,
                     });
@@ -1142,7 +1207,7 @@ impl Builder<'_, '_> {
     /// from its tokens; with shared variables, also the members it reads,
     /// which may run code elsewhere.
     fn scan_calls(&mut self, s: &Statement) {
-        let exposed = self.c.tables.exposed();
+        let exposed = self.c.tables.watches();
         let Some(text) = crate::rules::syntactic::source_of(self.source, s.span) else {
             return;
         };
@@ -1383,6 +1448,7 @@ pub(super) fn compile(
         declared.insert(RETURN_SLOT.to_string());
     }
     let positions = positions(unit, unit_stmt, entry);
+    let procedure = unit.kind == UnitKind::Procedure;
     let mut slots = Slots::default();
     let mut ops = vec![Vec::new(); cfg.node_count()];
     let mut guards = FxHashMap::default();
@@ -1406,6 +1472,7 @@ pub(super) fn compile(
             source,
             external: is_external(unit, unit_stmt, source, options),
             unit: cfg.id().index() as u32,
+            procedure,
             params: vec![ParamInfo::default(); positions.len()],
             positions,
         };
@@ -1427,7 +1494,13 @@ pub(super) fn compile(
             calls.extend(b.c.calls.drain(..).map(|c| (i, c)));
             foreign.extend(b.c.foreign.drain(..).map(|span| (i, span)));
         }
+        if procedure && tables.return_value {
+            b.c.return_value_slot();
+        }
         params = b.params;
+    }
+    if let Some(slot) = slots.get(RETURN_VALUE) {
+        return_value_after_calls(slot, &mut ops, &calls, &foreign, cfg.entry());
     }
     for op in ops.iter_mut().flatten() {
         op.value.expand_tables(&slots);
@@ -1438,11 +1511,41 @@ pub(super) fn compile(
         ops,
         guards,
         main: unit.kind == UnitKind::Main,
+        procedure,
         params,
         calls,
         foreign,
         outside: false,
     }
+}
+
+/// `RETURN-VALUE` holds, at the unit entry, what a caller's last `RUN` left:
+/// Unknown. After a call that may run code the file does not hold, and after
+/// a call of a function or method of the file, which may `RUN` something, it
+/// may hold Unknown too. A `RUN` of a procedure sets it as it compiles.
+fn return_value_after_calls(
+    slot: u32,
+    ops: &mut [Vec<Op>],
+    calls: &[(NodeIx, CallIr)],
+    foreign: &[(NodeIx, Span)],
+    entry: NodeIx,
+) {
+    let unknown = |span, strong| Op {
+        slot,
+        value: Value::origin(UNKNOWN),
+        strong,
+        span,
+    };
+    let sites = foreign.iter().copied().chain(
+        calls
+            .iter()
+            .filter(|(_, c)| !c.run)
+            .map(|(n, c)| (*n, c.span)),
+    );
+    for (n, span) in sites {
+        ops[n.index()].push(unknown(span, false));
+    }
+    ops[entry.index()].insert(0, unknown(Span::DUMMY, true));
 }
 
 /// The forward problem of one unit.
@@ -1708,18 +1811,33 @@ pub(super) fn summarize(
             ..UnitSummary::default()
         };
     };
+    // A procedure gives back its `RETURN-VALUE`, also when it raises an error.
+    let ret = if ir.procedure {
+        let mut ret = Labels::new();
+        if let Some(s) = ir.slots.get(RETURN_VALUE) {
+            for exit in [ExitKind::Return, ExitKind::Error]
+                .into_iter()
+                .filter_map(|k| cfg.exit(k))
+            {
+                oxabl_flow::provenance::merge(&mut ret, sol.before(exit).get(s as usize));
+            }
+        }
+        ret
+    } else {
+        Labels::new()
+    };
     let Some(exit) = cfg.exit(ExitKind::Return) else {
         return UnitSummary {
+            ret,
             params,
             ..UnitSummary::default()
         };
     };
     let fact = sol.before(exit);
-    let ret = ir
-        .slots
-        .get(RETURN_SLOT)
-        .map(|s| fact.get(s as usize).iter().copied().collect())
-        .unwrap_or_default();
+    let ret = match ir.slots.get(RETURN_SLOT) {
+        Some(s) if !ir.procedure => fact.get(s as usize).iter().copied().collect(),
+        _ => ret,
+    };
     let outs = ir
         .params
         .iter()

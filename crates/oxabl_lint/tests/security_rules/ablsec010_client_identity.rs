@@ -249,6 +249,31 @@ END.
     assert!(check(src).is_empty());
 }
 
+/// A procedure gives back what it returns in `RETURN-VALUE`: a decision on
+/// it decides on the identity its caller passed.
+#[test]
+fn an_identity_a_procedure_returns_reaches_return_value() {
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+c = get-value(\"role\").
+PROCEDURE chk:
+    DEFINE INPUT PARAMETER p AS CHARACTER NO-UNDO.
+    RETURN STRING(p = \"admin\").
+END PROCEDURE.
+RUN chk (c).
+IF RETURN-VALUE = \"yes\" THEN RUN purge.
+RUN chk (\"guest\").
+IF RETURN-VALUE = \"yes\" THEN RUN purge.
+";
+    let diags = check(src);
+    assert_eq!(lines(src, &diags), [8], "{diags:?}");
+    assert!(
+        diags[0].message.contains("`RETURN-VALUE`"),
+        "{}",
+        diags[0].message
+    );
+}
+
 /// A decision on a value the analysis cannot see is not judged, and says so:
 /// an unexpanded reference, a unit where an include did not arrive.
 #[test]

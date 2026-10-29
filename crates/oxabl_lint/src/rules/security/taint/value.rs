@@ -22,6 +22,12 @@ pub(super) const NUMERIC_SAFE: u32 = ALL & !SinkKind::Size.bit();
 /// source: a sink it reaches is reported as stage 1 reports it.
 pub(super) const UNKNOWN: u32 = u32::MAX;
 
+/// The slot of `RETURN-VALUE` in every unit that reads or sets it, and in
+/// every procedure, in a file that reads it: what the last `RUN` left, or
+/// what a procedure gives back with `RETURN` or `RETURN ERROR`. A file that
+/// does not read it has no such slot, so its summaries do not follow it.
+pub(super) const RETURN_VALUE: &str = "$return-value";
+
 /// The labels of a value the analysis cannot judge.
 const UNKNOWN_LABELS: [(u32, u32); 1] = [(UNKNOWN, ALL)];
 
@@ -522,6 +528,9 @@ pub(super) struct Tables {
     /// `SOURCE-PROCEDURE`, a trigger in `WAIT-FOR`, a method of an object
     /// that was passed on).
     pub callbacks: bool,
+    /// The source names `RETURN-VALUE`: only then does the analysis follow
+    /// it.
+    pub return_value: bool,
 }
 
 impl Tables {
@@ -530,6 +539,12 @@ impl Tables {
     /// looks for the calls of that code.
     pub fn exposed(&self) -> bool {
         self.callbacks || !self.shared.is_empty()
+    }
+
+    /// Whether the file looks for the calls of code it does not hold: it is
+    /// [`Self::exposed`], or it reads `RETURN-VALUE`, which such code may set.
+    pub fn watches(&self) -> bool {
+        self.exposed() || self.return_value
     }
 
     /// Whether `name` may hold a JSON object or array: its declared class is
@@ -728,6 +743,9 @@ pub(super) struct CallIr {
     pub args: Vec<Value>,
     /// The call.
     pub span: Span,
+    /// A `RUN` of a procedure, which sets `RETURN-VALUE` by its summary; a
+    /// function or method may set it by a `RUN` of its own.
+    pub run: bool,
 }
 
 /// Builds values for one unit.
@@ -775,7 +793,235 @@ enum Builtin {
     Numeric,
     Logical,
     Encode,
+    /// A built-in function whose result is made of its arguments, or holds
+    /// no input: see [`ARGS`].
+    Args,
+    /// `RETURN-VALUE`: what the last `RUN` left.
+    ReturnValue,
+    /// A built-in function whose result stage 2 does not model: Unknown.
+    Unknown,
+    /// Not a built-in function: an unknown call.
     Other,
+}
+
+/// Built-in functions whose result is made of their arguments (`ENTRY`,
+/// `SUBSTRING`, `STRING`), or holds no input (`TODAY`, `GUID`, `DBNAME`,
+/// `PROGRAM-NAME`): the union of the arguments is their value. With the
+/// lists of [`builtin`] and [`UNKNOWN_FUNCTIONS`], every built-in function
+/// has a decision; one on none of them is Unknown.
+const ARGS: [&str; 196] = [
+    "accum",
+    "add-interval",
+    "alias",
+    "audit-enabled",
+    "base64-decode",
+    "base64-encode",
+    "big-endian",
+    "box",
+    "buffer-group-id",
+    "buffer-group-name",
+    "buffer-partition-id",
+    "buffer-tenant-id",
+    "buffer-tenant-name",
+    // The parser makes `CAN-FIND` and `IF ... THEN ... ELSE` expression
+    // kinds; the token front end reads `CAN-FIND(...)` as its arguments.
+    "can-find",
+    "caps",
+    "cast",
+    "chr",
+    "codepage-convert",
+    "compare",
+    "connected",
+    "count-of",
+    "current-changed",
+    "current-language",
+    "current-result-row",
+    "current-value",
+    "data-source-modified",
+    "dataservers",
+    "db-remote-host",
+    "dbcodepage",
+    "dbcollation",
+    "dbname",
+    "dbparam",
+    "dbrestrictions",
+    "dbtaskid",
+    "dbtype",
+    "dbversion",
+    "decrypt",
+    "dynamic-cast",
+    "dynamic-current-value",
+    "dynamic-enum",
+    // Calls of code elsewhere: an unknown call.
+    "dynamic-function",
+    "dynamic-invoke",
+    "dynamic-new",
+    "dynamic-next-value",
+    "dynamic-property",
+    "encode",
+    "encrypt",
+    "entered",
+    "entry",
+    "error",
+    "extent",
+    "fill",
+    "first-of",
+    "fix-codepage",
+    "frame-col",
+    "frame-db",
+    "frame-down",
+    "frame-field",
+    "frame-file",
+    "frame-index",
+    "frame-line",
+    "frame-name",
+    "frame-row",
+    "gateways",
+    "generate-pbe-key",
+    "generate-pbe-salt",
+    "generate-random-key",
+    "generate-uuid",
+    "get-bits",
+    "get-byte-order",
+    "get-bytes",
+    "get-class",
+    "get-codepages",
+    "get-collations",
+    "get-db-client",
+    "get-double",
+    "get-effective-tenant-id",
+    "get-effective-tenant-name",
+    "get-float",
+    "get-int64",
+    "get-long",
+    "get-pointer-value",
+    "get-short",
+    "get-string",
+    "get-unsigned-long",
+    "get-unsigned-short",
+    "go-pending",
+    "guid",
+    "handle",
+    "hash-code",
+    "hex-decode",
+    "hex-encode",
+    "host-byte-order",
+    "if...then...else",
+    "is-attr-space",
+    "is-codepage-fixed",
+    "is-column-codepage",
+    "is-db-multi-tenant",
+    "is-lead-byte",
+    "iso-date",
+    "kblabel",
+    "keycode",
+    "keyfunction",
+    "keylabel",
+    "keyword",
+    "keyword-all",
+    "last-of",
+    "lastkey",
+    "lc",
+    "ldbname",
+    "left-trim",
+    "library",
+    "line-counter",
+    "list-events",
+    "list-query-attrs",
+    "list-set-attrs",
+    "list-widgets",
+    "little-endian",
+    "lower",
+    "md5-digest",
+    "member",
+    "message-digest",
+    "message-lines",
+    "new",
+    "next-value",
+    "normalize",
+    "now",
+    "num-aliases",
+    "num-dbs",
+    "num-results",
+    "opsys",
+    "os-drives",
+    "os-error",
+    "overlay",
+    "page-number",
+    "page-size",
+    "pdbname",
+    "proc-handle",
+    "proc-status",
+    "process-architecture",
+    "program-name",
+    "progress",
+    "promsgs",
+    "propath",
+    "proversion",
+    "put-bits",
+    "put-bytes",
+    "put-double",
+    "put-float",
+    "put-int64",
+    "put-long",
+    "put-short",
+    "put-string",
+    "put-unsigned-long",
+    "put-unsigned-short",
+    "query-off-end",
+    "raw",
+    "recid",
+    "record-length",
+    "rejected",
+    "replace",
+    "retry",
+    "rgb-value",
+    "right-trim",
+    "row-state",
+    "rowid",
+    "screen-lines",
+    "sdbname",
+    "search",
+    "set-byte-order",
+    "set-db-client",
+    "set-effective-tenant",
+    "set-pointer-value",
+    "set-size",
+    "setuserid",
+    "sha1-digest",
+    "string",
+    "substitute",
+    "substring",
+    "super",
+    "tenant-id",
+    "tenant-name-to-id",
+    "terminal",
+    "timezone",
+    "to-rowid",
+    "today",
+    "transaction",
+    "trim",
+    "type-of",
+    "unbox",
+    "upper",
+    "user",
+    "userid",
+    "valid-event",
+    "value",
+    "widget-handle",
+];
+
+/// Built-in functions whose result comes from outside the program and its
+/// arguments: what the user typed on the screen (`FRAME-VALUE`, `INPUT`), a
+/// directory listing (`OS-DIR`), the name of a TLS peer
+/// (`SSL-SERVER-NAME`). Their value is Unknown.
+const UNKNOWN_FUNCTIONS: [&str; 4] = ["frame-value", "input", "os-dir", "ssl-server-name"];
+
+/// Whether the lower-cased `name` is an entry of `list`, or a registered
+/// abbreviation of one.
+fn listed(list: &[&str], name: &str) -> bool {
+    list.contains(&name)
+        || oxabl_lexer::is_builtin_function(name) && list.iter().any(|f| f.starts_with(name))
 }
 
 /// Whether `name` is `full` or an abbreviation of it at least `min` long.
@@ -784,6 +1030,19 @@ fn abbrev(name: &str, full: &str, min: usize) -> bool {
 }
 
 fn builtin(name: &str) -> Builtin {
+    decision(name).unwrap_or_else(|| {
+        if oxabl_lexer::is_builtin_function(&name.to_ascii_lowercase()) {
+            Builtin::Unknown
+        } else {
+            Builtin::Other
+        }
+    })
+}
+
+/// The decision a list makes for the function `name`; `None` for a name on
+/// no list, which [`builtin`] reads as Unknown when it is a built-in
+/// function.
+fn decision(name: &str) -> Option<Builtin> {
     const SOURCES: [&str; 7] = [
         "GET-VALUE",
         "GET-FIELD",
@@ -827,7 +1086,7 @@ fn builtin(name: &str) -> Builtin {
         ("SEEK", 4),
     ];
     const LOGICAL: [(&str, usize); 9] = [
-        ("LOGICAL", 7),
+        ("LOGICAL", 4),
         ("AVAILABLE", 5),
         ("VALID-HANDLE", 12),
         ("VALID-OBJECT", 12),
@@ -837,7 +1096,8 @@ fn builtin(name: &str) -> Builtin {
         ("LOCKED", 6),
         ("AMBIGUOUS", 5),
     ];
-    if SOURCES.iter().any(|s| s.eq_ignore_ascii_case(name)) {
+    let lower = name.to_ascii_lowercase();
+    Some(if SOURCES.iter().any(|s| s.eq_ignore_ascii_case(name)) {
         Builtin::Source
     } else if name.eq_ignore_ascii_case("QUOTER") {
         Builtin::Quoter
@@ -847,9 +1107,15 @@ fn builtin(name: &str) -> Builtin {
         Builtin::Numeric
     } else if LOGICAL.iter().any(|(f, m)| abbrev(name, f, *m)) {
         Builtin::Logical
+    } else if abbrev(name, "RETURN-VALUE", 10) {
+        Builtin::ReturnValue
+    } else if listed(&UNKNOWN_FUNCTIONS, &lower) {
+        Builtin::Unknown
+    } else if listed(&ARGS, &lower) {
+        Builtin::Args
     } else {
-        Builtin::Other
-    }
+        return None;
+    })
 }
 
 /// Whether `name` looks like a web request: it has the word `request` or
@@ -916,10 +1182,16 @@ impl Compiler<'_> {
 
     /// A read of the variable `name`.
     fn var(&mut self, name: &str) -> Value {
+        let key = name.to_ascii_lowercase();
+        if !self.declared.contains(&key)
+            && !self.tables.names.contains(&key)
+            && let Some(v) = self.bare(&key)
+        {
+            return v;
+        }
         if let Some(s) = self.var_slot(name) {
             return Value(vec![Term::Slot(s)]);
         }
-        let key = name.to_ascii_lowercase();
         let outside = self.tables.shared_in.contains(&key) || self.tables.outside(&key);
         self.summary(name, &key, outside)
     }
@@ -989,6 +1261,7 @@ impl Compiler<'_> {
                 callees: callees.to_vec(),
                 args: args.clone(),
                 span,
+                run: false,
             });
         }
         Value(vec![Term::Call {
@@ -1002,10 +1275,10 @@ impl Compiler<'_> {
     /// file, may run code the file does not hold: a function of another
     /// program (`FUNCTION f ... IN h` or `IN SUPER`, or one the file does not
     /// declare), `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `DYNAMIC-NEW`,
-    /// `DYNAMIC-PROPERTY` and `SUPER`. Only an exposed file asks
-    /// ([`Tables::exposed`]).
+    /// `DYNAMIC-PROPERTY` and `SUPER`. Only a file that watches
+    /// calls asks ([`Tables::watches`]).
     fn runs_elsewhere(&self, name: &str) -> bool {
-        if !self.tables.exposed() {
+        if !self.tables.watches() {
             return false;
         }
         let name = name.to_ascii_lowercase();
@@ -1018,10 +1291,10 @@ impl Compiler<'_> {
     /// Whether `object:member` (a call when `call`) may run code the file does
     /// not hold: a method or property of an object of a class other than a
     /// JSON class, a static member of a class, and `INVOKE` of a handle. A
-    /// member of a member is judged by the first object of the chain. Only an
-    /// exposed file asks ([`Tables::exposed`]).
+    /// member of a member is judged by the first object of the chain. Only a
+    /// file that watches calls asks ([`Tables::watches`]).
     fn member_runs_elsewhere(&self, object: &Expression, member: &str, call: bool) -> bool {
-        if !self.tables.exposed() {
+        if !self.tables.watches() {
             return false;
         }
         match &object.kind {
@@ -1071,6 +1344,58 @@ impl Compiler<'_> {
         self.tables.names.contains(&name) || self.tables.database.contains(&name)
     }
 
+    /// Whose object `object:member` reads. A member of a member belongs to
+    /// the owner of the first object of the chain.
+    fn owner(&self, object: &Expression, member: &str) -> Owner {
+        match &object.kind {
+            // `BUFFER b:...`, `TEMP-TABLE tt:...`, `DATASET ds:...`.
+            E::Identifier(id) if object.span.start < id.span.start => Owner::Program,
+            E::Identifier(id) => self.name_owner(&id.name, member),
+            E::ArrayAccess { array, .. } => self.owner(array, member),
+            E::MemberAccess { object, member }
+            | E::MethodCall {
+                object,
+                method: member,
+                ..
+            } => self.owner(object, &member.name),
+            // A built-in function that returns a handle (`WIDGET-HANDLE(c)`).
+            E::FunctionCall { name, .. }
+                if oxabl_lexer::is_builtin_function(&name.name.to_ascii_lowercase())
+                    && !abbrev(&name.name, "cast", 4)
+                    && !abbrev(&name.name, "dynamic-cast", 12) =>
+            {
+                Owner::Program
+            }
+            // A user function or a field: a handle when the member is a
+            // keyword.
+            E::FunctionCall { .. } | E::FieldAccess { .. } if is_keyword(member) => Owner::Program,
+            _ => Owner::Class,
+        }
+    }
+
+    /// [`Self::owner`] of an object the source names `o`: a variable of a
+    /// class, a handle variable, a system handle, a table or buffer, or a
+    /// name the file does not declare (a class, or a handle when the member
+    /// is a keyword).
+    fn name_owner(&self, o: &str, member: &str) -> Owner {
+        let o = o.to_ascii_lowercase();
+        match self.tables.types.get(&o) {
+            Some(class) if class.is_empty() => Owner::Program,
+            Some(_) => Owner::Class,
+            None if o == "this-object" || o == "super" => Owner::Class,
+            None if PROGRAM_HANDLES.contains(&o.as_str()) => Owner::Program,
+            // `ERROR-STATUS`, `SELF`, ..., and a system handle on no list.
+            None if FOREIGN_HANDLES.contains(&o.as_str())
+                || oxabl_semantic::SYSTEM_HANDLES.contains(&o.as_str()) =>
+            {
+                Owner::Foreign
+            }
+            None if self.is_table(&o) || self.tables.receivers.contains(&o) => Owner::Program,
+            None if is_keyword(member) => Owner::Program,
+            None => Owner::Class,
+        }
+    }
+
     /// A call of the function `name`; `key` is its first argument when that
     /// is a string literal.
     fn call(&mut self, name: &str, args: Vec<Value>, span: Span, key: Option<&str>) -> Value {
@@ -1111,15 +1436,43 @@ impl Compiler<'_> {
             Builtin::Logical if self.decision => Value::union(args),
             Builtin::Logical => Value::union(args).logical(),
             Builtin::Encode => Value::union(args).cleared(SinkKind::Html.bit()),
-            Builtin::Other => Value::union(args),
+            Builtin::ReturnValue => self.return_value(),
+            Builtin::Unknown => Value::union(args.into_iter().chain([Value::origin(UNKNOWN)])),
+            Builtin::Args | Builtin::Other => Value::union(args),
+        }
+    }
+
+    /// `RETURN-VALUE`: what the last `RUN` of the unit left, or what it held
+    /// when the unit started, which is Unknown.
+    fn return_value(&mut self) -> Value {
+        match self.return_value_slot() {
+            Some(s) => Value(vec![Term::Slot(s)]),
+            None => Value::origin(UNKNOWN),
+        }
+    }
+
+    /// The slot of `RETURN-VALUE`, added when the unit is compiled.
+    pub fn return_value_slot(&mut self) -> Option<u32> {
+        self.slot("RETURN-VALUE", RETURN_VALUE.to_string(), false, false)
+    }
+
+    /// A built-in function that the source calls without parentheses, as
+    /// `name` (lower-cased) is when the file defines no such name.
+    fn bare(&mut self, key: &str) -> Option<Value> {
+        match builtin(key) {
+            Builtin::ReturnValue => Some(self.return_value()),
+            _ if !BARE_FUNCTIONS.contains(&key) => None,
+            // An unreserved name (`TODAY`) may be a variable of the includer.
+            _ if self.tables.open && !oxabl_lexer::is_reserved_keyword(key) => None,
+            Builtin::Unknown => Some(Value::origin(UNKNOWN)),
+            _ => Some(Value::default()),
         }
     }
 
     /// `object:member`, or `object:member(args)` when `args` is given.
-    /// `object_name` is the receiver when it is a plain name.
     fn access(
         &mut self,
-        object_name: Option<&str>,
+        receiver: Receiver,
         object: Value,
         member: &str,
         args: Option<Vec<Value>>,
@@ -1130,26 +1483,28 @@ impl Compiler<'_> {
             && member.len() > 3
             && member[..3].eq_ignore_ascii_case("get")
             && key.is_some_and(|k| self.options.is_identity_key(k));
-        let value = self.access_value(object_name, object, member, args, span);
+        let value = self.access_value(receiver, object, member, args, span);
         if identity { value.identity() } else { value }
     }
 
     fn access_value(
         &mut self,
-        object_name: Option<&str>,
+        receiver: Receiver,
         object: Value,
         member: &str,
         args: Option<Vec<Value>>,
         span: Span,
     ) -> Value {
-        if let Some(o) = object_name {
+        if let Some(o) = receiver.name {
             if o.eq_ignore_ascii_case("WEB-CONTEXT") {
                 return self.origin(format!("`WEB-CONTEXT:{member}`"), span);
             }
+            // `SESSION:PARAM` abbreviates `PARAMETER`.
             if o.eq_ignore_ascii_case("SESSION")
-                && ["PARAMETER", "STARTUP-PARAMETERS", "ICFPARAMETER"]
-                    .iter()
-                    .any(|m| m.eq_ignore_ascii_case(member))
+                && (abbrev(member, "PARAMETER", 5)
+                    || ["STARTUP-PARAMETERS", "ICFPARAMETER"]
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(member)))
             {
                 return self.origin(format!("`SESSION:{member}`"), span);
             }
@@ -1173,7 +1528,7 @@ impl Compiler<'_> {
             }
         }
         let Some(args) = args else {
-            return object;
+            return receiver.owner.read(member, object);
         };
         if let Some(mask) = self.options.validator(member) {
             return Value::union(args).cleared(mask);
@@ -1181,7 +1536,9 @@ impl Compiler<'_> {
         if self.options.is_source(member) {
             return self.origin(format!("project source `{member}`"), span);
         }
-        Value::union(std::iter::once(object).chain(args))
+        receiver
+            .owner
+            .read(member, Value::union(std::iter::once(object).chain(args)))
     }
 
     /// The value of an expression. Every operand (see [`operands`]) is read
@@ -1239,9 +1596,12 @@ impl Compiler<'_> {
                 if self.member_runs_elsewhere(object, &member.name, false) {
                     self.foreign.push(e.span);
                 }
-                let name = receiver_name(object);
+                let receiver = Receiver {
+                    name: receiver_name(object),
+                    owner: self.owner(object, &member.name),
+                };
                 let object = values.into_iter().next().unwrap_or_default();
-                self.access(name, object, &member.name, None, e.span, None)
+                self.access(receiver, object, &member.name, None, e.span, None)
             }
             E::MethodCall {
                 object,
@@ -1251,12 +1611,15 @@ impl Compiler<'_> {
                 if self.member_runs_elsewhere(object, &method.name, true) {
                     self.foreign.push(e.span);
                 }
-                let name = receiver_name(object);
+                let receiver = Receiver {
+                    name: receiver_name(object),
+                    owner: self.owner(object, &method.name),
+                };
                 let mut values = values.into_iter();
                 let object = values.next().unwrap_or_default();
                 let key = literal_key(arguments);
                 self.access(
-                    name,
+                    receiver,
                     object,
                     &method.name,
                     Some(values.collect()),
@@ -1266,7 +1629,7 @@ impl Compiler<'_> {
             }
             E::ArrayAccess { .. } => values.into_iter().next().unwrap_or_default(),
             E::New { .. } => {
-                if self.tables.exposed() {
+                if self.tables.watches() {
                     self.foreign.push(e.span);
                 }
                 Value::union(values)
@@ -1495,7 +1858,7 @@ impl Compiler<'_> {
                 continue;
             }
             // `NEW c(...)` runs the constructor of a class; `NEW(b)` is a function.
-            if st.is_word(i, "NEW") && !st.is(i + 1, Kind::LeftParen) && self.tables.exposed() {
+            if st.is_word(i, "NEW") && !st.is(i + 1, Kind::LeftParen) && self.tables.watches() {
                 self.foreign.push(st.span(i..i + 1));
             }
             // The condition of `IF c THEN a ELSE b` picks a value; it is not
@@ -1533,7 +1896,7 @@ impl Compiler<'_> {
                 // A dotted name before `:` is a class.
                 let receiver = st.is(j + 1, Kind::Colon);
                 if receiver
-                    && self.tables.exposed()
+                    && self.tables.watches()
                     && (!self.is_table(st.word(q)) || !is_keyword(st.word(j + 2)))
                 {
                     self.foreign.push(st.span(i..j + 1));
@@ -1555,7 +1918,8 @@ impl Compiler<'_> {
         let mut name = Some(first.to_string());
         let mut value = self.var(first);
         let mut j = i + 1;
-        if self.tables.exposed()
+        let owner = self.name_owner(first, st.word(j + 1));
+        if self.tables.watches()
             && self.name_runs_elsewhere(first, st.word(j + 1), st.is(j + 2, Kind::LeftParen))
         {
             self.foreign.push(st.span(i..j + 2));
@@ -1574,13 +1938,287 @@ impl Compiler<'_> {
                 next = close + 1;
             }
             let span = st.span(i..next);
-            value = self.access(name.as_deref(), value, member, args, span, key);
+            let receiver = Receiver {
+                name: name.as_deref(),
+                owner,
+            };
+            value = self.access(receiver, value, member, args, span, key);
             name = None;
             j = next;
         }
         (value, j)
     }
 }
+
+/// The receiver of a member read.
+#[derive(Debug, Clone, Copy)]
+struct Receiver<'n> {
+    /// The receiver when it is a plain name.
+    name: Option<&'n str>,
+    owner: Owner,
+}
+
+/// Whose object a member read reads, which decides what the read gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    /// An object of a class: the read gives what the object and the
+    /// arguments hold, as an unknown call does.
+    Class,
+    /// A handle of the program (a buffer, a query, a widget, `SESSION`,
+    /// `FILE-INFO`, ...): the handle holds what the program set on it, so a
+    /// member of [`MODELLED_MEMBERS`] gives what the handle and the arguments
+    /// hold. Any other member gives data the runtime fills (a field of the
+    /// record, the text on the screen, a node of an XML document): Unknown.
+    Program,
+    /// A handle of an object that the runtime or another program fills
+    /// ([`FOREIGN_HANDLES`]): a member of [`NO_INPUT_MEMBERS`] holds no input;
+    /// any other member is Unknown.
+    Foreign,
+}
+
+impl Owner {
+    /// The value of a read of `member`, given what the object and the
+    /// arguments hold.
+    fn read(self, member: &str, value: Value) -> Value {
+        let listed = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(member));
+        // `BUFFER b:BUFFER-FIELD("f"):BUFFER-VALUE` reads what the tables of
+        // `b` hold, which its receiver holds.
+        let fields = member.eq_ignore_ascii_case("BUFFER-VALUE")
+            && value.0.iter().any(|t| matches!(t, Term::Table(_)));
+        let modelled = match self {
+            Owner::Class => true,
+            Owner::Program => listed(&MODELLED_MEMBERS) || listed(&NO_INPUT_MEMBERS) || fields,
+            Owner::Foreign => listed(&NO_INPUT_MEMBERS),
+        };
+        if modelled {
+            value
+        } else {
+            Value::union([value, Value::origin(UNKNOWN)])
+        }
+    }
+}
+
+/// System handles of objects of the program or the session, which hold what
+/// the program set on them (`FILE-INFO:FILE-NAME`) or the session's settings.
+/// `THIS-OBJECT` and `SUPER` are objects of a class; `WEB-CONTEXT` and the
+/// parameters of `SESSION` are sources.
+const PROGRAM_HANDLES: [&str; 33] = [
+    "audit-control",
+    "audit-policy",
+    "codebase-locator",
+    "codepage-table",
+    "color-table",
+    "compiler",
+    "current-window",
+    "active-window",
+    "debugger",
+    "default-window",
+    "dslog-manager",
+    "file-info",
+    "file-information",
+    "font-table",
+    "log-manager",
+    "profiler",
+    "rcode-info",
+    "rcode-infor",
+    "rcode-inform",
+    "rcode-informa",
+    "rcode-informat",
+    "rcode-informati",
+    "rcode-informatio",
+    "rcode-information",
+    "security-policy",
+    "session",
+    "term",
+    "termi",
+    "termin",
+    "termina",
+    "terminal",
+    "this-procedure",
+    "web-context",
+];
+
+/// System handles of objects that the runtime or another program fills: the
+/// error of the last statement, the widget of the event, the clipboard, the
+/// procedure that ran this one. A system handle on neither list is one too.
+const FOREIGN_HANDLES: [&str; 14] = [
+    "active-form",
+    "clipboard",
+    "com-self",
+    "error-stat",
+    "error-status",
+    "error-statu",
+    "first-object",
+    "focus",
+    "last-even",
+    "last-event",
+    "last-object",
+    "self",
+    "source-procedure",
+    "target-procedure",
+];
+
+/// Built-in attributes and methods whose value holds no input, whoever owns
+/// the handle: numbers, logicals, kinds and names of objects that the
+/// program or the schema defines.
+const NO_INPUT_MEMBERS: [&str; 71] = [
+    "active",
+    "available",
+    "bgcolor",
+    "blank",
+    "checked",
+    "code",
+    "column",
+    "column-label",
+    "connected",
+    "cursor-offset",
+    "data-type",
+    "dbname",
+    "description",
+    "display-type",
+    "error",
+    "event-type",
+    "extent",
+    "fgcolor",
+    "file-mod-date",
+    "file-mod-time",
+    "file-name",
+    "file-size",
+    "file-type",
+    "first-child",
+    "format",
+    "frame",
+    "function",
+    "get-number",
+    "handle",
+    "height-chars",
+    "height-pixels",
+    "help",
+    "hidden",
+    "index",
+    "is-json",
+    "is-xml",
+    "label",
+    "last-child",
+    "length",
+    "line",
+    "locked",
+    "modified",
+    "name",
+    "new",
+    "next-sibling",
+    "num-buffers",
+    "num-children",
+    "num-fields",
+    "num-messages",
+    "num-results",
+    "num-selected-rows",
+    "parent",
+    "persistent",
+    "position",
+    "prev-sibling",
+    "read-only",
+    "recid",
+    "remote",
+    "row",
+    "rowid",
+    "sensitive",
+    "subtype",
+    "table",
+    "type",
+    "unique-id",
+    "visible",
+    "width-chars",
+    "width-pixels",
+    "window",
+    "x",
+    "y",
+];
+
+/// Built-in attributes and methods whose value, on a handle of the program,
+/// is what the program set on the handle (`PRIVATE-DATA`, `FULL-PATHNAME`
+/// after `FILE-NAME`), a handle it reaches (`BUFFER-FIELD`), a logical of an
+/// action (`QUERY-PREPARE`), or a setting of the session
+/// (`TEMP-DIRECTORY`): what the handle and the arguments hold gives it. Any
+/// member on neither list, such as `BUFFER-VALUE`, `SCREEN-VALUE`,
+/// `NODE-VALUE` or `GET-MESSAGE`, gives data the runtime fills, and is
+/// Unknown.
+const MODELLED_MEMBERS: [&str; 74] = [
+    "add-buffer",
+    "add-fields-from",
+    "add-index-field",
+    "add-like-field",
+    "add-new-field",
+    "add-new-index",
+    "add-relation",
+    "append-child",
+    "buffer-copy",
+    "buffer-create",
+    "buffer-delete",
+    "buffer-field",
+    "buffer-release",
+    "copy-dataset",
+    "copy-temp-table",
+    "create-like",
+    "create-node",
+    "date-format",
+    "default-buffer-handle",
+    "default-value",
+    "empty-dataset",
+    "empty-temp-table",
+    "end-element",
+    "fetch-selected-row",
+    "find-by-rowid",
+    "find-first",
+    "find-last",
+    "find-unique",
+    "first-column",
+    "full-pathname",
+    "get-buffer-handle",
+    "get-document-element",
+    "get-first",
+    "get-last",
+    "get-next",
+    "get-prev",
+    "get-relation",
+    "get-signature",
+    "image",
+    "index-information",
+    "insert-attribute",
+    "list-item-pairs",
+    "list-items",
+    "move-to-top",
+    "next-column",
+    "numeric-format",
+    "page-top",
+    "parent-buffer",
+    "pathname",
+    "private-data",
+    "query-close",
+    "query-off-end",
+    "query-open",
+    "query-prepare",
+    "read-json",
+    "read-xml",
+    "reposition-to-rowid",
+    "save",
+    "serialize-hidden",
+    "serialize-name",
+    "set-attribute",
+    "set-buffers",
+    "set-socket-option",
+    "set-wait-state",
+    "start-element",
+    "table-handle",
+    "temp-directory",
+    "temp-table-prepare",
+    "title",
+    "validate",
+    "write-data-element",
+    "write-json",
+    "write-xml",
+    "x-document",
+];
 
 /// The name of a receiver that is a plain name, not `BUFFER b`.
 fn receiver_name(object: &Expression) -> Option<&str> {
@@ -2019,5 +2657,136 @@ mod tests {
         }
         let missing: Vec<usize> = (0..seen.len()).filter(|&i| !seen[i]).collect();
         assert!(missing.is_empty(), "kinds with no sample: {missing:?}");
+    }
+
+    fn holds_unknown(v: &Value) -> bool {
+        v.0.iter().any(|t| matches!(t, Term::Origin(UNKNOWN)))
+    }
+
+    /// Every built-in function, and every one a program calls without
+    /// parentheses, is on a list of [`decision`]: a new one in the registry
+    /// fails here until it has a decision. Until then it is Unknown.
+    #[test]
+    fn every_builtin_function_has_a_decision() {
+        let undecided: Vec<&str> = oxabl_lexer::BUILTIN_FUNCTIONS
+            .iter()
+            .chain(&BARE_FUNCTIONS)
+            .copied()
+            .filter(|f| decision(f).is_none())
+            .collect();
+        assert!(
+            undecided.is_empty(),
+            "built-in functions with no decision: {undecided:?}"
+        );
+        assert_eq!(builtin("no-such-builtin"), Builtin::Other);
+        for f in UNKNOWN_FUNCTIONS {
+            assert_eq!(builtin(f), Builtin::Unknown, "{f}");
+        }
+    }
+
+    /// Every system handle is a handle of the program, of a foreign object, or
+    /// an object of a class: a new one fails here until it is on a list, and
+    /// is foreign until then.
+    #[test]
+    fn every_system_handle_has_an_owner() {
+        let options = super::super::Options::new(&SecurityOptions::default());
+        let tables = Tables::default();
+        let routines = Routines::default();
+        let declared = FxHashSet::default();
+        let mut slots = Slots::default();
+        let mut origins = Origins::default();
+        let c = Compiler {
+            options: &options,
+            tables: &tables,
+            slots: &mut slots,
+            origins: &mut origins,
+            declared: &declared,
+            frozen: false,
+            routines: &routines,
+            calls: Vec::new(),
+            foreign: Vec::new(),
+            decision: false,
+        };
+        let classes = ["this-object", "super"];
+        for h in oxabl_semantic::SYSTEM_HANDLES {
+            let lists = [
+                PROGRAM_HANDLES.contains(h),
+                FOREIGN_HANDLES.contains(h),
+                classes.contains(h),
+            ];
+            assert_eq!(lists.iter().filter(|l| **l).count(), 1, "{h}: {lists:?}");
+            let expected = match lists {
+                [true, ..] => Owner::Program,
+                [_, true, _] => Owner::Foreign,
+                _ => Owner::Class,
+            };
+            assert_eq!(c.name_owner(h, "NAME"), expected, "{h}");
+        }
+        for h in PROGRAM_HANDLES.iter().chain(&FOREIGN_HANDLES) {
+            assert!(
+                oxabl_semantic::SYSTEM_HANDLES.contains(h),
+                "{h} is no system handle"
+            );
+        }
+    }
+
+    /// The attributes and methods of the ABL reference, by name.
+    fn members() -> Vec<String> {
+        let index = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../resources/abl_keyword_index.json"),
+        )
+        .unwrap();
+        let mut out: Vec<String> = index
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("\"title\": \""))
+            .filter_map(|t| {
+                let t = t.trim_end_matches(['"', ',']);
+                t.strip_suffix(" attribute")
+                    .or_else(|| t.strip_suffix(" method"))
+            })
+            .map(|t| t.split('(').next().unwrap_or(t).trim().to_ascii_lowercase())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Every built-in attribute and method read on a handle is modelled when
+    /// a list names it, and Unknown otherwise; on a handle of a foreign object
+    /// only one that holds no input is modelled. A name on a list that is no
+    /// attribute or method fails.
+    #[test]
+    fn every_builtin_member_read_is_modelled_or_unknown() {
+        let members = members();
+        assert!(members.len() > 1000, "{}", members.len());
+        let read =
+            |owner: Owner, m: &str| !holds_unknown(&owner.read(m, Value(vec![Term::Slot(0)])));
+        for m in &members {
+            let no_input = NO_INPUT_MEMBERS.contains(&m.as_str());
+            let modelled = no_input || MODELLED_MEMBERS.contains(&m.as_str());
+            assert_eq!(
+                read(Owner::Program, m),
+                modelled,
+                "{m} on a handle of the program"
+            );
+            assert_eq!(read(Owner::Foreign, m), no_input, "{m} on a foreign handle");
+            assert!(read(Owner::Class, m), "{m} of an object of a class");
+        }
+        for m in NO_INPUT_MEMBERS.iter().chain(&MODELLED_MEMBERS) {
+            assert!(
+                members.iter().any(|x| x == m),
+                "{m} is no attribute or method"
+            );
+        }
+        for m in [
+            "buffer-value",
+            "screen-value",
+            "node-value",
+            "get-message",
+            "input-value",
+        ] {
+            assert!(!read(Owner::Program, m), "{m}");
+        }
     }
 }
