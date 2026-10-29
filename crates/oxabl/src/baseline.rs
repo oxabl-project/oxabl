@@ -60,6 +60,20 @@
 //! Version 3, byte for byte, for the text `S` of the checked file and one
 //! finding with byte span `start..end`:
 //!
+//! The span is the finding's, in `S`'s own bytes. Its start is where `S` wrote
+//! the first byte of the finding; a finding whose first byte `S` did not write
+//! is not in `S` (see below). Its end is, the first that applies, in `S`'s own
+//! bytes (or, for a finding in an include, in that expansion's):
+//!
+//! - where `S` wrote the byte after the finding, when that is at or after the
+//!   start: a finding that runs past a `{&name}`, `{N}` or `{file.i}` into `S`'s
+//!   text again ends there, and covers the reference, so a changed argument on a
+//!   later line changes the hash;
+//! - one past where `S` wrote the finding's last byte;
+//! - the end of the reference that wrote its last byte (the start of `S`'s next
+//!   stretch of text);
+//! - the end of the stretch of `S`'s text that holds the start.
+//!
 //! 1. Clamp the span: `start = min(start, len(S))`, `end = clamp(end, start,
 //!    len(S))`.
 //! 2. The flagged line is `S[ls..le]`: `ls` is just after the last `\n` before

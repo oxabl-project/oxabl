@@ -440,3 +440,41 @@ fn a_version_1_baseline_is_refused_with_the_fix() {
     assert_eq!(exit, Some(2), "{stderr}");
     assert!(stderr.contains("--update-baseline"), "{stderr}");
 }
+
+/// A finding whose span starts in the file's own text and runs past a
+/// substitution onto a later line hashes the whole span, as one with no
+/// substitution does: a changed argument on that later line is a new finding.
+#[test]
+fn a_changed_argument_past_a_substitution_on_a_later_line_is_new() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        &root.join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n[workspace.lint]\nenable = [\"security\"]\n",
+    );
+    let source = |key: &str| {
+        format!(
+            "&GLOBAL-DEFINE CMD \"ls \"\nOS-COMMAND VALUE({{&CMD}}\n  + get-value(\"{key}\")).\n"
+        )
+    };
+    write(&root.join("a.p"), &source("dir"));
+    let (exit, _, stderr) = check(root, &[".", "--baseline", "b.json", "--update-baseline"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    let (_, report, stderr) = baselined(root, &["."]);
+    assert_eq!(report["baseline"]["baselined"], 1, "{report}{stderr}");
+    let finding = &report["diagnostics"];
+    assert_eq!(finding.as_array().map(Vec::len), Some(0), "{report}");
+
+    write(&root.join("a.p"), &source("path"));
+    let (exit, report, stderr) = baselined(root, &["."]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert_eq!(report["baseline"]["new"], 1, "{report}");
+    assert_eq!(report["baseline"]["stale"], 1, "{report}");
+    let d = &report["diagnostics"][0];
+    assert_eq!(d["code"], "ABLSEC003", "{report}");
+    assert_eq!(
+        (&d["end"]["line"], &d["end"]["column"]),
+        (&3.into(), &23.into()),
+        "the span ends at the end of the operand, past the substitution: {report}"
+    );
+}

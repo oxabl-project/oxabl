@@ -787,11 +787,20 @@ impl ExpandedFile {
     /// to it landed on an empty range. `end` past the very end of the expansion failed
     /// the same way, for the same reason.
     ///
-    /// The span is resolved **within the chunk its start falls in**. A span that
-    /// reaches beyond that chunk is truncated at the chunk's end rather than collapsed:
-    /// the bytes past the boundary are not the root file's contiguous bytes at all, so
-    /// there is no honest longer answer, and a truncated extent is strictly better than
-    /// no extent. A zero-length span stays zero-length.
+    /// The start is resolved in the chunk it falls in, and the end in the bytes of
+    /// the same file (the root, or one expansion of an include), the first of these
+    /// that applies:
+    ///
+    /// 1. where that file wrote the byte after the span, when it wrote it at or after
+    ///    the start. A span that runs past a `{&name}`, `{N}` or `{file.i}` into the
+    ///    file's own text again ends there, and covers the reference;
+    /// 2. one past where it wrote the span's last byte. A span that ends where an
+    ///    include begins keeps its extent;
+    /// 3. where its next stretch begins after the last byte: the end of the reference
+    ///    that wrote that byte;
+    /// 4. the end of the stretch that holds the start.
+    ///
+    /// A zero-length span stays zero-length.
     fn resolve_span(&self, span: Span) -> Option<FileSpan> {
         let (start_file, real_start) = self.resolve(span.start)?;
         if start_file != self.root {
@@ -815,13 +824,7 @@ impl ExpandedFile {
         }
 
         let real_end = match self.chunk_at(span.start) {
-            // The last byte of the span, clamped into the chunk the start belongs to,
-            // then turned back into an exclusive end by adding one.
-            Some(chunk) => {
-                let chunk_last = chunk.virt_start + chunk.len - 1;
-                let last = (span.end - 1).min(chunk_last);
-                chunk.real_start + (last - chunk.virt_start) + 1
-            }
+            Some(chunk) => self.real_end(chunk, span.end, real_start),
             // No chunk table: the identity mapping, where virtual is real.
             None => span.end,
         };
@@ -829,6 +832,31 @@ impl ExpandedFile {
         Span {
             start: real_start,
             end: real_end.max(real_start),
+        }
+    }
+
+    /// The real end of a span that starts in `chunk`, at `real_start`, and ends
+    /// at `end`. See [`Self::resolve_span`] for the rule.
+    fn real_end(&self, chunk: &ExpandedChunk, end: u32, real_start: u32) -> u32 {
+        let own = |c: &&ExpandedChunk| c.file == chunk.file;
+        if let Some(next) = self.chunk_at(end).filter(own) {
+            let real = next.real_start + (end - next.virt_start);
+            if real >= real_start {
+                return real;
+            }
+        }
+        let last = end - 1;
+        if let Some(c) = self.chunk_at(last).filter(own) {
+            return c.real_start + (last - c.virt_start) + 1;
+        }
+        let after = self
+            .chunks
+            .iter()
+            .filter(own)
+            .find(|c| c.virt_start > last && c.real_start >= real_start);
+        match after {
+            Some(c) => c.real_start,
+            None => chunk.real_start + chunk.len,
         }
     }
 
@@ -2170,23 +2198,35 @@ mod tests {
         }
     }
 
-    /// A span reaching past its start chunk is truncated at that chunk, not collapsed.
-    ///
-    /// The bytes beyond the boundary are not the root file's contiguous bytes, so there
-    /// is no honest longer answer — and the previous behaviour, collapsing to zero
-    /// width, threw away the extent that *was* known.
+    /// A span that runs past an include ends where the root wrote the byte after it,
+    /// so it covers the `{file.i}` reference (rule 1 of `resolve_span`). Here the
+    /// reference is the five real bytes 10..15.
     #[test]
-    fn a_span_crossing_a_chunk_boundary_is_truncated_rather_than_collapsed() {
-        let expanded = root_include_root();
-
-        let resolved = expanded
-            .resolve_root_span(Span { start: 6, end: 35 })
-            .expect("the start is in the root");
-
+    fn a_span_running_past_an_include_into_the_root_ends_after_it() {
+        let expanded = expansion_with(&[
+            (0, 10, ROOT.raw(), 0),
+            (10, 20, 2, 0),
+            (30, 10, ROOT.raw(), 15),
+        ]);
         assert_eq!(
-            resolved,
-            Span { start: 6, end: 10 },
-            "the extent must stop at the chunk boundary rather than vanish"
+            expanded.resolve_root_span(Span { start: 6, end: 35 }),
+            Some(Span { start: 6, end: 20 })
+        );
+        // It ends inside the include: at the end of the reference (rule 3).
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 6, end: 15 }),
+            Some(Span { start: 6, end: 15 })
+        );
+    }
+
+    /// With no root text after it, a span that ends inside an include stops at the
+    /// end of its start chunk (rule 4): there is no honest longer answer.
+    #[test]
+    fn a_span_ending_in_a_trailing_include_is_truncated_at_its_start_chunk() {
+        let expanded = expansion_with(&[(0, 10, ROOT.raw(), 0), (10, 20, 2, 0)]);
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 6, end: 15 }),
+            Some(Span { start: 6, end: 10 })
         );
     }
 
