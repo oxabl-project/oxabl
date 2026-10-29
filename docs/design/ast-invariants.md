@@ -322,8 +322,21 @@ STREAM`/`DEFINE FRAME` options and the stream-I/O option tails keep their real
 `StatementKind`. The identifiers of the range they skipped ride on the wrapper, not the
 kind.
 
-- **Invariant:** the field is `None` unless the lexical filter kept at least one name, and
-  it never changes which `StatementKind` a form produces.
+- **Invariant:** the field is `None` unless the lexical filter kept at least one name or
+  the parser noted an unmodelled range, and it never changes which `StatementKind` a form
+  produces.
+- **`SkippedTail::unmodelled`:** every range of the statement's own tokens (not those of a
+  nested statement) that the parser consumed and the node does not hold, merged and in
+  order: a skipped tail or clause (every skip helper notes its range), an expression parsed
+  and dropped (`drop_expression`: the `WHEN` of an `ASSIGN` pair, the `BY` and `WHILE` of
+  `FOR EACH`, the counting loop and `PRESELECT` of `REPEAT`, `INITIAL` before `AS`, ...),
+  and a whole joined record phrase of `FOR EACH`. A range is kept only when it holds a token
+  that may name a value or run code (a name, `(`, `:` or a preprocessor reference). The
+  `parse_statement` funnel moves what a statement noted onto it after its nested statements
+  took theirs; a `Skipped` statement drops them, since it is unmodelled whole. The taint
+  analysis reads these ranges from the tokens, and `oxabl_lint`'s `statement_coverage` test
+  checks that every name a statement it reads from the node holds is in the node or in a
+  range.
 - **Invariant:** the names get the same treatment as a `Skipped` node's — a silent,
   non-counting lookup that can only mark a symbol as unjudgeable. They never produce a
   `references` entry, so they cannot reach LINT0001 or LINT0003, and they are not offered to

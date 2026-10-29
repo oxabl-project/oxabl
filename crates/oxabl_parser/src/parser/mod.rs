@@ -197,6 +197,10 @@ pub struct Parser<'a> {
     /// The token kinds of the method names declared in this token stream, built
     /// on first use by [`declares_method_named`](Self::declares_method_named).
     method_name_kinds: Option<Vec<Kind>>,
+    /// Byte ranges consumed without a place in a node, for
+    /// [`SkippedTail::unmodelled`]. The `parse_statement` funnel moves those a
+    /// statement noted, after its nested statements took theirs, onto it.
+    unmodelled: Vec<Span>,
 }
 
 impl<'a> Parser<'a> {
@@ -220,6 +224,7 @@ impl<'a> Parser<'a> {
             stmt_start_token: current,
             imported_classes: Vec::new(),
             method_name_kinds: None,
+            unmodelled: Vec::new(),
         }
     }
 
@@ -658,13 +663,89 @@ impl<'a> Parser<'a> {
     /// `docs/solutions/logic-errors/recursive-descent-skip-to-sync-infinite-loop.md`:
     /// a helper that returned without advancing would produce an empty range
     /// here, and the same non-advancing path is the one that hangs the parser.
+    ///
+    /// The range is noted unmodelled ([`note_unmodelled`](Self::note_unmodelled)):
+    /// a statement that keeps a node does not hold it, and a skipped statement
+    /// drops the note.
     #[inline]
-    fn skip_range(&self, start: usize) -> (usize, usize) {
+    fn skip_range(&mut self, start: usize) -> (usize, usize) {
         debug_assert!(
             self.current >= start,
             "a skip helper must never move the cursor backwards"
         );
+        self.note_unmodelled(start, self.current);
         (start, self.current)
+    }
+
+    /// Note the tokens `[lo, hi)` as consumed without a place in the node of
+    /// the statement being parsed, when one of them may name a value or run
+    /// code: a name, a `(`, a `:` or a preprocessor reference.
+    pub(crate) fn note_unmodelled(&mut self, lo: usize, hi: usize) {
+        let hi = hi.min(self.tokens.len());
+        let Some(lo) = (lo..hi).find(|&i| self.tokens[i].kind != Kind::Comment) else {
+            return;
+        };
+        let Some(last) = (lo..hi)
+            .rev()
+            .find(|&i| self.tokens[i].kind != Kind::Comment)
+        else {
+            return;
+        };
+        let worth = self.tokens[lo..=last].iter().any(|t| {
+            Self::can_be_identifier(t.kind)
+                || matches!(
+                    t.kind,
+                    Kind::LeftParen
+                        | Kind::Colon
+                        | Kind::Preprop
+                        | Kind::IncludeReference
+                        | Kind::IncludeArgReference
+                )
+        });
+        if worth {
+            self.unmodelled.push(Span {
+                start: self.tokens[lo].start as u32,
+                end: self.tokens[last].end as u32,
+            });
+        }
+    }
+
+    /// Parse an expression that the node has no place for, and note it
+    /// unmodelled.
+    pub(crate) fn drop_expression(&mut self) {
+        let lo = self.current;
+        self.parse_expression().ok();
+        self.note_unmodelled(lo, self.current);
+    }
+
+    /// [`drop_expression`](Self::drop_expression) for a postfix expression.
+    pub(crate) fn drop_postfix(&mut self) {
+        let lo = self.current;
+        self.parse_postfix().ok();
+        self.note_unmodelled(lo, self.current);
+    }
+
+    /// Move the ranges noted since `mark` onto `stmt`, merged and in order. A
+    /// statement skipped whole holds them already.
+    pub(crate) fn take_unmodelled(&mut self, mark: usize, stmt: &mut Statement) {
+        if self.unmodelled.len() <= mark {
+            return;
+        }
+        let mut spans = self.unmodelled.split_off(mark);
+        if matches!(stmt.kind, StatementKind::Skipped { .. }) {
+            return;
+        }
+        spans.sort_by_key(|s| (s.start, s.end));
+        let mut merged: Vec<Span> = Vec::with_capacity(spans.len());
+        for s in spans {
+            match merged.last_mut() {
+                Some(last) if s.start <= last.end => last.end = last.end.max(s.end),
+                _ => merged.push(s),
+            }
+        }
+        stmt.skipped_tail
+            .get_or_insert_with(Default::default)
+            .unmodelled = merged;
     }
 
     /// Build a [`StatementKind::Skipped`] node for a recognized-but-unmodelled
@@ -804,13 +885,21 @@ impl<'a> Parser<'a> {
     /// the tail starts after tokens the caller already modelled, so none of its
     /// tokens is a dispatch keyword to drop. `None` when the filter keeps
     /// nothing, which is the common case, so the node stays allocation-free.
+    ///
+    /// The range is noted unmodelled too.
     #[inline(never)]
-    pub(crate) fn skipped_tail(&self, (lo, hi): (usize, usize)) -> Option<Box<SkippedTail>> {
+    pub(crate) fn skipped_tail(&mut self, (lo, hi): (usize, usize)) -> Option<Box<SkippedTail>> {
+        self.note_unmodelled(lo, hi);
         // `harvest_skipped_names` drops the token at its `lo`; a tail is always
         // preceded by at least the statement's own first token, so `lo - 1` is
         // in range.
         let names = self.harvest_skipped_names(lo.saturating_sub(1), hi);
-        (!names.is_empty()).then(|| Box::new(SkippedTail { names }))
+        (!names.is_empty()).then(|| {
+            Box::new(SkippedTail {
+                names,
+                unmodelled: Vec::new(),
+            })
+        })
     }
 
     /// [`skip_to_statement_end`](Self::skip_to_statement_end), harvesting the
@@ -2109,7 +2198,7 @@ impl<'a> Parser<'a> {
             // Consume optional array subscript: LIKE table.field[n]
             if self.check(Kind::LeftBracket) {
                 self.advance(); // consume '['
-                self.parse_expression().ok();
+                self.drop_expression();
                 if self.check(Kind::RightBracket) {
                     self.advance();
                 }
