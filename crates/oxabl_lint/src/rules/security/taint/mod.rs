@@ -15,7 +15,7 @@
 //! |---|---|
 //! | `QUOTER(x)` | `query` |
 //! | a number: `INTEGER(x)`, `DECIMAL(x)`, `LENGTH(x)`, arithmetic, ... | every kind but `size` |
-//! | a logical: a comparison, `CAN-DO`, `VALID-HANDLE`, ... | every kind |
+//! | a logical: a comparison, `CAN-DO`, `VALID-HANDLE`, ... | every kind but `identity` |
 //! | `html-encode(x)` | `html` |
 //! | a configured validator `v(x)` | the kinds it protects |
 //!
@@ -229,6 +229,11 @@ impl Options {
                         .iter()
                         .filter_map(|k| SinkKind::mask_of(k))
                         .fold(0, |a, b| a | b);
+                    let mask = if mask & SinkKind::Identity.bit() != 0 {
+                        mask | value::PASSED
+                    } else {
+                        mask
+                    };
                     (v.name.clone(), mask)
                 })
                 .collect(),

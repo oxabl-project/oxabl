@@ -39,6 +39,13 @@ pub(super) const BUDGET_LABELS: [(u32, u32); 1] = [(BUDGET, ALL | SinkKind::Iden
 /// parameter and call. Read as [`BUDGET`] is, with its own reason.
 pub(super) const UNSETTLED: u32 = u32::MAX - 2;
 
+/// Not a kind: on the origin of a parameter, the label passes on, through a
+/// call, the identity that the argument holds. A logical made from the
+/// parameter keeps it, so `RETURN p = "admin"` gives back the identity of the
+/// argument; the parameter is no identity of its own. A validator that
+/// protects the identity clears it too.
+pub(super) const PASSED: u32 = 1 << 11;
+
 /// The labels of [`UNSETTLED`]: every kind, the identity too.
 const UNSETTLED_LABELS: [(u32, u32); 1] = [(UNSETTLED, ALL | SinkKind::Identity.bit())];
 
@@ -119,6 +126,10 @@ pub(super) enum Term {
     Clear(u32, Value),
     /// The sub-value with these kinds added to each of its labels.
     Tag(u32, Value),
+    /// A logical made from the sub-value: only the identity of its labels.
+    /// Text in it that the analysis cannot read is an Unknown identity, not an
+    /// Unknown value, since no injection kind is left to reach a sink.
+    Logical(Value),
     /// What a routine of the file returns (or leaves in an output parameter)
     /// for these arguments, by its summary.
     Call {
@@ -200,12 +211,28 @@ impl Value {
         }
     }
 
-    /// The value with the identity kind added to its labels.
-    pub fn identity(self) -> Self {
+    /// A logical made from the value: a comparison, a logical operator or
+    /// function, `CAN-FIND`. It decides on the value, so it still holds the
+    /// value's identity, and no other kind.
+    pub fn logical(self) -> Self {
         if self.0.is_empty() {
             self
         } else {
-            Value(vec![Term::Tag(SinkKind::Identity.bit(), self)])
+            Value(vec![Term::Logical(self)])
+        }
+    }
+
+    /// The value with the identity kind added to its labels.
+    pub fn identity(self) -> Self {
+        self.tagged(SinkKind::Identity.bit())
+    }
+
+    /// The value with the kinds of `mask` added to its labels.
+    pub fn tagged(self, mask: u32) -> Self {
+        if self.0.is_empty() {
+            self
+        } else {
+            Value(vec![Term::Tag(mask, self)])
         }
     }
 
@@ -257,6 +284,14 @@ impl Value {
                     inner.iter_mut().for_each(|l| l.1 |= mask);
                     provenance::merge(out, &inner);
                 }
+                Term::Logical(v) => {
+                    let mut inner = Labels::new();
+                    if v.eval_into(fact, env, &mut inner) {
+                        provenance::merge(out, &[(UNKNOWN, SinkKind::Identity.bit())]);
+                    }
+                    provenance::clear(&mut inner, ALL);
+                    provenance::merge(out, &inner);
+                }
                 Term::Call {
                     callees,
                     out: o,
@@ -286,7 +321,7 @@ impl Value {
     pub fn holds_origin(&self, origin: u32) -> bool {
         self.0.iter().any(|t| match t {
             Term::Origin(o) => *o == origin,
-            Term::Clear(_, v) | Term::Tag(_, v) => v.holds_origin(origin),
+            Term::Clear(_, v) | Term::Tag(_, v) | Term::Logical(v) => v.holds_origin(origin),
             _ => false,
         })
     }
@@ -302,7 +337,7 @@ impl Value {
             {
                 Some((name.as_str(), key.as_str()))
             }
-            Term::Clear(_, v) | Term::Tag(_, v) => v.file_with(files, origin),
+            Term::Clear(_, v) | Term::Tag(_, v) | Term::Logical(v) => v.file_with(files, origin),
             _ => None,
         })
     }
@@ -325,7 +360,7 @@ impl Value {
                         })
                         .map(|(i, _)| Term::Slot(i as u32)),
                 ),
-                Term::Clear(_, v) | Term::Tag(_, v) => v.expand_tables(slots),
+                Term::Clear(_, v) | Term::Tag(_, v) | Term::Logical(v) => v.expand_tables(slots),
                 Term::Call { args, .. } => args.iter_mut().for_each(|a| a.expand_tables(slots)),
                 _ => {}
             }
@@ -338,7 +373,7 @@ impl Value {
         for t in &self.0 {
             match t {
                 Term::Slot(s) => out.push(*s),
-                Term::Clear(_, v) | Term::Tag(_, v) => v.slots(out),
+                Term::Clear(_, v) | Term::Tag(_, v) | Term::Logical(v) => v.slots(out),
                 Term::Call { args, .. } => args.iter().for_each(|a| a.slots(out)),
                 _ => {}
             }
@@ -394,7 +429,12 @@ fn call_into(
             match s.params.iter().position(|p| *p == Some(origin)) {
                 Some(i) if i < args.len() => {
                     let mut l = arg(i, &mut unknown);
-                    l.iter_mut().for_each(|x| x.1 &= mask);
+                    let keep = if mask & PASSED != 0 {
+                        mask | SinkKind::Identity.bit()
+                    } else {
+                        mask
+                    };
+                    l.iter_mut().for_each(|x| x.1 &= keep);
                     l.retain(|x| x.1 != 0);
                     provenance::merge(out, &l);
                 }
@@ -1063,7 +1103,7 @@ impl Compiler<'_> {
                 .cleared(SinkKind::Query.bit()),
             Builtin::Numeric => Value::union(args).cleared(NUMERIC_SAFE),
             Builtin::Logical if self.decision => Value::union(args),
-            Builtin::Logical => Value::default(),
+            Builtin::Logical => Value::union(args).logical(),
             Builtin::Encode => Value::union(args).cleared(SinkKind::Html.bit()),
             Builtin::Other => Value::union(args),
         }
@@ -1140,8 +1180,9 @@ impl Compiler<'_> {
 
     /// The value of an expression. Every operand (see [`operands`]) is read
     /// first, so the calls in it run whatever the kind makes of its value: a
-    /// comparison, a logical operator, `CAN-FIND`, the condition of an `IF`
-    /// expression and a subscript run their calls and pass on no value (see
+    /// comparison, a logical operator, `CAN-FIND` and the condition of an `IF`
+    /// expression pass on only its identity ([`Value::logical`]), and a
+    /// subscript runs its calls and passes on no value (see
     /// [`Self::effects`]). A kind the compiler does not model is Unknown.
     pub fn expr(&mut self, e: &Expression) -> Value {
         let receiver = match &e.kind {
@@ -1153,8 +1194,11 @@ impl Compiler<'_> {
             .enumerate()
             .map(|(i, o)| match receiver {
                 Some(r) if std::ptr::eq(r, o) => self.receiver(o),
-                _ if passes_on(e, i) => self.expr(o),
-                _ => self.effects(o),
+                _ => match passes_on(e, i) {
+                    Pass::Value => self.expr(o),
+                    Pass::Identity => self.expr(o).logical(),
+                    Pass::Nothing => self.effects(o),
+                },
             })
             .collect();
         match &e.kind {
@@ -1180,8 +1224,8 @@ impl Compiler<'_> {
             | E::And(..)
             | E::Or(..)
             | E::Not(..)
-            | E::CanFind { .. } => Value::default(),
-            E::IfThenElse(..) => Value::union(values.into_iter().skip(1)),
+            | E::CanFind { .. }
+            | E::IfThenElse(..) => Value::union(values),
             E::FunctionCall { name, arguments } => {
                 self.call(&name.name, values, e.span, literal_key(arguments))
             }
@@ -1586,10 +1630,20 @@ pub(super) fn operands(e: &Expression) -> Vec<&Expression> {
     }
 }
 
-/// Whether `e` passes on the value of its operand at `i`: a comparison, a
-/// logical operator and `CAN-FIND` pass on none, an `IF` expression not its
-/// condition, and a subscript not its index.
-fn passes_on(e: &Expression, i: usize) -> bool {
+/// What an expression passes on of the value of one operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Value,
+    /// Only its identity: the operand decides a logical.
+    Identity,
+    /// Nothing; its calls run.
+    Nothing,
+}
+
+/// What `e` passes on of its operand at `i`: a comparison, a logical operator,
+/// `CAN-FIND` and the condition of an `IF` expression only the identity, and a
+/// subscript not its index.
+fn passes_on(e: &Expression, i: usize) -> Pass {
     match &e.kind {
         E::Equal(..)
         | E::NotEqual(..)
@@ -1603,10 +1657,10 @@ fn passes_on(e: &Expression, i: usize) -> bool {
         | E::And(..)
         | E::Or(..)
         | E::Not(..)
-        | E::CanFind { .. } => false,
-        E::IfThenElse(..) => i > 0,
-        E::ArrayAccess { .. } => i == 0,
-        _ => true,
+        | E::CanFind { .. } => Pass::Identity,
+        E::IfThenElse(..) if i == 0 => Pass::Identity,
+        E::ArrayAccess { .. } if i > 0 => Pass::Nothing,
+        _ => Pass::Value,
     }
 }
 

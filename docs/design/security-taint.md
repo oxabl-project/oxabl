@@ -144,7 +144,7 @@ assignments.
 |---|---|
 | `QUOTER(x)` | `query` |
 | `INTEGER`, `INT64`, `DECIMAL`, `DATE`, `DATETIME`, `DATETIME-TZ`, `LOGICAL` conversion, arithmetic, and functions that return a number (`LENGTH`, `NUM-ENTRIES`, `LOOKUP`, `INDEX`, ...) | every kind but `size` |
-| a function that returns a logical, a comparison | every kind |
+| a function that returns a logical, a comparison, `CAN-FIND`, the condition of an `IF` expression | every kind but the client identity, which it still decides on |
 | `html-encode(x)` | `html` |
 | `IF x = "lit"`, `IF LOOKUP(x, "a,b") > 0`, `IF CAN-DO("a,b", x)`, `CASE x: WHEN "a"` — on the guarded edge | every kind, for `x` |
 | a configured validator `v(x)`: as a wrapper, its result; as a guard `IF v(x)`, `x` on the true edge | the kinds it is configured for |

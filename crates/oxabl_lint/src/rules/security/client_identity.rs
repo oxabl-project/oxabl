@@ -28,8 +28,11 @@
 //! functions whose result is the client's claim. The value is followed with
 //! the taint analysis (in every mode), through variables, fields and the
 //! routines of the file. A comparison, a number conversion or a guard does
-//! not clean it: the checked value is still the client's. A validator that
-//! `protects = ["identity"]` does.
+//! not clean it: the checked value is still the client's. A logical value
+//! made from it holds it too: `l = role = "admin"` and then `IF l`, or a
+//! function of the file that returns `p = "admin"` for its parameter. A
+//! parameter is no identity of its own; a call puts back what its argument
+//! holds. A validator that `protects = ["identity"]` cleans it.
 //!
 //! # Decisions
 //!

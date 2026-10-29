@@ -14,8 +14,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, is_constant};
 use super::value::{
-    BUDGET_LABELS, CallIr, Compiler, Env, Origins, Out, Routines, Slots, Summaries, Tables, Term,
-    UNKNOWN, UnitSummary, Value,
+    BUDGET_LABELS, CallIr, Compiler, Env, Origins, Out, PASSED, Routines, Slots, Summaries, Tables,
+    Term, UNKNOWN, UnitSummary, Value,
 };
 use super::{ALL, Options};
 
@@ -534,20 +534,22 @@ impl Builder<'_, '_> {
                     return;
                 };
                 let mut origin = None;
+                // `PASSED` too, so a call puts back what its argument holds of
+                // an identity.
                 let value = if input {
                     let id = self
                         .c
                         .origins
                         .add(format!("input parameter `{}`", name.name), stmt.span);
                     origin = Some(id);
-                    Value::origin(id)
+                    Value::origin(id).tagged(PASSED)
                 } else if inbound && pos.is_some() {
                     let id = self
                         .c
                         .origins
                         .placeholder(format!("parameter `{}`", name.name), stmt.span);
                     origin = Some(id);
-                    Value::origin(id)
+                    Value::origin(id).tagged(PASSED)
                 } else {
                     Value::default()
                 };

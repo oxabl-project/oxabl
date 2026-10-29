@@ -95,6 +95,111 @@ END CASE.
     assert_eq!(related(src, &diags[0]), [4, 5]);
 }
 
+/// A logical value that a comparison of an identity made still holds the
+/// identity: kept in a variable, or returned by a function of the file.
+#[test]
+fn a_logical_value_made_from_an_identity_carries_it() {
+    let prelude = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE l AS LOGICAL NO-UNDO.
+c = get-value(\"role\").
+";
+    for (shape, last) in [
+        ("l = c = \"admin\".\nIF l THEN RUN purge.\n", 5),
+        ("l = (c = \"admin\").\nIF l THEN RUN purge.\n", 5),
+        ("l = CAN-DO(\"admin\", c).\nIF l THEN RUN purge.\n", 5),
+        ("l = c BEGINS \"adm\".\nIF l THEN RUN purge.\n", 5),
+        ("l = NOT (c <> \"admin\").\nIF l THEN RUN purge.\n", 5),
+        (
+            "ASSIGN l = c = \"admin\" OR c = \"root\".\nIF NOT l THEN RETURN.\n",
+            5,
+        ),
+        // `CAN-FIND` decides itself; the `IF` is the same identity.
+        (
+            "l = CAN-FIND(FIRST Customer WHERE Customer.SalesRep = c).\nIF l THEN RUN purge.\n",
+            4,
+        ),
+        (
+            "l = IF c = \"admin\" THEN TRUE ELSE FALSE.\nIF l THEN RUN purge.\n",
+            5,
+        ),
+        (
+            "FUNCTION isAdmin RETURNS LOGICAL (p AS CHARACTER): RETURN p = \"admin\". END FUNCTION.\n\
+             IF isAdmin(c) THEN RUN purge.\n",
+            5,
+        ),
+        (
+            "FUNCTION isAdmin RETURNS LOGICAL (): RETURN c = \"admin\". END FUNCTION.\n\
+             IF isAdmin() THEN RUN purge.\n",
+            5,
+        ),
+        (
+            "PROCEDURE chk:\n  DEFINE INPUT PARAMETER p AS CHARACTER NO-UNDO.\n  \
+             DEFINE OUTPUT PARAMETER ok AS LOGICAL NO-UNDO.\n  ok = p = \"admin\".\n\
+             END PROCEDURE.\nRUN chk (c, OUTPUT l).\nIF l THEN RUN purge.\n",
+            10,
+        ),
+    ] {
+        let src = format!("{prelude}{shape}");
+        let diags = check(&src);
+        assert_eq!(lines(&src, &diags), [last], "{src}\n{diags:?}");
+        assert!(diags[0].message.contains("`role`"), "{}", diags[0].message);
+    }
+    // The request value compared where it is read.
+    let src = "\
+DEFINE VARIABLE l AS LOGICAL NO-UNDO.
+l = get-value(\"role\") = \"admin\".
+IF l THEN RUN purge.
+";
+    assert_eq!(lines(src, &check(src)), [3]);
+    // A value read from an input parameter by an identity key is one.
+    let src = "\
+DEFINE INPUT PARAMETER oBody AS Progress.Json.ObjectModel.JsonObject NO-UNDO.
+IF oBody:GetCharacter(\"userId\") = \"x\" THEN RUN purge.
+";
+    assert_eq!(lines(src, &check(src)), [2]);
+    // A function that checks its parameter with a validator that protects the
+    // identity gives back none.
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+c = get-value(\"role\").
+FUNCTION isAdmin RETURNS LOGICAL (p AS CHARACTER): RETURN is-session-role(p). END FUNCTION.
+IF isAdmin(c) THEN RUN purge.
+";
+    let options = SecurityOptions {
+        validators: vec![SecurityValidator {
+            name: "is-session-role".into(),
+            protects: vec!["identity".into()],
+        }],
+        ..SecurityOptions::default()
+    };
+    assert!(check_with(src, options).is_empty());
+    // An input parameter is not a client identity of its own.
+    let src = "\
+DEFINE INPUT PARAMETER pcRole AS CHARACTER NO-UNDO.
+PROCEDURE allow:
+    DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+    IF pc = \"admin\" THEN RUN purge.
+END PROCEDURE.
+IF pcRole = \"admin\" THEN RUN allow (pcRole).
+";
+    assert!(check(src).is_empty());
+}
+
+/// A logical value made from an identity carries only the identity: it is no
+/// longer dangerous for an injection sink.
+#[test]
+fn a_logical_value_made_from_input_is_clean_for_a_sink() {
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE l AS LOGICAL NO-UNDO.
+c = get-value(\"cmd\").
+l = c = \"ls\".
+OS-COMMAND VALUE(STRING(l)).
+";
+    assert!(run_with("ABLSEC003", src, taint()).is_empty());
+}
+
 #[test]
 fn request_objects_and_json_bodies_carry_identity_keys() {
     let src = "\
