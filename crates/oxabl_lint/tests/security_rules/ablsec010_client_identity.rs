@@ -119,9 +119,10 @@ c = get-value(\"role\").
             "l = CAN-FIND(FIRST Customer WHERE Customer.SalesRep = c).\nIF l THEN RUN purge.\n",
             4,
         ),
+        // The `IF` expression decides itself; the `IF` is the same identity.
         (
             "l = IF c = \"admin\" THEN TRUE ELSE FALSE.\nIF l THEN RUN purge.\n",
-            5,
+            4,
         ),
         (
             "FUNCTION isAdmin RETURNS LOGICAL (p AS CHARACTER): RETURN p = \"admin\". END FUNCTION.\n\
@@ -245,6 +246,56 @@ DEFINE VARIABLE c AS CHARACTER NO-UNDO.
 ASSIGN c = get-value(\"role\").
 FOR EACH Order NO-LOCK BY get-value(\"user\"):
 END.
+";
+    assert!(check(src).is_empty());
+}
+
+/// Every construct that holds a condition decides: the `WHEN` values of a
+/// `CASE` (`CASE TRUE` too), the condition of an `IF` expression, the `WHEN`
+/// of a `DISPLAY` item, the key of a `FIND`, and an `IF` expression in a
+/// statement the parser does not model.
+#[test]
+fn every_condition_the_grammar_holds_is_a_decision() {
+    let prelude = "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nc = get-value(\"role\").\n";
+    for (shape, word) in [
+        (
+            "CASE TRUE:\n  WHEN c = \"admin\" THEN RUN purge.\nEND CASE.\n",
+            "CASE",
+        ),
+        (
+            "CASE TRUE:\n  WHEN LOOKUP(c, \"admin,root\") > 0 THEN RUN purge.\n  OTHERWISE RETURN.\nEND CASE.\n",
+            "CASE",
+        ),
+        (
+            "CASE \"admin\":\n  WHEN \"x\" OR WHEN c THEN RUN purge.\nEND CASE.\n",
+            "CASE",
+        ),
+        (
+            "RUN VALUE(IF c = \"admin\" THEN \"purge.p\" ELSE \"noop.p\").\n",
+            "IF",
+        ),
+        ("DISPLAY \"secret\" WHEN c = \"admin\".\n", "DISPLAY"),
+        ("FIND Customer c NO-LOCK NO-ERROR.\n", "FIND"),
+        (
+            "COMPILE VALUE(IF c = \"admin\" THEN \"purge.p\" ELSE \"noop.p\") SAVE.\n",
+            "COMPILE",
+        ),
+    ] {
+        let src = format!("{prelude}{shape}");
+        let diags = check(&src);
+        assert_eq!(lines(&src, &diags), [3], "{src}\n{diags:?}");
+        assert!(
+            src[diags[0].span.span.start as usize..].starts_with(word),
+            "{src}\n{diags:?}"
+        );
+        assert!(diags[0].message.contains("`role`"), "{}", diags[0].message);
+    }
+    // A constant decides nothing.
+    let src = "\
+CASE TRUE:
+  WHEN \"a\" = \"b\" THEN RUN purge.
+END CASE.
+DISPLAY \"x\" WHEN TRUE.
 ";
     assert!(check(src).is_empty());
 }

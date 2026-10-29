@@ -36,13 +36,18 @@
 //!
 //! # Decisions
 //!
-//! The condition of `IF`, `CASE`, `DO WHILE` and `REPEAT WHILE`, the `WHERE`
-//! of `FOR EACH`, `FIND` and `CAN-FIND`, and an argument of an
-//! `auth-routines` routine (`[workspace.lint.security.reach]`). So is every
-//! `WHERE`, `WHILE` and `WHEN` that the parser does not put in a node: of a
-//! joined record phrase, of `FOR EACH ... WHILE`, of `PRESELECT` and `OPEN
-//! QUERY`, of an `ASSIGN` pair. A value that is only displayed or stored is
-//! not reported.
+//! The condition of `IF` (the statement and the expression), the selector
+//! and the `WHEN` values of `CASE` (`CASE TRUE: WHEN c = "admin"`), the
+//! condition of `DO WHILE` and `REPEAT WHILE`, the `WHERE` of `FOR EACH`,
+//! `FIND` and `CAN-FIND`, the key of `FIND`, the `WHEN` of a `DISPLAY` item,
+//! and an argument of an `auth-routines` routine
+//! (`[workspace.lint.security.reach]`). So is every `WHERE`, `WHILE` and
+//! `WHEN` that the parser does not put in a node: of a joined record phrase,
+//! of `FOR EACH ... WHILE`, of `PRESELECT` and `OPEN QUERY`, of an `ASSIGN`
+//! pair; and the condition of an `IF` expression in a statement the parser
+//! does not model. `statement_decision` and `expression_decision` list every
+//! kind of the AST, so a new kind does not build until it is a decision or
+//! named as none. A value that is only displayed or stored is not reported.
 //!
 //! # One finding per routine and origin
 //!
@@ -329,6 +334,12 @@ impl Decisions<'_> {
                     _ if depth == 0 && CONDITIONS.iter().any(|w| st.is_word(i, w)) => {
                         operands.push(st.span(i + 1..clause_end(&st, i + 1)));
                     }
+                    // The condition of an `IF` expression, at any depth.
+                    _ if st.is_word(i, "IF") => {
+                        if let Some(then) = (i + 1..st.len()).find(|&j| st.is_word(j, "THEN")) {
+                            operands.push(st.span(i + 1..then));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -364,54 +375,214 @@ fn clause_end(st: &StatementText, from: usize) -> usize {
     st.len()
 }
 
+/// The decision a statement makes: its keyword and the operands that decide
+/// it. Every kind is listed, so a new kind does not build until it is a
+/// decision or named as none.
+fn statement_decision(
+    s: &Statement,
+    auth: &dyn Fn(&str) -> bool,
+) -> Option<(&'static str, Vec<Span>)> {
+    use StatementKind as S;
+    let decision = |word, spans: Vec<Span>| (!spans.is_empty()).then_some((word, spans));
+    match &s.kind {
+        S::If { condition, .. } => decision("IF", vec![condition.span]),
+        // The selector and each `WHEN` value: `CASE TRUE: WHEN c = "admin"`
+        // decides in its values.
+        S::Case {
+            expression,
+            when_branches,
+            ..
+        } => decision(
+            "CASE",
+            std::iter::once(expression.span)
+                .chain(
+                    when_branches
+                        .iter()
+                        .flat_map(|w| w.values.iter().map(|v| v.span)),
+                )
+                .collect(),
+        ),
+        // A loop's bounds are not a decision.
+        S::Do {
+            while_condition, ..
+        } => decision("DO", while_condition.iter().map(|w| w.span).collect()),
+        S::Repeat {
+            while_condition, ..
+        } => decision("REPEAT", while_condition.iter().map(|w| w.span).collect()),
+        S::ForEach { where_clause, .. } => {
+            decision("FOR", where_clause.iter().map(|w| w.span).collect())
+        }
+        // `FIND Customer cKey` selects by its key value as a `WHERE` does.
+        S::Find {
+            key_value,
+            where_clause,
+            ..
+        } => decision(
+            "FIND",
+            key_value
+                .iter()
+                .chain(where_clause)
+                .map(|e| e.span)
+                .collect(),
+        ),
+        // `DISPLAY x WHEN c`: the condition decides whether `x` is shown.
+        S::Display { items, .. } => decision(
+            "DISPLAY",
+            items
+                .iter()
+                .filter_map(|i| i.when_condition.as_ref().map(|w| w.span))
+                .collect(),
+        ),
+        S::Run {
+            target: RunTarget::Literal { name, .. },
+            arguments,
+            ..
+        } if auth(name) => decision("RUN", arguments.iter().map(|a| a.expression.span).collect()),
+        // Read from its tokens (`Decisions::unmodelled`).
+        S::Skipped { .. } => None,
+        // No condition: values, targets, definitions, blocks, events and the
+        // preprocessor, which decides at compile time. A `WHEN`, `WHERE` or
+        // `WHILE` the parser does not hold is read from the tokens.
+        S::Run { .. }
+        | S::VariableDeclaration { .. }
+        | S::VariableDeclarationList(_)
+        | S::Assignment { .. }
+        | S::ExpressionStatement(_)
+        | S::Block(_)
+        | S::Procedure { .. }
+        | S::DefineParameter { .. }
+        | S::IncludeReference { .. }
+        | S::IncludeArgReference { .. }
+        | S::Message { .. }
+        | S::Put { .. }
+        | S::Export { .. }
+        | S::Import { .. }
+        | S::Pause { .. }
+        | S::Down { .. }
+        | S::Form { .. }
+        | S::Update { .. }
+        | S::Set { .. }
+        | S::Apply { .. }
+        | S::WaitFor { .. }
+        | S::Enable { .. }
+        | S::Disable { .. }
+        | S::Hide { .. }
+        | S::View { .. }
+        | S::Up { .. }
+        | S::DefineTempTable { .. }
+        | S::DefineBuffer { .. }
+        | S::Catch { .. }
+        | S::Finally { .. }
+        | S::Throw(_)
+        | S::Assign { .. }
+        | S::Function { .. }
+        | S::Class { .. }
+        | S::Method { .. }
+        | S::Property { .. }
+        | S::Constructor { .. }
+        | S::Destructor { .. }
+        | S::Interface { .. }
+        | S::Using { .. }
+        | S::Create { .. }
+        | S::Delete { .. }
+        | S::DeleteObject { .. }
+        | S::DeleteWidgetPool { .. }
+        | S::CreateWidgetPool { .. }
+        | S::Release { .. }
+        | S::ReleaseObject { .. }
+        | S::Validate { .. }
+        | S::BufferCopy { .. }
+        | S::BufferCompare { .. }
+        | S::PreprocIf(_)
+        | S::PreprocDefine { .. }
+        | S::PreprocUndefine { .. }
+        | S::PreprocMessage { .. }
+        | S::DefineStream { .. }
+        | S::DefineFrame { .. }
+        | S::DefineWidget { .. }
+        | S::DefineDataset { .. }
+        | S::DefineDataSource { .. }
+        | S::Publish { .. }
+        | S::Subscribe { .. }
+        | S::Unsubscribe { .. }
+        | S::DefineEvent { .. }
+        | S::StreamIo { .. }
+        | S::On { .. }
+        | S::TriggerProcedure { .. }
+        | S::Leave(_)
+        | S::Next(_)
+        | S::Return(_)
+        | S::Empty
+        | S::Annotation(_)
+        | S::Label { .. } => None,
+    }
+}
+
+/// The decision an expression makes: its keyword and the operands that
+/// decide it. Every kind is listed, as in [`statement_decision`].
+fn expression_decision(e: &Expression, auth: &dyn Fn(&str) -> bool) -> Option<(String, Vec<Span>)> {
+    use ExpressionKind as E;
+    match &e.kind {
+        E::CanFind {
+            where_clause: Some(w),
+            ..
+        } => Some(("CAN-FIND".to_string(), vec![w.span])),
+        // `IF c THEN "purge.p" ELSE "noop.p"` picks what runs.
+        E::IfThenElse(c, ..) => Some(("IF".to_string(), vec![c.span])),
+        E::FunctionCall { name, arguments } if auth(&name.name) => Some((
+            name.name.clone(),
+            arguments.iter().map(|a| a.span).collect(),
+        )),
+        // Values and operators, which a decision reads; the preprocessor
+        // decides at compile time.
+        E::Literal(_)
+        | E::Identifier(_)
+        | E::Add(..)
+        | E::Minus(..)
+        | E::Multiply(..)
+        | E::Divide(..)
+        | E::Modulo(..)
+        | E::Equal(..)
+        | E::NotEqual(..)
+        | E::LessThan(..)
+        | E::LessThanOrEqual(..)
+        | E::GreaterThan(..)
+        | E::GreaterThanOrEqual(..)
+        | E::Begins(..)
+        | E::Matches(..)
+        | E::Contains(..)
+        | E::And(..)
+        | E::Or(..)
+        | E::Negate(_)
+        | E::Not(_)
+        | E::FunctionCall { .. }
+        | E::MemberAccess { .. }
+        | E::MethodCall { .. }
+        | E::ArrayAccess { .. }
+        | E::FieldAccess { .. }
+        | E::IncludeReference { .. }
+        | E::IncludeArgReference { .. }
+        | E::PreprocReference(_)
+        | E::PreprocIf(_)
+        | E::New { .. }
+        | E::CanFind { .. } => None,
+    }
+}
+
 impl Visitor for Decisions<'_> {
     fn statement(&mut self, s: &Statement) -> bool {
-        let at = s.span.start;
-        match &s.kind {
-            StatementKind::If { condition, .. } => self.decide(at, "IF", &[condition.span]),
-            StatementKind::Case { expression, .. } => self.decide(at, "CASE", &[expression.span]),
-            StatementKind::Do {
-                while_condition: Some(w),
-                ..
-            } => self.decide(at, "DO", &[w.span]),
-            StatementKind::Repeat {
-                while_condition: Some(w),
-                ..
-            } => self.decide(at, "REPEAT", &[w.span]),
-            StatementKind::ForEach {
-                where_clause: Some(w),
-                ..
-            } => self.decide(at, "FOR", &[w.span]),
-            StatementKind::Find {
-                where_clause: Some(w),
-                ..
-            } => self.decide(at, "FIND", &[w.span]),
-            StatementKind::Run {
-                target: RunTarget::Literal { name, .. },
-                arguments,
-                ..
-            } if self.is_auth(name) => {
-                let spans: Vec<Span> = arguments.iter().map(|a| a.expression.span).collect();
-                self.decide(at, "RUN", &spans);
-            }
-            _ => {}
+        let auth = |name: &str| self.is_auth(name);
+        if let Some((word, spans)) = statement_decision(s, &auth) {
+            self.decide(s.span.start, word, &spans);
         }
         self.unmodelled(s);
         true
     }
 
     fn expression(&mut self, e: &Expression) {
-        match &e.kind {
-            ExpressionKind::CanFind {
-                where_clause: Some(w),
-                ..
-            } => self.decide(e.span.start, "CAN-FIND", &[w.span]),
-            ExpressionKind::FunctionCall { name, arguments } if self.is_auth(&name.name) => {
-                let spans: Vec<Span> = arguments.iter().map(|a| a.span).collect();
-                let word = name.name.clone();
-                self.decide(e.span.start, &word, &spans);
-            }
-            _ => {}
+        let auth = |name: &str| self.is_auth(name);
+        if let Some((word, spans)) = expression_decision(e, &auth) {
+            self.decide(e.span.start, &word, &spans);
         }
     }
 }
