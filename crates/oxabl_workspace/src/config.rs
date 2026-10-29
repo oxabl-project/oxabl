@@ -403,6 +403,7 @@ impl SecurityConfig {
                 .collect(),
             identity_sources: self.identity_sources.clone(),
             reach: self.reach.to_options(),
+            work_budget: None,
         }
     }
 }

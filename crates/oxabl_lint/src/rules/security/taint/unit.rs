@@ -7,20 +7,21 @@ use oxabl_ast::{
 };
 use oxabl_common::ParameterSources;
 use oxabl_flow::dataflow::{Analysis, Direction, Limits, Solution, default_budget, solve_bounded};
-use oxabl_flow::provenance::Provenance;
+use oxabl_flow::provenance::{Labels, Provenance};
 use oxabl_flow::{Cfg, Edge, EdgeKind, ExitKind, NodeIx, NodeKind, Unit, UnitKind};
 use oxabl_lexer::Kind;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, is_constant};
 use super::value::{
-    CallIr, Compiler, Env, Origins, Out, Routines, Slots, Summaries, Tables, Term, UNKNOWN,
-    UnitSummary, Value,
+    BUDGET_LABELS, CallIr, Compiler, Env, Origins, Out, Routines, Slots, Summaries, Tables, Term,
+    UNKNOWN, UnitSummary, Value,
 };
 use super::{ALL, Options};
 
-/// The most work the solve of one unit may do. Past it the unit is Unknown.
-const WORK_LIMIT: usize = 2_000_000;
+/// The most work the solve of one unit may do, unless the options set
+/// another. Past it the unit is not judged: see `value::BUDGET`.
+pub(super) const WORK_LIMIT: usize = 2_000_000;
 
 /// One write: `slot` takes `value`.
 #[derive(Debug, Clone)]
@@ -1465,8 +1466,8 @@ impl Analysis for Problem<'_> {
 }
 
 /// Solve one unit with the file-level variables and fields at their
-/// summaries. `None` when the unit costs more than its budget.
-pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provenance>> {
+/// summaries. `None` when the unit costs more than `work`.
+pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env, work: usize) -> Option<Solution<Provenance>> {
     let env = env.outside(ir.outside);
     let mut seeds = Provenance::new(ir.slots.len());
     for (i, slot) in ir.slots.info.iter().enumerate() {
@@ -1475,14 +1476,19 @@ pub(super) fn solve(cfg: &Cfg, ir: &UnitIr, env: Env) -> Option<Solution<Provena
         {
             seeds.set(i, l.clone());
         }
-        if slot.outside || slot.global && env.unsure() {
+        if slot.outside {
             seeds.add(i, &[(UNKNOWN, ALL)]);
+        }
+        if slot.global {
+            let mut unsure = Labels::new();
+            env.unsure(&mut unsure);
+            seeds.add(i, &unsure);
         }
     }
     let problem = Problem { ir, env, seeds };
     let limits = Limits {
         visits: default_budget(cfg),
-        work: WORK_LIMIT,
+        work,
     };
     solve_bounded(cfg, &problem, limits).ok()
 }
@@ -1720,10 +1726,10 @@ pub(super) fn contribute(ir: &UnitIr, solution: &Solution<Provenance>, into: &mu
     }
 }
 
-/// What a unit past its work budget leaves: Unknown in every file-level slot
-/// it writes and in every parameter it passes to a routine of the file.
+/// What a unit past its work budget leaves: `value::BUDGET` in every file-level
+/// slot it writes and in every parameter it passes to a routine of the file.
 pub(super) fn contribute_unknown(ir: &UnitIr, into: &mut Summaries) {
-    let unknown = [(UNKNOWN, ALL)];
+    let unknown = BUDGET_LABELS;
     for op in ir.ops.iter().flatten() {
         let slot = &ir.slots.info[op.slot as usize];
         if slot.global || ir.main {

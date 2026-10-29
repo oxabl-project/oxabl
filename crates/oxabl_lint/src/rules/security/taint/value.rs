@@ -25,6 +25,16 @@ pub(super) const UNKNOWN: u32 = u32::MAX;
 /// The labels of a value the analysis cannot judge.
 const UNKNOWN_LABELS: [(u32, u32); 1] = [(UNKNOWN, ALL)];
 
+/// The origin of a value the analysis did not finish: what a unit past its
+/// work budget leaves, and every file-level read when the rounds end before
+/// the summaries stop changing. Like [`UNKNOWN`] it is never a real source;
+/// a decision it reaches is reported as not judged.
+pub(super) const BUDGET: u32 = u32::MAX - 1;
+
+/// The labels of a value the analysis did not finish: every kind, the
+/// identity of [`SinkKind::Identity`] too, since it may hold one.
+pub(super) const BUDGET_LABELS: [(u32, u32); 1] = [(BUDGET, ALL | SinkKind::Identity.bit())];
+
 /// An untrusted source site.
 #[derive(Debug, Clone)]
 pub(super) struct Origin {
@@ -153,9 +163,16 @@ impl<'a> Env<'a> {
         Env { outside, ..self }
     }
 
-    /// Whether every read of a file-level slot or a parameter holds Unknown.
-    pub fn unsure(&self) -> bool {
-        self.files.unconverged || self.outside
+    /// What every read of a file-level slot or a parameter holds besides its
+    /// summary: [`BUDGET`] when the summaries did not converge, Unknown when
+    /// code outside the file may run first.
+    pub fn unsure(&self, out: &mut Labels) {
+        if self.files.unconverged {
+            provenance::merge(out, &BUDGET_LABELS);
+        }
+        if self.outside {
+            provenance::merge(out, &UNKNOWN_LABELS);
+        }
     }
 }
 
@@ -208,9 +225,7 @@ impl Value {
                     if let Some(l) = files.labels.get(key) {
                         provenance::merge(out, l);
                     }
-                    if env.unsure() {
-                        provenance::merge(out, &UNKNOWN_LABELS);
-                    }
+                    env.unsure(out);
                 }
                 Term::Table(table) => {
                     for (key, l) in &files.labels {
@@ -221,9 +236,7 @@ impl Value {
                             provenance::merge(out, l);
                         }
                     }
-                    if env.unsure() {
-                        provenance::merge(out, &UNKNOWN_LABELS);
-                    }
+                    env.unsure(out);
                 }
                 Term::Clear(mask, v) => {
                     let mut inner = Labels::new();
@@ -251,9 +264,7 @@ impl Value {
                     if let Some(l) = files.seeds.get(&(*unit, *pos)) {
                         provenance::merge(out, l);
                     }
-                    if env.unsure() {
-                        provenance::merge(out, &UNKNOWN_LABELS);
-                    }
+                    env.unsure(out);
                 }
                 Term::Unknown => {
                     unknown = true;
@@ -330,7 +341,8 @@ impl Value {
 
 /// The labels of a call: each callee's summary with the arguments put in
 /// for its parameters. A callee past its work budget returns its arguments
-/// and Unknown, and so does every call when the summaries did not converge.
+/// and [`BUDGET`], and every call holds [`BUDGET`] when the summaries did not
+/// converge.
 fn call_into(
     callees: &[u32],
     o: Out,
@@ -351,7 +363,7 @@ fn call_into(
             .clone()
     };
     if env.files.unconverged {
-        provenance::merge(out, &UNKNOWN_LABELS);
+        provenance::merge(out, &BUDGET_LABELS);
     }
     for &c in callees {
         let Some(s) = env.files.units.get(&c) else {
@@ -361,7 +373,7 @@ fn call_into(
             for i in 0..args.len() {
                 provenance::merge(out, &arg(i, &mut unknown));
             }
-            provenance::merge(out, &UNKNOWN_LABELS);
+            provenance::merge(out, &BUDGET_LABELS);
             continue;
         }
         let labels = match o {

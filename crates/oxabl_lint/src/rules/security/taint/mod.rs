@@ -80,9 +80,10 @@
 //! holds it, the unit ran out of its work budget or holds an include that did
 //! not arrive, or the parse recovered.
 //!
-//! What it cannot judge also travels as a value, the origin
-//! `UNKNOWN` (in `value`), so a sink it reaches is reported too: what a unit past
-//! its work budget writes to file-level slots, passes to routines or returns;
+//! What it cannot judge also travels as a value, the origin `UNKNOWN` (in
+//! `value`; `BUDGET`, below, for the first two), so a sink it reaches is
+//! reported too: what a unit past its work budget writes to file-level slots,
+//! passes to routines or returns;
 //! every file-level read, routine result and parameter when the rounds end
 //! before the summaries stop changing; every file-level read and parameter
 //! when code outside the file may run first (in every unit of a file where
@@ -93,6 +94,11 @@
 //! does not define and the schema does not know, when the name may come from
 //! outside the file (an include checked on its own, an include that did not
 //! arrive, a class that inherits).
+//!
+//! What a unit past its work budget leaves, and what the rounds leave when the
+//! summaries do not settle, carries its own origin, `BUDGET`: a sink rule
+//! reads it as Unknown, and ABLSEC010, which drops Unknown, reports it as not
+//! judged (`Gate::judge_decision`).
 
 mod unit;
 mod value;
@@ -197,6 +203,8 @@ pub(crate) struct Options {
     validators: Vec<(String, u32)>,
     identity_keys: Vec<String>,
     identity_sources: Vec<String>,
+    /// The work budget of the solve of one unit.
+    work: usize,
 }
 
 /// The words of a request key that make it a client-supplied identity, when
@@ -229,6 +237,7 @@ impl Options {
                 o.identity_keys.clone()
             },
             identity_sources: o.identity_sources.clone(),
+            work: o.work_budget.unwrap_or(unit::WORK_LIMIT),
         }
     }
 
@@ -343,7 +352,7 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
             .units()
             .iter()
             .zip(&units)
-            .map(|(cfg, ir)| unit::solve(cfg, ir, env))
+            .map(|(cfg, ir)| unit::solve(cfg, ir, env, options.work))
             .collect();
         let mut next = summaries.clone();
         for (i, (cfg, (ir, sol))) in flow
@@ -374,6 +383,7 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
                         seeds: false,
                         ..env
                     },
+                    options.work,
                 )
             } else {
                 None
@@ -394,7 +404,7 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
             .units()
             .iter()
             .zip(&units)
-            .map(|(cfg, ir)| unit::solve(cfg, ir, env))
+            .map(|(cfg, ir)| unit::solve(cfg, ir, env, options.work))
             .collect();
     }
     FileTaint {
@@ -520,6 +530,10 @@ pub(crate) enum Reach {
     Clean,
     /// The analysis cannot judge it.
     Unknown,
+    /// The analysis did not finish it: the unit that holds it, or one whose
+    /// value reaches it, ran past its work budget, or the rounds ended before
+    /// the summaries converged. See `value::BUDGET`.
+    Unjudged,
     /// The path from the source, source first.
     Tainted(Vec<witness::Step>),
 }
@@ -538,7 +552,7 @@ impl FileTaint {
         let mut tainted = None;
         for &op in operands {
             match self.reach_one(flow, source, op, kind, decision) {
-                Reach::Unknown => return Reach::Unknown,
+                r @ (Reach::Unknown | Reach::Unjudged) => return r,
                 Reach::Clean => {}
                 t @ Reach::Tainted(_) => {
                     tainted.get_or_insert(t);
@@ -571,12 +585,12 @@ impl FileTaint {
             return Reach::Unknown;
         };
         let u = cfg.id().index();
-        let (Some(sol), ir) = (&self.solutions[u], &self.units[u]) else {
-            return Reach::Unknown;
-        };
         if self.elided.contains(&u) {
             return Reach::Unknown;
         }
+        let (Some(sol), ir) = (&self.solutions[u], &self.units[u]) else {
+            return Reach::Unjudged;
+        };
         let Some(st) = StatementText::over(source, operand) else {
             return Reach::Unknown;
         };
@@ -622,10 +636,14 @@ impl FileTaint {
         };
         let Some(&(origin, _)) = labels.iter().find(|(o, m)| m & kind.bit() != 0 && real(*o))
         else {
-            let unknown = labels
-                .iter()
-                .any(|(o, m)| *o == value::UNKNOWN && m & kind.bit() != 0);
-            return if unknown {
+            let held = |origin: u32| {
+                labels
+                    .iter()
+                    .any(|(o, m)| *o == origin && m & kind.bit() != 0)
+            };
+            return if held(value::BUDGET) {
+                Reach::Unjudged
+            } else if held(value::UNKNOWN) {
                 Reach::Unknown
             } else {
                 Reach::Clean
@@ -657,6 +675,8 @@ pub(crate) struct Judgement {
     pub chain: String,
     /// The untrusted source: where it is, and what it is.
     pub origin: Option<(Span, String)>,
+    /// The analysis did not finish the value: past a work budget.
+    pub unjudged: bool,
 }
 
 impl Judgement {
@@ -667,6 +687,16 @@ impl Judgement {
             tainted: false,
             chain: String::new(),
             origin: None,
+            unjudged: false,
+        }
+    }
+
+    /// A decision the analysis did not finish.
+    fn unjudged() -> Self {
+        Judgement {
+            subject: "a value the analysis did not finish".to_string(),
+            unjudged: true,
+            ..Judgement::stage_one()
         }
     }
 
@@ -718,20 +748,24 @@ impl<'g> Gate<'g> {
         }
         match self.reach(operands, kind, false) {
             Reach::Clean => None,
-            Reach::Unknown => Some(Judgement::stage_one()),
+            Reach::Unknown | Reach::Unjudged => Some(Judgement::stage_one()),
             Reach::Tainted(steps) => Some(self.tainted(&steps)),
         }
     }
 
     /// Judge a decision whose operands are at `operands`: the path when a
-    /// value of `kind` reaches them. A decision the analysis cannot judge is
-    /// not reported; neither is any in a file whose parse recovered.
+    /// value of `kind` reaches them, or [`Judgement::unjudged`] when the
+    /// analysis did not finish a value that reaches them (a work budget), so
+    /// the budget hides no decision. A decision the analysis cannot judge for
+    /// another reason is not reported; neither is any in a file whose parse
+    /// recovered.
     pub fn judge_decision(&self, operands: &[Span], kind: SinkKind) -> Option<Judgement> {
         if operands.is_empty() || self.ctx.parse_recovered {
             return None;
         }
         match self.reach(operands, kind, true) {
             Reach::Tainted(steps) => Some(self.tainted(&steps)),
+            Reach::Unjudged => Some(Judgement::unjudged()),
             Reach::Clean | Reach::Unknown => None,
         }
     }
@@ -756,6 +790,7 @@ impl<'g> Gate<'g> {
             .and_then(|s| s.span.map(|span| (span, s.chain.clone())));
         Judgement {
             origin,
+            unjudged: false,
             tainted: true,
             subject: format!("untrusted input: {chain}"),
             chain,

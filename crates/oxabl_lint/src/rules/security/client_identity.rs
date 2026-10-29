@@ -54,11 +54,21 @@
 //! is silent: turning on the `security` group in sink mode does not add it to
 //! a baseline.
 //!
+//! # Not judged
+//!
+//! A work budget bounds the analysis of each routine. A decision whose value
+//! the analysis did not finish (its routine, or one whose value reaches it,
+//! ran past the budget, or the summaries of the file did not converge) may
+//! read an identity, so the budget must not hide it: the routine gets one
+//! finding, at its first such decision, that says "authorization could not be
+//! judged: analysis budget exceeded", with the number of such decisions.
+//!
 //! # What is not reported
 //!
 //! The identity of the session (`USERID`, the client principal), a decision
-//! the analysis cannot judge (an unexpanded reference, a unit past its work
-//! budget), and any decision in a file whose parse recovered.
+//! the analysis cannot judge for another reason (an unexpanded reference, an
+//! include that did not arrive, a shared variable), and any decision in a
+//! file whose parse recovered.
 
 use oxabl_ast::{Expression, ExpressionKind, RunTarget, Span, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Label, SecurityMode, Severity};
@@ -86,6 +96,11 @@ pub const DESCRIPTION: &str =
 /// Remediation text, shown with each finding and in rule listings.
 pub const HELP: &str = "Take the user, company and role from the session that authenticated the \
      caller (the client principal), never from a request parameter, header or body.";
+
+/// Remediation text of a routine the analysis did not finish.
+pub const UNJUDGED_HELP: &str = "The routine is too large for the analysis to follow its values. \
+     Check by hand that its decisions take the user, company and role from the session, or split \
+     it into smaller routines.";
 
 /// Registry metadata.
 pub const META: RuleMeta = meta(
@@ -124,6 +139,7 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
     for h in hits {
         let unit = unit_at(flow, h.span.start).map(|(u, _)| u);
         let origin = match &h.judgement.origin {
+            _ if h.judgement.unjudged => "unjudged".to_string(),
             Some((span, _)) => format!("{}:{}", span.start, span.end),
             None => h.judgement.chain.clone(),
         };
@@ -158,7 +174,11 @@ fn report(ctx: &AnalysisContext, mut list: Vec<Hit>) -> Diagnostic {
         .take(MAX_RELATED)
         .map(|h| Label {
             span: file_span(ctx, h.span),
-            message: format!("`{}` decides on the same identity", h.word),
+            message: if h.judgement.unjudged {
+                format!("`{}` was not judged either", h.word)
+            } else {
+                format!("`{}` decides on the same identity", h.word)
+            },
         })
         .collect();
     let first = list.swap_remove(0);
@@ -167,6 +187,23 @@ fn report(ctx: &AnalysisContext, mut list: Vec<Hit>) -> Diagnostic {
     } else {
         format!("{count} decisions")
     };
+    if first.judgement.unjudged {
+        let mut d = finding(
+            ctx,
+            DEFAULT_SEVERITY,
+            ABLSEC010,
+            first.span,
+            format!(
+                "`{}`: authorization could not be judged: analysis budget exceeded; \
+                 {decisions} of this routine {} not judged",
+                first.word,
+                if count == 1 { "was" } else { "were" }
+            ),
+            UNJUDGED_HELP,
+        );
+        d.related = (!rest.is_empty()).then(|| Box::new(rest));
+        return d;
+    }
     let origin = first
         .judgement
         .origin

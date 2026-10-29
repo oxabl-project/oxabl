@@ -293,3 +293,187 @@ fn the_rule_is_silent_in_sink_mode() {
     };
     assert!(run_with("ABLSEC010", src, off).is_empty());
 }
+
+/// A main block that reads the company from the request, with `n` variables
+/// chained to each other, so that its solve costs more than a small budget;
+/// a function that decides twice on the main block's company, one that
+/// decides on a constant, and a procedure that decides on the company the
+/// main block passes it.
+fn heavy_company(n: usize) -> String {
+    let mut src = String::from("DEFINE VARIABLE cCompany AS CHARACTER NO-UNDO.\n");
+    for i in 0..n {
+        src.push_str(&format!("DEFINE VARIABLE d{i} AS CHARACTER NO-UNDO.\n"));
+    }
+    src.push_str("cCompany = get-value(\"company\").\n");
+    for i in 0..n {
+        src.push_str(&format!("d{i} = d{} + cCompany.\n", (i + 1) % n));
+    }
+    src.push_str(
+        "\
+FUNCTION f RETURNS LOGICAL ():
+  FIND FIRST Customer NO-LOCK WHERE Customer.Name = cCompany NO-ERROR.
+  IF cCompany = \"x\" THEN RETURN TRUE.
+  RETURN FALSE.
+END FUNCTION.
+FUNCTION g RETURNS LOGICAL ():
+  DEFINE VARIABLE cLocal AS CHARACTER NO-UNDO.
+  cLocal = \"x\".
+  IF cLocal = \"y\" THEN RETURN TRUE.
+  RETURN FALSE.
+END FUNCTION.
+PROCEDURE pick:
+  DEFINE INPUT PARAMETER pcCompany AS CHARACTER NO-UNDO.
+  FIND FIRST Customer NO-LOCK WHERE Customer.Name = pcCompany NO-ERROR.
+END PROCEDURE.
+IF cCompany = \"acme\" THEN RUN pick (cCompany).
+",
+    );
+    src
+}
+
+#[test]
+fn a_routine_the_budget_leaves_unjudged_gets_one_finding_that_says_so() {
+    let src = heavy_company(100);
+    let judged = check(&src);
+    assert_eq!(judged.len(), 3, "{judged:?}");
+    assert!(
+        judged.iter().all(|d| d.message.contains("client supplied")),
+        "{judged:?}"
+    );
+    let unjudged = check_with(
+        &src,
+        SecurityOptions {
+            work_budget: Some(5_000),
+            ..SecurityOptions::default()
+        },
+    );
+    let at: Vec<&str> = unjudged
+        .iter()
+        .map(|d| {
+            src[d.span.span.start as usize..]
+                .split_whitespace()
+                .next()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(at, ["FIND", "FIND", "IF"], "{unjudged:?}");
+    for d in &unjudged {
+        assert!(
+            d.message
+                .contains("authorization could not be judged: analysis budget exceeded"),
+            "{}",
+            d.message
+        );
+    }
+    assert!(
+        unjudged[0].message.contains("2 decisions"),
+        "{}",
+        unjudged[0].message
+    );
+    assert!(
+        unjudged[1].message.contains("1 decision"),
+        "{}",
+        unjudged[1].message
+    );
+    assert!(
+        unjudged[2].message.contains("1 decision"),
+        "{}",
+        unjudged[2].message
+    );
+}
+
+/// A function that reads the company from the request and returns it, with
+/// `n` variables chained to each other, so that its solve costs more than a
+/// small budget; a procedure that decides on its parameter; and a main block
+/// that decides on the function's result and passes it to the procedure.
+fn heavy_callee(n: usize) -> String {
+    let mut src = String::from(
+        "FUNCTION company RETURNS CHARACTER ():\n  \
+           DEFINE VARIABLE cCompany AS CHARACTER NO-UNDO.\n",
+    );
+    for i in 0..n {
+        src.push_str(&format!("  DEFINE VARIABLE d{i} AS CHARACTER NO-UNDO.\n"));
+    }
+    src.push_str("  cCompany = get-value(\"company\").\n");
+    for i in 0..n {
+        src.push_str(&format!("  d{i} = d{} + cCompany.\n", (i + 1) % n));
+    }
+    src.push_str(
+        "  \
+  RETURN cCompany.
+END FUNCTION.
+PROCEDURE pick:
+  DEFINE INPUT PARAMETER pcCompany AS CHARACTER NO-UNDO.
+  FIND FIRST Customer NO-LOCK WHERE Customer.Name = pcCompany NO-ERROR.
+END PROCEDURE.
+IF company() = \"acme\" THEN RUN pick (company()).
+",
+    );
+    src
+}
+
+#[test]
+fn a_call_of_a_routine_the_budget_leaves_unjudged_is_not_judged_either() {
+    let src = heavy_callee(100);
+    let judged = check(&src);
+    assert_eq!(lines(&src, &judged).len(), 2, "{judged:?}");
+    assert!(
+        judged.iter().all(|d| d.message.contains("client supplied")),
+        "{judged:?}"
+    );
+    let unjudged = check_with(
+        &src,
+        SecurityOptions {
+            work_budget: Some(5_000),
+            ..SecurityOptions::default()
+        },
+    );
+    let at: Vec<&str> = unjudged
+        .iter()
+        .map(|d| {
+            src[d.span.span.start as usize..]
+                .split_whitespace()
+                .next()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(at, ["FIND", "IF"], "{unjudged:?}");
+    assert!(
+        unjudged
+            .iter()
+            .all(|d| d.message.contains("could not be judged")),
+        "{unjudged:?}"
+    );
+}
+
+#[test]
+fn a_file_whose_summaries_do_not_settle_in_the_rounds_is_not_judged() {
+    // Each procedure carries the company one variable further, so each round
+    // of summaries moves it one step: more steps than rounds.
+    let n = 12;
+    let mut src = String::new();
+    for i in 0..=n {
+        src.push_str(&format!("DEFINE VARIABLE g{i} AS CHARACTER NO-UNDO.\n"));
+    }
+    for i in 0..n {
+        src.push_str(&format!(
+            "PROCEDURE p{i}:\n  g{} = g{i}.\nEND PROCEDURE.\n",
+            i + 1
+        ));
+    }
+    src.push_str("g0 = get-value(\"company\").\n");
+    for i in (0..n).rev() {
+        src.push_str(&format!("RUN p{i}.\n"));
+    }
+    src.push_str("IF g0 = \"acme\" THEN MESSAGE \"a\".\n");
+    src.push_str(&format!("IF g{n} = \"acme\" THEN MESSAGE \"b\".\n"));
+    let diags = check(&src);
+    assert_eq!(diags.len(), 2, "{diags:?}");
+    assert!(diags[0].message.contains("client supplied"), "{diags:?}");
+    assert!(
+        diags[1]
+            .message
+            .contains("authorization could not be judged: analysis budget exceeded"),
+        "{diags:?}"
+    );
+}

@@ -136,6 +136,10 @@ pub struct SecurityOptions {
     /// supplied.
     pub identity_sources: Vec<String>,
     pub reach: ReachOptions,
+    /// The most work the taint solve of one unit may do; `None` for the
+    /// built-in budget. Past it the unit is not judged. Not a key of
+    /// `oxabl.toml`: a test or a program that embeds the rules sets it.
+    pub work_budget: Option<usize>,
 }
 
 impl SecurityOptions {
