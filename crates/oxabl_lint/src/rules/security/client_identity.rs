@@ -56,12 +56,15 @@
 //!
 //! # Not judged
 //!
-//! A work budget bounds the analysis of each routine. A decision whose value
-//! the analysis did not finish (its routine, or one whose value reaches it,
-//! ran past the budget, or the summaries of the file did not converge) may
-//! read an identity, so the budget must not hide it: the routine gets one
-//! finding, at its first such decision, that says "authorization could not be
-//! judged: analysis budget exceeded", with the number of such decisions.
+//! A work budget bounds the analysis of each routine, and a number of rounds
+//! ([`super::taint::ROUNDS`]) bounds the summaries of a file. A decision whose
+//! value the analysis did not finish may read an identity, so neither bound
+//! may hide it: the routine gets one finding per reason, at its first such
+//! decision, with the number of such decisions. It says "authorization could
+//! not be judged: analysis budget exceeded" when its routine, or one whose
+//! value reaches it, ran past the budget, and "authorization could not be
+//! judged: the values of this file did not settle in the analysis" when the
+//! summaries of the file did not stop changing in the rounds.
 //!
 //! # What is not reported
 //!
@@ -75,7 +78,7 @@ use oxabl_common::{Diagnostic, Label, SecurityMode, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::reach::{names_routine, unit_at};
-use super::taint::{Gate, SinkKind};
+use super::taint::{Gate, SinkKind, Unfinished};
 use super::{ABLSEC010, finding, meta};
 use crate::registry::RuleMeta;
 use crate::rules::syntactic::{Visitor, file_span, walk_block};
@@ -97,10 +100,15 @@ pub const DESCRIPTION: &str =
 pub const HELP: &str = "Take the user, company and role from the session that authenticated the \
      caller (the client principal), never from a request parameter, header or body.";
 
-/// Remediation text of a routine the analysis did not finish.
+/// Remediation text of a routine past the work budget.
 pub const UNJUDGED_HELP: &str = "The routine is too large for the analysis to follow its values. \
      Check by hand that its decisions take the user, company and role from the session, or split \
      it into smaller routines.";
+
+/// Remediation text of a routine in a file whose summaries did not settle.
+pub const UNSETTLED_HELP: &str = "The values of this file pass through more routines, one after \
+     another, than the analysis follows. Check by hand that the decisions of this routine take \
+     the user, company and role from the session.";
 
 /// Registry metadata.
 pub const META: RuleMeta = meta(
@@ -138,10 +146,10 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
     let mut groups: Vec<(Group, Vec<Hit>)> = Vec::new();
     for h in hits {
         let unit = unit_at(flow, h.span.start).map(|(u, _)| u);
-        let origin = match &h.judgement.origin {
-            _ if h.judgement.unjudged => "unjudged".to_string(),
-            Some((span, _)) => format!("{}:{}", span.start, span.end),
-            None => h.judgement.chain.clone(),
+        let origin = match (h.judgement.unjudged, &h.judgement.origin) {
+            (Some(why), _) => format!("unjudged {why:?}"),
+            (None, Some((span, _))) => format!("{}:{}", span.start, span.end),
+            (None, None) => h.judgement.chain.clone(),
         };
         let key = (unit, origin);
         match groups.iter_mut().find(|(k, _)| *k == key) {
@@ -174,7 +182,7 @@ fn report(ctx: &AnalysisContext, mut list: Vec<Hit>) -> Diagnostic {
         .take(MAX_RELATED)
         .map(|h| Label {
             span: file_span(ctx, h.span),
-            message: if h.judgement.unjudged {
+            message: if h.judgement.unjudged.is_some() {
                 format!("`{}` was not judged either", h.word)
             } else {
                 format!("`{}` decides on the same identity", h.word)
@@ -187,19 +195,26 @@ fn report(ctx: &AnalysisContext, mut list: Vec<Hit>) -> Diagnostic {
     } else {
         format!("{count} decisions")
     };
-    if first.judgement.unjudged {
+    if let Some(why) = first.judgement.unjudged {
+        let (reason, help) = match why {
+            Unfinished::Budget => ("analysis budget exceeded", UNJUDGED_HELP),
+            Unfinished::Unsettled => (
+                "the values of this file did not settle in the analysis",
+                UNSETTLED_HELP,
+            ),
+        };
         let mut d = finding(
             ctx,
             DEFAULT_SEVERITY,
             ABLSEC010,
             first.span,
             format!(
-                "`{}`: authorization could not be judged: analysis budget exceeded; \
+                "`{}`: authorization could not be judged: {reason}; \
                  {decisions} of this routine {} not judged",
                 first.word,
                 if count == 1 { "was" } else { "were" }
             ),
-            UNJUDGED_HELP,
+            help,
         );
         d.related = (!rest.is_empty()).then(|| Box::new(rest));
         return d;

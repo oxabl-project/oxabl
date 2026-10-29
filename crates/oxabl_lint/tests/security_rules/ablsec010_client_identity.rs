@@ -364,6 +364,11 @@ fn a_routine_the_budget_leaves_unjudged_gets_one_finding_that_says_so() {
             "{}",
             d.message
         );
+        assert!(
+            d.help.as_deref().is_some_and(|h| h.contains("split it")),
+            "{:?}",
+            d.help
+        );
     }
     assert!(
         unjudged[0].message.contains("2 decisions"),
@@ -470,10 +475,17 @@ fn a_file_whose_summaries_do_not_settle_in_the_rounds_is_not_judged() {
     let diags = check(&src);
     assert_eq!(diags.len(), 2, "{diags:?}");
     assert!(diags[0].message.contains("client supplied"), "{diags:?}");
+    // No routine ran past its budget: the message and the help say why.
     assert!(
-        diags[1]
-            .message
-            .contains("authorization could not be judged: analysis budget exceeded"),
+        diags[1].message.contains(
+            "authorization could not be judged: the values of this file did not settle in the \
+             analysis"
+        ),
         "{diags:?}"
+    );
+    let help = diags[1].help.as_deref().unwrap_or_default();
+    assert!(
+        help.contains("more routines") && !help.contains("split"),
+        "{help}"
     );
 }

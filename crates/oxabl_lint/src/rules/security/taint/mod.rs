@@ -81,8 +81,8 @@
 //! not arrive, or the parse recovered.
 //!
 //! What it cannot judge also travels as a value, the origin `UNKNOWN` (in
-//! `value`; `BUDGET`, below, for the first two), so a sink it reaches is
-//! reported too: what a unit past its work budget writes to file-level slots,
+//! `value`; `BUDGET` and `UNSETTLED`, below, for the first two), so a sink it
+//! reaches is reported too: what a unit past its work budget writes to file-level slots,
 //! passes to routines or returns;
 //! every file-level read, routine result and parameter when the rounds end
 //! before the summaries stop changing; every file-level read and parameter
@@ -95,10 +95,11 @@
 //! outside the file (an include checked on its own, an include that did not
 //! arrive, a class that inherits).
 //!
-//! What a unit past its work budget leaves, and what the rounds leave when the
-//! summaries do not settle, carries its own origin, `BUDGET`: a sink rule
-//! reads it as Unknown, and ABLSEC010, which drops Unknown, reports it as not
-//! judged (`Gate::judge_decision`).
+//! What a unit past its work budget leaves carries its own origin, `BUDGET`,
+//! and what the rounds leave when the summaries do not settle carries
+//! `UNSETTLED`: a sink rule reads either as Unknown, and ABLSEC010, which
+//! drops Unknown, reports it as not judged, with its reason
+//! (`Gate::judge_decision`, [`Unfinished`]).
 
 mod unit;
 mod value;
@@ -525,15 +526,23 @@ fn routines(flow: &FileFlow) -> Routines {
     r
 }
 
+/// Why the analysis did not finish a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unfinished {
+    /// A unit ran past its work budget.
+    Budget,
+    /// The rounds ended before the summaries of the file stopped changing.
+    Unsettled,
+}
+
 /// What reaches a sink operand.
 pub(crate) enum Reach {
     Clean,
     /// The analysis cannot judge it.
     Unknown,
-    /// The analysis did not finish it: the unit that holds it, or one whose
-    /// value reaches it, ran past its work budget, or the rounds ended before
-    /// the summaries converged. See `value::BUDGET`.
-    Unjudged,
+    /// The analysis did not finish it. See `value::BUDGET` and
+    /// `value::UNSETTLED`.
+    Unjudged(Unfinished),
     /// The path from the source, source first.
     Tainted(Vec<witness::Step>),
 }
@@ -552,7 +561,7 @@ impl FileTaint {
         let mut tainted = None;
         for &op in operands {
             match self.reach_one(flow, source, op, kind, decision) {
-                r @ (Reach::Unknown | Reach::Unjudged) => return r,
+                r @ (Reach::Unknown | Reach::Unjudged(_)) => return r,
                 Reach::Clean => {}
                 t @ Reach::Tainted(_) => {
                     tainted.get_or_insert(t);
@@ -589,7 +598,7 @@ impl FileTaint {
             return Reach::Unknown;
         }
         let (Some(sol), ir) = (&self.solutions[u], &self.units[u]) else {
-            return Reach::Unjudged;
+            return Reach::Unjudged(Unfinished::Budget);
         };
         let Some(st) = StatementText::over(source, operand) else {
             return Reach::Unknown;
@@ -642,7 +651,9 @@ impl FileTaint {
                     .any(|(o, m)| *o == origin && m & kind.bit() != 0)
             };
             return if held(value::BUDGET) {
-                Reach::Unjudged
+                Reach::Unjudged(Unfinished::Budget)
+            } else if held(value::UNSETTLED) {
+                Reach::Unjudged(Unfinished::Unsettled)
             } else if held(value::UNKNOWN) {
                 Reach::Unknown
             } else {
@@ -675,8 +686,8 @@ pub(crate) struct Judgement {
     pub chain: String,
     /// The untrusted source: where it is, and what it is.
     pub origin: Option<(Span, String)>,
-    /// The analysis did not finish the value: past a work budget.
-    pub unjudged: bool,
+    /// The analysis did not finish the value, and why.
+    pub unjudged: Option<Unfinished>,
 }
 
 impl Judgement {
@@ -687,15 +698,15 @@ impl Judgement {
             tainted: false,
             chain: String::new(),
             origin: None,
-            unjudged: false,
+            unjudged: None,
         }
     }
 
     /// A decision the analysis did not finish.
-    fn unjudged() -> Self {
+    fn unjudged(why: Unfinished) -> Self {
         Judgement {
             subject: "a value the analysis did not finish".to_string(),
-            unjudged: true,
+            unjudged: Some(why),
             ..Judgement::stage_one()
         }
     }
@@ -748,15 +759,15 @@ impl<'g> Gate<'g> {
         }
         match self.reach(operands, kind, false) {
             Reach::Clean => None,
-            Reach::Unknown | Reach::Unjudged => Some(Judgement::stage_one()),
+            Reach::Unknown | Reach::Unjudged(_) => Some(Judgement::stage_one()),
             Reach::Tainted(steps) => Some(self.tainted(&steps)),
         }
     }
 
     /// Judge a decision whose operands are at `operands`: the path when a
     /// value of `kind` reaches them, or [`Judgement::unjudged`] when the
-    /// analysis did not finish a value that reaches them (a work budget), so
-    /// the budget hides no decision. A decision the analysis cannot judge for
+    /// analysis did not finish a value that reaches them (a work budget, or
+    /// summaries that did not settle), so neither hides a decision. A decision the analysis cannot judge for
     /// another reason is not reported; neither is any in a file whose parse
     /// recovered.
     pub fn judge_decision(&self, operands: &[Span], kind: SinkKind) -> Option<Judgement> {
@@ -765,7 +776,7 @@ impl<'g> Gate<'g> {
         }
         match self.reach(operands, kind, true) {
             Reach::Tainted(steps) => Some(self.tainted(&steps)),
-            Reach::Unjudged => Some(Judgement::unjudged()),
+            Reach::Unjudged(why) => Some(Judgement::unjudged(why)),
             Reach::Clean | Reach::Unknown => None,
         }
     }
@@ -790,7 +801,7 @@ impl<'g> Gate<'g> {
             .and_then(|s| s.span.map(|span| (span, s.chain.clone())));
         Judgement {
             origin,
-            unjudged: false,
+            unjudged: None,
             tainted: true,
             subject: format!("untrusted input: {chain}"),
             chain,

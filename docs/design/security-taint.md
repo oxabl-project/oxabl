@@ -241,11 +241,14 @@ reaches, and no real source does, is reported as in stage 1. It comes from:
   includer may define it as a buffer of a table with the same fields. Without a schema, a database
   field read in an include file checked on its own is Unknown too.
 
-What the first two leave, and a unit past its budget itself, has an origin of
-its own, `BUDGET`: the analysis did not finish the value. A sink rule reads it
-as Unknown. ABLSEC010, which reports no Unknown, reports a decision that it
-reaches as not judged, once per routine ("authorization could not be judged:
-analysis budget exceeded"), so the budget hides no decision.
+What the first two leave has an origin of its own: the analysis did not
+finish the value. A unit past its budget, and what it leaves, has `BUDGET`;
+what the rounds leave when the summaries do not settle has `UNSETTLED`. A sink
+rule reads either as Unknown. ABLSEC010, which reports no Unknown, reports a
+decision that one reaches as not judged, once per routine and reason
+("authorization could not be judged: analysis budget exceeded", or "...: the
+values of this file did not settle in the analysis"), so neither bound hides a
+decision.
 
 ### The path
 
