@@ -164,6 +164,7 @@ impl<'fs> Preprocessor<'fs> {
             sources: vec![(file, Arc::from(source))],
             written: rustc_hash::FxHashMap::default(),
             arg_written: Vec::new(),
+            named_args: Vec::new(),
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
             site_stack: Vec::new(),
@@ -276,8 +277,11 @@ struct ProcessContext<'a> {
     /// the source that holds the value: see [`PreprocessedFile::written`].
     written: rustc_hash::FxHashMap<FileId, Written>,
     /// Where the arguments of each include being expanded were written,
-    /// innermost last: what a `{N}` reference takes in.
+    /// innermost last: what a `{N}`, `{*}` or `{&*}` reference takes in.
     arg_written: Vec<Written>,
+    /// The named arguments of each include being expanded, innermost last:
+    /// what a `{&*}` reference expands to.
+    named_args: Vec<Vec<(String, String)>>,
     diagnostics: Vec<Diagnostic>,
     /// Stack of currently-being-processed paths for cycle detection.
     include_stack: HashSet<PathBuf>,
@@ -756,6 +760,16 @@ impl ProcessContext<'_> {
                                 &mut chunk_start,
                                 &mut nodes,
                             );
+                        } else if bytes[i + 1] == b'*' && bytes.get(i + 2) == Some(&b'}') {
+                            // `{*}`: every argument of the include.
+                            i = self.expand_all_args_at(
+                                file,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            );
+                            continue;
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
                             if let Some(next) = self.expand_positional_ref_at(
@@ -838,6 +852,18 @@ impl ProcessContext<'_> {
                             // `{N}` include args expand inside strings too
                             // (e.g. `"{1}":U` in ADM2 fn/fnarg).
                             i = next;
+                        } else if emitting
+                            && bytes[i] == b'{'
+                            && bytes.get(i + 1) == Some(&b'*')
+                            && bytes.get(i + 2) == Some(&b'}')
+                        {
+                            i = self.expand_all_args_at(
+                                file,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            );
                         } else {
                             i += 1;
                         }
@@ -978,8 +1004,11 @@ impl ProcessContext<'_> {
             };
             let inner = &after[..close];
             let taken = match inner.strip_prefix('&') {
+                Some("*") => self.arg_written.last().cloned(),
                 Some(name) => self.vars.written(name),
-                None if !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()) => {
+                None if inner == "*"
+                    || !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()) =>
+                {
                     self.arg_written.last().cloned()
                 }
                 None => None,
@@ -1263,7 +1292,19 @@ impl ProcessContext<'_> {
             });
         }
 
-        if let Some(val) = self.lookup_ref(var_name, source, i) {
+        // `{&*}`: the named arguments of the include, as `&name=value`.
+        let all_named = (var_name == "*")
+            .then(|| self.named_args.last())
+            .flatten()
+            .map(|named| {
+                let text: Vec<String> = named.iter().map(|(n, v)| format!("&{n}={v}")).collect();
+                Arc::<str>::from(text.join(" "))
+            });
+        let value = match all_named {
+            Some(val) => Some(val),
+            None => self.lookup_ref(var_name, source, i),
+        };
+        if let Some(val) = value {
             // Create a synthetic chunk for the expanded value.
             // We store it as a new source entry.
             let expanded_id = self.next_file_id();
@@ -1281,7 +1322,12 @@ impl ProcessContext<'_> {
             // The rescan reads the value while `self.sources` owns it.
             let rescan_text = rescan.then(|| Arc::clone(&val));
             self.sources.push((expanded_id, val));
-            if let Some(written) = self.vars.written(var_name) {
+            let written = if var_name == "*" {
+                self.arg_written.last().cloned()
+            } else {
+                self.vars.written(var_name)
+            };
+            if let Some(written) = written {
                 self.written.insert(expanded_id, written);
             }
 
@@ -1440,6 +1486,62 @@ impl ProcessContext<'_> {
                 Some(ref_end)
             }
         }
+    }
+
+    /// Expand a `{*}` reference at byte offset `i`: every argument of the
+    /// include, in order, separated by a space, written where the arguments
+    /// were. At top level (no arguments) it is left as text. Returns the
+    /// offset just past it.
+    fn expand_all_args_at(
+        &mut self,
+        file: FileId,
+        i: usize,
+        positional_args: &[String],
+        chunk_start: &mut u32,
+        nodes: &mut Vec<SpanNode>,
+    ) -> usize {
+        let ref_end = i + 3;
+        if positional_args.is_empty() {
+            return ref_end;
+        }
+        let args = &positional_args[1..];
+        if i as u32 > *chunk_start {
+            nodes.push(SpanNode::Chunk {
+                file,
+                start: *chunk_start,
+                end: i as u32,
+            });
+        }
+        *chunk_start = ref_end as u32;
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: i as u32,
+                end: ref_end as u32,
+            },
+        };
+        let value = args.join(" ");
+        if value.is_empty() {
+            self.elide(ElidedKind::Argument, site);
+            return ref_end;
+        }
+        let expanded_id = self.next_file_id();
+        let len = value.len() as u32;
+        self.sources.push((expanded_id, Arc::from(value)));
+        if let Some(written) = self.arg_written.last() {
+            self.written.insert(expanded_id, Arc::clone(written));
+        }
+        nodes.push(SpanNode::Include {
+            site,
+            // The arguments, not a file include.
+            path: None,
+            children: vec![SpanNode::Chunk {
+                file: expanded_id,
+                start: 0,
+                end: len,
+            }],
+        });
+        ref_end
     }
 
     /// Try to parse a preprocessor directive starting at position `i`.
@@ -1749,7 +1851,9 @@ impl ProcessContext<'_> {
         self.site_stack.push(site);
         self.file_names.push(include_name);
         self.arg_written.push(written);
+        self.named_args.push(args.named.clone());
         let children = self.process_source(include_file_id, &content, depth + 1, &args.positional);
+        self.named_args.pop();
         self.arg_written.pop();
         self.file_names.pop();
         self.site_stack.pop();
@@ -4340,6 +4444,28 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "A=one B=two C=three");
+    }
+
+    #[test]
+    fn star_expands_to_every_argument() {
+        let fs = make_fs(&[
+            ("/inc/all.i", "ALL={*} IN=\"{*}\""),
+            ("/inc/named.i", "N={&*} IN=\"{&*}\""),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp
+            .process(FileId::new(1), r#"{all.i one "two" &x=3}"#)
+            .unwrap();
+        assert_eq!(&*result.to_text(), "ALL=one two 3 IN=\"one two 3\"");
+        let result = pp
+            .process(FileId::new(1), "{named.i lone &a=1 &b=two}")
+            .unwrap();
+        assert_eq!(&*result.to_text(), "N=&a=1 &b=two IN=\"&a=1 &b=two\"");
+        // Outside an include there are no arguments: `{*}` stays text, and
+        // `{&*}` is an undefined name.
+        let result = pp.process(FileId::new(1), "A={*} B={&*}").unwrap();
+        assert_eq!(&*result.to_text(), "A={*} B=");
     }
 
     #[test]

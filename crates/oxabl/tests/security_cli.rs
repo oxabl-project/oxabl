@@ -385,10 +385,11 @@ fn thirds(secret: &str) -> [&str; 3] {
 /// on a line with two more findings, roots and an include that pass it to an
 /// include as a named or a positional argument on a line with another
 /// finding, a root that gives it to a `&GLOBAL-DEFINE` read in an `&IF`
-/// condition, a root that passes it with escaped quotes, and roots that build
+/// condition, a root that passes it with escaped quotes, roots that build
 /// it from [`thirds`] across two levels of include arguments or of defines,
-/// with a finding on each line that holds a part; and the hashes of each
-/// output.
+/// with a finding on each line that holds a part, and roots that pass it to an
+/// include that reads every argument (`{*}`) or every named one (`{&*}`); and
+/// the hashes of each output.
 fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
     let dir = TempDir::new().unwrap();
     write(
@@ -458,6 +459,24 @@ fn every_output(secret: &str) -> (Vec<String>, Vec<String>) {
     write(
         &dir.path().join("g.p"),
         &format!("{{outer2.i &X={one}}}{run}"),
+    );
+    write(
+        &dir.path().join("star.i"),
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"{*}\". \
+         RUN VALUE(cPassword).\n",
+    );
+    write(
+        &dir.path().join("v.p"),
+        &format!("{{star.i {secret}}}{run}"),
+    );
+    write(
+        &dir.path().join("named_star.i"),
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"{&*}\". \
+         RUN VALUE(cPassword).\n",
+    );
+    write(
+        &dir.path().join("w.p"),
+        &format!("{{named_star.i &PW={secret}}}{run}"),
     );
     write(
         &dir.path().join("h.p"),
@@ -531,6 +550,8 @@ fn no_output_holds_a_secret_of_the_file_or_of_an_include_or_a_hash_of_one() {
         "g.p:1:",
         "h.p:1:",
         "h.p:2:",
+        "v.p:1:",
+        "w.p:1:",
     ] {
         assert!(outputs[0].contains(shown), "{shown}\n{}", outputs[0]);
     }
