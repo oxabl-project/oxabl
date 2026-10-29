@@ -68,7 +68,8 @@
 //! - where `S` wrote the byte after the finding, when that is at or after the
 //!   start: a finding that runs past a `{&name}`, `{N}` or `{file.i}` into `S`'s
 //!   text again ends there, and covers the reference, so a changed argument on a
-//!   later line changes the hash;
+//!   later line changes the hash. A finding that ends right before a reference
+//!   that expanded to no text covers that reference too;
 //! - one past where `S` wrote the finding's last byte;
 //! - the end of the reference that wrote its last byte (the start of `S`'s next
 //!   stretch of text);

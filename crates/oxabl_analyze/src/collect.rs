@@ -793,7 +793,8 @@ impl ExpandedFile {
     ///
     /// 1. where that file wrote the byte after the span, when it wrote it at or after
     ///    the start. A span that runs past a `{&name}`, `{N}` or `{file.i}` into the
-    ///    file's own text again ends there, and covers the reference;
+    ///    file's own text again ends there, and covers the reference. So does a span
+    ///    that ends right before a reference that expanded to no text;
     /// 2. one past where it wrote the span's last byte. A span that ends where an
     ///    include begins keeps its extent;
     /// 3. where its next stretch begins after the last byte: the end of the reference
@@ -2215,6 +2216,19 @@ mod tests {
         // It ends inside the include: at the end of the reference (rule 3).
         assert_eq!(
             expanded.resolve_root_span(Span { start: 6, end: 15 }),
+            Some(Span { start: 6, end: 15 })
+        );
+    }
+
+    /// A span that ends right before a reference that expanded to no text ends
+    /// where the root wrote the byte after it, past the reference (rule 1 alone):
+    /// its last byte and the byte after it are in two root stretches, with the
+    /// five real bytes 10..15 of `{&E}` between them.
+    #[test]
+    fn a_span_ending_before_an_empty_reference_ends_after_the_reference() {
+        let expanded = expansion_with(&[(0, 10, ROOT.raw(), 0), (10, 10, ROOT.raw(), 15)]);
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 6, end: 10 }),
             Some(Span { start: 6, end: 15 })
         );
     }
