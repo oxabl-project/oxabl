@@ -140,8 +140,12 @@ registry against them.
   `html-encode`), a number or a logical, `RETURN-VALUE`, one whose result is
   made of its arguments or holds no input (`ENTRY`, `SUBSTRING`, `STRING`,
   `TODAY`, `GUID`, `PROGRAM-NAME`: the list `ARGS`), or Unknown
-  (`FRAME-VALUE`, `INPUT`, `OS-DIR`, `SSL-SERVER-NAME`). A function on no list
-  is Unknown. One that the program calls without parentheses (`TODAY`) is
+  (`FRAME-VALUE`, `INPUT`, `OS-DIR`, `SSL-SERVER-NAME`, and the calls of code
+  elsewhere `DYNAMIC-INVOKE`, `DYNAMIC-PROPERTY`, `SUPER` and
+  `DYNAMIC-FUNCTION`). A function on no list is Unknown.
+  `DYNAMIC-FUNCTION("f")` with a literal name of a function of the file and
+  nothing after it is a call of that function (see "Calls of the file"); with
+  an `IN` handle or arguments it is Unknown. One that the program calls without parentheses (`TODAY`) is
   read the same way.
 - **System handles.** A handle of the program or the session (`SESSION`,
   `FILE-INFO`, `THIS-PROCEDURE`, `LOG-MANAGER`, ...) holds what the program set

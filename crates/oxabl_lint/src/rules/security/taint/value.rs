@@ -827,7 +827,7 @@ enum Builtin {
 /// `PROGRAM-NAME`): the union of the arguments is their value. With the
 /// lists of [`builtin`] and [`UNKNOWN_FUNCTIONS`], every built-in function
 /// has a decision; one on none of them is Unknown.
-const ARGS: [&str; 196] = [
+const ARGS: [&str; 192] = [
     "accum",
     "add-interval",
     "alias",
@@ -870,12 +870,8 @@ const ARGS: [&str; 196] = [
     "dynamic-cast",
     "dynamic-current-value",
     "dynamic-enum",
-    // Calls of code elsewhere: an unknown call.
-    "dynamic-function",
-    "dynamic-invoke",
     "dynamic-new",
     "dynamic-next-value",
-    "dynamic-property",
     "encode",
     "encrypt",
     "entered",
@@ -1010,7 +1006,6 @@ const ARGS: [&str; 196] = [
     "string",
     "substitute",
     "substring",
-    "super",
     "tenant-id",
     "tenant-name-to-id",
     "terminal",
@@ -1033,7 +1028,18 @@ const ARGS: [&str; 196] = [
 /// arguments: what the user typed on the screen (`FRAME-VALUE`, `INPUT`), a
 /// directory listing (`OS-DIR`), the name of a TLS peer
 /// (`SSL-SERVER-NAME`). Their value is Unknown.
-const UNKNOWN_FUNCTIONS: [&str; 4] = ["frame-value", "input", "os-dir", "ssl-server-name"];
+const UNKNOWN_FUNCTIONS: [&str; 8] = [
+    // Calls of code elsewhere, which may return anything. `DYNAMIC-FUNCTION`
+    // of a function of the file is that function (see `Compiler::call`).
+    "dynamic-function",
+    "dynamic-invoke",
+    "dynamic-property",
+    "frame-value",
+    "input",
+    "os-dir",
+    "ssl-server-name",
+    "super",
+];
 
 /// Whether the lower-cased `name` is an entry of `list`, or a registered
 /// abbreviation of one.
@@ -1501,6 +1507,15 @@ impl Compiler<'_> {
         }
         if self.runs_elsewhere(name) {
             self.foreign.push(span);
+        }
+        // `DYNAMIC-FUNCTION("f")`, with no `IN` handle (nothing after the
+        // name): the function `f` of the file.
+        if listed(&["dynamic-function"], &name.to_ascii_lowercase())
+            && args.len() == 1
+            && let Some(callees) = key.and_then(|k| self.routines.callable(k))
+        {
+            let callees = callees.to_vec();
+            return self.routine_call(&callees, Out::Return, Vec::new(), span);
         }
         match builtin(name) {
             Builtin::Source if name.eq_ignore_ascii_case("OS-GETENV") => {
