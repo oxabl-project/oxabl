@@ -1120,6 +1120,43 @@ fn the_job_count_changes_nothing_a_run_reports() {
 }
 
 #[test]
+fn callee_summaries_are_the_same_at_any_job_count() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n\n[workspace.lint]\nenable = [\"strict.transactions\"]\n",
+    );
+    // Callers whose callees lie one to three calls away, some of them shared,
+    // so the summaries are built over several breadth-first frontiers.
+    for k in 0..24 {
+        write(
+            &tmp.path().join(format!("r{k:02}.p")),
+            &format!("DO TRANSACTION:\nRUN lib/m{}.p.\nEND.\n", k % 6),
+        );
+    }
+    for m in 0..6 {
+        write(
+            &tmp.path().join(format!("lib/m{m}.p")),
+            &format!("RUN lib/l{}.p.\nFIND FIRST Customer NO-LOCK.\n", m % 3),
+        );
+    }
+    write(&tmp.path().join("lib/l0.p"), "RUN lib/l1.p.\n");
+    write(&tmp.path().join("lib/l1.p"), "RUN lib/l0.p.\n");
+    write(&tmp.path().join("lib/l2.p"), "CREATE Customer.\n");
+    let dir = tmp.path().to_str().unwrap();
+    let run = |jobs: &str| check([dir, "--json", "--no-format", "-I", dir, "-j", jobs]);
+    let serial = run("1");
+    assert_eq!(serial.code, Some(1), "{}", serial.stderr);
+    assert!(serial.stdout.contains("TX004"), "{}", serial.stdout);
+    for jobs in ["2", "7", "64"] {
+        let parallel = run(jobs);
+        assert_eq!(parallel.code, serial.code, "-j {jobs}");
+        assert_eq!(parallel.stdout, serial.stdout, "-j {jobs}");
+        assert_eq!(parallel.stderr, serial.stderr, "-j {jobs}");
+    }
+}
+
+#[test]
 fn a_baseline_run_is_the_same_at_any_job_count() {
     let tmp = mixed_tree();
     let dir = tmp.path().to_str().unwrap();

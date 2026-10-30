@@ -16,7 +16,7 @@ use oxabl_index::{
 use oxabl_lint::CalleeSummaries;
 use oxabl_semantic::AnalysisContext;
 
-use crate::{Expansion, LintPipeline, ROOT_FILE_ID};
+use crate::{Expansion, LintPipeline, PipelineConfig, ROOT_FILE_ID};
 
 fn key(path: &Path) -> PathBuf {
     if path.as_os_str().is_empty() {
@@ -169,17 +169,17 @@ struct Direct {
     fingerprint: u64,
 }
 
-fn direct(run: &LintPipeline<'_>, path: &Path, expansion: &Expansion) -> Option<Direct> {
+fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option<Direct> {
     let expanded = expansion.expanded()?;
     let text = expanded.text.as_str();
     let tokens = oxabl_lexer::tokenize(text);
     let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
-    let mut ctx = AnalysisContext::new(ROOT_FILE_ID, text, &run.config().schema)
+    let mut ctx = AnalysisContext::new(ROOT_FILE_ID, text, &config.schema)
         .with_tokens(&tokens)
         .with_parse_recovered(!program.errors.is_empty())
         .with_elided(expanded.elided_offsets())
         .with_elided_includes(expanded.elided_include_offsets());
-    ctx.schema_loaded = run.config().schema_loaded;
+    ctx.schema_loaded = config.schema_loaded;
     let shared = oxabl_lint::RunShared::default();
     let effects = shared.effects(&program.statements, &ctx).clone();
     let root_units: Vec<Option<oxabl_ast::Span>> = effects
@@ -256,20 +256,31 @@ impl LintPipeline<'_> {
         expansion: &Expansion,
         known: &[PathBuf],
     ) -> WorkspaceEffects {
-        self.summaries_from(self.file().map(|root| (root, expansion)), known)
+        self.summaries_from(self.file().map(|root| (root, expansion)), known, 1)
     }
 
     /// Build the summaries of `known` and the programs they reach, every file
     /// read from disk. A batch run builds this once and hands it to each of its
     /// handles with [`with_effect_summaries`](Self::with_effect_summaries).
     pub fn build_workspace_effect_summaries(&self, known: &[PathBuf]) -> WorkspaceEffects {
-        self.summaries_from(None, known)
+        self.summaries_from(None, known, 1)
+    }
+
+    /// [`build_workspace_effect_summaries`](Self::build_workspace_effect_summaries)
+    /// on up to `threads` threads. The result is the same for any thread count.
+    pub fn build_workspace_effect_summaries_parallel(
+        &self,
+        known: &[PathBuf],
+        threads: usize,
+    ) -> WorkspaceEffects {
+        self.summaries_from(None, known, threads)
     }
 
     fn summaries_from(
         &self,
         root: Option<(&Path, &Expansion)>,
         known: &[PathBuf],
+        threads: usize,
     ) -> WorkspaceEffects {
         let config = self.config();
         let index = BatchIndex::new(self.file_system(), &config.include_paths)
@@ -282,49 +293,80 @@ impl LintPipeline<'_> {
                 .filter(|p| !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("i")))
                 .cloned(),
         );
-        let mut by_path = HashMap::new();
-        let mut files = Vec::new();
-        let mut programs = HashMap::new();
-        let mut cursor = 0;
-        while cursor < paths.len() {
-            let path = key(&paths[cursor]);
-            cursor += 1;
-            if by_path.contains_key(&path) {
-                continue;
-            }
-            by_path.insert(path.clone(), None);
-            let item = oxabl_common::catch_panic(|| {
-                if let Some((_, expansion)) = root.filter(|(r, _)| path == key(r)) {
-                    direct(self, &path, expansion)
+        let fs = self.file_system();
+        let preprocess = self.preprocess();
+        let load = |path: &PathBuf| {
+            oxabl_common::catch_panic(|| {
+                if let Some((_, expansion)) = root.filter(|(r, _)| *path == key(r)) {
+                    direct(config, path, expansion)
                 } else {
-                    self.file_system().read(&path).ok().and_then(|text| {
-                        let handle = self.with_file(&path);
-                        direct(&handle, &path, &handle.expand(&text))
+                    fs.read(path).ok().and_then(|text| {
+                        let run = LintPipeline::new(config, fs).with_preprocess(preprocess);
+                        let handle = run.with_file(path);
+                        direct(config, path, &handle.expand(&text))
                     })
                 }
             })
             .ok()
-            .flatten();
-            let Some(item) = item else {
-                continue;
-            };
-            for u in item.effects.units() {
-                for c in &u.calls {
-                    let name = match &c.target {
-                        CallTarget::Program(p) => p,
-                        CallTarget::InProgram { program, .. } => program,
-                        _ => continue,
-                    };
-                    programs
-                        .entry(name.clone())
-                        .or_insert_with(|| self.effect_program_path(name, &index).map(|p| key(&p)));
-                    if let Ok(p) = &programs[name] {
-                        paths.push(p.clone());
+            .flatten()
+        };
+        let index = self.effect_index(&index);
+        // Breadth-first, one frontier at a time: the files of a frontier are
+        // analysed in parallel, then taken in discovery order, so node ids do
+        // not depend on the thread count.
+        let mut by_path = HashMap::new();
+        let mut files = Vec::new();
+        let mut programs = HashMap::new();
+        let mut pending = paths;
+        while !pending.is_empty() {
+            let mut frontier = Vec::new();
+            for path in pending.drain(..) {
+                let path = key(&path);
+                if !by_path.contains_key(&path) {
+                    by_path.insert(path.clone(), None);
+                    frontier.push(path);
+                }
+            }
+            let loaded = map_in_order(threads, &frontier, &load);
+            let mut names = Vec::new();
+            for item in loaded.iter().flatten() {
+                for name in item
+                    .effects
+                    .units()
+                    .iter()
+                    .flat_map(|u| &u.calls)
+                    .filter_map(program_of)
+                {
+                    if !programs.contains_key(name) {
+                        programs.insert(name.clone(), None);
+                        names.push(name.clone());
                     }
                 }
             }
-            by_path.insert(path, Some(files.len()));
-            files.push(item);
+            let found = map_in_order(threads, &names, &|name: &String| {
+                LintPipeline::effect_program_path(index, name).map(|p| key(&p))
+            });
+            for (name, path) in names.into_iter().zip(found) {
+                programs.insert(name, Some(path));
+            }
+            for (path, item) in frontier.into_iter().zip(loaded) {
+                let Some(item) = item else {
+                    continue;
+                };
+                for name in item
+                    .effects
+                    .units()
+                    .iter()
+                    .flat_map(|u| &u.calls)
+                    .filter_map(program_of)
+                {
+                    if let Some(Ok(p)) = &programs[name] {
+                        pending.push(p.clone());
+                    }
+                }
+                by_path.insert(path, Some(files.len()));
+                files.push(item);
+            }
         }
         let mut bases = Vec::new();
         let mut size = 0u32;
@@ -349,6 +391,8 @@ impl LintPipeline<'_> {
         let program = |name: &str| -> Result<usize, UnknownCall> {
             let p = programs
                 .get(name)
+                .ok_or(UnknownCall::NotFound)?
+                .as_ref()
                 .ok_or(UnknownCall::NotFound)?
                 .as_ref()
                 .map_err(|u| *u)?;
@@ -376,51 +420,45 @@ impl LintPipeline<'_> {
                 CallTarget::Library(_) => return None,
             })
         };
-        let nodes: Vec<_> = files
-            .iter()
-            .enumerate()
-            .flat_map(|(fi, f)| {
-                let resolve = &resolve;
-                f.effects.units().iter().map(move |u| {
-                    let mut node = Node::of_unit(&f.effects, u, |c| {
-                        if c.kind == oxabl_index::calls::CallKind::Remote {
-                            None
-                        } else {
-                            resolve(fi, &c.target)
-                        }
-                    });
-                    node.unknown.extend_from_slice(&f.incomplete);
-                    node
-                })
-            })
-            .collect();
-        let solved = Arc::new(summary::summarize(&nodes, &summary::graph_of(&nodes)));
-        let names = Arc::new(
-            files
-                .iter()
-                .flat_map(|f| {
-                    f.effects.units().iter().map(|u| {
-                        format!(
-                            "{}::{}",
-                            f.path.display(),
-                            u.name.as_deref().unwrap_or(u.kind.as_str())
-                        )
-                    })
-                })
-                .collect(),
-        );
-        let mut callees_by_file = Vec::with_capacity(files.len());
-        for (fi, f) in files.iter().enumerate() {
+        let indices: Vec<usize> = (0..files.len()).collect();
+        let per_file = map_in_order(threads, &indices, &|&fi: &usize| {
+            let f = &files[fi];
+            let mut nodes = Vec::with_capacity(f.effects.units().len());
+            let mut names = Vec::with_capacity(f.effects.units().len());
             let mut callees = HashMap::new();
             for u in f.effects.units() {
+                let mut node = Node::of_unit(&f.effects, u, |c| {
+                    if c.kind == oxabl_index::calls::CallKind::Remote {
+                        None
+                    } else {
+                        resolve(fi, &c.target)
+                    }
+                });
+                node.unknown.extend_from_slice(&f.incomplete);
+                nodes.push(node);
+                names.push(format!(
+                    "{}::{}",
+                    f.path.display(),
+                    u.name.as_deref().unwrap_or(u.kind.as_str())
+                ));
                 for c in &u.calls {
                     if let Some(Callee::Node(n)) = resolve(fi, &c.target) {
                         callees.insert(c.at.start, n);
                     }
                 }
             }
-            callees_by_file.push(callees);
+            (nodes, names, callees)
+        });
+        let mut nodes = Vec::with_capacity(size as usize);
+        let mut names = Vec::with_capacity(size as usize);
+        let mut callees_by_file = Vec::with_capacity(files.len());
+        for (n, s, c) in per_file {
+            nodes.extend(n);
+            names.extend(s);
+            callees_by_file.push(c);
         }
+        let solved = Arc::new(summary::summarize(&nodes, &summary::graph_of(&nodes)));
+        let names = Arc::new(names);
         let mut out = WorkspaceEffects::default();
         for (fi, (f, callees)) in files.into_iter().zip(callees_by_file).enumerate() {
             let base = bases[fi] as usize;
@@ -451,4 +489,48 @@ impl LintPipeline<'_> {
         }
         out
     }
+}
+
+fn program_of(c: &oxabl_effects::UnitCall) -> Option<&String> {
+    match &c.target {
+        CallTarget::Program(p) => Some(p),
+        CallTarget::InProgram { program, .. } => Some(program),
+        _ => None,
+    }
+}
+
+/// `f` over `items` on up to `threads` threads, the results in item order.
+/// One thread or one item runs on the calling thread.
+fn map_in_order<T: Sync, R: Send>(
+    threads: usize,
+    items: &[T],
+    f: &(impl Fn(&T) -> R + Sync),
+) -> Vec<R> {
+    let threads = threads.min(items.len());
+    if threads <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                let next = &next;
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(i) else { break };
+                        out.push((i, f(item)));
+                    }
+                    out
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    done.sort_unstable_by_key(|(i, _)| *i);
+    done.into_iter().map(|(_, r)| r).collect()
 }
