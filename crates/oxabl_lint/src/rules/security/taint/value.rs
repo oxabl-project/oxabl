@@ -539,6 +539,10 @@ pub(super) struct Tables {
     /// Lower-cased `SESSION` and `THIS-PROCEDURE` when the file assigns their
     /// `PRIVATE-DATA`; see [`SHARED_HANDLES`].
     pub private_data: FxHashSet<String>,
+    /// Lower-cased names that every definition of the file declares
+    /// `NO-UNDO`: an `UNDO` does not restore them. Any other variable is
+    /// undoable.
+    pub no_undo: FxHashSet<String>,
 }
 
 impl Tables {
@@ -1559,6 +1563,13 @@ impl Compiler<'_> {
     /// The slot of [`ON_RETURN`].
     pub fn on_return_slot(&mut self) -> Option<u32> {
         self.slot("RETURN-VALUE", ON_RETURN.to_string(), false, false)
+    }
+
+    /// The slot that holds what the slot `of` held at the head of `block`,
+    /// which an `UNDO` of the block restores.
+    pub fn undo_slot(&mut self, block: usize, of: u32) -> Option<u32> {
+        let name = self.slots.info[of as usize].name.clone();
+        self.slot(&name, format!("$undo:{block}:{of}"), false, false)
     }
 
     /// A built-in function that the source calls without parentheses, as

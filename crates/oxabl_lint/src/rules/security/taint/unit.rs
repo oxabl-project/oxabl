@@ -187,8 +187,23 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
         ..Tables::default()
     };
     let locals = routine_statements(stmts);
+    let mut undoable = FxHashSet::default();
     for s in stmts.values() {
         defined_names(s, source, locals.contains(&s.id), &mut t.names);
+        if let S::VariableDeclaration { name, no_undo, .. }
+        | S::Property { name, no_undo, .. }
+        | S::DefineParameter {
+            param_type: ParameterType::Variable { name, no_undo, .. },
+            ..
+        } = &s.kind
+        {
+            let set = if *no_undo {
+                &mut t.no_undo
+            } else {
+                &mut undoable
+            };
+            set.insert(name.name.to_ascii_lowercase());
+        }
         if let S::VariableDeclaration {
             name,
             is_new_shared,
@@ -305,6 +320,7 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
             _ => {}
         }
     }
+    t.no_undo.retain(|n| !undoable.contains(n));
     t
 }
 
@@ -1591,6 +1607,7 @@ pub(super) fn compile(
             b.c.return_value_slot();
             on_return_without_edge(&mut b, cfg, stmts, &mut ops, &mut calls);
         }
+        undo_restores(&mut b.c, cfg, &mut ops);
         params = b.params;
     }
     if let Some(slot) = slots.get(RETURN_VALUE) {
@@ -1706,6 +1723,116 @@ fn on_return_without_edge(
                         strong: false,
                         span: h.span,
                     });
+                }
+            }
+        }
+    }
+}
+
+/// The block that `n` undoes, if any: a handler undoes the block its `ON`
+/// phrase names, else its own; an `UNDO` statement the block it targets.
+fn undone(cfg: &Cfg, n: NodeIx) -> Option<BlockId> {
+    let node = cfg.node(n);
+    let NodeKind::Handler(condition) = node.kind else {
+        return cfg.undone_block(n);
+    };
+    let label = cfg
+        .block(node.block)
+        .handling(condition)
+        .and_then(|h| h.undo.as_deref());
+    let Some(label) = label else {
+        return Some(node.block);
+    };
+    let mut at = Some(node.block);
+    while let Some(b) = at {
+        let block = cfg.block(b);
+        if block
+            .label
+            .as_deref()
+            .is_some_and(|l| l.eq_ignore_ascii_case(label))
+        {
+            return Some(b);
+        }
+        at = block.parent;
+    }
+    Some(node.block)
+}
+
+/// An `UNDO` gives each undoable variable that the undone block writes back
+/// the value it had at the head of the block (at the unit entry for the
+/// routine block). Each such variable has a slot that the head copies it to;
+/// each node that undoes the block (a handler, before its action; an `UNDO`
+/// statement, after the value of its `RETURN` or `THROW`) adds that slot back
+/// to the variable. Only a strong write can lose the old value, so only
+/// variables the block writes strongly are followed. A field is written
+/// weakly, so it keeps its old value already. Of a routine, only the
+/// file-level variables live on after the undo.
+fn undo_restores(c: &mut Compiler, cfg: &Cfg, ops: &mut [Vec<Op>]) {
+    let mut undoes: Vec<(NodeIx, BlockId)> = cfg
+        .nodes()
+        .filter_map(|(i, _)| undone(cfg, i).map(|b| (i, b)))
+        .collect();
+    undoes.sort_by_key(|(i, b)| (b.index(), i.index()));
+    let mut blocks: Vec<BlockId> = undoes.iter().map(|(_, b)| *b).collect();
+    blocks.dedup();
+    for block in blocks {
+        let routine = block == BlockId::ROUTINE;
+        let mut written: Vec<u32> = cfg
+            .nodes()
+            .filter(|(_, n)| cfg.block_contains(block, n.block))
+            .flat_map(|(i, _)| ops[i.index()].iter())
+            .filter(|op| op.strong)
+            .map(|op| op.slot)
+            .filter(|&s| {
+                let info = &c.slots.info[s as usize];
+                !info.key.starts_with('$')
+                    && !info.key.contains('.')
+                    && !c.tables.no_undo.contains(&info.key)
+                    && (!routine || info.global)
+            })
+            .collect();
+        written.sort_unstable();
+        written.dedup();
+        if written.is_empty() {
+            continue;
+        }
+        let head = if routine {
+            Some(cfg.entry())
+        } else {
+            cfg.nodes()
+                .find(|(_, n)| n.kind == NodeKind::Head && n.block == block)
+                .map(|(i, _)| i)
+        };
+        let Some(head) = head else {
+            continue;
+        };
+        for var in written {
+            let Some(saved) = c.undo_slot(block.index(), var) else {
+                continue;
+            };
+            let span = cfg.node(head).span;
+            let copy = Op {
+                slot: saved,
+                value: Value(vec![Term::Slot(var)]),
+                strong: true,
+                span,
+            };
+            if routine {
+                ops[head.index()].push(copy);
+            } else {
+                ops[head.index()].insert(0, copy);
+            }
+            for &(n, _) in undoes.iter().filter(|(_, b)| *b == block) {
+                let restore = Op {
+                    slot: var,
+                    value: Value(vec![Term::Slot(saved)]),
+                    strong: false,
+                    span: cfg.node(n).span,
+                };
+                if matches!(cfg.node(n).kind, NodeKind::Handler(_)) {
+                    ops[n.index()].insert(0, restore);
+                } else {
+                    ops[n.index()].push(restore);
                 }
             }
         }

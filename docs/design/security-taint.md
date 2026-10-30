@@ -104,6 +104,15 @@ rule hands over by span).
 - At a `RUN` of an internal procedure, a main block adds to each of its
   variables what other units write to it, so `RUN read-input. OS-COMMAND
   VALUE(cCmd).` sees the procedure's write.
+- An `UNDO` gives a variable that is not `NO-UNDO` the value it held at the
+  head of the undone block (at the unit entry for a routine block). The head
+  copies each such variable that the block writes with a strong update to a
+  slot of its own, and each node that undoes the block adds that slot back to
+  the variable: a handler before its `ON` action, so `ON ERROR UNDO, RETURN
+  cMsg` returns the restored `cMsg`, and an `UNDO` statement after the value
+  of its `RETURN` or `THROW`. A weak update keeps the old value already, so a
+  field needs nothing. Of a routine block, only the file-level variables are
+  restored: the others end with the routine.
 
 ### Sources
 
