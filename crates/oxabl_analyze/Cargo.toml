@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_analyze"
-version = "3.0.2"
+version = "3.0.3"
 edition = "2024"
 license = "MIT"
 description = "JSON dump + analyze CLI wiring for the oxabl semantic model"
@@ -10,7 +10,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_analyze"
 oxabl_ast = { path = "../oxabl_ast", version = "3.0.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.2.1" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.0" }
-oxabl_lint = { path = "../oxabl_lint", version = "3.0.2" }
+oxabl_lint = { path = "../oxabl_lint", version = "3.0.3" }
 oxabl_parser = { path = "../oxabl_parser", version = "3.0.2" }
 oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.7.2" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.4.2" }

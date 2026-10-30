@@ -1,6 +1,6 @@
 [package]
 name = "oxabl"
-version = "3.0.2"
+version = "3.0.3"
 edition = "2024"
 license = "MIT"
 description = "High-performance tooling suite for Progress ABL"
@@ -20,13 +20,13 @@ oxabl_workspace = { path = "../oxabl_workspace", version = "3.2.0" }
 oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.7.2" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "3.0.2" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.4.2" }
-oxabl_analyze = { path = "../oxabl_analyze", version = "3.0.2" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "3.0.3" }
 # Plain, non-optional: `oxabl_wasm` takes the umbrella with `default-features =
 # false`, so a `cli`-gated pipeline re-export would be invisible to the browser.
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.2.0" }
-oxabl_lint = { path = "../oxabl_lint", version = "3.0.2" }
-oxabl_lsp = { path = "../oxabl_lsp", version = "3.0.2", optional = true }
-oxabl_daemon = { path = "../oxabl_daemon", version = "0.5.2", optional = true }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.2.1" }
+oxabl_lint = { path = "../oxabl_lint", version = "3.0.3" }
+oxabl_lsp = { path = "../oxabl_lsp", version = "3.0.3", optional = true }
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.5.3", optional = true }
 oxabl_formatter = { path = "../oxabl_formatter", version = "2.0.2" }
 oxabl_style = { path = "../oxabl_style", version = "0.2.0" }
 clap = { version = "4", features = ["derive"], optional = true }
@@ -73,7 +73,7 @@ tikv-jemallocator = { version = "0.7", optional = true }
 [dev-dependencies]
 tempfile = "3"
 oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.3.0" }
-oxabl_analyze = { path = "../oxabl_analyze", version = "3.0.2" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "3.0.3" }
 oxabl_common = { path = "../oxabl_common", version = "1.2.1", features = [
     "test-panics",
 ] }
@@ -81,7 +81,7 @@ oxabl_schema = { path = "../oxabl_schema", version = "0.4.2" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "3.2.0" }
 # The shared cross-client parity fixture table (R19). A dev-dependency feature
 # only: the shipped binary and the library both take `oxabl_pipeline` without it.
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.2.0", features = [
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.2.1", features = [
     "test-support",
 ] }
 serde_json = "1"
@@ -89,13 +89,13 @@ serde_json = "1"
 # now, so nothing in the shipped binary needs a directory walker of its own.
 walkdir = "2"
 # The `flow_corpus` example only; the CLI does not build CFGs yet.
-oxabl_flow = { path = "../oxabl_flow", version = "0.3.2" }
+oxabl_flow = { path = "../oxabl_flow", version = "0.3.3" }
 # The `handles_corpus` example only.
-oxabl_handles = { path = "../oxabl_handles", version = "0.2.2" }
+oxabl_handles = { path = "../oxabl_handles", version = "0.2.3" }
 # The `scope_corpus` and `scope_listing` examples only.
-oxabl_scope = { path = "../oxabl_scope", version = "0.2.2" }
+oxabl_scope = { path = "../oxabl_scope", version = "0.2.3" }
 # The `effects_corpus` and `effects_xref` examples only.
-oxabl_effects = { path = "../oxabl_effects", version = "0.2.2" }
+oxabl_effects = { path = "../oxabl_effects", version = "0.2.3" }
 # The `nulls_corpus` example only.
-oxabl_nulls = { path = "../oxabl_nulls", version = "0.2.2" }
+oxabl_nulls = { path = "../oxabl_nulls", version = "0.2.3" }
 oxabl_index = { path = "../oxabl_index", version = "3.1.0" }

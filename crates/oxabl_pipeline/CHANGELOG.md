@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.2.0...oxabl_pipeline-v3.2.1) (2026-10-30)
+
+
+### Performance Improvements
+
+* **pipeline:** build TX004's workspace summaries on all cores ([75d9f8e](https://github.com/oxabl-project/oxabl/commit/75d9f8e1bc29a50364db54900c7161e53680dcb6))
+* **pipeline:** build TX004's workspace summaries on all cores ([f289387](https://github.com/oxabl-project/oxabl/commit/f289387b593c36806a16f7c546e96b2237e974aa))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.2.2 to 0.2.3
+    * oxabl_flow bumped from 0.3.2 to 0.3.3
+    * oxabl_scope bumped from 0.2.2 to 0.2.3
+    * oxabl_analyze bumped from 3.0.2 to 3.0.3
+    * oxabl_lint bumped from 3.0.2 to 3.0.3
+
 ## [3.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.1.0...oxabl_pipeline-v3.2.0) (2026-10-20)
 
 
