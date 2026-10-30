@@ -194,6 +194,19 @@ registry against them.
   the receiver holds and Unknown otherwise (`NODE-VALUE-TO-LONGCHAR(lc)`, the
   target of `SET-OUTPUT-DESTINATION`, and a method on no list). A guard test
   enumerates the methods of a handle in the registry against the lists.
+- **Several handles of one object.** The slot of a handle variable holds what
+  the program assigned to that variable, not what reached its object through
+  another handle: a node appended to a document, an attribute set on a node,
+  a copy `h2 = h1` written after the copy. So a method of
+  `CARRYING_METHODS` on a handle variable (`hDoc:SAVE("LONGCHAR", lc)`) also
+  writes Unknown; only on the tables of `TEMP-TABLE tt:`, `DATASET ds:` or
+  `BUFFER b:`, and for a `GET-...` method that navigates to a node, is what
+  the receiver holds the whole of it. A method of `RECEIVING_METHODS`, which
+  puts its arguments into its receiver's object (`APPEND-CHILD`,
+  `SET-ATTRIBUTE`, `LONGCHAR-TO-NODE-VALUE`, `ADD-LAST`, `GET-CHANGES`, ...),
+  adds them to the slot of a receiver that is a handle variable. A member
+  read of a handle variable that the file copies to or from another
+  (`h2 = h1`), but a number, a logical or a name, adds Unknown.
 - **`RETURN-VALUE`** is a slot of every unit that reads or sets it and of
   every procedure, in a file that reads it (a file that does not has no use
   for it, and its summaries need not settle on it). A `RUN` of an internal procedure sets it to the
@@ -487,6 +500,10 @@ their counts.
   `{&rv}` that an include defines does); a reference that does not expand is
   Unknown, so a sink still reports it and ABLSEC010 does not. The variable of a `CATCH`
   is Unknown, not what the block throws.
+- A handle passed to a routine or a program (`RUN fill-doc (hDoc)`) is not a
+  copy: what the routine puts into its object through the parameter does not
+  reach the caller's slot, except where a method on the handle variable
+  writes Unknown (`SAVE`, `WRITE-JSON`, ...).
 - A built-in attribute or method that the lists do not name is Unknown,
   even where the program set it (`BUFFER-VALUE` through a handle variable of
   a table whose fields hold no taint).

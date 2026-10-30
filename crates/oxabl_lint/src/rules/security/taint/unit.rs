@@ -17,8 +17,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, ends_with_word, is_constant};
 use super::value::{
-    BUDGET_LABELS, CallIr, Compiler, Env, ON_RETURN, Origins, Out, PASSED, RETURN_VALUE, Routines,
-    Slots, Summaries, Tables, Term, UNKNOWN, UnitSummary, Value,
+    BUDGET_LABELS, CallIr, Compiler, Env, ON_RETURN, Origins, Out, PASSED, RECEIVING_METHODS,
+    RETURN_VALUE, Routines, Slots, Summaries, Tables, Term, UNKNOWN, UnitSummary, Value,
 };
 use super::{ALL, Options};
 
@@ -188,6 +188,8 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
     };
     let locals = routine_statements(stmts);
     let mut undoable = FxHashSet::default();
+    let mut handle_vars = FxHashSet::default();
+    let mut copies = Vec::new();
     for s in stmts.values() {
         defined_names(s, source, locals.contains(&s.id), &mut t.names);
         if let S::VariableDeclaration { name, no_undo, .. }
@@ -287,6 +289,18 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
                     oxabl_ast::TypeSource::Explicit(d) => d.class_name().unwrap_or(""),
                     oxabl_ast::TypeSource::Like { .. } => "",
                 };
+                // A handle, or a type the file does not show.
+                if matches!(
+                    type_source,
+                    oxabl_ast::TypeSource::Like { .. }
+                        | oxabl_ast::TypeSource::Explicit(
+                            oxabl_ast::DataType::Handle
+                                | oxabl_ast::DataType::Com
+                                | oxabl_ast::DataType::PreprocIf(_)
+                        )
+                ) {
+                    handle_vars.insert(name.name.to_ascii_lowercase());
+                }
                 t.types
                     .insert(name.name.to_ascii_lowercase(), ty.to_ascii_lowercase());
             }
@@ -312,16 +326,34 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
             S::Assignment { target, value } => {
                 handle_of(target, value, &mut t.handles);
                 private_data(target, &mut t.private_data);
+                copies.extend(copy_of(target, value));
             }
             S::Assign { assignments } => assignments.iter().for_each(|p| {
                 handle_of(&p.target, &p.value, &mut t.handles);
                 private_data(&p.target, &mut t.private_data);
+                copies.extend(copy_of(&p.target, &p.value));
             }),
             _ => {}
         }
     }
     t.no_undo.retain(|n| !undoable.contains(n));
+    for (a, b) in copies {
+        if handle_vars.contains(&a) || handle_vars.contains(&b) {
+            t.aliased.insert(a);
+            t.aliased.insert(b);
+        }
+    }
     t
+}
+
+/// `a = b` with two plain names, lower-cased: `b` is no system handle.
+fn copy_of(target: &Expression, value: &Expression) -> Option<(String, String)> {
+    let (E::Identifier(a), E::Identifier(b)) = (&target.kind, &value.kind) else {
+        return None;
+    };
+    let b_name = b.name.to_ascii_lowercase();
+    (value.span.start >= b.span.start && !oxabl_semantic::SYSTEM_HANDLES.contains(&b_name.as_str()))
+        .then(|| (a.name.to_ascii_lowercase(), b_name))
 }
 
 /// The statements inside a routine: what they declare is not visible to the
@@ -749,6 +781,7 @@ impl Builder<'_, '_> {
             self.output_arguments(out, a, span);
         }
         if let E::MethodCall { object, method, .. } = &e.kind {
+            self.receive(out, object, &method.name, arguments, span);
             for (a, v) in self.c.method_writes(object, &method.name, arguments) {
                 if written_direction(self.source, a.span.start).is_none() {
                     let at = out.len();
@@ -802,6 +835,45 @@ impl Builder<'_, '_> {
         let value = Value::union(inputs);
         for o in outputs {
             self.set(out, o, value.clone(), span);
+        }
+    }
+
+    /// A method of [`RECEIVING_METHODS`] on a handle variable adds its
+    /// arguments to the variable: `hRoot:APPEND-CHILD(hText)`,
+    /// `hNode:SET-ATTRIBUTE("a", x)`.
+    fn receive(
+        &mut self,
+        out: &mut Vec<Op>,
+        object: &Expression,
+        method: &str,
+        arguments: &[Expression],
+        span: Span,
+    ) {
+        let E::Identifier(id) = &object.kind else {
+            return;
+        };
+        let var = self
+            .c
+            .tables
+            .types
+            .get(&id.name.to_ascii_lowercase())
+            .is_some_and(String::is_empty);
+        if object.span.start < id.span.start
+            || !var
+            || !RECEIVING_METHODS
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(method))
+        {
+            return;
+        }
+        let value = Value::union(arguments.iter().map(|a| self.c.expr(a)).collect::<Vec<_>>());
+        if let Some(slot) = self.c.var_slot(&id.name) {
+            out.push(Op {
+                slot,
+                value,
+                strong: false,
+                span,
+            });
         }
     }
 

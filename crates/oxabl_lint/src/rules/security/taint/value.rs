@@ -543,6 +543,11 @@ pub(super) struct Tables {
     /// `NO-UNDO`: an `UNDO` does not restore them. Any other variable is
     /// undoable.
     pub no_undo: FxHashSet<String>,
+    /// Lower-cased handle variables that the file copies to or from another
+    /// variable (`h2 = h1`): a write through one handle of the object does not
+    /// reach the slot of the other, so a member read through either is
+    /// Unknown.
+    pub aliased: FxHashSet<String>,
 }
 
 impl Tables {
@@ -1402,6 +1407,14 @@ impl Compiler<'_> {
             return Vec::new();
         }
         let receiver = self.receiver(object);
+        // A handle variable's slot holds what the program assigned to it, not
+        // what other handles of its object put there: only the tables of
+        // `BUFFER b:` and the like, and a node the method navigates to, are
+        // what the receiver holds.
+        let whole = is_prefixed(object)
+            || method
+                .get(..4)
+                .is_some_and(|p| p.eq_ignore_ascii_case("GET-"));
         let mut out = Vec::new();
         for (i, a) in arguments.iter().enumerate() {
             if !written(a) {
@@ -1417,6 +1430,7 @@ impl Compiler<'_> {
                                 .filter(|(j, _)| *j != i)
                                 .map(|(_, o)| self.expr(o)),
                         )
+                        .chain((!whole).then(|| Value::origin(UNKNOWN)))
                         .collect::<Vec<_>>(),
                 ),
                 _ => Value::union([receiver.clone(), Value::origin(UNKNOWN)]),
@@ -1652,6 +1666,15 @@ impl Compiler<'_> {
                         .iter()
                         .any(|m| m.eq_ignore_ascii_case(member)))
                     && self.tables.shared_private_data(o) =>
+            {
+                Value::union([object, Value::origin(UNKNOWN)])
+            }
+            // A copy of the handle may have changed the object.
+            Some(o)
+                if self.tables.aliased.contains(&o.to_ascii_lowercase())
+                    && !SCALAR_MEMBERS
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(member)) =>
             {
                 Value::union([object, Value::origin(UNKNOWN)])
             }
@@ -2458,6 +2481,29 @@ const CARRYING_METHODS: [&str; 18] = [
     "write-xmlschema",
 ];
 
+/// Built-in methods that put their arguments into their receiver's object: a
+/// node appended to it, an attribute or a value set on it, the changes of
+/// another dataset. The receiver's slot takes the arguments.
+pub(super) const RECEIVING_METHODS: [&str; 17] = [
+    "add-first",
+    "add-last",
+    "append-child",
+    "copy-sax-attributes",
+    "get-changes",
+    "import-principal",
+    "insert",
+    "insert-attribute",
+    "insert-before",
+    "longchar-to-node-value",
+    "memptr-to-node-value",
+    "replace",
+    "replace-child",
+    "set-attribute",
+    "set-attribute-node",
+    "set-property",
+    "update-attribute",
+];
+
 /// Built-in methods that write into an argument data the runtime fills or the
 /// lists do not model: `NODE-VALUE-TO-LONGCHAR(lc)`, the socket `READ`, the
 /// target of `SET-OUTPUT-DESTINATION` and an `OUTPUT` parameter of
@@ -2784,6 +2830,16 @@ const INPUT_METHODS: [&str; 304] = [
     "write-message",
     "write-processing-instruction",
 ];
+
+/// Whether the chain `object` starts at `BUFFER b`, `TEMP-TABLE tt` or
+/// `DATASET ds`.
+fn is_prefixed(object: &Expression) -> bool {
+    let mut base = object;
+    while let E::MemberAccess { object, .. } | E::MethodCall { object, .. } = &base.kind {
+        base = object;
+    }
+    matches!(&base.kind, E::Identifier(id) if base.span.start < id.span.start)
+}
 
 /// The name of a receiver that is a plain name, not `BUFFER b`.
 fn receiver_name(object: &Expression) -> Option<&str> {
@@ -3541,7 +3597,11 @@ mod tests {
             undecided.is_empty(),
             "built-in methods with no single argument decision: {undecided:?}"
         );
-        for m in lists.iter().flat_map(|l| l.iter()) {
+        for m in lists
+            .iter()
+            .flat_map(|l| l.iter())
+            .chain(&RECEIVING_METHODS)
+        {
             assert!(
                 methods.iter().any(|x| x == m),
                 "{m} is no method of a handle"
@@ -3568,14 +3628,32 @@ mod tests {
             decision: false,
         };
         let receiver = Expression::new(E::Identifier(name("h")));
+        // `BUFFER b`: the identifier starts after the expression.
+        let mut table = Expression::new(E::Identifier(Identifier {
+            span: Span { start: 7, end: 8 },
+            name: "b".to_string(),
+        }));
+        table.span = Span { start: 0, end: 8 };
         let argument = [Expression::new(E::Identifier(name("x")))];
         for m in methods.iter().map(String::as_str).chain(["no-such-method"]) {
             let writes = c.method_writes(&receiver, m, &argument);
             match argument_write(m) {
                 ArgWrite::Input => assert!(writes.is_empty(), "{m} writes"),
+                // Only the tables of `BUFFER b:` and a node it navigates to
+                // are what a handle holds; a handle variable may hold less.
                 ArgWrite::Carry => {
                     assert_eq!(writes.len(), 1, "{m}");
-                    assert!(!holds_unknown(&writes[0].1), "{m} writes Unknown");
+                    let navigates = m.starts_with("get-");
+                    assert_eq!(
+                        !holds_unknown(&writes[0].1),
+                        navigates,
+                        "{m} on a handle variable"
+                    );
+                    let writes = c.method_writes(&table, m, &argument);
+                    assert!(
+                        !holds_unknown(&writes[0].1),
+                        "{m} on BUFFER b writes Unknown"
+                    );
                 }
                 ArgWrite::Unknown => {
                     assert_eq!(writes.len(), 1, "{m}");
