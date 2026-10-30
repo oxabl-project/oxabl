@@ -294,10 +294,14 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
                     error_type.to_ascii_lowercase(),
                 );
             }
-            S::Assignment { target, value } => handle_of(target, value, &mut t.handles),
-            S::Assign { assignments } => assignments
-                .iter()
-                .for_each(|p| handle_of(&p.target, &p.value, &mut t.handles)),
+            S::Assignment { target, value } => {
+                handle_of(target, value, &mut t.handles);
+                private_data(target, &mut t.private_data);
+            }
+            S::Assign { assignments } => assignments.iter().for_each(|p| {
+                handle_of(&p.target, &p.value, &mut t.handles);
+                private_data(&p.target, &mut t.private_data);
+            }),
             _ => {}
         }
     }
@@ -358,6 +362,16 @@ fn handle_of(target: &Expression, value: &Expression, out: &mut FxHashMap<String
         out.entry(h.name.to_ascii_lowercase())
             .or_default()
             .push(table.name.clone());
+    }
+}
+
+/// `h:PRIVATE-DATA = x`: add `h`.
+fn private_data(target: &Expression, out: &mut FxHashSet<String>) {
+    if let E::MemberAccess { object, member } = &target.kind
+        && let E::Identifier(h) = &object.kind
+        && member.name.eq_ignore_ascii_case("PRIVATE-DATA")
+    {
+        out.insert(h.name.to_ascii_lowercase());
     }
 }
 

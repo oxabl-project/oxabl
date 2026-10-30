@@ -129,3 +129,16 @@ OS-COMMAND VALUE("rm " + cFile). /* taint: safe */
 lcOut = "".
 TEMP-TABLE tt:WRITE-JSON("longchar", lcOut).
 OS-COMMAND VALUE(STRING(lcOut)). /* taint: real */
+
+/* A handle that another program fills, also through a variable, and the
+   PRIVATE-DATA of the session and of this procedure, which any program of
+   the session or the caller may set. */
+DEFINE VARIABLE hOther AS HANDLE NO-UNDO.
+hOther = SOURCE-PROCEDURE.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+hOther = SELF.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+OS-COMMAND VALUE(THIS-PROCEDURE:PRIVATE-DATA). /* taint: real */
+OS-COMMAND VALUE(SESSION:PRIVATE-DATA). /* taint: real */
+hOther = THIS-PROCEDURE.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */

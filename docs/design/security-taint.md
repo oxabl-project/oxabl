@@ -147,7 +147,13 @@ registry against them.
   `FILE-INFO`, `THIS-PROCEDURE`, `LOG-MANAGER`, ...) holds what the program set
   on it. Any other one (`ERROR-STATUS`, `SELF`, `FOCUS`, `LAST-EVENT`,
   `CLIPBOARD`, `SOURCE-PROCEDURE`, `TARGET-PROCEDURE`, and a system handle on
-  no list) is foreign: the runtime or another program fills it.
+  no list) is foreign: the runtime or another program fills it. The owner
+  goes with the value: a copy of a foreign handle (`h = SOURCE-PROCEDURE`,
+  `h = SELF`) holds Unknown, and so does a handle variable assigned an
+  Unknown value, so whatever is read through it is Unknown. The
+  `PRIVATE-DATA` of `SESSION` and `THIS-PROCEDURE`, which any program of the
+  session or the caller of a persistent procedure may set, is Unknown, and so
+  is a copy of either handle, unless the file sets it.
 - **Attributes and methods of a handle.** On a handle of the program (a
   handle variable, `BUFFER b:`, a system handle of the program), a member on
   the lists `MODELLED_MEMBERS` and `NO_INPUT_MEMBERS` gives what the handle

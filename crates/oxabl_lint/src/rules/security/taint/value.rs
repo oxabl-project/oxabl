@@ -536,9 +536,22 @@ pub(super) struct Tables {
     /// The source names `RETURN-VALUE`: only then does the analysis follow
     /// it.
     pub return_value: bool,
+    /// Lower-cased `SESSION` and `THIS-PROCEDURE` when the file assigns their
+    /// `PRIVATE-DATA`; see [`SHARED_HANDLES`].
+    pub private_data: FxHashSet<String>,
 }
 
 impl Tables {
+    /// Whether the `PRIVATE-DATA` of the system handle `name` is set by code
+    /// the file does not hold, as far as the file shows: `name` is on
+    /// [`SHARED_HANDLES`] and the file does not assign it.
+    fn shared_private_data(&self, name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        SHARED_HANDLES.contains(&name.as_str())
+            && !self.types.contains_key(&name)
+            && !self.private_data.contains(&name)
+    }
+
     /// Whether code the file does not hold may write what the file sees: it
     /// has [`Self::shared`] names or [`Self::callbacks`]. Only such a file
     /// looks for the calls of that code.
@@ -1403,6 +1416,19 @@ impl Compiler<'_> {
         out
     }
 
+    /// Whether a read of the name `o` as a value, not as a receiver, copies a
+    /// handle that code the file does not hold fills: a foreign system handle
+    /// (`h = SOURCE-PROCEDURE`, `h = SELF`), or one of [`SHARED_HANDLES`]
+    /// whose `PRIVATE-DATA` the file does not set. What the copy then reads
+    /// holds Unknown.
+    fn copies_foreign(&self, o: &str) -> bool {
+        let key = o.to_ascii_lowercase();
+        !self.declared.contains(&key)
+            && !self.tables.names.contains(&key)
+            && (self.name_owner(&key, "") == Owner::Foreign
+                || self.tables.shared_private_data(&key))
+    }
+
     /// Whose object `object:member` reads. A member of a member belongs to
     /// the owner of the first object of the chain.
     fn owner(&self, object: &Expression, member: &str) -> Owner {
@@ -1591,6 +1617,16 @@ impl Compiler<'_> {
                 return self.origin(format!("web request `{o}:{member}`"), span);
             }
         }
+        // Any program of the session, or the caller of this one, may set it.
+        let object = match receiver.name {
+            Some(o)
+                if member.eq_ignore_ascii_case("PRIVATE-DATA")
+                    && self.tables.shared_private_data(o) =>
+            {
+                Value::union([object, Value::origin(UNKNOWN)])
+            }
+            _ => object,
+        };
         let Some(args) = args else {
             return receiver.owner.read(member, object);
         };
@@ -1630,6 +1666,11 @@ impl Compiler<'_> {
             .collect();
         match &e.kind {
             E::Literal(_) => Value::default(),
+            // A copy of a foreign handle, or of a handle whose `PRIVATE-DATA`
+            // other code sets, may hold anything: Unknown.
+            E::Identifier(id) if self.copies_foreign(&id.name) => {
+                Value::union([self.var(&id.name), Value::origin(UNKNOWN)])
+            }
             E::Identifier(id) => self.var(&id.name),
             E::FieldAccess { .. } => match field_parts(e) {
                 Some((q, f)) => self.field(q, f, e.span, false),
@@ -1723,6 +1764,8 @@ impl Compiler<'_> {
                 let tables = self.tables.tables_of(&id.name);
                 Value(tables.into_iter().map(Term::Table).collect())
             }
+            // A system handle read through its own name: its owner decides.
+            E::Identifier(id) => self.var(&id.name),
             // A dotted name before `:` is a class (`Progress.Lang.Class`) or a
             // buffer field holding an object.
             E::FieldAccess { .. } => match field_parts(object) {
@@ -2101,6 +2144,11 @@ const PROGRAM_HANDLES: [&str; 33] = [
     "this-procedure",
     "web-context",
 ];
+
+/// System handles of the program whose `PRIVATE-DATA` code the file does not
+/// hold may set: any program of the session, or the caller on the handle of a
+/// persistent procedure. Unknown unless the file sets it.
+const SHARED_HANDLES: [&str; 2] = ["session", "this-procedure"];
 
 /// System handles of objects that the runtime or another program fills: the
 /// error of the last statement, the widget of the event, the clipboard, the
