@@ -243,6 +243,24 @@ END.
 }
 
 #[test]
+fn a_field_read_through_buffer_b_in_a_sink_carries_its_path() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS CHARACTER.
+DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
+CREATE tt.
+tt.f = pc.
+OS-COMMAND VALUE(BUFFER tt:BUFFER-FIELD(\"f\"):BUFFER-VALUE).
+";
+    let diags = check_taint("ABLSEC003", src);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("untrusted input") && diags[0].message.contains("`tt.f`"),
+        "{}",
+        diags[0].message
+    );
+}
+
+#[test]
 fn an_unknown_call_is_tainted_when_an_argument_is() {
     let src = "\
 DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.

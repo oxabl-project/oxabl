@@ -1987,8 +1987,21 @@ impl Compiler<'_> {
                 i = close + 1;
                 continue;
             }
+            // `BUFFER b:...`, `TEMP-TABLE tt:...`, `DATASET ds:...`.
+            if ["BUFFER", "TEMP-TABLE", "DATASET"]
+                .iter()
+                .any(|w| w.eq_ignore_ascii_case(word))
+                && is_word(st, i + 1)
+                && st.is(i + 2, Kind::Colon)
+                && is_word(st, i + 3)
+            {
+                let (value, next) = self.token_chain(st, i + 1, end, true);
+                v = Value::union([v, value]);
+                i = next;
+                continue;
+            }
             if st.is(i + 1, Kind::Colon) && is_word(st, i + 2) {
-                let (value, next) = self.token_chain(st, i, end);
+                let (value, next) = self.token_chain(st, i, end, false);
                 v = Value::union([v, value]);
                 i = next;
                 continue;
@@ -2020,13 +2033,33 @@ impl Compiler<'_> {
     }
 
     /// `a:b:c(args)...` starting at `i`; the value and the index after it.
-    fn token_chain(&mut self, st: &StatementText, i: usize, end: usize) -> (Value, usize) {
+    /// `prefixed`: `a` follows `BUFFER`, `TEMP-TABLE` or `DATASET`, and the
+    /// chain reads its tables.
+    fn token_chain(
+        &mut self,
+        st: &StatementText,
+        i: usize,
+        end: usize,
+        prefixed: bool,
+    ) -> (Value, usize) {
         let first = st.word(i);
-        let mut name = Some(first.to_string());
-        let mut value = self.var(first);
         let mut j = i + 1;
-        let owner = self.name_owner(first, st.word(j + 1));
-        if self.tables.watches()
+        let (mut name, mut value, owner) = if prefixed {
+            let tables = self.tables.tables_of(first);
+            (
+                None,
+                Value(tables.into_iter().map(Term::Table).collect()),
+                Owner::Program,
+            )
+        } else {
+            (
+                Some(first.to_string()),
+                self.var(first),
+                self.name_owner(first, st.word(j + 1)),
+            )
+        };
+        if !prefixed
+            && self.tables.watches()
             && self.name_runs_elsewhere(first, st.word(j + 1), st.is(j + 2, Kind::LeftParen))
         {
             self.foreign.push(st.span(i..j + 2));

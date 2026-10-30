@@ -370,6 +370,26 @@ IF c = \"admin\" THEN RUN purge.
 }
 
 #[test]
+fn a_field_read_through_buffer_b_holds_its_tables_identity() {
+    let src = "\
+DEFINE TEMP-TABLE tt NO-UNDO FIELD role AS CHARACTER.
+CREATE tt.
+tt.role = get-value(\"role\").
+IF BUFFER tt:BUFFER-FIELD(\"role\"):BUFFER-VALUE = \"admin\" THEN RUN purge.
+PROCEDURE p:
+    IF BUFFER tt:BUFFER-FIELD(\"role\"):BUFFER-VALUE() = \"admin\" THEN RUN purge.
+END PROCEDURE.
+";
+    let diags = check(src);
+    assert_eq!(lines(src, &diags), [4, 6], "{diags:?}");
+    assert!(
+        diags[0].message.contains("`tt.role`"),
+        "{}",
+        diags[0].message
+    );
+}
+
+#[test]
 fn request_objects_and_json_bodies_carry_identity_keys() {
     let src = "\
 USING Progress.Json.ObjectModel.*.
