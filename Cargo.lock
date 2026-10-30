@@ -1211,7 +1211,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "oxabl"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_analyze"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "oxabl_ast",
  "oxabl_common",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_daemon"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "codspeed-criterion-compat",
@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_effects"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_flow"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "oxabl_ast",
  "oxabl_lexer",
@@ -1370,7 +1370,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_handles"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_lint"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_ast",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_lsp"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_nulls"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_pipeline"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "codspeed-criterion-compat",
  "oxabl_analyze",
@@ -1533,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_scope"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "oxabl_ast",
  "oxabl_flow",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_wasm"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "oxabl",
  "oxabl_pipeline",

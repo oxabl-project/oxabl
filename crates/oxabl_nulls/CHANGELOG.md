@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.3](https://github.com/oxabl-project/oxabl/compare/oxabl_nulls-v0.2.2...oxabl_nulls-v0.2.3) (2026-10-30)
+
+
+### Performance Improvements
+
+* **nulls:** reuse fact buffers in the dataflow solver ([7425896](https://github.com/oxabl-project/oxabl/commit/7425896f545d730499e0ad0cddc8c8f93e89dfa1))
+* **pipeline:** build TX004's workspace summaries on all cores ([75d9f8e](https://github.com/oxabl-project/oxabl/commit/75d9f8e1bc29a50364db54900c7161e53680dcb6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.3.2 to 0.3.3
+    * oxabl_scope bumped from 0.2.2 to 0.2.3
+
 ## [0.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_nulls-v0.2.1...oxabl_nulls-v0.2.2) (2026-10-20)
 
 

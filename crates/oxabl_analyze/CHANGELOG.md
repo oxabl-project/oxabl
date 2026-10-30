@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v3.0.2...oxabl_analyze-v3.0.3) (2026-10-30)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 3.0.2 to 3.0.3
+
 ## [3.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v3.0.1...oxabl_analyze-v3.0.2) (2026-10-20)
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.3](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.2...oxabl_handles-v0.2.3) (2026-10-30)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.3.2 to 0.3.3
+
 ## [0.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.1...oxabl_handles-v0.2.2) (2026-10-20)
 
 

@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_scope"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
 description = "Buffer scopes, transaction blocks and lock modes per unit, as the OpenEdge compiler assigns them, for Progress ABL"
@@ -8,7 +8,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_scope"
 
 [dependencies]
 oxabl_ast = { path = "../oxabl_ast", version = "3.0.0" }
-oxabl_flow = { path = "../oxabl_flow", version = "0.3.2" }
+oxabl_flow = { path = "../oxabl_flow", version = "0.3.3" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.4.2" }
 rustc-hash = "2"

@@ -1,5 +1,41 @@
 # Changelog
 
+## [3.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl-v3.0.2...oxabl-v3.0.3) (2026-10-30)
+
+
+### Bug Fixes
+
+* **cli:** rank tied conformance error patterns by text ([fb695c7](https://github.com/oxabl-project/oxabl/commit/fb695c7e914373034c3e700e082124e4818e2af8))
+
+
+### Performance Improvements
+
+* **cli:** run format and conformance on all cores ([37d4a55](https://github.com/oxabl-project/oxabl/commit/37d4a55361fe400c569e9d7573b13273e4a1605f))
+* **cli:** run format and conformance on all cores ([d195735](https://github.com/oxabl-project/oxabl/commit/d195735f6d30e52be7ebd8f806697f52d228f24c))
+* **cli:** use jemalloc as the oxabl binary's allocator ([b7f598e](https://github.com/oxabl-project/oxabl/commit/b7f598ef6264d3ec157f24e2201a209e6fddf02b))
+* **cli:** use jemalloc as the oxabl binary's allocator ([f7e2cf8](https://github.com/oxabl-project/oxabl/commit/f7e2cf8885f4460ad066c7331d53060ad649db54))
+* **pipeline:** build TX004's workspace summaries on all cores ([75d9f8e](https://github.com/oxabl-project/oxabl/commit/75d9f8e1bc29a50364db54900c7161e53680dcb6))
+* **pipeline:** build TX004's workspace summaries on all cores ([f289387](https://github.com/oxabl-project/oxabl/commit/f289387b593c36806a16f7c546e96b2237e974aa))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 3.0.2 to 3.0.3
+    * oxabl_pipeline bumped from 3.2.0 to 3.2.1
+    * oxabl_lint bumped from 3.0.2 to 3.0.3
+    * oxabl_lsp bumped from 3.0.2 to 3.0.3
+    * oxabl_daemon bumped from 0.5.2 to 0.5.3
+  * dev-dependencies
+    * oxabl_analyze bumped from 3.0.2 to 3.0.3
+    * oxabl_pipeline bumped from 3.2.0 to 3.2.1
+    * oxabl_flow bumped from 0.3.2 to 0.3.3
+    * oxabl_handles bumped from 0.2.2 to 0.2.3
+    * oxabl_scope bumped from 0.2.2 to 0.2.3
+    * oxabl_effects bumped from 0.2.2 to 0.2.3
+    * oxabl_nulls bumped from 0.2.2 to 0.2.3
+
 ## [3.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl-v3.0.1...oxabl-v3.0.2) (2026-10-20)
 
 
