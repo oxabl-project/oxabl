@@ -1349,6 +1349,60 @@ impl Compiler<'_> {
         self.tables.names.contains(&name) || self.tables.database.contains(&name)
     }
 
+    /// What the built-in method `object:method(arguments)` of a handle writes
+    /// into its arguments that are a variable or a field (see
+    /// [`argument_write`]), as weak writes. A method of an object of a class
+    /// writes only its `OUTPUT` arguments, and `SAVE("FILE", name)` and the
+    /// like write a file, not `name`.
+    pub fn method_writes<'e>(
+        &mut self,
+        object: &Expression,
+        method: &str,
+        arguments: &'e [Expression],
+    ) -> Vec<(&'e Expression, Value)> {
+        let write = argument_write(method);
+        if write == ArgWrite::Input || self.owner(object, method) == Owner::Class {
+            return Vec::new();
+        }
+        if arguments.first().is_some_and(|a| {
+            matches!(&a.kind, E::Literal(oxabl_ast::Literal::String(s))
+                if s.value.eq_ignore_ascii_case("FILE"))
+        }) {
+            return Vec::new();
+        }
+        let written = |a: &Expression| match &a.kind {
+            E::Identifier(id) => a.span.start >= id.span.start,
+            E::FieldAccess { .. } | E::ArrayAccess { .. } => true,
+            _ => false,
+        };
+        if !arguments.iter().any(written) {
+            return Vec::new();
+        }
+        let receiver = self.receiver(object);
+        let mut out = Vec::new();
+        for (i, a) in arguments.iter().enumerate() {
+            if !written(a) {
+                continue;
+            }
+            let value = match write {
+                ArgWrite::Carry => Value::union(
+                    std::iter::once(receiver.clone())
+                        .chain(
+                            arguments
+                                .iter()
+                                .enumerate()
+                                .filter(|(j, _)| *j != i)
+                                .map(|(_, o)| self.expr(o)),
+                        )
+                        .collect::<Vec<_>>(),
+                ),
+                _ => Value::union([receiver.clone(), Value::origin(UNKNOWN)]),
+            };
+            out.push((a, value));
+        }
+        out
+    }
+
     /// Whose object `object:member` reads. A member of a member belongs to
     /// the owner of the first object of the chain.
     fn owner(&self, object: &Expression, member: &str) -> Owner {
@@ -2230,6 +2284,384 @@ const MODELLED_MEMBERS: [&str; 74] = [
     "x-document",
 ];
 
+/// What a built-in method of a handle writes into an argument that is a
+/// variable or a field. ABL writes such an argument without `OUTPUT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ArgWrite {
+    /// It takes what the receiver and the other arguments hold: a node of the
+    /// receiver's document, the document saved to a `LONGCHAR`
+    /// ([`CARRYING_METHODS`]).
+    Carry,
+    /// It takes the receiver and Unknown: data the runtime fills
+    /// ([`UNKNOWN_WRITE_METHODS`]), and any method on no list.
+    Unknown,
+    /// It is only read ([`INPUT_METHODS`]).
+    Input,
+}
+
+/// What `method` writes into its arguments.
+pub(super) fn argument_write(method: &str) -> ArgWrite {
+    let listed = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(method));
+    if listed(&CARRYING_METHODS) {
+        ArgWrite::Carry
+    } else if listed(&INPUT_METHODS) {
+        ArgWrite::Input
+    } else {
+        ArgWrite::Unknown
+    }
+}
+
+/// Built-in methods that write into an argument what the receiver holds:
+/// `GET-DOCUMENT-ELEMENT(hRoot)`, `GET-CHILD(hKid, i)`,
+/// `SAVE("LONGCHAR", lc)`, `WRITE-JSON("LONGCHAR", lc)`.
+const CARRYING_METHODS: [&str; 18] = [
+    "add-header-entry",
+    "clone-node",
+    "create-node",
+    "create-node-namespace",
+    "get-attribute-node",
+    "get-child",
+    "get-document-element",
+    "get-header-entry",
+    "get-node",
+    "get-parent",
+    "import-node",
+    "merge-changes",
+    "merge-row-changes",
+    "save",
+    "serialize-row",
+    "write-json",
+    "write-xml",
+    "write-xmlschema",
+];
+
+/// Built-in methods that write into an argument data the runtime fills or the
+/// lists do not model: `NODE-VALUE-TO-LONGCHAR(lc)`, the socket `READ`, the
+/// target of `SET-OUTPUT-DESTINATION` and an `OUTPUT` parameter of
+/// `SET-PARAMETER`. A method on no list is read the same way.
+#[cfg(test)]
+const UNKNOWN_WRITE_METHODS: [&str; 11] = [
+    "buffer-export",
+    "buffer-export-fields",
+    "export",
+    "node-value-to-longchar",
+    "node-value-to-memptr",
+    "raw-transfer",
+    "read",
+    "set-output-destination",
+    "set-parameter",
+    "string-value",
+    "user-data",
+];
+
+/// Built-in methods that only read their arguments.
+const INPUT_METHODS: [&str; 304] = [
+    "accept-changes",
+    "accept-row-changes",
+    "add-buffer",
+    "add-calc-column",
+    "add-columns-from",
+    "add-events-procedure",
+    "add-fields-from",
+    "add-first",
+    "add-index-field",
+    "add-last",
+    "add-like-column",
+    "add-like-field",
+    "add-like-index",
+    "add-new-field",
+    "add-new-index",
+    "add-parent-id-relation",
+    "add-relation",
+    "add-schema-location",
+    "add-source-buffer",
+    "add-super-procedure",
+    "append-child",
+    "apply-callback",
+    "attach-data-source",
+    "authentication-failed",
+    "begin-event-group",
+    "buffer-compare",
+    "buffer-copy",
+    "buffer-create",
+    "buffer-delete",
+    "buffer-field",
+    "buffer-import",
+    "buffer-import-fields",
+    "buffer-release",
+    "buffer-validate",
+    "buffer-value",
+    "cancel-break",
+    "cancel-requests",
+    "cancel-requests-after",
+    "clear",
+    "clear-appl-context",
+    "clear-log",
+    "clear-selection",
+    "clear-sort-arrows",
+    "close-log",
+    "connect",
+    "connected",
+    "convert-to-offset",
+    "copy-dataset",
+    "copy-sax-attributes",
+    "copy-temp-table",
+    "create-like",
+    "create-like-sequential",
+    "create-result-list-entry",
+    "current-query",
+    "debug",
+    "declare-namespace",
+    "delete",
+    "delete-char",
+    "delete-current-row",
+    "delete-header-entry",
+    "delete-line",
+    "delete-node",
+    "delete-result-list-entry",
+    "delete-selected-row",
+    "delete-selected-rows",
+    "deselect-focused-row",
+    "deselect-rows",
+    "deselect-selected-row",
+    "detach-data-source",
+    "disable",
+    "disable-connections",
+    "disable-dump-triggers",
+    "disable-load-triggers",
+    "disconnect",
+    "display-message",
+    "dump-logging-now",
+    "edit-clear",
+    "edit-copy",
+    "edit-cut",
+    "edit-paste",
+    "edit-undo",
+    "empty-dataset",
+    "empty-temp-table",
+    "enable",
+    "enable-connections",
+    "enable-events",
+    "encode-domain-access-code",
+    "encrypt-audit-mac-key",
+    "end-document",
+    "end-element",
+    "end-event-group",
+    "end-file-drop",
+    "entry",
+    "export-principal",
+    "fetch-selected-row",
+    "fill",
+    "find-by-rowid",
+    "find-current",
+    "find-first",
+    "find-last",
+    "find-unique",
+    "first-of",
+    "get-attribute",
+    "get-binary-data",
+    "get-blue-value",
+    "get-browse-column",
+    "get-buffer-handle",
+    "get-bytes-available",
+    "get-callback-proc-context",
+    "get-callback-proc-name",
+    "get-cgi-list",
+    "get-cgi-long-value",
+    "get-cgi-value",
+    "get-changes",
+    "get-child-relation",
+    "get-client",
+    "get-column",
+    "get-config-value",
+    "get-current",
+    "get-dataset-buffer",
+    "get-dropped-file",
+    "get-dynamic",
+    "get-error-column",
+    "get-error-row",
+    "get-file-name",
+    "get-file-offset",
+    "get-first",
+    "get-green-value",
+    "get-index-by-namespace-name",
+    "get-index-by-qname",
+    "get-iteration",
+    "get-last",
+    "get-localname-by-index",
+    "get-message",
+    "get-message-type",
+    "get-next",
+    "get-number",
+    "get-prev",
+    "get-printers",
+    "get-property",
+    "get-qname-by-index",
+    "get-red-value",
+    "get-relation",
+    "get-repositioned-row",
+    "get-rgb-value",
+    "get-row",
+    "get-safe-user",
+    "get-selected-widget",
+    "get-serialized",
+    "get-signature",
+    "get-socket-option",
+    "get-source-buffer",
+    "get-tab-item",
+    "get-text-height-chars",
+    "get-text-height-pixels",
+    "get-text-width-chars",
+    "get-text-width-pixels",
+    "get-top-buffer",
+    "get-type-by-index",
+    "get-type-by-namespace-name",
+    "get-type-by-qname",
+    "get-uri-by-index",
+    "get-value-by-index",
+    "get-value-by-namespace-name",
+    "get-value-by-qname",
+    "get-wait-state",
+    "import-principal",
+    "increment-exclusive-id",
+    "index-information",
+    "initialize",
+    "initialize-document-type",
+    "initiate",
+    "insert",
+    "insert-attribute",
+    "insert-backtab",
+    "insert-before",
+    "insert-file",
+    "insert-row",
+    "insert-string",
+    "insert-tab",
+    "invoke",
+    "is-row-selected",
+    "is-selected",
+    "last-of",
+    "list-property-names",
+    "load",
+    "load-domains",
+    "load-icon",
+    "load-image",
+    "load-image-down",
+    "load-image-insensitive",
+    "load-image-up",
+    "load-mouse-pointer",
+    "load-small-icon",
+    "lock-registration",
+    "log-audit-event",
+    "logout",
+    "longchar-to-node-value",
+    "lookup",
+    "mark-new",
+    "mark-row-state",
+    "memptr-to-node-value",
+    "move-after-tab-item",
+    "move-before-tab-item",
+    "move-column",
+    "move-to-bottom",
+    "move-to-eof",
+    "move-to-top",
+    "normalize",
+    "query-close",
+    "query-open",
+    "query-prepare",
+    "read-file",
+    "read-json",
+    "read-xml",
+    "read-xmlschema",
+    "refresh",
+    "refresh-audit-policy",
+    "register-domain",
+    "reject-changes",
+    "reject-row-changes",
+    "remove-attribute",
+    "remove-child",
+    "remove-events-procedure",
+    "remove-super-procedure",
+    "replace",
+    "replace-child",
+    "replace-selection-text",
+    "reposition-backward",
+    "reposition-forward",
+    "reposition-to-row",
+    "reposition-to-rowid",
+    "reset",
+    "save-file",
+    "save-row-changes",
+    "sax-parse",
+    "sax-parse-first",
+    "sax-parse-next",
+    "scroll-to-current-row",
+    "scroll-to-item",
+    "scroll-to-selected-row",
+    "seal",
+    "search",
+    "select-all",
+    "select-focused-row",
+    "select-next-row",
+    "select-prev-row",
+    "select-row",
+    "set-actor",
+    "set-appl-context",
+    "set-attribute",
+    "set-attribute-node",
+    "set-blue-value",
+    "set-break",
+    "set-buffers",
+    "set-callback",
+    "set-callback-procedure",
+    "set-client",
+    "set-commit",
+    "set-connect-procedure",
+    "set-dynamic",
+    "set-green-value",
+    "set-input-source",
+    "set-must-understand",
+    "set-node",
+    "set-numeric-format",
+    "set-property",
+    "set-read-response-procedure",
+    "set-red-value",
+    "set-repositioned-row",
+    "set-rgb-value",
+    "set-role",
+    "set-rollback",
+    "set-safe-user",
+    "set-selection",
+    "set-serialized",
+    "set-socket-option",
+    "set-sort-arrow",
+    "set-wait-state",
+    "start-document",
+    "start-element",
+    "stop-parsing",
+    "synchronize",
+    "temp-table-prepare",
+    "tenant-id",
+    "tenant-name",
+    "update-attribute",
+    "url-decode",
+    "url-encode",
+    "validate",
+    "validate-domain-access-code",
+    "validate-seal",
+    "write",
+    "write-cdata",
+    "write-characters",
+    "write-comment",
+    "write-data",
+    "write-data-element",
+    "write-empty-element",
+    "write-entity-ref",
+    "write-external-dtd",
+    "write-fragment",
+    "write-message",
+    "write-processing-instruction",
+];
+
 /// The name of a receiver that is a plain name, not `BUFFER b`.
 fn receiver_name(object: &Expression) -> Option<&str> {
     match &object.kind {
@@ -2797,6 +3229,100 @@ mod tests {
             "input-value",
         ] {
             assert!(!read(Owner::Program, m), "{m}");
+        }
+    }
+
+    /// The built-in methods of a handle in the ABL reference. Their names are
+    /// upper case; the methods of a class (`GetCharacter`) are not.
+    fn handle_methods() -> Vec<String> {
+        let index = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../resources/abl_keyword_index.json"),
+        )
+        .unwrap();
+        let mut out: Vec<String> = index
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("\"title\": \""))
+            .filter_map(|t| {
+                let t = t.trim_end_matches(['"', ',']);
+                // `CLEAR( ) method (Call Object Handle)`.
+                t.split_once(" method (")
+                    .map(|(m, _)| m)
+                    .or_else(|| t.strip_suffix(" method"))
+            })
+            .map(|t| t.split('(').next().unwrap_or(t).trim().to_string())
+            .filter(|t| {
+                !t.is_empty() && !t.contains(' ') && !t.chars().any(|c| c.is_ascii_lowercase())
+            })
+            .map(|t| t.to_ascii_lowercase())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Every built-in method of a handle has one decision for what it writes
+    /// into an argument that is a variable: what the receiver holds, Unknown,
+    /// or nothing. A new one fails here until it is on a list, and writes
+    /// Unknown until then. A name on a list that is no such method fails.
+    #[test]
+    fn every_builtin_method_has_an_argument_decision() {
+        let methods = handle_methods();
+        assert!(methods.len() > 300, "{}", methods.len());
+        let lists: [&[&str]; 3] = [&CARRYING_METHODS, &UNKNOWN_WRITE_METHODS, &INPUT_METHODS];
+        let undecided: Vec<&String> = methods
+            .iter()
+            .filter(|m| lists.iter().filter(|l| l.contains(&m.as_str())).count() != 1)
+            .collect();
+        assert!(
+            undecided.is_empty(),
+            "built-in methods with no single argument decision: {undecided:?}"
+        );
+        for m in lists.iter().flat_map(|l| l.iter()) {
+            assert!(
+                methods.iter().any(|x| x == m),
+                "{m} is no method of a handle"
+            );
+        }
+
+        let options = super::super::Options::new(&SecurityOptions::default());
+        let mut tables = Tables::default();
+        tables.types.insert("h".to_string(), String::new());
+        let routines = Routines::default();
+        let declared: FxHashSet<String> = ["h", "x"].iter().map(|n| n.to_string()).collect();
+        let mut slots = Slots::default();
+        let mut origins = Origins::default();
+        let mut c = Compiler {
+            options: &options,
+            tables: &tables,
+            slots: &mut slots,
+            origins: &mut origins,
+            declared: &declared,
+            frozen: false,
+            routines: &routines,
+            calls: Vec::new(),
+            foreign: Vec::new(),
+            decision: false,
+        };
+        let receiver = Expression::new(E::Identifier(name("h")));
+        let argument = [Expression::new(E::Identifier(name("x")))];
+        for m in methods.iter().map(String::as_str).chain(["no-such-method"]) {
+            let writes = c.method_writes(&receiver, m, &argument);
+            match argument_write(m) {
+                ArgWrite::Input => assert!(writes.is_empty(), "{m} writes"),
+                ArgWrite::Carry => {
+                    assert_eq!(writes.len(), 1, "{m}");
+                    assert!(!holds_unknown(&writes[0].1), "{m} writes Unknown");
+                }
+                ArgWrite::Unknown => {
+                    assert_eq!(writes.len(), 1, "{m}");
+                    assert!(holds_unknown(&writes[0].1), "{m} writes no Unknown");
+                }
+            }
+        }
+        assert_eq!(argument_write("no-such-method"), ArgWrite::Unknown);
+        for m in UNKNOWN_WRITE_METHODS {
+            assert_eq!(argument_write(m), ArgWrite::Unknown, "{m}");
         }
     }
 }

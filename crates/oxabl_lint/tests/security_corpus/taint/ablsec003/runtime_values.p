@@ -104,3 +104,28 @@ RUN on-endkey-return.
 OS-COMMAND VALUE(RETURN-VALUE). /* taint: real */
 RUN on-error-return-fixed.
 OS-COMMAND VALUE(RETURN-VALUE). /* taint: safe */
+
+/* A built-in method that writes its argument: a node of a parsed document,
+   and what a method copies out of it, hold what the document holds. */
+DEFINE VARIABLE hDoc AS HANDLE NO-UNDO.
+DEFINE VARIABLE hRoot AS HANDLE NO-UNDO.
+DEFINE VARIABLE lcXml AS LONGCHAR NO-UNDO.
+DEFINE VARIABLE lcOut AS LONGCHAR NO-UNDO.
+DEFINE VARIABLE cFile AS CHARACTER NO-UNDO.
+CREATE X-DOCUMENT hDoc.
+CREATE X-NODEREF hRoot.
+lcXml = get-value("xml").
+hDoc:LOAD("longchar", lcXml, FALSE).
+hDoc:GET-DOCUMENT-ELEMENT(hRoot).
+OS-COMMAND VALUE(hRoot:NAME). /* taint: real */
+hRoot:NODE-VALUE-TO-LONGCHAR(lcOut).
+OS-COMMAND VALUE(STRING(lcOut)). /* taint: real */
+lcOut = "".
+hDoc:SAVE("longchar", lcOut).
+OS-COMMAND VALUE(STRING(lcOut)). /* taint: real */
+cFile = "out.xml".
+hDoc:SAVE("file", cFile).
+OS-COMMAND VALUE("rm " + cFile). /* taint: safe */
+lcOut = "".
+TEMP-TABLE tt:WRITE-JSON("longchar", lcOut).
+OS-COMMAND VALUE(STRING(lcOut)). /* taint: real */

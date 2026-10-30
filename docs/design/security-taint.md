@@ -114,7 +114,7 @@ rule hands over by span).
 | `WEB-CONTEXT:<anything>`, `get-value`, `get-field`, `get-cgi`, `get-user-field`, `get-cookie` | on |
 | a member or method of an object whose name says request (`poRequest`, `oWebRequest`) | on |
 | `IMPORT` targets, `SET`/`UPDATE`/`MESSAGE ... UPDATE` targets | on |
-| `COPY-LOB FROM FILE ... TO target`, `READ-JSON` and `READ-XML` with a source type of `"FILE"` or one that is not a literal, socket `READ(memptr, ...)` | on |
+| `COPY-LOB FROM FILE ... TO target`, `READ-JSON`, `READ-XML` and the `LOAD` of an X-document with a source type of `"FILE"` or one that is not a literal, socket `READ(memptr, ...)` | on |
 | `OS-GETENV(...)`, `SESSION:PARAMETER` (or `SESSION:PARAM`), `SESSION:STARTUP-PARAMETERS` | on |
 | database fields | off (`database-fields = true`) |
 | project functions and methods (`sources = [...]`) | none |
@@ -160,6 +160,16 @@ registry against them.
   `NO_INPUT_MEMBERS` (a number, a logical, a name: `ERROR-STATUS:ERROR`,
   `SELF:NAME`) is clean. A member of an object of a class is the unknown call
   above.
+- **Arguments that a built-in method writes.** ABL writes an argument of a
+  method of a handle without `OUTPUT`. An argument that is a variable or a
+  field takes, as a weak write, what the receiver and the other arguments
+  hold when the method is on `CARRYING_METHODS` (`GET-DOCUMENT-ELEMENT(hRoot)`,
+  `GET-CHILD(hKid, i)`, `SAVE("LONGCHAR", lc)`, `WRITE-JSON("LONGCHAR", lc)`:
+  a node holds what its document holds, so `hKid:NAME` does too), nothing
+  when it is on `INPUT_METHODS` or the first argument is `"FILE"`, and what
+  the receiver holds and Unknown otherwise (`NODE-VALUE-TO-LONGCHAR(lc)`, the
+  target of `SET-OUTPUT-DESTINATION`, and a method on no list). A guard test
+  enumerates the methods of a handle in the registry against the lists.
 - **`RETURN-VALUE`** is a slot of every unit that reads or sets it and of
   every procedure, in a file that reads it (a file that does not has no use
   for it, and its summaries need not settle on it). A `RUN` of an internal procedure sets it to the
@@ -176,7 +186,7 @@ sink rule reports such a read as stage 1 does, and ABLSEC010 does not report
 a decision on it, as it does not for a shared variable.
 
 Request data often arrives as tables. An `INPUT DATASET` parameter taints
-every table of the dataset. `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`,
+every table of the dataset. `READ-JSON`, `READ-XML`, `LOAD`, `COPY-TEMP-TABLE`,
 `COPY-DATASET` and the `BUFFER-COPY` method add their arguments to their
 receiver: the tables of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the
 handle variable the chain starts at and every table that the file assigns to
@@ -453,8 +463,6 @@ their counts.
 - A built-in attribute or method that the lists do not name is Unknown,
   even where the program set it (`BUFFER-VALUE` through a handle variable of
   a table whose fields hold no taint).
-- The targets that `WRITE-JSON` and `WRITE-XML` fill (`h:WRITE-JSON("LONGCHAR",
-  lc)`) do not take the data of the table.
 
 ## Result
 

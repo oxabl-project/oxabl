@@ -718,6 +718,15 @@ impl Builder<'_, '_> {
         for a in arguments {
             self.output_arguments(out, a, span);
         }
+        if let E::MethodCall { object, method, .. } = &e.kind {
+            for (a, v) in self.c.method_writes(object, &method.name, arguments) {
+                if written_direction(self.source, a.span.start).is_none() {
+                    let at = out.len();
+                    self.set(out, a, v, span);
+                    out[at..].iter_mut().for_each(|op| op.strong = false);
+                }
+            }
+        }
         let outputs: Vec<&Expression> = arguments
             .iter()
             .filter(|a| written_direction(self.source, a.span.start).is_some())
@@ -766,15 +775,16 @@ impl Builder<'_, '_> {
         }
     }
 
-    /// `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`, `COPY-DATASET` and
-    /// `BUFFER-COPY` methods fill their receiver with their arguments: the
-    /// tables of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the
+    /// `READ-JSON`, `READ-XML`, `LOAD`, `COPY-TEMP-TABLE`, `COPY-DATASET`
+    /// and `BUFFER-COPY` methods fill their receiver with their arguments:
+    /// the tables of `TEMP-TABLE tt:`, `DATASET ds:` or `BUFFER b:`, or the
     /// handle variable a chain starts at and the tables the file set it to.
-    /// `READ-JSON` and `READ-XML` from a file are a file read.
+    /// `READ-JSON`, `READ-XML` and `LOAD` from a file are a file read.
     fn fill(&mut self, out: &mut Vec<Op>, e: &Expression, span: Span) {
-        const FILLS: [&str; 5] = [
+        const FILLS: [&str; 6] = [
             "READ-JSON",
             "READ-XML",
+            "LOAD",
             "COPY-TEMP-TABLE",
             "COPY-DATASET",
             "BUFFER-COPY",
@@ -794,7 +804,7 @@ impl Builder<'_, '_> {
         }
         let mut value = Value::union(arguments.iter().map(|a| self.c.expr(a)).collect::<Vec<_>>());
         // `READ-JSON("FILE", ...)`, or a source type that is not a literal.
-        let read = ["READ-JSON", "READ-XML"]
+        let read = ["READ-JSON", "READ-XML", "LOAD"]
             .iter()
             .any(|m| m.eq_ignore_ascii_case(&method.name));
         if read
