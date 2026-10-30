@@ -289,6 +289,16 @@ fn every_condition_the_grammar_holds_is_a_decision() {
             "DELETE Customer VALIDATE(LOOKUP(c, \"admin,root\") > 0, \"not allowed\").\n",
             "DELETE",
         ),
+        // The format phrase of a frame statement.
+        ("UPDATE c VALIDATE(c = \"admin\", \"no\").\n", "UPDATE"),
+        ("SET c VALIDATE(c = \"admin\", \"no\").\n", "SET"),
+        ("DISPLAY c VALIDATE(c = \"admin\", \"no\").\n", "DISPLAY"),
+        ("UPDATE c WHEN c = \"admin\".\n", "UPDATE"),
+        ("ENABLE c WHEN c = \"admin\" WITH FRAME f.\n", "ENABLE"),
+        (
+            "FORM c VALIDATE(c = \"admin\", \"no\") WITH FRAME f.\n",
+            "FORM",
+        ),
     ] {
         let src = format!("{prelude}{shape}");
         let diags = check(&src);
@@ -306,6 +316,8 @@ CASE TRUE:
 END CASE.
 DISPLAY \"x\" WHEN TRUE.
 DELETE Customer VALIDATE(TRUE, \"x\").
+UPDATE x VALIDATE(TRUE, \"x\").
+ENABLE x WHEN TRUE WITH FRAME f.
 ";
     assert!(check(src).is_empty());
 }

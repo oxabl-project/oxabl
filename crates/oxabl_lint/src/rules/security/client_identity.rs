@@ -45,7 +45,8 @@
 //! `WHEN` that the parser does not put in a node: of a joined record phrase,
 //! of `FOR EACH ... WHILE`, of `PRESELECT` and `OPEN QUERY`, of an `ASSIGN`
 //! pair; and the condition of an `IF` expression in a statement the parser
-//! does not model. `statement_decision` and `expression_decision` list every
+//! does not model. So is the `WHEN` and the `VALIDATE(condition, message)`
+//! of a format phrase of `UPDATE`, `SET`, `DISPLAY`, `ENABLE` and `FORM`. `statement_decision` and `expression_decision` list every
 //! kind of the AST, so a new kind does not build until it is a decision or
 //! named as none. A value that is only displayed or stored is not reported.
 //!
@@ -360,6 +361,71 @@ impl Decisions<'_> {
     }
 }
 
+impl Decisions<'_> {
+    /// The `WHEN` and `VALIDATE(condition, message)` options of the format
+    /// phrases of a frame statement, which the parser puts in its node
+    /// (`UPDATE x VALIDATE(...)`, `ENABLE x WHEN c`). The ranges it did not
+    /// model are read by [`Self::unmodelled`]; the `WHEN` of a `DISPLAY` item
+    /// is a decision of the statement.
+    fn format_phrases(&mut self, s: &Statement) {
+        use StatementKind as S;
+        let (exprs, when): (Vec<Span>, bool) = match &s.kind {
+            S::Update { options, .. } | S::Set { options, .. } => {
+                (options.iter().map(|e| e.span).collect(), true)
+            }
+            S::Enable { items } | S::Form { items, .. } => {
+                (items.iter().map(|e| e.span).collect(), true)
+            }
+            S::Display { .. } => (Vec::new(), false),
+            _ => return,
+        };
+        let source = self.source;
+        let (Some(st), Some(word)) = (StatementText::of(source, s), leading_word(source, s)) else {
+            return;
+        };
+        let skipped = s
+            .skipped_tail
+            .as_ref()
+            .map_or(&[][..], |t| &t.unmodelled[..]);
+        let mut operands = Vec::new();
+        let mut depth = 0usize;
+        for i in 0..st.len() {
+            let at = st.span(i..i + 1).start;
+            if skipped.iter().any(|r| r.start <= at && at < r.end) {
+                continue;
+            }
+            match st.token(i).kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => depth = depth.saturating_sub(1),
+                _ if depth == 0 && when && st.is_word(i, "WHEN") && i + 1 < st.len() => {
+                    // The expression the parser read after `WHEN`, else the
+                    // clause.
+                    let next = st.span(i + 1..i + 2).start;
+                    operands.push(
+                        exprs
+                            .iter()
+                            .copied()
+                            .find(|e| e.start == next)
+                            .unwrap_or_else(|| st.span(i + 1..clause_end(&st, i + 1))),
+                    );
+                }
+                _ if st.is_word(i, "VALIDATE")
+                    && st.is(i + 1, Kind::LeftParen)
+                    && !(i > 0 && st.is(i - 1, Kind::Colon)) =>
+                {
+                    if let Some(first) = st.call_args(i + 1).into_iter().next() {
+                        operands.push(st.span(first));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for op in operands.into_iter().filter(|op| op.start < op.end) {
+            self.decide(s.span.start, &word, &[op]);
+        }
+    }
+}
+
 /// The words that start a condition.
 const CONDITIONS: [&str; 3] = ["WHERE", "WHILE", "WHEN"];
 
@@ -586,6 +652,7 @@ impl Visitor for Decisions<'_> {
             self.decide(s.span.start, word, &spans);
         }
         self.unmodelled(s);
+        self.format_phrases(s);
         true
     }
 
