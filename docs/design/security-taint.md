@@ -468,7 +468,10 @@ their counts.
   `validators` does not name is not seen, and an allow-list held in a
   variable is not a literal list.
 - `RETURN-VALUE` at a unit entry, and after a procedure with no `RETURN` on
-  some path, is Unknown, not what the caller held. The variable of a `CATCH`
+  some path, is Unknown, not what the caller held. The analysis follows
+  `RETURN-VALUE` only in a file whose text after preprocessing names it (a
+  `{&rv}` that an include defines does); a reference that does not expand is
+  Unknown, so a sink still reports it and ABLSEC010 does not. The variable of a `CATCH`
   is Unknown, not what the block throws.
 - A built-in attribute or method that the lists do not name is Unknown,
   even where the program set it (`BUFFER-VALUE` through a handle variable of
