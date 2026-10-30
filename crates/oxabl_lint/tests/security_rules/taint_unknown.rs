@@ -315,8 +315,13 @@ OS-COMMAND VALUE(tt.f).
         });
         assert!(found.is_empty(), "{src}");
     }
-    // A class name before `:` is no table.
-    let src = "OS-COMMAND VALUE(STRING(Progress.Lang.Class:GetClass(\"x\"))).\n";
+    // A class name before `:` is no table. A method of a class runs code
+    // elsewhere, and the token reader reads the member as a name, so the
+    // member is one the file defines.
+    let src = "\
+DEFINE VARIABLE Mode AS CHARACTER NO-UNDO INITIAL \"ls\".
+OS-COMMAND VALUE(STRING(pkg.Settings:Mode)).
+";
     assert!(check_fragment("ABLSEC003", src).is_empty());
 }
 

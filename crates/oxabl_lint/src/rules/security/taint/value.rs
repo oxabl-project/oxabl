@@ -539,6 +539,12 @@ pub(super) struct Tables {
     /// Lower-cased `SESSION` and `THIS-PROCEDURE` when the file assigns their
     /// `PRIVATE-DATA`; see [`SHARED_HANDLES`].
     pub private_data: FxHashSet<String>,
+    /// The offsets of the `IN` keywords of the file, in order.
+    pub in_words: Vec<u32>,
+    /// Lower-cased functions the file declares with no body: a prototype `IN
+    /// h`, `IN SUPER`, `EXTERNAL` or `MAP TO`, whose code is elsewhere (a
+    /// `FORWARD` one is a routine of the file).
+    pub prototypes: FxHashSet<String>,
     /// Lower-cased names that every definition of the file declares
     /// `NO-UNDO`: an `UNDO` does not restore them. Any other variable is
     /// undoable.
@@ -1526,14 +1532,11 @@ impl Compiler<'_> {
         if self.runs_elsewhere(name) {
             self.foreign.push(span);
         }
-        // `DYNAMIC-FUNCTION("f")`, with no `IN` handle (nothing after the
-        // name): the function `f` of the file.
-        if listed(&["dynamic-function"], &name.to_ascii_lowercase())
-            && args.len() == 1
-            && let Some(callees) = key.and_then(|k| self.routines.callable(k))
-        {
-            let callees = callees.to_vec();
-            return self.routine_call(&callees, Out::Return, Vec::new(), span);
+        // `DYNAMIC-FUNCTION("f", args...)`, with no `IN` handle: the
+        // function `f` of the file. A caller that saw `IN` passes no key.
+        if let Some(callees) = self.dynamic_callees(name, key) {
+            let args = args.into_iter().skip(1).collect();
+            return self.routine_call(&callees, Out::Return, args, span);
         }
         match builtin(name) {
             Builtin::Source if name.eq_ignore_ascii_case("OS-GETENV") => {
@@ -1556,8 +1559,61 @@ impl Compiler<'_> {
             Builtin::Encode => Value::union(args).cleared(SinkKind::Html.bit()),
             Builtin::ReturnValue => self.return_value(),
             Builtin::Unknown => Value::union(args.into_iter().chain([Value::origin(UNKNOWN)])),
+            // A function the file does not hold: one it declares `IN h`, `IN
+            // SUPER`, `EXTERNAL` or `MAP TO`, or, in an open file, one from
+            // outside it. In a closed file ABL compiles no call of a function
+            // it does not declare.
+            Builtin::Other
+                if self.tables.prototypes.contains(&name.to_ascii_lowercase())
+                    || self.tables.open =>
+            {
+                Value::union(args.into_iter().chain([Value::origin(UNKNOWN)]))
+            }
             Builtin::Args | Builtin::Other => Value::union(args),
         }
+    }
+
+    /// The functions of the file that `DYNAMIC-FUNCTION(key, ...)` calls:
+    /// `name` is `DYNAMIC-FUNCTION` and `key`, the literal first argument
+    /// with no `IN` after it, names a function of the file.
+    pub fn dynamic_callees(&self, name: &str, key: Option<&str>) -> Option<Vec<u32>> {
+        if !listed(&["dynamic-function"], &name.to_ascii_lowercase()) {
+            return None;
+        }
+        key.and_then(|k| self.routines.callable(k))
+            .map(<[u32]>::to_vec)
+    }
+
+    /// Whether the second argument of a call follows `IN`: the parser holds
+    /// the handle of `DYNAMIC-FUNCTION("f" IN h, ...)` as an argument.
+    pub fn dynamic_in(&self, arguments: &[Expression]) -> bool {
+        let [first, second, ..] = arguments else {
+            return false;
+        };
+        let (from, to) = (first.span.end, second.span.start);
+        let i = self.tables.in_words.partition_point(|&w| w < from);
+        self.tables.in_words.get(i).is_some_and(|&w| w < to)
+    }
+
+    /// Whether a chain that starts at `object` starts at a JSON object.
+    fn json_chain(&self, object: &Expression) -> bool {
+        let mut base = object;
+        while let E::MemberAccess { object, .. }
+        | E::MethodCall { object, .. }
+        | E::ArrayAccess { array: object, .. } = &base.kind
+        {
+            base = object;
+        }
+        matches!(&base.kind, E::Identifier(id)
+            if base.span.start >= id.span.start && self.json_name(&id.name))
+    }
+
+    /// Whether the name `o` may hold a JSON object: see
+    /// [`Tables::may_be_json`]. `THIS-OBJECT` and `SUPER` do not.
+    fn json_name(&self, o: &str) -> bool {
+        !o.eq_ignore_ascii_case("THIS-OBJECT")
+            && !o.eq_ignore_ascii_case("SUPER")
+            && self.tables.may_be_json(o)
     }
 
     /// `RETURN-VALUE`: what the last `RUN` of the unit left, or what it held
@@ -1689,9 +1745,13 @@ impl Compiler<'_> {
         if self.options.is_source(member) {
             return self.origin(format!("project source `{member}`"), span);
         }
-        receiver
-            .owner
-            .read(member, Value::union(std::iter::once(object).chain(args)))
+        let value = Value::union(std::iter::once(object).chain(args));
+        // A method of a class runs code the file does not hold; the methods of
+        // a JSON object are modelled.
+        if receiver.owner == Owner::Class && !receiver.json {
+            return Value::union([value, Value::origin(UNKNOWN)]);
+        }
+        receiver.owner.read(member, value)
     }
 
     /// The value of an expression. Every operand (see [`operands`]) is read
@@ -1748,7 +1808,8 @@ impl Compiler<'_> {
             | E::CanFind { .. }
             | E::IfThenElse(..) => Value::union(values),
             E::FunctionCall { name, arguments } => {
-                self.call(&name.name, values, e.span, literal_key(arguments))
+                let key = literal_key(arguments).filter(|_| !self.dynamic_in(arguments));
+                self.call(&name.name, values, e.span, key)
             }
             E::MemberAccess { object, member } => {
                 if self.member_runs_elsewhere(object, &member.name, false) {
@@ -1757,6 +1818,7 @@ impl Compiler<'_> {
                 let receiver = Receiver {
                     name: receiver_name(object),
                     owner: self.owner(object, &member.name),
+                    json: self.json_chain(object),
                 };
                 let object = values.into_iter().next().unwrap_or_default();
                 self.access(receiver, object, &member.name, None, e.span, None)
@@ -1772,6 +1834,7 @@ impl Compiler<'_> {
                 let receiver = Receiver {
                     name: receiver_name(object),
                     owner: self.owner(object, &method.name),
+                    json: self.json_chain(object),
                 };
                 let mut values = values.into_iter();
                 let object = values.next().unwrap_or_default();
@@ -2134,6 +2197,7 @@ impl Compiler<'_> {
             let receiver = Receiver {
                 name: name.as_deref(),
                 owner,
+                json: !prefixed && self.json_name(first),
             };
             value = self.access(receiver, value, member, args, span, key);
             name = None;
@@ -2149,6 +2213,8 @@ struct Receiver<'n> {
     /// The receiver when it is a plain name.
     name: Option<&'n str>,
     owner: Owner,
+    /// The chain starts at a JSON object, whose methods the analysis models.
+    json: bool,
 }
 
 /// Whose object a member read reads, which decides what the read gives.
@@ -2939,7 +3005,7 @@ fn may_run(e: &Expression) -> bool {
 }
 
 /// The text of a first argument that is a string literal.
-fn literal_key(arguments: &[Expression]) -> Option<&str> {
+pub(super) fn literal_key(arguments: &[Expression]) -> Option<&str> {
     match &arguments.first()?.kind {
         E::Literal(oxabl_ast::Literal::String(s)) => Some(s.value.as_str()),
         _ => None,

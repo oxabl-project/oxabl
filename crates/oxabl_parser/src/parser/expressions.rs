@@ -956,9 +956,16 @@ impl Parser<'_> {
                     self.advance();
                     arguments.push(self.parse_expression()?);
                 }
-                // Additional comma-separated arguments
+                // Additional comma-separated arguments, each with an optional
+                // direction, which is not part of the argument.
                 while self.check(Kind::Comma) {
                     self.advance();
+                    if matches!(
+                        self.peek().kind,
+                        Kind::Input | Kind::Output | Kind::InputOutput
+                    ) {
+                        self.advance();
+                    }
                     arguments.push(self.parse_expression()?);
                 }
             }

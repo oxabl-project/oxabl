@@ -133,9 +133,19 @@ Externally callable: the main block of a procedure file, a `PROCEDURE` or
 `PRIVATE`. `parameters = "all"` taints every input parameter,
 `parameters = "none"` none.
 
-An unknown call (a user function, a method, `RUN`, `NEW`) returns the union of
-its receiver and its arguments: it is tainted when any argument is. Its
-`OUTPUT` arguments get the same value.
+A call of code that the file does not hold returns the union of its receiver,
+its arguments and Unknown: `RUN` of another program (or of a procedure `IN` a
+handle), a function that the file declares `IN h`, `IN SUPER`, `EXTERNAL` or
+`MAP TO` and does not define, `DYNAMIC-FUNCTION` and `DYNAMIC-INVOKE` that do
+not name a function of the file, and a method of an object of a class (a
+JSON object's are modelled, see "JSON objects"). Its `OUTPUT` and
+`INPUT-OUTPUT` arguments take the same, as its `RETURN-VALUE` does, so what
+code elsewhere gives back is never clean. In a file that is open (see "The
+gate"), a function that the file does not declare is such a call too. In a
+closed file ABL compiles no call of a function that the file does not
+declare, so such a call (the synthetic `build-where(...)` of the corpus) is
+read as the union of its arguments: tainted when any argument is. `NEW`
+returns the union of its arguments.
 
 ### Built-in reads
 
@@ -152,9 +162,10 @@ registry against them.
   (`FRAME-VALUE`, `INPUT`, `OS-DIR`, `SSL-SERVER-NAME`, and the calls of code
   elsewhere `DYNAMIC-INVOKE`, `DYNAMIC-PROPERTY`, `SUPER` and
   `DYNAMIC-FUNCTION`). A function on no list is Unknown.
-  `DYNAMIC-FUNCTION("f")` with a literal name of a function of the file and
-  nothing after it is a call of that function (see "Calls of the file"); with
-  an `IN` handle or arguments it is Unknown. One that the program calls without parentheses (`TODAY`) is
+  `DYNAMIC-FUNCTION("f", ...)` with a literal name of a function of the file
+  and no `IN` handle is a call of that function with the arguments after the
+  name (see "Calls of the file"); with an `IN` handle it is Unknown, and so
+  are its `OUTPUT` arguments. One that the program calls without parentheses (`TODAY`) is
   read the same way.
 - **System handles.** A handle of the program or the session (`SESSION`,
   `FILE-INFO`, `THIS-PROCEDURE`, `LOG-MANAGER`, ...) holds what the program set
@@ -433,7 +444,8 @@ of an `IF` expression. The same holds for the `WHEN` values of a `CASE`, the
 subscripts of an assignment target, and the `TO`, `BY`, `WHILE` and `ON`
 actions of a block header. An expression kind that the analysis does not
 model is Unknown. A method is called on `THIS-OBJECT` or with no receiver; a
-call on another object is unknown.
+call on another object runs code the file does not hold, and gives back
+Unknown.
 
 ### JSON objects
 
@@ -464,8 +476,10 @@ their counts.
 
 ## Known limits
 
-- Calls cross the units of one file only (see "Calls of the file"). A
-  program run with `RUN other.p` returns what an unknown call returns.
+- Calls cross the units of one file only (see "Calls of the file"). What a
+  program run with `RUN other.p`, a function or procedure of another program
+  or a method of an object gives back (its result, `OUTPUT` arguments and
+  `RETURN-VALUE`) is Unknown, never what that code really returns.
 - A sink sees what a call in its own statement writes (a routine of the
   file, or Unknown from code elsewhere) when the call starts inside the sink's
   operand or ends before it; a call around the operand (`f(VALUE(c))`) writes
@@ -500,6 +514,9 @@ their counts.
   `{&rv}` that an include defines does); a reference that does not expand is
   Unknown, so a sink still reports it and ABLSEC010 does not. The variable of a `CATCH`
   is Unknown, not what the block throws.
+- A property of an object of a class (`o:Mode`, `pkg.Settings:Mode`) reads
+  what the object holds; a computed `GET` of another class is code elsewhere
+  that this does not see.
 - A handle passed to a routine or a program (`RUN fill-doc (hDoc)`) is not a
   copy: what the routine puts into its object through the parameter does not
   reach the caller's slot, except where a method on the handle variable

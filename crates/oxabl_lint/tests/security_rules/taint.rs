@@ -274,8 +274,10 @@ OS-COMMAND SILENT VALUE(d).
     assert_eq!(check_taint("ABLSEC003", src).len(), 1);
 }
 
+/// `make-path` is no procedure of the file: what another program gives back
+/// is Unknown, with the taint of the inputs.
 #[test]
-fn run_output_arguments_take_the_taint_of_the_inputs() {
+fn run_output_arguments_take_the_taint_of_the_inputs_and_unknown() {
     let src = "\
 DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.
 DEFINE VARIABLE c AS CHARACTER NO-UNDO.
@@ -285,7 +287,18 @@ RUN make-path (INPUT \"x\", OUTPUT d).
 OUTPUT TO VALUE(c).
 OUTPUT TO VALUE(d).
 ";
-    assert_eq!(check_taint("ABLSEC005", src).len(), 1);
+    let diags = check_taint("ABLSEC005", src);
+    assert_eq!(diags.len(), 2);
+    assert!(
+        diags[0].message.contains("untrusted input"),
+        "{}",
+        diags[0].message
+    );
+    assert!(
+        diags[1].message.contains("a non-literal value"),
+        "{}",
+        diags[1].message
+    );
 }
 
 #[test]

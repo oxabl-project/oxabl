@@ -9,3 +9,6 @@ OS-COMMAND SILENT VALUE("ping " + server). /* taint: real */
 
 cCmd = "df -k".
 OS-COMMAND SILENT VALUE(cCmd). /* taint: safe */
+
+/* A function of the includer: its code is not in this file. */
+OS-COMMAND SILENT VALUE(includer-cmd("ls")). /* taint: real */

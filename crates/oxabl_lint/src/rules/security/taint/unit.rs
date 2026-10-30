@@ -19,6 +19,7 @@ use super::super::literal::{StatementText, ends_with_word, is_constant};
 use super::value::{
     BUDGET_LABELS, CallIr, Compiler, Env, ON_RETURN, Origins, Out, PASSED, RECEIVING_METHODS,
     RETURN_VALUE, Routines, Slots, Summaries, Tables, Term, UNKNOWN, UnitSummary, Value,
+    literal_key,
 };
 use super::{ALL, Options};
 
@@ -245,6 +246,9 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
             _ => {}
         }
         match &s.kind {
+            S::Function { name, body, .. } if body.is_empty() => {
+                t.prototypes.insert(name.name.to_ascii_lowercase());
+            }
             S::DefineTempTable { name, .. } => {
                 t.temp_tables.insert(name.name.to_ascii_lowercase());
             }
@@ -797,15 +801,22 @@ impl Builder<'_, '_> {
         if outputs.is_empty() {
             return;
         }
-        let callees = match &e.kind {
-            E::FunctionCall { name, .. } => self.c.routines.callable(&name.name),
+        // `DYNAMIC-FUNCTION("f", ...)` passes its arguments after the name.
+        let (callees, skip) = match &e.kind {
+            E::FunctionCall { name, .. } => match self.c.routines.callable(&name.name) {
+                Some(c) => (Some(c.to_vec()), 0),
+                None => {
+                    let key = literal_key(arguments).filter(|_| !self.c.dynamic_in(arguments));
+                    (self.c.dynamic_callees(&name.name, key), 1)
+                }
+            },
             E::MethodCall { object, method, .. } if is_this_object(object) => {
-                self.c.routines.method(&method.name)
+                (self.c.routines.method(&method.name).map(<[u32]>::to_vec), 0)
             }
-            _ => None,
-        }
-        .map(<[u32]>::to_vec);
+            _ => (None, 0),
+        };
         if let Some(callees) = callees {
+            let arguments = &arguments[skip.min(arguments.len())..];
             let args: Vec<Value> = arguments
                 .iter()
                 .map(|a| match written_direction(self.source, a.span.start) {
@@ -823,7 +834,9 @@ impl Builder<'_, '_> {
             }
             return;
         }
-        let mut inputs = Vec::new();
+        // Code the file does not hold: what it gives back is Unknown, as its
+        // `RETURN-VALUE` is.
+        let mut inputs = vec![Value::origin(UNKNOWN)];
         if let Some(o) = object {
             inputs.push(self.c.expr(o));
         }
@@ -1156,7 +1169,10 @@ impl Builder<'_, '_> {
                         inputs.push(self.c.expr(&a.expression));
                     }
                 }
-                let value = Value::union(inputs);
+                // What the program it runs gives back, in its `OUTPUT`
+                // arguments and `RETURN-VALUE`: an unknown call's result, and
+                // Unknown.
+                let value = Value::union([Value::union(inputs), Value::origin(UNKNOWN)]);
                 for a in arguments {
                     if matches!(
                         a.direction,
@@ -1165,10 +1181,7 @@ impl Builder<'_, '_> {
                         self.set(&mut out, &a.expression, value.clone(), s.span);
                     }
                 }
-                // What the program it runs returns: an unknown call's result,
-                // and Unknown.
-                let result = Value::union([value, Value::origin(UNKNOWN)]);
-                self.set_return_value(&mut out, result, s.span);
+                self.set_return_value(&mut out, value, s.span);
             }
             (S::Import { targets, .. }, _) => {
                 let id = self.c.origins.add("file read `IMPORT`".to_string(), s.span);

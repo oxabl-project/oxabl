@@ -24,8 +24,11 @@
 //! with `NOT`, `AND` and `OR`, and `CASE x` on a `WHEN` whose values are all
 //! literals. A literal has no labels, and an assignment of one replaces them.
 //!
-//! An unknown call returns the union of its receiver and arguments, and its
-//! `OUTPUT` arguments take the same value.
+//! A call of code the file does not hold (another program, a function it
+//! declares `IN h`, `IN SUPER` or `EXTERNAL`, a method of an object) returns
+//! the union of its receiver, its arguments and Unknown, and its `OUTPUT`
+//! arguments take the same value. A function a closed file does not declare
+//! cannot be called there; such a call returns the union of its arguments.
 //!
 //! # Calls of the file's own routines
 //!
@@ -318,6 +321,7 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
         tables.database = database_tables(ctx, &tables);
     }
     tables.receivers = receiver_tables(ctx, &tables);
+    tables.in_words = in_words(ctx);
     tables.callbacks = flow.units().len() > 1;
     let routines = routines(flow);
     let mut origins = Origins::default();
@@ -533,6 +537,22 @@ fn receiver_tables(ctx: &AnalysisContext, tables: &Tables) -> FxHashSet<String> 
         }
     }
     out
+}
+
+/// The offsets of the `IN` keywords of the source, in order.
+fn in_words(ctx: &AnalysisContext) -> Vec<u32> {
+    let lexed;
+    let tokens = if ctx.tokens.is_empty() {
+        lexed = oxabl_lexer::tokenize(ctx.source);
+        &lexed[..]
+    } else {
+        ctx.tokens
+    };
+    tokens
+        .iter()
+        .filter(|t| t.kind == oxabl_lexer::Kind::KwIn)
+        .map(|t| t.start as u32)
+        .collect()
 }
 
 /// The units that hold one of `offsets`: the innermost unit around each, or
