@@ -252,8 +252,9 @@ END.
 
 /// Every construct that holds a condition decides: the `WHEN` values of a
 /// `CASE` (`CASE TRUE` too), the condition of an `IF` expression, the `WHEN`
-/// of a `DISPLAY` item, the key of a `FIND`, and an `IF` expression in a
-/// statement the parser does not model.
+/// of a `DISPLAY` item, the key of a `FIND`, an `IF` expression in a
+/// statement the parser does not model, and the condition of a `VALIDATE`
+/// phrase.
 #[test]
 fn every_condition_the_grammar_holds_is_a_decision() {
     let prelude = "DEFINE VARIABLE c AS CHARACTER NO-UNDO.\nc = get-value(\"role\").\n";
@@ -280,6 +281,14 @@ fn every_condition_the_grammar_holds_is_a_decision() {
             "COMPILE VALUE(IF c = \"admin\" THEN \"purge.p\" ELSE \"noop.p\") SAVE.\n",
             "COMPILE",
         ),
+        (
+            "DELETE Customer VALIDATE(c = \"admin\", \"not allowed\").\n",
+            "DELETE",
+        ),
+        (
+            "DELETE Customer VALIDATE(LOOKUP(c, \"admin,root\") > 0, \"not allowed\").\n",
+            "DELETE",
+        ),
     ] {
         let src = format!("{prelude}{shape}");
         let diags = check(&src);
@@ -296,6 +305,7 @@ CASE TRUE:
   WHEN \"a\" = \"b\" THEN RUN purge.
 END CASE.
 DISPLAY \"x\" WHEN TRUE.
+DELETE Customer VALIDATE(TRUE, \"x\").
 ";
     assert!(check(src).is_empty());
 }

@@ -6801,17 +6801,29 @@ impl Parser<'_> {
         }
         let buffer = self.parse_record_name()?;
         // Skip optional VALIDATE(...) clause: DELETE table VALIDATE(true, "msg").
+        // The node has no place for its condition: it is noted unmodelled.
         if self.check(Kind::Validate) {
+            let lo = self.current;
             self.advance(); // consume VALIDATE
             if self.check(Kind::LeftParen) {
                 self.advance();
-                while !self.check(Kind::RightParen) && !self.check(Kind::Period) && !self.at_end() {
+                let mut depth = 0usize;
+                while !(depth == 0 && self.check(Kind::RightParen))
+                    && !self.check(Kind::Period)
+                    && !self.at_end()
+                {
+                    match self.peek().kind {
+                        Kind::LeftParen => depth += 1,
+                        Kind::RightParen => depth -= 1,
+                        _ => {}
+                    }
                     self.advance();
                 }
                 if self.check(Kind::RightParen) {
                     self.advance();
                 }
             }
+            self.note_unmodelled(lo, self.current);
         }
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after DELETE statement")?;

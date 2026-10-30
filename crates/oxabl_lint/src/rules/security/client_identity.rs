@@ -304,9 +304,9 @@ impl Decisions<'_> {
         self.auth.iter().any(|p| names_routine(p, &[name]))
     }
 
-    /// The `WHERE`, `WHILE` and `WHEN` conditions of a statement that its node
-    /// does not hold: in the ranges the parser did not model, or anywhere in a
-    /// statement it skipped whole.
+    /// The `WHERE`, `WHILE`, `WHEN`, `IF` and `VALIDATE` conditions of a
+    /// statement that its node does not hold: in the ranges the parser did not
+    /// model, or anywhere in a statement it skipped whole.
     fn unmodelled(&mut self, s: &Statement) {
         let ranges: Vec<Span> = match (&s.kind, &s.skipped_tail) {
             (StatementKind::Skipped { .. }, _) => vec![s.span],
@@ -333,6 +333,16 @@ impl Decisions<'_> {
                     Kind::RightParen => depth = depth.saturating_sub(1),
                     _ if depth == 0 && CONDITIONS.iter().any(|w| st.is_word(i, w)) => {
                         operands.push(st.span(i + 1..clause_end(&st, i + 1)));
+                    }
+                    // The condition of a `VALIDATE(condition, message)`
+                    // phrase, not of the `VALIDATE` method of a handle.
+                    _ if st.is_word(i, "VALIDATE")
+                        && st.is(i + 1, Kind::LeftParen)
+                        && !(i > 0 && st.is(i - 1, Kind::Colon)) =>
+                    {
+                        if let Some(first) = st.call_args(i + 1).into_iter().next() {
+                            operands.push(st.span(first));
+                        }
                     }
                     // The condition of an `IF` expression, at any depth.
                     _ if st.is_word(i, "IF") => {
