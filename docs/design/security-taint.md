@@ -169,16 +169,21 @@ registry against them.
   is a copy of either handle, unless the file sets it.
 - **Attributes and methods of a handle.** On a handle of the program (a
   handle variable, `BUFFER b:`, a system handle of the program), a member on
-  the lists `MODELLED_MEMBERS` and `NO_INPUT_MEMBERS` gives what the handle
-  and the arguments hold: what the program set (`PRIVATE-DATA`,
-  `FULL-PATHNAME` after `FILE-NAME`), a handle it reaches (`BUFFER-FIELD`), a
-  logical of an action (`QUERY-PREPARE`), a number or a name. Any other member
-  (`BUFFER-VALUE`, `SCREEN-VALUE`, `NODE-VALUE`, `STRING-VALUE`,
-  `GET-MESSAGE`, ...) adds Unknown. `BUFFER-VALUE` read through `BUFFER b:`
-  gives what the tables of `b` hold. On a foreign handle only a member of
-  `NO_INPUT_MEMBERS` (a number, a logical, a name: `ERROR-STATUS:ERROR`,
-  `SELF:NAME`) is clean. A member of an object of a class is the unknown call
-  above.
+  the lists `MODELLED_MEMBERS`, `SCALAR_MEMBERS` and `HANDLE_MEMBERS` gives
+  what the handle and the arguments hold: what the program set
+  (`PRIVATE-DATA`, `FULL-PATHNAME` after `FILE-NAME`), a handle it reaches
+  (`BUFFER-FIELD`, `PARENT`, `HANDLE`), a logical of an action
+  (`QUERY-PREPARE`), a number or a name. Any other member (`BUFFER-VALUE`,
+  `SCREEN-VALUE`, `NODE-VALUE`, `STRING-VALUE`, `GET-MESSAGE`, ...) adds
+  Unknown. `BUFFER-VALUE` read through `BUFFER b:` gives what the tables of
+  `b` hold. On a foreign handle only a member of `SCALAR_MEMBERS` (a number,
+  a logical, a name: `ERROR-STATUS:ERROR`, `SELF:NAME`) is clean. A handle
+  that a foreign handle reaches (`SELF:HANDLE`, `SOURCE-PROCEDURE:HANDLE`,
+  `SELF:PARENT`) is foreign too, and so is one that `SESSION` or
+  `THIS-PROCEDURE` reaches when the file does not set its `PRIVATE-DATA`
+  (`SESSION:FIRST-CHILD`): each adds Unknown. A guard test holds the
+  handle-valued attributes of the reference off `SCALAR_MEMBERS`. A member of
+  an object of a class is the unknown call above.
 - **Arguments that a built-in method writes.** ABL writes an argument of a
   method of a handle without `OUTPUT`. An argument that is a variable or a
   field takes, as a weak write, what the receiver and the other arguments

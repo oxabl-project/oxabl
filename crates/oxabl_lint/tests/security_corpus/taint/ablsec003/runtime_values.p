@@ -143,3 +143,21 @@ OS-COMMAND VALUE(SESSION:PRIVATE-DATA). /* taint: real */
 hOther = THIS-PROCEDURE.
 OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
 OS-COMMAND VALUE(BUFFER tt:BUFFER-FIELD("f"):BUFFER-VALUE). /* taint: real */
+
+/* A handle that a foreign handle reaches is foreign too, and so is a window
+   of the session, which any program of the session may label. */
+hOther = SOURCE-PROCEDURE:HANDLE.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+hOther = SELF:HANDLE.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+hOther = SELF:PARENT.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+hOther = SOURCE-PROCEDURE:NEXT-SIBLING.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+hOther = SESSION:FIRST-CHILD.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+DEFINE VARIABLE hOwn AS HANDLE NO-UNDO.
+CREATE WINDOW hOwn.
+hOwn:PRIVATE-DATA = "ls".
+hOther = hOwn:HANDLE.
+OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: safe */

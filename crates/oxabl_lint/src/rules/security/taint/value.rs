@@ -1643,10 +1643,14 @@ impl Compiler<'_> {
                 return self.origin(format!("web request `{o}:{member}`"), span);
             }
         }
-        // Any program of the session, or the caller of this one, may set it.
+        // Any program of the session, or the caller of this one, may set it,
+        // also on a handle it reaches.
         let object = match receiver.name {
             Some(o)
-                if member.eq_ignore_ascii_case("PRIVATE-DATA")
+                if (member.eq_ignore_ascii_case("PRIVATE-DATA")
+                    || HANDLE_MEMBERS
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(member)))
                     && self.tables.shared_private_data(o) =>
             {
                 Value::union([object, Value::origin(UNKNOWN)])
@@ -2137,8 +2141,8 @@ enum Owner {
     /// record, the text on the screen, a node of an XML document): Unknown.
     Program,
     /// A handle of an object that the runtime or another program fills
-    /// ([`FOREIGN_HANDLES`]): a member of [`NO_INPUT_MEMBERS`] holds no input;
-    /// any other member is Unknown.
+    /// ([`FOREIGN_HANDLES`]): a member of [`SCALAR_MEMBERS`] holds no input;
+    /// any other member, a handle of [`HANDLE_MEMBERS`] too, is Unknown.
     Foreign,
 }
 
@@ -2153,8 +2157,13 @@ impl Owner {
             && value.0.iter().any(|t| matches!(t, Term::Table(_)));
         let modelled = match self {
             Owner::Class => true,
-            Owner::Program => listed(&MODELLED_MEMBERS) || listed(&NO_INPUT_MEMBERS) || fields,
-            Owner::Foreign => listed(&NO_INPUT_MEMBERS),
+            Owner::Program => {
+                listed(&MODELLED_MEMBERS)
+                    || listed(&SCALAR_MEMBERS)
+                    || listed(&HANDLE_MEMBERS)
+                    || fields
+            }
+            Owner::Foreign => listed(&SCALAR_MEMBERS),
         };
         if modelled {
             value
@@ -2231,8 +2240,8 @@ const FOREIGN_HANDLES: [&str; 14] = [
 
 /// Built-in attributes and methods whose value holds no input, whoever owns
 /// the handle: numbers, logicals, kinds and names of objects that the
-/// program or the schema defines.
-const NO_INPUT_MEMBERS: [&str; 71] = [
+/// program or the schema defines. No handle is one: see [`HANDLE_MEMBERS`].
+const SCALAR_MEMBERS: [&str; 63] = [
     "active",
     "available",
     "bgcolor",
@@ -2256,12 +2265,9 @@ const NO_INPUT_MEMBERS: [&str; 71] = [
     "file-name",
     "file-size",
     "file-type",
-    "first-child",
     "format",
-    "frame",
     "function",
     "get-number",
-    "handle",
     "height-chars",
     "height-pixels",
     "help",
@@ -2270,24 +2276,20 @@ const NO_INPUT_MEMBERS: [&str; 71] = [
     "is-json",
     "is-xml",
     "label",
-    "last-child",
     "length",
     "line",
     "locked",
     "modified",
     "name",
     "new",
-    "next-sibling",
     "num-buffers",
     "num-children",
     "num-fields",
     "num-messages",
     "num-results",
     "num-selected-rows",
-    "parent",
     "persistent",
     "position",
-    "prev-sibling",
     "read-only",
     "recid",
     "remote",
@@ -2301,9 +2303,23 @@ const NO_INPUT_MEMBERS: [&str; 71] = [
     "visible",
     "width-chars",
     "width-pixels",
-    "window",
     "x",
     "y",
+];
+
+/// Built-in attributes whose value is a handle that the receiver reaches: the
+/// receiver's value. What a foreign handle reaches is foreign too, and so is
+/// what `SESSION` or `THIS-PROCEDURE` reaches when the file does not set its
+/// `PRIVATE-DATA` (see [`SHARED_HANDLES`]): Unknown.
+const HANDLE_MEMBERS: [&str; 8] = [
+    "first-child",
+    "frame",
+    "handle",
+    "last-child",
+    "next-sibling",
+    "parent",
+    "prev-sibling",
+    "window",
 ];
 
 /// Built-in attributes and methods whose value, on a handle of the program,
@@ -3303,8 +3319,8 @@ mod tests {
 
     /// Every built-in attribute and method read on a handle is modelled when
     /// a list names it, and Unknown otherwise; on a handle of a foreign object
-    /// only one that holds no input is modelled. A name on a list that is no
-    /// attribute or method fails.
+    /// only one that holds no input is modelled, and a handle it reaches is
+    /// foreign too. A name on a list that is no attribute or method fails.
     #[test]
     fn every_builtin_member_read_is_modelled_or_unknown() {
         let members = members();
@@ -3312,8 +3328,10 @@ mod tests {
         let read =
             |owner: Owner, m: &str| !holds_unknown(&owner.read(m, Value(vec![Term::Slot(0)])));
         for m in &members {
-            let no_input = NO_INPUT_MEMBERS.contains(&m.as_str());
-            let modelled = no_input || MODELLED_MEMBERS.contains(&m.as_str());
+            let no_input = SCALAR_MEMBERS.contains(&m.as_str());
+            let modelled = no_input
+                || HANDLE_MEMBERS.contains(&m.as_str())
+                || MODELLED_MEMBERS.contains(&m.as_str());
             assert_eq!(
                 read(Owner::Program, m),
                 modelled,
@@ -3322,7 +3340,11 @@ mod tests {
             assert_eq!(read(Owner::Foreign, m), no_input, "{m} on a foreign handle");
             assert!(read(Owner::Class, m), "{m} of an object of a class");
         }
-        for m in NO_INPUT_MEMBERS.iter().chain(&MODELLED_MEMBERS) {
+        for m in SCALAR_MEMBERS
+            .iter()
+            .chain(&HANDLE_MEMBERS)
+            .chain(&MODELLED_MEMBERS)
+        {
             assert!(
                 members.iter().any(|x| x == m),
                 "{m} is no attribute or method"
@@ -3337,6 +3359,140 @@ mod tests {
         ] {
             assert!(!read(Owner::Program, m), "{m}");
         }
+    }
+
+    /// The attributes of the ABL reference whose value is a handle or an
+    /// object reference. The index holds no data types, so this list is the
+    /// reference's, by hand; [`no_handle_attribute_is_a_scalar_member`] holds
+    /// it to the index.
+    const HANDLE_ATTRIBUTES: [&str; 74] = [
+        "after-buffer",
+        "async-request-handle",
+        "before-buffer",
+        "buffer-field",
+        "buffer-handle",
+        "cancel-button",
+        "child-buffer",
+        "com-handle",
+        "current-column",
+        "current-request-info",
+        "current-response-info",
+        "current-window",
+        "data-source",
+        "dataset",
+        "default-buffer-handle",
+        "default-button",
+        "error-object",
+        "event-handler-object",
+        "event-procedure-context",
+        "first-async-request",
+        "first-buffer",
+        "first-child",
+        "first-column",
+        "first-data-source",
+        "first-dataset",
+        "first-form",
+        "first-object",
+        "first-procedure",
+        "first-query",
+        "first-server",
+        "first-server-socket",
+        "first-socket",
+        "first-tab-item",
+        "frame",
+        "handle",
+        "handler",
+        "in-handle",
+        "instantiating-procedure",
+        "last-async-request",
+        "last-child",
+        "last-form",
+        "last-object",
+        "last-procedure",
+        "last-server",
+        "last-server-socket",
+        "last-socket",
+        "last-tab-item",
+        "menu-bar",
+        "next-column",
+        "next-sibling",
+        "next-tab-item",
+        "origin-handle",
+        "owner",
+        "owner-document",
+        "parent",
+        "parent-buffer",
+        "parent-relation",
+        "persistent-procedure",
+        "popup-menu",
+        "prev-column",
+        "prev-sibling",
+        "prev-tab-item",
+        "query",
+        "request-info",
+        "response-info",
+        "server",
+        "side-label-handle",
+        "soap-fault-detail",
+        "stop-object",
+        "table-handle",
+        "top-nav-query",
+        "trans-init-procedure",
+        "window",
+        "x-document",
+    ];
+
+    /// No attribute whose value is a handle is on [`SCALAR_MEMBERS`], where a
+    /// foreign receiver would make it clean; [`HANDLE_MEMBERS`] are all
+    /// handles. An attribute of the index named like a handle (`...-HANDLE`,
+    /// `FIRST-...`, `LAST-...`, `NEXT-...`, `PREV-...`) is on
+    /// [`HANDLE_ATTRIBUTES`] or named here as no handle, so a new one fails
+    /// until it is decided.
+    #[test]
+    fn no_handle_attribute_is_a_scalar_member() {
+        let attributes = attributes();
+        for a in HANDLE_ATTRIBUTES {
+            assert!(attributes.iter().any(|x| x == a), "{a} is no attribute");
+            assert!(!SCALAR_MEMBERS.contains(&a), "{a} is a handle");
+        }
+        for m in HANDLE_MEMBERS {
+            assert!(HANDLE_ATTRIBUTES.contains(&m), "{m} is no handle");
+        }
+        let not_handles = ["printer-control-handle", "last-batch", "next-rowid"];
+        let undecided: Vec<&String> = attributes
+            .iter()
+            .filter(|a| {
+                a.ends_with("-handle")
+                    || ["first-", "last-", "next-", "prev-"]
+                        .iter()
+                        .any(|p| a.starts_with(p))
+            })
+            .filter(|a| {
+                !HANDLE_ATTRIBUTES.contains(&a.as_str()) && !not_handles.contains(&a.as_str())
+            })
+            .collect();
+        assert!(
+            undecided.is_empty(),
+            "attributes named like a handle: {undecided:?}"
+        );
+    }
+
+    /// The attributes of the ABL reference, by name.
+    fn attributes() -> Vec<String> {
+        let index = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../resources/abl_keyword_index.json"),
+        )
+        .unwrap();
+        let mut out: Vec<String> = index
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("\"title\": \""))
+            .filter_map(|t| t.trim_end_matches(['"', ',']).strip_suffix(" attribute"))
+            .map(|t| t.trim().to_ascii_lowercase())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// The built-in methods of a handle in the ABL reference. Their names are
