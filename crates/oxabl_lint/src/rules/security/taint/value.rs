@@ -28,6 +28,11 @@ pub(super) const UNKNOWN: u32 = u32::MAX;
 /// does not read it has no such slot, so its summaries do not follow it.
 pub(super) const RETURN_VALUE: &str = "$return-value";
 
+/// The slot of what a procedure may give back in `RETURN-VALUE` through the
+/// `RETURN` action of a block's `ON` phrase, where the CFG has no edge for
+/// it: the condition may come at any statement of the block. Only added to.
+pub(super) const ON_RETURN: &str = "$on-return";
+
 /// The labels of a value the analysis cannot judge.
 const UNKNOWN_LABELS: [(u32, u32); 1] = [(UNKNOWN, ALL)];
 
@@ -1454,6 +1459,11 @@ impl Compiler<'_> {
     /// The slot of `RETURN-VALUE`, added when the unit is compiled.
     pub fn return_value_slot(&mut self) -> Option<u32> {
         self.slot("RETURN-VALUE", RETURN_VALUE.to_string(), false, false)
+    }
+
+    /// The slot of [`ON_RETURN`].
+    pub fn on_return_slot(&mut self) -> Option<u32> {
+        self.slot("RETURN-VALUE", ON_RETURN.to_string(), false, false)
     }
 
     /// A built-in function that the source calls without parentheses, as

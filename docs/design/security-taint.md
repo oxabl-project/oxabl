@@ -343,7 +343,8 @@ to the rules, so the CLI, the daemon, the LSP and wasm need no new plumbing.
 Each procedure, function and method of a file has a **summary**: the labels
 of its result (a `$return` slot that each `RETURN expr` sets; for a
 procedure, its `RETURN-VALUE` at its exit, also when it raises an error,
-which `RETURN expr`, `RETURN ERROR expr` and `UNDO, THROW expr` set, `RETURN.`
+which `RETURN expr`, `RETURN ERROR expr`, `UNDO, THROW expr` and the
+`RETURN [ERROR] expr` action of a block's `ON` phrase set, `RETURN.`
 empties, and which holds Unknown on a path with no `RETURN`) and of each
 `OUTPUT`/`INPUT-OUTPUT` parameter at its exit. An input parameter has an
 origin of its own: the source "input parameter `pc`" for a unit that code
@@ -351,6 +352,13 @@ outside the file can call, and a **placeholder** for any other. A call
 replaces the callee's parameter origins in the summary with its argument
 values, so the summary serves every caller: `f(pc)` is tainted when `f`
 returns `pc`, `f("x")` is not. A placeholder is never a source at a sink.
+
+The `RETURN` action of an `ON ERROR`, `ENDKEY`, `STOP` or `QUIT` phrase sets
+`RETURN-VALUE` on the edge of the CFG that carries it out. Where the CFG has no
+such edge (nothing in the block is seen to raise the condition), any statement
+of the block may still raise it, so the summary also takes the action's value
+after each statement of the block. An action whose value the header does not
+show (`RETURN NO-APPLY`) gives Unknown.
 
 A caller also passes its argument values to the callee's parameters (the
 **seeds**), so the sinks inside a `PRIVATE` procedure see what the file runs

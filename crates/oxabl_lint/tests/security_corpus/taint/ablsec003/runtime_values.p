@@ -53,3 +53,54 @@ tt.f = get-value("cmd").
 hBuf = BUFFER tt:HANDLE.
 OS-COMMAND VALUE(hBuf:BUFFER-FIELD("f"):BUFFER-VALUE). /* taint: real */
 OS-COMMAND VALUE(SESSION:TEMP-DIRECTORY + "purge.sh"). /* taint: safe */
+
+/* The RETURN action of a block's ON phrase sets RETURN-VALUE when the
+   condition comes, also when nothing in the block is seen to raise it. */
+DEFINE VARIABLE cMsg AS CHARACTER NO-UNDO.
+
+PROCEDURE on-error-return PRIVATE:
+    RUN fixed.
+    DO ON ERROR UNDO, RETURN cMsg:
+        i = 1.
+    END.
+END PROCEDURE.
+
+PROCEDURE on-error-return-run PRIVATE:
+    RUN fixed.
+    DO ON ERROR UNDO, RETURN cMsg:
+        RUN fixed.
+    END.
+END PROCEDURE.
+
+PROCEDURE on-error-return-error PRIVATE:
+    RUN fixed.
+    DO ON ERROR UNDO, RETURN ERROR cMsg:
+        i = INTEGER(cMsg).
+    END.
+END PROCEDURE.
+
+PROCEDURE on-endkey-return PRIVATE:
+    RUN fixed.
+    REPEAT ON ENDKEY UNDO, RETURN cMsg:
+        i = 1.
+    END.
+END PROCEDURE.
+
+PROCEDURE on-error-return-fixed PRIVATE:
+    RUN fixed.
+    DO ON ERROR UNDO, RETURN "ls":
+        i = INTEGER(cMsg).
+    END.
+END PROCEDURE.
+
+cMsg = get-value("cmd").
+RUN on-error-return.
+OS-COMMAND VALUE(RETURN-VALUE). /* taint: real */
+RUN on-error-return-run.
+OS-COMMAND VALUE(RETURN-VALUE). /* taint: real */
+RUN on-error-return-error NO-ERROR.
+OS-COMMAND VALUE(RETURN-VALUE). /* taint: real */
+RUN on-endkey-return.
+OS-COMMAND VALUE(RETURN-VALUE). /* taint: real */
+RUN on-error-return-fixed.
+OS-COMMAND VALUE(RETURN-VALUE). /* taint: safe */

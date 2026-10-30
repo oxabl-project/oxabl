@@ -8,14 +8,17 @@ use oxabl_ast::{
 use oxabl_common::ParameterSources;
 use oxabl_flow::dataflow::{Analysis, Direction, Limits, Solution, default_budget, solve_bounded};
 use oxabl_flow::provenance::{Labels, Provenance};
-use oxabl_flow::{Cfg, Edge, EdgeKind, ExitKind, NodeIx, NodeKind, Unit, UnitKind};
+use oxabl_flow::{
+    Action, BlockId, Cfg, Condition, Edge, EdgeKind, ExitKind, NodeIx, NodeKind, ReturnKind, Unit,
+    UnitKind,
+};
 use oxabl_lexer::Kind;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::super::literal::{StatementText, ends_with_word, is_constant};
 use super::value::{
-    BUDGET_LABELS, CallIr, Compiler, Env, Origins, Out, PASSED, RETURN_VALUE, Routines, Slots,
-    Summaries, Tables, Term, UNKNOWN, UnitSummary, Value,
+    BUDGET_LABELS, CallIr, Compiler, Env, ON_RETURN, Origins, Out, PASSED, RETURN_VALUE, Routines,
+    Slots, Summaries, Tables, Term, UNKNOWN, UnitSummary, Value,
 };
 use super::{ALL, Options};
 
@@ -529,6 +532,63 @@ impl Builder<'_, '_> {
                 span,
             });
         }
+    }
+
+    /// What the `RETURN [ERROR] x` action of the `ON condition` phrase of a
+    /// block gives back in `RETURN-VALUE`: `x`, or empty. `None` when the
+    /// header does not show it (a `RETURN NO-APPLY`, a phrase the header does
+    /// not hold), which the caller reads as Unknown.
+    fn on_return(
+        &mut self,
+        header: Span,
+        block: &Statement,
+        condition: Condition,
+        kind: ReturnKind,
+    ) -> Option<Value> {
+        let (S::Do { on_actions, .. }
+        | S::Repeat { on_actions, .. }
+        | S::ForEach { on_actions, .. }) = &block.kind
+        else {
+            return None;
+        };
+        if kind == ReturnKind::NoApply {
+            return None;
+        }
+        let st = StatementText::over(self.source, header)?;
+        let words: &[&str] = match condition {
+            Condition::Error => &["ERROR"],
+            Condition::Endkey => &["ENDKEY", "END-KEY"],
+            Condition::Stop => &["STOP"],
+            Condition::Quit => &["QUIT"],
+        };
+        // The `ON` phrases of the header, up to its `:`.
+        let mut depth = 0usize;
+        let mut phrases = Vec::new();
+        for i in 0..st.len() {
+            match st.token(i).kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => depth = depth.saturating_sub(1),
+                Kind::Colon if depth == 0 => break,
+                Kind::On if depth == 0 => phrases.push(i),
+                _ => {}
+            }
+        }
+        let k = phrases
+            .iter()
+            .position(|&i| words.iter().any(|w| st.is_word(i + 1, w)))?;
+        let start = st.span(phrases[k]..phrases[k] + 1).start;
+        let end = phrases
+            .get(k + 1)
+            .map_or(header.end, |&i| st.span(i..i + 1).start);
+        Some(
+            match on_actions
+                .iter()
+                .find(|e| e.span.start >= start && e.span.start < end)
+            {
+                Some(e) => self.c.expr(e),
+                None => Value::default(),
+            },
+        )
     }
 
     fn set(&mut self, out: &mut Vec<Op>, target: &Expression, value: Value, span: Span) {
@@ -1480,6 +1540,15 @@ pub(super) fn compile(
             b.parameter(&mut ops[cfg.entry().index()], p);
         }
         for (i, n) in cfg.nodes() {
+            if let NodeKind::Handler(condition) = n.kind
+                && procedure
+                && tables.return_value
+            {
+                let o = handler_return(&mut b, cfg, stmts, i, condition);
+                ops[i.index()].extend(o);
+                calls.extend(b.c.calls.drain(..).map(|c| (i, c)));
+                continue;
+            }
             if !matches!(n.kind, NodeKind::Stmt | NodeKind::Head) {
                 continue;
             }
@@ -1496,6 +1565,7 @@ pub(super) fn compile(
         }
         if procedure && tables.return_value {
             b.c.return_value_slot();
+            on_return_without_edge(&mut b, cfg, stmts, &mut ops, &mut calls);
         }
         params = b.params;
     }
@@ -1516,6 +1586,105 @@ pub(super) fn compile(
         calls,
         foreign,
         outside: false,
+    }
+}
+
+/// The `RETURN` action of the `ON` phrase a `Handler` node carries out: it
+/// sets `RETURN-VALUE`. On a node that may also go to a `CATCH`, the write is
+/// weak.
+fn handler_return(
+    b: &mut Builder,
+    cfg: &Cfg,
+    stmts: &FxHashMap<NodeId, &Statement>,
+    i: NodeIx,
+    condition: Condition,
+) -> Vec<Op> {
+    let n = cfg.node(i);
+    let returns = |e: &&Edge| matches!(e.kind, EdgeKind::Return | EdgeKind::ReturnError);
+    let Some(Action::Return(kind)) = cfg.block(n.block).handling(condition).map(|h| &h.action)
+    else {
+        return Vec::new();
+    };
+    if !cfg.successors(i).any(|e| returns(&e)) {
+        return Vec::new();
+    }
+    let strong = cfg.successors(i).all(|e| returns(&e));
+    let value = n
+        .stmt
+        .and_then(|id| stmts.get(&id))
+        .and_then(|s| b.on_return(n.span, s, condition, *kind));
+    let mut out = Vec::new();
+    match value {
+        Some(v) => {
+            b.set_return_value(&mut out, v, n.span);
+            out.iter_mut().for_each(|op| op.strong = strong);
+        }
+        None => {
+            b.set_return_value(&mut out, Value::origin(UNKNOWN), n.span);
+            out.iter_mut().for_each(|op| op.strong = false);
+        }
+    }
+    out
+}
+
+/// A block whose `ON` phrase returns on a condition that nothing in the CFG
+/// raises in it (an `ENDKEY` with no input statement, a `STOP`) may still
+/// return there: each node of the block adds the action's value to
+/// [`ON_RETURN`], which the summary gives back.
+fn on_return_without_edge(
+    b: &mut Builder,
+    cfg: &Cfg,
+    stmts: &FxHashMap<NodeId, &Statement>,
+    ops: &mut [Vec<Op>],
+    calls: &mut Vec<(NodeIx, CallIr)>,
+) {
+    let inside = |mut at: Option<BlockId>, root: BlockId| {
+        while let Some(b) = at {
+            if b == root {
+                return true;
+            }
+            at = cfg.block(b).parent;
+        }
+        false
+    };
+    for (id, block) in cfg.blocks() {
+        for condition in Condition::ALL {
+            let Some(Action::Return(kind)) = block.handling(condition).map(|h| &h.action) else {
+                continue;
+            };
+            if cfg
+                .nodes()
+                .any(|(_, n)| n.kind == NodeKind::Handler(condition) && n.block == id)
+            {
+                continue;
+            }
+            let Some((head, h)) = cfg
+                .nodes()
+                .find(|(_, n)| n.kind == NodeKind::Head && n.block == id)
+            else {
+                continue;
+            };
+            let value = stmts
+                .get(&block.stmt)
+                .and_then(|s| b.on_return(h.span, s, condition, *kind))
+                .unwrap_or_else(|| Value::origin(UNKNOWN));
+            calls.extend(b.c.calls.drain(..).map(|c| (head, c)));
+            let Some(slot) = b.c.on_return_slot() else {
+                continue;
+            };
+            for (i, n) in cfg.nodes() {
+                if matches!(n.kind, NodeKind::Head | NodeKind::Stmt | NodeKind::End)
+                    && inside(Some(n.block), id)
+                {
+                    ops[i.index()].push(Op {
+                        slot,
+                        value: value.clone(),
+                        strong: false,
+                        span: h.span,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -1820,6 +1989,11 @@ pub(super) fn summarize(
                 .filter_map(|k| cfg.exit(k))
             {
                 oxabl_flow::provenance::merge(&mut ret, sol.before(exit).get(s as usize));
+            }
+        }
+        if let Some(s) = ir.slots.get(ON_RETURN) {
+            for (n, _) in cfg.nodes() {
+                oxabl_flow::provenance::merge(&mut ret, sol.after(n).get(s as usize));
             }
         }
         ret
