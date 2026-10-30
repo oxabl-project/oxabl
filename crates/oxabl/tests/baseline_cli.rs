@@ -70,7 +70,7 @@ fn a_baselined_tree_passes_and_only_a_new_finding_fails() {
     );
     let written = fs::read_to_string(root.join("b.json")).unwrap();
     let doc = json(&written);
-    assert_eq!(doc["version"], 2);
+    assert_eq!(doc["version"], 3);
     let paths: Vec<_> = doc["entries"]
         .as_array()
         .unwrap()
@@ -371,6 +371,67 @@ fn a_file_outside_the_root_is_reported_and_never_recorded() {
 }
 
 #[test]
+fn a_version_2_baseline_is_read_and_an_update_rewrites_it_as_version_3() {
+    let dir = workspace();
+    let root = dir.path();
+    write(&root.join("old.json"), "{\"version\": 2, \"entries\": []}");
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "old.json"]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert!(stderr.contains("old.json is version 2"), "{stderr}");
+    let (exit, _, stderr) = check(
+        root,
+        &["src", "--baseline", "old.json", "--update-baseline"],
+    );
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("rewrote version 2 as version 3"),
+        "{stderr}"
+    );
+    let doc = json(&fs::read_to_string(root.join("old.json")).unwrap());
+    assert_eq!(doc["version"], 3);
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "old.json"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+}
+
+#[test]
+fn a_partial_update_of_a_version_2_baseline_keeps_the_files_it_did_not_check() {
+    let dir = workspace();
+    let root = dir.path();
+    check(root, &["src", "--baseline", "b.json", "--update-baseline"]);
+    // A one-line finding with no secret hashes the same at version 2.
+    let text = fs::read_to_string(root.join("b.json")).unwrap();
+    write(
+        &root.join("b.json"),
+        &text.replace("\"version\": 3", "\"version\": 2"),
+    );
+
+    let (exit, _, stderr) = check(
+        root,
+        &["src/a.p", "--baseline", "b.json", "--update-baseline"],
+    );
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert!(stderr.contains("(0 added, 0 removed)"), "{stderr}");
+    assert!(
+        stderr.contains("1 entries of files this run did not check stay at version 2"),
+        "{stderr}"
+    );
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "b.json"]);
+    assert_eq!(exit, Some(0), "b.p is still baselined: {stderr}");
+    assert!(stderr.contains("0 new, 2 baselined, 0 stale"), "{stderr}");
+    assert!(
+        stderr.contains("1 entries of b.json are version 2"),
+        "{stderr}"
+    );
+
+    let (exit, _, stderr) = check(root, &["src", "--baseline", "b.json", "--update-baseline"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    assert!(stderr.contains("(0 added, 0 removed)"), "{stderr}");
+    let doc = json(&fs::read_to_string(root.join("b.json")).unwrap());
+    assert_eq!(doc["entries"].as_array().unwrap().len(), 2);
+    assert!(doc.get("legacy").is_none(), "{doc}");
+}
+
+#[test]
 fn a_version_1_baseline_is_refused_with_the_fix() {
     let dir = workspace();
     let root = dir.path();
@@ -378,4 +439,42 @@ fn a_version_1_baseline_is_refused_with_the_fix() {
     let (exit, _, stderr) = check(root, &["src", "--baseline", "old.json"]);
     assert_eq!(exit, Some(2), "{stderr}");
     assert!(stderr.contains("--update-baseline"), "{stderr}");
+}
+
+/// A finding whose span starts in the file's own text and runs past a
+/// substitution onto a later line hashes the whole span, as one with no
+/// substitution does: a changed argument on that later line is a new finding.
+#[test]
+fn a_changed_argument_past_a_substitution_on_a_later_line_is_new() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(
+        &root.join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n[workspace.lint]\nenable = [\"security\"]\n",
+    );
+    let source = |key: &str| {
+        format!(
+            "&GLOBAL-DEFINE CMD \"ls \"\nOS-COMMAND VALUE({{&CMD}}\n  + get-value(\"{key}\")).\n"
+        )
+    };
+    write(&root.join("a.p"), &source("dir"));
+    let (exit, _, stderr) = check(root, &[".", "--baseline", "b.json", "--update-baseline"]);
+    assert_eq!(exit, Some(0), "{stderr}");
+    let (_, report, stderr) = baselined(root, &["."]);
+    assert_eq!(report["baseline"]["baselined"], 1, "{report}{stderr}");
+    let finding = &report["diagnostics"];
+    assert_eq!(finding.as_array().map(Vec::len), Some(0), "{report}");
+
+    write(&root.join("a.p"), &source("path"));
+    let (exit, report, stderr) = baselined(root, &["."]);
+    assert_eq!(exit, Some(1), "{stderr}");
+    assert_eq!(report["baseline"]["new"], 1, "{report}");
+    assert_eq!(report["baseline"]["stale"], 1, "{report}");
+    let d = &report["diagnostics"][0];
+    assert_eq!(d["code"], "ABLSEC003", "{report}");
+    assert_eq!(
+        (&d["end"]["line"], &d["end"]["column"]),
+        (&3.into(), &23.into()),
+        "the span ends at the end of the operand, past the substitution: {report}"
+    );
 }

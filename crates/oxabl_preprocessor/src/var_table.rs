@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use oxabl_common::FileSpan;
 use rustc_hash::FxBuildHasher;
 
 /// Preprocessor variable table tracking `&SCOPED-DEFINE`, `&GLOBAL-DEFINE` and
@@ -45,9 +46,14 @@ type Slot = Option<Entry>;
 #[derive(Debug, Clone)]
 pub(crate) struct BaseVars(Arc<HashMap<Arc<[u8]>, Entry, FxBuildHasher>>);
 
+/// Where the bytes of a value were written: see [`PreprocVarTable::written`].
+pub(crate) type Written = Arc<[FileSpan]>;
+
 #[derive(Debug, Clone)]
 struct Entry {
     value: Arc<str>,
+    /// Where the value was written, and the values it took in.
+    written: Written,
     origin: Origin,
     /// The scope that made the entry; it ends with that scope. A global define
     /// is at zero and does not end.
@@ -109,17 +115,28 @@ impl PreprocVarTable {
 
     /// Define a preprocessor variable as `&SCOPED-DEFINE` does.
     pub fn define(&mut self, name: &str, value: &str) {
-        self.push(name, value, Origin::Scoped);
+        self.define_written(name, value, Written::default());
+    }
+
+    /// [`Self::define`], with where the value was written.
+    pub(crate) fn define_written(&mut self, name: &str, value: &str, written: Written) {
+        self.push(name, value, written, Origin::Scoped);
     }
 
     /// Define a preprocessor variable as `&GLOBAL-DEFINE` does.
     pub fn define_global(&mut self, name: &str, value: &str) {
+        self.define_global_written(name, value, Written::default());
+    }
+
+    /// [`Self::define_global`], with where the value was written.
+    pub(crate) fn define_global_written(&mut self, name: &str, value: &str, written: Written) {
         with_folded(name, |key| match self.entry(key) {
             None => self.store(
                 key,
                 None,
                 Some(Entry {
                     value: Arc::from(value),
+                    written,
                     origin: Origin::Global,
                     depth: 0,
                     behind: None,
@@ -128,6 +145,7 @@ impl PreprocVarTable {
             Some(current) if current.origin == Origin::Global => {
                 let entry = Entry {
                     value: Arc::from(value),
+                    written,
                     ..current.clone()
                 };
                 self.store(key, None, Some(entry));
@@ -137,23 +155,26 @@ impl PreprocVarTable {
         });
     }
 
-    /// Define a named include argument (`{file.i &name=value}`).
-    pub(crate) fn define_argument(&mut self, name: &str, value: &str) {
-        self.push(name, value, Origin::Argument);
+    /// Define a named include argument (`{file.i &name=value}`), written at
+    /// `written`.
+    pub(crate) fn define_argument(&mut self, name: &str, value: &str, written: Written) {
+        self.push(name, value, written, Origin::Argument);
     }
 
     /// Define `name` as a scoped name or an include argument of the open scope.
-    fn push(&mut self, name: &str, value: &str, origin: Origin) {
+    fn push(&mut self, name: &str, value: &str, written: Written, origin: Origin) {
         with_folded(name, |key| {
             let depth = self.scopes;
             let entry = match self.entry(key) {
                 // The same file defines it again: the new value replaces the old.
                 Some(e) if e.origin == origin && e.depth == depth => Entry {
                     value: Arc::from(value),
+                    written,
                     ..e.clone()
                 },
                 prev => Entry {
                     value: Arc::from(value),
+                    written,
                     origin,
                     depth,
                     behind: prev.map(|e| Arc::new(e.clone())),
@@ -254,6 +275,14 @@ impl PreprocVarTable {
     /// Look up a variable's value. Returns `None` if not defined.
     pub fn get(&self, name: &str) -> Option<&Arc<str>> {
         with_folded(name, |key| self.entry(key).map(|e| &e.value))
+    }
+
+    /// Where the value of a variable was written: the define value or the
+    /// include arguments, in the files that hold them, and the same for each
+    /// value it took in. Empty for a predefined name, and for a value written
+    /// by no file the preprocessor read.
+    pub(crate) fn written(&self, name: &str) -> Option<Written> {
+        with_folded(name, |key| self.entry(key).map(|e| Arc::clone(&e.written)))
     }
 
     /// Check whether a variable is defined.
@@ -442,7 +471,7 @@ mod tests {
     fn a_global_define_over_a_scoped_name_or_an_argument_is_ignored() {
         let mut table = PreprocVarTable::new();
         table.define("S", "scoped");
-        table.define_argument("ARG", "argument");
+        table.define_argument("ARG", "argument", Written::default());
         table.define_global("M", "global");
         table.define("M", "scoped");
         for name in ["S", "ARG", "M"] {
@@ -470,7 +499,7 @@ mod tests {
         table.define("N", "s");
         assert_eq!(table.origin("N"), Some(Origin::Scoped));
         let scope = table.begin_scope();
-        table.define_argument("N", "a");
+        table.define_argument("N", "a", Written::default());
         assert_eq!(table.origin("N"), Some(Origin::Argument));
         table.define("N", "s2");
         assert_eq!(table.origin("N"), Some(Origin::Scoped));
@@ -559,7 +588,7 @@ mod tests {
     fn an_argument_and_a_scoped_name_in_the_same_scope_are_two_definitions() {
         let mut table = PreprocVarTable::new();
         let scope = table.begin_scope();
-        table.define_argument("A", "argument");
+        table.define_argument("A", "argument", Written::default());
         table.define("A", "scoped");
         table.undefine("A");
         assert_eq!(value(&table, "A"), Some("argument"));

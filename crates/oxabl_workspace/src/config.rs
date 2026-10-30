@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use oxabl_common::{LintLayer, LintSeverityMap, Severity};
+use oxabl_common::{
+    LintLayer, LintSeverityMap, ParameterSources, ReachOptions, SecurityMode, SecurityOptions,
+    SecurityValidator, Severity,
+};
 use oxabl_style::StyleGuide;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
@@ -216,6 +219,193 @@ pub struct LintConfig {
     /// ones.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub overrides: Vec<LintOverride>,
+
+    /// Options of the `security` rules (`[workspace.lint.security]`). Global:
+    /// an override does not read it.
+    #[serde(skip_serializing_if = "SecurityConfig::is_default")]
+    pub security: SecurityConfig,
+}
+
+/// How a `security` rule decides that a sink is a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityModeSetting {
+    /// Stage 1: every sink whose argument is not a literal.
+    #[default]
+    Sink,
+    /// Stage 2: a sink that untrusted input can reach inside one procedure
+    /// without a sanitiser for that sink.
+    Taint,
+}
+
+impl SecurityModeSetting {
+    fn lower(self) -> SecurityMode {
+        match self {
+            SecurityModeSetting::Sink => SecurityMode::Sink,
+            SecurityModeSetting::Taint => SecurityMode::Taint,
+        }
+    }
+}
+
+/// Which input parameters the taint stage counts as untrusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ParameterSourcesSetting {
+    /// Parameters of the main block, of a procedure or function that is not
+    /// `PRIVATE`, and of a method or constructor that is not `PRIVATE`.
+    #[default]
+    External,
+    /// Every input parameter.
+    All,
+    /// No parameter.
+    None,
+}
+
+/// A project function that validates or cleans a value.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecurityValidatorConfig {
+    /// Function or method name, compared case-insensitively.
+    pub name: String,
+    /// Sink kinds it protects: `query`, `sql`, `command`, `code`, `path`,
+    /// `html`, `header`, `deserialize`, `xml`, `size`, or `all`.
+    pub protects: Vec<String>,
+}
+
+/// The `[workspace.lint.security]` table.
+///
+/// `mode` chooses stage 1 (`sink`, the default) or stage 2 (`taint`) for every
+/// security rule that has a taint mode; `modes` sets one rule, by code or kebab
+/// name. The other keys say what the taint stage counts as a source and as a
+/// sanitiser.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SecurityConfig {
+    /// The mode of every rule that `modes` does not name.
+    pub mode: SecurityModeSetting,
+    /// Per-rule modes, keyed by code (`ABLSEC005`) or kebab name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub modes: BTreeMap<String, SecurityModeSetting>,
+    /// Which input parameters are untrusted.
+    pub parameters: ParameterSourcesSetting,
+    /// Whether a database field read is untrusted. Default `false`.
+    pub database_fields: bool,
+    /// Project functions and methods whose result is untrusted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+    /// Project functions that validate or clean a value, with the sink kinds
+    /// each protects.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub validators: Vec<SecurityValidatorConfig>,
+    /// Words that make a request key a client-supplied identity for
+    /// `client-identity` (ABLSEC010). Empty: `user`, `username`, `userid`,
+    /// `login`, `company`, `tenant`, `role`, `roles`, `owner`, `admin`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub identity_keys: Vec<String>,
+    /// Project functions and methods whose result is an identity the client
+    /// supplied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub identity_sources: Vec<String>,
+    /// Entry-point reachability (`[workspace.lint.security.reach]`).
+    #[serde(skip_serializing_if = "SecurityReachConfig::is_default")]
+    pub reach: SecurityReachConfig,
+}
+
+/// The `[workspace.lint.security.reach]` table: where reachability starts and
+/// what counts as authorisation and as a sensitive operation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SecurityReachConfig {
+    /// The entry-point file (JSON), relative to `oxabl.toml`. Without one,
+    /// findings carry no reachability and the rules that need entry points
+    /// (ABLSEC011, ABLSEC012) are silent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_points: Option<PathBuf>,
+    /// Procedures, functions, methods, programs and include files whose call
+    /// (or inclusion) authorises the rest of the request.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auth_routines: Vec<String>,
+    /// Routines whose call is a sensitive operation, besides database
+    /// writes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sensitive_calls: Vec<String>,
+    /// A security finding reachable from an entry point reports one level
+    /// more severe. Default `false`.
+    pub raise_reachable: bool,
+    /// A security finding that no entry point can reach reports one level
+    /// less severe. Default `false`.
+    pub lower_unreachable: bool,
+}
+
+impl SecurityReachConfig {
+    fn is_default(&self) -> bool {
+        *self == SecurityReachConfig::default()
+    }
+
+    /// Lower to the application form. The entries are read by the caller,
+    /// which knows where the file is.
+    pub fn to_options(&self) -> ReachOptions {
+        let trimmed = |v: &[String]| -> Vec<String> {
+            v.iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        ReachOptions {
+            configured: self.entry_points.is_some(),
+            entries: Vec::new(),
+            auth_routines: trimmed(&self.auth_routines),
+            sensitive_calls: trimmed(&self.sensitive_calls),
+            raise_reachable: self.raise_reachable,
+            lower_unreachable: self.lower_unreachable,
+        }
+    }
+}
+
+impl SecurityConfig {
+    fn is_default(&self) -> bool {
+        *self == SecurityConfig::default()
+    }
+
+    /// Lower to the application form.
+    pub fn to_options(&self) -> SecurityOptions {
+        SecurityOptions {
+            mode: self.mode.lower(),
+            modes: self
+                .modes
+                .iter()
+                .map(|(k, m)| (k.trim().to_ascii_lowercase(), m.lower()))
+                .collect(),
+            parameters: match self.parameters {
+                ParameterSourcesSetting::External => ParameterSources::External,
+                ParameterSourcesSetting::All => ParameterSources::All,
+                ParameterSourcesSetting::None => ParameterSources::None,
+            },
+            database_fields: self.database_fields,
+            sources: self.sources.clone(),
+            validators: self
+                .validators
+                .iter()
+                .map(|v| SecurityValidator {
+                    name: v.name.clone(),
+                    protects: v
+                        .protects
+                        .iter()
+                        .map(|k| k.trim().to_ascii_lowercase())
+                        .collect(),
+                })
+                .collect(),
+            identity_keys: self
+                .identity_keys
+                .iter()
+                .map(|k| k.trim().to_ascii_lowercase())
+                .filter(|k| !k.is_empty())
+                .collect(),
+            identity_sources: self.identity_sources.clone(),
+            reach: self.reach.to_options(),
+            work_budget: None,
+        }
+    }
 }
 
 /// A problem in the `files` of a `[[workspace.lint.overrides]]` entry that makes
@@ -238,6 +428,7 @@ impl LintConfig {
     pub fn to_severity_map_at(&self, root: &Path) -> (LintSeverityMap, Vec<RejectedLintPattern>) {
         let mut map = LintSeverityMap::new();
         *map.base_mut() = self.settings.to_layer();
+        map.set_security(self.security.to_options());
         let mut rejected = Vec::new();
         for entry in &self.overrides {
             if entry.files.is_empty() {
@@ -862,6 +1053,92 @@ proversion = "12.8"
             WorkspaceConfig::from_toml(toml).is_err(),
             "enable is a list"
         );
+    }
+
+    #[test]
+    fn the_security_table_reaches_the_lint_map_and_holds_no_rule_keys() {
+        let lint = lint_of(
+            r#"
+[workspace.lint]
+enable = ["security"]
+ABLSEC003 = "warn"
+
+[workspace.lint.security]
+mode = "taint"
+parameters = "all"
+database-fields = true
+sources = ["read-body"]
+
+[workspace.lint.security.modes]
+path-traversal = "sink"
+
+[[workspace.lint.security.validators]]
+name = "valid-code"
+protects = ["Query", "path"]
+"#,
+        );
+        assert_eq!(lint.rule_selectors().collect::<Vec<_>>(), ["ABLSEC003"]);
+        let (map, _) = lint.to_severity_map_at(Path::new("/ws"));
+        let options = map.for_path(Path::new("/ws/a.p")).security().clone();
+        assert_eq!(options.mode, SecurityMode::Taint);
+        assert_eq!(
+            options.mode_for("ABLSEC005", "path-traversal"),
+            SecurityMode::Sink
+        );
+        assert_eq!(options.parameters, ParameterSources::All);
+        assert!(options.database_fields);
+        assert_eq!(options.sources, ["read-body"]);
+        assert_eq!(options.validators[0].protects, ["query", "path"]);
+    }
+
+    #[test]
+    fn the_reach_table_and_identity_keys_reach_the_lint_map() {
+        let lint = lint_of(
+            r#"
+[workspace.lint]
+enable = ["security"]
+
+[workspace.lint.security]
+identity-keys = ["User", " branch "]
+identity-sources = ["session-user"]
+
+[workspace.lint.security.reach]
+entry-points = "security/entries.json"
+auth-routines = ["check-access", "auth/guard.i"]
+sensitive-calls = ["post-ledger"]
+raise-reachable = true
+"#,
+        );
+        let (map, _) = lint.to_severity_map_at(Path::new("/ws"));
+        let options = map.for_path(Path::new("/ws/a.p")).security().clone();
+        assert_eq!(options.identity_keys, ["user", "branch"]);
+        assert_eq!(options.identity_sources, ["session-user"]);
+        assert!(options.reach.configured);
+        assert!(
+            options.reach.entries.is_empty(),
+            "the caller reads the file"
+        );
+        assert_eq!(
+            options.reach.auth_routines,
+            ["check-access", "auth/guard.i"]
+        );
+        assert_eq!(options.reach.sensitive_calls, ["post-ledger"]);
+        assert!(options.reach.raise_reachable);
+        assert!(!options.reach.lower_unreachable);
+        assert_eq!(
+            lint.security.reach.entry_points.as_deref(),
+            Some(Path::new("security/entries.json"))
+        );
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint.security.reach]\nentry = \"a\"\n";
+        assert!(toml::from_str::<WorkspaceConfig>(toml).is_err());
+    }
+
+    #[test]
+    fn a_misspelled_security_key_is_an_error() {
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint.security]\nmod = \"taint\"\n";
+        assert!(toml::from_str::<WorkspaceConfig>(toml).is_err());
+        let toml = "[workspace]\nname = \"p\"\n[workspace.lint.security]\nmode = \"strict\"\n";
+        assert!(toml::from_str::<WorkspaceConfig>(toml).is_err());
     }
 
     #[test]

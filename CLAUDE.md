@@ -55,6 +55,7 @@ cargo run -p oxabl_codegen -- kind     # Writes kind.rs (enum + match function)
 cargo run -p oxabl_codegen -- atoms    # Writes build.rs (complete file)
 cargo run -p oxabl_codegen -- callable # Writes callable.rs (is_callable_kind)
 cargo run -p oxabl_codegen -- builtins # Writes builtins.rs (built-in function registry)
+cargo run -p oxabl_codegen -- reserved # Writes reserved.rs (reserved keywords)
 
 # Show statistics without writing files
 cargo run -p oxabl_codegen -- summary

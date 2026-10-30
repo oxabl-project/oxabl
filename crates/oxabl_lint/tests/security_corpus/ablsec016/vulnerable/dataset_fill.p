@@ -1,0 +1,5 @@
+/* expect: 2 */
+DEFINE VARIABLE hDs AS HANDLE NO-UNDO.
+
+hDs:FILL().
+DATASET dsOrders:FILL().

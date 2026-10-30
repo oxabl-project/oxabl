@@ -1,0 +1,1 @@
+RUN VALUE(cProg) (INPUT 1).

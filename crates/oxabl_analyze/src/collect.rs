@@ -116,6 +116,91 @@ pub struct CollectedDiagnostics {
     ///
     /// [`RuleMeta::use_site_in_includer`]: oxabl_lint::RuleMeta::use_site_in_includer
     pub include_findings: Vec<IncludeFinding>,
+    /// The parts of hard-coded secrets in the root's own bytes: each string
+    /// literal in a span that `ABLSEC008` flags (all of the span when it holds
+    /// none), whether or not the configuration enables it. A client that hashes
+    /// or shows source text masks them; [`Self::secrets_in`] adds the other
+    /// places that hold their text.
+    pub secrets: Vec<Span>,
+    /// The same for the includes the root expands: each include file and a
+    /// part in its own bytes.
+    ///
+    /// A part that a `{&name}` or `{N}` substitution wrote is also masked
+    /// where the substitution was written, in the root or in an include: the
+    /// lines of each define value and the arguments of each include
+    /// reference it was made from, at every level.
+    pub include_secrets: Vec<(PathBuf, Span)>,
+    /// The text of every secret and of each part of one that a `{&name}` or
+    /// `{N}` substitution wrote, which is in no file where the expansion put
+    /// it. The messages of this set are masked with it already.
+    pub secret_text: SecretText,
+}
+
+/// The text of hard-coded secrets, to mask wherever it shows.
+///
+/// An include argument or a `&GLOBAL-DEFINE` value is written in a file, but
+/// the expansion keeps no place for it, so it is masked by its text: in the
+/// root, in each include, and in messages. Its `Debug` shows only a count.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SecretText(Vec<String>);
+
+impl std::fmt::Debug for SecretText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretText({} masked)", self.0.len())
+    }
+}
+
+impl SecretText {
+    /// No secrets.
+    pub const fn new() -> Self {
+        SecretText(Vec::new())
+    }
+
+    /// Add `text`, unless it is blank. The longest text comes first, so a
+    /// secret that holds another is masked whole.
+    fn add(&mut self, text: &str) {
+        if text.trim().is_empty() || self.0.iter().any(|known| known == text) {
+            return;
+        }
+        let at = self.0.partition_point(|known| known.len() >= text.len());
+        self.0.insert(at, text.to_string());
+    }
+
+    /// Every place in `text` that holds one of the secrets.
+    pub fn find_in(&self, text: &str) -> Vec<Span> {
+        self.0
+            .iter()
+            .flat_map(|secret| {
+                text.match_indices(secret.as_str()).map(|(at, found)| Span {
+                    start: at as u32,
+                    end: (at + found.len()) as u32,
+                })
+            })
+            .collect()
+    }
+
+    /// Replace each secret in `text` with `****`.
+    pub fn mask(&self, text: &mut String) {
+        for secret in &self.0 {
+            if text.contains(secret.as_str()) {
+                *text = text.replace(secret.as_str(), "****");
+            }
+        }
+    }
+
+    fn mask_diagnostic(&self, d: &mut Diagnostic) {
+        self.mask(&mut d.message);
+        if let Some(help) = &mut d.help {
+            self.mask(help);
+        }
+        for label in d
+            .labels
+            .iter_mut()
+            .chain(d.related.iter_mut().flat_map(|related| related.iter_mut()))
+        {
+            self.mask(&mut label.message);
+        }
+    }
 }
 
 /// A finding whose anchor is in an include file, with where it would show.
@@ -149,7 +234,27 @@ impl CollectedDiagnostics {
             parse_recovered: false,
             include_origin: Vec::new(),
             include_findings: Vec::new(),
+            secrets: Vec::new(),
+            include_secrets: Vec::new(),
+            secret_text: SecretText::new(),
         }
+    }
+
+    /// Where the hard-coded secrets are in `text`, which is the root when
+    /// `include` is `None`, else that include file: the parts in its own
+    /// bytes, and every place that holds the text of a secret.
+    pub fn secrets_in(&self, include: Option<&Path>, text: &str) -> Vec<Span> {
+        let mut found = match include {
+            None => self.secrets.clone(),
+            Some(path) => self
+                .include_secrets
+                .iter()
+                .filter(|(known, _)| known == path)
+                .map(|(_, span)| *span)
+                .collect(),
+        };
+        found.extend(self.secret_text.find_in(text));
+        found
     }
 
     /// Every diagnostic (all stages), in pipeline order.
@@ -195,6 +300,9 @@ impl CollectedDiagnostics {
             } else {
                 self.include_findings.clone()
             },
+            secrets: self.secrets.clone(),
+            include_secrets: self.include_secrets.clone(),
+            secret_text: self.secret_text.clone(),
         }
     }
 }
@@ -418,6 +526,9 @@ pub struct ExpandedFile {
     /// The offsets of `elided_offsets` that are includes that did not
     /// arrive, sorted.
     elided_include_offsets: Vec<u32>,
+    /// Where the bytes of each substitution were written, by the file id of
+    /// its chunks: see `PreprocessedFile::written`.
+    written: HashMap<u32, Arc<[FileSpan]>>,
     /// The root file id, used for identity resolution and origin checks.
     root: FileId,
 }
@@ -579,6 +690,24 @@ impl ExpandedFile {
         ))
     }
 
+    /// Where each include expansion, at any depth, starts in the expanded
+    /// text, with the path it was read from, in expansion order. An include
+    /// that expanded to no text is not listed.
+    pub fn include_starts(&self) -> Vec<(u32, &Path)> {
+        let mut seen = vec![false; self.included.len()];
+        let mut out = Vec::new();
+        for c in &self.chunks {
+            if let ChunkOrigin::Include(i) = c.origin
+                && let Some(s) = seen.get_mut(i as usize)
+                && !*s
+            {
+                *s = true;
+                out.push((c.virt_start, self.included[i as usize].path.as_path()));
+            }
+        }
+        out
+    }
+
     /// The parts of the expanded text that include files wrote, in order.
     pub fn include_spans(&self) -> Vec<Span> {
         self.include_regions
@@ -658,11 +787,21 @@ impl ExpandedFile {
     /// to it landed on an empty range. `end` past the very end of the expansion failed
     /// the same way, for the same reason.
     ///
-    /// The span is resolved **within the chunk its start falls in**. A span that
-    /// reaches beyond that chunk is truncated at the chunk's end rather than collapsed:
-    /// the bytes past the boundary are not the root file's contiguous bytes at all, so
-    /// there is no honest longer answer, and a truncated extent is strictly better than
-    /// no extent. A zero-length span stays zero-length.
+    /// The start is resolved in the chunk it falls in, and the end in the bytes of
+    /// the same file (the root, or one expansion of an include), the first of these
+    /// that applies:
+    ///
+    /// 1. where that file wrote the byte after the span, when it wrote it at or after
+    ///    the start. A span that runs past a `{&name}`, `{N}` or `{file.i}` into the
+    ///    file's own text again ends there, and covers the reference. So does a span
+    ///    that ends right before a reference that expanded to no text;
+    /// 2. one past where it wrote the span's last byte. A span that ends where an
+    ///    include begins keeps its extent;
+    /// 3. where its next stretch begins after the last byte: the end of the reference
+    ///    that wrote that byte;
+    /// 4. the end of the stretch that holds the start.
+    ///
+    /// A zero-length span stays zero-length.
     fn resolve_span(&self, span: Span) -> Option<FileSpan> {
         let (start_file, real_start) = self.resolve(span.start)?;
         if start_file != self.root {
@@ -686,13 +825,7 @@ impl ExpandedFile {
         }
 
         let real_end = match self.chunk_at(span.start) {
-            // The last byte of the span, clamped into the chunk the start belongs to,
-            // then turned back into an exclusive end by adding one.
-            Some(chunk) => {
-                let chunk_last = chunk.virt_start + chunk.len - 1;
-                let last = (span.end - 1).min(chunk_last);
-                chunk.real_start + (last - chunk.virt_start) + 1
-            }
+            Some(chunk) => self.real_end(chunk, span.end, real_start),
             // No chunk table: the identity mapping, where virtual is real.
             None => span.end,
         };
@@ -700,6 +833,31 @@ impl ExpandedFile {
         Span {
             start: real_start,
             end: real_end.max(real_start),
+        }
+    }
+
+    /// The real end of a span that starts in `chunk`, at `real_start`, and ends
+    /// at `end`. See [`Self::resolve_span`] for the rule.
+    fn real_end(&self, chunk: &ExpandedChunk, end: u32, real_start: u32) -> u32 {
+        let own = |c: &&ExpandedChunk| c.file == chunk.file;
+        if let Some(next) = self.chunk_at(end).filter(own) {
+            let real = next.real_start + (end - next.virt_start);
+            if real >= real_start {
+                return real;
+            }
+        }
+        let last = end - 1;
+        if let Some(c) = self.chunk_at(last).filter(own) {
+            return c.real_start + (last - c.virt_start) + 1;
+        }
+        let after = self
+            .chunks
+            .iter()
+            .filter(own)
+            .find(|c| c.virt_start > last && c.real_start >= real_start);
+        match after {
+            Some(c) => c.real_start,
+            None => chunk.real_start + chunk.len,
         }
     }
 
@@ -721,6 +879,60 @@ impl ExpandedFile {
             FileId::new(chunk.file),
             self.real_span(span, real_start),
         ))
+    }
+
+    /// Where the bytes of `span`, in the expanded buffer, were written: a part
+    /// for each chunk it crosses, in the root's or the include's own bytes, or
+    /// in the expanded buffer for substitution text.
+    fn origins(&self, span: Span) -> Vec<(ChunkOrigin, Span)> {
+        if self.chunks.is_empty() {
+            return vec![(ChunkOrigin::Root, span)];
+        }
+        let first = self
+            .chunks
+            .partition_point(|chunk| chunk.virt_start + chunk.len <= span.start);
+        self.chunks[first..]
+            .iter()
+            .take_while(|chunk| chunk.virt_start < span.end)
+            .map(|chunk| {
+                let start = span.start.max(chunk.virt_start);
+                let end = span.end.min(chunk.virt_start + chunk.len);
+                let part = match chunk.origin {
+                    ChunkOrigin::Substitution => Span { start, end },
+                    _ => Span {
+                        start: chunk.real_start + (start - chunk.virt_start),
+                        end: chunk.real_start + (end - chunk.virt_start),
+                    },
+                };
+                (chunk.origin, part)
+            })
+            .collect()
+    }
+
+    /// Where the substitution text in `span` was written: each define value
+    /// and include argument it was made from, in the root (`None`) or in an
+    /// include file, in that file's own bytes.
+    fn written_places(&self, span: Span) -> Vec<(Option<&Path>, Span)> {
+        let first = self
+            .chunks
+            .partition_point(|chunk| chunk.virt_start + chunk.len <= span.start);
+        self.chunks[first..]
+            .iter()
+            .take_while(|chunk| chunk.virt_start < span.end)
+            .filter(|chunk| chunk.origin == ChunkOrigin::Substitution)
+            .filter_map(|chunk| self.written.get(&chunk.file))
+            .flat_map(|places| places.iter())
+            .filter_map(|place| {
+                if place.file == self.root {
+                    return Some((None, place.span));
+                }
+                let (_, path) = self
+                    .file_paths
+                    .iter()
+                    .find(|(known, _)| *known == place.file.raw())?;
+                Some((Some(path.as_path()), place.span))
+            })
+            .collect()
     }
 
     /// The include chain, root first, down to include expansion `include`.
@@ -818,6 +1030,7 @@ pub fn expand_source_with(
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            written: HashMap::new(),
             root,
         });
     }
@@ -942,6 +1155,11 @@ pub fn expand_source_with(
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
+                written: pf
+                    .written
+                    .iter()
+                    .map(|(file, places)| (file.raw(), Arc::clone(places)))
+                    .collect(),
                 root,
             })
         }
@@ -1371,6 +1589,44 @@ pub fn collect_from_expanded_with_summaries(
     selection: RuleSelection,
     summaries: Option<&dyn oxabl_lint::CalleeSummaries>,
 ) -> (Option<Semantic>, CollectedDiagnostics) {
+    collect_from_expanded_with(
+        expanded,
+        schema,
+        schema_loaded,
+        lint_severities,
+        index,
+        source_context,
+        selection,
+        CrossFile {
+            summaries,
+            reach: None,
+        },
+    )
+}
+
+/// What a client that reads the workspace gives the rules of one file, in
+/// expanded byte coordinates.
+#[derive(Clone, Copy, Default)]
+pub struct CrossFile<'a> {
+    /// Database effect summaries of the callees (TX004).
+    pub summaries: Option<&'a dyn oxabl_lint::CalleeSummaries>,
+    /// Entry-point reachability (the `security` rules).
+    pub reach: Option<&'a dyn oxabl_lint::security::reach::SecurityReach>,
+}
+
+/// Collect with what a client knows about other files.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_from_expanded_with(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    lint_severities: &LintSeverityMap,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    selection: RuleSelection,
+    cross: CrossFile<'_>,
+) -> (Option<Semantic>, CollectedDiagnostics) {
+    let summaries = cross.summaries;
     let root = expanded.root;
     let mut out = CollectedDiagnostics::default();
     let everything = selection == RuleSelection::All;
@@ -1428,9 +1684,18 @@ pub fn collect_from_expanded_with_summaries(
         }
     }
 
-    let shared = oxabl_lint::RunShared::default();
+    let includes: Vec<(u32, PathBuf)> = expanded
+        .include_starts()
+        .into_iter()
+        .map(|(at, p)| (at, p.to_path_buf()))
+        .collect();
+    let shared = oxabl_lint::RunShared::default().with_includes(&includes);
     let shared = match summaries {
         Some(provider) => shared.with_summaries(provider),
+        None => shared,
+    };
+    let shared = match cross.reach {
+        Some(reach) => shared.with_reach(reach),
         None => shared,
     };
     let linted = oxabl_lint::Registry::builtin_shared().run_where_shared(
@@ -1462,8 +1727,82 @@ pub fn collect_from_expanded_with_summaries(
             Err(_) => {}
         }
     }
+    for d in oxabl_lint::security::hardcoded_secret::run(&program.statements, &sem, &ctx) {
+        for literal in secret_literals(&expanded.text, d.span.span) {
+            let text = |span: Span| expanded.text.get(span.start as usize..span.end as usize);
+            out.secret_text
+                .add(text(literal).map(literal_content).unwrap_or_default());
+            for (origin, part) in expanded.origins(literal) {
+                match origin {
+                    ChunkOrigin::Root => out.secrets.push(part),
+                    ChunkOrigin::Include(include) => {
+                        let path = expanded.included[include as usize].path.clone();
+                        out.include_secrets.push((path, part));
+                    }
+                    ChunkOrigin::Substitution => {
+                        out.secret_text.add(text(part).unwrap_or_default());
+                    }
+                }
+            }
+            // A part that a substitution wrote is masked where it was written:
+            // each define value and include argument it was made from, at
+            // every level, however the parts were split.
+            for (path, part) in expanded.written_places(literal) {
+                match path {
+                    None => out.secrets.push(part),
+                    Some(path) => out.include_secrets.push((path.to_path_buf(), part)),
+                }
+            }
+        }
+    }
+    let masking = std::mem::take(&mut out.secret_text);
+    for d in out.diagnostics.iter_mut() {
+        masking.mask_diagnostic(&mut d.diagnostic);
+    }
+    for d in out.include_origin.iter_mut() {
+        masking.mask_diagnostic(&mut d.diagnostic);
+    }
+    for d in out.include_findings.iter_mut() {
+        masking.mask_diagnostic(&mut d.diagnostic);
+    }
+    out.secret_text = masking;
 
     (Some(sem), out)
+}
+
+/// The string literals in `span` of `text`, or all of `span` when it holds
+/// none.
+fn secret_literals(text: &str, span: Span) -> Vec<Span> {
+    let start = (span.start as usize).min(text.len());
+    let end = (span.end as usize).clamp(start, text.len());
+    let whole = vec![Span {
+        start: start as u32,
+        end: end as u32,
+    }];
+    let Some(slice) = text.get(start..end) else {
+        return whole;
+    };
+    let found: Vec<Span> = tokenize(slice)
+        .iter()
+        .filter(|t| t.kind == oxabl_lexer::Kind::StringLiteral)
+        .map(|t| Span {
+            start: (start + t.start) as u32,
+            end: (start + t.end) as u32,
+        })
+        .collect();
+    if found.is_empty() { whole } else { found }
+}
+
+/// The text between the quotes of a string literal, without its `:U` or
+/// other attribute, or all of `literal` when it is not quoted.
+fn literal_content(literal: &str) -> &str {
+    let Some(quote @ ('"' | '\'')) = literal.chars().next() else {
+        return literal;
+    };
+    match literal.rfind(quote) {
+        Some(end) if end > 0 => &literal[1..end],
+        _ => &literal[1..],
+    }
 }
 
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree
@@ -1758,6 +2097,7 @@ mod tests {
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
+            written: HashMap::new(),
             root: ROOT,
         }
     }
@@ -1859,23 +2199,48 @@ mod tests {
         }
     }
 
-    /// A span reaching past its start chunk is truncated at that chunk, not collapsed.
-    ///
-    /// The bytes beyond the boundary are not the root file's contiguous bytes, so there
-    /// is no honest longer answer — and the previous behaviour, collapsing to zero
-    /// width, threw away the extent that *was* known.
+    /// A span that runs past an include ends where the root wrote the byte after it,
+    /// so it covers the `{file.i}` reference (rule 1 of `resolve_span`). Here the
+    /// reference is the five real bytes 10..15.
     #[test]
-    fn a_span_crossing_a_chunk_boundary_is_truncated_rather_than_collapsed() {
-        let expanded = root_include_root();
-
-        let resolved = expanded
-            .resolve_root_span(Span { start: 6, end: 35 })
-            .expect("the start is in the root");
-
+    fn a_span_running_past_an_include_into_the_root_ends_after_it() {
+        let expanded = expansion_with(&[
+            (0, 10, ROOT.raw(), 0),
+            (10, 20, 2, 0),
+            (30, 10, ROOT.raw(), 15),
+        ]);
         assert_eq!(
-            resolved,
-            Span { start: 6, end: 10 },
-            "the extent must stop at the chunk boundary rather than vanish"
+            expanded.resolve_root_span(Span { start: 6, end: 35 }),
+            Some(Span { start: 6, end: 20 })
+        );
+        // It ends inside the include: at the end of the reference (rule 3).
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 6, end: 15 }),
+            Some(Span { start: 6, end: 15 })
+        );
+    }
+
+    /// A span that ends right before a reference that expanded to no text ends
+    /// where the root wrote the byte after it, past the reference (rule 1 alone):
+    /// its last byte and the byte after it are in two root stretches, with the
+    /// five real bytes 10..15 of `{&E}` between them.
+    #[test]
+    fn a_span_ending_before_an_empty_reference_ends_after_the_reference() {
+        let expanded = expansion_with(&[(0, 10, ROOT.raw(), 0), (10, 10, ROOT.raw(), 15)]);
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 6, end: 10 }),
+            Some(Span { start: 6, end: 15 })
+        );
+    }
+
+    /// With no root text after it, a span that ends inside an include stops at the
+    /// end of its start chunk (rule 4): there is no honest longer answer.
+    #[test]
+    fn a_span_ending_in_a_trailing_include_is_truncated_at_its_start_chunk() {
+        let expanded = expansion_with(&[(0, 10, ROOT.raw(), 0), (10, 20, 2, 0)]);
+        assert_eq!(
+            expanded.resolve_root_span(Span { start: 6, end: 15 }),
+            Some(Span { start: 6, end: 10 })
         );
     }
 

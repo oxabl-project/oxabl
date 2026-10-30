@@ -9,7 +9,7 @@
 use criterion::{
     BenchmarkGroup, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
-use oxabl_common::{FileId, LintSeverityMap};
+use oxabl_common::{FileId, LintSeverityMap, SecurityMode, SecurityOptions};
 use oxabl_lexer::tokenize;
 use oxabl_lint::{
     CL001, CL002, CL005, LINT0002, LINT0005, LINT0006, Registry, TX006, block_var_used_outside,
@@ -188,6 +188,77 @@ fn realistic_benchmarks(c: &mut Criterion) {
     );
 }
 
+/// A file of `routines` procedures, each with an untrusted parameter that
+/// reaches some sinks through assignments, a temp-table field and a guard, and
+/// constants that reach others. Stage 2 has to solve every routine.
+fn security_source(routines: usize) -> String {
+    let mut src = String::from(
+        "DEFINE TEMP-TABLE ttArg NO-UNDO FIELD cValue AS CHARACTER.\n\
+         DEFINE VARIABLE hQ AS HANDLE NO-UNDO.\n",
+    );
+    for n in 0..routines {
+        src.push_str(&format!("PROCEDURE p{n}:\n"));
+        src.push_str("    DEFINE INPUT PARAMETER pc AS CHARACTER NO-UNDO.\n");
+        src.push_str("    DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n");
+        src.push_str("    DEFINE VARIABLE i AS INTEGER NO-UNDO.\n");
+        src.push_str("    c = \"FOR EACH Customer WHERE Customer.Name = '\" + pc + \"'\".\n");
+        src.push_str("    hQ:QUERY-PREPARE(c).\n");
+        src.push_str("    CREATE ttArg.\n    ttArg.cValue = pc.\n");
+        src.push_str("    DO i = 1 TO 3:\n        OS-COMMAND SILENT VALUE(\"echo \" + ttArg.cValue).\n    END.\n");
+        src.push_str("    IF LOOKUP(pc, \"a,b\") = 0 THEN RETURN.\n");
+        src.push_str("    RUN VALUE(pc + \".p\").\n");
+        src.push_str("    c = \"ls\".\n    OS-COMMAND SILENT VALUE(c).\n");
+        src.push_str(
+            "    hQ:QUERY-PREPARE(\"FOR EACH Customer WHERE Customer.Name = \" + QUOTER(pc)).\n",
+        );
+        src.push_str("END PROCEDURE.\n");
+    }
+    src
+}
+
+/// The `security` group in stage 1 and in taint mode.
+fn security_benchmarks(c: &mut Criterion) {
+    let source = security_source(40);
+    let tokens = tokenize(&source);
+    let program = Parser::new(&tokens, &source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let schema = Schema::empty();
+    let context = |mode| {
+        let mut map = LintSeverityMap::new();
+        map.base_mut().enable_group("security");
+        map.set_security(SecurityOptions {
+            mode,
+            ..SecurityOptions::default()
+        });
+        AnalysisContext::new(FileId::new(1), &source, &schema)
+            .with_tokens(&tokens)
+            .with_lint_severities(map)
+    };
+    let (sink, taint) = (context(SecurityMode::Sink), context(SecurityMode::Taint));
+    let sem = analyze_file(&program.statements, &sink);
+    let registry = Registry::builtin();
+    let select = |m: &oxabl_lint::RuleMeta| m.group == "security";
+    let found = |ctx| {
+        registry
+            .run_where(&program.statements, &sem, ctx, select)
+            .len()
+    };
+    // Stage 1 reports the five sinks of each routine; stage 2 the two that
+    // the parameter reaches unguarded and uncleaned.
+    assert_eq!(found(&sink), 40 * 5);
+    assert_eq!(found(&taint), 40 * 2);
+
+    let mut group = c.benchmark_group("lint_security");
+    group.throughput(Throughput::Bytes(source.len() as u64));
+    group.bench_function("sink", |b| {
+        b.iter(|| black_box(registry.run_where(&program.statements, &sem, &sink, select)))
+    });
+    group.bench_function("taint", |b| {
+        b.iter(|| black_box(registry.run_where(&program.statements, &sem, &taint, select)))
+    });
+    group.finish();
+}
+
 fn lint_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("lint");
     // `h1`, `h2` and `l` of every routine, and `shared-count` once.
@@ -197,5 +268,10 @@ fn lint_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, lint_benchmarks, realistic_benchmarks);
+criterion_group!(
+    benches,
+    lint_benchmarks,
+    realistic_benchmarks,
+    security_benchmarks
+);
 criterion_main!(benches);

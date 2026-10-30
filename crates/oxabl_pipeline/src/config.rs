@@ -97,6 +97,13 @@ pub enum ConfigWarning {
     /// group, or an override pattern that is not a valid glob. The entry is
     /// ignored and the rest of the table applies.
     Lint(String),
+
+    /// The entry-point file of `[workspace.lint.security.reach]` could not be
+    /// read or parsed. Reachability is off for the run: no finding is labelled
+    /// and the rules that need entry points are silent. `check` treats it as
+    /// a config error, because it would gate on findings that are not
+    /// labelled as configured.
+    EntryPoints(String),
 }
 
 impl std::fmt::Display for ConfigWarning {
@@ -114,6 +121,7 @@ impl std::fmt::Display for ConfigWarning {
                 "root_extensions: ignoring `{entry}`, which cannot be a root file extension"
             ),
             ConfigWarning::Lint(msg) => write!(f, "lint: {msg}"),
+            ConfigWarning::EntryPoints(msg) => write!(f, "lint: {msg}"),
         }
     }
 }
@@ -403,7 +411,29 @@ fn derive(
         .clone()
         .unwrap_or_else(|| config.workspace.style.clone());
 
-    let (lint_severities, rejected_patterns) = config.workspace.lint.to_severity_map_at(root);
+    let (mut lint_severities, rejected_patterns) = config.workspace.lint.to_severity_map_at(root);
+    if let Some(file) = &config.workspace.lint.security.reach.entry_points {
+        let file = anchor_to(root, file);
+        let read = std::fs::read_to_string(&file)
+            .map_err(|e| e.to_string())
+            .and_then(|text| oxabl_workspace::parse_entry_points(&text));
+        match read {
+            Ok(entries) => {
+                let mut security = lint_severities.security().clone();
+                security.reach.entries = entries;
+                lint_severities.set_security(security);
+            }
+            Err(e) => {
+                let mut security = lint_severities.security().clone();
+                security.reach.configured = false;
+                lint_severities.set_security(security);
+                warnings.push(ConfigWarning::EntryPoints(format!(
+                    "entry points `{}`: {e}",
+                    file.display()
+                )));
+            }
+        }
+    }
     warnings.extend(rejected_patterns.into_iter().map(|r| {
         ConfigWarning::Lint(if r.pattern.is_empty() {
             format!("ignoring override: {}", r.reason)
@@ -543,6 +573,28 @@ fn lint_name_warnings(lint: &LintConfig) -> Vec<ConfigWarning> {
         };
         if seen.insert(("group", group)) {
             warnings.push(ConfigWarning::Lint(message));
+        }
+    }
+    let table = "`[workspace.lint.security.modes]`";
+    for rule in lint.security.modes.keys() {
+        match registry.rule(rule) {
+            None => warnings.push(ConfigWarning::Lint(format!(
+                "unknown rule `{rule}` in {table}"
+            ))),
+            Some(r) if r.meta().group != oxabl_lint::groups::SECURITY => warnings.push(
+                ConfigWarning::Lint(format!("rule `{rule}` in {table} is not a security rule")),
+            ),
+            Some(_) => {}
+        }
+    }
+    for v in &lint.security.validators {
+        for kind in &v.protects {
+            if oxabl_lint::security::taint::SinkKind::mask_of(kind.trim()).is_none() {
+                warnings.push(ConfigWarning::Lint(format!(
+                    "unknown sink kind `{kind}` for validator `{}`",
+                    v.name
+                )));
+            }
         }
     }
     warnings
@@ -703,6 +755,93 @@ mod tests {
                 "lint: ignoring override: empty pattern",
             ]
         );
+    }
+
+    #[test]
+    fn security_options_name_known_rules_and_sink_kinds() {
+        let warnings = lint_warnings(
+            "[workspace.lint.security]\nmode = \"taint\"\n\
+             [workspace.lint.security.modes]\nABLSEC005 = \"sink\"\nno-such-rule = \"sink\"\n\
+             unused-variable = \"taint\"\n\
+             [[workspace.lint.security.validators]]\nname = \"ok\"\nprotects = [\"query\", \"ALL\"]\n\
+             [[workspace.lint.security.validators]]\nname = \"v\"\nprotects = [\"sqli\"]\n",
+        );
+        assert_eq!(
+            warnings,
+            [
+                "lint: unknown rule `no-such-rule` in `[workspace.lint.security.modes]`",
+                "lint: rule `unused-variable` in `[workspace.lint.security.modes]` is not a \
+                 security rule",
+                "lint: unknown sink kind `sqli` for validator `v`",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_entry_point_file_is_read_relative_to_the_config() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join("security")).unwrap();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.lint.security.reach]\nentry-points = \"security/entries.json\"\n",
+        );
+        write(
+            root,
+            "security/entries.json",
+            r#"{"version": 1, "entries": [{"kind": "REST", "name": "GET /a", "program": "web/a.p"}]}"#,
+        );
+        write(root, "main.p", "");
+        let (config, warnings) =
+            PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let reach = &config.lint_severities.security().reach;
+        assert!(reach.configured);
+        assert_eq!(reach.entries.len(), 1);
+        assert_eq!(reach.entries[0].label(), "REST GET /a");
+
+        write(
+            root,
+            "security/entries.json",
+            r#"{"version": 1, "entries": [{}]}"#,
+        );
+        let (config, warnings) =
+            PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+        let warnings: Vec<String> = warnings.iter().map(|w| w.to_string()).collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("entries.json"), "{warnings:?}");
+        assert!(warnings[0].contains("entry 0"), "{warnings:?}");
+        assert!(!config.lint_severities.security().reach.configured);
+        assert!(config.lint_severities.security().reach.entries.is_empty());
+    }
+
+    /// An entry-point file that is missing or of another version turns
+    /// reachability off, so no finding is labelled from an empty entry list.
+    #[test]
+    fn an_entry_point_file_that_does_not_load_turns_reachability_off() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "oxabl.toml",
+            "[workspace]\nname = \"p\"\n\
+             [workspace.lint.security.reach]\nentry-points = \"entries.json\"\n",
+        );
+        write(root, "main.p", "");
+        let resolve = || PipelineConfig::resolve(&root.join("main.p"), &ConfigOverrides::default());
+        for text in [None, Some(r#"{"version": 2, "entries": []}"#)] {
+            if let Some(t) = text {
+                write(root, "entries.json", t);
+            }
+            let (config, warnings) = resolve();
+            assert!(
+                matches!(warnings.as_slice(), [ConfigWarning::EntryPoints(m)] if m.contains("entries.json")),
+                "{warnings:?}"
+            );
+            assert!(!config.lint_severities.security().reach.configured);
+        }
     }
 
     #[test]

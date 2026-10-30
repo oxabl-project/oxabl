@@ -13,7 +13,7 @@ use crate::span_tree::{
     BranchDirective, ElidedKind, ElidedReference, PreprocessedFile, SkippedBranch, SkippedInclude,
     SkippedText, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
 };
-use crate::var_table::BaseVars;
+use crate::var_table::{BaseVars, Written};
 
 /// Preprocessor for ABL source code.
 ///
@@ -162,6 +162,9 @@ impl<'fs> Preprocessor<'fs> {
             line_starts: HashMap::new(),
             expanding_vars: Vec::new(),
             sources: vec![(file, Arc::from(source))],
+            written: rustc_hash::FxHashMap::default(),
+            arg_written: Vec::new(),
+            named_args: Vec::new(),
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
             site_stack: Vec::new(),
@@ -192,6 +195,7 @@ impl<'fs> Preprocessor<'fs> {
         processed.skipped_text = ctx.skipped_text;
         processed.text_losses = ctx.text_losses;
         processed.elided = ctx.elided;
+        processed.written = ctx.written;
         Ok(processed)
     }
 }
@@ -269,6 +273,15 @@ struct ProcessContext<'a> {
     /// so a value that names itself cannot recurse.
     expanding_vars: Vec<String>,
     sources: Vec<(FileId, Arc<str>)>,
+    /// Where the bytes of each substitution value were written, by the id of
+    /// the source that holds the value: see [`PreprocessedFile::written`].
+    written: rustc_hash::FxHashMap<FileId, Written>,
+    /// Where the arguments of each include being expanded were written,
+    /// innermost last: what a `{N}`, `{*}` or `{&*}` reference takes in.
+    arg_written: Vec<Written>,
+    /// The named arguments of each include being expanded, innermost last:
+    /// what a `{&*}` reference expands to.
+    named_args: Vec<Vec<(String, String)>>,
     diagnostics: Vec<Diagnostic>,
     /// Stack of currently-being-processed paths for cycle detection.
     include_stack: HashSet<PathBuf>,
@@ -367,7 +380,7 @@ impl ProcessContext<'_> {
                     // Possible preprocessor directive
                     if let Some(directive) = self.try_parse_directive(source, i) {
                         match directive.kind {
-                            DirectiveKind::ScopedDefine { name, value } => {
+                            DirectiveKind::ScopedDefine { name, value, at } => {
                                 // Emit chunk up to directive
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
@@ -383,6 +396,8 @@ impl ProcessContext<'_> {
                                     // an include — top-level keeps literal `{N}`
                                     // for the lexer, matching body-scan rules.
                                     // #65 round 4.
+                                    let written =
+                                        self.written_at(file, source, at..directive.end, &value);
                                     let expanded = if !positional_args.is_empty() {
                                         expand_positional_refs(&value, positional_args).into_owned()
                                     } else {
@@ -391,13 +406,13 @@ impl ProcessContext<'_> {
                                     let expanded = self
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
-                                    self.vars.define(&name, &expanded);
+                                    self.vars.define_written(&name, &expanded, written);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
                                 continue;
                             }
-                            DirectiveKind::GlobalDefine { name, value } => {
+                            DirectiveKind::GlobalDefine { name, value, at } => {
                                 if emitting && i as u32 > chunk_start {
                                     nodes.push(SpanNode::Chunk {
                                         file,
@@ -406,6 +421,8 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if emitting {
+                                    let written =
+                                        self.written_at(file, source, at..directive.end, &value);
                                     let expanded = if !positional_args.is_empty() {
                                         expand_positional_refs(&value, positional_args).into_owned()
                                     } else {
@@ -414,7 +431,7 @@ impl ProcessContext<'_> {
                                     let expanded = self
                                         .expand_defined_preproc_vars(&expanded, source, i)
                                         .unwrap_or(expanded);
-                                    self.vars.define_global(&name, &expanded);
+                                    self.vars.define_global_written(&name, &expanded, written);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -701,9 +718,17 @@ impl ProcessContext<'_> {
                                 // "this file includes that one" is a fact about
                                 // the source, not about how much text arrived.
                                 let unresolved_before = self.unresolved_includes.len();
-                                if let Some((path, children)) =
-                                    self.expand_include(&include_name, include_site, inner, depth)
-                                {
+                                let inner_at = close - source[i + 1..close].trim_start().len();
+                                let args_at = inner_at + find_args_start(raw_inner);
+                                let written =
+                                    self.written_at(file, source, args_at..close, raw_inner);
+                                if let Some((path, children)) = self.expand_include(
+                                    &include_name,
+                                    include_site,
+                                    inner,
+                                    written,
+                                    depth,
+                                ) {
                                     nodes.push(SpanNode::Include {
                                         site: include_site,
                                         path: Some(path),
@@ -735,6 +760,16 @@ impl ProcessContext<'_> {
                                 &mut chunk_start,
                                 &mut nodes,
                             );
+                        } else if bytes[i + 1] == b'*' && bytes.get(i + 2) == Some(&b'}') {
+                            // `{*}`: every argument of the include.
+                            i = self.expand_all_args_at(
+                                file,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            );
+                            continue;
                         } else if bytes[i + 1].is_ascii_digit() {
                             // Positional argument reference {0}, {1}, etc.
                             if let Some(next) = self.expand_positional_ref_at(
@@ -817,6 +852,18 @@ impl ProcessContext<'_> {
                             // `{N}` include args expand inside strings too
                             // (e.g. `"{1}":U` in ADM2 fn/fnarg).
                             i = next;
+                        } else if emitting
+                            && bytes[i] == b'{'
+                            && bytes.get(i + 1) == Some(&b'*')
+                            && bytes.get(i + 2) == Some(&b'}')
+                        {
+                            i = self.expand_all_args_at(
+                                file,
+                                i,
+                                positional_args,
+                                &mut chunk_start,
+                                &mut nodes,
+                            );
                         } else {
                             i += 1;
                         }
@@ -932,6 +979,50 @@ impl ProcessContext<'_> {
 
     /// The value of `{&name}` at byte offset `at` of `source`: a defined name
     /// first, then one of the computed predefined names.
+    /// Where a value written at `range` of `source`, in `file`, came from:
+    /// that text, line by line, and what each `{&name}` and `{N}` reference in
+    /// `text`, the value as written, was made from. Text inside a substitution
+    /// value was written where that value was.
+    fn written_at(
+        &self,
+        file: FileId,
+        source: &str,
+        range: std::ops::Range<usize>,
+        text: &str,
+    ) -> Written {
+        let mut out: Vec<FileSpan> = match self.written.get(&file) {
+            Some(written) => written.to_vec(),
+            None => line_spans(source, range)
+                .map(|span| FileSpan { file, span })
+                .collect(),
+        };
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('}') else {
+                break;
+            };
+            let inner = &after[..close];
+            let taken = match inner.strip_prefix('&') {
+                Some("*") => self.arg_written.last().cloned(),
+                Some(name) => self.vars.written(name),
+                None if inner == "*"
+                    || !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    self.arg_written.last().cloned()
+                }
+                None => None,
+            };
+            for place in taken.iter().flat_map(|w| w.iter()) {
+                if !out.contains(place) {
+                    out.push(*place);
+                }
+            }
+            rest = &after[close..];
+        }
+        Arc::from(out)
+    }
+
     fn lookup_ref(&mut self, name: &str, source: &str, at: usize) -> Option<Arc<str>> {
         if let Some(val) = self.vars.get(name) {
             return Some(val.clone());
@@ -1201,7 +1292,19 @@ impl ProcessContext<'_> {
             });
         }
 
-        if let Some(val) = self.lookup_ref(var_name, source, i) {
+        // `{&*}`: the named arguments of the include, as `&name=value`.
+        let all_named = (var_name == "*")
+            .then(|| self.named_args.last())
+            .flatten()
+            .map(|named| {
+                let text: Vec<String> = named.iter().map(|(n, v)| format!("&{n}={v}")).collect();
+                Arc::<str>::from(text.join(" "))
+            });
+        let value = match all_named {
+            Some(val) => Some(val),
+            None => self.lookup_ref(var_name, source, i),
+        };
+        if let Some(val) = value {
             // Create a synthetic chunk for the expanded value.
             // We store it as a new source entry.
             let expanded_id = self.next_file_id();
@@ -1219,6 +1322,14 @@ impl ProcessContext<'_> {
             // The rescan reads the value while `self.sources` owns it.
             let rescan_text = rescan.then(|| Arc::clone(&val));
             self.sources.push((expanded_id, val));
+            let written = if var_name == "*" {
+                self.arg_written.last().cloned()
+            } else {
+                self.vars.written(var_name)
+            };
+            if let Some(written) = written {
+                self.written.insert(expanded_id, written);
+            }
 
             if val_len > 0 {
                 let site = FileSpan {
@@ -1333,6 +1444,9 @@ impl ProcessContext<'_> {
                     let val: Arc<str> = Arc::from(arg_val);
                     let val_len = val.len() as u32;
                     self.sources.push((expanded_id, val));
+                    if let Some(written) = self.arg_written.last() {
+                        self.written.insert(expanded_id, Arc::clone(written));
+                    }
                     nodes.push(SpanNode::Include {
                         site: FileSpan {
                             file,
@@ -1374,6 +1488,62 @@ impl ProcessContext<'_> {
         }
     }
 
+    /// Expand a `{*}` reference at byte offset `i`: every argument of the
+    /// include, in order, separated by a space, written where the arguments
+    /// were. At top level (no arguments) it is left as text. Returns the
+    /// offset just past it.
+    fn expand_all_args_at(
+        &mut self,
+        file: FileId,
+        i: usize,
+        positional_args: &[String],
+        chunk_start: &mut u32,
+        nodes: &mut Vec<SpanNode>,
+    ) -> usize {
+        let ref_end = i + 3;
+        if positional_args.is_empty() {
+            return ref_end;
+        }
+        let args = &positional_args[1..];
+        if i as u32 > *chunk_start {
+            nodes.push(SpanNode::Chunk {
+                file,
+                start: *chunk_start,
+                end: i as u32,
+            });
+        }
+        *chunk_start = ref_end as u32;
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: i as u32,
+                end: ref_end as u32,
+            },
+        };
+        let value = args.join(" ");
+        if value.is_empty() {
+            self.elide(ElidedKind::Argument, site);
+            return ref_end;
+        }
+        let expanded_id = self.next_file_id();
+        let len = value.len() as u32;
+        self.sources.push((expanded_id, Arc::from(value)));
+        if let Some(written) = self.arg_written.last() {
+            self.written.insert(expanded_id, Arc::clone(written));
+        }
+        nodes.push(SpanNode::Include {
+            site,
+            // The arguments, not a file include.
+            path: None,
+            children: vec![SpanNode::Chunk {
+                file: expanded_id,
+                start: 0,
+                end: len,
+            }],
+        });
+        ref_end
+    }
+
     /// Try to parse a preprocessor directive starting at position `i`.
     fn try_parse_directive(&self, source: &str, i: usize) -> Option<Directive> {
         let rest = &source[i..];
@@ -1398,21 +1568,23 @@ impl ProcessContext<'_> {
 
         match &*keyword_upper {
             b"SCOPED-DEFINE" | b"SCOPED" | b"SCOP" => {
-                let (name, value, end) = parse_define_body(source, i + j);
+                let (name, value, at, end) = parse_define_body(source, i + j);
                 Some(Directive {
                     kind: DirectiveKind::ScopedDefine {
                         name,
                         value: strip_comments_owned(value),
+                        at,
                     },
                     end,
                 })
             }
             b"GLOBAL-DEFINE" | b"GLOBAL" | b"GLOB" => {
-                let (name, value, end) = parse_define_body(source, i + j);
+                let (name, value, at, end) = parse_define_body(source, i + j);
                 Some(Directive {
                     kind: DirectiveKind::GlobalDefine {
                         name,
                         value: strip_comments_owned(value),
+                        at,
                     },
                     end,
                 })
@@ -1589,6 +1761,7 @@ impl ProcessContext<'_> {
         include_name: &str,
         site: FileSpan,
         inner: &str,
+        written: Written,
         depth: usize,
     ) -> Option<(PathBuf, Vec<SpanNode>)> {
         // Parse include arguments
@@ -1669,7 +1842,7 @@ impl ProcessContext<'_> {
         // Scope isolation: open a variable scope, inject named args
         let scope = self.vars.begin_scope();
         for (name, value) in &args.named {
-            self.vars.define_argument(name, value);
+            self.vars.define_argument(name, value, Arc::clone(&written));
         }
 
         // Process recursively with positional args scoped to this include.
@@ -1677,7 +1850,11 @@ impl ProcessContext<'_> {
         // below here can name the chain that reached it.
         self.site_stack.push(site);
         self.file_names.push(include_name);
+        self.arg_written.push(written);
+        self.named_args.push(args.named.clone());
         let children = self.process_source(include_file_id, &content, depth + 1, &args.positional);
+        self.named_args.pop();
+        self.arg_written.pop();
         self.file_names.pop();
         self.site_stack.pop();
 
@@ -1713,11 +1890,26 @@ struct Directive {
 }
 
 enum DirectiveKind {
-    ScopedDefine { name: String, value: String },
-    GlobalDefine { name: String, value: String },
-    Undefine { name: String },
-    If { condition: String },
-    ElseIf { condition: String },
+    /// `at` is where the value starts in the source.
+    ScopedDefine {
+        name: String,
+        value: String,
+        at: usize,
+    },
+    GlobalDefine {
+        name: String,
+        value: String,
+        at: usize,
+    },
+    Undefine {
+        name: String,
+    },
+    If {
+        condition: String,
+    },
+    ElseIf {
+        condition: String,
+    },
     Else,
     EndIf,
     Message,
@@ -1725,12 +1917,12 @@ enum DirectiveKind {
 
 /// Parse the body of `&SCOPED-DEFINE name value` or `&GLOBAL-DEFINE name value`.
 ///
-/// Returns `(name, value, end_offset)`. The value runs to EOL (or EOF), or to
+/// Returns `(name, value, value_offset, end_offset)`. The value runs to EOL (or EOF), or to
 /// a same-line `&ELSE`/`&ELSEIF`/`&ENDIF` so inline forms like
 /// `&IF … &THEN &SCOPED-DEFINE x 1 &ENDIF` leave the closer for the scanner
 /// (the ADM2 shape). A block comment still open at EOL runs on to its close,
 /// so the value then holds the lines of the comment too.
-fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
+fn parse_define_body(source: &str, start: usize) -> (String, String, usize, usize) {
     let rest = &source[start..];
 
     // Skip whitespace
@@ -1790,8 +1982,7 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
         // leave it for the main scanner. Do consume a trailing newline.
         value.push_str(trimmed);
         if hit_boundary {
-            let _ = value_start;
-            return (name, value, start + content_end);
+            return (name, value, start + value_start, start + content_end);
         }
         i = line_end;
         if i < rest.len() && rest.as_bytes()[i] == b'\r' {
@@ -1802,12 +1993,25 @@ fn parse_define_body(source: &str, start: usize) -> (String, String, usize) {
         }
         break;
     }
-    // Trim leading whitespace that was part of the continuation indent,
-    // but only from the value_start — the first line's leading space was
-    // already skipped above.
-    let _ = value_start;
+    (name, value, start + value_start, start + i)
+}
 
-    (name, value, start + i)
+/// The spans of the lines of `range` in `source`, without the line breaks and
+/// the white space around each line, and without empty lines.
+fn line_spans(source: &str, range: std::ops::Range<usize>) -> impl Iterator<Item = Span> + '_ {
+    let start = range.start.min(source.len());
+    let end = range.end.clamp(start, source.len());
+    let mut at = start;
+    source[start..end].split('\n').filter_map(move |line| {
+        let from = at;
+        at += line.len() + 1;
+        let lead = line.len() - line.trim_start().len();
+        let kept = line.trim();
+        (!kept.is_empty()).then(|| Span {
+            start: (from + lead) as u32,
+            end: (from + lead + kept.len()) as u32,
+        })
+    })
 }
 
 /// Where the text of a define that continues at `from` ends: the end of its line
@@ -2364,12 +2568,23 @@ fn read_arg_value(s: &str, i: &mut usize) -> String {
 
     if bytes[*i] == b'"' || bytes[*i] == b'\'' {
         // Quoted value — read to the matching quote. A doubled quote inside
-        // the string stands for one quote character.
+        // the string stands for one quote character, and so do `~"` and `~'`;
+        // `~~` stands for one tilde. Any other `~x` stays as written.
         let quote = bytes[*i];
         *i += 1;
         let mut value = String::new();
         let mut start = *i;
         while *i < bytes.len() {
+            if bytes[*i] == b'~' && *i + 1 < bytes.len() {
+                if matches!(bytes[*i + 1], b'"' | b'\'' | b'~') {
+                    value.push_str(&s[start..*i]);
+                    start = *i + 1;
+                    *i += 2;
+                } else {
+                    *i += 1;
+                }
+                continue;
+            }
             if bytes[*i] == quote {
                 if bytes.get(*i + 1) != Some(&quote) {
                     break;
@@ -2759,7 +2974,8 @@ mod tests {
         for (source, text) in [
             ("{a.i \"{\"}", "A{"),
             ("{a.i \"}\"}", "A}"),
-            ("{a.i \"~\"}\"}Z", "A~Z"),
+            // `~"` is an escaped quote, so the `}` after it is in the string.
+            ("{a.i \"~\"}\"}Z", "A\"}Z"),
             ("{a.i '}' }Z", "A}Z"),
         ] {
             let result = pp.process(FileId::new(1), source).unwrap();
@@ -2787,6 +3003,24 @@ mod tests {
             let expected = format!("{text}Z\n'tail'");
             assert_eq!(&*result.to_text(), expected, "for {source:?}");
             assert!(result.unresolved_includes.is_empty(), "for {source:?}");
+            assert!(result.diagnostics.is_empty(), "for {source:?}");
+        }
+    }
+
+    #[test]
+    fn a_tilde_escapes_a_quote_or_a_tilde_in_an_include_argument() {
+        let fs = make_fs(&[("/inc/a.i", "A{1}B{2}")]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        for (source, text) in [
+            ("{a.i \"~\"x~\"\"}Z", "A\"x\"B"),
+            ("{a.i '~'x~'' y}Z", "A'x'By"),
+            ("{a.i \"~'x\" y}Z", "A'xBy"),
+            ("{a.i \"a~~\" y}Z", "Aa~By"),
+            ("{a.i \"a~nb\"}Z", "Aa~nbB"),
+        ] {
+            let result = pp.process(FileId::new(1), source).unwrap();
+            assert_eq!(&*result.to_text(), format!("{text}Z"), "for {source:?}");
             assert!(result.diagnostics.is_empty(), "for {source:?}");
         }
     }
@@ -3346,13 +3580,13 @@ mod tests {
     #[test]
     fn a_define_body_reads_the_lines_of_an_open_comment() {
         let source = " x 5 /* c\n{old.i}\n*/ tail\nnext";
-        let (name, value, end) = parse_define_body(source, 0);
+        let (name, value, _, end) = parse_define_body(source, 0);
         assert_eq!(name, "x");
         assert_eq!(value, "5 /* c\n{old.i}\n*/ tail");
         assert_eq!(&source[end..], "next");
 
         let source = " x 5 /* closed */ ~\n6\nnext";
-        let (_, value, end) = parse_define_body(source, 0);
+        let (_, value, _, end) = parse_define_body(source, 0);
         assert_eq!(strip_comments(&value), "5  6");
         assert_eq!(&source[end..], "next");
     }
@@ -4210,6 +4444,28 @@ ELSE
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "A=one B=two C=three");
+    }
+
+    #[test]
+    fn star_expands_to_every_argument() {
+        let fs = make_fs(&[
+            ("/inc/all.i", "ALL={*} IN=\"{*}\""),
+            ("/inc/named.i", "N={&*} IN=\"{&*}\""),
+        ]);
+        let include_paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &include_paths);
+        let result = pp
+            .process(FileId::new(1), r#"{all.i one "two" &x=3}"#)
+            .unwrap();
+        assert_eq!(&*result.to_text(), "ALL=one two 3 IN=\"one two 3\"");
+        let result = pp
+            .process(FileId::new(1), "{named.i lone &a=1 &b=two}")
+            .unwrap();
+        assert_eq!(&*result.to_text(), "N=&a=1 &b=two IN=\"&a=1 &b=two\"");
+        // Outside an include there are no arguments: `{*}` stays text, and
+        // `{&*}` is an undefined name.
+        let result = pp.process(FileId::new(1), "A={*} B={&*}").unwrap();
+        assert_eq!(&*result.to_text(), "A={*} B=");
     }
 
     #[test]

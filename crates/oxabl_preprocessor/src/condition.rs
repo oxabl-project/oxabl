@@ -1580,7 +1580,7 @@ mod tests {
         let mut vars = PreprocVarTable::new();
         vars.define("s", "x");
         vars.define_global("g", "x");
-        vars.define_argument("a", "x");
+        vars.define_argument("a", "x", Default::default());
         assert!(evaluate_exact("DEFINED(g) = 1", &vars));
         assert!(evaluate_exact("DEFINED(a) = 2", &vars));
         assert!(evaluate_exact("DEFINED(s) = 3", &vars));

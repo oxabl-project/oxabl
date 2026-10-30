@@ -20,11 +20,19 @@ use crate::rules::{
     field_after_failed_find, find_in_loop, handle_not_deleted, implicit_transaction,
     lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
     missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
-    run_value, scope_widened, shared_state, signature_mismatch, transaction_spans_call,
-    transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
-    unknown_propagation, unknown_table_or_field, unresolved_call, unused_variable,
+    run_value, scope_widened,
+    security::{
+        client_identity, cross_request_state, dynamic_code, dynamic_query, foreign_sql,
+        hardcoded_secret, header_injection, information_leak, integrity_bypass,
+        missing_authorization, os_command, path_traversal, resource_exhaustion,
+        unsafe_deserialization, untrusted_xml, weak_crypto, xss_output,
+    },
+    shared_state, signature_mismatch, transaction_spans_call, transaction_spans_ui,
+    type_mismatch_assignment, undefined_symbol, unknown_in_comparison, unknown_propagation,
+    unknown_table_or_field, unresolved_call, unused_variable,
 };
 use crate::shared::RunShared;
+use crate::suppress::{self, LINT0007, LINT0008};
 
 /// Names of the built-in rule groups.
 pub mod groups {
@@ -42,6 +50,8 @@ pub mod groups {
     pub const STRICT_NULLS: &str = "strict.nulls";
     /// Call and shared-state rules (`CL`).
     pub const STRICT_CALLS: &str = "strict.calls";
+    /// Injection and unsafe-resource rules (`ABLSEC`).
+    pub const SECURITY: &str = "security";
 }
 
 /// How settled a rule is.
@@ -85,6 +95,13 @@ pub struct RuleMeta {
     /// of being dropped. The rule's answer needs the includer: it creates,
     /// names or frees an object that the include alone does not see.
     pub use_site_in_includer: bool,
+    /// Longer remediation text for the rule, for output formats that carry
+    /// rule help. `None` falls back to [`description`](Self::description).
+    pub help: Option<&'static str>,
+    /// The rule's security severity on the 0.0 to 10.0 scale, as a decimal
+    /// string, which is how SARIF carries it. `None` for a rule that is not a
+    /// security rule.
+    pub security_severity: Option<&'static str>,
 }
 
 impl RuleMeta {
@@ -106,6 +123,8 @@ impl RuleMeta {
             requires_compilation_unit: false,
             context_free: false,
             use_site_in_includer: false,
+            help: None,
+            security_severity: None,
         }
     }
 
@@ -131,6 +150,18 @@ impl RuleMeta {
     /// when the include's own run cannot produce them.
     pub const fn reported_at_use_site(mut self) -> Self {
         self.use_site_in_includer = true;
+        self
+    }
+
+    /// Set the rule's help text.
+    pub const fn with_help(mut self, help: &'static str) -> Self {
+        self.help = Some(help);
+        self
+    }
+
+    /// Set the security severity, a decimal string from `"0.0"` to `"10.0"`.
+    pub const fn with_security_severity(mut self, severity: &'static str) -> Self {
+        self.security_severity = Some(severity);
         self
     }
 
@@ -215,6 +246,7 @@ enum Body {
     NullFields(NullsFn),
     Shared(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
     Calls(fn(&[Statement], &Semantic, &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
+    Security(fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>),
 }
 
 /// A [`Rule`] made of metadata and a plain function — how every built-in rule
@@ -269,6 +301,18 @@ impl FnRule {
         FnRule {
             meta,
             body: Body::Nulls(check),
+        }
+    }
+
+    /// Pair `meta` with a security rule that may read the file's taint
+    /// facts ([`RunShared`]), which one registry run computes once.
+    pub(crate) const fn security(
+        meta: RuleMeta,
+        check: fn(&[Statement], &AnalysisContext, &RunShared) -> Vec<Diagnostic>,
+    ) -> Self {
+        FnRule {
+            meta,
+            body: Body::Security(check),
         }
     }
 
@@ -329,6 +373,7 @@ impl Rule for FnRule {
         match self.body {
             Body::Shared(check) => check(program, ctx, shared),
             Body::Calls(check) => check(program, sem, ctx, shared),
+            Body::Security(check) => check(program, ctx, shared),
             Body::Plain(run) => run(program, sem, ctx),
             Body::Handles(check) => check(shared.handles(program, ctx), ctx),
             Body::Scopes(check) => check(shared.scopes(program, ctx), program, ctx),
@@ -413,6 +458,10 @@ pub const BUILTIN_GROUPS: &[RuleGroup] = &[
     RuleGroup::opt_in(groups::STRICT_HANDLES, "Leaked dynamic objects."),
     RuleGroup::opt_in(groups::STRICT_NULLS, "Unknown values reaching sinks."),
     RuleGroup::opt_in(groups::STRICT_CALLS, "Dynamic calls and shared state."),
+    RuleGroup::opt_in(
+        groups::SECURITY,
+        "Injection and unsafe-resource sinks fed by non-literal values.",
+    ),
 ];
 
 /// The built-in rules, in run order.
@@ -475,6 +524,28 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         )
         .requiring_compilation_unit(),
         assigned_but_never_read::run,
+    ),
+    FnRule::new(
+        RuleMeta::new(
+            LINT0007,
+            suppress::INVALID_NAME,
+            groups::DEFAULT,
+            "An `oxabl-ignore` comment with no reason or an unknown rule; it suppresses nothing.",
+        )
+        .with_help(
+            "Write `oxabl-ignore <CODE>: <reason>` with a registered rule code and a reason.",
+        ),
+        no_findings,
+    ),
+    FnRule::new(
+        RuleMeta::new(
+            LINT0008,
+            suppress::UNUSED_NAME,
+            groups::DEFAULT,
+            "An `oxabl-ignore` comment that suppresses no finding.",
+        )
+        .with_default_severity(Severity::Info),
+        no_findings,
     ),
     strict_rule(
         CL001,
@@ -707,7 +778,33 @@ pub const BUILTIN_RULES: &[FnRule] = &[
         .reported_at_use_site(),
         nullable_db_field::check,
     ),
+    // Security, stage 1: sink rules.
+    FnRule::security(dynamic_query::META, dynamic_query::check),
+    FnRule::security(foreign_sql::META, foreign_sql::check),
+    FnRule::security(os_command::META, os_command::check),
+    FnRule::security(dynamic_code::META, dynamic_code::check),
+    FnRule::security(path_traversal::META, path_traversal::check),
+    // Security, ABLSEC006 to ABLSEC009 and ABLSEC013 to ABLSEC017.
+    FnRule::security(xss_output::META, xss_output::check),
+    FnRule::security(header_injection::META, header_injection::check),
+    FnRule::new(hardcoded_secret::META, hardcoded_secret::run),
+    FnRule::new(weak_crypto::META, weak_crypto::run),
+    FnRule::new(information_leak::META, information_leak::run),
+    FnRule::security(unsafe_deserialization::META, unsafe_deserialization::check),
+    FnRule::security(untrusted_xml::META, untrusted_xml::check),
+    FnRule::security(resource_exhaustion::META, resource_exhaustion::check),
+    FnRule::new(integrity_bypass::META, integrity_bypass::run),
+    // Security, stage 3: ABLSEC010 to ABLSEC012.
+    FnRule::security(client_identity::META, client_identity::check),
+    FnRule::security(missing_authorization::META, missing_authorization::check),
+    FnRule::security(cross_request_state::META, cross_request_state::check),
 ];
+
+/// The run of a rule whose diagnostics come from the suppression pass
+/// ([`suppress`]), which reads comments, not the program.
+fn no_findings(_: &[Statement], _: &Semantic, _: &AnalysisContext) -> Vec<Diagnostic> {
+    Vec::new()
+}
 
 /// A syntactic strict rule: context-free, and in preview until its
 /// false-positive rate on a real corpus is measured.
@@ -1011,11 +1108,15 @@ impl Registry {
                     .any(|r| r.reads_scopes() && enabled(r).is_some());
                 shared.share_flow(scopes);
             }
+            let security = rule.meta().group == groups::SECURITY;
             out.extend(
                 rule.run_shared(program, sem, ctx, shared)
                     .into_iter()
                     .map(|mut d| {
                         d.severity = severity;
+                        if security {
+                            crate::rules::security::reach::annotate(&mut d, program, ctx, shared);
+                        }
                         d
                     }),
             );

@@ -1057,3 +1057,103 @@ END.
         Action::Return(oxabl_flow::ReturnKind::Error)
     );
 }
+
+#[test]
+fn nodes_at_finds_the_innermost_statement_or_header() {
+    let p = parse(
+        "\
+PROCEDURE p:
+    DO WHILE x < f(1):
+        IF y THEN z = g(2).
+    END.
+    DO ON ERROR UNDO, LEAVE:
+        w = 1.
+        FINALLY:
+            v = h(3).
+        END FINALLY.
+    END.
+END PROCEDURE.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[1];
+    let at = |text: &str| p.source.find(text).unwrap() as u32;
+    assert_eq!(cfg.nodes_at(at("f(1)")), [p.node(cfg, "DO WHILE")]);
+    assert_eq!(cfg.nodes_at(at("y THEN")), [p.node(cfg, "IF y")]);
+    assert_eq!(cfg.nodes_at(at("g(2)")), [p.node(cfg, "z = g(2)")]);
+    let copies = cfg.nodes_at(at("h(3)"));
+    assert!(copies.len() > 1, "one node per FINALLY copy");
+    assert_eq!(copies, p.nodes(cfg, "v = h(3)"));
+    assert!(cfg.nodes_at(at("PROCEDURE")).is_empty());
+}
+
+/// Taint-like provenance over the real solver: `a = src`, `b = a`, a guard
+/// that clears `b` on its true edge, and a join.
+#[test]
+fn provenance_flows_through_assignments_and_joins() {
+    use oxabl_flow::provenance::{Labels, Provenance};
+
+    let p = parse(
+        "\
+PROCEDURE p:
+    a = src().
+    b = a.
+    IF ok(b) THEN c = b.
+    ELSE c = \"lit\".
+    d = c.
+END PROCEDURE.
+",
+    );
+    let flow = p.flow();
+    let cfg = &flow.units()[1];
+    let names = ["a", "b", "c", "d"];
+    let slot = |n: &str| names.iter().position(|x| *x == n).unwrap();
+    struct Problem<'a> {
+        p: &'a Parsed,
+        slot: &'a dyn Fn(&str) -> usize,
+    }
+    impl Problem<'_> {
+        fn text(&self, cfg: &Cfg, n: NodeIx) -> &str {
+            let s = cfg.node(n).span;
+            &self.p.source[s.start as usize..s.end as usize]
+        }
+    }
+    impl Analysis for Problem<'_> {
+        type Fact = Provenance;
+        fn direction(&self) -> Direction {
+            Direction::Forward
+        }
+        fn initial(&self, _: &Cfg) -> Provenance {
+            Provenance::new(4)
+        }
+        fn boundary(&self, _: &Cfg) -> Provenance {
+            Provenance::new(4)
+        }
+        fn join(&self, acc: &mut Provenance, other: &Provenance) {
+            acc.join(other);
+        }
+        fn transfer(&self, cfg: &Cfg, n: NodeIx, f: &mut Provenance) {
+            let text = self.text(cfg, n);
+            let Some((target, value)) = text.trim_end_matches('.').split_once(" = ") else {
+                return;
+            };
+            let labels: Labels = match value {
+                "src()" => [(7, 0b11)].into_iter().collect(),
+                v if v.starts_with('"') => Labels::new(),
+                v => f.get((self.slot)(v)).iter().copied().collect(),
+            };
+            f.set((self.slot)(target), labels);
+        }
+        fn transfer_edge(&self, cfg: &Cfg, n: NodeIx, e: &oxabl_flow::Edge, f: &mut Provenance) {
+            self.transfer(cfg, n, f);
+            if e.kind == EdgeKind::True && self.text(cfg, n).starts_with("IF ok(b)") {
+                f.clear((self.slot)("b"), 0b01);
+            }
+        }
+    }
+    let problem = Problem { p: &p, slot: &slot };
+    let sol = solve(cfg, &problem);
+    let d = p.node(cfg, "d = c");
+    assert_eq!(sol.before(d).get(slot("c")), &[(7, 0b10)]);
+    assert_eq!(sol.before(d).get(slot("a")), &[(7, 0b11)]);
+}

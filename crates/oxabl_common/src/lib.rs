@@ -4,6 +4,8 @@ mod file_id;
 mod file_span;
 mod lint_severity;
 mod panic_guard;
+mod reachability;
+mod security_options;
 mod source_map;
 mod virtual_span;
 
@@ -16,6 +18,11 @@ pub use file_span::FileSpan;
 pub use lint_severity::{LintLayer, LintRuleRef, LintSeverityMap};
 pub use panic_guard::{
     InternalPanic, TEST_PANIC_MARKER, catch_panic, panic_if_injected, panic_sites,
+};
+pub use reachability::{ReachEntry, ReachPath, ReachStatus, ReachStep, Reachability};
+pub use security_options::{
+    EntryPoint, EntryTarget, ParameterSources, ReachOptions, SecurityMode, SecurityOptions,
+    SecurityValidator,
 };
 pub use source_map::SourceMap;
 pub use virtual_span::VirtualSpan;

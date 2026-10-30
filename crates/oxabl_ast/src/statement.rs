@@ -951,24 +951,33 @@ pub struct Statement {
     /// parser stamps a real span. Excluded from `PartialEq`
     /// (`docs/design/ast-invariants.md` §1).
     pub span: Span,
-    /// Identifier-shaped tokens of a trailing range the parser skipped without
-    /// modelling, on a statement that is itself modelled (`DISPLAY ... WITH
-    /// FRAME f TITLE x`, `RETURN ERROR msg`, the `VIEW-AS` tail of a `DEFINE
-    /// VARIABLE`, ...). `None` when nothing was skipped or the range held no
-    /// identifier. [`StatementKind::Skipped`] is the equivalent for a statement
-    /// that is skipped whole.
-    ///
-    /// Filtered lexically, exactly as [`StatementKind::Skipped::names`] is, and
-    /// meant only for the semantic pass's best-effort lookup: a name here can
-    /// silence a diagnostic, never raise one. Excluded from `PartialEq`.
+    /// What the parser passed over without modelling, on a statement that is
+    /// itself modelled: the identifiers of a skipped tail, and every range of
+    /// the statement's own tokens that its node does not hold. `None` when
+    /// nothing that may name a value or run code was passed over.
+    /// [`StatementKind::Skipped`] is the equivalent for a statement that is
+    /// skipped whole. Excluded from `PartialEq`.
     pub skipped_tail: Option<Box<SkippedTail>>,
 }
 
-/// The identifiers of a [`Statement::skipped_tail`]. A named struct so the field
-/// is one pointer wide: `Statement` is the element type of every block body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a [`Statement::skipped_tail`] holds. A named struct so the field is one
+/// pointer wide: `Statement` is the element type of every block body.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SkippedTail {
+    /// Identifier-shaped tokens of a trailing range the parser skipped
+    /// (`DISPLAY ... WITH FRAME f TITLE x`, `RETURN ERROR msg`, the `VIEW-AS`
+    /// tail of a `DEFINE VARIABLE`, ...). Filtered lexically, exactly as
+    /// [`StatementKind::Skipped::names`] is, and meant only for the semantic
+    /// pass's best-effort lookup: a name here can silence a diagnostic, never
+    /// raise one.
     pub names: Vec<Identifier>,
+    /// The byte ranges of the statement's own tokens (not those of a nested
+    /// statement) that the parser consumed and the node does not hold: a
+    /// skipped tail or clause, or an expression it parsed and dropped (the
+    /// `BY` and `WHILE` of `FOR EACH`, its joined record phrases, ...). Only a
+    /// range with a token that may name a value or run code is kept. A reader
+    /// that needs every operand of a statement reads these from the tokens.
+    pub unmodelled: Vec<Span>,
 }
 
 impl Statement {

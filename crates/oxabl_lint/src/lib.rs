@@ -12,6 +12,8 @@
 //! | LINT0004 | `type-mismatch-assignment` | Warning  | Assignment type mismatches / narrowing conversions     |
 //! | LINT0005 | `block-var-used-outside`   | Info     | Block-defined variable read outside its block, unset   |
 //! | LINT0006 | `assigned-but-never-read`  | Warning  | Dead store: written, never read; at the write site      |
+//! | LINT0007 | `invalid-suppression`      | Warning  | `oxabl-ignore` comment with no reason or an unknown rule ([`suppress`]) |
+//! | LINT0008 | `unused-suppression`       | Info     | `oxabl-ignore` comment that suppresses no finding ([`suppress`]) |
 //!
 //! LINT0002 and LINT0006 divide one population — symbols nothing reads — by
 //! whether anything ever wrote to them, so a symbol yields exactly one
@@ -74,6 +76,35 @@
 //! (`oxabl_nulls`) over them too. Each is made once per [`Registry::run_where`] through [`RunShared`]
 //! and only when one of its rules is enabled.
 //!
+//! The `security` group ([`security`]) is opt-in as well and holds the sink
+//! rules ABLSEC001 to ABLSEC009 and ABLSEC013 to ABLSEC017 and the
+//! entry-point rules ABLSEC010 to ABLSEC012. They are in preview, and all but
+//! ABLSEC011 and ABLSEC012 are context-free like the strict rules above; see
+//! the module for the design, [`security::literal`] for the shared "is this a
+//! literal" decision, [`security::taint`] for the taint mode (stage 2) that
+//! `[workspace.lint.security]` turns on, and [`security::reach`] for
+//! reachability from entry points (stage 3):
+//!
+//! | Code      | Module                        | What it fires on                                         |
+//! |-----------|-------------------------------|----------------------------------------------------------|
+//! | ABLSEC001 | [`security::dynamic_query`]   | `QUERY-PREPARE`, buffer `FIND-*` and `FILL-WHERE-STRING` from a non-literal |
+//! | ABLSEC002 | [`security::foreign_sql`]     | `send-sql-statement` and .NET command text from a non-literal |
+//! | ABLSEC003 | [`security::os_command`]      | `OS-COMMAND`, `UNIX`, `DOS` and `THROUGH` with a non-literal `VALUE` |
+//! | ABLSEC004 | [`security::dynamic_code`]    | `RUN VALUE`, `DYNAMIC-*`, `GetClass` and `COMPILE VALUE` of a non-literal |
+//! | ABLSEC005 | [`security::path_traversal`]  | file paths for streams, `OS-*`, `COPY-LOB` and `FILE-INFO` from a non-literal |
+//! | ABLSEC006 | [`security::xss_output`]      | `{&OUT}`, `PUT STREAM WebStream`, response `Write` and `Entity` of a non-literal |
+//! | ABLSEC007 | [`security::header_injection`] | response headers, cookies and `Location` from a non-literal |
+//! | ABLSEC008 | [`security::hardcoded_secret`] | a literal `-P`, `oech1::`, key material, or a password-like name set to a literal |
+//! | ABLSEC009 | [`security::weak_crypto`]     | `ENCODE`, `MD5-DIGEST`, `SHA1-DIGEST` of secrets, and `RANDOM` for tokens |
+//! | ABLSEC010 | [`security::client_identity`] | a decision on a user, company or role the client sent |
+//! | ABLSEC011 | [`security::missing_authorization`] | a database write or sensitive call an entry point reaches with no check |
+//! | ABLSEC012 | [`security::cross_request_state`] | session state a request reads before it sets it |
+//! | ABLSEC013 | [`security::information_leak`] | error text to a client, and secrets in `MESSAGE` or the log |
+//! | ABLSEC014 | [`security::unsafe_deserialization`] | `Deserialize` of a non-literal |
+//! | ABLSEC015 | [`security::untrusted_xml`]   | `X-DOCUMENT:LOAD`, `SAX-PARSE` (info) |
+//! | ABLSEC016 | [`security::resource_exhaustion`] | `SET-SIZE`, socket `READ`, `FILL` without a cap (info) |
+//! | ABLSEC017 | [`security::integrity_bypass`] | `DISABLE TRIGGERS` and writes to `_User` |
+//!
 //! A finding that sits in an include file is dropped when the includer is
 //! linted. A context-free rule reports it once, in the include file itself,
 //! when a client lints that file as a root (`oxabl check <dir>` does so for
@@ -91,20 +122,23 @@ pub mod fragment;
 mod registry;
 mod rules;
 mod shared;
+pub mod suppress;
 
 pub use registry::{
     BUILTIN_GROUPS, BUILTIN_RULES, EffectsFn, FnRule, HandlesFn, NullsFn, Registry, RegistryError,
     Rule, RuleFn, RuleGroup, RuleMeta, ScopesFn, Stability, groups,
 };
 pub use rules::{
-    CL001, CL002, CL003, CL004, CL005, DB001, HD001, HD002, HD003, HD004, HD005, LINT0001,
-    LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002, NL003,
-    NL004, TX001, TX002, TX003, TX004, TX005, TX006, assigned_but_never_read,
+    ABLSEC001, ABLSEC002, ABLSEC003, ABLSEC004, ABLSEC005, ABLSEC006, ABLSEC007, ABLSEC008,
+    ABLSEC009, ABLSEC010, ABLSEC011, ABLSEC012, ABLSEC013, ABLSEC014, ABLSEC015, ABLSEC016,
+    ABLSEC017, CL001, CL002, CL003, CL004, CL005, DB001, HD001, HD002, HD003, HD004, HD005,
+    LINT0001, LINT0002, LINT0003, LINT0004, LINT0005, LINT0006, LK001, LK002, LK003, NL001, NL002,
+    NL003, NL004, TX001, TX002, TX003, TX004, TX005, TX006, assigned_but_never_read,
     block_var_used_outside, default_lock, delete_not_in_finally, dynamic_invoke,
     field_after_failed_find, find_in_loop, handle_not_deleted, implicit_transaction,
     lock_outlives_transaction, lock_upgrade_in_loop, memptr_not_freed, missing_no_undo,
     missing_widget_pool, nullable_db_field, persistent_procedure_leak, procedure_wide_transaction,
-    run_value, scope_widened, shared_state, signature_mismatch, transaction_spans_call,
+    run_value, scope_widened, security, shared_state, signature_mismatch, transaction_spans_call,
     transaction_spans_ui, type_mismatch_assignment, undefined_symbol, unknown_in_comparison,
     unknown_propagation, unknown_table_or_field, unresolved_call, unused_variable,
 };
