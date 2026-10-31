@@ -106,9 +106,12 @@ rule hands over by span).
   VALUE(cCmd).` sees the procedure's write.
 - An `UNDO` gives a variable that is not `NO-UNDO` the value it held at the
   head of the undone block (at the unit entry for a routine block). The head
-  copies each such variable that the block writes with a strong update to a
-  slot of its own, and each node that undoes the block adds that slot back to
-  the variable: a handler before its `ON` action, so `ON ERROR UNDO, RETURN
+  of each such block adds each such variable that the block writes with a
+  strong update to one slot per variable, and each node that undoes the block
+  adds that slot back to the variable, so the variable takes the join of what
+  it held at those heads, which holds the value ABL restores (one slot per
+  block and variable cost a large tree a quarter more units past the work
+  budget): a handler before its `ON` action, so `ON ERROR UNDO, RETURN
   cMsg` returns the restored `cMsg`, and an `UNDO` statement after the value
   of its `RETURN` or `THROW`. A weak update keeps the old value already, so a
   field needs nothing. Of a routine block, only the file-level variables are

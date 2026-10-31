@@ -1635,11 +1635,11 @@ impl Compiler<'_> {
         self.slot("RETURN-VALUE", ON_RETURN.to_string(), false, false)
     }
 
-    /// The slot that holds what the slot `of` held at the head of `block`,
-    /// which an `UNDO` of the block restores.
-    pub fn undo_slot(&mut self, block: usize, of: u32) -> Option<u32> {
+    /// The slot that holds what the slot `of` held at the head of each block
+    /// that an `UNDO` restores it to.
+    pub fn undo_slot(&mut self, of: u32) -> Option<u32> {
         let name = self.slots.info[of as usize].name.clone();
-        self.slot(&name, format!("$undo:{block}:{of}"), false, false)
+        self.slot(&name, format!("$undo:{of}"), false, false)
     }
 
     /// A built-in function that the source calls without parentheses, as

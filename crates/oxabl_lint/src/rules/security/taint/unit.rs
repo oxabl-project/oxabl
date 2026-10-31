@@ -1845,10 +1845,12 @@ fn undone(cfg: &Cfg, n: NodeIx) -> Option<BlockId> {
 
 /// An `UNDO` gives each undoable variable that the undone block writes back
 /// the value it had at the head of the block (at the unit entry for the
-/// routine block). Each such variable has a slot that the head copies it to;
-/// each node that undoes the block (a handler, before its action; an `UNDO`
-/// statement, after the value of its `RETURN` or `THROW`) adds that slot back
-/// to the variable. Only a strong write can lose the old value, so only
+/// routine block). Each such variable has one slot that the head of every
+/// such block adds it to, and each node that undoes the block (a handler,
+/// before its action; an `UNDO` statement, after the value of its `RETURN` or
+/// `THROW`) adds that slot back to the variable. So an undo restores the join
+/// of what the variable held at those heads: never less than the value ABL
+/// restores, with one slot per variable rather than per block and variable. Only a strong write can lose the old value, so only
 /// variables the block writes strongly are followed. A field is written
 /// weakly, so it keeps its old value already. Of a routine, only the
 /// file-level variables live on after the undo.
@@ -1892,14 +1894,14 @@ fn undo_restores(c: &mut Compiler, cfg: &Cfg, ops: &mut [Vec<Op>]) {
             continue;
         };
         for var in written {
-            let Some(saved) = c.undo_slot(block.index(), var) else {
+            let Some(saved) = c.undo_slot(var) else {
                 continue;
             };
             let span = cfg.node(head).span;
             let copy = Op {
                 slot: saved,
                 value: Value(vec![Term::Slot(var)]),
-                strong: true,
+                strong: false,
                 span,
             };
             if routine {
