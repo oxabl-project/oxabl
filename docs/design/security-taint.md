@@ -527,8 +527,10 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.68 (stage 1) to 0.98 (stage 2) and
-recall stays at 1.00 (it was 0.83 before the `ON` phrase's `RETURN`, the
+On the taint corpus, precision goes from 0.69 (stage 1) to 0.99 (stage 2) and
+recall stays at 1.00 (it was 0.84 on the cases of `UNDO`, of handles that
+reach or copy other handles, and of what code elsewhere gives back, before
+they were modelled, 0.83 before the `ON` phrase's `RETURN`, the
 arguments that built-in methods write, the owner of a copied handle and
 `DYNAMIC-FUNCTION` were modelled, 0.93 before `RETURN-VALUE`, `RETURN ERROR`, a
 `CATCH` variable and the built-in reads were modelled, 0.96 before calls of the file were followed,
