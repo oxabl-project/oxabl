@@ -138,7 +138,9 @@ After the plan ([build-tool.md](../build-tool.md#the-build-flow), step 6):
    time, so fetching and compiling overlap.
 3. **Outcome.** An `Installed` outcome goes to a promote batch. Before each promote batch
    (every 500 sets or every 2 s), oxabl calls `syncfs` on the stage, renames each file to
-   its final path, and records the results with `origin` `2` (local) or `3` (remote). The
+   its final path, and records the results with `origin` `2` (local) or `3` (remote). Oxabl
+   hashes each promoted file itself for the `outputs` table; the client reports no per-file
+   hash, and oxabl does not need one. The
    node is finished. A `Miss` turns the node into a compile job.
 4. **Local fill.** Each remote hit is also stored in the local cache (when the local cache
    is on), by reflink or hard link from the stage where the filesystem allows it, and by
@@ -319,7 +321,9 @@ customer's repository, with the keys `server`, `cache` (the `c_...` id), `owner_
 - `server` may be overridden by `OXABL_CACHE_SERVER`; the client reads that variable. The
   server is untrusted anyway.
 - Mode (`ci`, `developer`, `read-only`) and credentials come from the environment
-  (`OXABL_CACHE_MODE`, `OXABL_CACHE_IDENTITY`, `OXABL_CACHE_TOKEN`, OIDC detection) or the
+  (`OXABL_CACHE_MODE`, which is exactly `ci`, `developer` or `read-only`;
+`OXABL_CACHE_IDENTITY`; `OXABL_CACHE_TOKEN`; OIDC detection on CI systems that issue ID
+tokens, while CI systems without them, such as Gitea Actions today, use a token) or the
   client's flags. Oxabl passes them through and never reads, stores or prints a credential.
 
 `oxabl.toml` holds only the build-side switches ([config.md](config.md#buildcache)):
