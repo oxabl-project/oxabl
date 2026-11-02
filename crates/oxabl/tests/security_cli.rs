@@ -938,3 +938,119 @@ fn client_identity_is_silent_in_sink_mode_and_its_baseline_survives_a_new_decisi
     let (exit, stdout, stderr) = check(dir.path(), &[".", "--baseline", "b.json", "--json"]);
     assert_eq!(exit, Some(0), "{stdout}{stderr}");
 }
+
+const TAINT: &str =
+    "[workspace.lint]\nenable = [\"security\"]\n[workspace.lint.security]\nmode = \"taint\"\n";
+
+/// A line the parser cannot read, so the parse of its file recovers.
+const UNPARSED: &str = "x = DYNAMIC-FUNCTION(\"f\" IN h, 1 2 3 ))).\n";
+
+/// The `ABLSEC010` messages of a `--json` report, for files whose path ends
+/// with `file`.
+fn identity_messages(stdout: &str, file: &str) -> Vec<String> {
+    json(stdout)["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "ABLSEC010")
+        .filter(|d| {
+            d["path"]
+                .as_str()
+                .unwrap()
+                .replace('\\', "/")
+                .ends_with(file)
+        })
+        .map(|d| d["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_recovered_include_still_judges_its_decisions_and_says_it_recovered() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), &config(TAINT));
+    let decision = "\
+cComp = get-value(\"company\").
+FOR EACH customer NO-LOCK WHERE customer.company = cComp:
+END.
+";
+    write(
+        &dir.path().join("src/ri.i"),
+        &format!("{decision}{UNPARSED}"),
+    );
+    write(
+        &dir.path().join("src/main.p"),
+        "DEFINE VARIABLE cComp AS CHARACTER NO-UNDO.\n{ri.i}\n",
+    );
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--json"]);
+    assert_eq!(exit, Some(1), "{stdout}{stderr}");
+    let messages = identity_messages(&stdout, "src/ri.i");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("decides on an identity the client supplied")),
+        "{messages:?}"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.contains("authorization could not be judged: the parse recovered"))
+            .count(),
+        1,
+        "{messages:?}"
+    );
+
+    // The read is in a nested include: the finding is still in the file.
+    write(
+        &dir.path().join("src/read.i"),
+        "cComp = get-value(\"company\").\n",
+    );
+    write(
+        &dir.path().join("src/ri.i"),
+        &format!("{{read.i}}\nIF cComp = \"x\" THEN RETURN.\n{UNPARSED}"),
+    );
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    let messages = identity_messages(&stdout, "src/ri.i");
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.contains("authorization could not be judged: the parse recovered"))
+            .count(),
+        1,
+        "{messages:?}"
+    );
+
+    // A recovered file that reads no request value has nothing to say; a
+    // block label named like a request is no read.
+    write(
+        &dir.path().join("src/ri.i"),
+        &format!("cComp = \"x\".\ndo_req: DO:\nEND.\n{UNPARSED}"),
+    );
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    assert_eq!(identity_messages(&stdout, "src/ri.i"), Vec::<String>::new());
+}
+
+#[test]
+fn a_decision_added_to_a_recovered_program_is_a_new_finding() {
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("oxabl.toml"), &config(TAINT));
+    let program = format!("DEFINE VARIABLE c AS CHARACTER NO-UNDO.\n{UNPARSED}");
+    write(&dir.path().join("a.p"), &program);
+    let (exit, _, stderr) = check(
+        dir.path(),
+        &[".", "--baseline", "b.json", "--update-baseline"],
+    );
+    assert_eq!(exit, Some(0), "{stderr}");
+    write(
+        &dir.path().join("a.p"),
+        &format!("{program}IF get-value(\"role\") = \"admin\" THEN RUN purge.p.\n"),
+    );
+    let (exit, stdout, stderr) = check(dir.path(), &[".", "--baseline", "b.json", "--json"]);
+    assert_eq!(exit, Some(1), "{stdout}{stderr}");
+    let messages = identity_messages(&stdout, "a.p");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("`IF` decides on an identity the client supplied")),
+        "{messages:?}"
+    );
+}

@@ -83,13 +83,20 @@
 //! "authorization could not be judged: the analysis cannot see a value it
 //! reads".
 //!
+//! In a file whose parse recovered, an include file too, the decisions that
+//! the parser kept are judged as in any file. A decision in the text it
+//! skipped is not seen, so a file that reads a request value also gets one
+//! finding, at its first such read (at its first token when an include it
+//! holds makes the read): "authorization could not be judged: the parse
+//! recovered".
+//!
 //! # What is not reported
 //!
 //! The identity of the session (`USERID`, the client principal), a value of
 //! another program (a shared variable, a parameter of a routine that code
 //! outside the file calls, unless it is read by an identity key: the identity
-//! is followed inside one file), and any decision in a file whose parse
-//! recovered.
+//! is followed inside one file), and a decision in the text that a recovered
+//! parse skipped when the file reads no request value.
 
 use oxabl_ast::{Expression, ExpressionKind, RunTarget, Span, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Label, SecurityMode, Severity};
@@ -136,6 +143,11 @@ pub const UNSETTLED_HELP: &str = "The values of this file pass through more rout
      another, than the analysis follows. Check by hand that the decisions of this routine take \
      the user, company and role from the session.";
 
+/// Remediation text of a file whose parse recovered.
+pub const RECOVERED_HELP: &str = "The parser could not read part of this file, so a decision \
+     there may read this request value unseen. Fix the syntax error, or check by hand that the \
+     decisions of this file take the user, company and role from the session.";
+
 /// Registry metadata.
 pub const META: RuleMeta = meta(
     ABLSEC010,
@@ -167,6 +179,7 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
         hits: Vec::new(),
     };
     walk_block(&mut v, program);
+    let recovered = v.gate.recovered_read();
     let flow = shared.flow(program, ctx);
     let mut hits = v.hits;
     hits.sort_by_key(|h| h.span.start);
@@ -184,10 +197,28 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
             None => groups.push((key, vec![h])),
         }
     }
-    groups
+    let mut out: Vec<Diagnostic> = groups
         .into_iter()
         .map(|(_, list)| report(ctx, list))
-        .collect()
+        .collect();
+    out.extend(recovered.map(|(span, word)| recovered_finding(ctx, span, &word)));
+    out
+}
+
+/// The finding of a file whose parse recovered and that reads a request
+/// value (`word`): a decision in the text the parser skipped may read it.
+fn recovered_finding(ctx: &AnalysisContext, span: Span, word: &str) -> Diagnostic {
+    finding(
+        ctx,
+        DEFAULT_SEVERITY,
+        ABLSEC010,
+        span,
+        format!(
+            "`{word}`: authorization could not be judged: the parse recovered; the decisions \
+             in the text the parser skipped were not judged"
+        ),
+        RECOVERED_HELP,
+    )
 }
 
 /// A routine (its unit, when one holds the decision) and an origin.

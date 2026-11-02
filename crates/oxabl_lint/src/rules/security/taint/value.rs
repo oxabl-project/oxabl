@@ -1078,19 +1078,21 @@ fn builtin(name: &str) -> Builtin {
     })
 }
 
+/// The built-in functions that read the request, and `OS-GETENV`.
+const SOURCES: [&str; 7] = [
+    "GET-VALUE",
+    "GET-FIELD",
+    "GET-CGI",
+    "GET-USER-FIELD",
+    "GET-COOKIE",
+    "GET-LONG-VALUE",
+    "OS-GETENV",
+];
+
 /// The decision a list makes for the function `name`; `None` for a name on
 /// no list, which [`builtin`] reads as Unknown when it is a built-in
 /// function.
 fn decision(name: &str) -> Option<Builtin> {
-    const SOURCES: [&str; 7] = [
-        "GET-VALUE",
-        "GET-FIELD",
-        "GET-CGI",
-        "GET-USER-FIELD",
-        "GET-COOKIE",
-        "GET-LONG-VALUE",
-        "OS-GETENV",
-    ];
     const NUMERIC: [(&str, usize); 31] = [
         ("INTEGER", 3),
         ("INT64", 5),
@@ -1163,6 +1165,38 @@ fn is_request(name: &str) -> bool {
     super::super::names::segments(name)
         .iter()
         .any(|w| w == "request" || w == "req")
+}
+
+/// The tokens of `source` that read a request value: a call of a web input
+/// function or of an `identity-sources` function, `WEB-CONTEXT:` or a member
+/// of a request-named object (`name:member`, with no space: `name: DO` is a
+/// block label).
+pub(crate) fn request_reads(source: &str, options: &Options) -> Vec<Span> {
+    let tokens = oxabl_lexer::tokenize(source);
+    tokens
+        .windows(3)
+        .filter_map(|w| {
+            let name = source.get(w[0].start..w[0].end)?;
+            if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                return None;
+            }
+            let read = match w[1].kind {
+                Kind::LeftParen => {
+                    (SOURCES.iter().any(|s| s.eq_ignore_ascii_case(name))
+                        && !name.eq_ignore_ascii_case("OS-GETENV"))
+                        || options.is_identity_source(name)
+                }
+                Kind::Colon if w[0].end == w[1].start && w[1].end == w[2].start => {
+                    name.eq_ignore_ascii_case("WEB-CONTEXT") || is_request(name)
+                }
+                _ => false,
+            };
+            read.then_some(Span {
+                start: w[0].start as u32,
+                end: w[0].end as u32,
+            })
+        })
+        .collect()
 }
 
 impl Compiler<'_> {

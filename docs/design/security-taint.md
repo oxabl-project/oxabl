@@ -364,7 +364,13 @@ decision that one reaches as not judged, once per routine and reason
 values of this file did not settle in the analysis"), so neither bound hides a
 decision. A decision on text it cannot read, or in a unit where an include did
 not arrive, is not judged either ("...: the analysis cannot see a value it
-reads").
+reads"). In a file whose parse recovered (an include file too), ABLSEC010
+judges the decisions that the partial tree holds, and, when the file's text
+reads a request value (a web input function, `WEB-CONTEXT:`, a member of a
+request-named object, an `identity-sources` function), adds one finding at
+the first such read (at the file's first token when the read is in text an
+include wrote): "...: the parse recovered", since a decision in the skipped
+text is not seen.
 
 ### The path
 

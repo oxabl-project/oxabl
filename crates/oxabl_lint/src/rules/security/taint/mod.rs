@@ -842,10 +842,10 @@ impl<'g> Gate<'g> {
     /// value of `kind` reaches them, or [`Judgement::unjudged`] when the
     /// analysis did not finish a value that reaches them (a work budget, or
     /// summaries that did not settle) or cannot see it (Unknown), so none of
-    /// these hides a decision. No decision in a file whose parse recovered is
-    /// reported.
+    /// these hides a decision. In a file whose parse recovered, the decisions
+    /// the parser kept are judged; see [`Gate::recovered_read`] for the rest.
     pub fn judge_decision(&self, operands: &[Span], kind: SinkKind) -> Option<Judgement> {
-        if operands.is_empty() || self.ctx.parse_recovered {
+        if operands.is_empty() {
             return None;
         }
         match self.reach(operands, kind, true) {
@@ -854,6 +854,43 @@ impl<'g> Gate<'g> {
             Reach::Unknown => Some(Judgement::unjudged(Unfinished::Unseen)),
             Reach::Clean => None,
         }
+    }
+
+    /// In a file whose parse recovered, the first read of a request value
+    /// and its text: a decision in the text the parser skipped may read it
+    /// unjudged. A read that an include wrote is placed at the first token of
+    /// the file's own text, so the finding stays in the file.
+    pub fn recovered_read(&self) -> Option<(Span, String)> {
+        if !self.ctx.parse_recovered {
+            return None;
+        }
+        let options = Options::new(self.ctx.lint_severities.security());
+        let reads = value::request_reads(self.ctx.source, &options);
+        let regions = self.ctx.include_regions;
+        let own = |s: &Span| {
+            let i = regions.partition_point(|r| r.end <= s.start);
+            regions.get(i).is_none_or(|r| r.start >= s.end)
+        };
+        let first = reads.first()?;
+        let text = |s: &Span| {
+            self.ctx
+                .source
+                .get(s.start as usize..s.end as usize)
+                .unwrap_or_default()
+                .to_string()
+        };
+        if let Some(read) = reads.iter().find(|s| own(s)) {
+            return Some((*read, text(read)));
+        }
+        let at = oxabl_lexer::tokenize(self.ctx.source)
+            .into_iter()
+            .filter(|t| !matches!(t.kind, oxabl_lexer::Kind::Eof | oxabl_lexer::Kind::Comment))
+            .map(|t| Span {
+                start: t.start as u32,
+                end: t.end as u32,
+            })
+            .find(|s| own(s))?;
+        Some((at, text(first)))
     }
 
     fn reach(&self, operands: &[Span], kind: SinkKind, decision: bool) -> Reach {
