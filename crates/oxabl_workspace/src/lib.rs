@@ -4,6 +4,8 @@ mod discovery;
 mod encoding;
 mod file_system;
 mod include_paths;
+mod observations;
+mod observing;
 mod workspace;
 
 pub use cached::CachedFileSystem;
@@ -20,4 +22,6 @@ pub use discovery::{
 pub use encoding::{DecodedSource, SourceDecoding, SourceEncoding};
 pub use file_system::{EncodedFileSystem, FileSystem, InMemoryFileSystem, RealFileSystem};
 pub use include_paths::find_workspace_root;
+pub use observations::{Observations, Observed, unobserved};
+pub use observing::ObservingFileSystem;
 pub use workspace::Workspace;

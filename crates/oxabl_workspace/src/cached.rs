@@ -53,7 +53,7 @@ struct Shard {
     /// Keyed by a hash of the search path and the name; the entries compare
     /// both, so a hash collision costs a search and never a wrong answer.
     resolved: FxHashMap<u64, Vec<Resolved>>,
-    ignoring_case: FxHashMap<(PathBuf, PathBuf), Vec<PathBuf>>,
+    ignoring_case: FxHashMap<(PathBuf, PathBuf), Arc<IgnoringCase>>,
 }
 
 /// Reads before a file's text is kept.
@@ -113,6 +113,12 @@ impl Read {
     }
 }
 
+/// What one case-insensitive lookup found and listed.
+struct IgnoringCase {
+    found: Vec<PathBuf>,
+    listed: Vec<PathBuf>,
+}
+
 struct Resolved {
     include_paths: Box<[PathBuf]>,
     name: Box<str>,
@@ -141,6 +147,25 @@ impl<F: FileSystem + ?Sized> CachedFileSystem<F> {
 
     fn shard_of(&self, key: &(impl Hash + ?Sized)) -> &RwLock<Shard> {
         self.shard(FxBuildHasher.hash_one(key))
+    }
+}
+
+impl<F: FileSystem + ?Sized> CachedFileSystem<F> {
+    fn ignoring_case(&self, dir: &Path, relative: &Path) -> Arc<IgnoringCase> {
+        let key = (dir.to_path_buf(), relative.to_path_buf());
+        let shard = self.shard_of(&key);
+        if let Some(known) = read_lock(shard).ignoring_case.get(&key) {
+            return Arc::clone(known);
+        }
+        let mut listed = Vec::new();
+        let found = self
+            .inner
+            .find_ignoring_case_listing(dir, relative, &mut listed);
+        let lookup = Arc::new(IgnoringCase { found, listed });
+        write_lock(shard)
+            .ignoring_case
+            .insert(key, Arc::clone(&lookup));
+        lookup
     }
 }
 
@@ -203,14 +228,18 @@ impl<F: FileSystem + ?Sized> FileSystem for CachedFileSystem<F> {
     }
 
     fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
-        let key = (dir.to_path_buf(), relative.to_path_buf());
-        let shard = self.shard_of(&key);
-        if let Some(known) = read_lock(shard).ignoring_case.get(&key) {
-            return known.clone();
-        }
-        let found = self.inner.find_ignoring_case(dir, relative);
-        write_lock(shard).ignoring_case.insert(key, found.clone());
-        found
+        self.ignoring_case(dir, relative).found.clone()
+    }
+
+    fn find_ignoring_case_listing(
+        &self,
+        dir: &Path,
+        relative: &Path,
+        listed: &mut Vec<PathBuf>,
+    ) -> Vec<PathBuf> {
+        let lookup = self.ignoring_case(dir, relative);
+        listed.extend(lookup.listed.iter().cloned());
+        lookup.found.clone()
     }
 
     /// `inner` with `decoding`, uncached, as a filesystem with another
