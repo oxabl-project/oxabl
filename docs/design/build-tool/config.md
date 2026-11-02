@@ -75,8 +75,8 @@ acme-util = "/opt/libs/acme-util.pl"
 | `state` | `.oxabl/build` | State directory. Must be under the root. |
 | `store` | `""` (in `state`) | Host directory for `state.db` only, for a root on a network filesystem. Absolute or relative. |
 | `exclude` | `[]` | Glob patterns (root-relative, `**` allowed) of root files that are not units. |
-| `[build.libraries]` | `{}` | Procedure libraries outside the root and outside `$DLC`: a logical name and the library's path **as the worker sees it**. `include_paths` names them as `$LIB:<name>`. The worker reports the SHA-256 of each library's bytes, and the key holds it ([compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)). |
-| `[build.external_packages]` | `{ "OpenEdge." = ["$DLC"], "Progress." = ["$DLC"] }` | Class name prefix to the library entries that supply it. `"$DLC"` means any library under `$DLC` on the unit PROPATH. An unresolved class under a prefix keeps the unit keyable only when one of the listed libraries is on the unit PROPATH (so its bytes are in the key); any other unresolved class makes the unit unkeyable ([compile-key.md](compile-key.md#the-fail-closed-rule)). |
+| `[build.libraries]` | `{}` | Procedure libraries outside the root and outside `$DLC`: a logical name and the library's path **as the worker sees it**. `include_paths` names them as `$LIB:<name>`. The worker reports the SHA-256 of each library's bytes, and the key holds it ([compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)). A `$LIB:` entry that is a directory (a folder of r-code) has no such hash: every unit with it on its PROPATH is unkeyable (K6). |
+| `[build.external_packages]` | `{ "OpenEdge." = ["$DLC"], "Progress." = ["$DLC"] }` | Class name prefix to the library entries that supply it. `"$DLC"` means any `.pl` library under `$DLC` on the unit PROPATH with a `sha256:` digest; directory entries do not count. An unresolved class under a prefix keeps the unit keyable only when one of the listed libraries is on the unit PROPATH (so its bytes are in the key); any other unresolved class makes the unit unkeyable ([compile-key.md](compile-key.md#the-fail-closed-rule)). |
 
 ### `[build.outputs]`
 
@@ -161,25 +161,27 @@ local_max_size = "20GiB"
 | `enabled` | `true` | Both caches. |
 | `remote` | `true` when `.oxabl/cache.toml` exists, else `false` | Use the remote cache. `true` without `.oxabl/cache.toml` is a configuration error. |
 | `idle_timeout` | `30s` | A remote or local fetch with no progress for this long ends; the keys not yet reported are misses. |
-| `local` | the user cache directory | Host path of the local cache (developer mode). |
-| `local_job_dir` | `""` | In CI or `ci` mode, the per-job local cache directory, emptied at the start of each build. Empty means no local cache in CI ([cache.md](cache.md#trust)). |
+| `local` | the user cache directory | Host path of the shared local cache, used only in `developer` mode. |
+| `local_job_dir` | `""` | In `ci` and `read-only` modes, the per-job local cache directory. It must be absent or empty the first time (then oxabl marks it with `.oxabl-cache-job`); the workspace root, its ancestors, `$HOME` and `/` are refused; oxabl deletes only `v1/` beneath it at the start of each build. Empty means no local cache outside `developer` mode ([cache.md](cache.md#trust)). |
 | `local_max_size` | `20GiB` | Eviction limit. |
 
 There is no `[build.cache.remote]` table. The remote cache's own settings (`server`,
 `cache`, `owner_keys`, `min_roster_version`) are in `.oxabl/cache.toml`, a file that the
 oxabl-cache client owns and that the repository commits
 ([cache.md](cache.md#configuration-and-trust-root)). No oxabl file, overlay, flag or
-environment variable can set `owner_keys` or `min_roster_version`.
+environment variable can set `tenant`, `owner_keys` or `min_roster_version`; a trust
+variable in the environment stops the build with exit code 2
+([cache.md](cache.md#configuration-and-trust-root)).
 
 ## Environment variables
 
 | Variable | Meaning |
 | --- | --- |
 | `OXABL_DLC_SOURCES` | Overrides `[workspace.sources].dlc`. |
-| `OXABL_CACHE_DIR` | Overrides `[build.cache].local`. |
+| `OXABL_BUILD_CACHE_DIR` | Overrides `[build.cache].local`. Oxabl's own variables never use the client's `OXABL_CACHE_` prefix. |
 | `OXABL_BUILD_OVERLAY` | A path, as `--config-overlay`. |
-| `CI` | When set, the local cache follows the CI rule ([cache.md](cache.md#trust)). |
-| `OXABL_CACHE_MODE` | Read by the client (`ci`, `developer`, `read-only`); oxabl reads it only for the CI rule of the local cache. |
+| `CI` | When set and `OXABL_CACHE_MODE` is not, the mode is `read-only` and the shared local cache is off ([cache.md](cache.md#trust)). |
+| `OXABL_CACHE_MODE` | Read by the client (`ci`, `developer`, `read-only`); oxabl also reads it, because the shared local cache is on only in `developer` mode. CI systems that do not set `CI` must set it. |
 | `OXABL_CACHE_SERVER`, `OXABL_CACHE_IDENTITY`, `OXABL_CACHE_TOKEN`, OIDC variables | Read by the client. Oxabl never reads a credential. |
 
 Precedence for one key: CLI flag, then environment variable, then overlay, then

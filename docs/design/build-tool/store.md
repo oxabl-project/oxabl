@@ -201,7 +201,11 @@ format.
 - `varint` is unsigned LEB128.
 - `edges` and `observations`: `varint count`, then the entries sorted by `(kind,
   path_id)`. Each entry is `u8 kind` and `varint delta`, where `delta` is the path id minus
-  the previous path id of the same kind (the first of each kind is the id itself).
+  the previous path id of the same kind (the first of each kind is the id itself). A class
+  edge (kinds `3` and `7`) also carries `varint length` and the UTF-8 class name that
+  reached the target, because the class-conflict rule compares names
+  ([compile-key.md](compile-key.md#class-conflicts)); class edges sort by `(kind, path_id,
+  name)`, so one target reached by two spellings gives two entries with delta `0`.
 - `unresolved`: `varint count`, then each entry as `u8 kind`, `u8 reason`, `varint length`
   and the UTF-8 name, sorted by `(kind, name)`.
 - `completeness`: `varint count`, then one `u8` per degraded reason, sorted. Count 0 means

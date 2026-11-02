@@ -153,8 +153,9 @@ it as a lost worker.
    - the predefined names equal what oxabl analysed with (see below).
 4. Oxabl sends `SCHEMA <ldb>` for each database and reads the images.
 5. Oxabl sends `HASH` for each library entry of every unit PROPATH (including the DLC
-   default entries from the `propath` field) and for each startup parameter value
-   ([compile-key.md](compile-key.md#startup-parameters)), and reads the answers.
+   default entries from the `propath` field), for each startup parameter value
+   ([compile-key.md](compile-key.md#startup-parameters)) and for each `$DLC/...` file in a
+   closure of the build, and reads the answers.
 
 The whole handshake must end within `[build.workers].start_timeout` (default 60 s).
 
@@ -270,8 +271,10 @@ OpenEdge version, and the version is in the environment anyway.
 
 ## Hashing worker-side files
 
-Some inputs are files that only the worker can see: procedure libraries (the DLC default
-entries, `$LIB:` entries, a `.pl` under `$DLC`) and file-valued startup parameters. For
+Some inputs are files whose compile-time copy only the worker can see: procedure libraries
+(the DLC default entries, `$LIB:` entries, a `.pl` under `$DLC`), file-valued startup
+parameters, and each `$DLC/...` file in a closure (the host mirror can differ from the copy
+the AVM compiles with; [compile-key.md](compile-key.md#hash-function)). For
 `HASH <id> <path>`, the worker resolves the path (relative paths against its working
 directory, `$DLC/` against `OS-GETENV("DLC")`, `$LIB:<name>` as oxabl expanded it from
 `[build.libraries]`), checks it with `FILE-INFO`, and for a file reads its bytes with
@@ -301,36 +304,19 @@ workers start, the build goes on with them and prints a warning.
 
 ### Dispatch
 
-An idle worker takes the next ready job ([the scheduler](../build-tool.md#scheduler)) that its
-session may compile (see below). Oxabl sends `PROPATH` and `OPTIONS` lines the first time a
+An idle worker takes the next ready job ([the scheduler](../build-tool.md#scheduler)). Oxabl sends `PROPATH` and `OPTIONS` lines the first time a
 request needs an id that the worker does not know yet, then `COMPILE` and the `UNIT` lines.
 
-### Class-resolution groups
+### Class conflicts and sessions
 
 `COMPILER:MULTI-COMPILE` keeps each class that a session has compiled, by class name, and
-does not drop it when `PROPATH` changes. When two units have PROPATHs that resolve one
-class name to different files (`a/pkg/Foo.cls` for one, `b/pkg/Foo.cls` for the other,
-which happens with `root_relative_include_paths`), one session that compiles both would
-give the second unit the first unit's class. The key would name the right file and the
-r-code would not match it. Check V3 cannot see this, because the compiler opens no new
-file.
-
-So, before dispatch, oxabl computes from the graph, for each pair of PROPATH ids in the
-build, whether they **conflict**: some class name that a unit with one id references
-resolves, under the other id, to a different file (or to none). Each worker session has a
-**bound set** of PROPATH ids, empty at start:
-
-- A job may go to a worker when its PROPATH id conflicts with no id in the bound set; the id
-  joins the set.
-- Otherwise the worker gets `QUIT` and a new session starts in its slot, with an empty set.
-  The scheduler prefers jobs that need no restart, and among them the one with the highest
-  priority.
-
-When the build has no conflict, no worker restarts. The OpenEdge suite test
-`multicompile_propath_isolation` shows the cross-talk with one session and shows that the
-restart removes it. Turning `MULTI-COMPILE` off and on between ids would be cheaper; it
-replaces the restart only after an OpenEdge-suite test proves that it clears the session's
-classes.
+does not drop it when `PROPATH` changes. All units also share one `$OUT` tree, where one
+class name has one `.r`. So when one class name resolves to two files in a build, the
+compiler can give a unit the other file's class, whatever the session. Worker restarts
+cannot fix the shared `$OUT`, so the pool does not try: the plan makes every unit that
+reaches such a name unkeyable (K8, [compile-key.md](compile-key.md#class-conflicts)), and
+any worker may compile it, as the AVM would. When the build has no class conflict, sessions
+are shared freely and every key is sound.
 
 ### Timeouts
 
@@ -360,8 +346,9 @@ write to one place.
 On the first `SIGINT` or `SIGTERM`, oxabl stops dispatching. Busy workers finish their
 current unit within `[build.workers].cancel_grace` (default 30 s); their results are
 promoted and recorded. Then every worker gets `QUIT`, and any that is still busy is killed.
-A second signal kills every worker at once. Oxabl writes no cache entries for a cancelled
-build. The exit code is 130.
+A second signal kills every worker at once. Oxabl uploads the units that already passed
+verification, V2 included, then finishes the uploader; it uploads nothing for units that
+were still compiling ([cache.md](cache.md#build-flow-with-a-cache)). The exit code is 130.
 
 ### Shutdown
 

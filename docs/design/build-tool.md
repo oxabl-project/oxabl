@@ -89,11 +89,11 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
 | D5 | The compile key uses the full source of every file in the closure and a full schema image per database. | Conservative and simple to prove. | Signature-aware keys now: they need a proof that does not exist yet. Per-table schema CRCs: the CRC does not cover labels, formats and validation that the compiler puts in r-code. |
 | D6 | The environment comes from a probe of the real worker at each build, never from configuration alone. The predefined names that oxabl analysed with must equal what the worker reports, or the build stops. | The AVM is the only source of truth for what it compiles with. | Trust `oxabl.toml`: a stale value gives wrong keys with no signal. |
 | D7 | The worker protocol is line-based text over the worker's stdin and stdout. | It works through any command (`docker exec -i`, `kubectl exec -i`, a local `_progres`) with no ports and no network setup. End of stdin stops the worker, so a dead oxabl leaves no orphan workers. | TCP: port races, bind addresses, a firewall and an orphan registry. |
-| D8 | Workers live for one build, and one session never compiles two units whose PROPATHs resolve one class name to different files (a restart separates them). | No daemon is needed. `MULTI-COMPILE` keeps classes by name across PROPATH changes; separate sessions keep the compiled class equal to the keyed file. | A persistent pool: it needs a daemon (follow-up). `MULTI-COMPILE` off: slower for every build, to fix a case that only conflicting PROPATHs have. |
+| D8 | Workers live for one build. A class name that resolves to two files in one build makes every unit that reaches it unkeyable (K8); those units still compile, as the AVM resolves them. | No daemon is needed. The shared `$OUT` tree and `MULTI-COMPILE` both resolve a class by name, so no session rule can make such a key sound; the build must still work for codebases with override directories. | A persistent pool: it needs a daemon (follow-up). An output tree per PROPATH id: one class name with two `.r` files is ambiguous at run time anyway. Exit 2 on a conflict: real codebases with override directories must keep building. |
 | D9 | A fake AVM (`oxabl_fake_avm`, a test-only binary) implements the protocol from the document, with no oxabl dependency. | It stands in for Progress, not for oxabl. A shared codec would hide a codec bug on both sides. | A mock inside the tests: it fakes the program under test. |
 | D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema probe gives the same image, and the compiler opened no file outside the closure (from the compiler-resolved `XREF-XML`). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
-| D13 | The remote cache's configuration and root of trust (`owner_keys`, `min_roster_version`) live only in the client's committed `.oxabl/cache.toml`. `oxabl.toml` has build-side switches only. | Whoever controls the environment of a build must not be able to replace the pinned owner keys. | Remote settings in `oxabl.toml`: the overlay could replace the root of trust. |
-| D14 | The local cache trusts every process of the OS user, so it is off in CI unless a per-job directory is configured. | On a shared CI runner, an untrusted job could plant an entry that a trusted job installs without a signature check. | A local cache with signatures: it needs the remote keys on every machine and duplicates the client. |
+| D13 | The remote cache's configuration and root of trust (`tenant`, `owner_keys`, `min_roster_version`) live only in the client's committed `.oxabl/cache.toml`. `oxabl.toml` has build-side switches only. | Whoever controls the environment of a build must not be able to replace the pinned owner keys. | Remote settings in `oxabl.toml`: the overlay could replace the root of trust. |
+| D14 | The local cache trusts every process of the OS user, so the shared one is on only in `developer` mode; `ci` and `read-only` use a marked per-job directory or none. | On a shared CI runner, an untrusted job could plant an entry that a trusted job installs without a signature check. | A local cache with signatures: it needs the remote keys on every machine and duplicates the client. |
 | D11 | Store format changes rebuild the store. There are no migrations. | The store is a derived cache. Migrations were the largest source of complexity in the downstream store. | Versioned migrations. |
 | D12 | One writer per workspace through a lock file. `--plan` reads a snapshot with no lock. | Simple and enough: one build per workspace at a time. | Multi-writer SQLite: id minting races and interleaved refreshes. |
 
@@ -328,13 +328,11 @@ never compiled on its own.
    compiles a cycle of classes in one `MULTI-COMPILE` session.
 6. **Fetches.** A unit whose key is being fetched is a pending component. A hit finishes
    it; a miss makes it a job. Jobs that wait on no pending component start at once.
-7. **Sessions.** A worker takes only jobs that its session may compile without class
-   cross-talk ([class-resolution groups](build-tool/worker-protocol.md#class-resolution-groups)).
-8. **Failure does not block.** A failed job finishes. Its dependents still compile; the
+7. **Failure does not block.** A failed job finishes. Its dependents still compile; the
    compiler can often resolve from source. They are **tainted**: they are recorded, but
    they are never written to a cache. The failed unit's old outputs are deleted, so no
    dependent compiles against stale r-code.
-9. **Retry pass.** After the queue is empty, each failed unit compiles once more, in the
+8. **Retry pass.** After the queue is empty, each failed unit compiles once more, in the
    same order rules, on the same pool. A unit can fail only because something it uses was
    not compiled yet through a reference that the graph does not model. A unit that
    succeeds on retry counts as one success.
@@ -379,7 +377,10 @@ entries, then `[workspace.sources].include_paths`, then the DLC default entries
 ([compile-key.md](build-tool/compile-key.md#the-unit-propath-and-the-compile-name)). The output directory comes first, so a
 unit that uses a class reads the r-code that this build just made for it. The scheduler
 order makes that r-code current. The prune step and the delete-on-failure rule make sure
-no stale or orphan r-code is there.
+no stale or orphan r-code is there. Because every unit reads the one `$OUT` tree, a class name that
+resolves to two files in the build cannot be compiled soundly for both; the plan makes the
+units that reach it unkeyable (K8,
+[compile-key.md](build-tool/compile-key.md#class-conflicts)) and warns once per name.
 
 ## CLI surface
 
@@ -478,7 +479,9 @@ a black-box acceptance test. The tests are in [testing.md](build-tool/testing.md
    through `Config::from_repo`. *Acceptance:* tests against the real oxabl-cache server
    binary: CI writes, a second workspace fetches everything; a server that returns garbage
    gives misses and a correct build; a server that is down gives a correct build; a slow
-   server that keeps sending is not cut off; an overlay that names `owner_keys` is exit 2.
+   server that keeps sending is not cut off; an overlay that names `owner_keys` is exit 2;
+   each trust variable in the environment (`TrustOverride`) is exit 2; a non-default output
+   layout uploads and installs correctly.
 9. **Handover.** `--config-overlay`, the event stream documentation, the downstream wrapper
    guide. *Acceptance:* an overlay test (overlay wins key by key; an unknown key is an
    error; a secret-looking key is refused); the downstream tool's own test suite passes

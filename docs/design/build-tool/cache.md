@@ -98,9 +98,13 @@ pub trait ArtifactUploader: Send {
 ```
 
 - **`fetch` streams.** It takes all requests in one call (the cache batches on the wire)
-  and calls `on_outcome` once per key, as each one completes. An installed set is complete
-  and verified under `stage/<key hex>/` at its artifact paths before its outcome is
-  reported, and it stays installed whatever happens to later keys. `expect` is the list of
+  and calls `on_outcome` once per key, as each one completes. Every key of one call is
+  installed into one tree, `stage/<artifact path>`: artifact paths are unique per build
+  after the output-collision rule
+  ([compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)), so no two keys
+  share a path. An installed set is complete and verified at its artifact paths before its
+  outcome is reported, and it stays installed whatever happens to later keys. Oxabl
+  promotes from there. `expect` is the list of
   artifact paths oxabl requires; a set with another list is a `Miss` with reason
   `PathMismatch`. A key the call never reports (a crash of the adapter, a timeout) is a
   miss. `Origin` names the cache, and for a remote hit its tier and signer.
@@ -112,9 +116,13 @@ pub trait ArtifactUploader: Send {
   (`Durability::Caller` in the client). Oxabl calls `syncfs(2)` on the stage filesystem
   once before it promotes a batch of fetched sets
   ([store.md](store.md#crash-safety)).
-- **`uploader` streams.** Oxabl `push`es one set at a time during the build, as soon as the
-  unit passes verification. A set names files on disk, not bytes; the cache reads them
-  lazily and applies its own back-pressure, so memory stays bounded. `push` may block for
+- **`uploader` streams.** `uploader()` takes no root. Oxabl `push`es one set at a time
+  during the build, as soon as the unit passes verification. Each `ArtifactFileRef` names
+  two places: `path`, the artifact path (relative to the logical artifact root, validated
+  by the cache), and `disk_path`, the absolute path of the promoted file in its configured
+  output directory. The cache opens `disk_path` with `O_NOFOLLOW` and reads it lazily, and
+  applies its own back-pressure, so memory stays bounded. Output directories need not share
+  a parent. `push` may block for
   back-pressure. The cache must check, when it reads a file, that its size and BLAKE3 hash
   equal `size` and `blake3`, and must drop the set otherwise: a file that changed after
   verification is never stored. `finish` flushes and returns one outcome per key.
@@ -142,9 +150,11 @@ After the plan ([build-tool.md](../build-tool.md#the-build-flow), step 6):
    hashes each promoted file itself for the `outputs` table; the client reports no per-file
    hash, and oxabl does not need one. The
    node is finished. A `Miss` turns the node into a compile job.
-4. **Local fill.** Each remote hit is also stored in the local cache (when the local cache
-   is on), by reflink or hard link from the stage where the filesystem allows it, and by
-   copy otherwise. The local entry records the remote tier and signer.
+4. **Local fill.** After promotion, each remote hit is also stored in the local cache (when
+   the local cache is on), by reflink or hard link **from the final path**, and by copy
+   otherwise. The promoted file is the only copy left once the stage file is renamed away,
+   and the verified local read covers any later edit of it. The local entry records the
+   remote tier and signer.
 5. **Compile** the rest.
 6. **Verify and write** each compiled unit as it completes
    ([Verification](#verification)): a unit that passes goes to the local cache and is
@@ -152,8 +162,10 @@ After the plan ([build-tool.md](../build-tool.md#the-build-flow), step 6):
 7. At the end of the build, `finish` the uploader and print the store outcomes in the
    summary.
 
-A cancelled build stops pushing at once and calls `finish` with what was pushed. Sets
-already pushed passed verification, so they are valid entries.
+**Cancel.** A cancelled build uploads the units that already passed verification, V2
+included (sets already pushed, and held sets that a V2 probe has released), then calls
+`finish`. It uploads nothing for units that are still compiling, and nothing for held
+sets that no V2 probe has released yet: oxabl starts no new probe after a cancel.
 
 ### Which units are written
 
@@ -178,9 +190,24 @@ with compiling.
 
 | Check | How | On failure |
 | --- | --- | --- |
-| V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. Every hash must equal the hash the key used. | The unit is not written. |
+| V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. A `$DLC/...` file is hashed again by an idle worker (`HASH`), from the copy the AVM compiles with, not from the host mirror. Every hash must equal the hash the key used. | The unit is not written. |
 | V2 schema | The schema images are probed again by one idle worker before each upload batch is released (every 60 s or 500 units, and at the end). A unit is released only after a probe that **started after the unit finished** gives the images of the handshake. | Every held and later unit of this build is not written. |
 | V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
+
+### What V3 covers
+
+V3 is proven for **includes**: `xref_xml_resolution` shows that the `Source` elements name
+every include the compiler opened, as it resolved it. Whether they also name class sources
+that `MULTI-COMPILE` compiles implicitly, r-code read from `$OUT`, or r-code read from a
+`.pl`, is not established. The OpenEdge test `xref_xml_classes` records what `XREF-XML`
+lists for a unit that uses a class from source, from `$OUT` r-code and from a `.pl`.
+
+Until that test passes and this section maps those names (an `$OUT/<stem>.r` name to the
+class unit with that stem, which must be in the closure; a `.pl` member to its library
+entry, which must be on the unit PROPATH with a `sha256:` digest), V3 for a unit whose
+closure holds a class checks includes only. A `Source` name that is r-code under `$OUT` or a
+`.pl` member is then skipped, not failed. Class resolution is protected by the class-conflict
+rule (K8, [compile-key.md](compile-key.md#class-conflicts)), not by V3.
 
 V2 has one residual case: a schema that changes and changes back between two probes, with
 a compile in between. This needs two dictionary loads into the build's database during
@@ -209,18 +236,29 @@ developer's own machine. It is wrong for a CI runner that runs untrusted jobs (p
 from forks) and trusted jobs (protected branches) as one user, because an untrusted job
 could plant an entry that a trusted job would install.
 
-So:
+So the local cache is on **only in `developer` mode**. Oxabl resolves the mode as the client
+does: `OXABL_CACHE_MODE` when set; otherwise `read-only` when the `CI` variable is set;
+otherwise `developer`.
 
-- **CI and `ci` mode.** When `OXABL_CACHE_MODE` is `ci`, or the `CI` environment variable is
-  set, the local cache is **off**, unless `[build.cache].local_job_dir` names a directory.
-  That directory is the local cache for the job, and oxabl deletes everything in it at the
-  start of each build. A CI job then gets its cache from the remote cache, where the
-  signature and tier checks run.
-- **Developer mode.** The local cache is on by default. The documentation for users says
+- **`ci` and `read-only` modes.** The shared local cache is off. A read-only packaging job on
+  a shared runner is exactly the job that must not install a planted entry. A CI system that
+  does not set `CI` (for example Jenkins, TeamCity or Bamboo agents) must set
+  `OXABL_CACHE_MODE`; the user documentation says so, and without it the job runs in
+  `developer` mode with the shared local cache on.
+- **Per-job directory.** In `ci` and `read-only` modes, `[build.cache].local_job_dir` can name
+  a directory that serves as the local cache for one job. Oxabl treats it like an output
+  directory ([output ownership](../build-tool.md#output-ownership)):
+  - the first time, it must be absent or empty; oxabl then writes the marker
+    `.oxabl-cache-job` into it. A directory with files and no marker stops the build with
+    exit code 2, and nothing is deleted;
+  - oxabl refuses (exit code 2) the workspace root, any ancestor of it, `$HOME` and `/`;
+  - at the start of each build oxabl deletes only `v1/` beneath it, never anything else.
+- **`developer` mode.** The shared local cache is on by default. The user documentation says
   that it trusts every process of the user.
-- **Provenance.** A local entry that came from a remote hit records the tier and the signer
-  in its manifest. `--report` shows them for a local hit, so a user can see where an
-  installed artifact came from.
+- **Provenance is informational.** A local entry that came from a remote hit records the
+  tier and the signer in its manifest. Nothing authenticates that line: a process of the
+  same user can write any value into it. `--report` therefore shows it as
+  `origin (unverified): remote <tier> <signer>`, and it never changes what oxabl trusts.
 
 ### Location
 
@@ -311,20 +349,31 @@ unification).
 ### Configuration and trust root
 
 The client owns its configuration. It is one file, **`.oxabl/cache.toml`**, committed in the
-customer's repository, with the keys `server`, `cache` (the `c_...` id), `owner_keys` and
-`min_roster_version`. The adapter loads it with `Config::from_repo(root)`.
+customer's repository, with the keys `server`, `tenant` (the `t_...` id), `cache` (the
+`c_...` id), `owner_keys` and `min_roster_version`. The adapter loads it with
+`Config::from_repo(root)`.
 
-- `owner_keys` and `min_roster_version` are the root of trust. Nothing in oxabl can set or
-  override them: not `oxabl.toml`, not the overlay, not a flag, not an environment variable.
-  The oxabl configuration schema has no key for them, so an overlay or an `oxabl.toml` that
-  names them is an unknown-key error (exit code 2).
+- `tenant`, `owner_keys` and `min_roster_version` are the root of trust. Nothing in oxabl
+  can set or override them: not `oxabl.toml`, not the overlay, not a flag, not an
+  environment variable. The oxabl configuration schema has no key for them, so an overlay
+  or an `oxabl.toml` that names them is an unknown-key error (exit code 2).
+- **`TrustOverride` is exit 2, not a miss.** When `Config::from_repo` fails with
+  `ConfigError::TrustOverride` (the environment sets one of the trust variables that the
+  client refuses, such as `OXABL_CACHE_OWNER_KEYS`, `OXABL_CACHE_MIN_ROSTER_VERSION`,
+  `OXABL_CACHE_CACHE` or `OXABL_CACHE_TENANT`), `oxabl build` stops with exit code 2 and
+  names the variable. This is the one cache error that is not a miss: an attempt to replace
+  the root of trust must be loud. Every other configuration error of the client is reported
+  once, and the build runs without the remote cache.
+- The OIDC audience is always `oxabl-cache:<tenant id>`, derived by the client from
+  `tenant`. The client never takes an audience from the server.
 - `server` may be overridden by `OXABL_CACHE_SERVER`; the client reads that variable. The
   server is untrusted anyway.
 - Mode (`ci`, `developer`, `read-only`) and credentials come from the environment
   (`OXABL_CACHE_MODE`, which is exactly `ci`, `developer` or `read-only`;
-`OXABL_CACHE_IDENTITY`; `OXABL_CACHE_TOKEN`; OIDC detection on CI systems that issue ID
-tokens, while CI systems without them, such as Gitea Actions today, use a token) or the
-  client's flags. Oxabl passes them through and never reads, stores or prints a credential.
+  `OXABL_CACHE_IDENTITY`; `OXABL_CACHE_TOKEN`; OIDC with any issuer that publishes discovery
+  and JWKS; Gitea Actions uses scoped tokens) or the client's flags. Oxabl passes them
+  through and never reads, stores or prints a credential. Oxabl itself reads only
+  `OXABL_CACHE_MODE` and `CI`, for the local cache rule.
 
 `oxabl.toml` holds only the build-side switches ([config.md](config.md#buildcache)):
 `[build.cache] remote` (default: on when `.oxabl/cache.toml` exists) and the idle timeout.

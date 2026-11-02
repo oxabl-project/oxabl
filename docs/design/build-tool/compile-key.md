@@ -36,6 +36,16 @@ comes from who wrote it (the oxabl-cache design), not from a comparison.
 - **Content hash** of a file: `BLAKE3(bytes)`, the standard unkeyed BLAKE3 hash of the raw
   file bytes, 32 bytes. No decoding, no line-ending change, no BOM removal: the compiler
   reads bytes. `b3sum` gives the same value.
+
+  Exception: a file under `$DLC` is hashed **by the worker**, from the copy that the AVM
+  compiles with, as `SHA-256(bytes)` (the worker computes SHA-256 natively). In a closure
+  entry its algorithm is `sha256`; for every other file it is `blake3`. The worker hashes
+  each `$DLC/...` closure file once per build (`HASH`,
+  [worker-protocol.md](worker-protocol.md#hashing-worker-side-files)). Oxabl also hashes the
+  host mirror's copy with SHA-256; when the two differ, every unit with that file in its
+  closure is unkeyable (K6, `dlc-mirror-mismatch: <path>`), because the analysis read
+  other bytes than the compiler will. So a patch to an include inside the OpenEdge
+  installation changes the key even when the first line of `$DLC/version` does not change.
 - **Derived hashes** use BLAKE3 in derive-key mode (`blake3::Hasher::new_derive_key`) with
   a context string. The context string gives domain separation and carries the spec
   version:
@@ -107,7 +117,10 @@ Duplicates after the first are removed.
 
 Each entry is a directory or a procedure library. In the key, an entry carries a **digest**:
 
-- `dir` for a directory. Its files enter the key through the closure, file by file.
+- `dir` for a directory under the root or under `$DLC`. Its source files enter the key
+  through the closure, file by file. A `$LIB:` entry that the worker reports as a directory
+  (a folder of r-code) has no digest that covers its bytes: every unit with it on its
+  PROPATH is unkeyable (K6, `unhashable-library: $LIB:<name>`).
 - `sha256:<64 lower-case hex>` for a library (a `.pl` file, or any entry that the worker
   reports as a file): the SHA-256 of the library's bytes, which the worker computes and
   reports ([worker-protocol.md](worker-protocol.md#hashing-worker-side-files)). A library
@@ -164,10 +177,38 @@ The closure is computed iteratively with a visited set over the in-memory graph,
 end.
 
 The closure assumes that the compile resolves each class name to the file that the analysis
-resolved under the unit PROPATH. A `MULTI-COMPILE` session keeps a class it has compiled
-under its name, even after PROPATH changes. The worker pool therefore never lets one session
-compile two units whose PROPATHs resolve one class name to different files
-([worker-protocol.md](worker-protocol.md#class-resolution-groups)).
+resolved. That holds only when every class name has **one** file in the build. Two things
+make the compiler use another file than the analysis: the shared `$OUT` tree (one class name
+has one `.r` there, whichever source produced it), and a `MULTI-COMPILE` session (it keeps a
+class by name after PROPATH changes). So a class name that resolves to two files in one
+build makes every unit that reaches it unkeyable ([K8](#class-conflicts)).
+
+### Class conflicts
+
+At plan time, oxabl collects every **class resolution** in the build: each class edge of
+each analysed node (its class name and its target file), and each class unit (its own class
+name and its own file). A class name is **in conflict** when it has two or more different
+target files, under any two PROPATH ids of the build. Names compare ignoring ASCII case, as
+the AVM does.
+
+Each keyable unit whose closure (transitively, including super classes, interfaces and the
+classes that those name) holds a class edge with a conflicting name, or that is itself a
+class unit with a conflicting name, is unkeyable under K8. The build prints one warning per
+conflicting name with both files, for example:
+
+```text
+warning: class pkg.Foo resolves to two files in this build: a/pkg/Foo.cls, b/pkg/Foo.cls;
+         12 units that use it are compiled without a key
+```
+
+The build does not stop. It compiles these units as the AVM resolves them, so real
+codebases with override directories keep building. Their local output follows the AVM's
+resolution, which can differ from oxabl's analysis (for example, `b/y.p` can compile
+against `a`'s `pkg/Foo.r` in `$OUT`). Such units are never fetched from a cache and never
+written to one.
+
+Rejected: an output tree per PROPATH id. At run time one class name with two `.r` files is
+ambiguous anyway, so the separate trees would only move the conflict to deployment.
 
 ## Environment identity
 
@@ -323,7 +364,7 @@ change how a unit compiles, so it changes every key.
 material =
     section("unit")         str(unit_path) str(compile_name) hash(content(unit))
     section("closure")      list(entry, closure sorted by path bytes)
-                            entry = str(path) hash(content(path))
+                            entry = str(path) str(algorithm) hash(content(path))
     section("propath")      list(propath_entry, unit PROPATH in search order)
                             propath_entry = str(entry) str(digest)
     section("environment")  hash(environment_identity)
@@ -372,12 +413,14 @@ gives each reason.
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
 | K6 | The environment was not established in this build (no probe, a failed probe, or a schema probe failure for any database). | `environment-unknown` |
 | K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`). | the skip reason |
+| K8 | The closure holds a class name that resolves to two files in this build ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
 
 `[build.external_packages]` maps a class name prefix to the library entries that supply
-it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any library under
-`$DLC` on the unit PROPATH; the DLC default entries are always there. A prefix whose
-libraries are not on the unit PROPATH leaves the unit unkeyable: no prefix is trusted by
-name alone. A workspace that ships its own classes under such a prefix has them as files,
+it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any `.pl` library
+under `$DLC` on the unit PROPATH whose digest is `sha256:`; a `dir` entry such as `$DLC/tty`
+does not count. A prefix is accepted only through an entry with a `sha256:` digest, so the
+library's bytes are in the key. A prefix whose libraries are not on the unit PROPATH, or
+have no `sha256:` digest, leaves the unit unkeyable: no prefix is trusted by name alone. A workspace that ships its own classes under such a prefix has them as files,
 and then they are edges, not unresolved names.
 
 Two more rules govern cache **writes** only. They do not remove the key:
@@ -399,7 +442,7 @@ Schema image of database `ledger`, two records:
 
 ```text
 ["db", "_db-coll-name=ICU-UCA", "_db-type=PROGRESS", "_db-xl-name=UTF-8"]
-["table", "customer", "_can-read=*", "_crc=12345", "_dump-name=customer", "_prime-index=custnum"]
+["table", "customer", "_can-read=*", "_crc=12345", "_dump-name=customer", "_prime-index=index/customer/custnum"]
 ```
 
 Environment:
@@ -412,22 +455,29 @@ parameters   [("-cpinternal","UTF-8"), ("-cpstream","UTF-8"), ("-d","mdy"), ("-i
 databases    [("ledger", "PROGRESS", ["dictdb"], <schema identity>)]
 ```
 
-Unit `src/ar/post.p`, compile name `ar/post.p`, bytes `{inc/ledger.i}\nMESSAGE "post".\n`.
-Closure: `src/inc/ledger.i`, bytes `DEFINE VARIABLE x AS INTEGER NO-UNDO.\n`. Unit PROPATH:
-`$OUT` (`dir`), `src` (`dir`), `$DLC/tty/netlib/OpenEdge.Net.pl` (`sha256:` of the bytes
-`library bytes`, which is
-`8c45ce4e5a5cb0c03670ca09e153a24b1c7b7f94141c4da68f31ce8e91bc1bf8`). Default compile options. Outputs: `rcode`. Worker program bytes:
-`/* oxabl worker */\n`.
+Unit `src/ar/post.p`, compile name `ar/post.p`, bytes
+`{inc/ledger.i}\n{adecomm/x.i}\nMESSAGE "post".\n`.
+
+Closure, sorted by path bytes:
+
+| Path | Algorithm | Bytes | Hash |
+| --- | --- | --- | --- |
+| `$DLC/src/adecomm/x.i` | `sha256` (worker) | `DEFINE VARIABLE y AS CHARACTER NO-UNDO.\n` | `63789d696f620f34d75a81ee06dbac5cc9f6be2bccee4052f067e021ffa1acdd` |
+| `src/inc/ledger.i` | `blake3` | `DEFINE VARIABLE x AS INTEGER NO-UNDO.\n` | `0b547367c7b6f2702a1cedf8d6e7a6c4a646ba1e89229a91052712e69427b058` |
+
+Unit PROPATH: `$OUT` (`dir`), `src` (`dir`), `$DLC/src` (`dir`),
+`$DLC/tty/netlib/OpenEdge.Net.pl` (`sha256:` of the bytes `library bytes`, which is
+`8c45ce4e5a5cb0c03670ca09e153a24b1c7b7f94141c4da68f31ce8e91bc1bf8`). Default compile
+options. Outputs: `rcode`. Worker program bytes: `/* oxabl worker */\n`.
 
 | Value | Hex |
 | --- | --- |
-| schema identity | `5d563b8b7413121dc18d6061596536064071f7cce3024ee25178547e2adef0ed` |
-| environment identity | `0c88b89888c58e11a288151cfe11997e8301e65b69305e50500a3f20fb743420` |
-| content of the unit | `0396bf3a7c10884079571b007003baaba08e654f666a1cbc9b95f142cb6aea21` |
-| content of the include | `0b547367c7b6f2702a1cedf8d6e7a6c4a646ba1e89229a91052712e69427b058` |
+| schema identity | `6ab6b229201e70db9565ea27eb2ebe892d68b5d8dfcb8b01c4ebc5c883027dbd` |
+| environment identity | `fb9f595b87b5b1c2a831f1606bd0b457cf3e42cbf51ff43aa577f4f9f09b3e12` |
+| content of the unit | `46fc37de67aabc0750c364e9958c080394046a163ac10ffa9f2f482e811d3b9a` |
 | content of the worker program | `c90f59b20862aa76cdd3a16915d2662583c01e49f381d7db0810e5d9bc397fb8` |
-| key material length | 702 bytes |
-| compile key | `fa30683ea4089459e871b5b3ca40b50ee4ed09aa8aa04f38ed5f863dfe4300a2` |
+| key material length | 817 bytes |
+| compile key | `10d43c2bde300b761eff9194be0448b9cc351799bdbe7c520b1a05aab133693a` |
 
 Slice 5 adds `crates/oxabl_build/tests/key_vectors.json` with this example and one vector
 per rule of the encoding (an empty closure, two databases, a parameter that appears twice,

@@ -166,6 +166,12 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   `output-collision: <dir>/x.p`.
 - The DLC default entries from the worker's startup PROPATH appear in every unit PROPATH in
   `--plan --json`.
+- A `$LIB:` entry that the worker reports as a directory: its users are unkeyable with
+  `unhashable-library`, also when an `external_packages` prefix maps to it. A prefix mapped
+  to `"$DLC"` with only `$DLC/tty` (a directory) on the PROPATH: unkeyable (K3).
+- A `$DLC/...` include whose worker-side copy differs from the host mirror (the fake hashes
+  its own copy): its users are unkeyable with `dlc-mirror-mismatch`. Changing the
+  worker-side copy alone changes the key.
 - A workspace copied to another path: every key is equal.
 
 ### Slice 6: compile
@@ -177,7 +183,9 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `FAKE-CRASH`: the unit fails with `worker lost twice`; the other units compile.
 - `FAKE-HANG` with `unit_timeout = "2s"`: the unit fails, the build ends.
 - SIGINT during a build: exit code 130; within `cancel_grace` plus 10 s every fake worker
-  logged `exit` or is gone; a following build compiles only what was not recorded.
+  logged `exit` or is gone; a following build compiles only what was not recorded. With a
+  recording test cache: every unit released by V2 before the signal is pushed, `finish` is
+  called once, and no unit that was still compiling at the signal is pushed.
 - SIGKILL of oxabl during a build: every fake worker quits after its current unit (the
   stdin end-of-file).
 - A second build: no compile in the fake log.
@@ -185,11 +193,13 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `FAKE-FAIL` in a class: its old `.r` is gone, its users compile and are tainted (no
   cache write), and the exit code is 1.
 - `--events` and `--report`: the shapes, and one `unit-finished` per compiled unit.
-- Class cross-talk: units in `a/` and `b/` with `root_relative_include_paths = ["."]`, each
-  using `pkg.Foo` from its own directory, and `count = 1`: each `.r` reads its own
-  `pkg/Foo.cls` (the fake's class cache would otherwise give the second one the first one's
-  class), and the fake log shows a worker restart between them. With no conflict, no
-  restart.
+- Class conflict: units `a/x.p` and `b/y.p` with `root_relative_include_paths = ["."]`, and
+  `a/pkg/Foo.cls` and `b/pkg/Foo.cls`, which are units too, each user doing `NEW pkg.Foo()`.
+  Both users are unkeyable with `class-conflict: pkg.Foo` in `--plan --json`; the build
+  prints one warning naming both files; the build compiles and exits 0 (apart from the
+  `output-collision` skip of one `Foo.cls`); and nothing is written to any cache for the
+  users (the local cache and a recording test cache stay without their keys). A workspace
+  with one `pkg/Foo.cls` has no warning and keyable users.
 - An output directory with a foreign file and no marker: exit code 2. A foreign `.r` put
   into a managed output directory: deleted by the next build, and no unit reads it.
 
@@ -207,8 +217,14 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `FAKE_AVM_SCHEMA_CHANGE_AFTER`: no cache entry for the units released after the change.
 - `FAKE-RESOLVE-OTHER` for an include that holds only preprocessor definitions: the
   `XREF-XML` names the other file, so check V3 fails and nothing is written.
-- With `CI=1` and no `local_job_dir`: a planted local entry is never read. With
-  `local_job_dir`: the directory is emptied at the start.
+- With `CI=1` and no `OXABL_CACHE_MODE`, and with `OXABL_CACHE_MODE=read-only` or `ci`: a
+  planted entry in the shared local cache is never read. With `OXABL_CACHE_MODE=developer`
+  it is (the documented trust).
+- `local_job_dir`: a non-empty directory with no marker gives exit 2 and nothing in it is
+  deleted; the workspace root, its parent, `$HOME` and `/` give exit 2; with a marker, only
+  `v1/` is deleted at the start and a file next to it survives.
+- A local entry whose manifest claims a remote origin: `--report` shows it as
+  `origin (unverified)`.
 - Uploads stream: with a recording test cache (a test-only `ArtifactCache` adapter that
   stands in for the remote service, not for oxabl), the first `push` arrives before the last
   unit compiles, and the cache sees file paths, not bytes. An output changed after its
@@ -234,6 +250,13 @@ missing, the tests fail.
   fetched. A server that stops sending: the keys not yet reported are misses after
   `idle_timeout`, and the build is correct.
 - A binary without the feature and a workspace with `.oxabl/cache.toml`: exit code 2.
+- A non-default output layout (`output = "rcode"`, `xref = "reports/xref"`): CI writes, a
+  second workspace with the default layout fetches every unit and installs the files at its
+  own paths; the uploads read the files from both directories.
+- Each trust variable the client refuses (`OXABL_CACHE_OWNER_KEYS`,
+  `OXABL_CACHE_MIN_ROSTER_VERSION`, `OXABL_CACHE_CACHE`, `OXABL_CACHE_TENANT`), one test
+  each: exit code 2 naming the variable, no compile and no cache use.
+- `tenant` in `oxabl.toml` or in the overlay: exit code 2.
 - `owner_keys` or `min_roster_version` in `oxabl.toml`, in the overlay, or as a flag: exit
   code 2. `OXABL_CACHE_SERVER` changes the server and nothing else.
 
@@ -286,7 +309,8 @@ needs equivalence first checks that the mask is small (under 1 % of the file).
 | `portable_rcode` | The fixture copied to two roots gives equivalent r-code for every unit. |
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
-| `multicompile_propath_isolation` | Two units whose PROPATHs resolve `pkg.Foo` to two files, one worker session: shows the cross-talk; with oxabl's restart rule, each unit runs with its own `Foo`. |
+| `multicompile_propath_isolation` | `a/pkg/Foo.cls` and `b/pkg/Foo.cls` are both units, and `a/x.p` and `b/y.p` use `pkg.Foo` through their own directories: both users are unkeyable with `class-conflict`, nothing is written to any cache for them, and the run shows which `Foo` each user got from the AVM (recorded, not asserted). |
+| `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: records what the `XREF-XML` `Source` elements list for each, so V3's class coverage can be stated ([cache.md](cache.md#what-v3-covers)). |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |
 | `xref_xml_resolution` | The `XREF-XML` `Source` elements name each include as the compiler resolved it, including an include with only preprocessor definitions. |
 | `xref_readers` | The text and XML XREF readers find every include of the fixture. |
