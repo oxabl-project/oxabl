@@ -153,9 +153,12 @@ it as a lost worker.
    - the predefined names equal what oxabl analysed with (see below).
 4. Oxabl sends `SCHEMA <ldb>` for each database and reads the images.
 5. Oxabl sends `HASH` for each library entry of every unit PROPATH (including the DLC
-   default entries from the `propath` field), for each startup parameter value
-   ([compile-key.md](compile-key.md#startup-parameters)) and for each `$DLC/...` file in a
-   closure of the build, and reads the answers.
+   default entries from the `propath` field) and for each startup parameter value
+   ([compile-key.md](compile-key.md#startup-parameters)), and reads the answers.
+
+The `$DLC/...` closure files are **not** hashed in the handshake: the closures exist only
+after the refresh and the closure step. They are hashed in a separate phase (see
+[Hashing worker-side files](#hashing-worker-side-files)).
 
 The whole handshake must end within `[build.workers].start_timeout` (default 60 s).
 
@@ -283,8 +286,17 @@ hex. Slice 4 checks `MESSAGE-DIGEST` with SHA-256 on the supported OpenEdge vers
 is not available, every `HASH` fails and units with a library on their PROPATH are
 unkeyable (K6).
 
-Every worker hashes the same paths, and the answers are part of the environment check: all
-workers must agree.
+Library entries and parameter values are hashed in the handshake by every worker, and the
+answers are part of the environment check: all workers must agree.
+
+`$DLC/...` closure files are hashed in the **DLC hash phase**, after the closure step of the
+plan ([build-tool.md](../build-tool.md#the-build-flow), step 4) and before the keys are
+computed. One worker that finished its handshake hashes every distinct `$DLC/...` path in
+any closure of the whole graph, once, outside `start_timeout`; each `HASH` answer has
+`unit_timeout`. The other workers can already compile units with no keyable work pending
+(unkeyable units, which need no key). A lost worker during the phase hands the remaining
+paths to another worker; when no worker is left, every unit with a `$DLC` file in its
+closure is unkeyable (K6).
 
 ## Pool lifecycle
 

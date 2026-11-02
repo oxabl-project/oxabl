@@ -39,8 +39,9 @@ comes from who wrote it (the oxabl-cache design), not from a comparison.
 
   Exception: a file under `$DLC` is hashed **by the worker**, from the copy that the AVM
   compiles with, as `SHA-256(bytes)` (the worker computes SHA-256 natively). In a closure
-  entry its algorithm is `sha256`; for every other file it is `blake3`. The worker hashes
-  each `$DLC/...` closure file once per build (`HASH`,
+  entry its algorithm is `sha256`; for every other file it is `blake3`. One worker hashes
+  each `$DLC/...` closure file once per build, in the DLC hash phase between the closure
+  step and the key step (`HASH`,
   [worker-protocol.md](worker-protocol.md#hashing-worker-side-files)). Oxabl also hashes the
   host mirror's copy with SHA-256; when the two differ, every unit with that file in its
   closure is unkeyable (K6, `dlc-mirror-mismatch: <path>`), because the analysis read
@@ -103,7 +104,13 @@ as a list of canonical paths, in order:
 
 1. `$OUT`.
 2. Each `[workspace.sources].root_relative_include_paths` entry, joined to the unit's
-   directory and made canonical (`.` with a unit in `src/ar` gives `src/ar`).
+   **base directory** and made canonical (`.` with a procedure in `src/ar` gives `src/ar`).
+   The base directory of a procedure (`.p`, `.w`, ...) is its own directory. The base
+   directory of a class unit is its **package root**: its directory minus one component for
+   each package segment of the class name it declares (`a/pkg/Foo.cls`, declaring
+   `pkg.Foo`, has the package root `a`). A class unit whose directory does not end with its
+   package path is skipped with `package-mismatch: <declared name>`, because the compiler
+   would reject it.
 3. Each `[workspace.sources].include_paths` entry, made canonical. An entry that is not
    under the root, not under `$DLC` and not a `$LIB:` name is a configuration error for
    `oxabl build` (exit code 2), because it has no portable form.
@@ -131,8 +138,17 @@ Each entry is a directory or a procedure library. In the key, an entry carries a
   hash makes the environment unknown for the units that use it (K6).
 
 The **compile name** is the unit path relative to the first entry after `$OUT` that holds
-it. For a class it is the package path with the extension (`acme/ar/Invoice.cls`). A unit
-that no entry holds is skipped (`not-on-propath`). A unit whose compile name resolves, on
+it. For a class unit it must be the package path with the extension (`pkg/Foo.cls`): the
+first entry that holds the class unit must be its package root, or an `include_paths`
+entry that is the same directory. Otherwise the unit is skipped with
+`package-root-not-on-propath: <package root>` (for example, a class `a/pkg/Foo.cls` with no
+`.` in `root_relative_include_paths` and no `a` in `include_paths`). A unit that no entry
+holds is skipped (`not-on-propath`).
+
+The analysis of a class node uses the same rule: a class node's own includes and class
+references are searched on the PROPATH of its package root, not of its file's directory,
+so the analysis and the compile search the same entries. (Slice 2 aligns
+`oxabl_pipeline`'s `root_relative_include_paths` handling for class roots to this rule.) A unit whose compile name resolves, on
 the unit PROPATH, to a different file first is skipped (`shadowed-by`).
 
 Two units whose r-code would land on one path collide: `x.p` and `x.w` in one directory, or
@@ -185,20 +201,32 @@ build makes every unit that reaches it unkeyable ([K8](#class-conflicts)).
 
 ### Class conflicts
 
-At plan time, oxabl collects every **class resolution** in the build: each class edge of
-each analysed node (its class name and its target file), and each class unit (its own class
-name and its own file). A class name is **in conflict** when it has two or more different
-target files, under any two PROPATH ids of the build. Names compare ignoring ASCII case, as
-the AVM does.
+At plan time, oxabl collects every **class resolution** of the **whole graph**: every unit
+and every analysed node, whatever the rebuild set. An up-to-date class unit still puts its
+`.r` in `$OUT`, so an incremental build must see it. The resolutions are:
+
+- each class edge of each analysed node: its class name and its target file;
+- each class unit: its own class name and its own file;
+- each class name that K3 accepted as external: its name and the token `external`. The
+  compiler can read a workspace class's `.r` from `$OUT` in place of the library class that
+  the key covers.
+
+A class name is **in conflict** when it has two or more different resolutions: two files,
+or a file and `external`. Names compare ignoring ASCII case, as the AVM does. In short: a
+name that K3 accepts as external is never accepted when any class unit or any class edge
+target in the graph has that name.
 
 Each keyable unit whose closure (transitively, including super classes, interfaces and the
-classes that those name) holds a class edge with a conflicting name, or that is itself a
-class unit with a conflicting name, is unkeyable under K8. The build prints one warning per
+classes that those name) holds a class edge with a conflicting name, or an unresolved class
+with a conflicting name that K3 accepted, or that is itself a class unit with a conflicting
+name, is unkeyable under K8. The build prints one warning per
 conflicting name with both files, for example:
 
 ```text
 warning: class pkg.Foo resolves to two files in this build: a/pkg/Foo.cls, b/pkg/Foo.cls;
          12 units that use it are compiled without a key
+warning: class Acme.Util.X resolves to a/Acme/Util/X.cls and to the library $LIB:acme;
+         3 units that use it are compiled without a key
 ```
 
 The build does not stop. It compiles these units as the AVM resolves them, so real
@@ -412,8 +440,8 @@ gives each reason.
 | K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). | `computed-name: <name> in <path>` |
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
 | K6 | The environment was not established in this build (no probe, a failed probe, or a schema probe failure for any database). | `environment-unknown` |
-| K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`). | the skip reason |
-| K8 | The closure holds a class name that resolves to two files in this build ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
+| K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`, `package-mismatch`, `package-root-not-on-propath`). | the skip reason |
+| K8 | The unit or its closure names a class that has two resolutions in the whole graph: two files, or a file and an external library ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
 
 `[build.external_packages]` maps a class name prefix to the library entries that supply
 it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any `.pl` library

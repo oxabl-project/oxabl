@@ -95,7 +95,51 @@ pub trait ArtifactUploader: Send {
     fn push(&mut self, set: ArtifactSetRef);
     fn finish(self: Box<Self>) -> Vec<(CompileKey, StoreOutcome)>;
 }
+
+pub enum StoreOutcome {
+    Stored,
+    AlreadyPresent,
+    NotStored { reason: NotStoredReason },
+}
+
+pub enum NotStoredReason {
+    ChangedOnDisk,
+    Unreadable,
+    Rejected,
+    TooLarge,
+    QuotaExceeded,
+    Unavailable,
+}
 ```
+
+`StoreOutcome` belongs to `oxabl_build::cache`, because the local cache returns it too and
+only `oxabl_build_remote` depends on the client. The remote adapter maps the client's
+outcomes:
+
+| Client outcome | `StoreOutcome` |
+| --- | --- |
+| `Committed` | `Stored` |
+| `Existed` | `AlreadyPresent` |
+| `Changed` (a file's size or hash differed when read) | `NotStored { ChangedOnDisk }` |
+| `Failed(Unreadable)` | `NotStored { Unreadable }` |
+| `Failed(Rejected)` | `NotStored { Rejected }` |
+| `Failed(TooLarge)` | `NotStored { TooLarge }` |
+| `Failed(QuotaExceeded)` | `NotStored { QuotaExceeded }` |
+| `Failed(Unavailable)` | `NotStored { Unavailable }` |
+
+The mapping is total over the client's `StoreFailure` (`Rejected`, `TooLarge`,
+`Unreadable`, `QuotaExceeded`, `Unavailable`); a new client variant is a compile error in
+the adapter, not a silent default.
+
+The local cache returns `Stored`, `AlreadyPresent` (another process won the rename), or
+`NotStored` with `ChangedOnDisk` or `Unreadable`. The summary counts each variant; no
+variant changes the exit code.
+
+**A mode that does not write yields a no-op uploader.** When the client's `uploader()`
+fails because the mode does not write (`read-only`), or when `[build.cache] remote` is off,
+the adapter returns an uploader whose `push` does nothing and whose `finish` returns an
+empty list. Oxabl then reports `remote: read-only, 0 sets offered` in the summary, not a
+failure.
 
 - **`fetch` streams.** It takes all requests in one call (the cache batches on the wire)
   and calls `on_outcome` once per key, as each one completes. Every key of one call is
@@ -120,7 +164,10 @@ pub trait ArtifactUploader: Send {
   during the build, as soon as the unit passes verification. Each `ArtifactFileRef` names
   two places: `path`, the artifact path (relative to the logical artifact root, validated
   by the cache), and `disk_path`, the absolute path of the promoted file in its configured
-  output directory. The cache opens `disk_path` with `O_NOFOLLOW` and reads it lazily, and
+  output directory. The cache opens `disk_path` with `O_NOFOLLOW`, which refuses a symbolic link in the
+  **final component only**: a directory above it may be a symbolic link (oxabl resolves
+  paths lexically, and a workspace often sits under a linked directory), and the verified
+  size and BLAKE3 hash bind the content anyway. The cache reads the file lazily, and
   applies its own back-pressure, so memory stays bounded. Output directories need not share
   a parent. `push` may block for
   back-pressure. The cache must check, when it reads a file, that its size and BLAKE3 hash
@@ -296,8 +343,9 @@ end <BLAKE3 hex of all the lines above, each with its LF>
 ### Write
 
 1. Create `tmp/<random>/` and put each file there by reflink, then hard link, then copy, in
-   that order of preference, from the promoted output (a compiled unit) or the stage (a
-   remote hit). Write the manifest last.
+   that order of preference, from the promoted output at its final path, for a compiled
+   unit and for a remote hit alike (the stage file has been renamed away by then). Write the
+   manifest last.
 2. Call `syncfs` on the cache filesystem once per batch of entries, then `rename` each
    directory to `entries/<hh>/<hex>`. When the target exists, another process won; delete
    the temporary directory. An entry is complete or absent; never partial.
