@@ -349,6 +349,16 @@ enum Cli {
         #[arg(long, num_args = 1.., value_name = "PATH", requires = "plan")]
         files: Vec<PathBuf>,
 
+        /// Treat every file that differs from this git revision as changed:
+        /// committed, staged and unstaged edits, deletions, renames and
+        /// untracked files.
+        #[arg(long, value_name = "REV", requires = "plan", conflicts_with = "files")]
+        since: Option<String>,
+
+        /// Print the plan as one JSON document.
+        #[arg(long, requires = "plan")]
+        json: bool,
+
         /// The workspace root. Defaults to the nearest ancestor of the current
         /// directory that holds an `oxabl.toml`.
         #[arg(long, value_name = "DIR")]
@@ -601,8 +611,10 @@ fn main() -> ExitCode {
             plan,
             all,
             files,
+            since,
+            json,
             root,
-        } => build_cmd::run(plan, all, &files, root.as_deref()),
+        } => build_cmd::run(plan, all, &files, since, json, root.as_deref()),
     }
 }
 

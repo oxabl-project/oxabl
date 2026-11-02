@@ -1367,6 +1367,7 @@ dependencies = [
  "rusqlite",
  "rustc-hash",
  "rustix",
+ "serde_json",
  "tempfile",
  "walkdir",
 ]

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use oxabl_build::config::BuildWorkspace;
 use oxabl_build::error::BuildError;
-use oxabl_build::plan::{PlanRequest, plan, render};
+use oxabl_build::plan::{PlanRequest, plan, render, render_json};
 
 const NO_WORKER_COMMAND: &str = "oxabl build needs a worker command; set [build.workers].command \
      (see docs/design/build-tool/config.md) or run oxabl build --plan";
@@ -27,7 +27,14 @@ fn named(files: &[PathBuf]) -> Result<Vec<PathBuf>, BuildError> {
         .collect()
 }
 
-pub fn run(plan_only: bool, all: bool, files: &[PathBuf], root: Option<&Path>) -> ExitCode {
+pub fn run(
+    plan_only: bool,
+    all: bool,
+    files: &[PathBuf],
+    since: Option<String>,
+    json: bool,
+    root: Option<&Path>,
+) -> ExitCode {
     let workspace = match BuildWorkspace::open(root) {
         Ok(workspace) => workspace,
         Err(error) => return fail(&error),
@@ -44,7 +51,7 @@ pub fn run(plan_only: bool, all: bool, files: &[PathBuf], root: Option<&Path>) -
         return ExitCode::from(2);
     }
     let request = match named(files) {
-        Ok(named) => PlanRequest { named },
+        Ok(named) => PlanRequest { named, since },
         Err(error) => return fail(&error),
     };
     match plan(&workspace, &request) {
@@ -52,6 +59,7 @@ pub fn run(plan_only: bool, all: bool, files: &[PathBuf], root: Option<&Path>) -
             for note in &report.notes {
                 eprintln!("warning: {note}");
             }
+            let render = if json { render_json } else { render };
             print!("{}", render(&report.plan, report.committed, all));
             ExitCode::SUCCESS
         }
