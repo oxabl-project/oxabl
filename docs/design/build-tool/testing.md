@@ -57,8 +57,8 @@ starts with the worker program's header line.
   directly; the oxabl analysis does not see it, which tests the read check.
 - **Class cache.** Like `MULTI-COMPILE`, it keeps each class it has compiled from source by
   class name for the rest of its session, and does not drop it when the PROPATH changes. So
-  a test can show class cross-talk between PROPATHs, and that oxabl's worker restarts
-  remove it.
+  the fake behaves like the AVM when one class name has two files, and the class-conflict
+  test sees the AVM-like output while it checks that no key and no cache write exist.
 - **Startup parameters.** `FAKE_AVM_ENV` gives the command-line parameters and the `.pf`
   contents separately; the fake reports `startup_parameters` with `.pf` contents expanded,
   `-pf <path>` and `(end .pf)` items, as the AVM does.
