@@ -46,7 +46,9 @@
 //! A JSON object or array (a variable declared as a `Json...` class, or not
 //! declared) takes what `o:Add`, `o:Set` and `o:Insert` give it, and
 //! `o:Write(target)` puts it into `target`; a read such as `o:GetJsonText()`
-//! returns it.
+//! returns it. A handle or JSON
+//! variable that is not the only reference to its object (`Tables::sole`)
+//! adds Unknown to what is read through it.
 //!
 //! `READ-JSON`, `READ-XML`, `COPY-TEMP-TABLE`, `COPY-DATASET` and the
 //! `BUFFER-COPY` method fill their receiver with their arguments: the tables
@@ -319,6 +321,10 @@ pub(crate) fn analyze(program: &[Statement], ctx: &AnalysisContext, flow: &FileF
         });
     if tables.open {
         tables.database = database_tables(ctx, &tables);
+    }
+    // Text the analysis does not see may name any variable.
+    if fragment || elided {
+        tables.sole.clear();
     }
     tables.receivers = receiver_tables(ctx, &tables);
     tables.in_words = in_words(ctx);

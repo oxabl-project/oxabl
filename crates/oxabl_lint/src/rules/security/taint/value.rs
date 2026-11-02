@@ -549,11 +549,12 @@ pub(super) struct Tables {
     /// `NO-UNDO`: an `UNDO` does not restore them. Any other variable is
     /// undoable.
     pub no_undo: FxHashSet<String>,
-    /// Lower-cased handle variables that the file copies to or from another
-    /// variable (`h2 = h1`): a write through one handle of the object does not
-    /// reach the slot of the other, so a member read through either is
-    /// Unknown.
-    pub aliased: FxHashSet<String>,
+    /// Lower-cased handle and JSON variables whose object no other handle or
+    /// reference reaches (see `unit::sole`). The slot of a variable holds
+    /// what the program wrote through it, so a member read through any other
+    /// receiver (a variable that is not sole, a field, a call) is Unknown: a
+    /// write through another handle of the object does not reach that slot.
+    pub sole: FxHashSet<String>,
 }
 
 impl Tables {
@@ -585,8 +586,38 @@ impl Tables {
     pub fn may_be_json(&self, name: &str) -> bool {
         match self.types.get(&name.to_ascii_lowercase()) {
             None => true,
-            Some(t) => is_json_class(t),
+            Some(t) => self.is_json_type(t),
         }
+    }
+
+    /// Whether the lower-cased class name `class` is a JSON class.
+    pub fn is_json_type(&self, class: &str) -> bool {
+        class
+            .rsplit('.')
+            .next()
+            .is_some_and(|s| s.starts_with("json"))
+    }
+
+    /// Whether `v:member` leaves the variable `v` (lower-cased) sole: the
+    /// member gives no other handle of an object ([`HANDLE_ATTRIBUTES`],
+    /// [`HANDLE_METHODS`]), or, on a JSON object, no other reference
+    /// ([`JSON_SOLE_MEMBERS`] lists the ones that do not).
+    pub fn sole_member(&self, v: &str, member: &str) -> bool {
+        let listed = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(member));
+        match self.types.get(v) {
+            Some(t) if self.is_json_type(t) => listed(&JSON_SOLE_MEMBERS),
+            _ => !listed(&HANDLE_ATTRIBUTES) && !listed(&HANDLE_METHODS),
+        }
+    }
+
+    /// Whether a member read through `name` reads only what the program wrote
+    /// through it: `name` is a sole variable, or a system handle the file
+    /// does not declare as a variable, whose own lists decide.
+    pub fn sole_name(&self, name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        self.sole.contains(&name)
+            || !self.types.contains_key(&name)
+                && oxabl_semantic::SYSTEM_HANDLES.contains(&name.as_str())
     }
 
     /// The table a buffer or table name stands for, lower-cased.
@@ -810,13 +841,45 @@ fn is_keyword(word: &str) -> bool {
         .is_some_and(|t| t.kind != Kind::Identifier)
 }
 
-/// Whether the lower-cased class name `class` is a JSON class.
-fn is_json_class(class: &str) -> bool {
-    class
-        .rsplit('.')
-        .next()
-        .is_some_and(|s| s.starts_with("json"))
-}
+/// The members of a JSON object or array that give no other reference to an
+/// object: they put a value in, write the text out, or read a value that is
+/// no object. `GetJsonObject`, `GetJsonArray` and any member not listed may
+/// give one.
+const JSON_SOLE_MEMBERS: [&str; 33] = [
+    "Add",
+    "AddNull",
+    "Set",
+    "SetNull",
+    "Insert",
+    "InsertNull",
+    "Remove",
+    "Has",
+    "IsNull",
+    "IsA",
+    "Length",
+    "GetNames",
+    "GetType",
+    "GetCharacter",
+    "GetLongchar",
+    "GetInteger",
+    "GetInt64",
+    "GetDecimal",
+    "GetLogical",
+    "GetDate",
+    "GetDatetime",
+    "GetDatetime-TZ",
+    "GetDatetimeTZ",
+    "GetRaw",
+    "GetMemptr",
+    "GetRowid",
+    "GetRecid",
+    "GetJsonText",
+    "Write",
+    "WriteFile",
+    "WriteStream",
+    "ToString",
+    "Clone",
+];
 
 /// How a function name changes the value of its arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1401,7 +1464,7 @@ impl Compiler<'_> {
         let o = o.to_ascii_lowercase();
         match self.tables.types.get(&o) {
             Some(class) if class.is_empty() => call && member.eq_ignore_ascii_case("INVOKE"),
-            Some(class) => !is_json_class(class),
+            Some(class) => !self.tables.is_json_type(class),
             None if oxabl_semantic::SYSTEM_HANDLES.contains(&o.as_str()) || self.is_table(&o) => {
                 false
             }
@@ -1642,6 +1705,24 @@ impl Compiler<'_> {
             if base.span.start >= id.span.start && self.json_name(&id.name))
     }
 
+    /// Whether a chain that starts at `object` starts at the tables of
+    /// `BUFFER b:`, a sole variable or a system handle: see
+    /// [`Tables::sole_name`].
+    fn sole_chain(&self, object: &Expression) -> bool {
+        let mut base = object;
+        while let E::MemberAccess { object, .. }
+        | E::MethodCall { object, .. }
+        | E::ArrayAccess { array: object, .. } = &base.kind
+        {
+            base = object;
+        }
+        match &base.kind {
+            E::Identifier(id) if base.span.start < id.span.start => true,
+            E::Identifier(id) => self.tables.sole_name(&id.name),
+            _ => false,
+        }
+    }
+
     /// Whether the name `o` may hold a JSON object: see
     /// [`Tables::may_be_json`]. `THIS-OBJECT` and `SUPER` do not.
     fn json_name(&self, o: &str) -> bool {
@@ -1747,6 +1828,9 @@ impl Compiler<'_> {
                 return self.origin(format!("web request `{o}:{member}`"), span);
             }
         }
+        let scalar = SCALAR_MEMBERS
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(member));
         // Any program of the session, or the caller of this one, may set it,
         // also on a handle it reaches.
         let object = match receiver.name {
@@ -1759,12 +1843,10 @@ impl Compiler<'_> {
             {
                 Value::union([object, Value::origin(UNKNOWN)])
             }
-            // A copy of the handle may have changed the object.
-            Some(o)
-                if self.tables.aliased.contains(&o.to_ascii_lowercase())
-                    && !SCALAR_MEMBERS
-                        .iter()
-                        .any(|m| m.eq_ignore_ascii_case(member)) =>
+            // Another handle or reference of the object may have changed it.
+            _ if !receiver.sole
+                && !scalar
+                && (receiver.owner == Owner::Program || receiver.json) =>
             {
                 Value::union([object, Value::origin(UNKNOWN)])
             }
@@ -1853,6 +1935,7 @@ impl Compiler<'_> {
                     name: receiver_name(object),
                     owner: self.owner(object, &member.name),
                     json: self.json_chain(object),
+                    sole: self.sole_chain(object),
                 };
                 let object = values.into_iter().next().unwrap_or_default();
                 self.access(receiver, object, &member.name, None, e.span, None)
@@ -1869,6 +1952,7 @@ impl Compiler<'_> {
                     name: receiver_name(object),
                     owner: self.owner(object, &method.name),
                     json: self.json_chain(object),
+                    sole: self.sole_chain(object),
                 };
                 let mut values = values.into_iter();
                 let object = values.next().unwrap_or_default();
@@ -2232,6 +2316,7 @@ impl Compiler<'_> {
                 name: name.as_deref(),
                 owner,
                 json: !prefixed && self.json_name(first),
+                sole: prefixed || self.tables.sole_name(first),
             };
             value = self.access(receiver, value, member, args, span, key);
             name = None;
@@ -2249,6 +2334,9 @@ struct Receiver<'n> {
     owner: Owner,
     /// The chain starts at a JSON object, whose methods the analysis models.
     json: bool,
+    /// The chain starts at a sole variable, a system handle or the tables of
+    /// `BUFFER b:` (see [`Tables::sole`]).
+    sole: bool,
 }
 
 /// Whose object a member read reads, which decides what the read gives.
@@ -2428,6 +2516,112 @@ const SCALAR_MEMBERS: [&str; 63] = [
     "width-pixels",
     "x",
     "y",
+];
+
+/// The attributes of the ABL reference whose value is a handle or an
+/// object reference. The index holds no data types, so this list is the
+/// reference's, by hand; `no_handle_attribute_is_a_scalar_member` holds
+/// it to the index.
+pub(super) const HANDLE_ATTRIBUTES: [&str; 74] = [
+    "after-buffer",
+    "async-request-handle",
+    "before-buffer",
+    "buffer-field",
+    "buffer-handle",
+    "cancel-button",
+    "child-buffer",
+    "com-handle",
+    "current-column",
+    "current-request-info",
+    "current-response-info",
+    "current-window",
+    "data-source",
+    "dataset",
+    "default-buffer-handle",
+    "default-button",
+    "error-object",
+    "event-handler-object",
+    "event-procedure-context",
+    "first-async-request",
+    "first-buffer",
+    "first-child",
+    "first-column",
+    "first-data-source",
+    "first-dataset",
+    "first-form",
+    "first-object",
+    "first-procedure",
+    "first-query",
+    "first-server",
+    "first-server-socket",
+    "first-socket",
+    "first-tab-item",
+    "frame",
+    "handle",
+    "handler",
+    "in-handle",
+    "instantiating-procedure",
+    "last-async-request",
+    "last-child",
+    "last-form",
+    "last-object",
+    "last-procedure",
+    "last-server",
+    "last-server-socket",
+    "last-socket",
+    "last-tab-item",
+    "menu-bar",
+    "next-column",
+    "next-sibling",
+    "next-tab-item",
+    "origin-handle",
+    "owner",
+    "owner-document",
+    "parent",
+    "parent-buffer",
+    "parent-relation",
+    "persistent-procedure",
+    "popup-menu",
+    "prev-column",
+    "prev-sibling",
+    "prev-tab-item",
+    "query",
+    "request-info",
+    "response-info",
+    "server",
+    "side-label-handle",
+    "soap-fault-detail",
+    "stop-object",
+    "table-handle",
+    "top-nav-query",
+    "trans-init-procedure",
+    "window",
+    "x-document",
+];
+
+/// The built-in methods whose result is a handle: a buffer, a relation, a
+/// column, a widget, a procedure, an iteration. A method that writes a handle
+/// into an argument (`GET-CHILD(hKid, 1)`) names that argument instead.
+/// `every_handle_getter_is_decided` holds the `GET-...` methods of the index
+/// to this list.
+pub(super) const HANDLE_METHODS: [&str; 17] = [
+    "buffer-field",
+    "current-query",
+    "get-browse-column",
+    "get-buffer-handle",
+    "get-callback-proc-context",
+    "get-child-relation",
+    "get-client",
+    "get-column",
+    "get-dataset-buffer",
+    "get-error-column",
+    "get-iteration",
+    "get-relation",
+    "get-safe-user",
+    "get-selected-widget",
+    "get-source-buffer",
+    "get-tab-item",
+    "get-top-buffer",
 ];
 
 /// Built-in attributes whose value is a handle that the receiver reaches: the
@@ -3517,87 +3711,6 @@ mod tests {
         }
     }
 
-    /// The attributes of the ABL reference whose value is a handle or an
-    /// object reference. The index holds no data types, so this list is the
-    /// reference's, by hand; [`no_handle_attribute_is_a_scalar_member`] holds
-    /// it to the index.
-    const HANDLE_ATTRIBUTES: [&str; 74] = [
-        "after-buffer",
-        "async-request-handle",
-        "before-buffer",
-        "buffer-field",
-        "buffer-handle",
-        "cancel-button",
-        "child-buffer",
-        "com-handle",
-        "current-column",
-        "current-request-info",
-        "current-response-info",
-        "current-window",
-        "data-source",
-        "dataset",
-        "default-buffer-handle",
-        "default-button",
-        "error-object",
-        "event-handler-object",
-        "event-procedure-context",
-        "first-async-request",
-        "first-buffer",
-        "first-child",
-        "first-column",
-        "first-data-source",
-        "first-dataset",
-        "first-form",
-        "first-object",
-        "first-procedure",
-        "first-query",
-        "first-server",
-        "first-server-socket",
-        "first-socket",
-        "first-tab-item",
-        "frame",
-        "handle",
-        "handler",
-        "in-handle",
-        "instantiating-procedure",
-        "last-async-request",
-        "last-child",
-        "last-form",
-        "last-object",
-        "last-procedure",
-        "last-server",
-        "last-server-socket",
-        "last-socket",
-        "last-tab-item",
-        "menu-bar",
-        "next-column",
-        "next-sibling",
-        "next-tab-item",
-        "origin-handle",
-        "owner",
-        "owner-document",
-        "parent",
-        "parent-buffer",
-        "parent-relation",
-        "persistent-procedure",
-        "popup-menu",
-        "prev-column",
-        "prev-sibling",
-        "prev-tab-item",
-        "query",
-        "request-info",
-        "response-info",
-        "server",
-        "side-label-handle",
-        "soap-fault-detail",
-        "stop-object",
-        "table-handle",
-        "top-nav-query",
-        "trans-init-procedure",
-        "window",
-        "x-document",
-    ];
-
     /// No attribute whose value is a handle is on [`SCALAR_MEMBERS`], where a
     /// foreign receiver would make it clean; [`HANDLE_MEMBERS`] are all
     /// handles. An attribute of the index named like a handle (`...-HANDLE`,
@@ -3678,6 +3791,100 @@ mod tests {
         out.sort();
         out.dedup();
         out
+    }
+
+    /// Every built-in method of the reference that gets something (`GET-...`,
+    /// `CURRENT-...`) is decided: its result is a handle ([`HANDLE_METHODS`]),
+    /// it writes a handle into an argument (a carrying or receiving method,
+    /// whose argument names the other handle), or it is named here as no
+    /// handle. A new one fails until it is decided; until then
+    /// [`Tables::sole_member`] keeps its receiver sole, so this is the guard.
+    #[test]
+    fn every_handle_getter_is_decided() {
+        const NOT_HANDLES: [&str; 48] = [
+            "get-attribute",
+            "get-binary-data",
+            "get-blue-value",
+            "get-bytes-available",
+            "get-callback-proc-name",
+            "get-cgi-list",
+            "get-cgi-long-value",
+            "get-cgi-value",
+            "get-config-value",
+            "get-current",
+            "get-dropped-file",
+            "get-dynamic",
+            "get-error-row",
+            "get-file-name",
+            "get-file-offset",
+            "get-first",
+            "get-green-value",
+            "get-index-by-namespace-name",
+            "get-index-by-qname",
+            "get-last",
+            "get-localname-by-index",
+            "get-message",
+            "get-message-type",
+            "get-next",
+            "get-number",
+            "get-prev",
+            "get-printers",
+            "get-property",
+            "get-qname-by-index",
+            "get-red-value",
+            "get-repositioned-row",
+            "get-rgb-value",
+            "get-row",
+            "get-serialized",
+            "get-signature",
+            "get-socket-option",
+            "get-text-height-chars",
+            "get-text-height-pixels",
+            "get-text-width-chars",
+            "get-text-width-pixels",
+            "get-type-by-index",
+            "get-type-by-namespace-name",
+            "get-type-by-qname",
+            "get-uri-by-index",
+            "get-value-by-index",
+            "get-value-by-namespace-name",
+            "get-value-by-qname",
+            "get-wait-state",
+        ];
+        let methods = handle_methods();
+        let writes_argument =
+            |m: &str| CARRYING_METHODS.contains(&m) || RECEIVING_METHODS.contains(&m);
+        let undecided: Vec<&String> = methods
+            .iter()
+            .filter(|m| m.starts_with("get-") || m.starts_with("current-"))
+            .filter(|m| {
+                let m = m.as_str();
+                [
+                    HANDLE_METHODS.contains(&m),
+                    writes_argument(m),
+                    NOT_HANDLES.contains(&m),
+                ]
+                .iter()
+                .filter(|d| **d)
+                .count()
+                    != 1
+            })
+            .collect();
+        assert!(
+            undecided.is_empty(),
+            "getters with no single handle decision: {undecided:?}"
+        );
+        for m in HANDLE_METHODS.iter().chain(&NOT_HANDLES) {
+            assert!(methods.iter().any(|x| x == m), "{m} is no method");
+        }
+        let mut tables = Tables::default();
+        tables.types.insert("h".to_string(), String::new());
+        for m in HANDLE_METHODS.iter().chain(&HANDLE_ATTRIBUTES) {
+            assert!(!tables.sole_member("h", m), "{m} keeps h sole");
+        }
+        for m in ["private-data", "list-items", "add-last", "save", "name"] {
+            assert!(tables.sole_member("h", m), "{m}");
+        }
     }
 
     /// Every built-in method of a handle has one decision for what it writes

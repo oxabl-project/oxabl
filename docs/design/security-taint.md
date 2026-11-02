@@ -211,16 +211,33 @@ registry against them.
 - **Several handles of one object.** The slot of a handle variable holds what
   the program assigned to that variable, not what reached its object through
   another handle: a node appended to a document, an attribute set on a node,
-  a copy `h2 = h1` written after the copy. So a method of
+  a write through a copy after the copy. So a member read is modelled only
+  through a handle that is **sole**: a variable (`HANDLE`, `WIDGET-HANDLE` or
+  an abbreviation, `COM-HANDLE`, `LIKE`) that the file declares, not shared,
+  and that every place the text names is one of: its declaration, `CREATE
+  ... h`, `h = ?` or a comparison with `?`, `VALID-HANDLE(h)`, `DELETE
+  OBJECT h`, or `h:member` with a member that gives no handle
+  (`HANDLE_ATTRIBUTES`, `HANDLE_METHODS`). Any other place makes it, and
+  every handle or JSON variable that the same statement names, not sole: a
+  copy either way (`h2 = h1`, `h2 = h1:HANDLE`, `ASSIGN`), a field
+  (`tt.hf = h1`), an argument (`RUN p (h)`, `f(h)`, `APPEND-CHILD(h)`),
+  `RETURN h`, a handle-valued member (`DEFAULT-BUFFER-HANDLE`,
+  `TABLE-HANDLE`, `GET-BUFFER-HANDLE`, `FIRST-CHILD`, ...), and text the
+  list does not know. The rule reads the tokens of the whole file, so a
+  statement the parser does not model is read too, and a way of getting a
+  handle that is not on the list fails closed. A member read (but a number,
+  a logical or a name) through a handle that is not sole, a field, a call or
+  any other receiver than a sole variable, a system handle or `BUFFER b:`
+  adds Unknown. In an include file checked on its own, or a file where an
+  include did not arrive, no handle is sole. A guard test holds the
+  `GET-...` methods of the reference to `HANDLE_METHODS`. So a method of
   `CARRYING_METHODS` on a handle variable (`hDoc:SAVE("LONGCHAR", lc)`) also
   writes Unknown; only on the tables of `TEMP-TABLE tt:`, `DATASET ds:` or
   `BUFFER b:`, and for a `GET-...` method that navigates to a node, is what
   the receiver holds the whole of it. A method of `RECEIVING_METHODS`, which
   puts its arguments into its receiver's object (`APPEND-CHILD`,
   `SET-ATTRIBUTE`, `LONGCHAR-TO-NODE-VALUE`, `ADD-LAST`, `GET-CHANGES`, ...),
-  adds them to the slot of a receiver that is a handle variable. A member
-  read of a handle variable that the file copies to or from another
-  (`h2 = h1`), but a number, a logical or a name, adds Unknown.
+  adds them to the slot of a receiver that is a handle variable.
 - **`RETURN-VALUE`** is a slot of every unit that reads or sets it and of
   every procedure, in a file that reads it (a file that does not has no use
   for it, and its summaries need not settle on it). A `RUN` of an internal procedure sets it to the
@@ -464,8 +481,17 @@ without passing a variable the analysis can see. A variable declared as a
 declare, takes what `o:Add(...)`, `o:Set(...)` and `o:Insert(...)` give it
 (a weak update), and `o:Write(target, ...)` writes it into `target`. A read
 through the object (`o:GetJsonText()`, `o:GetCharacter("k")`) is already the
-union of the receiver and the arguments. JSON serialisation clears no kind: a
-JSON text written into an HTML response is still an XSS finding.
+union of the receiver and the arguments.
+
+A JSON variable is sole by the rule for handles (see "Built-in reads"),
+with `JSON_SOLE_MEMBERS` as the members that give no other reference
+(`GetJsonObject`, `GetJsonArray` and a member not listed do): a copy
+(`o2 = o1`), an object added into another (`o1:Add("in", oIn)`), a
+reference got with `GetJsonObject`, and an object passed to a routine make
+it and the other JSON variables of the statement not sole. A read through
+a JSON variable that is not sole, and what its `Write` writes, add
+Unknown. JSON serialisation clears no kind: a JSON text written into an
+HTML response is still an XSS finding.
 
 ## Measurement
 
@@ -526,18 +552,29 @@ their counts.
 - A property of an object of a class (`o:Mode`, `pkg.Settings:Mode`) reads
   what the object holds; a computed `GET` of another class is code elsewhere
   that this does not see.
-- A handle passed to a routine or a program (`RUN fill-doc (hDoc)`) is not a
-  copy: what the routine puts into its object through the parameter does not
-  reach the caller's slot, except where a method on the handle variable
-  writes Unknown (`SAVE`, `WRITE-JSON`, ...).
+- Whether a handle or JSON variable is sole is decided for the whole file,
+  not at each statement: a variable that is not sole somewhere reads Unknown
+  everywhere, also before it was copied and after it takes a new object
+  (`limits.p` of ABLSEC003 and ABLSEC006). A handle that the file copies
+  reads Unknown, also where the copy cannot have changed the object.
+- `BUFFER b:`, `TEMP-TABLE tt:` and `DATASET ds:` read their tables, and a
+  system handle of the program what the file set on it: a handle of the same
+  object that the file got another way (`hB = BUFFER b:HANDLE`) and wrote
+  through is not seen there (see the dynamic buffer field assignment above).
+- In a file whose parse recovered, a sink rule reports as stage 1 does, and
+  ABLSEC010 judges only the decisions that the parser kept; a file that
+  reads a request value also gets one finding that says the parse
+  recovered, not one per decision that was skipped.
 - A built-in attribute or method that the lists do not name is Unknown,
   even where the program set it (`BUFFER-VALUE` through a handle variable of
   a table whose fields hold no taint).
 
 ## Result
 
-On the taint corpus, precision goes from 0.69 (stage 1) to 0.99 (stage 2) and
-recall stays at 1.00 (it was 0.84 on the cases of `UNDO`, of handles that
+On the taint corpus, precision goes from 0.71 (stage 1) to 0.97 (stage 2) and
+recall stays at 1.00 (it was 0.90 on the cases of a second handle or JSON
+reference of an object got other than by a plain copy and a `WIDGET-HANDLE`,
+before they were modelled, 0.84 on the cases of `UNDO`, of handles that
 reach or copy other handles, and of what code elsewhere gives back, before
 they were modelled, 0.83 before the `ON` phrase's `RETURN`, the
 arguments that built-in methods write, the owner of a copied handle and

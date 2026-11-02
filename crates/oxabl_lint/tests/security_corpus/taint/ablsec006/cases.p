@@ -58,7 +58,8 @@ lcJson = oList:GetJsonText().
 oWriter:Write(lcJson). /* taint: real */
 
 /* A JSON object of constants. */
-oJson = NEW Progress.Json.ObjectModel.JsonObject().
-oJson:Set("status", "ok").
-oJson:Write(lcJson, TRUE).
+DEFINE VARIABLE oStatus AS Progress.Json.ObjectModel.JsonObject NO-UNDO.
+oStatus = NEW Progress.Json.ObjectModel.JsonObject().
+oStatus:Set("status", "ok").
+oStatus:Write(lcJson, TRUE).
 PUT STREAM WebStream UNFORMATTED lcJson. /* taint: safe */

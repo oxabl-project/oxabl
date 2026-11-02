@@ -22,10 +22,10 @@ use super::taint::{run_in, taint};
 const RULES: [(&str, (usize, usize, usize)); 10] = [
     ("ABLSEC001", (6, 1, 0)),
     ("ABLSEC002", (6, 0, 0)),
-    ("ABLSEC003", (85, 1, 0)),
+    ("ABLSEC003", (100, 2, 0)),
     ("ABLSEC004", (7, 0, 0)),
     ("ABLSEC005", (7, 0, 0)),
-    ("ABLSEC006", (7, 0, 0)),
+    ("ABLSEC006", (7, 1, 0)),
     ("ABLSEC007", (7, 0, 0)),
     ("ABLSEC014", (3, 0, 0)),
     ("ABLSEC015", (2, 0, 0)),

@@ -189,8 +189,9 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
     };
     let locals = routine_statements(stmts);
     let mut undoable = FxHashSet::default();
-    let mut handle_vars = FxHashSet::default();
-    let mut copies = Vec::new();
+    // Variables of a handle or JSON type, and where each is declared.
+    let mut objects = FxHashSet::default();
+    let mut declarations = FxHashSet::default();
     for s in stmts.values() {
         defined_names(s, source, locals.contains(&s.id), &mut t.names);
         if let S::VariableDeclaration { name, no_undo, .. }
@@ -290,31 +291,26 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
                 ..
             } => {
                 let ty = match type_source {
-                    oxabl_ast::TypeSource::Explicit(d) => d.class_name().unwrap_or(""),
-                    oxabl_ast::TypeSource::Like { .. } => "",
+                    oxabl_ast::TypeSource::Explicit(d) => type_name(d),
+                    oxabl_ast::TypeSource::Like { .. } => String::new(),
                 };
-                // A handle, or a type the file does not show.
-                if matches!(
-                    type_source,
-                    oxabl_ast::TypeSource::Like { .. }
-                        | oxabl_ast::TypeSource::Explicit(
-                            oxabl_ast::DataType::Handle
-                                | oxabl_ast::DataType::Com
-                                | oxabl_ast::DataType::PreprocIf(_)
-                        )
-                ) {
-                    handle_vars.insert(name.name.to_ascii_lowercase());
+                let key = name.name.to_ascii_lowercase();
+                // A handle, a type the file does not show, or a JSON object.
+                let object = match type_source {
+                    oxabl_ast::TypeSource::Like { .. } => true,
+                    oxabl_ast::TypeSource::Explicit(d) => is_handle_type(d) || t.is_json_type(&ty),
+                };
+                if object && matches!(s.kind, S::VariableDeclaration { .. }) {
+                    objects.insert(key.clone());
+                    declarations.insert(name.span.start);
                 }
-                t.types
-                    .insert(name.name.to_ascii_lowercase(), ty.to_ascii_lowercase());
+                t.types.insert(key, ty);
             }
             S::Property {
                 name, data_type, ..
             } => {
-                t.types.insert(
-                    name.name.to_ascii_lowercase(),
-                    data_type.class_name().unwrap_or("").to_ascii_lowercase(),
-                );
+                t.types
+                    .insert(name.name.to_ascii_lowercase(), type_name(data_type));
             }
             // An error object: its members are a class's.
             S::Catch {
@@ -330,34 +326,122 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
             S::Assignment { target, value } => {
                 handle_of(target, value, &mut t.handles);
                 private_data(target, &mut t.private_data);
-                copies.extend(copy_of(target, value));
             }
             S::Assign { assignments } => assignments.iter().for_each(|p| {
                 handle_of(&p.target, &p.value, &mut t.handles);
                 private_data(&p.target, &mut t.private_data);
-                copies.extend(copy_of(&p.target, &p.value));
             }),
             _ => {}
         }
     }
     t.no_undo.retain(|n| !undoable.contains(n));
-    for (a, b) in copies {
-        if handle_vars.contains(&a) || handle_vars.contains(&b) {
-            t.aliased.insert(a);
-            t.aliased.insert(b);
-        }
-    }
+    objects.retain(|n| !t.shared.contains(n));
+    t.sole = sole(source, &objects, &declarations, &t);
     t
 }
 
-/// `a = b` with two plain names, lower-cased: `b` is no system handle.
-fn copy_of(target: &Expression, value: &Expression) -> Option<(String, String)> {
-    let (E::Identifier(a), E::Identifier(b)) = (&target.kind, &value.kind) else {
-        return None;
+/// The lower-cased name of a declared type: a class name, or empty for a
+/// primitive type and a handle, `WIDGET-HANDLE` included.
+fn type_name(d: &oxabl_ast::DataType) -> String {
+    match d.class_name() {
+        Some(c) if !is_widget_handle(c) => c.to_ascii_lowercase(),
+        _ => String::new(),
+    }
+}
+
+/// Whether `d` is a handle: `HANDLE`, `WIDGET-HANDLE` (which the parser reads
+/// as a class name), `COM-HANDLE`, or a type a preprocessor condition picks.
+pub(super) fn is_handle_type(d: &oxabl_ast::DataType) -> bool {
+    match d {
+        oxabl_ast::DataType::Handle
+        | oxabl_ast::DataType::Com
+        | oxabl_ast::DataType::PreprocIf(_) => true,
+        oxabl_ast::DataType::Class(c) => is_widget_handle(c),
+        _ => false,
+    }
+}
+
+/// `WIDGET-HANDLE` or an abbreviation of it (`WIDGET-H` at the least).
+fn is_widget_handle(name: &str) -> bool {
+    name.len() >= 8 && "widget-handle".starts_with(&name.to_ascii_lowercase())
+}
+
+/// The variables of `objects` whose object no other handle or reference
+/// reaches, as far as the file shows: each place the text names one is its
+/// declaration (at `declarations`), `CREATE ... v`, `v = NEW ...`, `v = ?`
+/// or a comparison with `?`, `VALID-HANDLE(v)`, `VALID-OBJECT(v)`, `DELETE
+/// OBJECT v`, or `v:member` with a member that gives no handle or object
+/// (see [`Tables::sole_member`]). Any other place (a copy, a field, an
+/// argument, `RETURN v`, a value of `Add`, a handle-valued member, text the
+/// list does not know) makes it, and every object variable that the same
+/// statement names, not sole.
+fn sole(
+    source: &str,
+    objects: &FxHashSet<String>,
+    declarations: &FxHashSet<u32>,
+    tables: &Tables,
+) -> FxHashSet<String> {
+    let mut out = objects.clone();
+    let Some(st) = StatementText::over(
+        source,
+        Span {
+            start: 0,
+            end: source.len() as u32,
+        },
+    ) else {
+        return FxHashSet::default();
     };
-    let b_name = b.name.to_ascii_lowercase();
-    (value.span.start >= b.span.start && !oxabl_semantic::SYSTEM_HANDLES.contains(&b_name.as_str()))
-        .then(|| (a.name.to_ascii_lowercase(), b_name))
+    let word = |i: usize| if i < st.len() { st.word(i) } else { "" };
+    let adjacent = |i: usize| i + 1 < st.len() && st.token(i).end == st.token(i + 1).start;
+    // A period that ends a statement: not inside a name (`t.f`).
+    let ends = |i: usize| st.is(i, Kind::Period) && !(i > 0 && adjacent(i - 1) && adjacent(i));
+    let mut named: Vec<String> = Vec::new();
+    let mut tainted = false;
+    for i in 0..=st.len() {
+        if i == st.len() || ends(i) {
+            if tainted {
+                for n in &named {
+                    out.remove(n);
+                }
+            }
+            named.clear();
+            tainted = false;
+            continue;
+        }
+        let name = word(i).to_ascii_lowercase();
+        if st.token(i).kind == Kind::StringLiteral || !objects.contains(&name) {
+            continue;
+        }
+        // A member (`h:name`) or a part of a dotted name is not the variable.
+        if i > 0 && st.is(i - 1, Kind::Colon)
+            || i > 0 && st.is(i - 1, Kind::Period) && adjacent(i - 1)
+            || st.is(i + 1, Kind::Period) && adjacent(i) && adjacent(i + 1)
+        {
+            continue;
+        }
+        let is = |j: usize, w: &str| j < st.len() && st.is_word(j, w);
+        let prev = |k: usize| i.checked_sub(k);
+        let unknown_after = |j: usize| st.is(j, Kind::Question);
+        let allowed = declarations.contains(&(st.span(i..i + 1).start))
+            || prev(2).is_some_and(|j| is(j, "CREATE"))
+            || (st.is(i + 1, Kind::Equals)
+                || st.is(i + 1, Kind::NotEqual)
+                || is(i + 1, "EQ")
+                || is(i + 1, "NE"))
+                && unknown_after(i + 2)
+            || st.is(i + 1, Kind::Equals) && is(i + 2, "NEW")
+            || st.is(i + 1, Kind::RightParen)
+                && prev(1).is_some_and(|j| st.is(j, Kind::LeftParen))
+                && prev(2).is_some_and(|j| is(j, "VALID-HANDLE") || is(j, "VALID-OBJECT"))
+            || prev(2).is_some_and(|j| is(j, "DELETE"))
+                && prev(1).is_some_and(|j| is(j, "OBJECT") || is(j, "WIDGET"))
+            || st.is(i + 1, Kind::Colon)
+                && i + 2 < st.len()
+                && tables.sole_member(&name, word(i + 2));
+        named.push(name);
+        tainted |= !allowed;
+    }
+    out
 }
 
 /// The statements inside a routine: what they declare is not visible to the
@@ -1446,7 +1530,11 @@ impl Builder<'_, '_> {
             && let Some(first) = arguments.first()
             && written_direction(self.source, first.span.start).is_none()
         {
-            let value = self.c.expr(object);
+            let mut value = self.c.expr(object);
+            // Another reference may have put more into the object.
+            if !self.c.tables.sole.contains(&o.name.to_ascii_lowercase()) {
+                value = Value::union([value, Value::origin(UNKNOWN)]);
+            }
             self.set(out, first, value, span);
         }
     }
@@ -2394,4 +2482,60 @@ fn member_is_visible(source: &str, span: Span) -> bool {
     (0..st.len())
         .take_while(|&i| !st.is_word(i, "VARIABLE") && !st.is_word(i, "VAR"))
         .any(|i| st.is_word(i, "PUBLIC") || st.is_word(i, "PROTECTED"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whether `h` is sole in `body`, after `DEFINE VARIABLE h AS HANDLE`
+    /// and `DEFINE VARIABLE h2 AS HANDLE`.
+    fn sole_in(body: &str) -> bool {
+        let src = format!(
+            "DEFINE VARIABLE h AS HANDLE NO-UNDO.\nDEFINE VARIABLE h2 AS HANDLE NO-UNDO.\n{body}\n"
+        );
+        let tokens = oxabl_lexer::tokenize(&src);
+        let program = oxabl_parser::Parser::new(&tokens, &src).parse_program();
+        tables(&statements(&program.statements), &src)
+            .sole
+            .contains("h")
+    }
+
+    /// A handle is sole only where every place the text names it is on the
+    /// list; any other place, a statement the parser does not model included,
+    /// fails closed.
+    #[test]
+    fn a_handle_named_anywhere_off_the_list_is_not_sole() {
+        for body in [
+            "CREATE BUTTON h.",
+            "CREATE X-DOCUMENT h IN WIDGET-POOL \"p\".",
+            "h = ?.",
+            "IF h <> ? AND VALID-HANDLE(h) THEN DELETE OBJECT h.",
+            "h:PRIVATE-DATA = \"x\". h:ADD-LAST(\"y\").",
+            "DELETE WIDGET h.",
+        ] {
+            assert!(sole_in(body), "{body}");
+        }
+        for body in [
+            "h2 = h.",
+            "h = h2.",
+            "ASSIGN h2 = h.",
+            "h2 = h:HANDLE.",
+            "h2 = h:GET-BUFFER-HANDLE(1).",
+            "h:FIRST-CHILD:PRIVATE-DATA = \"x\".",
+            "RUN p (h).",
+            "RUN p (OUTPUT h).",
+            "x = f(h).",
+            "PUBLISH \"e\" (h).",
+            "RETURN h.",
+            "h:APPEND-CHILD(h2).",
+            "h2:APPEND-CHILD(h).",
+            "h = SESSION:FIRST-CHILD.",
+            "h = WIDGET-HANDLE(\"1\").",
+            "UNKNOWN-STATEMENT h.",
+            "SET h.",
+        ] {
+            assert!(!sole_in(body), "{body}");
+        }
+    }
 }
