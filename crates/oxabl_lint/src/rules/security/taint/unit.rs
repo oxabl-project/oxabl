@@ -193,6 +193,11 @@ pub(super) fn tables(stmts: &FxHashMap<NodeId, &Statement>, source: &str) -> Tab
     let mut objects = FxHashSet::default();
     let mut declarations = FxHashSet::default();
     for s in stmts.values() {
+        if let S::Using { type_name, .. } = &s.kind {
+            t.json_using(type_name);
+        }
+    }
+    for s in stmts.values() {
         defined_names(s, source, locals.contains(&s.id), &mut t.names);
         if let S::VariableDeclaration { name, no_undo, .. }
         | S::Property { name, no_undo, .. }

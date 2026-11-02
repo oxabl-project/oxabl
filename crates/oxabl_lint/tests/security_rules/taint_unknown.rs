@@ -315,14 +315,14 @@ OS-COMMAND VALUE(tt.f).
         });
         assert!(found.is_empty(), "{src}");
     }
-    // A class name before `:` is no table. A method of a class runs code
-    // elsewhere, and the token reader reads the member as a name, so the
-    // member is one the file defines.
+    // A class name before `:` is no table, and a static member of the class
+    // is code elsewhere: Unknown, also when the file has a name like the
+    // member.
     let src = "\
 DEFINE VARIABLE Mode AS CHARACTER NO-UNDO INITIAL \"ls\".
 OS-COMMAND VALUE(STRING(pkg.Settings:Mode)).
 ";
-    assert!(check_fragment("ABLSEC003", src).is_empty());
+    assert_eq!(check_fragment("ABLSEC003", src).len(), 1);
 }
 
 #[test]

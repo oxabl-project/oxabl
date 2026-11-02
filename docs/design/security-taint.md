@@ -140,8 +140,9 @@ A call of code that the file does not hold returns the union of its receiver,
 its arguments and Unknown: `RUN` of another program (or of a procedure `IN` a
 handle), a function that the file declares `IN h`, `IN SUPER`, `EXTERNAL` or
 `MAP TO` and does not define, `DYNAMIC-FUNCTION` and `DYNAMIC-INVOKE` that do
-not name a function of the file, and a method of an object of a class (a
-JSON object's are modelled, see "JSON objects"). Its `OUTPUT` and
+not name a function of the file, and a method or a property of an object
+of a class, and any static member of a class (a JSON object's methods are
+modelled, see "JSON objects"). Its `OUTPUT` and
 `INPUT-OUTPUT` arguments take the same, as its `RETURN-VALUE` does, so what
 code elsewhere gives back is never clean. In a file that is open (see "The
 gate"), a function that the file does not declare is such a call too. In a
@@ -477,11 +478,16 @@ Unknown.
 
 The object model is a common way for request values to reach a response
 without passing a variable the analysis can see. A variable declared as a
-`Json...` class (`JsonObject`, `JsonArray`), or one the file does not
-declare, takes what `o:Add(...)`, `o:Set(...)` and `o:Insert(...)` give it
-(a weak update), and `o:Write(target, ...)` writes it into `target`. A read
-through the object (`o:GetJsonText()`, `o:GetCharacter("k")`) is already the
-union of the receiver and the arguments.
+`JsonObject`, `JsonArray` or `JsonConstruct` of `Progress.Json.ObjectModel`
+(in full, or a short name that `USING` imports), or, in an open file, one
+the file does not declare, takes what `o:Add(...)`, `o:Set(...)` and
+`o:Insert(...)` give it (a weak update), and `o:Write(target, ...)` writes it
+into `target`. A read through the object (`o:GetJsonText()`,
+`o:GetCharacter("k")`) is already the union of the receiver and the
+arguments. A class of another package whose name starts with `Json` is a
+class like any other: its members are code elsewhere. In a closed file, a
+name the file does not declare before `:` is a class (`Settings:GetCmd()`),
+so its members are code elsewhere too.
 
 A JSON variable is sole by the rule for handles (see "Built-in reads"),
 with `JSON_SOLE_MEMBERS` as the members that give no other reference
@@ -513,8 +519,9 @@ their counts.
 
 - Calls cross the units of one file only (see "Calls of the file"). What a
   program run with `RUN other.p`, a function or procedure of another program
-  or a method of an object gives back (its result, `OUTPUT` arguments and
-  `RETURN-VALUE`) is Unknown, never what that code really returns.
+  or a method or property of an object or a class gives back (its result,
+  `OUTPUT` arguments and `RETURN-VALUE`) is Unknown, never what that code
+  really returns.
 - A sink sees what a call in its own statement writes (a routine of the
   file, or Unknown from code elsewhere) when the call starts inside the sink's
   operand or ends before it; a call around the operand (`f(VALUE(c))`) writes
@@ -549,9 +556,6 @@ their counts.
   `{&rv}` that an include defines does); a reference that does not expand is
   Unknown, so a sink still reports it and ABLSEC010 does not. The variable of a `CATCH`
   is Unknown, not what the block throws.
-- A property of an object of a class (`o:Mode`, `pkg.Settings:Mode`) reads
-  what the object holds; a computed `GET` of another class is code elsewhere
-  that this does not see.
 - Whether a handle or JSON variable is sole is decided for the whole file,
   not at each statement: a variable that is not sole somewhere reads Unknown
   everywhere, also before it was copied and after it takes a new object
@@ -571,10 +575,11 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.71 (stage 1) to 0.97 (stage 2) and
-recall stays at 1.00 (it was 0.90 on the cases of a second handle or JSON
-reference of an object got other than by a plain copy and a `WIDGET-HANDLE`,
-before they were modelled, 0.84 on the cases of `UNDO`, of handles that
+On the taint corpus, precision goes from 0.72 (stage 1) to 0.97 (stage 2) and
+recall stays at 1.00 (it was 0.85 on the cases of a second handle or JSON
+reference of an object got other than by a plain copy, a `WIDGET-HANDLE`, a
+property or static member of a class, and a class named `Json...`, before
+they were modelled, 0.84 on the cases of `UNDO`, of handles that
 reach or copy other handles, and of what code elsewhere gives back, before
 they were modelled, 0.83 before the `ON` phrase's `RETURN`, the
 arguments that built-in methods write, the owner of a copied handle and

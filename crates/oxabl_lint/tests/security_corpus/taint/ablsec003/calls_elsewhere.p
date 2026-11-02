@@ -1,6 +1,7 @@
 /* What code the file does not hold gives back, in an OUTPUT argument or as
    a result, is Unknown, as its RETURN-VALUE is: another program, a function
    or procedure of another one, a method of an object. */
+USING pkg.*.
 DEFINE VARIABLE cOut AS CHARACTER NO-UNDO.
 DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
 DEFINE VARIABLE oLib AS Progress.Lang.Object NO-UNDO.
@@ -27,6 +28,26 @@ OS-COMMAND VALUE(cOut). /* taint: real */
 cOut = "".
 oLib:GetCmd(OUTPUT cOut).
 OS-COMMAND VALUE(cOut). /* taint: real */
+
+/* A property of an object of a class, and any static member of a class,
+   are code elsewhere too, as a class whose name starts with Json is. */
+DEFINE VARIABLE oSvc AS app.JsonService NO-UNDO.
+oLib = NEW pkg.Lib().
+OS-COMMAND VALUE(oLib:Cmd). /* taint: real */
+cOut = oLib:Cmd.
+OS-COMMAND VALUE(cOut). /* taint: real */
+OS-COMMAND VALUE(oLib:Items[1]). /* taint: real */
+OS-COMMAND VALUE(pkg.Lib:Cmd). /* taint: real */
+OS-COMMAND VALUE(pkg.Settings:GetCmd()). /* taint: real */
+cOut = Settings:GetCmd().
+OS-COMMAND VALUE(cOut). /* taint: real */
+OS-COMMAND VALUE(Settings:GetCmd()). /* taint: real */
+oSvc = NEW app.JsonService().
+cOut = oSvc:BuildCommand().
+OS-COMMAND VALUE(cOut). /* taint: real */
+DEFINE VARIABLE oSvcOwn AS app.JsonService NO-UNDO.
+oSvcOwn = NEW app.JsonService().
+OS-COMMAND VALUE(oSvcOwn:GetCharacter("cmd")). /* taint: real */
 
 /* A function of the file that returns a literal. */
 OS-COMMAND VALUE(fixed-cmd()). /* taint: safe */

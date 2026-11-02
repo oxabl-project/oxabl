@@ -555,6 +555,8 @@ pub(super) struct Tables {
     /// receiver (a variable that is not sole, a field, a call) is Unknown: a
     /// write through another handle of the object does not reach that slot.
     pub sole: FxHashSet<String>,
+    /// Lower-cased short names of the JSON classes that `USING` imports.
+    pub json_short: FxHashSet<String>,
 }
 
 impl Tables {
@@ -582,20 +584,36 @@ impl Tables {
     }
 
     /// Whether `name` may hold a JSON object or array: its declared class is
-    /// one, or the file does not declare it.
+    /// one, or, in an open file, the file does not declare it. In a closed
+    /// file such a name before `:` is a class: `Settings:GetCmd()`.
     pub fn may_be_json(&self, name: &str) -> bool {
         match self.types.get(&name.to_ascii_lowercase()) {
-            None => true,
+            None => self.open,
             Some(t) => self.is_json_type(t),
         }
     }
 
-    /// Whether the lower-cased class name `class` is a JSON class.
+    /// Whether the lower-cased class name `class` is a JSON object, array or
+    /// construct of `Progress.Json.ObjectModel`: written in full, or a short
+    /// name that `USING` imports.
     pub fn is_json_type(&self, class: &str) -> bool {
-        class
-            .rsplit('.')
-            .next()
-            .is_some_and(|s| s.starts_with("json"))
+        match class.strip_prefix(JSON_PACKAGE) {
+            Some(short) => JSON_CLASSES.contains(&short),
+            None => self.json_short.contains(class),
+        }
+    }
+
+    /// Note `USING type_name`: the JSON classes it imports.
+    pub fn json_using(&mut self, type_name: &str) {
+        let lower = type_name.to_ascii_lowercase();
+        let Some(rest) = lower.strip_prefix(JSON_PACKAGE) else {
+            return;
+        };
+        for c in JSON_CLASSES {
+            if rest == "*" || rest == c {
+                self.json_short.insert(c.to_string());
+            }
+        }
     }
 
     /// Whether `v:member` leaves the variable `v` (lower-cased) sole: the
@@ -840,6 +858,12 @@ fn is_keyword(word: &str) -> bool {
         .first()
         .is_some_and(|t| t.kind != Kind::Identifier)
 }
+
+/// The package of the JSON classes, lower-cased, with its trailing dot.
+const JSON_PACKAGE: &str = "progress.json.objectmodel.";
+
+/// The JSON classes whose methods the analysis models, lower-cased.
+const JSON_CLASSES: [&str; 3] = ["jsonobject", "jsonarray", "jsonconstruct"];
 
 /// The members of a JSON object or array that give no other reference to an
 /// object: they put a value in, write the text out, or read a value that is
@@ -1853,6 +1877,11 @@ impl Compiler<'_> {
             _ => object,
         };
         let Some(args) = args else {
+            // A property of an object of a class, a static one too, is code
+            // elsewhere, as a method is.
+            if receiver.owner == Owner::Class && !receiver.json {
+                return Value::union([object, Value::origin(UNKNOWN)]);
+            }
             return receiver.owner.read(member, object);
         };
         if let Some(mask) = self.options.validator(member) {
@@ -2249,15 +2278,32 @@ impl Compiler<'_> {
                 }
                 // A dotted name before `:` is a class.
                 let receiver = st.is(j + 1, Kind::Colon);
-                if receiver
-                    && self.tables.watches()
-                    && (!self.is_table(st.word(q)) || !is_keyword(st.word(j + 2)))
-                {
+                let class = receiver && (!self.is_table(st.word(q)) || !is_keyword(st.word(j + 2)));
+                if class && self.tables.watches() {
                     self.foreign.push(st.span(i..j + 1));
                 }
                 let field = self.field(st.word(q), st.word(j), st.span(i..j + 1), receiver);
                 v = Value::union([v, field]);
                 i = j + 1;
+                // A static member of a class (`pkg.Cls:m()`, `pkg.Cls:p`), or a
+                // member of an object a field holds, is code elsewhere.
+                if class {
+                    v = Value::union([v, Value::origin(UNKNOWN)]);
+                    while i + 1 < end && st.is(i, Kind::Colon) && is_word(st, i + 1) {
+                        i += 2;
+                        if st.is(i, Kind::LeftParen)
+                            && let Some(close) = st.close_of(i).filter(|&c| c < end)
+                        {
+                            let args: Vec<Value> = st
+                                .call_args(i)
+                                .into_iter()
+                                .map(|a| self.tokens(st, a))
+                                .collect();
+                            v = Value::union(std::iter::once(v).chain(args));
+                            i = close + 1;
+                        }
+                    }
+                }
                 continue;
             }
             v = Value::union([v, self.var(word)]);

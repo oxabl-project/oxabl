@@ -25,10 +25,11 @@
 //! literals. A literal has no labels, and an assignment of one replaces them.
 //!
 //! A call of code the file does not hold (another program, a function it
-//! declares `IN h`, `IN SUPER` or `EXTERNAL`, a method of an object) returns
-//! the union of its receiver, its arguments and Unknown, and its `OUTPUT`
-//! arguments take the same value. A function a closed file does not declare
-//! cannot be called there; such a call returns the union of its arguments.
+//! declares `IN h`, `IN SUPER` or `EXTERNAL`, a method or property of an
+//! object, a static member of a class) returns the union of its receiver,
+//! its arguments and Unknown, and its `OUTPUT` arguments take the same value.
+//! A function a closed file does not declare cannot be called there; such a
+//! call returns the union of its arguments.
 //!
 //! # Calls of the file's own routines
 //!
@@ -43,10 +44,10 @@
 //! a unit that no caller outside the file reaches is a placeholder, never a
 //! source of its own.
 //!
-//! A JSON object or array (a variable declared as a `Json...` class, or not
-//! declared) takes what `o:Add`, `o:Set` and `o:Insert` give it, and
-//! `o:Write(target)` puts it into `target`; a read such as `o:GetJsonText()`
-//! returns it. A handle or JSON
+//! A JSON object or array (a variable declared as a JSON class of
+//! `Progress.Json.ObjectModel`, or, in an open file, not declared) takes what
+//! `o:Add`, `o:Set` and `o:Insert` give it, and `o:Write(target)` puts it into
+//! `target`; a read such as `o:GetJsonText()` returns it. A handle or JSON
 //! variable that is not the only reference to its object (`Tables::sole`)
 //! adds Unknown to what is read through it.
 //!
