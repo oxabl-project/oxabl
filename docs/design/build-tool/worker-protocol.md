@@ -33,10 +33,14 @@ between allocation and bind), the address of the container, a firewall opening, 
 registry to find and stop orphan workers after a crash. These were the largest parts of
 the downstream worker code. Stdin also avoids a second channel for results.
 
-Known risk: this needs the AVM to read stdin line by line in batch mode (`IMPORT
-UNFORMATTED` on the default input stream) and to write each `MESSAGE` line to stdout at
-once. Slice 4 checks both on a real AVM first. If either fails, the same line protocol runs
-over a TCP connection that the worker opens to oxabl, and this section is updated.
+The worker writes each protocol line with `PUT UNFORMATTED <line> SKIP` to the default
+output stream. This output path has been checked on a real AVM in batch mode. `MESSAGE` is
+not used, because its batch-mode wrapping and buffering of long lines is not checked.
+
+Known risk: the AVM must read stdin line by line in batch mode (`IMPORT UNFORMATTED` on the
+default input stream). Slice 4 checks it on a real AVM first. If it fails, the same line
+protocol runs over a TCP connection that the worker opens to oxabl, and this section is
+updated.
 
 ## The worker command
 
@@ -106,9 +110,10 @@ Oxabl to the worker:
 | --- | --- | --- |
 | `HELLO` | `version` `token` | Start of the session. `version` is `1`. `token` is 32 random hex digits. |
 | `SCHEMA` | `ldb` | Emit the schema image of one database. |
+| `HASH` | `id` `path` | Hash one worker-side file ([Hashing worker-side files](#hashing-worker-side-files)). |
 | `PROPATH` | `id` `entry`... | Define a PROPATH. Entries are worker-side paths. |
 | `OPTIONS` | `id` `name=value`... | Define a set of compile options. |
-| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref`, `xref-xml` or `private`. `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. |
+| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref`, `xref-xml` or `private` (a private `XREF-XML` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. |
 | `UNIT` | `req` `compile-name` | One unit of the request, in compile order. |
 | `PING` | `n` | Liveness. |
 | `QUIT` | | End the session. |
@@ -121,8 +126,9 @@ The worker to oxabl:
 | `ENV` | `name` `value` | One environment field. |
 | `DB` | `number` `ldb` `dbtype` `aliases` | One connected database, in connection order. `aliases` is comma-separated. |
 | `ENV-END` | `count` | End of the environment; `count` is the number of `ENV` and `DB` lines. |
-| `SREC` | `ldb` `field`... | One schema image record. |
-| `SCHEMA-END` | `ldb` `count` | End of the image; `count` is the number of `SREC` lines. |
+| `SREC` | `ldb` `record` `field` `last` `chunk` | One chunk of one field of one schema image record ([Schema image](#schema-image)). |
+| `SCHEMA-END` | `ldb` `records` `lines` | End of the image: the number of records and of `SREC` lines. |
+| `HASHED` | `id` `kind` `size` `sha256` | `kind` is `file`, `dir` or `none`; `size` and `sha256` (lower-case hex) are `-` unless `kind` is `file`. |
 | `OK` | `id` | A `PROPATH` or `OPTIONS` is defined. |
 | `MSG` | `req` `compile-name` `type` `number` `file` `row` `column` `text` | One compiler message. `type` is `error` or `warning`. |
 | `DONE` | `req` `compile-name` `status` `ms` | One unit is complete. `status` is `ok` or `fail`. |
@@ -146,6 +152,9 @@ it as a lost worker.
    - `cwd` equals the worker root (after removing a trailing `/`);
    - the predefined names equal what oxabl analysed with (see below).
 4. Oxabl sends `SCHEMA <ldb>` for each database and reads the images.
+5. Oxabl sends `HASH` for each library entry of every unit PROPATH (including the DLC
+   default entries from the `propath` field) and for each startup parameter value
+   ([compile-key.md](compile-key.md#startup-parameters)), and reads the answers.
 
 The whole handshake must end within `[build.workers].start_timeout` (default 60 s).
 
@@ -165,6 +174,7 @@ The whole handshake must end within `[build.workers].start_timeout` (default 60 
 | `date_format`, `year_offset` | `SESSION:DATE-FORMAT`, `STRING(SESSION:YEAR-OFFSET)` |
 | `numeric_decimal_point`, `numeric_separator` | `SESSION:NUMERIC-DECIMAL-POINT`, `SESSION:NUMERIC-SEPARATOR` |
 | `startup_parameters` | `SESSION:STARTUP-PARAMETERS` |
+| `propath` | `PROPATH` at start, before the worker changes it |
 | `cwd` | `FILE-INFO:FULL-PATHNAME` of `"."` |
 
 ### Predefined names must agree
@@ -200,7 +210,7 @@ For each `UNIT` of a request, the worker:
 2. Computes the output paths under the stage directory of the request:
    - r-code: `COMPILE ... SAVE INTO <stage>/r`, so the `.r` is at `<stage>/r/<compile stem>.r`;
    - XREF: `<stage>/xref/<compile name>.xref` (or `.xref.xml`);
-   - private XREF: `<stage>/verify/<compile name>.xref`;
+   - private XREF: `<stage>/verify/<compile name>.xref.xml` (always `XREF-XML`);
    - debug list: `<stage>/dbg/<compile name>.dbg`;
    - listing: `<stage>/lst/<compile name>.lst`.
 3. Creates each directory those paths need, with `OS-CREATE-DIR`. `SAVE INTO` creates package
@@ -224,8 +234,18 @@ own, so a worker that oxabl gave up on can never write into a stage that oxabl s
 
 ## Schema image
 
-For `SCHEMA <ldb>`, the worker emits records with `SREC`. Each record is a list of fields.
-The first field is the record type.
+For `SCHEMA <ldb>`, the worker emits the records of the image. A record is a list of fields,
+and the first field is the record type. One field can be long (a `_Desc` or `_Valexp` of
+many kilobytes, then percent-encoded), so a record is never put on one line:
+
+- Records are numbered from 1 in the order the worker emits them. Fields are numbered from
+  1 in record order.
+- Each field is cut into chunks of at most 2,000 characters. Each chunk is one line:
+  `SREC <ldb> <record> <field> <last> <chunk>`, where `last` is `1` on the last chunk of the
+  field and `0` otherwise. 2,000 characters percent-encode to at most 24,000 bytes, below the
+  line limit, also for 4-byte UTF-8 characters.
+- Oxabl joins the chunks of a field in order, and the fields of a record in order. A gap,
+  a chunk out of order, or totals that differ from `SCHEMA-END` is a protocol error.
 
 | Type | Fields after the type | Rows |
 | --- | --- | --- |
@@ -241,9 +261,27 @@ The first field is the record type.
 The pairs are every field of the row's metaschema buffer (`BUFFER-FIELD(i)` for `i` from 1
 to `NUM-FIELDS`) except the excluded ones in
 [compile-key.md](compile-key.md#schema-identity), in buffer order, with the field name in
-ASCII lower case. Array fields give one pair per element: `name[i]=value`. The worker uses
+ASCII lower case. Array fields give one pair per element: `name[i]=value`. A `RECID` or
+`ROWID` field is mapped to the row it points at
+([compile-key.md](compile-key.md#schema-identity)); the worker reads the whole image into a
+temp-table first, so it can map pointers in a second pass. The worker uses
 dynamic buffers (`CREATE BUFFER ... FOR TABLE "<ldb>._File"`), so one program covers every
 OpenEdge version, and the version is in the environment anyway.
+
+## Hashing worker-side files
+
+Some inputs are files that only the worker can see: procedure libraries (the DLC default
+entries, `$LIB:` entries, a `.pl` under `$DLC`) and file-valued startup parameters. For
+`HASH <id> <path>`, the worker resolves the path (relative paths against its working
+directory, `$DLC/` against `OS-GETENV("DLC")`, `$LIB:<name>` as oxabl expanded it from
+`[build.libraries]`), checks it with `FILE-INFO`, and for a file reads its bytes with
+`COPY-LOB FROM FILE` into a `MEMPTR` and answers with `MESSAGE-DIGEST("SHA-256", ...)` in
+hex. Slice 4 checks `MESSAGE-DIGEST` with SHA-256 on the supported OpenEdge versions; when it
+is not available, every `HASH` fails and units with a library on their PROPATH are
+unkeyable (K6).
+
+Every worker hashes the same paths, and the answers are part of the environment check: all
+workers must agree.
 
 ## Pool lifecycle
 
@@ -263,9 +301,36 @@ workers start, the build goes on with them and prints a warning.
 
 ### Dispatch
 
-An idle worker takes the next ready job ([the scheduler](../build-tool.md#scheduler)).
-Oxabl sends `PROPATH` and `OPTIONS` lines the first time a request needs an id that the
-worker does not know yet, then `COMPILE` and the `UNIT` lines.
+An idle worker takes the next ready job ([the scheduler](../build-tool.md#scheduler)) that its
+session may compile (see below). Oxabl sends `PROPATH` and `OPTIONS` lines the first time a
+request needs an id that the worker does not know yet, then `COMPILE` and the `UNIT` lines.
+
+### Class-resolution groups
+
+`COMPILER:MULTI-COMPILE` keeps each class that a session has compiled, by class name, and
+does not drop it when `PROPATH` changes. When two units have PROPATHs that resolve one
+class name to different files (`a/pkg/Foo.cls` for one, `b/pkg/Foo.cls` for the other,
+which happens with `root_relative_include_paths`), one session that compiles both would
+give the second unit the first unit's class. The key would name the right file and the
+r-code would not match it. Check V3 cannot see this, because the compiler opens no new
+file.
+
+So, before dispatch, oxabl computes from the graph, for each pair of PROPATH ids in the
+build, whether they **conflict**: some class name that a unit with one id references
+resolves, under the other id, to a different file (or to none). Each worker session has a
+**bound set** of PROPATH ids, empty at start:
+
+- A job may go to a worker when its PROPATH id conflicts with no id in the bound set; the id
+  joins the set.
+- Otherwise the worker gets `QUIT` and a new session starts in its slot, with an empty set.
+  The scheduler prefers jobs that need no restart, and among them the one with the highest
+  priority.
+
+When the build has no conflict, no worker restarts. The OpenEdge suite test
+`multicompile_propath_isolation` shows the cross-talk with one session and shows that the
+restart removes it. Turning `MULTI-COMPILE` off and on between ids would be cheaper; it
+replaces the restart only after an OpenEdge-suite test proves that it clears the session's
+classes.
 
 ### Timeouts
 
@@ -317,11 +382,13 @@ The program has these parts. Each is one internal procedure.
 | Part | Responsibility |
 | --- | --- |
 | main loop | `REPEAT ON ENDKEY UNDO, LEAVE ON ERROR UNDO, LEAVE`: `IMPORT UNFORMATTED` one line, dispatch on the type, `QUIT` on end-of-file. |
-| `emit` | Percent-encode the fields and write one `MESSAGE` line. |
+| `emit` | Percent-encode the fields and write one line with `PUT UNFORMATTED ... SKIP`. |
 | `decode` | Split a line on `TAB` and decode each field. |
 | `hello` | Check the version, echo the token, emit the environment and the databases. |
-| `schemaImage` | Emit the records of one database with dynamic buffers and queries. |
+| `schemaImage` | Read the records of one database with dynamic buffers and queries into a temp-table, map `RECID` and `ROWID` pointers, and emit them in chunks. |
+| `hashFile` | Answer one `HASH`. |
 | `compileRequest` | Read the `UNIT` lines, compile each unit, emit `MSG` and `DONE`, then `END`. |
 
-The program reads no file and writes no file except the compile outputs in the stage. It
+The program reads no file except the files that `HASH` names, and writes no file except the
+compile outputs in the stage. It
 connects no database. It runs no other program.

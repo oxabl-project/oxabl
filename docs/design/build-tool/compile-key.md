@@ -79,6 +79,8 @@ empty component, no leading `./` and no trailing `/`. Case is the case on disk.
 - A file or directory under the host DLC source directory (`[workspace.sources].dlc`): `$DLC/`
   followed by its path relative to that directory. `$DLC` alone is the directory itself.
 - The output directory, as a PROPATH entry only: `$OUT`.
+- A procedure library outside the root and outside `$DLC`, named in `[build.libraries]`, as a
+  PROPATH entry only: `$LIB:<name>`.
 
 Any other path (another absolute directory, a path through a symbolic link that leaves the
 root) has no canonical form. Oxabl resolves symbolic links lexically: a path is canonical
@@ -93,16 +95,39 @@ as a list of canonical paths, in order:
 2. Each `[workspace.sources].root_relative_include_paths` entry, joined to the unit's
    directory and made canonical (`.` with a unit in `src/ar` gives `src/ar`).
 3. Each `[workspace.sources].include_paths` entry, made canonical. An entry that is not
-   under the root and not under `$DLC` is a configuration error for `oxabl build` (exit
-   code 2), because it has no portable form.
+   under the root, not under `$DLC` and not a `$LIB:` name is a configuration error for
+   `oxabl build` (exit code 2), because it has no portable form.
+4. The **DLC default entries**: each entry of the worker's own startup PROPATH (reported in
+   the handshake) that is under the worker's `$DLC`, in its order, as `$DLC/...`. These are
+   the libraries of the installation (`OpenEdge.Core.pl`, `netlib/OpenEdge.Net.pl`, ...),
+   which the AVM would search if oxabl did not set PROPATH. Startup entries outside `$DLC`
+   are dropped, with one warning per build that names them.
 
-An entry can name a directory or a procedure library (`.pl`). Duplicates after the first
-are removed.
+Duplicates after the first are removed.
+
+Each entry is a directory or a procedure library. In the key, an entry carries a **digest**:
+
+- `dir` for a directory. Its files enter the key through the closure, file by file.
+- `sha256:<64 lower-case hex>` for a library (a `.pl` file, or any entry that the worker
+  reports as a file): the SHA-256 of the library's bytes, which the worker computes and
+  reports ([worker-protocol.md](worker-protocol.md#hashing-worker-side-files)). A library
+  holds r-code that the compiler can read, so its bytes are an input. SHA-256 is used
+  because ABL computes it natively (`MESSAGE-DIGEST`); BLAKE3 stays the hash for every file
+  oxabl reads itself.
+- `absent` for an entry that the worker reports as missing. An entry that the worker cannot
+  hash makes the environment unknown for the units that use it (K6).
 
 The **compile name** is the unit path relative to the first entry after `$OUT` that holds
 it. For a class it is the package path with the extension (`acme/ar/Invoice.cls`). A unit
 that no entry holds is skipped (`not-on-propath`). A unit whose compile name resolves, on
 the unit PROPATH, to a different file first is skipped (`shadowed-by`).
+
+Two units whose r-code would land on one path collide: `x.p` and `x.w` in one directory, or
+`x.p` and `x.cls`. The compile stems are compared ignoring ASCII case, because r-code is
+often deployed to case-insensitive systems. In each colliding group, the unit with the
+smallest unit path (by bytes) compiles, and every other unit is skipped with
+`output-collision: <path of the unit that compiles>`. So two keys never install over one
+final path.
 
 The worker compiles `COMPILE VALUE(<compile name>)` with the unit PROPATH as worker-side
 paths (`$OUT` is the worker-side output directory, a root-relative entry is relative to the
@@ -137,6 +162,12 @@ target in `S`. `U` itself is never in `S`.
 
 The closure is computed iteratively with a visited set over the in-memory graph, so cycles
 end.
+
+The closure assumes that the compile resolves each class name to the file that the analysis
+resolved under the unit PROPATH. A `MULTI-COMPILE` session keeps a class it has compiled
+under its name, even after PROPATH changes. The worker pool therefore never lets one session
+compile two units whose PROPATHs resolve one class name to different files
+([worker-protocol.md](worker-protocol.md#class-resolution-groups)).
 
 ## Environment identity
 
@@ -174,15 +205,29 @@ section("databases")   list(database, databases)      database = str(logical_nam
 
 ### Startup parameters
 
-The worker reports `SESSION:STARTUP-PARAMETERS`, a comma-separated list. Oxabl parses it:
+The worker reports `SESSION:STARTUP-PARAMETERS`, a comma-separated list. The AVM expands
+each `.pf` file into it: `-pf /work/build.pf,-inp 77777,-tok 4321,(end .pf),-Mm 8192` for a
+`.pf` that holds `-inp` and `-tok` (measured on OpenEdge 12.8). Oxabl parses it:
 
-1. Split on `,`. An item that does not start with `-` continues the value of the item
-   before it (the comma is kept). This handles a value that holds a comma.
-2. Split each item at the first space into a name and a value. An item with no space has
+1. Split on `,`.
+2. Remove each item that is exactly `(end .pf)`, and each item whose name is `-pf`. The
+   parameters that a `.pf` held stay, so a parameter has one canonical form whether it came
+   from a `.pf` or from the command line.
+3. An item that does not start with `-` continues the value of the item before it (the comma
+   is kept). This handles a value that holds a comma.
+4. Split each item at the first space into a name and a value. An item with no space has
    the value `""`.
-3. Remove every parameter whose name is in the drop list.
-4. For a name that occurs more than once, keep the last one (the AVM uses the last one).
-5. Sort by name, by bytes. Names and values keep their case.
+5. Remove every parameter whose name is in the drop list.
+6. **File values.** For each remaining value that is not `""`, oxabl asks the worker to hash
+   the path that the value names (relative to the worker root when relative). When the
+   worker reports a file, the value becomes `sha256:<hex>` of its bytes, so
+   `-compileroptionsfile`, `-ininame` and any other file-valued parameter count by content,
+   not by path. When it reports a directory (`-assemblies`), the environment is unknown for
+   every unit (K6, `unhashable-parameter: -assemblies`). When nothing exists at the path, the
+   value stays as written. This rule needs no list of file-valued parameters, so a parameter
+   that oxabl does not know is still keyed by content.
+7. For a name that occurs more than once, keep the last one (the AVM uses the last one).
+8. Sort by name, by bytes. Names and values keep their case.
 
 The **drop list** holds only parameters that name a connection, a file of this process, a
 log or a secret:
@@ -218,13 +263,17 @@ The image holds every user table (`_File._Tbl-Type = "T"`), and the fields, inde
 fields, table triggers and field triggers of those tables, and every sequence, plus one
 database record. Each record carries every scalar field of its metaschema table **except**:
 
-- fields of data type `RECID`, `ROWID`, `BLOB` or `CLOB` (a record names its table, field
-  or index by name instead);
+- fields of data type `BLOB` or `CLOB`;
 - `_Last-change` (a time stamp that differs between two databases loaded from one `.df`);
 - storage area numbers (`_ianum` and other area fields).
 
 A field value is `STRING(value)`, `?` for the unknown value, and `HEX-ENCODE(value)` for a
-`RAW` field. Each array element is a separate field `name[i]=value`. The field names are in
+`RAW` field. A `RECID` or `ROWID` field is **mapped to the row it points at**: its value is
+the record type and the name fields of that row, joined with `/` (for example
+`_prime-index=index/customer/custnum`). So a change of a table's primary index changes the
+image. A pointer to a row that is not in the image keeps its raw value; that is sound (a
+different value can only cause a miss), and the OpenEdge suite shows whether it costs
+portability. Each array element is a separate field `name[i]=value`. The field names are in
 ASCII lower case.
 
 The image covers the CRC of each table and also what the CRC does not cover and the
@@ -258,7 +307,7 @@ Material: `list(pair, pairs)` with `pair = str(name) str(value)`.
 The requested output kinds, sorted by bytes. `rcode` is always present. The others are
 `debug-list`, `listing`, and one of `xref` or `xref-xml`.
 
-The private XREF that verification uses ([cache.md](cache.md#verification)) is not a
+The private `XREF-XML` that verification uses ([cache.md](cache.md#verification)) is not a
 requested output and is not in the key. The OpenEdge suite proves that XREF does not change
 the r-code (`xref_does_not_change_rcode`). If that test fails, verification compiles into
 a separate private compile instead.
@@ -275,7 +324,8 @@ material =
     section("unit")         str(unit_path) str(compile_name) hash(content(unit))
     section("closure")      list(entry, closure sorted by path bytes)
                             entry = str(path) hash(content(path))
-    section("propath")      list(str, unit PROPATH in search order)
+    section("propath")      list(propath_entry, unit PROPATH in search order)
+                            propath_entry = str(entry) str(digest)
     section("environment")  hash(environment_identity)
     section("options")      list(pair, compile options)
     section("outputs")      list(str, output kinds)
@@ -317,16 +367,18 @@ gives each reason.
 | --- | --- | --- |
 | K1 | The unit, or an analysed node in its closure, has a degraded edge set. | `degraded: <path>: <reason>` |
 | K2 | The unit, or an analysed node in its closure, has an unresolved include (any kind, any reason). | `unresolved-include: <name> in <path>` |
-| K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external* and its name starts with a `[build].external_packages` prefix. | `unresolved-class: <name> in <path>` |
+| K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]`, and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
 | K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). | `computed-name: <name> in <path>` |
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
 | K6 | The environment was not established in this build (no probe, a failed probe, or a schema probe failure for any database). | `environment-unknown` |
-| K7 | The unit is skipped (`not-on-propath`, `shadowed-by`). | the skip reason |
+| K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`). | the skip reason |
 
-`[build].external_packages` defaults to `["OpenEdge.", "Progress."]`. These classes come
-from procedure libraries in the OpenEdge installation, so the `openedge` section of the
-environment covers them. A workspace that ships its own classes under those names has them
-as files, and then they are edges, not unresolved names.
+`[build.external_packages]` maps a class name prefix to the library entries that supply
+it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any library under
+`$DLC` on the unit PROPATH; the DLC default entries are always there. A prefix whose
+libraries are not on the unit PROPATH leaves the unit unkeyable: no prefix is trusted by
+name alone. A workspace that ships its own classes under such a prefix has them as files,
+and then they are edges, not unresolved names.
 
 Two more rules govern cache **writes** only. They do not remove the key:
 
@@ -347,7 +399,7 @@ Schema image of database `ledger`, two records:
 
 ```text
 ["db", "_db-coll-name=ICU-UCA", "_db-type=PROGRESS", "_db-xl-name=UTF-8"]
-["table", "customer", "_can-read=*", "_crc=12345", "_dump-name=customer"]
+["table", "customer", "_can-read=*", "_crc=12345", "_dump-name=customer", "_prime-index=custnum"]
 ```
 
 Environment:
@@ -356,24 +408,26 @@ Environment:
 openedge     "OpenEdge Release 12.8.9", "12.8"
 platform     "UNIX", "TTY", "yes", "64"
 session      "UTF-8", "UTF-8", "ICU-UCA", "BASIC", "mdy", "1950", ".", ","
-parameters   [("-cpinternal","UTF-8"), ("-cpstream","UTF-8"), ("-d","mdy")]
+parameters   [("-cpinternal","UTF-8"), ("-cpstream","UTF-8"), ("-d","mdy"), ("-inp","32000")]
 databases    [("ledger", "PROGRESS", ["dictdb"], <schema identity>)]
 ```
 
 Unit `src/ar/post.p`, compile name `ar/post.p`, bytes `{inc/ledger.i}\nMESSAGE "post".\n`.
 Closure: `src/inc/ledger.i`, bytes `DEFINE VARIABLE x AS INTEGER NO-UNDO.\n`. Unit PROPATH:
-`$OUT`, `src`, `$DLC/tty`. Default compile options. Outputs: `rcode`. Worker program bytes:
+`$OUT` (`dir`), `src` (`dir`), `$DLC/tty/netlib/OpenEdge.Net.pl` (`sha256:` of the bytes
+`library bytes`, which is
+`8c45ce4e5a5cb0c03670ca09e153a24b1c7b7f94141c4da68f31ce8e91bc1bf8`). Default compile options. Outputs: `rcode`. Worker program bytes:
 `/* oxabl worker */\n`.
 
 | Value | Hex |
 | --- | --- |
-| schema identity | `16d38b20397a370bbe5be71d0e0a8bbd8e837d405f25704d95ab3d5b0f548904` |
-| environment identity | `3a2cfe5dcb6cce3f42c2419650ef289e0f3c01fc3cfafb6bd8f0c1ba1687180e` |
+| schema identity | `5d563b8b7413121dc18d6061596536064071f7cce3024ee25178547e2adef0ed` |
+| environment identity | `0c88b89888c58e11a288151cfe11997e8301e65b69305e50500a3f20fb743420` |
 | content of the unit | `0396bf3a7c10884079571b007003baaba08e654f666a1cbc9b95f142cb6aea21` |
 | content of the include | `0b547367c7b6f2702a1cedf8d6e7a6c4a646ba1e89229a91052712e69427b058` |
 | content of the worker program | `c90f59b20862aa76cdd3a16915d2662583c01e49f381d7db0810e5d9bc397fb8` |
-| key material length | 578 bytes |
-| compile key | `20bf60ab42992c2c18ec13ea2cc04bbbe720ad2143df8f95d577121b9dd5b8b2` |
+| key material length | 702 bytes |
+| compile key | `fa30683ea4089459e871b5b3ca40b50ee4ed09aa8aa04f38ed5f863dfe4300a2` |
 
 Slice 5 adds `crates/oxabl_build/tests/key_vectors.json` with this example and one vector
 per rule of the encoding (an empty closure, two databases, a parameter that appears twice,

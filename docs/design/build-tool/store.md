@@ -176,8 +176,10 @@ CREATE TABLE environments (
   without dropped parameters. The planner compares two records field by field to name an
   `environment-changed` reason. Rows that no result refers to are deleted at commit.
 - `outputs` holds each output file of a result: its root-relative final path, its stat
-  and the BLAKE3 hash of its bytes. `outputs_by_path` makes sure that two units never own
-  one output.
+  and the BLAKE3 hash of its bytes. The planner skips colliding units before any compile
+  (`output-collision`, [compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)),
+  so two units never reach one output. `outputs_by_path` is the guard behind that rule: an
+  insert that breaks it is a bug, and the build stops with exit code 3 and names both units.
 
 ### Meta keys
 
@@ -352,6 +354,13 @@ paths. Results are committed in batches (every 500 units or every 2 seconds). Be
 batch commit, oxabl calls `syncfs(2)` on the output filesystem on Linux, or `fsync` on
 each new output file elsewhere. A committed result therefore never names an output whose
 bytes are not durable.
+
+Nothing in the stage is synced file by file: the worker writes compiled outputs without
+`fsync`, and the cache client installs fetched sets with `Durability::Caller`. The stage and
+the outputs are on one filesystem in the normal case, so the one `syncfs` before the batch
+commit covers both. When they are not, oxabl also calls `syncfs` on the stage filesystem
+before it promotes the batch. A cold fetch of 30,000 files therefore costs a few `syncfs`
+calls, not 30,000 `fsync` calls. Slice 7 measures promotion on a cold fetch and reports it.
 
 ## Memory and size
 

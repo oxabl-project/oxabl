@@ -32,7 +32,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 
 ```toml
 [workspace.sources]
-include_paths = ["src", "lib", "$DLC/src", "$DLC/tty"]
+include_paths = ["src", "lib", "$DLC/src", "$LIB:acme-util"]
 dlc = "/opt/oe128-sources"   # host path; machine-specific, usually set by OXABL_DLC_SOURCES
 ```
 
@@ -43,6 +43,14 @@ needs `dlc` and it is not set, the includes under it do not resolve and the unit
 them are unkeyable (`unresolved-include`). `oxabl check` and the language server use the
 same key, so they resolve these includes too.
 
+An entry `$LIB:<name>` names a procedure library from `[build.libraries]`. The analysis does
+not search it (a `.pl` holds r-code, not source).
+
+The worker PROPATH also gets the AVM's own default entries under `$DLC` (the `.pl` files of
+the installation) after `include_paths`, without listing them
+([compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)). So the minimum
+`include_paths` is the workspace's own source directories.
+
 ### `[build]`
 
 ```toml
@@ -51,7 +59,14 @@ output = "build/r"
 state = ".oxabl/build"
 store = ""
 exclude = ["**/test-fixtures/**"]
-external_packages = ["OpenEdge.", "Progress."]
+
+[build.libraries]
+acme-util = "/opt/libs/acme-util.pl"
+
+[build.external_packages]
+"OpenEdge." = ["$DLC"]
+"Progress." = ["$DLC"]
+"Acme.Util." = ["$LIB:acme-util"]
 ```
 
 | Key | Default | Meaning |
@@ -60,7 +75,8 @@ external_packages = ["OpenEdge.", "Progress."]
 | `state` | `.oxabl/build` | State directory. Must be under the root. |
 | `store` | `""` (in `state`) | Host directory for `state.db` only, for a root on a network filesystem. Absolute or relative. |
 | `exclude` | `[]` | Glob patterns (root-relative, `**` allowed) of root files that are not units. |
-| `external_packages` | `["OpenEdge.", "Progress."]` | Class name prefixes that may be unresolved without making a unit unkeyable ([compile-key.md](compile-key.md#the-fail-closed-rule)). |
+| `[build.libraries]` | `{}` | Procedure libraries outside the root and outside `$DLC`: a logical name and the library's path **as the worker sees it**. `include_paths` names them as `$LIB:<name>`. The worker reports the SHA-256 of each library's bytes, and the key holds it ([compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)). |
+| `[build.external_packages]` | `{ "OpenEdge." = ["$DLC"], "Progress." = ["$DLC"] }` | Class name prefix to the library entries that supply it. `"$DLC"` means any library under `$DLC` on the unit PROPATH. An unresolved class under a prefix keeps the unit keyable only when one of the listed libraries is on the unit PROPATH (so its bytes are in the key); any other unresolved class makes the unit unkeyable ([compile-key.md](compile-key.md#the-fail-closed-rule)). |
 
 ### `[build.outputs]`
 
@@ -73,7 +89,9 @@ listing = ""
 ```
 
 Each directory is optional (`""` or absent means off) and must be under the root.
-`xref_format` is `"xml"` (`XREF-XML`) or `"text"` (`XREF`), default `"xml"`.
+`xref_format` is `"xml"` (`XREF-XML`) or `"text"` (`XREF`), default `"xml"`. With `"text"`, oxabl
+writes no cache entries, because verification needs the compiler-resolved file names that
+only `XREF-XML` has and one compile gives only one form ([cache.md](cache.md#verification)).
 
 ### `[build.compile]`
 
@@ -126,30 +144,32 @@ reads = true
 `reads` turns on the private XREF and the read check ([cache.md](cache.md#verification)).
 With `reads = false`, no cache write happens.
 
-### `[build.cache]` and `[build.cache.remote]`
+### `[build.cache]`
 
 ```toml
 [build.cache]
 enabled = true
+remote = true
+idle_timeout = "30s"
 local = ""
+local_job_dir = ""
 local_max_size = "20GiB"
-
-[build.cache.remote]
-write = true
-timeout = "30s"
-# The keys below are defined and checked by the oxabl-cache client.
-url = "https://cache.example.com"
-cache = "acme-ledger"
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Both caches. |
-| `local` | the user cache directory | Host path of the local cache. |
+| `remote` | `true` when `.oxabl/cache.toml` exists, else `false` | Use the remote cache. `true` without `.oxabl/cache.toml` is a configuration error. |
+| `idle_timeout` | `30s` | A remote or local fetch with no progress for this long ends; the keys not yet reported are misses. |
+| `local` | the user cache directory | Host path of the local cache (developer mode). |
+| `local_job_dir` | `""` | In CI or `ci` mode, the per-job local cache directory, emptied at the start of each build. Empty means no local cache in CI ([cache.md](cache.md#trust)). |
 | `local_max_size` | `20GiB` | Eviction limit. |
-| `remote` | absent | The remote cache. Absent means off. |
-| `remote.write` | `true` | Store verified artifact sets. |
-| `remote.timeout` | `30s` | Per call; a timeout is a miss. |
+
+There is no `[build.cache.remote]` table. The remote cache's own settings (`server`,
+`cache`, `owner_keys`, `min_roster_version`) are in `.oxabl/cache.toml`, a file that the
+oxabl-cache client owns and that the repository commits
+([cache.md](cache.md#configuration-and-trust-root)). No oxabl file, overlay, flag or
+environment variable can set `owner_keys` or `min_roster_version`.
 
 ## Environment variables
 
@@ -158,7 +178,9 @@ cache = "acme-ledger"
 | `OXABL_DLC_SOURCES` | Overrides `[workspace.sources].dlc`. |
 | `OXABL_CACHE_DIR` | Overrides `[build.cache].local`. |
 | `OXABL_BUILD_OVERLAY` | A path, as `--config-overlay`. |
-| client-defined | Credentials and key material of the remote cache. Oxabl does not read them. |
+| `CI` | When set, the local cache follows the CI rule ([cache.md](cache.md#trust)). |
+| `OXABL_CACHE_MODE` | Read by the client (`ci`, `developer`, `read-only`); oxabl reads it only for the CI rule of the local cache. |
+| `OXABL_CACHE_SERVER`, `OXABL_CACHE_IDENTITY`, `OXABL_CACHE_TOKEN`, OIDC variables | Read by the client. Oxabl never reads a credential. |
 
 Precedence for one key: CLI flag, then environment variable, then overlay, then
 `oxabl.toml`, then the default.
@@ -223,13 +245,15 @@ The downstream build tool becomes an environment wrapper. Per build, it:
    passes the host directory as `[workspace.sources].dlc`;
 4. writes an overlay with:
    - `[workspace.sources].include_paths` and `root_relative_include_paths`: its PROPATH,
-     with root-relative and `$DLC/` entries only;
+     with root-relative, `$DLC/` and `$LIB:` entries only, and `[build.libraries]` for each
+     third-party library at its path in the container;
    - `[workspace.preprocessor]`: `proversion` and `databases` (logical names in connection
      order), and `[workspace.schema].files` (the `.df` dumps for the analysis);
    - `[build.workers]`: `command` (its container exec and `.pf`), `root` (the root inside
      the container) and `count`;
    - `[build]`, `[build.outputs]`, `[build.compile]`: its output directories and options;
-   - `[build.cache]`: its cache settings, with credentials in the environment;
+   - `[build.cache]`: its local cache settings; the remote cache settings stay in the
+     repository's `.oxabl/cache.toml`, and the mode and credentials go in the environment;
 5. runs `oxabl build --root <root> --config-overlay <file> --events --report <file>`, shows
    the events in its own interface, and keeps the report.
 

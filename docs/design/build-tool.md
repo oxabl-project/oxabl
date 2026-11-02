@@ -89,9 +89,11 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
 | D5 | The compile key uses the full source of every file in the closure and a full schema image per database. | Conservative and simple to prove. | Signature-aware keys now: they need a proof that does not exist yet. Per-table schema CRCs: the CRC does not cover labels, formats and validation that the compiler puts in r-code. |
 | D6 | The environment comes from a probe of the real worker at each build, never from configuration alone. The predefined names that oxabl analysed with must equal what the worker reports, or the build stops. | The AVM is the only source of truth for what it compiles with. | Trust `oxabl.toml`: a stale value gives wrong keys with no signal. |
 | D7 | The worker protocol is line-based text over the worker's stdin and stdout. | It works through any command (`docker exec -i`, `kubectl exec -i`, a local `_progres`) with no ports and no network setup. End of stdin stops the worker, so a dead oxabl leaves no orphan workers. | TCP: port races, bind addresses, a firewall and an orphan registry. |
-| D8 | Workers live for one build. | No daemon is needed. Stale class information in a long `MULTI-COMPILE` session is not possible. | A persistent pool: it needs a daemon (follow-up). |
+| D8 | Workers live for one build, and one session never compiles two units whose PROPATHs resolve one class name to different files (a restart separates them). | No daemon is needed. `MULTI-COMPILE` keeps classes by name across PROPATH changes; separate sessions keep the compiled class equal to the keyed file. | A persistent pool: it needs a daemon (follow-up). `MULTI-COMPILE` off: slower for every build, to fix a case that only conflicting PROPATHs have. |
 | D9 | A fake AVM (`oxabl_fake_avm`, a test-only binary) implements the protocol from the document, with no oxabl dependency. | It stands in for Progress, not for oxabl. A shared codec would hide a codec bug on both sides. | A mock inside the tests: it fakes the program under test. |
-| D10 | Cache writes need verification after the build: the inputs hash again to the same values, the schema image is the same, and the compiler read no file outside the closure (from XREF). | A file edit or a schema change during the build must never put a wrong entry in a cache. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. |
+| D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema probe gives the same image, and the compiler opened no file outside the closure (from the compiler-resolved `XREF-XML`). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
+| D13 | The remote cache's configuration and root of trust (`owner_keys`, `min_roster_version`) live only in the client's committed `.oxabl/cache.toml`. `oxabl.toml` has build-side switches only. | Whoever controls the environment of a build must not be able to replace the pinned owner keys. | Remote settings in `oxabl.toml`: the overlay could replace the root of trust. |
+| D14 | The local cache trusts every process of the OS user, so it is off in CI unless a per-job directory is configured. | On a shared CI runner, an untrusted job could plant an entry that a trusted job installs without a signature check. | A local cache with signatures: it needs the remote keys on every machine and duplicates the client. |
 | D11 | Store format changes rebuild the store. There are no migrations. | The store is a derived cache. Migrations were the largest source of complexity in the downstream store. | Versioned migrations. |
 | D12 | One writer per workspace through a lock file. `--plan` reads a snapshot with no lock. | Simple and enough: one build per workspace at a time. | Multi-writer SQLite: id minting races and interleaved refreshes. |
 
@@ -176,14 +178,15 @@ It then calls `oxabl_build` and reads the same store. It does not keep a second 
 5. **Prune.** Delete outputs that the store owns whose unit no longer exists, and every
    other file in the output directories that the store does not own (see
    [Output ownership](#output-ownership)).
-6. **Fetch.** For each keyable unit in the rebuild set, look up its key in the local cache,
-   then in the remote cache. Install hits into the stage. Promote them. Record them. They
-   leave the rebuild set ([cache.md](build-tool/cache.md#build-flow-with-a-cache)).
-7. **Compile.** Schedule the rest over the workers in dependency order. Promote and record
-   each result as it arrives.
+6. **Fetch.** Look up every keyable unit of the rebuild set in the local cache, then in the
+   remote cache, in one streaming call. Each hit is installed into the stage, promoted and
+   recorded as it arrives; each miss becomes a compile job
+   ([cache.md](build-tool/cache.md#build-flow-with-a-cache)).
+7. **Compile.** At the same time, schedule the compile jobs over the workers in dependency
+   order. A job waits for the fetches it depends on. Promote and record each result as it
+   arrives. Verify each eligible unit as it completes, and stream it to the caches.
 8. **Retry.** Compile each failed unit once more, in dependency order.
-9. **Verify and write.** Verify each eligible artifact set, then write it to the local
-   cache and, when writing is on, to the remote cache.
+9. **Finish writes.** Release the last verified sets and finish the remote uploader.
 10. **Finish.** Stop the workers. Release the lock. Print the summary. Write `--report`.
 
 When the rebuild set is empty after step 4, oxabl stops the workers and does not compile.
@@ -290,7 +293,7 @@ rebuild  gl/close.p         unkeyable: unresolved-include: {&tmpl}.i
 only. `action` is `rebuild`, `up-to-date` or `skip`. A unit is skipped, with a reason, when it
 cannot compile under its name: `not-on-propath` (no PROPATH entry holds it) or
 `shadowed-by: <path>` (an earlier PROPATH entry holds another file with the same compile
-name). The `format` number changes when the shape changes. The shape is unstable before
+name), or `output-collision: <path>` (another unit compiles to the same `.r`). The `format` number changes when the shape changes. The shape is unstable before
 1.0, like `analyze --json`.
 
 ### Parity with the downstream tool
@@ -323,12 +326,15 @@ never compiled on its own.
    unknown). Ties break by path. This starts the long chains first.
 5. **Cycles.** All units of one job go to one worker in one request. The ABL compiler
    compiles a cycle of classes in one `MULTI-COMPILE` session.
-6. **Cache hits** are installed before the first dispatch, so they are finished components.
-7. **Failure does not block.** A failed job finishes. Its dependents still compile; the
+6. **Fetches.** A unit whose key is being fetched is a pending component. A hit finishes
+   it; a miss makes it a job. Jobs that wait on no pending component start at once.
+7. **Sessions.** A worker takes only jobs that its session may compile without class
+   cross-talk ([class-resolution groups](build-tool/worker-protocol.md#class-resolution-groups)).
+8. **Failure does not block.** A failed job finishes. Its dependents still compile; the
    compiler can often resolve from source. They are **tainted**: they are recorded, but
    they are never written to a cache. The failed unit's old outputs are deleted, so no
    dependent compiles against stale r-code.
-8. **Retry pass.** After the queue is empty, each failed unit compiles once more, in the
+9. **Retry pass.** After the queue is empty, each failed unit compiles once more, in the
    same order rules, on the same pool. A unit can fail only because something it uses was
    not compiled yet through a reference that the graph does not model. A unit that
    succeeds on retry counts as one success.
@@ -369,7 +375,8 @@ that the key covers, and the key would be wrong. So:
 ### Worker PROPATH and the output directory
 
 The worker PROPATH for a unit is: the output directory, then the unit's root-relative
-entries, then `[workspace.sources].include_paths`. The output directory comes first, so a
+entries, then `[workspace.sources].include_paths`, then the DLC default entries
+([compile-key.md](build-tool/compile-key.md#the-unit-propath-and-the-compile-name)). The output directory comes first, so a
 unit that uses a class reads the r-code that this build just made for it. The scheduler
 order makes that r-code current. The prune step and the delete-on-failure rule make sure
 no stale or orphan r-code is there.
@@ -444,7 +451,8 @@ a black-box acceptance test. The tests are in [testing.md](build-tool/testing.md
    fixture (commit, edit, untracked file, deletion); the JSON shape test; the parity script
    reports 0 missed on the synthetic corpus; the parity run on the private corpus is
    reported in the pull request.
-4. **Worker program, protocol and pool; `oxabl build --probe`.** `oxabl_fake_avm`,
+4. **Worker program, protocol and pool; `oxabl build --probe`.** Includes `HASH`, the
+   chunked schema image and the `.pf`-aware parameter parse. `oxabl_fake_avm`,
    `worker` module, the environment and the schema image. `oxabl build` without a command
    fails with exit 2. *Acceptance:* fake-AVM tests: handshake, noise lines, a worker that
    exits during handshake, a slow start past `start_timeout`, a wrong program token,
@@ -460,15 +468,17 @@ a black-box acceptance test. The tests are in [testing.md](build-tool/testing.md
    a hang past `unit_timeout`; SIGINT stops all worker processes and leaves a consistent
    store; a second build compiles nothing; an include edit compiles only its includers; a
    failure deletes the old output and taints dependents.
-7. **Verification and the local cache.** `verify`, `cache::seam`, `cache::local`.
-   *Acceptance:* two workspace copies share a local cache, and the second compiles nothing
-   with byte-identical outputs; a corrupted cache file is a miss and is quarantined; an edit
-   during the compile blocks the cache write; the XREF read check blocks the write of a
-   unit whose compile read a file outside its closure.
-8. **Remote cache.** `oxabl_build_remote`, the `remote-cache` feature, `[build.cache.remote]`.
-   *Acceptance:* tests against the real oxabl-cache server binary: CI writes, a second
-   workspace fetches everything; a server that returns garbage gives misses and a correct
-   build; a server that is down gives a correct build.
+7. **Verification and the local cache.** `verify`, `cache::seam` (streaming fetch and
+   uploader), `cache::local`. *Acceptance:* two workspace copies share a local cache, and
+   the second compiles nothing with byte-identical outputs; a corrupted cache file is a miss
+   and is quarantined; an edit during the compile blocks the cache write; the XREF read
+   check blocks the write of a unit whose compile opened a file outside its closure; with
+   `CI` set the local cache is not read.
+8. **Remote cache.** `oxabl_build_remote`, the `remote-cache` feature, `.oxabl/cache.toml`
+   through `Config::from_repo`. *Acceptance:* tests against the real oxabl-cache server
+   binary: CI writes, a second workspace fetches everything; a server that returns garbage
+   gives misses and a correct build; a server that is down gives a correct build; a slow
+   server that keeps sending is not cut off; an overlay that names `owner_keys` is exit 2.
 9. **Handover.** `--config-overlay`, the event stream documentation, the downstream wrapper
    guide. *Acceptance:* an overlay test (overlay wins key by key; an unknown key is an
    error; a secret-looking key is refused); the downstream tool's own test suite passes

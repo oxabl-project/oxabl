@@ -55,11 +55,20 @@ starts with the worker program's header line.
   `INHERITS X`, `IMPLEMENTS X` and `NEW X(`, it reads `X.r` from the output entry when that
   exists, and the source otherwise. A `FAKE-READ <path>` line makes it read that file
   directly; the oxabl analysis does not see it, which tests the read check.
+- **Class cache.** Like `MULTI-COMPILE`, it keeps each class it has compiled from source by
+  class name for the rest of its session, and does not drop it when the PROPATH changes. So
+  a test can show class cross-talk between PROPATHs, and that oxabl's worker restarts
+  remove it.
+- **Startup parameters.** `FAKE_AVM_ENV` gives the command-line parameters and the `.pf`
+  contents separately; the fake reports `startup_parameters` with `.pf` contents expanded,
+  `-pf <path>` and `(end .pf)` items, as the AVM does.
+- **Hashing.** It answers `HASH` with the SHA-256 of the file, `dir` or `none`.
 - **Outputs.** The `.r` is text: a header, the compile name, one line `read <path> <hash>` for
   each file read, and `compiled-at <nanoseconds>`. The last line makes outputs of one
   source differ between compiles, like real r-code. A test can read a `.r` and check that it
-  matches the current files: that is the wrong-hit oracle. The XREF is the text form, with an
-  `INCLUDE` row per include and one row per file read. Debug lists and listings hold the
+  matches the current files: that is the wrong-hit oracle. It writes the text XREF or the
+  `XREF-XML` as requested; the `XREF-XML` has a `Source` element for each file it opened, with
+  the name as it resolved it. Debug lists and listings hold the
   source text.
 - **Faults**, from text in the source or from environment variables:
 
@@ -76,6 +85,7 @@ starts with the worker program's header line.
 | `FAKE_AVM_BAD_TOKEN=1` | Echo a wrong token. |
 | `FAKE_AVM_EXIT_IN_HANDSHAKE=1` | Exit after `HELLO`. |
 | `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` | Emit a different schema image after `n` compiles. |
+| `FAKE-RESOLVE-OTHER <name> <path>` in a source | Resolve include `<name>` to `<path>` instead of the first PROPATH match, as a divergent AVM would. |
 
 - **Log.** It appends one line per compiled unit to `FAKE_AVM_LOG` (`<worker pid> <compile
   name>`), so a test counts compiles and sees which worker compiled what. It also writes its
@@ -132,6 +142,13 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `[workspace.preprocessor].proversion` differs from the worker: exit code 2 naming both
   values.
 - No `[build.workers].command`: exit code 2 and the message from the PRD.
+- A schema field of 20 KB with non-ASCII characters: it arrives in chunks, and the identity
+  equals the identity of the same image sent with short fields.
+- A chunk out of order, or a `SCHEMA-END` with a wrong count: the worker is lost.
+- A parameter set only in the `.pf` and the same parameter set on the command line: equal
+  canonical parameters and equal environment identities; `-pf` and `(end .pf)` are absent.
+- A file-valued parameter (`-compileroptionsfile`): changing the file's bytes changes the
+  environment identity; `-assemblies <dir>` makes every unit `environment-unknown`.
 
 ### Slice 5: keys
 
@@ -141,6 +158,14 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   schema image, each compile option, the outputs, the worker program. Each changes the key,
   except the dropped parameter, which must not.
 - One test per fail-closed rule K1 to K7: the key is `null` and the reason is listed.
+- A library on the PROPATH (`$LIB:` and a `$DLC/` `.pl`): changing its bytes changes the keys
+  of the units with it on their PROPATH, and only theirs.
+- An unresolved class under a prefix of `[build.external_packages]` whose library is not on
+  the unit PROPATH: unkeyable (K3). With the library on the PROPATH: keyable.
+- `x.p` and `x.w` in one directory: `x.p` compiles, `x.w` is skipped with
+  `output-collision: <dir>/x.p`.
+- The DLC default entries from the worker's startup PROPATH appear in every unit PROPATH in
+  `--plan --json`.
 - A workspace copied to another path: every key is equal.
 
 ### Slice 6: compile
@@ -160,6 +185,11 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `FAKE-FAIL` in a class: its old `.r` is gone, its users compile and are tainted (no
   cache write), and the exit code is 1.
 - `--events` and `--report`: the shapes, and one `unit-finished` per compiled unit.
+- Class cross-talk: units in `a/` and `b/` with `root_relative_include_paths = ["."]`, each
+  using `pkg.Foo` from its own directory, and `count = 1`: each `.r` reads its own
+  `pkg/Foo.cls` (the fake's class cache would otherwise give the second one the first one's
+  class), and the fake log shows a worker restart between them. With no conflict, no
+  restart.
 - An output directory with a foreign file and no marker: exit code 2. A foreign `.r` put
   into a managed output directory: deleted by the next build, and no unit reads it.
 
@@ -174,7 +204,17 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   edits): no cache entry for that unit; the next build compiles it again.
 - `FAKE-READ` of a file outside the closure: no cache entry, the result has no key, and the
   summary names the file.
-- `FAKE_AVM_SCHEMA_CHANGE_AFTER`: no cache entry for the whole build.
+- `FAKE_AVM_SCHEMA_CHANGE_AFTER`: no cache entry for the units released after the change.
+- `FAKE-RESOLVE-OTHER` for an include that holds only preprocessor definitions: the
+  `XREF-XML` names the other file, so check V3 fails and nothing is written.
+- With `CI=1` and no `local_job_dir`: a planted local entry is never read. With
+  `local_job_dir`: the directory is emptied at the start.
+- Uploads stream: with a recording test cache (a test-only `ArtifactCache` adapter that
+  stands in for the remote service, not for oxabl), the first `push` arrives before the last
+  unit compiles, and the cache sees file paths, not bytes. An output changed after its
+  verification is dropped by the size and hash check.
+- A fetch stream that stops after half the keys: the installed half stays installed and
+  recorded; the rest compiles.
 - A cache directory writable by others: a warning, a correct build, no cache use.
 - Eviction: with a tiny `local_max_size`, the oldest entries go and a later fetch of one of
   them is a miss, not an error.
@@ -190,8 +230,12 @@ missing, the tests fail.
 - A proxy in front of the server that returns garbage bodies: misses, a correct build,
   exit code 0, one warning.
 - The server is down: a correct build, exit code 0, one warning.
-- A server that is slow past `timeout`: a miss, not a hang.
-- A binary without the feature and `[build.cache.remote]` set: exit code 2.
+- A server that sends slowly but without a gap longer than `idle_timeout`: every key is
+  fetched. A server that stops sending: the keys not yet reported are misses after
+  `idle_timeout`, and the build is correct.
+- A binary without the feature and a workspace with `.oxabl/cache.toml`: exit code 2.
+- `owner_keys` or `min_roster_version` in `oxabl.toml`, in the overlay, or as a flag: exit
+  code 2. `OXABL_CACHE_SERVER` changes the server and nothing else.
 
 ### Slice 9: handover
 
@@ -227,15 +271,24 @@ needs equivalence first checks that the mask is small (under 1 % of the file).
 
 | Test | What it proves |
 | --- | --- |
-| `transport` | The worker reads stdin in batch mode, and each `MESSAGE` line reaches stdout at once, including a 30,000-byte line. |
+| `transport` | The worker reads stdin in batch mode, and each `PUT UNFORMATTED ... SKIP` line reaches stdout at once, including a 30,000-byte line. |
 | `probe_fields` | Every handshake field is present and has the expected form. |
 | `schema_identity_same_df` | Two databases loaded from one `.df` give one schema identity. |
 | `schema_identity_label_change` | Changing one field label changes the identity. |
+| `schema_identity_primary_index` | Making another index the table's primary index changes the identity. |
+| `schema_long_field` | A field description of 20 KB arrives whole through the chunks. |
+| `startup_pf` | A parameter set only in a `.pf` is in the probe, and its canonical form equals the same parameter on the command line. |
+| `param_file_hash` | Changing the bytes of a `-compileroptionsfile` file changes the environment identity. |
+| `library_hash` | `HASH` gives the SHA-256 of a `.pl`; a changed `.pl` changes the keys of its users. |
+| `dlc_default_entries` | A unit that uses an `OpenEdge.*` class compiles with no `$DLC` entry in `include_paths`. |
 | `compile_fixture` | The fixture builds; outputs exist; a planted error gives a `MSG` with row and column. |
 | `class_order` | The cycle and the hierarchy compile; users of a changed class compile after it. |
 | `portable_rcode` | The fixture copied to two roots gives equivalent r-code for every unit. |
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
+| `multicompile_propath_isolation` | Two units whose PROPATHs resolve `pkg.Foo` to two files, one worker session: shows the cross-talk; with oxabl's restart rule, each unit runs with its own `Foo`. |
+| `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |
+| `xref_xml_resolution` | The `XREF-XML` `Source` elements name each include as the compiler resolved it, including an include with only preprocessor definitions. |
 | `xref_readers` | The text and XML XREF readers find every include of the fixture. |
 | `orphans` | After `SIGKILL` of oxabl, no `_progres` of that build is alive after its current compile. |
 
