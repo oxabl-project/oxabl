@@ -536,8 +536,8 @@ pub(super) struct Tables {
     /// The source names `RETURN-VALUE`: only then does the analysis follow
     /// it.
     pub return_value: bool,
-    /// Lower-cased `SESSION` and `THIS-PROCEDURE` when the file assigns their
-    /// `PRIVATE-DATA`; see [`SHARED_HANDLES`].
+    /// Lower-cased handles whose `PRIVATE-DATA` the file assigns, and
+    /// `h:title` for those whose `TITLE` it assigns; see [`SHARED_HANDLES`].
     pub private_data: FxHashSet<String>,
     /// The offsets of the `IN` keywords of the file, in order.
     pub in_words: Vec<u32>,
@@ -564,10 +564,21 @@ impl Tables {
     /// the file does not hold, as far as the file shows: `name` is on
     /// [`SHARED_HANDLES`] and the file does not assign it.
     fn shared_private_data(&self, name: &str) -> bool {
+        self.shared_member(name, "PRIVATE-DATA")
+    }
+
+    /// [`Self::shared_private_data`] for `member` of `name`: its `TITLE` when
+    /// the member is `TITLE`, else its `PRIVATE-DATA`.
+    fn shared_member(&self, name: &str, member: &str) -> bool {
         let name = name.to_ascii_lowercase();
+        let set = if member.eq_ignore_ascii_case("TITLE") {
+            format!("{name}:title")
+        } else {
+            name.clone()
+        };
         SHARED_HANDLES.contains(&name.as_str())
             && !self.types.contains_key(&name)
-            && !self.private_data.contains(&name)
+            && !self.private_data.contains(&set)
     }
 
     /// Whether code the file does not hold may write what the file sees: it
@@ -1860,10 +1871,11 @@ impl Compiler<'_> {
         let object = match receiver.name {
             Some(o)
                 if (member.eq_ignore_ascii_case("PRIVATE-DATA")
+                    || member.eq_ignore_ascii_case("TITLE")
                     || HANDLE_MEMBERS
                         .iter()
                         .any(|m| m.eq_ignore_ascii_case(member)))
-                    && self.tables.shared_private_data(o) =>
+                    && self.tables.shared_member(o, member) =>
             {
                 Value::union([object, Value::origin(UNKNOWN)])
             }
@@ -2473,7 +2485,13 @@ const PROGRAM_HANDLES: [&str; 33] = [
 /// System handles of the program whose `PRIVATE-DATA` code the file does not
 /// hold may set: any program of the session, or the caller on the handle of a
 /// persistent procedure. Unknown unless the file sets it.
-const SHARED_HANDLES: [&str; 2] = ["session", "this-procedure"];
+const SHARED_HANDLES: [&str; 5] = [
+    "active-window",
+    "current-window",
+    "default-window",
+    "session",
+    "this-procedure",
+];
 
 /// System handles of objects that the runtime or another program fills: the
 /// error of the last statement, the widget of the event, the clipboard, the

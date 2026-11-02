@@ -510,9 +510,13 @@ fn handle_of(target: &Expression, value: &Expression, out: &mut FxHashMap<String
 fn private_data(target: &Expression, out: &mut FxHashSet<String>) {
     if let E::MemberAccess { object, member } = &target.kind
         && let E::Identifier(h) = &object.kind
-        && member.name.eq_ignore_ascii_case("PRIVATE-DATA")
     {
-        out.insert(h.name.to_ascii_lowercase());
+        let h = h.name.to_ascii_lowercase();
+        if member.name.eq_ignore_ascii_case("PRIVATE-DATA") {
+            out.insert(h);
+        } else if member.name.eq_ignore_ascii_case("TITLE") {
+            out.insert(format!("{h}:title"));
+        }
     }
 }
 

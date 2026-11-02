@@ -181,7 +181,10 @@ registry against them.
   Unknown value, so whatever is read through it is Unknown. The
   `PRIVATE-DATA` of `SESSION` and `THIS-PROCEDURE`, which any program of the
   session or the caller of a persistent procedure may set, is Unknown, and so
-  is a copy of either handle, unless the file sets it.
+  is a copy of either handle, unless the file sets it. The same holds for
+  `ACTIVE-WINDOW`, `CURRENT-WINDOW` and `DEFAULT-WINDOW`, which any program
+  of the session may set, label or change, and for the `TITLE` of all five:
+  Unknown unless the file sets it.
 - **Attributes and methods of a handle.** On a handle of the program (a
   handle variable, `BUFFER b:`, a system handle of the program), a member on
   the lists `MODELLED_MEMBERS`, `SCALAR_MEMBERS` and `HANDLE_MEMBERS` gives
@@ -575,11 +578,11 @@ their counts.
 
 ## Result
 
-On the taint corpus, precision goes from 0.72 (stage 1) to 0.97 (stage 2) and
-recall stays at 1.00 (it was 0.85 on the cases of a second handle or JSON
+On the taint corpus, precision goes from 0.72 (stage 1) to 0.98 (stage 2) and
+recall stays at 1.00 (it was 0.84 on the cases of a second handle or JSON
 reference of an object got other than by a plain copy, a `WIDGET-HANDLE`, a
-property or static member of a class, and a class named `Json...`, before
-they were modelled, 0.84 on the cases of `UNDO`, of handles that
+property or static member of a class, a class named `Json...` and the windows
+of the session, before they were modelled, 0.84 on the cases of `UNDO`, of handles that
 reach or copy other handles, and of what code elsewhere gives back, before
 they were modelled, 0.83 before the `ON` phrase's `RETURN`, the
 arguments that built-in methods write, the owner of a copied handle and

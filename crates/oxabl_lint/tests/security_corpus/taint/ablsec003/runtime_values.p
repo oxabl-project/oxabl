@@ -156,3 +156,11 @@ hOther = SOURCE-PROCEDURE:NEXT-SIBLING.
 OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
 hOther = SESSION:FIRST-CHILD.
 OS-COMMAND VALUE(hOther:PRIVATE-DATA). /* taint: real */
+
+/* The windows of the session, which any program of the session may set and
+   label, and the widgets they hold. */
+OS-COMMAND VALUE(CURRENT-WINDOW:PRIVATE-DATA). /* taint: real */
+OS-COMMAND VALUE(ACTIVE-WINDOW:TITLE). /* taint: real */
+DEFINE VARIABLE hWinChild AS HANDLE NO-UNDO.
+hWinChild = DEFAULT-WINDOW:FIRST-CHILD.
+OS-COMMAND VALUE(hWinChild:PRIVATE-DATA). /* taint: real */
