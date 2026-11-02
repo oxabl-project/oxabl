@@ -145,11 +145,8 @@ entry that is the same directory. Otherwise the unit is skipped with
 `.` in `root_relative_include_paths` and no `a` in `include_paths`). A unit that no entry
 holds is skipped (`not-on-propath`).
 
-The analysis of a class node uses the same rule: a class node's own includes and class
-references are searched on the PROPATH of its package root, not of its file's directory,
-so the analysis and the compile search the same entries. (Slice 2 aligns
-`oxabl_pipeline`'s `root_relative_include_paths` handling for class roots to this rule.) A unit whose compile name resolves, on
-the unit PROPATH, to a different file first is skipped (`shadowed-by`).
+A unit whose compile name resolves, on the unit PROPATH, to a different file first is
+skipped (`shadowed-by`).
 
 Two units whose r-code would land on one path collide: `x.p` and `x.w` in one directory, or
 `x.p` and `x.cls`. The compile stems are compared ignoring ASCII case, because r-code is
@@ -192,51 +189,77 @@ target in `S`. `U` itself is never in `S`.
 The closure is computed iteratively with a visited set over the in-memory graph, so cycles
 end.
 
-The closure assumes that the compile resolves each class name to the file that the analysis
-resolved. That holds only when every class name has **one** file in the build. Two things
-make the compiler use another file than the analysis: the shared `$OUT` tree (one class name
-has one `.r` there, whichever source produced it), and a `MULTI-COMPILE` session (it keeps a
-class by name after PROPATH changes). So a class name that resolves to two files in one
-build makes every unit that reaches it unkeyable ([K8](#class-conflicts)).
+The closure assumes that the compile resolves each class name to the file, and each
+include inside a class to the file, that the analysis resolved. That holds when the build
+has **one PROPATH id**: then every unit, and every class compiled in memory for it, searches
+the same entries, and a class name resolves to one file. With more than one PROPATH id it
+does not hold in general: the shared `$OUT` tree has one `.r` per class name, a
+`MULTI-COMPILE` session keeps a class by name across PROPATH changes, and a class that is
+not a unit is compiled in memory under each user's own PROPATH. So the key covers classes
+only with one PROPATH id ([K9](#per-unit-propath-classes)), and one narrow conflict remains
+to check even then ([K8](#class-conflicts)).
+
+### Per-unit PROPATH classes
+
+A **PROPATH id** is one distinct unit PROPATH (the list of entries with their digests). The
+build has more than one PROPATH id when `root_relative_include_paths` is non-empty and gives
+units in different directories different PROPATHs. Oxabl counts the PROPATH ids over the
+**whole graph** (every unit, whatever the rebuild set).
+
+With more than one PROPATH id, every unit whose closure reaches a class source (a class unit
+or a class that is not a unit), and every class unit, is unkeyable under K9
+(`per-unit-propath-classes`). These units still compile locally, as the AVM resolves them,
+and are never fetched from or written to a cache. Units that reach no class keep their keys,
+because includes resolve per unit and the closure follows each unit's own PROPATH. The build
+prints one warning with the number of such units.
+
+Real codebases checked use a single global PROPATH, so K9 costs nothing there. Keying
+classes under per-unit PROPATHs is a [follow-up](#follow-up-classes-under-per-unit-propaths).
 
 ### Class conflicts
 
-At plan time, oxabl collects every **class resolution** of the **whole graph**: every unit
-and every analysed node, whatever the rebuild set. An up-to-date class unit still puts its
-`.r` in `$OUT`, so an incremental build must see it. The resolutions are:
+With one PROPATH id, a class name resolves to one file, with one exception: a class name that
+K3 accepted as external (unresolved, but supplied by a hashed library) can also be the name
+of a workspace class: a class unit, or the target of a class edge, that the analysis of
+this unit did not reach (for example through a spelling that differs in case with
+`case_insensitive_lookup = false`). The compiler can then read that class's `.r` from `$OUT`
+in place of the library class that the key covers.
 
-- each class edge of each analysed node: its class name and its target file;
-- each class unit: its own class name and its own file;
-- each class name that K3 accepted as external: its name and the token `external`. The
-  compiler can read a workspace class's `.r` from `$OUT` in place of the library class that
-  the key covers.
-
-A class name is **in conflict** when it has two or more different resolutions: two files,
-or a file and `external`. Names compare ignoring ASCII case, as the AVM does. In short: a
-name that K3 accepts as external is never accepted when any class unit or any class edge
-target in the graph has that name.
-
-Each keyable unit whose closure (transitively, including super classes, interfaces and the
-classes that those name) holds a class edge with a conflicting name, or an unresolved class
-with a conflicting name that K3 accepted, or that is itself a class unit with a conflicting
-name, is unkeyable under K8. The build prints one warning per
-conflicting name with both files, for example:
+So, over the **whole graph**, a name that K3 accepted is **in conflict** when any class unit
+or class edge target has the same name (ignoring ASCII case, as the AVM does). Every unit
+whose closure holds such an accepted name is unkeyable under K8 (`class-conflict: <name>`).
+The build prints one warning per name, for example:
 
 ```text
-warning: class pkg.Foo resolves to two files in this build: a/pkg/Foo.cls, b/pkg/Foo.cls;
-         12 units that use it are compiled without a key
-warning: class Acme.Util.X resolves to a/Acme/Util/X.cls and to the library $LIB:acme;
-         3 units that use it are compiled without a key
+warning: class Acme.Util.X is accepted as external ($LIB:acme) but src/Acme/Util/X.cls
+         also has that name; 3 units that use it are compiled without a key
 ```
 
-The build does not stop. It compiles these units as the AVM resolves them, so real
-codebases with override directories keep building. Their local output follows the AVM's
-resolution, which can differ from oxabl's analysis (for example, `b/y.p` can compile
-against `a`'s `pkg/Foo.r` in `$OUT`). Such units are never fetched from a cache and never
-written to one.
+The build does not stop; these units compile as the AVM resolves them and are never cached.
 
-Rejected: an output tree per PROPATH id. At run time one class name with two `.r` files is
-ambiguous anyway, so the separate trees would only move the conflict to deployment.
+### Follow-up: classes under per-unit PROPATHs
+
+Keying classes when units have different PROPATHs needs all of these, each proven on a real
+AVM; every earlier attempt to design it found a new hole:
+
+1. **The shared `$OUT` tree.** One class name has one `.r` there, whichever source produced
+   it, so a unit whose PROPATH resolves the name to another source compiles against the
+   wrong class. A fix needs either a proof that the compiler prefers the source on the
+   unit's PROPATH over `$OUT`, or a per-unit view of `$OUT`, which conflicts with one
+   deployable output tree.
+2. **`MULTI-COMPILE` sessions** keep a class by name across PROPATH changes. Sessions must
+   be separated by PROPATH id, or toggling `MULTI-COMPILE` must be proven to clear them.
+3. **External names.** A K3-accepted name must not collide with a workspace class under any
+   PROPATH id.
+4. **Class units.** A class unit's package root must be an entry of every user's PROPATH, and
+   its own compile and its users' must agree on its includes.
+5. **Classes that are not units** are compiled in memory under each user's PROPATH, so
+   their includes and class references must be analysed per reaching PROPATH id (edges
+   stored per id), not once on the class's own PROPATH.
+6. **V3 coverage of classes** (`xref_xml_classes`) must show what the compiler opened inside
+   each class, so a divergence is caught.
+
+Until all six exist, K9 holds.
 
 ## Environment identity
 
@@ -436,12 +459,13 @@ gives each reason.
 | --- | --- | --- |
 | K1 | The unit, or an analysed node in its closure, has a degraded edge set. | `degraded: <path>: <reason>` |
 | K2 | The unit, or an analysed node in its closure, has an unresolved include (any kind, any reason). | `unresolved-include: <name> in <path>` |
-| K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]`, and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
+| K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]` (compared ignoring ASCII case), and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
 | K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). | `computed-name: <name> in <path>` |
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
 | K6 | The environment was not established in this build (no probe, a failed probe, or a schema probe failure for any database). | `environment-unknown` |
 | K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`, `package-mismatch`, `package-root-not-on-propath`). | the skip reason |
-| K8 | The unit or its closure names a class that has two resolutions in the whole graph: two files, or a file and an external library ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
+| K8 | The unit's closure holds a class name that K3 accepted as external, and a class unit or class edge target in the whole graph has that name ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
+| K9 | The build has more than one PROPATH id, and the unit is a class unit or its closure reaches a class source ([Per-unit PROPATH classes](#per-unit-propath-classes)). | `per-unit-propath-classes` |
 
 `[build.external_packages]` maps a class name prefix to the library entries that supply
 it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any `.pl` library

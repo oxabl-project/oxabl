@@ -57,12 +57,14 @@ starts with the worker program's header line.
   directly; the oxabl analysis does not see it, which tests the read check.
 - **Class cache.** Like `MULTI-COMPILE`, it keeps each class it has compiled from source by
   class name for the rest of its session, and does not drop it when the PROPATH changes. So
-  the fake behaves like the AVM when one class name has two files, and the class-conflict
+  the fake behaves like the AVM when one class name has two files, and the per-unit PROPATH
   test sees the AVM-like output while it checks that no key and no cache write exist.
 - **Startup parameters.** `FAKE_AVM_ENV` gives the command-line parameters and the `.pf`
   contents separately; the fake reports `startup_parameters` with `.pf` contents expanded,
   `-pf <path>` and `(end .pf)` items, as the AVM does.
-- **Hashing.** It answers `HASH` with the SHA-256 of the file, `dir` or `none`.
+- **Hashing.** It answers `HASH` with the SHA-256 of the file, `dir` or `none`, and
+  `HASHSET` with the digest of the list. `FAKE_AVM_DLC` points it at its own copy of the
+  `$DLC` files, so two workers can see different copies.
 - **Outputs.** The `.r` is text: a header, the compile name, one line `read <path> <hash>` for
   each file read, and `compiled-at <nanoseconds>`. The last line makes outputs of one
   source differ between compiles, like real r-code. A test can read a `.r` and check that it
@@ -193,30 +195,34 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `FAKE-FAIL` in a class: its old `.r` is gone, its users compile and are tainted (no
   cache write), and the exit code is 1.
 - `--events` and `--report`: the shapes, and one `unit-finished` per compiled unit.
-- Class conflict, two sources. `root_relative_include_paths = ["."]`, `directories = ["a",
-  "b"]`, units `a/x.p` and `b/y.p` each doing `NEW pkg.Foo()`, and class units
-  `a/pkg/Foo.cls` and `b/pkg/Foo.cls`. Exact outcome:
-  - both class units have the package root (`a`, `b`) on their own PROPATH and the compile
-    name `pkg/Foo.cls`; they collide on `pkg/Foo.r`, so `a/pkg/Foo.cls` (the smaller path)
-    compiles and `b/pkg/Foo.cls` is skipped with `output-collision: a/pkg/Foo.cls`;
-  - `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `class-conflict: pkg.Foo`;
-  - one warning names `a/pkg/Foo.cls` and `b/pkg/Foo.cls`;
-  - `a/pkg/Foo.cls`, `a/x.p` and `b/y.p` compile (the fake gives `b/y.p` the `pkg/Foo.r`
-    from `a`, as the AVM would); the exit code is 0, because a skipped unit is not a
-    failure;
-  - nothing is written to any cache for the three unkeyable units (the local cache and a
-    recording test cache stay without their keys).
+- Per-unit PROPATH classes. `root_relative_include_paths = ["."]`, `directories = ["a",
+  "b"]`, units `a/x.p` and `b/y.p` each doing `NEW pkg.Foo()`, class units `a/pkg/Foo.cls`
+  and `b/pkg/Foo.cls`, and a unit `a/plain.p` that reaches no class. Exact outcome:
+  - the build has two PROPATH ids;
+  - both class units have the compile name `pkg/Foo.cls` and collide on `pkg/Foo.r`, so
+    `a/pkg/Foo.cls` (the smaller path) compiles and `b/pkg/Foo.cls` is skipped with
+    `output-collision: a/pkg/Foo.cls`;
+  - `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`;
+    `a/plain.p` is keyable;
+  - one warning gives the number of units without a key;
+  - `a/pkg/Foo.cls`, `a/x.p`, `b/y.p` and `a/plain.p` compile; the exit code is 0, because a
+    skipped unit is not a failure;
+  - nothing is written to any cache for the three unkeyable units; `a/plain.p` is written.
 
-  A workspace with only `a/pkg/Foo.cls` has no warning and keyable users.
-- Class conflict, incremental. After the build above, touch only `b/y.p`: the plan still
-  reports `class-conflict: pkg.Foo` for `b/y.p`, although `a/pkg/Foo.cls` is up to date and
-  not in the rebuild set.
-- Class conflict with a library. `include_paths = ["$LIB:acme"]` (a `.pl`, digest
-  `sha256:`), `[build.external_packages] "Acme.Util." = ["$LIB:acme"]`, a class unit
-  `a/Acme/Util/X.cls` used by `a/p.p`, and `b/q.p` doing `NEW Acme.Util.X()`, which does not
-  resolve in `b`. `b/q.p` is unkeyable with `class-conflict: Acme.Util.X` (not accepted by
-  K3), the warning names `a/Acme/Util/X.cls` and `$LIB:acme`, and nothing is cached for
-  `b/q.p`. Without `a/Acme/Util/X.cls`, `b/q.p` is keyable.
+  The same workspace with `root_relative_include_paths = []` and `include_paths = ["a"]`
+  (one PROPATH id, `b/` removed) has no warning and keyable users of `pkg.Foo`.
+- Per-unit PROPATH classes, incremental. After the build above, touch only `b/y.p`: the
+  plan still reports `per-unit-propath-classes` for it, although the other units are up to
+  date and not in the rebuild set (PROPATH ids are counted over the whole graph).
+- Class conflict with a library (one PROPATH id). `include_paths = ["src", "$LIB:acme"]`
+  (`acme` is a `.pl`, digest `sha256:`), `case_insensitive_lookup = false`,
+  `[build.external_packages] "Acme.Util." = ["$LIB:acme"]`, a class unit
+  `src/Acme/Util/X.cls`, and `src/q.p` doing `NEW acme.util.x()`, which the analysis does not
+  resolve (the case differs) and K3 accepts. `src/q.p` is unkeyable with
+  `class-conflict: Acme.Util.X`, the warning names `src/Acme/Util/X.cls` and `$LIB:acme`, and
+  nothing is cached for `src/q.p`. Without `src/Acme/Util/X.cls`, `src/q.p` is keyable.
+- Class conflict, incremental: after that build, touch only `src/q.p`: still
+  `class-conflict`, although `src/Acme/Util/X.cls` is up to date.
 - A class unit `src/x/Foo.cls` that declares `pkg.Foo`: skipped with `package-mismatch`.
   A class unit `a/pkg/Foo.cls` with no `.` in `root_relative_include_paths` and no `a` in
   `include_paths`: skipped with `package-root-not-on-propath: a`.
@@ -235,6 +241,11 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `FAKE-READ` of a file outside the closure: no cache entry, the result has no key, and the
   summary names the file.
 - `FAKE_AVM_SCHEMA_CHANGE_AFTER`: no cache entry for the units released after the change.
+- Two workers whose `$DLC` copies differ in one closure file (two fake environment
+  directories): exit code 2, `workers see different $DLC files`, before any compile.
+- No compile starts before step 7: with a fake that logs the time of each request,
+  every `COMPILE` comes after the last `HASH`/`HASHSET` of the DLC hash phase and after the
+  prune.
 - `FAKE-RESOLVE-OTHER` for an include that holds only preprocessor definitions: the
   `XREF-XML` names the other file, so check V3 fails and nothing is written.
 - With `CI=1` and no `OXABL_CACHE_MODE`, and with `OXABL_CACHE_MODE=read-only` or `ci`: a
@@ -282,6 +293,9 @@ missing, the tests fail.
   `NotStored { Unreadable }`, the build exits 0.
 - `OXABL_CACHE_MODE=read-only`: the uploader is a no-op, the summary says `read-only, 0
   sets offered`, and the build exits 0.
+- `OXABL_CACHE_MODE=ci` with an uploader that cannot start (the test server refuses the
+  credentials for writing): one warning with the error, every pushed set reported as
+  `NotStored { Unavailable }`, the summary does not say `read-only`, and the build exits 0.
 - `owner_keys` or `min_roster_version` in `oxabl.toml`, in the overlay, or as a flag: exit
   code 2. `OXABL_CACHE_SERVER` changes the server and nothing else.
 
@@ -334,7 +348,7 @@ needs equivalence first checks that the mask is small (under 1 % of the file).
 | `portable_rcode` | The fixture copied to two roots gives equivalent r-code for every unit. |
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
-| `multicompile_propath_isolation` | The slice-6 two-source layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `class-conflict: pkg.Foo`, nothing is written to any cache for them, the exit code is 0, and the run records which `Foo` each user got from the AVM (recorded, not asserted). |
+| `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them, the exit code is 0, and the run records which `Foo` each user got from the AVM (recorded, not asserted; it is evidence for the follow-up). |
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: records what the `XREF-XML` `Source` elements list for each, so V3's class coverage can be stated ([cache.md](cache.md#what-v3-covers)). |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |
 | `xref_xml_resolution` | The `XREF-XML` `Source` elements name each include as the compiler resolved it, including an include with only preprocessor definitions. |

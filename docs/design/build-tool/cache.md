@@ -135,11 +135,17 @@ The local cache returns `Stored`, `AlreadyPresent` (another process won the rena
 `NotStored` with `ChangedOnDisk` or `Unreadable`. The summary counts each variant; no
 variant changes the exit code.
 
-**A mode that does not write yields a no-op uploader.** When the client's `uploader()`
-fails because the mode does not write (`read-only`), or when `[build.cache] remote` is off,
-the adapter returns an uploader whose `push` does nothing and whose `finish` returns an
-empty list. Oxabl then reports `remote: read-only, 0 sets offered` in the summary, not a
-failure.
+**The uploader is chosen by mode, not by error.** The adapter reads `client.mode()` before
+it calls the client's `uploader()`:
+
+- In a mode that does not write (`read-only`), or when `[build.cache] remote` is off, it
+  returns a no-op uploader whose `push` does nothing and whose `finish` returns an empty
+  list. The summary says `remote: read-only, 0 sets offered`.
+- In a writing mode (`ci`, `developer`), it calls `uploader()`. An `Err` there is never
+  read as "read-only": oxabl prints one warning with the error, and the uploader it returns
+  reports every pushed set as `NotStored { Unavailable }`. So a CI job whose uploads cannot
+  start shows the failure in its summary on every key, and never looks like a read-only
+  run. The exit code does not change.
 
 - **`fetch` streams.** It takes all requests in one call (the cache batches on the wire)
   and calls `on_outcome` once per key, as each one completes. Every key of one call is
@@ -253,8 +259,9 @@ Until that test passes and this section maps those names (an `$OUT/<stem>.r` nam
 class unit with that stem, which must be in the closure; a `.pl` member to its library
 entry, which must be on the unit PROPATH with a `sha256:` digest), V3 for a unit whose
 closure holds a class checks includes only. A `Source` name that is r-code under `$OUT` or a
-`.pl` member is then skipped, not failed. Class resolution is protected by the class-conflict
-rule (K8, [compile-key.md](compile-key.md#class-conflicts)), not by V3.
+`.pl` member is then skipped, not failed. Class resolution is protected by the plan
+rules, not by V3: classes are keyed only with one PROPATH id (K9) and without an external
+name collision (K8, [compile-key.md](compile-key.md#per-unit-propath-classes)).
 
 V2 has one residual case: a schema that changes and changes back between two probes, with
 a compile in between. This needs two dictionary loads into the build's database during

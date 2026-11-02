@@ -62,6 +62,9 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
   dependency. [compile-key.md](build-tool/compile-key.md#follow-up-signature-aware-keys)
   describes the refinement and the proof it needs.
 - No deployment, packaging (`.pl` libraries) or runtime PROPATH management.
+- No cache keys for units that reach a class when units have different PROPATHs
+  (`root_relative_include_paths`). They compile locally on every build (K9). Real codebases
+  checked use one global PROPATH.
 
 ## Vocabulary
 
@@ -89,7 +92,7 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
 | D5 | The compile key uses the full source of every file in the closure and a full schema image per database. | Conservative and simple to prove. | Signature-aware keys now: they need a proof that does not exist yet. Per-table schema CRCs: the CRC does not cover labels, formats and validation that the compiler puts in r-code. |
 | D6 | The environment comes from a probe of the real worker at each build, never from configuration alone. The predefined names that oxabl analysed with must equal what the worker reports, or the build stops. | The AVM is the only source of truth for what it compiles with. | Trust `oxabl.toml`: a stale value gives wrong keys with no signal. |
 | D7 | The worker protocol is line-based text over the worker's stdin and stdout. | It works through any command (`docker exec -i`, `kubectl exec -i`, a local `_progres`) with no ports and no network setup. End of stdin stops the worker, so a dead oxabl leaves no orphan workers. | TCP: port races, bind addresses, a firewall and an orphan registry. |
-| D8 | Workers live for one build. A class name that resolves to two files in one build makes every unit that reaches it unkeyable (K8); those units still compile, as the AVM resolves them. | No daemon is needed. The shared `$OUT` tree and `MULTI-COMPILE` both resolve a class by name, so no session rule can make such a key sound; the build must still work for codebases with override directories. | A persistent pool: it needs a daemon (follow-up). An output tree per PROPATH id: one class name with two `.r` files is ambiguous at run time anyway. Exit 2 on a conflict: real codebases with override directories must keep building. |
+| D8 | Workers live for one build. Classes are keyed only when the build has one PROPATH id; with per-unit PROPATHs, every unit that reaches a class is unkeyable (K9) and still compiles as the AVM resolves it. | No daemon is needed. The shared `$OUT` tree, `MULTI-COMPILE` sessions and in-memory class compiles all resolve classes in ways that per-unit PROPATHs make unsound, and real codebases checked use one global PROPATH. | A persistent pool: it needs a daemon (follow-up). Keying classes under per-unit PROPATHs: each design attempt found a new hole (follow-up with its proof list). An output tree per PROPATH id: one class name with two `.r` files is ambiguous at run time anyway. |
 | D9 | A fake AVM (`oxabl_fake_avm`, a test-only binary) implements the protocol from the document, with no oxabl dependency. | It stands in for Progress, not for oxabl. A shared codec would hide a codec bug on both sides. | A mock inside the tests: it fakes the program under test. |
 | D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema probe gives the same image, and the compiler opened no file outside the closure (from the compiler-resolved `XREF-XML`). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
 | D13 | The remote cache's configuration and root of trust (`tenant`, `owner_keys`, `min_roster_version`) live only in the client's committed `.oxabl/cache.toml`. `oxabl.toml` has build-side switches only. | Whoever controls the environment of a build must not be able to replace the pinned owner keys. | Remote settings in `oxabl.toml`: the overlay could replace the root of trust. |
@@ -382,10 +385,10 @@ entries, then `[workspace.sources].include_paths`, then the DLC default entries
 ([compile-key.md](build-tool/compile-key.md#the-unit-propath-and-the-compile-name)). The output directory comes first, so a
 unit that uses a class reads the r-code that this build just made for it. The scheduler
 order makes that r-code current. The prune step and the delete-on-failure rule make sure
-no stale or orphan r-code is there. Because every unit reads the one `$OUT` tree, a class name that
-resolves to two files in the build cannot be compiled soundly for both; the plan makes the
-units that reach it unkeyable (K8,
-[compile-key.md](build-tool/compile-key.md#class-conflicts)) and warns once per name.
+no stale or orphan r-code is there. Because every unit reads the one `$OUT` tree, classes
+are keyed only when the build has one PROPATH id (K9,
+[compile-key.md](build-tool/compile-key.md#per-unit-propath-classes)); with one PROPATH id,
+a K3-accepted external name that a workspace class also has is K8.
 
 ## CLI surface
 
@@ -502,6 +505,10 @@ Slices 1 to 3 need no AVM. Slice 4 can start at the same time as slice 2.
 
 These are out of scope. Each needs its own design note before code.
 
+- **Classes under per-unit PROPATHs.** Key class users when `root_relative_include_paths`
+  gives units different PROPATHs. See
+  [compile-key.md](build-tool/compile-key.md#follow-up-classes-under-per-unit-propaths) for
+  the six things it must prove.
 - **Signature-aware keys.** See
   [compile-key.md](build-tool/compile-key.md#follow-up-signature-aware-keys).
 - **Per-table schema keys.** Key a unit on the schema image of the tables it reads, not on

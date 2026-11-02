@@ -111,6 +111,8 @@ Oxabl to the worker:
 | `HELLO` | `version` `token` | Start of the session. `version` is `1`. `token` is 32 random hex digits. |
 | `SCHEMA` | `ldb` | Emit the schema image of one database. |
 | `HASH` | `id` `path` | Hash one worker-side file ([Hashing worker-side files](#hashing-worker-side-files)). |
+| `HASHSET` | `id` `count` | Hash a set of worker-side files and answer with one digest of the list. `count` `PATH` lines follow. |
+| `PATH` | `id` `path` | One path of a `HASHSET`, in sorted order. |
 | `PROPATH` | `id` `entry`... | Define a PROPATH. Entries are worker-side paths. |
 | `OPTIONS` | `id` `name=value`... | Define a set of compile options. |
 | `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref`, `xref-xml` or `private` (a private `XREF-XML` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. |
@@ -129,6 +131,7 @@ The worker to oxabl:
 | `SREC` | `ldb` `record` `field` `last` `chunk` | One chunk of one field of one schema image record ([Schema image](#schema-image)). |
 | `SCHEMA-END` | `ldb` `records` `lines` | End of the image: the number of records and of `SREC` lines. |
 | `HASHED` | `id` `kind` `size` `sha256` | `kind` is `file`, `dir` or `none`; `size` and `sha256` (lower-case hex) are `-` unless `kind` is `file`. |
+| `HASHSET-DONE` | `id` `sha256` | The digest of a `HASHSET` list. |
 | `OK` | `id` | A `PROPATH` or `OPTIONS` is defined. |
 | `MSG` | `req` `compile-name` `type` `number` `file` `row` `column` `text` | One compiler message. `type` is `error` or `warning`. |
 | `DONE` | `req` `compile-name` `status` `ms` | One unit is complete. `status` is `ok` or `fail`. |
@@ -291,12 +294,25 @@ answers are part of the environment check: all workers must agree.
 
 `$DLC/...` closure files are hashed in the **DLC hash phase**, after the closure step of the
 plan ([build-tool.md](../build-tool.md#the-build-flow), step 4) and before the keys are
-computed. One worker that finished its handshake hashes every distinct `$DLC/...` path in
-any closure of the whole graph, once, outside `start_timeout`; each `HASH` answer has
-`unit_timeout`. The other workers can already compile units with no keyable work pending
-(unkeyable units, which need no key). A lost worker during the phase hands the remaining
-paths to another worker; when no worker is left, every unit with a `$DLC` file in its
-closure is unkeyable (K6).
+computed. **Nothing compiles before step 7**: every worker is idle during the phase.
+
+1. One worker that finished its handshake hashes every distinct `$DLC/...` path in any
+   closure of the whole graph, once, with `HASH`, outside `start_timeout`; each answer has
+   `unit_timeout`. These digests go into the keys.
+2. Every other worker then checks that it sees the same copies, in one round trip: oxabl
+   sends `HASHSET <id> <count>` followed by `count` lines `PATH <id> <path>`, with the paths
+   sorted by bytes. The worker hashes each path as for `HASH` and answers
+   `HASHSET-DONE <id> <sha256>`, the SHA-256 of the lines `<path> TAB <digest> LF` in that
+   order, where `<digest>` is the lower-case hex SHA-256, or `dir` or `none`. Oxabl computes
+   the same value from the first worker's answers. Any difference stops the build with exit
+   code 2: `workers see different $DLC files`, like the other environment checks. A pool is
+   one environment; a command that reaches different containers per slot (for example a
+   `kubectl exec` through a service) must reach identical installations.
+3. A worker lost during the phase hands its remaining work to another worker; when no
+   worker is left, every unit with a `$DLC` file in its closure is unkeyable (K6).
+
+The phase costs one round trip per distinct `$DLC` path on one worker, plus one round trip
+on each other worker, in parallel.
 
 ## Pool lifecycle
 
@@ -319,16 +335,15 @@ workers start, the build goes on with them and prints a warning.
 An idle worker takes the next ready job ([the scheduler](../build-tool.md#scheduler)). Oxabl sends `PROPATH` and `OPTIONS` lines the first time a
 request needs an id that the worker does not know yet, then `COMPILE` and the `UNIT` lines.
 
-### Class conflicts and sessions
+### Classes and sessions
 
 `COMPILER:MULTI-COMPILE` keeps each class that a session has compiled, by class name, and
 does not drop it when `PROPATH` changes. All units also share one `$OUT` tree, where one
-class name has one `.r`. So when one class name resolves to two files in a build, the
-compiler can give a unit the other file's class, whatever the session. Worker restarts
-cannot fix the shared `$OUT`, so the pool does not try: the plan makes every unit that
-reaches such a name unkeyable (K8, [compile-key.md](compile-key.md#class-conflicts)), and
-any worker may compile it, as the AVM would. When the build has no class conflict, sessions
-are shared freely and every key is sound.
+class name has one `.r`. With one PROPATH id in the build, every unit resolves a class name
+to the same file, so sessions are shared freely and the keys are sound. With more than one
+PROPATH id, the plan makes every unit that reaches a class unkeyable (K9,
+[compile-key.md](compile-key.md#per-unit-propath-classes)); any worker may compile it, as the
+AVM would. The pool has no session rule of its own.
 
 ### Timeouts
 
@@ -385,7 +400,7 @@ The program has these parts. Each is one internal procedure.
 | `decode` | Split a line on `TAB` and decode each field. |
 | `hello` | Check the version, echo the token, emit the environment and the databases. |
 | `schemaImage` | Read the records of one database with dynamic buffers and queries into a temp-table, map `RECID` and `ROWID` pointers, and emit them in chunks. |
-| `hashFile` | Answer one `HASH`. |
+| `hashFile` | Answer one `HASH`, or one `HASHSET`. |
 | `compileRequest` | Read the `UNIT` lines, compile each unit, emit `MSG` and `DONE`, then `END`. |
 
 The program reads no file except the files that `HASH` names, and writes no file except the
