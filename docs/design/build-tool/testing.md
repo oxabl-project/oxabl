@@ -1,0 +1,260 @@
+---
+title: "oxabl build: testing"
+status: proposed
+date: 2026-11-02
+---
+
+# Testing
+
+Part of [the oxabl build PRD](../build-tool.md).
+
+## Rules
+
+- **No unit tests.** Tests drive the product the way a user or a wrapper does: the
+  `oxabl` binary (`CARGO_BIN_EXE_oxabl`) over temporary directories, and, for slice 1 only,
+  the public API of `oxabl_pipeline`. A test knows nothing of the internal modules.
+- **A stub fakes the environment, never the program under test.** The fake AVM stands in
+  for Progress. Nothing stands in for oxabl.
+- **A check that cannot fail is worse than none.** Each acceptance test is broken once on
+  purpose during its slice (remove the guarded behaviour, see the test go red with the
+  assertion that names it), and the pull request says so.
+- **Opt-in is never a silent pass.** The OpenEdge suite is `#[ignore]`. When it runs and
+  its environment variables are missing, it fails; it does not skip.
+- All fixtures are synthetic ABL written for the test.
+
+## Where tests live
+
+| Tests | Location |
+| --- | --- |
+| Observed analysis (slice 1) | `crates/oxabl_pipeline/tests/observations.rs` |
+| CLI build and plan | `crates/oxabl/tests/build_*.rs`, one file per behaviour group |
+| Golden key vectors | `crates/oxabl/tests/build_key_vectors.rs` with `crates/oxabl_build/tests/key_vectors.json` |
+| Remote cache | `crates/oxabl_build_remote/tests/` |
+| OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `scripts/openedge-e2e.sh` |
+| Parity | `scripts/plan-parity.sh` |
+
+## The fake AVM
+
+`crates/oxabl_fake_avm` is a binary crate with `publish = false`. It depends on no oxabl
+crate; a CI step checks that `cargo tree -p oxabl_fake_avm` names none. It implements
+protocol 1 from [worker-protocol.md](worker-protocol.md) on its own, so a codec bug in
+oxabl cannot hide behind the same bug in the fake.
+
+The tests use it as the worker command:
+`command = ["<path to oxabl_fake_avm>", "{program}"]`. It checks that `{program}` exists and
+starts with the worker program's header line.
+
+### What it does
+
+- **Environment.** It reads the environment fields, the databases and the schema records
+  from the JSON file in `FAKE_AVM_ENV`. A test changes the environment by changing that
+  file.
+- **Compile.** It resolves the compile name on the request PROPATH (the first entry that
+  has the file; `$OUT`-mapped entries first). It reads the source and follows its includes:
+  every `{name}` and `{name args}` is resolved on the PROPATH and read, recursively. For each
+  `INHERITS X`, `IMPLEMENTS X` and `NEW X(`, it reads `X.r` from the output entry when that
+  exists, and the source otherwise. A `FAKE-READ <path>` line makes it read that file
+  directly; the oxabl analysis does not see it, which tests the read check.
+- **Outputs.** The `.r` is text: a header, the compile name, one line `read <path> <hash>` for
+  each file read, and `compiled-at <nanoseconds>`. The last line makes outputs of one
+  source differ between compiles, like real r-code. A test can read a `.r` and check that it
+  matches the current files: that is the wrong-hit oracle. The XREF is the text form, with an
+  `INCLUDE` row per include and one row per file read. Debug lists and listings hold the
+  source text.
+- **Faults**, from text in the source or from environment variables:
+
+| Trigger | Effect |
+| --- | --- |
+| `FAKE-FAIL` in a source | `MSG` error 1234 at that line, `DONE fail`. |
+| `FAKE-WARN` in a source | `MSG` warning, `DONE ok`. |
+| `FAKE-CRASH` in a source | Exit 1 while compiling it. |
+| `FAKE-CRASH-ONCE` in a source | Exit 1 the first time, using a marker file in `FAKE_AVM_STATE`. |
+| `FAKE-HANG` in a source | Sleep forever while compiling it. |
+| `FAKE-SLOW` in a source | Sleep 2 s after reading the source and before writing outputs. |
+| `FAKE_AVM_NOISE=1` | Print noise lines before and between protocol lines. |
+| `FAKE_AVM_START_DELAY=<ms>` | Sleep before the handshake. |
+| `FAKE_AVM_BAD_TOKEN=1` | Echo a wrong token. |
+| `FAKE_AVM_EXIT_IN_HANDSHAKE=1` | Exit after `HELLO`. |
+| `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` | Emit a different schema image after `n` compiles. |
+
+- **Log.** It appends one line per compiled unit to `FAKE_AVM_LOG` (`<worker pid> <compile
+  name>`), so a test counts compiles and sees which worker compiled what. It also writes its
+  pid there at start and `exit` at quit, so a test can check that no worker stays alive.
+
+## Scenarios per slice
+
+Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
+
+### Slice 1: observed analysis
+
+- A root that includes `a.i`, which includes `b.i`: the observation set reads both.
+- Two roots that use one class through one `SharedRun`: both observation sets read the
+  class, in either order of analysis.
+- An include found in the third search directory: the first two paths are absent
+  observations. Create the file in the first: the observation set names that path.
+- A case-insensitive lookup: the listed directory is in the set.
+
+### Slice 2: store, refresh, `--plan --files`
+
+- Edit an include: the plan lists exactly its includers, reason `dependency-changed`.
+- No change: the second plan reports nothing changed, and `--plan --json` shows the same
+  store generation as the first.
+- Create a file that shadows an include: its includers are analysed again and listed with
+  `closure-changed`.
+- Delete an include: its includers are listed; their edge sets are now degraded.
+- Write a store with another `user_version`: the next plan rebuilds the store and prints
+  the same plan as a fresh workspace.
+- Truncate `state.db`: the next plan moves it aside (one `state.db.corrupt-*` file) and
+  succeeds.
+- Hold the lock with a running build: `--plan` succeeds twice and does not wait.
+- A misspelled table (`[biuld]`) and an unknown key in `[build]`: exit code 2 with the key in
+  the message.
+- Edit a file in the same second as the previous refresh (set mtime equal to it): the racy
+  rule hashes it again and the plan sees the change.
+
+### Slice 3: `--since`, `--json`, parity
+
+- A git fixture: commit, then edit one file, add an untracked include, delete a class:
+  `--since HEAD` names the right units with `named` reasons.
+- `--json` shape: field names and types, `format: 1`.
+- `scripts/plan-parity.sh` on a synthetic pair of plans reports a planted miss and exits 1;
+  with no miss it exits 0 and lists extras by reason.
+
+### Slice 4: worker protocol
+
+- The handshake fields reach `oxabl build --plan --probe --json` (`environment.source:
+  "probe"`).
+- Noise lines everywhere: the build still works and the log holds the noise.
+- A start delay past `start_timeout`, a bad token, an exit during the handshake: each slot
+  is retried twice; with every slot failing, exit code 3 and the log tail in the message.
+- Two workers with different environment files: exit code 2, `workers see different
+  environments`, and the field.
+- `[workspace.preprocessor].proversion` differs from the worker: exit code 2 naming both
+  values.
+- No `[build.workers].command`: exit code 2 and the message from the PRD.
+
+### Slice 5: keys
+
+- The golden vectors: every key in `key_vectors.json` equals the key in `--plan --json`.
+- One test per input of the key: the unit bytes, a closure file's bytes, a closure path, the
+  unit PROPATH, each environment section, one dropped and one kept startup parameter, the
+  schema image, each compile option, the outputs, the worker program. Each changes the key,
+  except the dropped parameter, which must not.
+- One test per fail-closed rule K1 to K7: the key is `null` and the reason is listed.
+- A workspace copied to another path: every key is equal.
+
+### Slice 6: compile
+
+- A class and its user: the class compiles first (the fake log order), and the user's `.r`
+  reads the class's new `.r`.
+- Two classes in a cycle: one request with both.
+- `FAKE-CRASH-ONCE`: the unit compiles on the second dispatch; one `worker-lost` event.
+- `FAKE-CRASH`: the unit fails with `worker lost twice`; the other units compile.
+- `FAKE-HANG` with `unit_timeout = "2s"`: the unit fails, the build ends.
+- SIGINT during a build: exit code 130; within `cancel_grace` plus 10 s every fake worker
+  logged `exit` or is gone; a following build compiles only what was not recorded.
+- SIGKILL of oxabl during a build: every fake worker quits after its current unit (the
+  stdin end-of-file).
+- A second build: no compile in the fake log.
+- An include edit: only its includers in the fake log.
+- `FAKE-FAIL` in a class: its old `.r` is gone, its users compile and are tainted (no
+  cache write), and the exit code is 1.
+- `--events` and `--report`: the shapes, and one `unit-finished` per compiled unit.
+- An output directory with a foreign file and no marker: exit code 2. A foreign `.r` put
+  into a managed output directory: deleted by the next build, and no unit reads it.
+
+### Slice 7: verification and the local cache
+
+- Two copies of one workspace at different paths, one local cache: the second build has no
+  compile in the fake log, and every output file is byte-identical to the first copy's.
+- Flip one byte of a cached `.r`: the next fetch is a miss, the entry is in `quarantine/`,
+  the unit compiles, and its `.r` passes the wrong-hit oracle.
+- Remove one file from a cached entry: a miss, never a partial install.
+- Edit a closure file while the fake compiles (the fake sleeps on `FAKE-SLOW`, the test
+  edits): no cache entry for that unit; the next build compiles it again.
+- `FAKE-READ` of a file outside the closure: no cache entry, the result has no key, and the
+  summary names the file.
+- `FAKE_AVM_SCHEMA_CHANGE_AFTER`: no cache entry for the whole build.
+- A cache directory writable by others: a warning, a correct build, no cache use.
+- Eviction: with a tiny `local_max_size`, the oldest entries go and a later fetch of one of
+  them is a miss, not an error.
+
+### Slice 8: remote cache
+
+These start the real oxabl-cache server binary, from the path in `OXABL_CACHE_SERVER_BIN`
+(CI builds it from the pinned release). With the `remote-cache` feature on and the variable
+missing, the tests fail.
+
+- A CI-mode build writes; a second workspace with a fresh local cache fetches everything and
+  compiles nothing; outputs are byte-identical.
+- A proxy in front of the server that returns garbage bodies: misses, a correct build,
+  exit code 0, one warning.
+- The server is down: a correct build, exit code 0, one warning.
+- A server that is slow past `timeout`: a miss, not a hang.
+- A binary without the feature and `[build.cache.remote]` set: exit code 2.
+
+### Slice 9: handover
+
+- An overlay over `oxabl.toml`: overlay values win key by key, arrays replace;
+  `--print-config` shows the sources.
+- An overlay with `[workspace.lint]` or an unknown key: exit code 2.
+- No `oxabl.toml` and a complete overlay: the build works.
+
+## Opt-in OpenEdge suite
+
+`crates/oxabl/tests/build_openedge.rs`, every test `#[ignore]`. A developer runs it on a
+machine with OpenEdge:
+
+```bash
+OXABL_E2E_DLC=/path/to/dlc scripts/openedge-e2e.sh
+```
+
+The script creates two databases from `crates/oxabl/tests/fixtures/openedge/test.df` with
+the installation's own tools (`prodb` and the dictionary load program of the installation;
+oxabl ships neither), sets `OXABL_E2E_WORKER_COMMAND` to a local `_progres` command, and runs
+`cargo test --test build_openedge -- --ignored`. The fixture is a small synthetic project:
+procedures, includes, a class hierarchy, a cycle of two classes, a temp-table, and a
+procedure that reads a database table.
+
+### The r-code oracle
+
+r-code is not byte-deterministic, so the suite compares r-code with a **mask**: compile one
+unit twice in one root and record the byte offsets that differ. Two r-code files are
+**equivalent** when they have the same size and differ only at masked offsets. A test that
+needs equivalence first checks that the mask is small (under 1 % of the file).
+
+### Tests
+
+| Test | What it proves |
+| --- | --- |
+| `transport` | The worker reads stdin in batch mode, and each `MESSAGE` line reaches stdout at once, including a 30,000-byte line. |
+| `probe_fields` | Every handshake field is present and has the expected form. |
+| `schema_identity_same_df` | Two databases loaded from one `.df` give one schema identity. |
+| `schema_identity_label_change` | Changing one field label changes the identity. |
+| `compile_fixture` | The fixture builds; outputs exist; a planted error gives a `MSG` with row and column. |
+| `class_order` | The cycle and the hierarchy compile; users of a changed class compile after it. |
+| `portable_rcode` | The fixture copied to two roots gives equivalent r-code for every unit. |
+| `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
+| `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
+| `xref_readers` | The text and XML XREF readers find every include of the fixture. |
+| `orphans` | After `SIGKILL` of oxabl, no `_progres` of that build is alive after its current compile. |
+
+If `portable_rcode` or `xref_does_not_change_rcode` fails, the key specification changes as
+[compile-key.md](compile-key.md) says, before any cache slice ships.
+
+## Planner parity
+
+`scripts/plan-parity.sh <oxabl-plan.json> <downstream-rebuild.txt>` compares oxabl's rebuild
+set (units with `action: rebuild`) with a list of paths from the downstream tool (one
+root-relative path per line). It prints:
+
+- **missed**: paths in the downstream list that oxabl does not rebuild. Any missed path
+  makes the script exit 1.
+- **extras**: paths oxabl rebuilds that the downstream tool does not, grouped by oxabl's
+  first reason.
+
+The private corpus stays outside this repository. Slice 3 runs the script on it for a set of
+edits (an include used by many units, a class body edit, a class signature edit, a new file
+that shadows an include, a deleted include, a schema change) and reports the counts in the
+pull request with no paths. The class body edit is expected to give extras (oxabl keys on
+full source); every other row is expected to give few.
