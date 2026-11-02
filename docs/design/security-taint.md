@@ -230,9 +230,11 @@ registry against them.
   list does not know. The rule reads the tokens of the whole file, so a
   statement the parser does not model is read too, and a way of getting a
   handle that is not on the list fails closed. A member read (but a number,
-  a logical or a name) through a handle that is not sole, a field, a call or
-  any other receiver than a sole variable, a system handle or `BUFFER b:`
-  adds Unknown. In an include file checked on its own, or a file where an
+  a logical, a name or a handle) through a handle that is not sole, a field,
+  a call or any other receiver than a sole variable, a system handle or
+  `BUFFER b:` adds Unknown. A handle that such a read gives is no data, and
+  a read through it adds Unknown in turn: its variable is not sole, and a
+  chain (`h:FIRST-CHILD:PRIVATE-DATA`) starts at a handle that is not. In an include file checked on its own, or a file where an
   include did not arrive, no handle is sole. A guard test holds the
   `GET-...` methods of the reference to `HANDLE_METHODS`. So a method of
   `CARRYING_METHODS` on a handle variable (`hDoc:SAVE("LONGCHAR", lc)`) also

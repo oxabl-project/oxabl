@@ -635,8 +635,15 @@ impl Tables {
         let listed = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(member));
         match self.types.get(v) {
             Some(t) if self.is_json_type(t) => listed(&JSON_SOLE_MEMBERS),
-            _ => !listed(&HANDLE_ATTRIBUTES) && !listed(&HANDLE_METHODS),
+            _ => !self.handle_valued(member),
         }
+    }
+
+    /// Whether `member` of a handle gives a handle ([`HANDLE_ATTRIBUTES`],
+    /// [`HANDLE_METHODS`]).
+    pub fn handle_valued(&self, member: &str) -> bool {
+        let listed = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(member));
+        listed(&HANDLE_ATTRIBUTES) || listed(&HANDLE_METHODS)
     }
 
     /// Whether a member read through `name` reads only what the program wrote
@@ -1880,8 +1887,11 @@ impl Compiler<'_> {
                 Value::union([object, Value::origin(UNKNOWN)])
             }
             // Another handle or reference of the object may have changed it.
+            // A handle it gives is no data: a read through that handle is
+            // not sole either, and adds Unknown there.
             _ if !receiver.sole
                 && !scalar
+                && !self.tables.handle_valued(member)
                 && (receiver.owner == Owner::Program || receiver.json) =>
             {
                 Value::union([object, Value::origin(UNKNOWN)])

@@ -54,6 +54,19 @@ hQ:QUERY-PREPARE("FOR EACH Customer WHERE " + get-filter()). /* taint: real */
 /* A function of the file that quotes its argument. */
 hQ:QUERY-PREPARE("FOR EACH Customer WHERE Customer.Name = " + quoted(pcName)). /* taint: safe */
 
+/* The name of a buffer that a second handle of a table gives: no input,
+   whatever other handles of the table may have written. */
+DEFINE VARIABLE hTrack AS HANDLE NO-UNDO.
+DEFINE VARIABLE hTrackBuf AS HANDLE NO-UNDO.
+DEFINE VARIABLE hTrackQuery AS HANDLE NO-UNDO.
+CREATE TEMP-TABLE hTrack.
+hTrack:ADD-NEW-FIELD("f", "character").
+hTrack:TEMP-TABLE-PREPARE("track").
+hTrackBuf = hTrack:DEFAULT-BUFFER-HANDLE.
+CREATE QUERY hTrackQuery.
+hTrackQuery:SET-BUFFERS(hTrackBuf).
+hTrackQuery:QUERY-PREPARE("FOR EACH " + hTrackBuf:NAME + " NO-LOCK"). /* taint: safe */
+
 FUNCTION get-filter RETURNS CHARACTER PRIVATE ():
     RETURN get-value("filter").
 END FUNCTION.
