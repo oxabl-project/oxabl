@@ -202,7 +202,13 @@ impl Rules<'_> {
         let mut reaches_class = false;
         for node in std::iter::once(unit).chain(closure.iter().copied()) {
             self.check_file(&mut verdict, node);
-            reaches_class |= node != unit && self.class_sources.contains(&node);
+            let class_source = self.class_sources.contains(&node);
+            reaches_class |= node != unit && class_source;
+            // An include is analysed in its includer's context; its own
+            // analysis as a root says nothing about the includer.
+            if node != unit && !class_source {
+                continue;
+            }
             let Some(analysis) = self.outcome.analyses.get(node) else {
                 continue;
             };

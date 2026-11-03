@@ -876,3 +876,56 @@ fn a_class_that_is_present_but_unusable_is_not_accepted_as_external_k3() {
         &["unresolved-class: acme.util.broken in src/q.p"],
     );
 }
+
+#[test]
+fn an_include_is_judged_in_its_includers_context_not_as_a_root_k1() {
+    let workspace = Keyed::simple();
+    workspace.write(
+        "src/lib/tt.v",
+        "DEFINE TEMP-TABLE {&table} NO-UNDO LIKE customer.\n",
+    );
+    workspace.write("src/a.p", "{lib/tt.v &table=\"ttX\"}\nMESSAGE \"a\".\n");
+
+    let plan = workspace.plan();
+
+    assert!(plan.key("src/a.p").is_some(), "{}", plan.unit("src/a.p"));
+    assert_unkeyable(
+        &plan,
+        "src/lib/tt.v",
+        &["degraded: src/lib/tt.v: parse-recovered"],
+    );
+}
+
+#[test]
+fn a_class_that_is_degraded_on_its_own_makes_its_users_unkeyable_k1() {
+    let workspace = Keyed::simple();
+    workspace.write(
+        "src/a.p",
+        "DEFINE VARIABLE o AS pkg.Foo NO-UNDO.\no = NEW pkg.Foo().\n",
+    );
+    workspace.write(
+        "src/pkg/Foo.cls",
+        "CLASS pkg.Foo:\n  DEFINE VARIABLE x AS .\nEND CLASS.\n",
+    );
+
+    let plan = workspace.plan();
+
+    assert_unkeyable(
+        &plan,
+        "src/a.p",
+        &["degraded: src/pkg/Foo.cls: parse-recovered"],
+    );
+}
+
+#[test]
+fn an_include_that_is_degraded_in_its_includers_context_makes_it_unkeyable_k1() {
+    let workspace = Keyed::simple();
+    workspace.write("src/inc/b.i", "DEFINE VARIABLE {&name} AS .\n");
+    workspace.write("src/a.p", "{inc/b.i &name=x}\n");
+    workspace.write("src/ok.p", "MESSAGE \"ok\".\n");
+
+    let plan = workspace.plan();
+
+    assert_unkeyable(&plan, "src/a.p", &["degraded: src/a.p: parse-recovered"]);
+    assert!(plan.key("src/ok.p").is_some());
+}

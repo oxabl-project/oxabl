@@ -169,7 +169,7 @@ The PROPATH of a unit is `$OUT`, the `root_relative_include_paths` joined to the
 
 | Rule | Reason | When |
 |---|---|---|
-| K1 | `degraded: <path>: <reason>` | The unit, or a class or include in its closure, has an edge set that may miss dependencies. |
+| K1 | `degraded: <path>: <reason>` | The unit, or a class in its closure, has an edge set that may miss dependencies. An include is judged inside the unit that includes it, not as a root. |
 | K2 | `unresolved-include: <name> in <path>` | An include does not resolve, in any branch. |
 | K3 | `unresolved-class: <name> in <path>` | A class does not resolve, unless its name starts with a prefix of `[build.external_packages]` and a listed library is on the PROPATH with a SHA-256 digest. A directory never supplies a prefix. |
 | K4 | `computed-name: <name> in <path>` | An include or class name is computed. This includes a class unit whose `CLASS` statement oxabl cannot read in its own text. |
