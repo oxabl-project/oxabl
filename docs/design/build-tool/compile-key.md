@@ -524,8 +524,8 @@ gives each reason.
 
 | Rule | Condition | Reason text |
 | --- | --- | --- |
-| K1 | The unit, or an analysed node in its closure, has a degraded edge set. | `degraded: <path>: <reason>` |
-| K2 | The unit, or an analysed node in its closure, has an unresolved include (any kind, any reason). | `unresolved-include: <name> in <path>` |
+| K1 | The unit, or a class source in its closure, has a degraded edge set. | `degraded: <path>: <reason>` |
+| K2 | The unit, or a class source in its closure, has an unresolved include (any kind, any reason). | `unresolved-include: <name> in <path>` |
 | K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]` (compared ignoring ASCII case), and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
 | K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). | `computed-name: <name> in <path>` |
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
@@ -533,6 +533,15 @@ gives each reason.
 | K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`, `package-mismatch`, `package-root-not-on-propath`). | the skip reason |
 | K8 | The unit's closure holds a class name that K3 accepted as external, and a class unit or class edge target in the whole graph has that name ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
 | K9 | The build has more than one PROPATH id, and the unit is a class unit or its closure reaches a class source ([Per-unit PROPATH classes](#per-unit-propath-classes)). | `per-unit-propath-classes` |
+
+**An include is judged in its includer's context.** K1 to K4 read the analyses of the
+unit and of the class sources in its closure only. A closure file reached only through
+include edges contributes nothing of its own standalone analysis, even when it is also a
+unit (a `.v` file is a root and is often included): a `.v` that degrades on its own because
+it uses `{&table}` does not make its includer unkeyable, because the includer's analysis
+expands it with the includer's definitions, and anything degraded there is a K1 of the
+includer. K5 and K6 still check every closure file. A file that is both an include target and
+a class source is always judged by its own analysis too (fail-closed).
 
 `[build.external_packages]` maps a class name prefix to the library entries that supply
 it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any `.pl` library

@@ -248,7 +248,7 @@ details:
 | Reason | Detail |
 | --- | --- |
 | `new` | No result in the store. |
-| `failed` | The last compile failed. |
+| `failed` | The last compile failed; the detail is the recorded failure reason (see [Failure reasons](#failure-reasons)). |
 | `unkeyable` | The keyability reasons, for example `unresolved-include: inc/x.i`. See [compile-key.md](build-tool/compile-key.md#the-fail-closed-rule). Such a unit compiles on every build. |
 | `named` | `--files` or `--since` named a file in its closure; the detail names the file and the edge path from the unit to it. |
 | `source-changed` | The unit's own bytes changed. |
@@ -256,8 +256,9 @@ details:
 | `closure-changed` | The closure gained or lost a file, or a name now resolves to a different file. |
 | `environment-changed` | The environment fields that differ: for example `schema: ledger`, `proversion`. |
 | `options-changed` | The compile options or the requested outputs differ. |
+| `propath-changed` | The unit PROPATH differs (an entry, its order, or a library digest). The PROPATH is its own key section. |
 | `worker-changed` | The worker program changed (a new oxabl release that changes it). |
-| `unverified` | The last compile read a file outside the closure (check V3 in [cache.md](build-tool/cache.md#verification)); the file is named. The unit compiles at each build until the analysis finds that file. |
+| `unverified` | The last compile read a file outside the closure (check V3 in [cache.md](build-tool/cache.md#verification)); the file is named. The unit compiles at each build until the analysis finds that file. A result with no key and no named file, in a plan with keys, is `unverified: the last compile had no key`; without `--probe` it is `unkeyable: no key at the last build`. |
 | `output-missing`, `output-changed` | An output was deleted or changed outside oxabl. |
 
 `--plan` does not start a worker. It uses the environment of the last build and says so:
@@ -265,6 +266,19 @@ details:
 the pool (`[build.workers].count`, or `--workers`; all workers must agree, so the probe uses
 the pool, not one worker), probes, and stops it. With no stored environment and no `--probe`, keys are
 `null` and every unit that is not otherwise in the set is reported `environment-unknown`.
+
+`environment.source` in `--json` is `"stored"` (the environment of the last build),
+`"probe"` (`--probe`), or `"none"` (no build yet and no probe).
+
+**Without `--probe` there are no keys.** The plan then compares each unit with its last
+result through generations: the unit and its closure files with `changed_gen >
+compiled_gen` give `source-changed` or `dependency-changed`, and a closure that the refresh
+changed gives `closure-changed`. When the refresh did not see the change itself, the
+closure component only says that it differs: the reason lists the closure files with a newer
+`changed_gen` (a new file counts as changed), or is an empty `closure-changed`.
+`environment-changed`, `options-changed`, `worker-changed` and `propath-changed` need the keys,
+so they need `--probe`, except where a stored component already differs. A store with no
+completed build yet plans "what changed since the last refresh", as slices 2 to 5 do.
 
 ### Probe output
 
@@ -355,7 +369,23 @@ never compiled on its own.
 8. **Retry pass.** After the queue is empty, each failed unit compiles once more, in the
    same order rules, on the same pool. A unit can fail only because something it uses was
    not compiled yet through a reference that the graph does not model. A unit that
-   succeeds on retry counts as one success.
+   succeeds on retry counts as one success. The retry pass skips units that failed because
+   their worker was lost twice: they already had two attempts. Loss counts are per build,
+   across both passes.
+
+### Failure reasons
+
+A failed unit always carries a reason, in `--report`, in the `unit-finished` event and in
+the store (`results.note`), so the plan can show it. The reason is the first error message
+of the compile when there is one. Otherwise oxabl writes one of its own:
+
+| Situation | Reason |
+| --- | --- |
+| The worker reported `fail` with no error message | `the compiler reported a failure without a message` |
+| The worker reported `ok`, but an expected output is missing in the stage | `no output: <artifact path>` |
+| The worker was lost twice while compiling the unit | `worker lost twice while compiling this unit` |
+| The compile name or a PROPATH entry cannot be sent in the worker's code page | `path-encoding: <name>` |
+| A unit in its closure failed in this build (the unit itself compiled) | not a failure; the unit is tainted |
 
 Worker crash, timeout and cancel rules are in
 [worker-protocol.md](build-tool/worker-protocol.md#pool-lifecycle).

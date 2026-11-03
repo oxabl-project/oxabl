@@ -95,8 +95,8 @@ well under a second.
   literal.
 - The worker encodes the bytes of its strings in its `-cpinternal`. Oxabl decodes a field
   with the code page that the worker reported. A path that oxabl sends must be ASCII unless
-  the worker's `cpinternal` is `UTF-8`; otherwise the unit is skipped with
-  `path-encoding`.
+  the worker's `cpinternal` is `UTF-8`; otherwise the unit fails at dispatch with
+  `path-encoding: <name>` (the code page is known only after the handshake, after the plan).
 - A line is at most 30,000 bytes, below the 32,000-byte limit of an ABL `CHARACTER`.
 - **Noise.** A stdout line that does not start with `OXW1` and `TAB` is noise (for example a
   message that the AVM prints at start). Oxabl writes it to the worker log and never parses
@@ -114,9 +114,9 @@ Oxabl to the worker:
 | `HASH` | `id` `path` | Hash one worker-side file ([Hashing worker-side files](#hashing-worker-side-files)). |
 | `HASHSET` | `id` `count` | Hash a set of worker-side files and answer with one digest of the list. `count` `PATH` lines follow. |
 | `PATH` | `id` `path` | One path of a `HASHSET`, in sorted order. |
-| `PROPATH` | `id` `entry`... | Define a PROPATH. Entries are worker-side paths. |
+| `PROPATH` | `id` `entry`... | Define a PROPATH. Entries are worker-side paths; a `$DLC/...` entry is sent as written and the worker expands it with `OS-GETENV("DLC")`. |
 | `OPTIONS` | `id` `name=value`... | Define a set of compile options. |
-| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref`, `xref-xml` or `private` (a private `XREF-XML` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. |
+| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref` or `xref-xml` (slice 7 adds `private`, a private `XREF-XML` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. `stage` is relative to the worker root and starts with `./` (see [Compiling](#compiling)). |
 | `UNIT` | `req` `compile-name` | One unit of the request, in compile order. |
 | `PING` | `n` | Liveness. |
 | `QUIT` | | End the session. |
@@ -220,25 +220,41 @@ ties every worker to the same databases.
 
 For each `UNIT` of a request, the worker:
 
-1. Sets `PROPATH` to the entries of the request's PROPATH, joined with `,`.
+1. Sets `PROPATH` to the entries of the request's PROPATH, joined with `,`. `$DLC/...`
+   entries are expanded with `OS-GETENV("DLC")`.
 2. Computes the output paths under the stage directory of the request:
    - r-code: `COMPILE ... SAVE INTO <stage>/r`, so the `.r` is at `<stage>/r/<compile stem>.r`;
    - XREF: `<stage>/xref/<compile name>.xref` (or `.xref.xml`);
-   - private XREF: `<stage>/verify/<compile name>.xref.xml` (always `XREF-XML`);
+   - private XREF (slice 7): `<stage>/verify/<compile name>.xref.xml` (always `XREF-XML`);
    - debug list: `<stage>/dbg/<compile name>.dbg`;
    - listing: `<stage>/lst/<compile name>.lst`.
 3. Creates each directory those paths need, with `OS-CREATE-DIR`. `SAVE INTO` creates package
    directories for classes but not directories for procedures.
-4. Runs `COMPILE VALUE(<compile name>) SAVE INTO VALUE(<stage>/r)` with the requested
-   `XREF`/`XREF-XML`, `DEBUG-LIST` and `LISTING` phrases and the option phrases (`MIN-SIZE`,
-   `GENERATE-MD5`, `STREAM-IO`, `V6FRAME`, `ATTR-SPACE`, `LANGUAGES`, `OPTIONS`), with
-   `NO-ERROR`. `COMPILER:MULTI-COMPILE` is `TRUE` for the whole session.
+4. Compiles the unit through a **generated compile procedure**. The phrases of `COMPILE`
+   (`MIN-SIZE`, `GENERATE-MD5`, `STREAM-IO`, `V6FRAME`, `ATTR-SPACE`, `XREF`, `XREF-XML`,
+   `DEBUG-LIST`, `LISTING`) are keywords, not run-time values, so one fixed statement cannot
+   take them. For each **shape** (the options set, the `xref` value and the debug-list and
+   listing flags) the worker writes, once per session, a procedure
+   `<stage>/gen/c-<options id>-<xref>-<d><l>.p` that holds one
+   `COMPILE VALUE(<name>) SAVE INTO VALUE(<dir>) ... NO-ERROR` statement with exactly those
+   phrases (and `LANGUAGES (...)` and `OPTIONS "..."` written as literals), and `RUN`s it by
+   its absolute path with the compile name and the output paths as parameters.
+   `COMPILER:MULTI-COMPILE` is `TRUE` for the whole session. Because the languages and the
+   options are written into source, `[build.compile].languages` and `.options` may hold only
+   letters, digits and `-`, `_`, `:`, `,` and `.`; any other character is a configuration
+   error (exit code 2).
 5. Emits one `MSG` line for each message from `COMPILER:NUM-MESSAGES`, with
    `COMPILER:GET-MESSAGE-TYPE`, `GET-NUMBER`, `GET-FILE-NAME`, `GET-ROW`, `GET-COLUMN` and
    `GET-MESSAGE`.
 6. Emits `DONE` with `fail` when `COMPILER:ERROR` is true, or when any step before the
    compile raised an error (then with a `MSG` line of number `0` that holds the error
    text), and `ok` otherwise, plus the elapsed milliseconds from `ETIME`.
+
+**The stage path starts with `./`.** Oxabl sends the stage relative to the worker root and
+always with a leading `./` (`./.oxabl/build/stage/<build-id>/w1-1`). OpenEdge 12.8 strips a
+leading `.` from a relative `XREF` or `XREF-XML` file name, so `.oxabl/...` would be written
+to `oxabl/...` (verified on a real AVM); `./.oxabl/...` is kept as written. `SAVE INTO`,
+`LISTING` and `DEBUG-LIST` are not affected, and use the same `./` path for uniformity.
 
 After the last unit, the worker emits `END`.
 
@@ -372,11 +388,16 @@ the protocol. Then oxabl:
 
 1. sends `SIGTERM` to its process group, waits up to 5 s, sends `SIGKILL`, and reaps it;
 2. never reads its stage again;
-3. dispatches again, alone, the unit that was in flight; the units of the same request that
-   had not started are dispatched again with no count against them;
+3. puts the unit that was in flight back in the queue, together with the units of the same
+   request that had not started, as one job with the lost unit first (a request holds more
+   than one unit only for a cycle of classes, which must stay together); only the lost unit
+   counts a loss;
 4. marks a unit that is lost a second time in one build as failed, with the message
    `worker lost twice while compiling this unit`;
-5. starts a new worker in the slot, unless three starts in a row failed in this build.
+5. starts a new worker in the slot, with a new stage (`w<n>-<s+1>`). The new worker must
+   report the same environment profile as the pool. When three starts in a row fail, the
+   slot is dead and is left out of later passes. When no worker is left, the build records
+   what it finished and stops with exit code 3.
 
 A container exec can leave the AVM running after its client is killed. That AVM finishes
 its current compile into its own stage, which oxabl no longer reads. It then reads the
@@ -421,5 +442,5 @@ The program has these parts. Each is one internal procedure.
 | `compileRequest` | Read the `UNIT` lines, compile each unit, emit `MSG` and `DONE`, then `END`. |
 
 The program reads no file except the files that `HASH` names, and writes no file except the
-compile outputs in the stage. It
+compile outputs in the stage and its generated compile procedures under `<stage>/gen/`. It
 connects no database. It runs no other program.

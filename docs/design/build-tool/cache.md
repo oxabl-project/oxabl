@@ -212,6 +212,12 @@ After the plan ([build-tool.md](../build-tool.md#the-build-flow), step 6):
 6. **Verify and write** each compiled unit as it completes
    ([Verification](#verification)): a unit that passes goes to the local cache and is
    `push`ed to the remote uploader at once.
+
+   **Until V1 to V3 exist (slice 6), the hook pushes at unit completion:** a unit is pushed
+   when it completes `ok`, has a key, is not tainted and no cancel has arrived. Slice 7 puts
+   verification between completion and `push`. `finish` runs once, also after a cancel.
+   This interim hook is tested only through the public `oxabl::build` API with a recording
+   cache; no real cache is wired to it before slice 7.
 7. At the end of the build, `finish` the uploader and print the store outcomes in the
    summary.
 

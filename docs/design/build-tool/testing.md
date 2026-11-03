@@ -81,6 +81,9 @@ starts with the worker program's header line.
 | Trigger | Effect |
 | --- | --- |
 | `FAKE-FAIL` in a source | `MSG` error 1234 at that line, `DONE fail`. |
+| `FAKE-FAIL-ONCE` in a source | `MSG` error and `DONE fail` the first time (marker in `FAKE_AVM_STATE`), `DONE ok` after; tests the retry pass. |
+| `FAKE-FAIL-SILENT` in a source | `DONE fail` with no `MSG` line; tests that a failed unit still carries a reason. |
+| `FAKE-NO-OUTPUT` in a source | `DONE ok` but no `.r` in the stage; tests the `no output` failure. |
 | `FAKE-WARN` in a source | `MSG` warning, `DONE ok`. |
 | `FAKE-CRASH` in a source | Exit 1 while compiling it. |
 | `FAKE-CRASH-ONCE` in a source | Exit 1 the first time, using a marker file in `FAKE_AVM_STATE`. |
@@ -198,6 +201,20 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 
 - A class and its user: the class compiles first (the fake log order), and the user's `.r`
   reads the class's new `.r`.
+- `FAKE-FAIL-ONCE`: the unit fails, compiles on the retry pass and counts as one success;
+  `FAKE-FAIL` compiles twice and fails. A unit lost twice is not retried.
+- `FAKE-FAIL-SILENT` and `FAKE-NO-OUTPUT`: each failed unit has its reason (`the compiler
+  reported a failure without a message`, `no output: r/<stem>.r`) in `--report`, the event
+  and the next plan's `failed` reason.
+- A worker lost during a cycle request: the in-flight unit and the units of the request
+  that had not started go back as one job, the lost unit first.
+- A plan after a build without `--probe`: `environment.source` is `"stored"`; a changed
+  `include_paths` order gives `propath-changed` with `--probe`.
+- The stage path in each `COMPILE` starts with `./`, and an `XREF-XML` output lands under
+  `.oxabl/build/stage/...` (the opt-in OpenEdge test `compile_a_class_and_its_user` checks it on
+  a real AVM).
+- `[build.compile].options` with a character outside letters, digits and `-_:,.`: exit code
+  2.
 - Two classes in a cycle: one request with both.
 - `FAKE-CRASH-ONCE`: the unit compiles on the second dispatch; one `worker-lost` event.
 - `FAKE-CRASH`: the unit fails with `worker lost twice`; the other units compile.
