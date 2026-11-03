@@ -1,7 +1,9 @@
 //! The fetch thread: asks the cache for every keyable unit of the rebuild set,
 //! and installs each hit at its final paths as it arrives.
 
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::thread;
+use std::time::Duration;
 
 use oxabl_common::catch_panic;
 
@@ -16,13 +18,29 @@ use crate::output::promote;
 /// cache ends the call: the keys it did not report are misses.
 pub fn run(ctx: &Ctx<'_>, plan: &FetchPlan, tx: Sender<Msg>) {
     let _ = std::fs::create_dir_all(&plan.stage);
-    let _ = catch_panic(|| {
-        ctx.cache
-            .fetch(plan.requests.clone(), &plan.stage, &mut |outcome| {
-                deliver(ctx, plan, &tx, outcome)
-            });
+    let (ended, watching) = channel::<()>();
+    thread::scope(|scope| {
+        scope.spawn(move || cancel_when_asked(ctx, &watching));
+        let _ = catch_panic(|| {
+            ctx.cache
+                .fetch(plan.requests.clone(), &plan.stage, &mut |outcome| {
+                    deliver(ctx, plan, &tx, outcome)
+                });
+        });
+        drop(ended);
     });
     let _ = tx.send(Msg::FetchEnded);
+}
+
+/// Tells the cache to end its fetch when the build is cancelled, until the
+/// fetch has ended.
+fn cancel_when_asked(ctx: &Ctx<'_>, ended: &Receiver<()>) {
+    while let Err(RecvTimeoutError::Timeout) = ended.recv_timeout(Duration::from_millis(20)) {
+        if ctx.cancel.is_cancelled() {
+            let _ = catch_panic(|| ctx.cache.cancel_fetch());
+            return;
+        }
+    }
 }
 
 fn deliver(ctx: &Ctx<'_>, plan: &FetchPlan, tx: &Sender<Msg>, outcome: FetchOutcome) {

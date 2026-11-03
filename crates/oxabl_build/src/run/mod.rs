@@ -256,6 +256,7 @@ pub fn build(
     let outcomes = uploader
         .and_then(|uploader| catch_panic(|| uploader.finish()).ok())
         .unwrap_or_default();
+    notes.extend(catch_panic(|| cache.notes()).unwrap_or_default());
     let cache_report = cache_report(
         cache.label(),
         verifying,

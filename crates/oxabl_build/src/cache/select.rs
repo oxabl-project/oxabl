@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use oxabl_workspace::BuildCache;
 
 use super::job_dir;
+use super::layered::Layered;
 use super::local::LocalCache;
 use super::mode::Mode;
+use super::remote::{RemoteError, RemoteOpener};
 use super::seam::ArtifactCache;
 use crate::cache::NoCache;
 use crate::config::BuildWorkspace;
@@ -84,22 +86,51 @@ pub fn remote_wanted(config: &BuildCache, root: &Path) -> bool {
         .unwrap_or_else(|| root.join(".oxabl/cache.toml").is_file())
 }
 
-/// Chooses the caches of a build.
+/// Opens the remote cache when the workspace wants it and the flags allow it.
+fn open_remote(
+    config: &BuildCache,
+    root: &Path,
+    flags: Flags,
+    opener: Option<&dyn RemoteOpener>,
+    notes: &mut Vec<String>,
+) -> Result<Option<Box<dyn ArtifactCache>>, BuildError> {
+    if !config.enabled || flags.no_cache || flags.no_remote_cache || !remote_wanted(config, root) {
+        return Ok(None);
+    }
+    if !root.join(".oxabl/cache.toml").is_file() {
+        return Err(BuildError::Usage(
+            "[build.cache].remote is true, but .oxabl/cache.toml does not exist".to_string(),
+        ));
+    }
+    let Some(opener) = opener else {
+        return Err(BuildError::Usage(
+            "the remote cache is on, but this oxabl was built without remote-cache; rebuild with --features remote-cache or pass --no-remote-cache"
+                .to_string(),
+        ));
+    };
+    match opener.open(root, config.idle_timeout.0) {
+        Ok(remote) => Ok(Some(remote)),
+        Err(RemoteError::Refused(message)) => Err(BuildError::Usage(message)),
+        Err(RemoteError::Unavailable(message)) => {
+            notes.push(format!("the remote cache is not used: {message}"));
+            Ok(None)
+        }
+    }
+}
+
+/// Chooses the caches of a build. `remote` opens the remote cache; a binary
+/// without one passes `None`.
 pub fn select(
     workspace: &BuildWorkspace,
     flags: Flags,
     environment: &Environment,
+    remote: Option<&dyn RemoteOpener>,
 ) -> Result<Selection, BuildError> {
     let config = &workspace.config.build.cache;
     let root = &workspace.settings.root;
     let mode = Mode::resolve(environment.cache_mode.as_deref(), environment.ci.as_deref())?;
     let mut notes = Vec::new();
-    if config.enabled && !flags.no_cache && !flags.no_remote_cache && remote_wanted(config, root) {
-        return Err(BuildError::Usage(
-            "the remote cache is on, but this oxabl was built without remote-cache; rebuild with --features remote-cache or pass --no-remote-cache"
-                .to_string(),
-        ));
-    }
+    let remote = open_remote(config, root, flags, remote, &mut notes)?;
     if !config.enabled || flags.no_cache {
         return Ok(Selection {
             cache: Box::new(NoCache),
@@ -126,7 +157,7 @@ pub fn select(
             }
         },
     };
-    let cache: Box<dyn ArtifactCache> = match directory {
+    let local: Option<Box<dyn ArtifactCache>> = match directory {
         None => {
             if mode == Mode::Developer {
                 notes.push(
@@ -134,15 +165,20 @@ pub fn select(
                         .to_string(),
                 );
             }
-            Box::new(NoCache)
+            None
         }
         Some(directory) => match LocalCache::open(&directory, limit) {
-            Ok(local) => Box::new(local),
+            Ok(local) => Some(Box::new(local)),
             Err(message) => {
                 notes.push(format!("the local cache is not used: {message}"));
-                Box::new(NoCache)
+                None
             }
         },
+    };
+    let cache: Box<dyn ArtifactCache> = match (local, remote) {
+        (Some(local), Some(remote)) => Box::new(Layered::new(local, remote)),
+        (Some(cache), None) | (None, Some(cache)) => cache,
+        (None, None) => Box::new(NoCache),
     };
     Ok(Selection { cache, mode, notes })
 }

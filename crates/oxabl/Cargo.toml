@@ -28,6 +28,7 @@ oxabl_lint = { path = "../oxabl_lint", version = "3.0.2" }
 oxabl_lsp = { path = "../oxabl_lsp", version = "3.0.2", optional = true }
 oxabl_daemon = { path = "../oxabl_daemon", version = "0.5.2", optional = true }
 oxabl_build = { path = "../oxabl_build", version = "0.1.0", optional = true }
+oxabl_build_remote = { path = "../oxabl_build_remote", version = "0.1.0", optional = true }
 oxabl_formatter = { path = "../oxabl_formatter", version = "2.0.2" }
 oxabl_style = { path = "../oxabl_style", version = "0.2.0" }
 clap = { version = "4", features = ["derive"], optional = true }
@@ -66,6 +67,11 @@ cli = [
     "dep:tikv-jemallocator",
 ]
 
+# The remote cache of `oxabl build`. Off by default: it brings the network and
+# crypto stack, which the library, the wasm build and a plain
+# `cargo install oxabl` do not need.
+remote-cache = ["cli", "dep:oxabl_build_remote"]
+
 # The CLI's allocator. Its workers allocate heavily on every core, where
 # jemalloc is markedly faster than the system allocator. MSVC and wasm keep
 # the system one.
@@ -91,6 +97,10 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.2.0", features = [
     "test-support",
 ] }
 serde_json = "1"
+# The remote-cache tests only: they set up a roster for a real cache server.
+base64 = "0.22"
+oxabl-cache-crypto.workspace = true
+oxabl-cache-format.workspace = true
 # Examples only. The CLI walks trees through `oxabl_workspace::discover_path`
 # now, so nothing in the shipped binary needs a directory walker of its own.
 walkdir = "2"

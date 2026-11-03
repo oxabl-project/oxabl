@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use oxabl_build::cache::{Environment, Flags, select};
+use oxabl_build::cache::{Environment, Flags, RemoteOpener, select};
 use oxabl_build::config::BuildWorkspace;
 use oxabl_build::error::BuildError;
 use oxabl_build::events::Event;
@@ -48,6 +48,17 @@ fn write_report(path: &Path, report: &BuildReport) -> Result<(), BuildError> {
     })
 }
 
+/// The remote cache of this binary: none without the `remote-cache` feature.
+#[cfg(feature = "remote-cache")]
+fn remote() -> Option<&'static dyn RemoteOpener> {
+    Some(&oxabl_build_remote::RemoteCacheOpener)
+}
+
+#[cfg(not(feature = "remote-cache"))]
+fn remote() -> Option<&'static dyn RemoteOpener> {
+    None
+}
+
 pub fn run(workspace: &BuildWorkspace, options: Options<'_>) -> ExitCode {
     let cancel = Cancel::new();
     build_probe::install_signal_handler(&cancel);
@@ -58,6 +69,7 @@ pub fn run(workspace: &BuildWorkspace, options: Options<'_>) -> ExitCode {
             no_remote_cache: options.no_remote_cache,
         },
         &Environment::from_process(),
+        remote(),
     ) {
         Ok(selection) => selection,
         Err(error) => return fail(&error),
