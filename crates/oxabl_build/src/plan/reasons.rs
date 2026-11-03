@@ -12,6 +12,8 @@ pub struct Named {
 pub enum Reason {
     /// The store had not seen the unit.
     New,
+    /// The last compile failed.
+    Failed,
     /// The unit has no compile key, so it compiles on every build: the rules
     /// that apply to it.
     Unkeyable(Vec<String>),
@@ -26,6 +28,20 @@ pub enum Reason {
         gained: Vec<String>,
         lost: Vec<String>,
     },
+    /// The unit PROPATH differs from the one of the last compile.
+    PropathChanged,
+    /// The environment fields that differ from the last compile.
+    EnvironmentChanged(Vec<String>),
+    /// The compile options or the requested outputs differ.
+    OptionsChanged(Vec<String>),
+    /// The worker program is another one.
+    WorkerChanged,
+    /// The last compile has no key, and why.
+    Unverified(String),
+    /// An output of the last compile is gone.
+    OutputMissing(String),
+    /// An output of the last compile was changed outside oxabl.
+    OutputChanged(String),
 }
 
 const SHOWN: usize = 5;
@@ -48,6 +64,14 @@ impl Reason {
     pub fn kind(&self) -> &'static str {
         match self {
             Reason::New => "new",
+            Reason::Failed => "failed",
+            Reason::PropathChanged => "propath-changed",
+            Reason::EnvironmentChanged(_) => "environment-changed",
+            Reason::OptionsChanged(_) => "options-changed",
+            Reason::WorkerChanged => "worker-changed",
+            Reason::Unverified(_) => "unverified",
+            Reason::OutputMissing(_) => "output-missing",
+            Reason::OutputChanged(_) => "output-changed",
             Reason::Unkeyable(_) => "unkeyable",
             Reason::Named(_) => "named",
             Reason::SourceChanged => "source-changed",
@@ -59,7 +83,18 @@ impl Reason {
     /// The reason as one line: its name and its details.
     pub fn describe(&self) -> String {
         match self {
-            Reason::New | Reason::SourceChanged => self.kind().to_string(),
+            Reason::New
+            | Reason::Failed
+            | Reason::SourceChanged
+            | Reason::PropathChanged
+            | Reason::WorkerChanged => self.kind().to_string(),
+            Reason::EnvironmentChanged(fields) | Reason::OptionsChanged(fields) => {
+                format!("{}: {}", self.kind(), list(fields))
+            }
+            Reason::Unverified(note) => format!("unverified: {note}"),
+            Reason::OutputMissing(path) | Reason::OutputChanged(path) => {
+                format!("{}: {path}", self.kind())
+            }
             Reason::Named(named) => {
                 let files: Vec<String> = named
                     .iter()

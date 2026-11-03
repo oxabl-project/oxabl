@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::closure;
-use super::compile_key::{Algorithm, ClosureFile, EntryDigest, Material, compile_key};
+use super::compile_key::{Algorithm, ClosureFile, EntryDigest, Material, compile_key, components};
 use super::digest::{FileDigest, sha256_bytes, sha256_hex};
 use super::environment::Environment;
 use super::keyability::{ExternalPackage, Resolved, Rules};
@@ -15,6 +15,7 @@ use crate::config::BuildWorkspace;
 use crate::paths::PathMap;
 use crate::paths::propath::{OUT, Placement, Search, canonical_entry, library_name};
 use crate::refresh::{Content, Outcome, parallel};
+use crate::store::Components;
 use crate::worker::{Pool, PoolError, program};
 
 /// The key of one unit, or why it has none.
@@ -23,6 +24,8 @@ pub struct UnitKey {
     /// The name the worker compiles; `None` for a skipped unit.
     pub compile_name: Option<String>,
     pub key: Option<[u8; 32]>,
+    /// The digest of each section of the key, when there is a key.
+    pub components: Option<Components>,
     /// Why there is no key: the rules K1 to K9, or the reason the unit is
     /// skipped. Empty when there is a key.
     pub unkeyable: Vec<String>,
@@ -39,6 +42,8 @@ pub struct Keyed {
     /// The distinct unit PROPATHs, each entry with its digest.
     pub propaths: Vec<Vec<(String, String)>>,
     pub environment: Option<blake3::Hash>,
+    /// The readable record of the environment, as the store keeps it.
+    pub environment_record: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -354,7 +359,7 @@ pub fn compute(
             });
         }
         let propath = &propath_digests[layout.units[at].propath?];
-        Some(compile_key(&Material {
+        let material = Material {
             unit_path: outcome.name(unit),
             compile_name: name,
             unit_content,
@@ -363,7 +368,8 @@ pub fn compute(
             environment: identity,
             settings: &settings_lowered,
             worker,
-        }))
+        };
+        Some((compile_key(&material), components(&material)))
     });
 
     let mut units: Vec<UnitKey> = layout
@@ -387,7 +393,10 @@ pub fn compute(
         let unit = &mut units[active[k]];
         let reasons = verdict.into_reasons();
         match key {
-            Some(key) if reasons.is_empty() => unit.key = Some(*key.as_bytes()),
+            Some((key, parts)) if reasons.is_empty() => {
+                unit.key = Some(*key.as_bytes());
+                unit.components = Some(parts);
+            }
             _ => {
                 without_key += usize::from(reasons.iter().any(|r| r == "per-unit-propath-classes"));
                 unit.unkeyable = match reasons.is_empty() {
@@ -410,6 +419,7 @@ pub fn compute(
         units,
         propaths,
         environment: Some(identity),
+        environment_record: Some(super::record::record(environment)),
         warnings,
     })
 }

@@ -54,6 +54,9 @@ pub struct Outcome {
     /// The content of each path by id. Empty unless the request asked for
     /// keys.
     pub content: Vec<Content>,
+    /// The generation in which each tracked path last changed, by id. Empty
+    /// unless the request asked for keys.
+    pub changed_gen: Vec<u64>,
     /// Problems a client shows and goes on from.
     pub warnings: Vec<String>,
     /// What to write to the store.
@@ -72,6 +75,11 @@ impl Outcome {
             .get(id as usize)
             .copied()
             .unwrap_or(Content::Untracked)
+    }
+
+    /// The generation in which path id `id` last changed; 0 when untracked.
+    pub fn changed_gen_of(&self, id: u32) -> u64 {
+        self.changed_gen.get(id as usize).copied().unwrap_or(0)
     }
 
     /// The id of the canonical path `name`, when the working tree has one.

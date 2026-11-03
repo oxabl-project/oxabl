@@ -154,6 +154,14 @@ impl Files {
         }
     }
 
+    /// The generation in which `id` last changed.
+    pub fn changed_gen(&self, id: u32) -> u64 {
+        match self.map.get(&id) {
+            Some(Tracked { old: Some(old), .. }) if !self.changed.contains(&id) => old.changed_gen,
+            _ => self.generation,
+        }
+    }
+
     /// The row to store for `id` with `bits` of `tracked_by`, and whether it
     /// differs from the stored one.
     pub fn row(&self, id: u32, bits: u8) -> Option<(FileRow, bool)> {

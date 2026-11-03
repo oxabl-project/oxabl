@@ -192,6 +192,7 @@ pub fn run(
         },
         skipped,
         need_keys: request.need_keys,
+        need_generations: request.need_graph,
     });
     outcome.warnings = warnings;
     Ok(outcome)

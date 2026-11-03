@@ -2,6 +2,10 @@
 
 use super::encode::{Encoder, KEY_CONTEXT, derive};
 use super::options::CompileSettings;
+use crate::store::{Components, SECTIONS};
+
+/// Where the environment identity sits among the sections.
+pub const ENVIRONMENT_SECTION: usize = 3;
 
 /// What a PROPATH entry contributes to the key besides its name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,34 +67,73 @@ pub struct Material<'a> {
     pub worker: blake3::Hash,
 }
 
-/// The compile key of `material`.
-pub fn compile_key(material: &Material<'_>) -> blake3::Hash {
-    let mut e = Encoder::new();
-    e.section("unit")
+/// The encoded bytes of each section of the key, in order.
+fn sections(material: &Material<'_>) -> [Vec<u8>; SECTIONS] {
+    let mut unit = Encoder::new();
+    unit.section("unit")
         .str(material.unit_path)
         .str(material.compile_name)
         .hash(&blake3::Hash::from_bytes(material.unit_content));
-    e.section("closure").u64(material.closure.len() as u64);
+    let mut closure = Encoder::new();
+    closure
+        .section("closure")
+        .u64(material.closure.len() as u64);
     for file in material.closure {
-        e.str(file.path)
+        closure
+            .str(file.path)
             .str(file.algorithm.name())
             .hash(&blake3::Hash::from_bytes(file.hash));
     }
-    e.section("propath").u64(material.propath.len() as u64);
+    let mut propath = Encoder::new();
+    propath
+        .section("propath")
+        .u64(material.propath.len() as u64);
     for (entry, digest) in material.propath {
-        e.str(entry).str(&digest.text());
+        propath.str(entry).str(&digest.text());
     }
-    e.section("environment").hash(&material.environment);
+    let mut environment = Encoder::new();
+    environment
+        .section("environment")
+        .hash(&material.environment);
     let pairs = material.settings.pairs();
-    e.section("options").u64(pairs.len() as u64);
+    let mut options = Encoder::new();
+    options.section("options").u64(pairs.len() as u64);
     for (name, value) in pairs {
-        e.str(name).str(value);
+        options.str(name).str(value);
     }
     let outputs = material.settings.outputs();
-    e.section("outputs").u64(outputs.len() as u64);
+    let mut kinds = Encoder::new();
+    kinds.section("outputs").u64(outputs.len() as u64);
     for kind in outputs {
-        e.str(kind);
+        kinds.str(kind);
     }
-    e.section("worker").hash(&material.worker);
-    derive(KEY_CONTEXT, &e.finish())
+    let mut worker = Encoder::new();
+    worker.section("worker").hash(&material.worker);
+    [
+        unit.finish(),
+        closure.finish(),
+        propath.finish(),
+        environment.finish(),
+        options.finish(),
+        kinds.finish(),
+        worker.finish(),
+    ]
+}
+
+/// The compile key of `material`.
+pub fn compile_key(material: &Material<'_>) -> blake3::Hash {
+    derive(KEY_CONTEXT, &sections(material).concat())
+}
+
+/// The digest of each section of the key of `material`, which the planner
+/// compares to name what changed. The environment section is the environment
+/// identity itself.
+pub fn components(material: &Material<'_>) -> Components {
+    let sections = sections(material);
+    let mut digests = [[0u8; 32]; SECTIONS];
+    for (at, section) in sections.iter().enumerate() {
+        digests[at] = *blake3::hash(section).as_bytes();
+    }
+    digests[ENVIRONMENT_SECTION] = *material.environment.as_bytes();
+    digests
 }

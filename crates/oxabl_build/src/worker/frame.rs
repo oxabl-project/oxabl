@@ -95,7 +95,32 @@ pub enum Request<'a> {
     Ping {
         n: u64,
     },
+    Propath {
+        id: u64,
+        entries: &'a [String],
+    },
+    Options {
+        id: u64,
+        pairs: &'a [(String, String)],
+    },
+    Compile(&'a CompileRequest<'a>),
     Quit,
+}
+
+/// One `COMPILE` request with its `UNIT` lines.
+#[derive(Debug)]
+pub struct CompileRequest<'a> {
+    pub req: u64,
+    pub propath: u64,
+    pub options: u64,
+    /// The stage directory as the worker sees it.
+    pub stage: &'a str,
+    /// `none`, `xref` or `xref-xml`.
+    pub xref: &'a str,
+    pub debug_list: bool,
+    pub listing: bool,
+    /// The compile names, in compile order.
+    pub units: &'a [String],
 }
 
 fn line(kind: &str, fields: &[Vec<u8>]) -> Result<Vec<u8>, String> {
@@ -133,6 +158,40 @@ impl Request<'_> {
                 Ok(lines)
             }
             Request::Ping { n } => Ok(vec![line("PING", &[number(*n)])?]),
+            Request::Propath { id, entries } => {
+                let mut fields = vec![number(*id)];
+                for entry in *entries {
+                    fields.push(text(entry)?);
+                }
+                Ok(vec![line("PROPATH", &fields)?])
+            }
+            Request::Options { id, pairs } => {
+                let mut fields = vec![number(*id)];
+                for (name, value) in *pairs {
+                    fields.push(text(&format!("{name}={value}"))?);
+                }
+                Ok(vec![line("OPTIONS", &fields)?])
+            }
+            Request::Compile(request) => {
+                let flag = |value: bool| number(u64::from(value));
+                let mut lines = vec![line(
+                    "COMPILE",
+                    &[
+                        number(request.req),
+                        number(request.propath),
+                        number(request.options),
+                        text(request.stage)?,
+                        text(request.xref)?,
+                        flag(request.debug_list),
+                        flag(request.listing),
+                        number(request.units.len() as u64),
+                    ],
+                )?];
+                for unit in request.units {
+                    lines.push(line("UNIT", &[number(request.req), text(unit)?])?);
+                }
+                Ok(lines)
+            }
             Request::Quit => Ok(vec![line("QUIT", &[])?]),
         }
     }
@@ -188,10 +247,36 @@ pub enum Reply {
     Pong {
         n: String,
     },
+    Ok {
+        id: String,
+    },
+    Msg(Box<Message>),
+    Done {
+        req: String,
+        name: Vec<u8>,
+        status: String,
+        ms: String,
+    },
+    End {
+        req: String,
+    },
     Bye,
     Error {
         text: Vec<u8>,
     },
+}
+
+/// One compiler message, with text fields still as bytes.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Message {
+    pub req: String,
+    pub name: Vec<u8>,
+    pub kind: String,
+    pub number: String,
+    pub file: Vec<u8>,
+    pub row: String,
+    pub column: String,
+    pub text: Vec<u8>,
 }
 
 fn ascii(field: &[u8]) -> Result<String, String> {
@@ -293,6 +378,40 @@ impl Reply {
                 expect(1, &fields)?;
                 Ok(Reply::Pong {
                     n: ascii(&take(&mut fields))?,
+                })
+            }
+            "OK" => {
+                expect(1, &fields)?;
+                Ok(Reply::Ok {
+                    id: ascii(&take(&mut fields))?,
+                })
+            }
+            "MSG" => {
+                expect(8, &fields)?;
+                Ok(Reply::Msg(Box::new(Message {
+                    req: ascii(&take(&mut fields))?,
+                    name: take(&mut fields),
+                    kind: ascii(&take(&mut fields))?,
+                    number: ascii(&take(&mut fields))?,
+                    file: take(&mut fields),
+                    row: ascii(&take(&mut fields))?,
+                    column: ascii(&take(&mut fields))?,
+                    text: take(&mut fields),
+                })))
+            }
+            "DONE" => {
+                expect(4, &fields)?;
+                Ok(Reply::Done {
+                    req: ascii(&take(&mut fields))?,
+                    name: take(&mut fields),
+                    status: ascii(&take(&mut fields))?,
+                    ms: ascii(&take(&mut fields))?,
+                })
+            }
+            "END" => {
+                expect(1, &fields)?;
+                Ok(Reply::End {
+                    req: ascii(&take(&mut fields))?,
                 })
             }
             "BYE" => {

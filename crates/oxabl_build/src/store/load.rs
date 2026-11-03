@@ -50,6 +50,10 @@ impl Store {
 }
 
 impl Reading<'_> {
+    pub(super) fn transaction(&self) -> &Transaction<'_> {
+        &self.tx
+    }
+
     /// Load the path table, the files, the listings and the analysis heads.
     pub fn load(&self) -> Result<Loaded, StoreError> {
         let generation = match meta::get(&self.tx, GENERATION)? {

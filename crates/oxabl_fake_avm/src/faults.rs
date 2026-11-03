@@ -19,6 +19,8 @@ pub struct Faults {
     /// The share that reports one table too many (`FAKE_AVM_COUNT_SKEW`).
     pub count_skew: Option<usize>,
     pub log: Option<PathBuf>,
+    /// A directory a test gives for markers that outlive one process.
+    pub state: Option<PathBuf>,
     pub dlc: Option<PathBuf>,
 }
 
@@ -26,6 +28,7 @@ impl Faults {
     pub fn from_env() -> Faults {
         let state = std::env::var_os("FAKE_AVM_STATE").map(PathBuf::from);
         Faults {
+            state: state.clone(),
             noise: flag("FAKE_AVM_NOISE"),
             start_delay: std::env::var("FAKE_AVM_START_DELAY")
                 .ok()

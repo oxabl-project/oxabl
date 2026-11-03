@@ -21,10 +21,16 @@ pub enum LockOutcome {
 
 /// Try to take the lock in `state_dir`, creating the directory when needed.
 pub fn try_acquire(state_dir: &Path) -> LockOutcome {
-    if let Err(e) = std::fs::create_dir_all(state_dir) {
+    try_acquire_file(state_dir, FILE_NAME)
+}
+
+/// Try to take the lock file `name` in `directory`, creating the directory
+/// when needed.
+pub fn try_acquire_file(directory: &Path, name: &str) -> LockOutcome {
+    if let Err(e) = std::fs::create_dir_all(directory) {
         return LockOutcome::Unavailable(e.to_string());
     }
-    let path = state_dir.join(FILE_NAME);
+    let path = directory.join(name);
     let mut file = match OpenOptions::new()
         .read(true)
         .write(true)

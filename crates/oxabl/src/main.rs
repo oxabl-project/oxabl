@@ -11,6 +11,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod baseline;
 mod build_cmd;
 mod build_probe;
+mod build_run;
 mod explain;
 mod watch;
 
@@ -330,17 +331,19 @@ enum Cli {
     /// no hand-maintained mirror. Editors (e.g. Even Better TOML) consume it for
     /// autocomplete/validation inside `oxabl.toml`.
     Schema,
-    /// Plan the ABL build: which units must compile, and why.
+    /// Build the ABL sources: plan, compile in dependency order, install.
     ///
     /// Refreshes the persisted dependency graph from the working tree (reading
-    /// only the files that changed), then lists the units that a change reaches.
-    /// `--probe` instead starts the worker pool from `[build.workers]`, prints
-    /// the environment identity and the schema identity of each database, and
-    /// exits.
-    /// Exit codes: `0` when a plan or a probe was printed, `2` on a usage or
+    /// only the files that changed), then compiles the units that a change
+    /// reaches on the workers that `[build.workers]` starts. `--plan` only
+    /// lists those units, and why. `--probe` instead starts the worker pool,
+    /// prints the environment identity and the schema identity of each
+    /// database, and exits.
+    /// Exit codes: `0` when everything compiled or a plan or a probe was
+    /// printed, `1` when a unit failed to compile, `2` on a usage or
     /// configuration error (including workers that disagree), `3` when the
-    /// store, the workspace or the workers could not be used, `130` when a
-    /// probe is cancelled.
+    /// store, the workspace or the workers could not be used, `130` when the
+    /// command is cancelled.
     #[command(hide = true)]
     Build {
         /// Print the plan and compile nothing.
@@ -378,6 +381,19 @@ enum Cli {
         /// Number of workers; overrides `[build.workers].count`.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
         workers: Option<u32>,
+
+        /// Write one JSON object for each event to stdout while the build
+        /// runs; the human output goes to stderr.
+        #[arg(long, conflicts_with_all = ["plan", "probe", "json"])]
+        events: bool,
+
+        /// Write the per-unit results of the build to this file as JSON.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["plan", "probe"])]
+        report: Option<PathBuf>,
+
+        /// Stop dispatching at the first failure.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        fail_fast: bool,
     },
 }
 
@@ -631,6 +647,9 @@ fn main() -> ExitCode {
             json,
             root,
             workers,
+            events,
+            report,
+            fail_fast,
         } => build_cmd::run(build_cmd::Options {
             plan,
             probe,
@@ -640,6 +659,9 @@ fn main() -> ExitCode {
             json,
             root: root.as_deref(),
             workers: workers.map(|n| n as usize),
+            events,
+            report: report.as_deref(),
+            fail_fast,
         }),
     }
 }

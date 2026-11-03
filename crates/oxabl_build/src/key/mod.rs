@@ -11,6 +11,7 @@ pub mod layout;
 pub mod options;
 pub mod parameters;
 pub mod predefined;
+pub mod record;
 pub mod schema_image;
 
 pub use digest::FileDigest;

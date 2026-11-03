@@ -24,7 +24,7 @@ const QUIT_WAIT: Duration = Duration::from_secs(10);
 /// How long a `SIGTERM` waits before `SIGKILL`.
 const TERM_GRACE: Duration = Duration::from_secs(5);
 /// The longest wait on the reader before oxabl looks at the cancel flag.
-const POLL: Duration = Duration::from_millis(100);
+pub(super) const POLL: Duration = Duration::from_millis(100);
 
 /// How to start one worker.
 pub struct SpawnSpec<'a> {
@@ -43,7 +43,7 @@ pub struct Session {
     stdin: Option<ChildStdin>,
     events: Receiver<Event>,
     reader: Option<JoinHandle<()>>,
-    cancel: Cancel,
+    pub(super) cancel: Cancel,
     pub codec: Codec,
     next_id: u64,
 }
@@ -129,7 +129,33 @@ impl Session {
         }
     }
 
-    /// Reads the next reply. An `ERROR` reply is a protocol error.
+    /// Waits up to `wait` for one reply; `None` when nothing came. An `ERROR`
+    /// reply is a protocol error.
+    pub(super) fn poll_reply(&mut self, wait: Duration) -> Result<Option<Reply>, WorkerError> {
+        match self.events.recv_timeout(wait) {
+            Ok(Event::Line(line)) => {
+                let reply = Frame::parse(&line)
+                    .and_then(Reply::from_frame)
+                    .map_err(WorkerError::Protocol)?;
+                if let Reply::Error { text } = &reply {
+                    return Err(WorkerError::Protocol(format!(
+                        "the worker reported: {}",
+                        String::from_utf8_lossy(text)
+                    )));
+                }
+                Ok(Some(reply))
+            }
+            Ok(Event::TooLong) => Err(WorkerError::Protocol(
+                "a protocol line is longer than 30,000 bytes".into(),
+            )),
+            Ok(Event::Eof) => Err(self.lost("its stdout ended")),
+            Ok(Event::Failed(error)) => Err(self.lost(&format!("cannot read its stdout: {error}"))),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(self.lost("its reader stopped")),
+        }
+    }
+
+    /// Reads the next reply; a cancel stops the wait.
     pub fn recv(&mut self, deadline: Instant) -> Result<Reply, WorkerError> {
         loop {
             if self.cancel.is_cancelled() {
@@ -139,35 +165,13 @@ impl Session {
             if wait.is_zero() {
                 return Err(WorkerError::Timeout("no answer before the deadline".into()));
             }
-            match self.events.recv_timeout(wait.min(POLL)) {
-                Ok(Event::Line(line)) => {
-                    let reply = Frame::parse(&line)
-                        .and_then(Reply::from_frame)
-                        .map_err(WorkerError::Protocol)?;
-                    if let Reply::Error { text } = &reply {
-                        return Err(WorkerError::Protocol(format!(
-                            "the worker reported: {}",
-                            String::from_utf8_lossy(text)
-                        )));
-                    }
-                    return Ok(reply);
-                }
-                Ok(Event::TooLong) => {
-                    return Err(WorkerError::Protocol(
-                        "a protocol line is longer than 30,000 bytes".into(),
-                    ));
-                }
-                Ok(Event::Eof) => return Err(self.lost("its stdout ended")),
-                Ok(Event::Failed(error)) => {
-                    return Err(self.lost(&format!("cannot read its stdout: {error}")));
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return Err(self.lost("its reader stopped")),
+            if let Some(reply) = self.poll_reply(wait.min(POLL))? {
+                return Ok(reply);
             }
         }
     }
 
-    fn id(&mut self) -> u64 {
+    pub(super) fn id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         id
