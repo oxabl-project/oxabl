@@ -216,9 +216,9 @@ After the plan ([build-tool.md](../build-tool.md#the-build-flow), step 6):
    summary.
 
 **Cancel.** A cancelled build uploads the units that already passed verification, V2
-included (sets already pushed, and held sets that a V2 probe has released), then calls
+included (sets already pushed, and held sets that a V2 imaging has released), then calls
 `finish`. It uploads nothing for units that are still compiling, and nothing for held
-sets that no V2 probe has released yet: oxabl starts no new probe after a cancel.
+sets that no V2 imaging has released yet: oxabl starts no new imaging after a cancel.
 
 ### Which units are written
 
@@ -244,7 +244,7 @@ with compiling.
 | Check | How | On failure |
 | --- | --- | --- |
 | V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. A `$DLC/...` file is hashed again by an idle worker (`HASH`), from the copy the AVM compiles with, not from the host mirror. Every hash must equal the hash the key used. | The unit is not written. |
-| V2 schema | The schema images are probed again by one idle worker before each upload batch is released (every 60 s or 500 units, and at the end). A unit is released only after a probe that **started after the unit finished** gives the images of the handshake. | Every held and later unit of this build is not written. |
+| V2 schema | The databases are imaged again before each upload batch is released (every 60 s or 500 units, and at the end), split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. | Every held and later unit of this build is not written. |
 | V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
 
 ### What V3 covers
@@ -263,7 +263,7 @@ closure holds a class checks includes only. A `Source` name that is r-code under
 rules, not by V3: classes are keyed only with one PROPATH id (K9) and without an external
 name collision (K8, [compile-key.md](compile-key.md#per-unit-propath-classes)).
 
-V2 has one residual case: a schema that changes and changes back between two probes, with
+V2 has one residual case: a schema that changes and changes back between two imagings, with
 a compile in between. This needs two dictionary loads into the build's database during
 the build; CI builds use a database of their own, and the case is stated, not hidden.
 
@@ -275,7 +275,7 @@ build. With `reads = false`, oxabl writes nothing to any cache. The `XREF-XML` r
 `oxabl_effects`; slice 10 checks it against real compiler output.
 
 Verification costs one hash of each closure file per unit completion window (BLAKE3 on all
-cores, about 1 s for 500 MB of source), one schema probe per upload batch, and one XREF read
+cores, about 1 s for 500 MB of source), one schema imaging per upload batch (about 6 s with 8 workers on the measured databases), and one XREF read
 per unit.
 
 ## Local cache

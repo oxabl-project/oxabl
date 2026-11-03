@@ -30,7 +30,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | CLI build and plan | `crates/oxabl/tests/build_*.rs`, one file per behaviour group |
 | Golden key vectors | `crates/oxabl/tests/build_key_vectors.rs` with `crates/oxabl_build/tests/key_vectors.json` |
 | Remote cache | `crates/oxabl_build_remote/tests/` |
-| OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `scripts/openedge-e2e.sh` |
+| OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `crates/oxabl/tests/build_openedge_scratch.rs` |
 | Parity | `scripts/plan-parity.sh` |
 
 ## The fake AVM
@@ -46,9 +46,13 @@ starts with the worker program's header line.
 
 ### What it does
 
-- **Environment.** It reads the environment fields, the databases and the schema records
-  from the JSON file in `FAKE_AVM_ENV`. A test changes the environment by changing that
-  file.
+- **Environment.** It reads the environment fields, the databases (each with its schema
+  entries as entry texts, and its fingerprint `guid` and `stamp`) and an optional `dlc_dir`
+  from a JSON file: `--env <file>` on its command line (so `{worker}` can pick a file per
+  worker), or `FAKE_AVM_ENV`. A test changes the environment by changing that file.
+- **Schema image.** It follows the spec on its own: it hashes each entry text with SHA-256,
+  answers `SCHEMA <ldb> <part> <parts>` with its share of `SENT` entries and a
+  `SCHEMA-END` with the counts, answers `FINGERPRINT`, and logs `schema <ldb>` per share.
 - **Compile.** It resolves the compile name on the request PROPATH (the first entry that
   has the file; `$OUT`-mapped entries first). It reads the source and follows its includes:
   every `{name}` and `{name args}` is resolved on the PROPATH and read, recursively. For each
@@ -86,6 +90,10 @@ starts with the worker program's header line.
 | `FAKE_AVM_START_DELAY=<ms>` | Sleep before the handshake. |
 | `FAKE_AVM_BAD_TOKEN=1` | Echo a wrong token. |
 | `FAKE_AVM_EXIT_IN_HANDSHAKE=1` | Exit after `HELLO`. |
+| `FAKE_AVM_EXIT_IN_HANDSHAKE_ONCE=1` | Exit after `HELLO` the first time only (marker in `FAKE_AVM_STATE`), to test a start retry that succeeds. |
+| `FAKE_AVM_SCHEMA_FAULT=<fault>` | `duplicate-entry`, `bad-hash` (a hash that is not 64 lower-case hex digits) or `bad-count` (a wrong `SCHEMA-END` count). |
+| `FAKE_AVM_SKIP_SHARE=1` | Answer its share with no table entries. |
+| `FAKE_AVM_COUNT_SKEW=1` | Report a `tables` count one higher than the database has. |
 | `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` | Emit a different schema image after `n` compiles. |
 | `FAKE-RESOLVE-OTHER <name> <path>` in a source | Resolve include `<name>` to `<path>` instead of the first PROPATH match, as a divergent AVM would. |
 
@@ -144,9 +152,19 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `[workspace.preprocessor].proversion` differs from the worker: exit code 2 naming both
   values.
 - No `[build.workers].command`: exit code 2 and the message from the PRD.
-- A schema field of 20 KB with non-ASCII characters: it arrives in chunks, and the identity
-  equals the identity of the same image sent with short fields.
-- A chunk out of order, or a `SCHEMA-END` with a wrong count: the worker is lost.
+- A four-entry image with a 20 KB field, non-ASCII characters and `%`: the probe's schema
+  identity equals an identity that the test computes on its own from the entry texts.
+- A duplicate entry, a bad hash or a `SCHEMA-END` with a wrong count: a protocol error,
+  and the worker is lost.
+- The image split across 1, 2, 3 and 8 workers: the same identity, and each worker asks for
+  its share of each database exactly once.
+- A worker that skips its share, and workers that count different `tables`: exit code 3,
+  `cannot image the databases`.
+- Two workers with different fingerprints for one database: exit code 2, `workers see
+  different environments`, field `fingerprint <db>`.
+- A change of the schema context string changes the identity (the version is in the hash).
+- SIGTERM during the start: the probe stops like on SIGINT, within 10 s, and every worker
+  process group is gone.
 - A parameter set only in the `.pf` and the same parameter set on the command line: equal
   canonical parameters and equal environment identities; `-pf` and `(end .pf)` are absent.
 - A file-valued parameter (`-compileroptionsfile`): changing the file's bytes changes the
@@ -308,19 +326,33 @@ missing, the tests fail.
 
 ## Opt-in OpenEdge suite
 
-`crates/oxabl/tests/build_openedge.rs`, every test `#[ignore]`. A developer runs it on a
-machine with OpenEdge:
+Two test files, every test `#[ignore]`. When a test runs and its variables are missing, it
+fails; it never skips.
+
+- `crates/oxabl/tests/build_openedge.rs` runs against an existing OpenEdge container or
+  installation. Variables: `OXABL_OPENEDGE_COMMAND` (the worker command as a JSON array with
+  `{program}` and `{root}`; it connects the databases through its `.pf` and starts in
+  `{root}`), `OXABL_OPENEDGE_WORKSPACE` (the host directory the worker sees),
+  `OXABL_OPENEDGE_WORKER_ROOT` (the same directory as the worker sees it),
+  `OXABL_OPENEDGE_PROVERSION` (exactly as `PROVERSION` prints it, for example `12.8`),
+  `OXABL_OPENEDGE_DATABASES` (the connection order), `OXABL_OPENEDGE_SAME_DF` (databases
+  loaded from one `.df`) and `OXABL_OPENEDGE_WORKERS` (worker counts for the timing test,
+  default `1,4,8`).
+- `crates/oxabl/tests/build_openedge_scratch.rs` creates scratch databases from the empty
+  database of the installation and loads `.df` edits into them, never touching existing
+  databases. Variables: `OXABL_OPENEDGE_EXEC` (the exec prefix as a JSON array with
+  `{root}`), `OXABL_OPENEDGE_SCRATCH` (a directory inside the container),
+  `OXABL_OPENEDGE_WORKSPACE`, `OXABL_OPENEDGE_WORKER_ROOT` and `OXABL_OPENEDGE_PROVERSION`.
+  It probes single-user (`-1`) with one worker; run it with `--test-threads 1`.
 
 ```bash
-OXABL_E2E_DLC=/path/to/dlc scripts/openedge-e2e.sh
+cargo test -p oxabl --test build_openedge -- --ignored --nocapture
+cargo test -p oxabl --test build_openedge_scratch -- --ignored --nocapture --test-threads 1
 ```
 
-The script creates two databases from `crates/oxabl/tests/fixtures/openedge/test.df` with
-the installation's own tools (`prodb` and the dictionary load program of the installation;
-oxabl ships neither), sets `OXABL_E2E_WORKER_COMMAND` to a local `_progres` command, and runs
-`cargo test --test build_openedge -- --ignored`. The fixture is a small synthetic project:
-procedures, includes, a class hierarchy, a cycle of two classes, a temp-table, and a
-procedure that reads a database table.
+The compile tests of later slices use a small synthetic fixture project
+(`crates/oxabl/tests/fixtures/openedge/`): procedures, includes, a class hierarchy, a cycle
+of two classes, a temp-table, and a procedure that reads a database table.
 
 ### The r-code oracle
 
@@ -335,10 +367,12 @@ needs equivalence first checks that the mask is small (under 1 % of the file).
 | --- | --- |
 | `transport` | The worker reads stdin in batch mode, and each `PUT UNFORMATTED ... SKIP` line reaches stdout at once, including a 30,000-byte line. |
 | `probe_fields` | Every handshake field is present and has the expected form. |
-| `schema_identity_same_df` | Two databases loaded from one `.df` give one schema identity. |
-| `schema_identity_label_change` | Changing one field label changes the identity. |
-| `schema_identity_primary_index` | Making another index the table's primary index changes the identity. |
-| `schema_long_field` | A field description of 20 KB arrives whole through the chunks. |
+| `probe_a_real_avm` | The fields, at least one entry per database, and an identity that is stable across two probes. |
+| `two_workers_agree_on_one_environment` | Two workers give one environment, fingerprints included. |
+| `probe_time_by_worker_count` | Prints `TIMING workers=N wall=...` for each `OXABL_OPENEDGE_WORKERS` count and asserts equal identities. |
+| `databases_loaded_from_one_df_give_one_schema_identity` (scratch) | Two databases created from the empty database at different times, with one `.df` loaded: different cache stamps, one schema identity. |
+| `schema_edit_table` (scratch) | Each `.df` edit of the [fingerprint table](compile-key.md#database-fingerprints) changes the schema identity; the test records whether the cache stamp moved. |
+| `schema_long_field` | A field description over 32,000 bytes hashes without error (`LONGCHAR` path). |
 | `startup_pf` | A parameter set only in a `.pf` is in the probe, and its canonical form equals the same parameter on the command line. |
 | `param_file_hash` | Changing the bytes of a `-compileroptionsfile` file changes the environment identity. |
 | `library_hash` | `HASH` gives the SHA-256 of a `.pl`; a changed `.pl` changes the keys of its users. |

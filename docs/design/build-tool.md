@@ -94,7 +94,7 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
 | D7 | The worker protocol is line-based text over the worker's stdin and stdout. | It works through any command (`docker exec -i`, `kubectl exec -i`, a local `_progres`) with no ports and no network setup. End of stdin stops the worker, so a dead oxabl leaves no orphan workers. | TCP: port races, bind addresses, a firewall and an orphan registry. |
 | D8 | Workers live for one build. Classes are keyed only when the build has one PROPATH id; with per-unit PROPATHs, every unit that reaches a class is unkeyable (K9) and still compiles as the AVM resolves it. | No daemon is needed. The shared `$OUT` tree, `MULTI-COMPILE` sessions and in-memory class compiles all resolve classes in ways that per-unit PROPATHs make unsound, and real codebases checked use one global PROPATH. | A persistent pool: it needs a daemon (follow-up). Keying classes under per-unit PROPATHs: each design attempt found a new hole (follow-up with its proof list). An output tree per PROPATH id: one class name with two `.r` files is ambiguous at run time anyway. |
 | D9 | A fake AVM (`oxabl_fake_avm`, a test-only binary) implements the protocol from the document, with no oxabl dependency. | It stands in for Progress, not for oxabl. A shared codec would hide a codec bug on both sides. | A mock inside the tests: it fakes the program under test. |
-| D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema probe gives the same image, and the compiler opened no file outside the closure (from the compiler-resolved `XREF-XML`). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
+| D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema image gives the same identities, and the compiler opened no file outside the closure (from the compiler-resolved `XREF-XML`). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
 | D13 | The remote cache's configuration and root of trust (`tenant`, `owner_keys`, `min_roster_version`) live only in the client's committed `.oxabl/cache.toml`. `oxabl.toml` has build-side switches only. | Whoever controls the environment of a build must not be able to replace the pinned owner keys. | Remote settings in `oxabl.toml`: the overlay could replace the root of trust. |
 | D14 | The local cache trusts every process of the OS user, so the shared one is on only in `developer` mode; `ci` and `read-only` use a marked per-job directory or none. | On a shared CI runner, an untrusted job could plant an entry that a trusted job installs without a signature check. | A local cache with signatures: it needs the remote keys on every machine and duplicates the client. |
 | D11 | Store format changes rebuild the store. There are no migrations. | The store is a derived cache. Migrations were the largest source of complexity in the downstream store. | Versioned migrations. |
@@ -172,8 +172,11 @@ It then calls `oxabl_build` and reads the same store. It does not keep a second 
 2. **Refresh.** Bring the graph up to date with the working tree
    ([store.md](build-tool/store.md#refresh)).
 3. **Start workers and probe.** Start the worker pool. Each worker reports its environment
-   and the schema image of each database, and all of them must be equal
-   ([worker-protocol.md](build-tool/worker-protocol.md#handshake)). Check the
+   and the fingerprint of each database, and all of them must be equal
+   ([worker-protocol.md](build-tool/worker-protocol.md#handshake)). Then the workers image
+   every database together, each a share of the tables, and oxabl combines the shares into
+   the schema identities ([worker-protocol.md](build-tool/worker-protocol.md#schema-image)).
+   Every build images every database. Check the
    predefined names against `[workspace.preprocessor]`. A difference stops the build with
    exit code 2 and names the value on both sides.
 4. **Key and plan.** Compute the closure and keyability of every unit, including the class
@@ -259,8 +262,17 @@ details:
 
 `--plan` does not start a worker. It uses the environment of the last build and says so:
 `environment: from build at 2026-11-02T10:31:00Z (not probed)`. With `--probe`, it starts
-one worker, probes, and stops it. With no stored environment and no `--probe`, keys are
+the pool (`[build.workers].count`, or `--workers`; all workers must agree, so the probe uses
+the pool, not one worker), probes, and stops it. With no stored environment and no `--probe`, keys are
 `null` and every unit that is not otherwise in the set is reported `environment-unknown`.
+
+### Probe output
+
+`oxabl build --probe` (with or without `--plan`) prints the environment: every environment
+field, the canonical startup parameters, the library digests, the environment identity, and
+per database `schema_identity`, `entries`, `records` and `fingerprint` (`guid`, `stamp`).
+`--json` prints the same as one JSON object. The fingerprint is shown for diagnosis only;
+it never decides anything except the agreement between workers.
 
 ### Output
 
@@ -460,8 +472,9 @@ a black-box acceptance test. The tests are in [testing.md](build-tool/testing.md
    fixture (commit, edit, untracked file, deletion); the JSON shape test; the parity script
    reports 0 missed on the synthetic corpus; the parity run on the private corpus is
    reported in the pull request.
-4. **Worker program, protocol and pool; `oxabl build --probe`.** Includes `HASH`, the
-   chunked schema image and the `.pf`-aware parameter parse. `oxabl_fake_avm`,
+4. **Worker program, protocol and pool; `oxabl build --probe`.** Includes `HASH`,
+   `HASHSET`, `FINGERPRINT`, the schema image hashed on the workers and split across them,
+   SIGINT and SIGTERM, and the `.pf`-aware parameter parse. `oxabl_fake_avm`,
    `worker` module, the environment and the schema image. `oxabl build` without a command
    fails with exit 2. *Acceptance:* fake-AVM tests: handshake, noise lines, a worker that
    exits during handshake, a slow start past `start_timeout`, a wrong program token,
@@ -521,6 +534,10 @@ These are out of scope. Each needs its own design note before code.
   and a proof that the reset clears the session cache.
 - **Windows workers.** Needs a check that the worker program reads stdin in batch mode on
   Windows.
-- **Cheap schema fingerprint.** When the schema probe of slice 4 takes more than 2 s on a
-  real schema, a cheaper change test, with a proof that it changes for every change the
-  image covers.
+- **Cheaper trustworthy schema change test.** Every build images every database (6.2 s with
+  8 workers for 5 real databases, the largest with 1,229 entries). A test that could skip
+  imaging must change for every edit that changes the image. The database's cache stamp
+  does not: it missed a primary-index change, an added sequence and a dropped field
+  ([compile-key.md](build-tool/compile-key.md#database-fingerprints)). Per-table checks
+  (`_File._CRC` plus counts) miss labels and formats. A candidate must pass the same
+  scratch-database edit table, plus every excluded-field case, before it may skip imaging.

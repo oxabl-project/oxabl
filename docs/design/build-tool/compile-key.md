@@ -55,7 +55,7 @@ comes from who wrote it (the oxabl-cache design), not from a comparison.
 | --- | --- |
 | Compile key | `oxabl 2026-11 compile key v1` |
 | Environment identity | `oxabl 2026-11 compile environment v1` |
-| Schema identity | `oxabl 2026-11 schema image v1` |
+| Schema identity | `oxabl 2026-11 schema image v2` |
 
 A change to this specification that changes any encoded byte uses new context strings
 (`v2`). Old and new keys can then never be equal.
@@ -340,43 +340,110 @@ secrets.
 
 ### Schema identity
 
-The worker emits a **schema image** of each connected database: a set of records, each a
-list of strings ([worker-protocol.md](worker-protocol.md#schema-image)). Oxabl encodes each
-record as `list(str, fields)`, sorts the encoded records by bytes, and hashes:
+The worker builds a **schema image** of each connected database and hashes it on the worker
+side ([worker-protocol.md](worker-protocol.md#schema-image)). The image is a list of
+**entries**:
 
-```text
-schema_identity = derive_key("oxabl 2026-11 schema image v1",
-                             u64(number of records) || encoded records in sorted order)
-```
+| Entry kind | Name | Records in the entry, in this order |
+| --- | --- | --- |
+| `db` | `""` | the one `_Db` record of the database |
+| `table` | the table name | the `_File` record of the table; its `_Field` records by field name; its `_Index` records by index name, each followed by its `_Index-Field` records by `_Index-Seq`; its `_File-Trig` records by `_Event`; its `_Field-Trig` records by `_Field-Recid`, then `_Event` |
+| `sequence` | the sequence name | the `_Sequence` record |
 
-Oxabl sorts, so the order in which the worker emits records does not matter.
+There is one `db` entry, one `table` entry per user table (`_File._Tbl-Type = "T"`), and one
+`sequence` entry per sequence.
 
-The image holds every user table (`_File._Tbl-Type = "T"`), and the fields, indexes, index
-fields, table triggers and field triggers of those tables, and every sequence, plus one
-database record. Each record carries every scalar field of its metaschema table **except**:
+**Canonical entry text.** Each record is one line: its fields, each percent-encoded as in
+the protocol framing ([worker-protocol.md](worker-protocol.md#framing)), joined by `TAB`,
+ended by `LF`. The fields of a record are:
+
+1. the record type (`db`, `table`, `field`, `index`, `index-field`, `table-trigger`,
+   `field-trigger`, `sequence`);
+2. its name fields: none for `db`; the table name for `table`; table and field for
+   `field`; table and index for `index`; table, index, `_Index-Seq` and field name for
+   `index-field`; table and event for `table-trigger`; table, field and event for
+   `field-trigger`; the name for `sequence`;
+3. one `name=value` pair for each field of the metaschema buffer, in buffer order
+   (`BUFFER-FIELD(i)` for `i` from 1 to `NUM-FIELDS`), with the field name in ASCII lower
+   case, except the excluded fields below. Each pair is one field of the line, encoded as
+   a whole.
+
+A value is `STRING(value)`; `HEX-ENCODE(value)` for a `RAW` field; `?` for the unknown value
+**of every data type** (character, integer, date, logical and the others). An array field
+is **one** pair `name[]=v1%00v2%00...`: each element is percent-encoded and the elements are
+joined with `%00`, which cannot occur inside an encoded value. A `RECID` or `ROWID` field is
+written as the row it points at: `table/<table>`, `field/<table>/<field>`,
+`index/<table>/<index>` or `db` (for example `_prime-index=index/customer/custnum`). A
+pointer to a row that is not in the image keeps its raw value; that is sound, because a
+different value can only cause a miss.
+
+**Excluded fields:**
 
 - fields of data type `BLOB` or `CLOB`;
-- `_Last-change` (a time stamp that differs between two databases loaded from one `.df`);
-- storage area numbers (`_ianum` and other area fields).
+- `_last-change`, `_last-modified` and `_mod-sequence`: time stamps and counters that
+  differ between two databases loaded from one `.df` (measured on OpenEdge 12.8);
+- `_ianum` and every field with `area` in its name (storage areas).
 
-A field value is `STRING(value)`, `?` for the unknown value, and `HEX-ENCODE(value)` for a
-`RAW` field. A `RECID` or `ROWID` field is **mapped to the row it points at**: its value is
-the record type and the name fields of that row, joined with `/` (for example
-`_prime-index=index/customer/custnum`). So a change of a table's primary index changes the
-image. A pointer to a row that is not in the image keeps its raw value; that is sound (a
-different value can only cause a miss), and the OpenEdge suite shows whether it costs
-portability. Each array element is a separate field `name[i]=value`. The field names are in
-ASCII lower case.
+The canonical text is ASCII, because the encoding replaces every other byte, so its bytes do
+not depend on the worker's code page. The worker hashes it with
+`MESSAGE-DIGEST("SHA-256", ...)` over a `LONGCHAR` and reports, per entry, the kind, the
+name, the number of records and the lower-case hex SHA-256.
+
+**Identity.** Oxabl encodes each entry and sorts the encoded entries by bytes:
+
+```text
+encode(entry)   = str(kind) str(name) u64(records) str(sha256 hex)
+schema_identity = derive_key("oxabl 2026-11 schema image v2",
+                             u64(number of entries) || encoded entries in sorted order)
+```
+
+The identity does not depend on the order in which entries arrive, nor on how the imaging is
+split between workers ([worker-protocol.md](worker-protocol.md#schema-image)).
 
 The image covers the CRC of each table and also what the CRC does not cover and the
 compiler puts into r-code: labels, formats, initial values, validation expressions, help,
-view-as phrases and compile-time security (`_Can-*`). So two databases loaded from one
-`.df` give one identity (slice 4 proves it on OpenEdge), and any dictionary change that
-the compiler can see changes it.
+view-as phrases and compile-time security (`_Can-*`). The OpenEdge suite proves on scratch
+databases that two databases loaded from one `.df` give one identity, and that each of these
+`.df` edits changes it: field label, field format, add index, change primary index,
+validation expression and message, field help, add field, add table, add sequence, drop
+index, drop field.
+
+**Every build images every database.** No cheaper test is trusted to skip imaging; see
+[Database fingerprints](#database-fingerprints).
 
 Rejected: the table CRCs alone (they do not cover labels, formats and validation); the
 `.df` files of `[workspace.schema]` (they can differ from the database that the AVM
-compiles against, and nothing would tell).
+compiles against, and nothing would tell); sending every record to oxabl and hashing there
+(version 1 of this spec: 6.6 million lines and 296 MB for one real database, 10 minutes per
+probe, against about 50 s with hashing on the worker, and 6 s with the work split across 8
+workers).
+
+### Database fingerprints
+
+The worker also reports a **fingerprint** per database: `_Db._Db-guid` and
+`_DbStatus._DbStatus-CacheStamp` (`?` when unavailable). It is part of the environment
+agreement: every worker must report the same fingerprints, which catches two workers that
+reach different databases. It is **never** used to skip imaging, because it does not see
+every change that changes r-code. Measured on scratch databases, one `.df` edit per probe:
+
+| Edit | Schema identity changed | Cache stamp changed |
+| --- | --- | --- |
+| field label | yes | yes |
+| field format | yes | yes |
+| add index | yes | yes |
+| change primary index | yes | **no** |
+| validation expression and message | yes | yes |
+| field help | yes | yes |
+| add field | yes | yes |
+| add table | yes | yes |
+| add sequence | yes | **no** |
+| drop index | yes | yes |
+| drop field | yes | **no** |
+
+The stamp also has one-second resolution, and the GUID stayed the same for databases
+created from one empty database, so neither identifies a database or its schema. A cheaper
+change test that can be trusted to skip imaging is an open follow-up
+([build-tool.md](../build-tool.md#follow-ups)).
 
 ## Compile options
 
@@ -462,7 +529,7 @@ gives each reason.
 | K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]` (compared ignoring ASCII case), and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
 | K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). | `computed-name: <name> in <path>` |
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
-| K6 | The environment was not established in this build (no probe, a failed probe, or a schema probe failure for any database). | `environment-unknown` |
+| K6 | The environment was not established in this build (no probe, a failed probe, or a schema imaging failure for any database). | `environment-unknown` |
 | K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`, `package-mismatch`, `package-root-not-on-propath`). | the skip reason |
 | K8 | The unit's closure holds a class name that K3 accepted as external, and a class unit or class edge target in the whole graph has that name ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
 | K9 | The build has more than one PROPATH id, and the unit is a class unit or its closure reaches a class source ([Per-unit PROPATH classes](#per-unit-propath-classes)). | `per-unit-propath-classes` |
@@ -490,12 +557,23 @@ oxabl's analysis. A degraded unit is never made incremental by a guess.
 
 These inputs are illustrative. They are not real OpenEdge output.
 
-Schema image of database `ledger`, two records:
+Schema image of database `ledger`, three entries. Entry texts (`\t` is `TAB`, `\n` is `LF`):
 
 ```text
-["db", "_db-coll-name=ICU-UCA", "_db-type=PROGRESS", "_db-xl-name=UTF-8"]
-["table", "customer", "_can-read=*", "_crc=12345", "_dump-name=customer", "_prime-index=index/customer/custnum"]
+db         ""          1 record    db\t_db-coll-name=ICU-UCA\t_db-type=PROGRESS\t_db-xl-name=UTF-8\n
+table      customer    5 records   table\tcustomer\t_can-read=*\t_crc=12345\t_dump-name=customer\t_prime-index=index/customer/custnum\n
+                                   field\tcustomer\tcustnum\t_data-type=integer\t_decimals=?\t_format=>>>>9\t_label=Cust Num\t_view-as=?\n
+                                   field\tcustomer\tname\t_data-type=character\t_decimals=?\t_format=x(30)\t_label=Name\t_view-as=?\n
+                                   index\tcustomer\tcustnum\t_active=yes\t_unique=yes\n
+                                   index-field\tcustomer\tcustnum\t1\tcustnum\t_ascending=yes\n
+sequence   next-cust   1 record    sequence\tnext-cust\t_cycle-ok=no\t_seq-incr=1\t_seq-init=1\n
 ```
+
+| Entry | SHA-256 of the entry text |
+| --- | --- |
+| `db` | `481e13c6d939c677a3c1490550c757a7c14e2f239df9870a19d3ac2251ff3678` |
+| `table customer` | `38c22afa820d544f4ffa4550cf322aee17d2e7a7539f96bf253d494f20216aaa` |
+| `sequence next-cust` | `563c917df85ba47de60ec29c499935236d5d2cc3e440c4fc9f6e348357302295` |
 
 Environment:
 
@@ -524,12 +602,12 @@ options. Outputs: `rcode`. Worker program bytes: `/* oxabl worker */\n`.
 
 | Value | Hex |
 | --- | --- |
-| schema identity | `6ab6b229201e70db9565ea27eb2ebe892d68b5d8dfcb8b01c4ebc5c883027dbd` |
-| environment identity | `fb9f595b87b5b1c2a831f1606bd0b457cf3e42cbf51ff43aa577f4f9f09b3e12` |
+| schema identity | `8a495ef6b5c1d99915758a8773441ab7adf1b6abe407bf19c1a4f097ac62a199` |
+| environment identity | `88379412ea5b9c91d75b53fed5c30c3ed18048293664ed0ec0deff2ec441a079` |
 | content of the unit | `46fc37de67aabc0750c364e9958c080394046a163ac10ffa9f2f482e811d3b9a` |
 | content of the worker program | `c90f59b20862aa76cdd3a16915d2662583c01e49f381d7db0810e5d9bc397fb8` |
 | key material length | 817 bytes |
-| compile key | `10d43c2bde300b761eff9194be0448b9cc351799bdbe7c520b1a05aab133693a` |
+| compile key | `1e7e5c8c6213fb125ce83de8bf24bd702a339b554d7a39794204687c8aba304a` |
 
 Slice 5 adds `crates/oxabl_build/tests/key_vectors.json` with this example and one vector
 per rule of the encoding (an empty closure, two databases, a parameter that appears twice,
