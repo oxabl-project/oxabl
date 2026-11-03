@@ -30,7 +30,11 @@ use oxabl_workspace::{
 use serde::Serialize;
 
 #[derive(ClapParser)]
-#[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
+#[command(
+    name = "oxabl",
+    version,
+    about = "High-performance tooling for Progress ABL"
+)]
 enum Cli {
     /// Lint ABL source and report formatting drift — the one pre-commit gate.
     ///
