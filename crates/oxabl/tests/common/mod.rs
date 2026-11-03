@@ -3,6 +3,7 @@
 
 #![allow(dead_code)]
 
+pub mod built;
 pub mod key_spec;
 pub mod keyed;
 pub mod openedge;
