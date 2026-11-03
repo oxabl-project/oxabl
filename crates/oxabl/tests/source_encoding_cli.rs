@@ -181,3 +181,55 @@ fn analyze_reads_a_single_byte_file_when_configured() {
         .unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+/// The values `oxabl schema` offers for an encoding.
+fn schema_encodings() -> Vec<String> {
+    let out = oxabl().arg("schema").output().unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut values: Vec<String> = schema["definitions"]["SourceEncoding"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|variant| variant["enum"].as_array().unwrap().iter())
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    values.sort();
+    values
+}
+
+fn accepted(key: &str, value: &str) -> bool {
+    let tmp = TempDir::new().unwrap();
+    config(tmp.path(), &format!("{key} = \"{value}\"\n"));
+    fs::write(tmp.path().join("a.p"), b"MESSAGE \"x\".\n").unwrap();
+    let out = oxabl()
+        .args(["check", "--no-format"])
+        .arg(tmp.path().join("a.p"))
+        .output()
+        .unwrap();
+    out.status.code() != Some(2) && !stderr(&out).contains("oxabl.toml")
+}
+
+/// The schema lists exactly the values the binary accepts: every listed value
+/// is accepted for both keys, and the values a user might guess are refused.
+#[test]
+fn the_schema_lists_exactly_the_accepted_encodings() {
+    assert_eq!(
+        schema_encodings(),
+        [
+            "cp1252",
+            "iso-8859-1",
+            "latin1",
+            "utf-8",
+            "utf8",
+            "windows-1252"
+        ]
+    );
+    for value in schema_encodings() {
+        for key in ["encoding", "fallback_encoding"] {
+            assert!(accepted(key, &value), "{key} = {value} is listed");
+        }
+    }
+    for value in ["UTF-8", "latin-1", "ascii", "ebcdic", "windows1252"] {
+        assert!(!accepted("encoding", value), "{value} is not listed");
+    }
+}

@@ -8,6 +8,8 @@ use std::io;
 use std::path::Path;
 
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject, SubschemaValidation};
 use serde::Deserialize;
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
@@ -17,7 +19,7 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 ///
 /// Every encoding decodes to the same Unicode text in memory; spans and offsets
 /// the tools report are byte offsets into that text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize)]
 pub enum SourceEncoding {
     /// UTF-8. A file with invalid UTF-8 cannot be read.
     #[default]
@@ -31,6 +33,61 @@ pub enum SourceEncoding {
     /// the same value.
     #[serde(rename = "windows-1252", alias = "cp1252")]
     Windows1252,
+}
+
+impl JsonSchema for SourceEncoding {
+    fn schema_name() -> String {
+        "SourceEncoding".to_string()
+    }
+
+    // Hand-written so the aliases are offered too; the derive lists the
+    // canonical names only. Keep in step with the `serde` attributes above.
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let variant = |description: &str, names: &[&str]| {
+            Schema::Object(SchemaObject {
+                metadata: Some(Box::new(Metadata {
+                    description: Some(description.to_string()),
+                    ..Default::default()
+                })),
+                instance_type: Some(InstanceType::String.into()),
+                enum_values: Some(names.iter().map(|n| (*n).into()).collect()),
+                ..Default::default()
+            })
+        };
+        SchemaObject {
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "The character encoding of ABL source files on disk \
+                     (`[workspace.sources].encoding`).\n\nEvery encoding decodes to the same \
+                     Unicode text in memory; spans and offsets the tools report are byte \
+                     offsets into that text."
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+            subschemas: Some(Box::new(SubschemaValidation {
+                one_of: Some(vec![
+                    variant(
+                        "UTF-8. A file with invalid UTF-8 cannot be read.",
+                        &["utf-8", "utf8"],
+                    ),
+                    variant(
+                        "ISO 8859-1 (Latin-1): every byte is the code point of the same value.",
+                        &["iso-8859-1", "latin1"],
+                    ),
+                    variant(
+                        "Windows code page 1252. Every byte decodes; the five bytes the code \
+                         page leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) become the C1 \
+                         control of the same value.",
+                        &["windows-1252", "cp1252"],
+                    ),
+                ]),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
 }
 
 impl SourceEncoding {

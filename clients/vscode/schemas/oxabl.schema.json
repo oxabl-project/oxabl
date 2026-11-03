@@ -241,21 +241,24 @@
         {
           "description": "UTF-8. A file with invalid UTF-8 cannot be read.",
           "enum": [
-            "utf-8"
+            "utf-8",
+            "utf8"
           ],
           "type": "string"
         },
         {
           "description": "ISO 8859-1 (Latin-1): every byte is the code point of the same value.",
           "enum": [
-            "iso-8859-1"
+            "iso-8859-1",
+            "latin1"
           ],
           "type": "string"
         },
         {
           "description": "Windows code page 1252. Every byte decodes; the five bytes the code page leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) become the C1 control of the same value.",
           "enum": [
-            "windows-1252"
+            "windows-1252",
+            "cp1252"
           ],
           "type": "string"
         }
@@ -283,7 +286,7 @@
               "$ref": "#/definitions/SourceEncoding"
             }
           ],
-          "description": "The character encoding of source files: `\"utf-8\"` (the default), `\"iso-8859-1\"` or `\"windows-1252\"`.\n\nIt applies to every file read from disk: roots, include files, classes and `.df` schema files, and `oxabl format` writes a file back in the same encoding. A UTF-8 byte order mark always means UTF-8 and is removed, whatever this says. `\"utf-8\"` rejects a file with invalid UTF-8; see `fallback_encoding`."
+          "description": "The character encoding of source files: `\"utf-8\"` (the default), `\"iso-8859-1\"` or `\"windows-1252\"`. `\"utf8\"`, `\"latin1\"` and `\"cp1252\"` are accepted as aliases.\n\nIt applies to every file read from disk: roots, include files, classes and `.df` schema files, and `oxabl format` writes a file back in the same encoding. A UTF-8 byte order mark always means UTF-8 and is removed, whatever this says. `\"utf-8\"` rejects a file with invalid UTF-8; see `fallback_encoding`."
         },
         "fallback_encoding": {
           "anyOf": [
