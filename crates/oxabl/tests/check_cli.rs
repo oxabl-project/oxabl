@@ -555,6 +555,40 @@ fn a_schema_dir_with_no_df_files_warns_instead_of_flooding_findings() {
     );
 }
 
+/// What `unknown-table-or-field` reports under a loaded schema: an unknown field
+/// and an unknown sequence. A table named only in a record phrase is not
+/// reported; the rule's description says so.
+#[test]
+fn a_loaded_schema_reports_unknown_fields_and_sequences_but_not_record_phrase_tables() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("src").join("cust.p");
+    write(
+        &file,
+        "DEFINE VARIABLE n AS INTEGER NO-UNDO.\n\
+         FOR EACH Item NO-LOCK:\nEND.\n\
+         FIND FIRST Stock NO-LOCK NO-ERROR.\n\
+         FOR EACH Customer NO-LOCK:\n  DISPLAY Customer.NoSuchField.\nEND.\n\
+         n = NEXT-VALUE(NoSuchSeq).\nMESSAGE n.\n",
+    );
+    let schema_dir = tmp.path().join("schema");
+    write(
+        &schema_dir.join("s.df"),
+        "ADD TABLE \"Customer\"\nADD FIELD \"CustNum\" OF \"Customer\" AS integer\n",
+    );
+
+    let run = check([
+        Path::new("--schema").as_os_str(),
+        schema_dir.as_os_str(),
+        Path::new("--no-format").as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    let lines: Vec<&str> = run.stdout.lines().filter(|l| l.contains("[LINT")).collect();
+    assert_eq!(lines.len(), 2, "stdout:\n{}", run.stdout);
+    assert!(lines[0].contains("LINT0003") && lines[0].contains("unknown field `NoSuchField`"));
+    assert!(lines[1].contains("LINT0003") && lines[1].contains("unknown sequence `NoSuchSeq`"));
+}
+
 // ---------------------------------------------------------------------------
 // Preprocessing is on by default (R19)
 // ---------------------------------------------------------------------------

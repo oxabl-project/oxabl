@@ -16,6 +16,12 @@
 //! silent by design — the match above is positive on the two reported
 //! reasons, so a new reason is skip-listed without an edit here.
 //!
+//! A table that is only named in a record phrase (`FOR EACH`, `FIND`,
+//! `DEFINE BUFFER ... FOR`) is not checked: the resolver binds an unknown name
+//! there to a buffer without a schema table, because the name may be a
+//! temp-table or buffer the file cannot see (an include, a superclass). An
+//! unknown qualifier on a field reference is `undefined-symbol`'s.
+//!
 //! The operand of `NEXT-VALUE` / `CURRENT-VALUE` (and the dynamic forms with a
 //! string literal) resolves against the schema's sequences the same way: a name
 //! the loaded schema does not declare is reported as an unknown sequence.

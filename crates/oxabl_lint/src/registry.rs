@@ -442,7 +442,8 @@ pub const BUILTIN_RULES: &[FnRule] = &[
             LINT0003,
             "unknown-table-or-field",
             groups::DEFAULT,
-            "A table, field or sequence the loaded schema does not declare.",
+            "A field or sequence the loaded schema does not declare. A table named only in a \
+             record phrase (`FOR EACH`, `FIND`, `DEFINE BUFFER ... FOR`) is not checked.",
         ),
         unknown_table_or_field::run,
     ),
