@@ -119,13 +119,3 @@ INPUT /* stream */ CLOSE.
 DO ON STOP UNDO, LEAVE:
     STOP /* condition */ .
 END.
-
-/* An empty THEN branch leaves END to the enclosing block; a stray comma follows a period. */
-procedure notify-owner:
-    do:
-        assign lv-ok = send-mail("owner", lv-body).
-        if not lv-ok then
-    end.
-    run notify/log.p (input lv-body, input lv-ok).,
-    message "notified".
-end procedure.
