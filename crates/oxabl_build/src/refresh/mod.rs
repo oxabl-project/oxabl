@@ -6,15 +6,16 @@ mod identity;
 mod intern;
 mod listing;
 mod outcome;
-mod parallel;
+pub(crate) mod parallel;
 mod probe;
 mod session;
 mod settle;
 mod snapshot;
 mod walk;
 
-pub use outcome::{Delta, Outcome};
+pub use outcome::{Content, Delta, Outcome};
 pub use session::{Request, run};
+pub use settle::Analyses;
 
 use crate::error::BuildError;
 use crate::store::StoreError;

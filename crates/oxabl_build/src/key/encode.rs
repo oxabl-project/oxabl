@@ -2,6 +2,8 @@
 
 /// Context string of the environment identity.
 pub const ENVIRONMENT_CONTEXT: &str = "oxabl 2026-11 compile environment v1";
+/// Context string of the compile key.
+pub const KEY_CONTEXT: &str = "oxabl 2026-11 compile key v1";
 /// Context string of the schema identity.
 pub const SCHEMA_CONTEXT: &str = "oxabl 2026-11 schema image v2";
 

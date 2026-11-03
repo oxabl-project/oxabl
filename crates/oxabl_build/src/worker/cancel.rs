@@ -11,6 +11,12 @@ struct Inner {
     groups: Mutex<Vec<u32>>,
 }
 
+impl std::fmt::Debug for Cancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cancel({})", self.is_cancelled())
+    }
+}
+
 /// A cancel flag plus the process groups of every live worker.
 #[derive(Clone, Default)]
 pub struct Cancel(Arc<Inner>);

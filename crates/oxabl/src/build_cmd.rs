@@ -5,13 +5,15 @@ use std::process::ExitCode;
 
 use oxabl_build::config::BuildWorkspace;
 use oxabl_build::error::BuildError;
-use oxabl_build::plan::{PlanRequest, plan, render, render_json};
+use oxabl_build::plan::{PlanRequest, Probe, plan, render, render_json};
 use oxabl_build::worker::pool::NO_COMMAND;
 
 use crate::build_probe;
 
 fn fail(error: &BuildError) -> ExitCode {
-    eprintln!("error: {error}");
+    if !matches!(error, BuildError::Cancelled) {
+        eprintln!("error: {error}");
+    }
     ExitCode::from(error.exit_code())
 }
 
@@ -54,7 +56,7 @@ pub fn run(options: Options<'_>) -> ExitCode {
         Ok(workspace) => workspace,
         Err(error) => return fail(&error),
     };
-    if probe {
+    if probe && !plan_only {
         return build_probe::run(&workspace, json, workers);
     }
     if !plan_only {
@@ -68,8 +70,20 @@ pub fn run(options: Options<'_>) -> ExitCode {
         );
         return ExitCode::from(2);
     }
+    let probe = probe.then(|| {
+        let probe = Probe {
+            workers,
+            ..Probe::default()
+        };
+        build_probe::install_signal_handler(&probe.cancel);
+        probe
+    });
     let request = match named(files) {
-        Ok(named) => PlanRequest { named, since },
+        Ok(named) => PlanRequest {
+            named,
+            since,
+            probe,
+        },
         Err(error) => return fail(&error),
     };
     match plan(&workspace, &request) {

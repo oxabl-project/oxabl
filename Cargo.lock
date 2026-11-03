@@ -1412,6 +1412,7 @@ dependencies = [
  "glob",
  "oxabl_common",
  "oxabl_index",
+ "oxabl_lexer",
  "oxabl_pipeline",
  "oxabl_semantic",
  "oxabl_workspace",

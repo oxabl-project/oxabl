@@ -4,6 +4,7 @@ use rustc_hash::FxHashSet;
 
 use super::reasons::{Named, Reason};
 use crate::graph::{Graph, Reverse, Scratch};
+use crate::key::compute::{Keyed, UnitKey};
 use crate::paths::PathMap;
 use crate::refresh::Outcome;
 
@@ -22,6 +23,8 @@ pub struct Plan {
     pub rebuild: Vec<Entry>,
     /// The units not in the rebuild set, sorted by path.
     pub unchanged: Vec<String>,
+    /// The units that cannot compile where they are, sorted by path.
+    pub skipped: Vec<String>,
     /// The units of the store that are no longer in the working tree.
     pub removed: Vec<String>,
     /// The files `--files` named that are not in the graph.
@@ -29,6 +32,22 @@ pub struct Plan {
     /// The generation of the store: after the refresh when it was committed,
     /// the one the store holds otherwise.
     pub generation: u64,
+    /// The compile keys, when the environment was probed.
+    pub keys: Option<PlanKeys>,
+}
+
+/// The compile keys of a plan, by unit path.
+#[derive(Debug)]
+pub struct PlanKeys {
+    pub keyed: Keyed,
+    index: std::collections::HashMap<String, usize>,
+}
+
+impl PlanKeys {
+    /// The key state of the unit at `path`.
+    pub fn get(&self, path: &str) -> Option<&UnitKey> {
+        self.index.get(path).map(|at| &self.keyed.units[*at])
+    }
 }
 
 /// A file `--files` named, as a node of the graph.
@@ -68,9 +87,16 @@ fn path_to(outcome: &Outcome, via: &HashMap<u32, u32>, unit: u32, target: u32) -
     path
 }
 
-/// Decide the rebuild set from what the refresh found different, and from the
-/// files `named` as changed.
-pub fn decide(outcome: &Outcome, paths: &PathMap, named: &[std::path::PathBuf]) -> Plan {
+/// Decide the rebuild set from what the refresh found different, from the
+/// files `named` as changed, and from the keys: a unit without a key
+/// compiles on every build, and a unit that cannot compile where it is is
+/// skipped.
+pub fn decide(
+    outcome: &Outcome,
+    paths: &PathMap,
+    named: &[std::path::PathBuf],
+    keyed: Option<Keyed>,
+) -> Plan {
     let after = &outcome.after;
     let before = &outcome.before;
     let reverse_after = Reverse::of(after);
@@ -106,13 +132,23 @@ pub fn decide(outcome: &Outcome, paths: &PathMap, named: &[std::path::PathBuf]) 
     let mut scratch = Scratch::new(outcome.names.len());
     let mut rebuild = Vec::new();
     let mut unchanged = Vec::new();
-    for &unit in &outcome.units {
+    let mut skipped = Vec::new();
+    for (position, &unit) in outcome.units.iter().enumerate() {
         let name = outcome.name(unit).to_string();
-        if !touched_after.contains_key(&unit) && !touched_before.contains_key(&unit) {
-            unchanged.push(name);
+        let key = keyed.as_ref().map(|keyed| &keyed.units[position]);
+        if key.is_some_and(|key| key.skipped) {
+            skipped.push(name);
             continue;
         }
-        let reasons = reasons_of(outcome, unit, &targets, &mut scratch, after, before);
+        let touched = touched_after.contains_key(&unit) || touched_before.contains_key(&unit);
+        let mut reasons = match touched {
+            true => reasons_of(outcome, unit, &targets, &mut scratch, after, before),
+            false => Vec::new(),
+        };
+        if let Some(key) = key.filter(|key| key.key.is_none()) {
+            let after_new = usize::from(matches!(reasons.first(), Some(Reason::New)));
+            reasons.insert(after_new, Reason::Unkeyable(key.unkeyable.clone()));
+        }
         if reasons.is_empty() {
             unchanged.push(name);
         } else {
@@ -123,9 +159,20 @@ pub fn decide(outcome: &Outcome, paths: &PathMap, named: &[std::path::PathBuf]) 
         }
     }
 
+    let keys = keyed.map(|keyed| {
+        let index = outcome
+            .units
+            .iter()
+            .enumerate()
+            .map(|(position, unit)| (outcome.name(*unit).to_string(), position))
+            .collect();
+        PlanKeys { keyed, index }
+    });
     Plan {
         rebuild,
         unchanged,
+        skipped,
+        keys,
         removed: names(outcome, delta.removed_units.iter().copied()),
         unknown,
         generation: outcome.generation,

@@ -24,6 +24,9 @@ use crate::store::{Analysis, FileRow, Loaded, Reading, tracked};
 pub struct Request {
     /// Load the graph even when nothing changed.
     pub need_graph: bool,
+    /// Load the graph and the analyses, and report the content of every
+    /// tracked path: what the compile keys are made from.
+    pub need_keys: bool,
 }
 
 /// Bring the graph up to date with the working tree. `reading` is the store
@@ -115,7 +118,7 @@ pub fn run(
         && !identity_changed
         && removed_units.is_empty()
         && !units_lack_analysis;
-    let skipped = unchanged && !request.need_graph;
+    let skipped = unchanged && !request.need_graph && !request.need_keys;
 
     let fs = ObservingFileSystem::new(snapshot);
     let mut analyses = Analyses::default();
@@ -188,6 +191,7 @@ pub fn run(
             ..Delta::default()
         },
         skipped,
+        need_keys: request.need_keys,
     });
     outcome.warnings = warnings;
     Ok(outcome)
