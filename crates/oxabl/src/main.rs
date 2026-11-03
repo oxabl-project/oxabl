@@ -284,6 +284,9 @@ enum Cli {
     /// [workspace.style] > the safe non-mangling default. Any file that cannot be
     /// formatted faithfully (parse errors, or output that would alter the token
     /// stream) is left byte-for-byte unchanged and the reason is reported.
+    ///
+    /// An `oxabl.toml` this run cannot use is a config error (exit 2), as for
+    /// `check`; `--style` skips the file instead.
     Format {
         /// Path to a single ABL file or a directory to format
         /// (`.p`/`.w`/`.cls`/`.v` under a directory).
@@ -698,6 +701,15 @@ fn resolve_style_arg(value: &str) -> Result<StyleGuide, String> {
         .map_err(|e| format!("--style `{value}`: invalid style TOML: {e}"))
 }
 
+/// The message of an `oxabl.toml` the run could not use, if any: the whole file
+/// was discarded, so continuing would run on defaults the user did not write.
+fn config_error(warnings: &[ConfigWarning]) -> Option<&str> {
+    warnings.iter().find_map(|w| match w {
+        ConfigWarning::Config(msg) => Some(msg.as_str()),
+        _ => None,
+    })
+}
+
 /// `oxabl format`: resolve configuration once, then render the shared
 /// [`FormatPipeline`]'s decision for each discovered file per the selected mode.
 ///
@@ -756,10 +768,9 @@ fn run_format(
     // `--style` names a whole guide, so it leaves nothing in `oxabl.toml` for the
     // run to need: it short-circuits discovery entirely rather than resolving a
     // config only to override it. That is what makes `--style` work in a tree
-    // whose `oxabl.toml` cannot be parsed. Without it, a malformed config still
-    // degrades to defaults with one `warning:` line (R7) — `format` rewrites
-    // layout rather than answering a pass/fail question, so unlike `check` (A3) it
-    // has nothing to report wrongly.
+    // whose `oxabl.toml` cannot be parsed. Without it, a config the run cannot use
+    // is a config error (exit 2), as for `check`: `--check` answers a pass/fail
+    // question, and a write would reformat the tree in a style nobody chose.
     //
     // The source encoding is the exception: `--style` still has to read the files
     // the way the tree is stored, so it takes the encoding from the config and
@@ -777,6 +788,10 @@ fn run_format(
         ),
         None => PipelineConfig::resolve_style_only(path, &ConfigOverrides::default()),
     };
+    if let Some(msg) = config_error(&warnings) {
+        eprintln!("error: {msg}");
+        return ExitCode::from(2);
+    }
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
@@ -1157,16 +1172,15 @@ fn run_check(
     };
     let (config, warnings) = PipelineConfig::resolve(path, &overrides);
 
-    // The one place the gate hardens where every other command degrades (A3): an
-    // `oxabl.toml` the resolver could not use is a **config error**, exit 2.
+    // An `oxabl.toml` the resolver could not use is a **config error**, exit 2.
     //
     // `ConfigWarning::Config` means the whole file was discarded, so the run would
     // proceed on defaults — and defaults are not what the user wrote. A dropped
     // `[workspace.lint]` table takes every `off` with it, so the gate reports
     // findings for rules the project switched off, and reports them under a green
-    // exit code if nothing else fires. `format`, `analyze`, `conformance` and the
-    // LSP keep degrading with a warning: none of them answers a pass/fail
-    // question, so none of them can answer it wrongly.
+    // exit code if nothing else fires. `format` and `watch` refuse likewise.
+    // `analyze`, `explain`, `conformance` and the LSP keep degrading with a
+    // warning: they dump or serve what oxabl found rather than gate on it.
     //
     // "Could not use" is broader than "malformed TOML": `StyleGuide` denies
     // unknown fields, so a syntactically valid file naming a key oxabl does not
@@ -1176,10 +1190,7 @@ fn run_check(
     // Every other warning stays a warning. A `.df` that would not load, or a
     // `--schema` directory that matched nothing (A2), leaves the rest of the
     // configuration intact, so the run still means what it says.
-    if let Some(msg) = warnings.iter().find_map(|w| match w {
-        ConfigWarning::Config(msg) => Some(msg),
-        _ => None,
-    }) {
+    if let Some(msg) = config_error(&warnings) {
         eprintln!("error: {msg}");
         return ExitCode::from(2);
     }
