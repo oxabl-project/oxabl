@@ -26,5 +26,6 @@ members = [
     "crates/oxabl_effects",
     "crates/oxabl_nulls",
     "crates/oxabl_build",
+    "crates/oxabl_fake_avm",
 ]
 resolver = "2"

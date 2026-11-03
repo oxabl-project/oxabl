@@ -22,6 +22,13 @@ jobs:
         with:
           channel: stable
       - run: cargo check --workspace
+      # The fake AVM stands in for Progress, so it must not share a codec with oxabl.
+      - name: The fake AVM depends on no oxabl crate
+        run: |
+          if cargo tree -p oxabl_fake_avm --prefix none | tail -n +2 | grep '^oxabl'; then
+            echo "oxabl_fake_avm must not depend on an oxabl crate" >&2
+            exit 1
+          fi
 
   test:
     name: Test
