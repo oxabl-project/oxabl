@@ -111,6 +111,11 @@ impl Parser<'_> {
         let mut stmt = self.parse_statement_inner()?;
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
+        // The compiler tolerates one stray comma right after a statement's
+        // terminating period (`RUN a.p.,`); it belongs to no statement.
+        if self.check(Kind::Comma) && self.prev_token_kind() == Some(Kind::Period) {
+            self.advance();
+        }
         Ok(stmt)
     }
 
@@ -2698,6 +2703,9 @@ impl Parser<'_> {
         let then_lo = self.peek().start as u32;
         let mut then_branch = if self.check(Kind::Do) {
             self.parse_do_statement()?
+        } else if self.check(Kind::End) {
+            // Empty THEN branch: END belongs to the enclosing block, as for ELSE below.
+            self.stmt(StatementKind::Empty)
         } else {
             self.parse_statement()?
         };

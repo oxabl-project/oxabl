@@ -1766,6 +1766,15 @@ impl<'a> Parser<'a> {
         0
     }
 
+    /// Kind of the last consumed token that is not a comment.
+    fn prev_token_kind(&self) -> Option<Kind> {
+        self.tokens[..self.current.min(self.tokens.len())]
+            .iter()
+            .rev()
+            .map(|t| t.kind)
+            .find(|k| *k != Kind::Comment)
+    }
+
     /// Parse an optional access modifier (PUBLIC, PRIVATE, PROTECTED, PACKAGE-PRIVATE).
     /// Returns None if the current token is not an access modifier.
     fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
