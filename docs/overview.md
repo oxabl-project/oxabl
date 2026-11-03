@@ -56,7 +56,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Build system
   - Incremental compiling (via the Progress compiler)
   - Remote cache
-  - Status: Experimental, not available. The first part is in the tree: `oxabl build --plan` (a hidden command) refreshes a persisted dependency graph and says which units must rebuild, and why. It compiles nothing yet. See [`oxabl build --plan`](#oxabl-build---plan).
+  - Status: Experimental, not available. `oxabl build` (a hidden command) refreshes a persisted dependency graph, says which units must rebuild and why (`--plan`), and compiles them through AVM workers that your own command starts, in dependency order, with retry, crash handling and cancellation. There is no cache yet. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build).
 
 ## Project Status
 
@@ -94,7 +94,7 @@ Requirements:
 - Hidden commands. Both are real, documented, and reachable — `oxabl <command> --help` works — they simply do not appear in `oxabl --help`, because each answers a question about *oxabl* rather than about your source, and neither belongs in the surface a new user reads.
   - `oxabl conformance <path>` — the parser-refinement instrument: how many files parse, which fail and where, and the ranked error patterns behind the failures.
   - `oxabl explain <file>[:line]` — show each unit's direct database effects and transitive summary. Add `--json` for the version 1 explain document. Use `-I` and `--schema` to override project paths and schema. Preprocessing is on. A line selects the innermost unit at that root line; printed lines refer to expanded text. Partial summaries list their reasons. Index choices remain estimates until the XREF gate passes. Exit codes: 0 for a report, 2 for a bad line or unreadable file, 3 for fatal preprocessing failure, 4 for an internal panic, 6 for serialization failure.
-  - `oxabl build --plan [--probe] [--all] [--files <path>... | --since <rev>] [--json] [--root <dir>]` — which compile units must rebuild, and why. With `--probe` it also computes the compile key of every unit. See [`oxabl build --plan`](#oxabl-build---plan). Exit codes: 0 when a plan was printed, 2 for a usage or configuration error, 3 when the store or the workspace cannot be used or no worker can start, 130 when a signal stops a probe.
+  - `oxabl build [--plan [--probe] [--all] [--files <path>... | --since <rev>]] [--json] [--events] [--report <file>] [--fail-fast] [--workers <n>] [--root <dir>]` — which compile units must rebuild and why (`--plan`), or compile them. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build). Exit codes: 0 when everything compiled or a plan was printed, 1 when a unit failed to compile, 2 for a usage or configuration error, 3 when the store or the workspace cannot be used or no worker can start, 130 when a signal stops the command.
   - `oxabl analyze <file>` — a single file's resolved semantic model, dumped as a per-section-versioned JSON envelope or as text (`--schema <file|dir>` for schema-backed resolution). Introspection, not a gate: it exits 0 whatever it finds. Eight sections are emitted — `scopes`, `symbols`, `types`, `references`, `diagnostics`, `preproc`, `coverage`, and `dependencies` — each carrying its own version under `sections`, so a change to one leaves the others' numbers alone. `dependencies` is where cross-file resolution is observable: which files the run's workspace index actually consulted, and which cross-file names came back empty and why.
 - `oxabl_wasm`: browser bindings in `crates/oxabl_wasm`.
   - Three `wasm-bindgen` exports — `analyze_source`, `format_source`, and `version()` (a crate version plus a build identifier, so a crash report names the exact artifact a hand-vendored copy is running) — the first two returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the formatter declines to format (in which case the original source comes back untouched). Line and column come from the shared position helper the CLI's text output uses, so the two cannot drift.
@@ -106,6 +106,8 @@ Current Work: continued dogfood-driven trust-hardening, and typing `:`-qualified
 ### `oxabl build --plan`
 
 `oxabl build --plan` reads `oxabl.toml` and refreshes a graph of the working tree. It then lists the compile units that a change reaches. It compiles nothing. It starts no worker unless you add `--probe` (see [Compile keys](#compile-keys)). The command is hidden from `oxabl --help` until the build is complete. The design is in `docs/design/build-tool.md`.
+
+Until a build has recorded results, a plan lists what changed since the last refresh. After that it compares each unit with its last result, see [What the plan compares](#oxabl-build---plan).
 
 ```sh
 oxabl build --plan                       # the units that changed since the last run
@@ -126,6 +128,20 @@ A compile unit is a file under `[workspace.sources].directories` with a root ext
 | `dependency-changed` | A file that stayed in its closure changed. |
 | `closure-changed` | Its closure gained or lost a file. This includes a new file that now shadows an include. |
 | `unkeyable` | The unit has no compile key, so it compiles on every build. The rules that apply follow the reason. Only with `--probe`. |
+
+Once a build has recorded results, these reasons come from them (the first that applies is shown):
+
+| Reason | Meaning |
+|---|---|
+| `new` | The unit has no result. |
+| `failed` | The last compile failed. |
+| `source-changed`, `dependency-changed`, `closure-changed` | As above, now against the last result: a file counts when it changed in a later refresh than the one the result was made from. With `--probe` the key sections that differ name the reason. |
+| `propath-changed` | The unit PROPATH differs from the last compile (`--probe` only). |
+| `environment-changed` | The environment differs from the last compile; the fields are listed, for example `cpcoll` or `schema: ledger` (`--probe` only). |
+| `options-changed` | `[build.compile]` or the requested outputs differ (`--probe` only). |
+| `worker-changed` | The worker program is another one (`--probe` only). |
+| `unverified` | The last compile has no key, and the reason is in the details. |
+| `output-missing`, `output-changed` | An output of the last compile is gone, or was changed outside oxabl. An output with another time stamp and the same bytes is current. |
 
 **`--since <rev>`.** Oxabl runs the `git` binary (no libgit2) in the workspace root: `git diff --name-only --no-renames --relative <rev>` for committed, staged and unstaged edits and deletions (a rename is the old path deleted and the new one added), and `git ls-files --others --exclude-standard` for untracked files that git does not ignore. Each file counts as if `--files` had named it. A file that is not in the graph (a `README`, a build script) is dropped without a message. Exit code 2 when the root is not in a git work tree, when `<rev>` is not a commit, or together with `--files`. Only files under the workspace root are looked at. The graph is still the graph of the working tree: an edit that git does not show (an ignored file) is seen by the refresh like any other.
 
@@ -185,7 +201,7 @@ K3 sees only the class names that the analysis records. It records none from `Op
 
 The closure of a unit is every file the compiler can read for it: its includes at any depth, the classes it names and the includes and classes of those, including the ones in branches an `&IF` did not take.
 
-**What the plan compares.** There are no compile results in the store yet, so a plan lists what changed since the last refresh that reached the store. A run that holds the workspace lock writes its refresh, so the next plan starts from it. Run `oxabl build --plan` again and the answer is "0 to rebuild" until a file changes. A plan that finds the lock taken (a build is running) reads a snapshot of the store and writes nothing. It ends with `(not committed)`. Compile results, and with them "what is not compiled yet", arrive with `oxabl build`.
+**What the plan compares.** Before a build has recorded results, a plan lists what changed since the last refresh that reached the store. A run that holds the workspace lock writes its refresh, so the next plan starts from it. Run `oxabl build --plan` again and the answer is "0 to rebuild" until a file changes. From the first build on, a plan compares every unit with its last result: a unit with no result is `new`, one that failed is `failed`, and a unit whose key, whose outputs or whose files differ from the result is in the set, so a build that was cancelled leaves its remaining units in the next plan. Without `--probe` there is no key, so the plan cannot see an environment, option or worker change; it says `environment from build at <time>` for the environment it did not probe. A plan that finds the lock taken (a build is running) reads a snapshot of the store and writes nothing. It ends with `(not committed)`.
 
 **The store.** The state is in `[build].state` (default `.oxabl/build`), which must be under the workspace root: `state.db` (SQLite, WAL) and `build.lock`. Set `[build].store` to put `state.db` in another local directory when the root is on a network file system. SQLite WAL cannot run on NFS, SMB or FUSE, so oxabl stops with exit code 3 for a store there. Add `.oxabl/` to the ignore file of your version control. The store is a cache of what the files say:
 
@@ -195,7 +211,36 @@ The closure of a unit is every file the compiler can read for it: its includes a
 
 **How fast.** A file is read and hashed only when its size, times or inode changed. A stat taken in the two seconds before a file's last change is not trusted at the next run. A run with no change stats the files and reads the store, and that is all it does. On a synthetic tree of 28,000 files that takes about 0.2 s. An analysis runs again only for a file whose bytes changed, or that looked for a path, found a path absent, or listed a directory, where something changed since.
 
-**Configuration.** `[build]` and its tables (`workers`, `outputs`, `compile`, `verify`, `cache`) are read strictly, as is the top level of `oxabl.toml`: an unknown table or key is a usage error (exit code 2) that names it. A duration is an integer and `s`, `m` or `h` (`"90s"`); a size is an integer and `KiB`, `MiB`, `GiB` or `TiB` (`"20GiB"`). `oxabl build` without `--plan` needs `[build.workers].command` and stops with exit code 2 without it.
+**Configuration.** `[build]` and its tables (`workers`, `outputs`, `compile`, `verify`, `cache`) are read strictly, as is the top level of `oxabl.toml`: an unknown table or key is a usage error (exit code 2) that names it. A duration is an integer and `s`, `m` or `h` (`"90s"`); a size is an integer and `KiB`, `MiB`, `GiB` or `TiB` (`"20GiB"`). `oxabl build` without `--plan` needs `[build.workers].command` and `[build].output`, and stops with exit code 2 without them.
+
+### `oxabl build`
+
+`oxabl build` compiles the units that the plan lists. It is hidden from `oxabl --help` until the cache lands. It needs `[build.workers].command` (the command that starts one AVM worker, see `docs/design/build-tool/worker-protocol.md`) and `[build].output` (the directory for the r-code). Oxabl ships no Progress code but its own small worker program. The build runs in this order:
+
+1. It takes the workspace lock (`<state>/build.lock`) and, in the r-code directory, `.oxabl-build.lock`. A second build stops with exit code 3 and the process id of the first.
+2. It refreshes the graph and, at the same time, starts the workers, probes the environment and hashes the worker-side files. It computes the compile key of every unit and the plan.
+3. It deletes the outputs that no result owns, then compiles. Nothing compiles before this.
+4. Each worker takes the ready job of highest priority: the longest chain of units that waits for it, by last compile time. A job is a set of units that cannot be ordered, a cycle of classes, and goes to one worker in one request, with `MULTI-COMPILE` on. A unit compiles after every unit that it reads at compile time: classes before their users. A failed unit does not hold its users back; they compile and are marked **tainted** in the report. A tainted unit is recorded but never offered to a cache.
+5. Each unit that compiled has its outputs moved from the worker's stage (`<state>/stage/<build>/w<n>-<s>`) to their final paths by `rename`, or by copy, `fsync` and rename across file systems. The result is recorded after the outputs are in place. Results are written to the store in batches of 500 units or two seconds, after `syncfs` on the output file system. A unit that failed loses its old outputs, so no user compiles against stale r-code.
+6. Each unit that failed compiles once more, in the same order. A unit that failed because its worker was lost twice is not tried again. A unit that compiles on the second try counts as one success.
+
+**Output directories.** `[build].output` and the directories of `[build.outputs]` belong to oxabl. Each must be absent or empty the first time (oxabl writes `.oxabl-output` into it), and must not lie inside another. A directory that holds files and has no marker stops the build with exit code 2 and nothing is deleted. Oxabl deletes every file in a marked directory that no result owns.
+
+**Workers that fail.** A worker is lost when its output ends, its process exits, a unit takes longer than `[build.workers].unit_timeout`, or it breaks the protocol. Oxabl stops its process group, starts another worker in the slot and puts the unit that was running, and the units of the same request that had not started, back in the queue. A unit that loses its worker twice in one build fails with `worker lost twice while compiling this unit`. When no replacement can start the build goes on with the other workers; with none left it stops with exit code 3.
+
+**Cancel.** The first `SIGINT` or `SIGTERM` stops dispatch. Busy workers have `[build.workers].cancel_grace` (30 s) to finish their unit; what they finish is installed and recorded. Then the workers get `QUIT`, and any that is still busy is stopped. A second signal stops every worker at once. The exit code is 130 and the store is consistent: the next build compiles what was not recorded. If oxabl is killed, the workers read the end of their input and quit after their current unit.
+
+**`--fail-fast`** stops dispatch at the first failed unit; the units not started are `not-run` in the report, and there is no retry pass.
+
+**`--events`** writes one JSON object per line to stdout while the build runs; the human output goes to stderr. Events: `build-started` (`format`, `build`, `units`, `rebuild`, `workers`), `unit-started` (`path`, `worker`), `message` (`path`, `type`, `number`, `file`, `row`, `column`, `text`), `unit-finished` (`path`, `status` `ok` or `fail`, `ms`), `worker-lost` (`worker`, `reason`, `unit`) and `summary` (`compiled`, `fetched`, `failed`, `skipped`, `exit`). A unit that compiles in the retry pass has a second `unit-started` and `unit-finished`.
+
+**`--report <file>`** writes the result of the build as JSON, and **`--json`** prints the same document instead of the text. It has `format` 1, `exit`, `build`, `environment` (the identity), `summary` (`compiled`, `fetched`, `failed`, `skipped`, `not_run`, `tainted`, `up_to_date`), `timing` (`setup_ms` is the refresh, the probe and the keys; `elapsed_ms`), `notes` (the warnings) and `units`: for each unit that compiled, failed, was skipped or was not run, its `path`, `status` (`ok`, `fail`, `skipped`, `not-run`), `source` (`compiled`), `reason` (why the plan listed it), `ms`, `tainted`, `skipped` (why), `note` and the compiler `messages`.
+
+**Exit codes.** 0 every unit compiled, 1 a unit failed after the retry pass (a skipped unit is not a failure), 2 a usage or configuration error (no worker command, no `[build].output`, an output directory that oxabl does not own, workers that disagree), 3 the store, a lock or the workers could not be used, 130 cancelled.
+
+**The cache hook.** Every unit that compiled, has a key, is not tainted and finished before a cancel is offered to an uploader, one set of output files at a time; the uploader is finished once at the end. The uploader is a no-op in this release.
+
+**The worker program.** `PROPATH`, `OPTIONS` and `COMPILE` requests are answered by `OK`, `MSG`, `DONE` and `END`. The worker writes one small procedure for each shape of `COMPILE` statement into its stage, because the phrases (`XREF-XML`, `MIN-SIZE`, `GENERATE-MD5`, ...) are keywords; `languages` and `options` hold only letters, digits and `-_:,.`. The PROPATH entries that oxabl sends are relative to the worker's working directory (the output directory first), `$DLC` entries (the worker expands them) or the paths of `[build.libraries]`.
 
 ### Lint configuration
 
