@@ -9,6 +9,7 @@ use std::time::Instant;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod baseline;
+mod display_path;
 mod explain;
 mod watch;
 
@@ -1972,7 +1973,7 @@ fn report_include_findings(
     unit: &mut Unit,
 ) {
     for finding in found {
-        let display = finding.path.display().to_string();
+        let display = display_path::spell(&finding.path, root);
         let mut diagnostic = finding.diagnostic.clone();
         diagnostic.span.file = ROOT_FILE_ID;
         let text = texts.get(&finding.path).map(str::to_owned);
@@ -1996,7 +1997,7 @@ fn report_include_findings(
                 for step in &expansion.chain {
                     via.push(site_label(&previous.0, previous.1.as_deref(), step.site));
                     previous = (
-                        step.path.display().to_string(),
+                        display_path::spell(&step.path, root),
                         texts.get(&step.path).map(str::to_owned),
                     );
                 }
@@ -2035,7 +2036,7 @@ fn report_include_findings(
                         };
                         previous = texts.get(&step.path).map(str::to_owned);
                         CheckJsonChainStep {
-                            path: step.path.display().to_string(),
+                            path: display_path::spell(&step.path, root),
                             site: step.site.map(|at| CheckJsonSpan {
                                 start: at.start,
                                 end: at.end,
