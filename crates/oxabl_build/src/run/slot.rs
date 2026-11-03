@@ -154,13 +154,14 @@ fn finish_unit(
     compiled: CompiledUnit,
 ) -> UnitDone {
     let info = &shared.infos[&unit];
+    let silent = !compiled.ok && compiled.messages.is_empty();
     let mut done = UnitDone {
         job,
         unit,
         ok: compiled.ok,
         ms: compiled.ms,
         messages: compiled.messages,
-        note: None,
+        note: silent.then(|| "the compile failed and the worker gave no message".to_string()),
         outputs: Vec::new(),
         lost: false,
     };

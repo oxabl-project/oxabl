@@ -1,7 +1,7 @@
 //! The files a compile writes into the stage.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::outcome::Outcome;
@@ -58,6 +58,17 @@ fn xref_text(out: &Outcome) -> String {
         .collect()
 }
 
+/// Where the compiler opens an XREF file: like the real one, it removes a
+/// leading `.` from a relative name, so `.s/x` lands in `s/x` and `./.s/x` and
+/// absolute names are kept.
+fn xref_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix('.') {
+        Some(rest) if !rest.starts_with('/') && !text.starts_with("..") => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
 /// Writes the outputs of a compiled unit under the stage.
 pub fn write(ctx: &Context<'_>, name: &str, out: &Outcome) -> io::Result<()> {
     put(
@@ -66,11 +77,11 @@ pub fn write(ctx: &Context<'_>, name: &str, out: &Outcome) -> io::Result<()> {
     )?;
     match ctx.xref {
         "xref-xml" => put(
-            &ctx.stage.join("xref").join(format!("{name}.xref.xml")),
+            &xref_path(ctx.stage.join("xref").join(format!("{name}.xref.xml"))),
             &xref_xml(out),
         )?,
         "xref" => put(
-            &ctx.stage.join("xref").join(format!("{name}.xref")),
+            &xref_path(ctx.stage.join("xref").join(format!("{name}.xref"))),
             &xref_text(out),
         )?,
         _ => {}

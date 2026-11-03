@@ -177,5 +177,6 @@ fn apply(fault: Fault, row: usize, file: &str, unit: &str, faults: &Faults, out:
         },
         Fault::Slow => out.slow = true,
         Fault::NoOutput => out.no_output = true,
+        Fault::FailSilent => out.ok = false,
     }
 }

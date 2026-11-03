@@ -382,3 +382,15 @@ fn the_unit_that_the_longest_chain_waits_for_compiles_first() {
     assert!(at("pkg/Base.cls") < at("a.p"), "{order:?}");
     assert!(at("pkg/User.cls") < at("a.p"), "{order:?}");
 }
+
+#[test]
+fn the_xref_is_written_although_the_state_directory_starts_with_a_dot() {
+    let workspace = Built::with(
+        "include_paths = [\"src\"]",
+        "[build.outputs]\nxref = \"build/xref\"\n",
+    );
+    workspace.write("src/a.p", "MESSAGE \"a\".\n");
+
+    workspace.build().succeeded();
+    assert!(workspace.exists("build/xref/a.p.xref.xml"));
+}

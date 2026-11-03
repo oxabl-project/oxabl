@@ -307,3 +307,20 @@ fn a_unit_whose_name_does_not_fit_the_worker_code_page_fails_and_the_others_comp
         "no worker was lost over it"
     );
 }
+
+#[test]
+fn a_failed_unit_always_carries_a_reason() {
+    let workspace = Built::new();
+    workspace.write("src/mute.p", "/* FAKE-FAIL-SILENT */\nMESSAGE \"m\".\n");
+
+    let run = workspace.build_with(&["--json"]);
+
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    let mute = unit(&report(&run), "src/mute.p").clone();
+    assert_eq!(mute["status"], "fail");
+    assert_eq!(
+        mute["note"],
+        "the compile failed and the worker gave no message"
+    );
+    assert!(run.stdout.contains("the compile failed"), "{}", run.stdout);
+}

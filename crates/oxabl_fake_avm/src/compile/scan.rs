@@ -11,6 +11,7 @@ pub enum Fault {
     Hang,
     Slow,
     NoOutput,
+    FailSilent,
 }
 
 /// The references and faults of one text.
@@ -26,8 +27,9 @@ pub struct Scan {
     pub faults: Vec<(Fault, usize)>,
 }
 
-const FAULTS: [(&str, Fault); 8] = [
+const FAULTS: [(&str, Fault); 9] = [
     ("FAKE-CRASH-ONCE", Fault::CrashOnce),
+    ("FAKE-FAIL-SILENT", Fault::FailSilent),
     ("FAKE-FAIL-ONCE", Fault::FailOnce),
     ("FAKE-CRASH", Fault::Crash),
     ("FAKE-FAIL", Fault::Fail),

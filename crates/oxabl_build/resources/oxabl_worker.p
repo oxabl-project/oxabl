@@ -1014,7 +1014,12 @@ PROCEDURE writeCompiler:
     PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcXref AS CHARACTER NO-UNDO." SKIP.
     PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcDbg AS CHARACTER NO-UNDO." SKIP.
     PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcLst AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE OUTPUT PARAMETER pcErr AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE VARIABLE i AS INTEGER NO-UNDO." SKIP.
     PUT STREAM sFile UNFORMATTED cStatement SKIP.
+    PUT STREAM sFile UNFORMATTED "IF ERROR-STATUS:ERROR THEN DO i = 1 TO ERROR-STATUS:NUM-MESSAGES:" SKIP.
+    PUT STREAM sFile UNFORMATTED "    pcErr = pcErr + (IF pcErr = '' THEN '' ELSE ' ') + ERROR-STATUS:GET-MESSAGE(i)." SKIP.
+    PUT STREAM sFile UNFORMATTED "END." SKIP.
     OUTPUT STREAM sFile CLOSE.
 END PROCEDURE.
 
@@ -1036,6 +1041,7 @@ PROCEDURE compileUnit:
     DEFINE VARIABLE cXrefFile AS CHARACTER NO-UNDO INITIAL "".
     DEFINE VARIABLE cDbgFile  AS CHARACTER NO-UNDO INITIAL "".
     DEFINE VARIABLE cLstFile  AS CHARACTER NO-UNDO INITIAL "".
+    DEFINE VARIABLE cCompErr  AS CHARACTER NO-UNDO INITIAL "".
     DEFINE VARIABLE lOk       AS LOGICAL   NO-UNDO INITIAL TRUE.
     DEFINE VARIABLE iMsg      AS INTEGER   NO-UNDO.
     DEFINE VARIABLE iMs       AS INT64     NO-UNDO.
@@ -1071,7 +1077,8 @@ PROCEDURE compileUnit:
     END.
 
     RUN VALUE(gcCwd + "/" + cGen)
-        (pcName, pcStage + "/r", cXrefFile, cDbgFile, cLstFile) NO-ERROR.
+        (INPUT pcName, INPUT pcStage + "/r", INPUT cXrefFile, INPUT cDbgFile, INPUT cLstFile,
+         OUTPUT cCompErr) NO-ERROR.
     IF ERROR-STATUS:ERROR THEN DO:
         lOk = FALSE.
         RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + "error"
@@ -1081,6 +1088,12 @@ PROCEDURE compileUnit:
     END.
     ELSE DO:
         IF COMPILER:ERROR THEN lOk = FALSE.
+        IF cCompErr <> "" THEN DO:
+            lOk = FALSE.
+            RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + "error"
+                         + gcTab + "0" + gcTab + toWire(pcName) + gcTab + "0" + gcTab + "0" + gcTab
+                         + toWire(cCompErr)).
+        END.
         DO iMsg = 1 TO COMPILER:NUM-MESSAGES:
             cType = IF COMPILER:GET-MESSAGE-TYPE(iMsg) = 2 THEN "warning" ELSE "error".
             RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + cType

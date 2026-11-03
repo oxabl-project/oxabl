@@ -2,6 +2,17 @@
 
 use std::path::{Path, PathBuf};
 
+/// The stage as a worker names it. A relative path starts with `./`: the
+/// compiler removes a leading `.` from a relative XREF file name, so a state
+/// directory such as `.oxabl/build` would lose it.
+fn worker_path(relative: &Path, build: &str, name: &str) -> String {
+    let prefix = if relative.is_absolute() { "" } else { "./" };
+    format!(
+        "{prefix}{}/stage/{build}/{name}",
+        relative.to_string_lossy()
+    )
+}
+
 /// The directories of a stage that a request writes into.
 const KINDS: [&str; 4] = ["r", "xref", "dbg", "lst"];
 
@@ -20,7 +31,7 @@ impl Stage {
         let name = format!("w{worker}-{start}");
         Stage {
             host: state_dir.join("stage").join(build).join(&name),
-            worker: format!("{}/stage/{build}/{name}", relative.to_string_lossy()),
+            worker: worker_path(relative, build, &name),
         }
     }
 
