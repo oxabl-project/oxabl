@@ -40,8 +40,7 @@ pub struct StyleGuide {
     pub wrap_long_lines: bool,
     pub blank_lines_between_sections: bool,
     /// Maximum number of consecutive blank lines the formatter permits before
-    /// collapsing the run (and trimming file edges). This slice adds the field
-    /// and its config plumbing only; enforcement lands with the Slice 3 printer.
+    /// collapsing the run (and trimming file edges).
     pub max_consecutive_blank_lines: usize,
 
     // Block & Statement Structure ------------------------------------------

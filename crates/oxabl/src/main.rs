@@ -38,12 +38,12 @@ use serde::Serialize;
 enum Cli {
     /// Lint ABL source and report formatting drift — the one pre-commit gate.
     ///
-    /// Two channels, deliberately not merged (KTD7): lint diagnostics are
+    /// Two channels, deliberately not merged: lint diagnostics are
     /// span-anchored findings, while format drift is a per-file boolean. Folding
     /// the second into the first would mean inventing spans that do not exist,
     /// so `--json` carries two findings keys instead of one array.
     ///
-    /// Exit codes (R15): `0` with neither a lint finding nor drift, `1` when
+    /// Exit codes: `0` with neither a lint finding nor drift, `1` when
     /// either is present (or a file could not be read or analyzed), `2` on a
     /// usage or config error. `--json` adds `6` for a serialization failure,
     /// matching `analyze`.
@@ -75,7 +75,7 @@ enum Cli {
         /// Skip preprocessing: do not expand includes or evaluate `&IF`.
         ///
         /// Preprocessing is **on by default** here, unlike `conformance` and
-        /// `analyze` (R19). A lint gate that does not expand includes cannot see
+        /// `analyze`. A lint gate that does not expand includes cannot see
         /// the symbols an include declares, so it reports every one of them as
         /// `undefined-symbol` — a flood of findings about the caller's own
         /// correct code. The language server always preprocesses, so leaving it
@@ -107,7 +107,7 @@ enum Cli {
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
 
-        /// Suppress lint findings; parse/semantic errors still gate (R16).
+        /// Suppress lint findings; parse/semantic errors still gate.
         ///
         /// A **filter on the reported set**, not a skipped run — the same meaning
         /// `analyze --no-lint` has always had. The pipeline that produces lint
@@ -117,7 +117,7 @@ enum Cli {
         #[arg(long)]
         no_lint: bool,
 
-        /// Suppress the format-drift channel: report lint findings only (R16).
+        /// Suppress the format-drift channel: report lint findings only.
         #[arg(long)]
         no_format: bool,
 
@@ -181,7 +181,7 @@ enum Cli {
     /// This is the parser-refinement instrument, not a user-facing check — it
     /// answers "how much ABL can oxabl parse today?", which is a question about
     /// oxabl rather than about the caller's source. It is deliberately
-    /// **hidden** from `--help` (R17/R23): it stays reachable and documented for
+    /// **hidden** from `--help`: it stays reachable and documented for
     /// the corpus loop and the A/B gate without growing the advertised CLI
     /// surface.
     #[command(hide = true)]
@@ -217,10 +217,10 @@ enum Cli {
     ///
     /// This is the semantic layer's introspection tool, not a gate: it answers
     /// "what did oxabl understand about this file?", so it **exits 0 whatever it
-    /// finds** (KTD9). A file full of lint findings and a clean one are the same
+    /// finds**. A file full of lint findings and a clean one are the same
     /// success here; `oxabl check` is the command whose exit code means something.
     ///
-    /// Deliberately **hidden** from `--help` (R23), alongside `conformance`: it is
+    /// Deliberately **hidden** from `--help`, alongside `conformance`: it is
     /// a debugging instrument for oxabl's own model, so it earns its own command
     /// but not a place in the advertised surface. It stays fully reachable and
     /// `oxabl analyze --help` works as normal.
@@ -229,8 +229,8 @@ enum Cli {
     /// the file cannot be read, `3` on a fatal preprocessing failure (no model to
     /// dump), `4` on a contained internal panic, `6` on a serialization failure,
     /// `7` on an unrecognized `--format`. Single-file by design, which is why a
-    /// panic aborts here rather than being reported-and-skipped as `check` does
-    /// (R24): there is no "rest of the walk" to protect.
+    /// panic aborts here rather than being reported-and-skipped as `check` does:
+    /// there is no "rest of the walk" to protect.
     #[command(hide = true)]
     Analyze {
         /// Path to the ABL source file to analyze.

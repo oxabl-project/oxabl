@@ -480,7 +480,7 @@
         },
         "max_consecutive_blank_lines": {
           "default": 1,
-          "description": "Maximum number of consecutive blank lines the formatter permits before collapsing the run (and trimming file edges). This slice adds the field and its config plumbing only; enforcement lands with the Slice 3 printer.",
+          "description": "Maximum number of consecutive blank lines the formatter permits before collapsing the run (and trimming file edges).",
           "format": "uint",
           "minimum": 0.0,
           "type": "integer"
