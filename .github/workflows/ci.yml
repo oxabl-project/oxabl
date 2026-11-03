@@ -29,6 +29,18 @@ jobs:
             echo "oxabl_fake_avm must not depend on an oxabl crate" >&2
             exit 1
           fi
+      # The remote cache sits behind the remote-cache feature of the umbrella
+      # crate, so that no other build carries the network and crypto stack.
+      - name: Only the remote-cache feature reaches the oxabl-cache client
+        run: |
+          if cargo tree -p oxabl_build --prefix none | grep '^oxabl-cache'; then
+            echo "oxabl_build must not depend on an oxabl-cache crate" >&2
+            exit 1
+          fi
+          if cargo tree -p oxabl -e normal,build --prefix none | grep '^oxabl-cache'; then
+            echo "oxabl without the remote-cache feature must not depend on an oxabl-cache crate" >&2
+            exit 1
+          fi
 
   test:
     name: Test
@@ -39,6 +51,30 @@ jobs:
         with:
           channel: stable
       - run: cargo test --workspace
+
+  remote-cache:
+    name: Remote cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      # The tests start the real cache server and its admin tool, built at the
+      # revision that Cargo.toml pins. The script builds them only when the
+      # cached directory does not hold that revision.
+      - uses: actions/cache@v4
+        with:
+          path: ~/oxabl-cache-bin
+          key: oxabl-cache-bin-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'scripts/remote-cache-binaries.sh') }}
+      - name: Build the cache server and the admin tool
+        run: ./scripts/remote-cache-binaries.sh ~/oxabl-cache-bin
+      - name: Test the remote cache
+        run: |
+          export OXABL_CACHE_SERVER_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache-server"
+          export OXABL_CACHE_ADMIN_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache-admin"
+          cargo test -p oxabl --features remote-cache --locked \
+            --test build_remote_cache --test build_remote_faults --test build_remote_trust
 
   fmt:
     name: Format

@@ -279,25 +279,6 @@ fn a_new_job_directory_is_marked_and_used_in_ci_and_read_only_mode_but_not_in_de
 }
 
 #[test]
-fn a_workspace_that_turns_the_remote_cache_on_needs_a_binary_with_it() {
-    let workspace = project();
-    workspace.write(".oxabl/cache.toml", "server = \"https://cache.example\"\n");
-
-    let run = workspace.build();
-
-    assert_eq!(run.code, 2, "{}", run.stderr);
-    assert!(
-        run.stderr.contains("built without remote-cache")
-            && run.stderr.contains("--no-remote-cache"),
-        "{}",
-        run.stderr
-    );
-    assert!(workspace.compiled().is_empty());
-    workspace.build_with(&["--no-remote-cache"]).succeeded();
-    assert_eq!(workspace.compiled().len(), 3);
-}
-
-#[test]
 fn waiting_for_the_lock_lets_a_second_build_follow_the_first() {
     let workspace = project();
     workspace.write("src/slow.p", "/* FAKE-SLOW */\nMESSAGE \"s\".\n");

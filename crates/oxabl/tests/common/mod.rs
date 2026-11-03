@@ -8,6 +8,8 @@ pub mod cache;
 pub mod key_spec;
 pub mod keyed;
 pub mod openedge;
+#[cfg(feature = "remote-cache")]
+pub mod remote;
 pub mod remote_double;
 
 use std::fs;

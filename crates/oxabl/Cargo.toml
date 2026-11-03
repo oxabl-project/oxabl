@@ -41,6 +41,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 schemars = { version = "0.8", optional = true }
 
+[[test]]
+name = "build_remote_cache"
+required-features = ["remote-cache"]
+
+[[test]]
+name = "build_remote_faults"
+required-features = ["remote-cache"]
+
+[[test]]
+name = "build_remote_trust"
+required-features = ["remote-cache"]
+
 [features]
 # `serde` propagates the diagnostic-family `Serialize` derives up from the
 # sub-crates. It is on by default so the `oxabl` binary can serialize
