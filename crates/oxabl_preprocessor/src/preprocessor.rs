@@ -145,6 +145,8 @@ impl<'fs> Preprocessor<'fs> {
         source: &str,
     ) -> Result<PreprocessedFile, Vec<Diagnostic>> {
         let predefined = self.predefined.as_ref().unwrap_or(&DEFAULT_PREDEFINED);
+        let mut sources = Vec::with_capacity(1 + count_markers(source.as_bytes()).0);
+        sources.push((file, Arc::from(source)));
         let mut ctx = ProcessContext {
             fs: self.fs,
             include_paths: self.include_paths,
@@ -161,7 +163,7 @@ impl<'fs> Preprocessor<'fs> {
             elided: Vec::new(),
             line_starts: HashMap::new(),
             expanding_vars: Vec::new(),
-            sources: vec![(file, Arc::from(source))],
+            sources,
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
             site_stack: Vec::new(),
@@ -303,7 +305,11 @@ impl ProcessContext<'_> {
     ) -> Vec<SpanNode> {
         let bytes = source.as_bytes();
         let len = bytes.len();
-        let mut nodes: Vec<SpanNode> = Vec::new();
+        // Each reference adds up to two nodes and a source, each directive one
+        // node. Reserving once keeps the vectors from regrowing as it scans.
+        let (refs, directives) = count_markers(bytes);
+        let mut nodes: Vec<SpanNode> = Vec::with_capacity(2 * refs + directives + 1);
+        self.sources.reserve(refs);
         // `chunk_start` tracks the beginning of the current un-emitted text chunk.
         let mut chunk_start: u32 = 0;
         let mut i: usize = 0;
@@ -2145,6 +2151,24 @@ fn include_ref_start(bytes: &[u8], open: usize) -> bool {
         first,
         Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'.' | b'"' | b'{')
     )
+}
+
+/// The number of `{` and of `&` bytes in `bytes`: an upper bound on the
+/// references and the directives a scan of it will meet.
+fn count_markers(bytes: &[u8]) -> (usize, usize) {
+    let (mut refs, mut directives) = (0, 0);
+    // Byte counters over blocks that cannot overflow them: the loop vectorizes
+    // where one wide counter does not.
+    for block in bytes.chunks(usize::from(u8::MAX)) {
+        let (mut r, mut d) = (0u8, 0u8);
+        for &b in block {
+            r += u8::from(b == b'{');
+            d += u8::from(b == b'&');
+        }
+        refs += usize::from(r);
+        directives += usize::from(d);
+    }
+    (refs, directives)
 }
 
 /// Whether `text` holds a `{` that starts a file include reference.
