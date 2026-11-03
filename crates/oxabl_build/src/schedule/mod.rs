@@ -5,4 +5,4 @@ mod jobs;
 mod queue;
 
 pub use jobs::{Job, Schedule};
-pub use queue::{Queue, Take};
+pub use queue::{Queue, Take, Task};

@@ -1,10 +1,14 @@
 //! `oxabl build`: plan, compile in dependency order, install, record.
 
+mod complete;
 mod context;
+mod coordinate;
+mod fetch;
 mod finish;
 mod pass;
 mod prepare;
 mod record;
+mod release;
 pub mod report;
 pub mod request;
 mod shared;
@@ -16,15 +20,17 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
+use oxabl_common::catch_panic;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use self::context::{Ctx, State};
+use self::context::{Ctx, FetchPlan, Imaging, State, Verify};
 use self::pass::PassEnd;
 use self::prepare::{Prepared, prepare};
 use self::record::Recorder;
 pub use self::report::{BuildReport, Summary, UnitReport, UnitStatus};
 pub use self::request::BuildRequest;
 use self::types::UnitInfo;
+use crate::cache::{ArtifactPath, CompileKey, FetchRequest, NotStoredReason, StoreOutcome};
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::events::Event;
@@ -33,6 +39,9 @@ use crate::key::compute::UnitKey;
 use crate::output::{OutputLayout, prune, stage};
 use crate::paths::propath::{OUT, library_name};
 use crate::store::StoredEnvironment;
+use crate::verify::reads::Reads;
+use crate::verify::rehash::Rehasher;
+use crate::verify::release::{Releaser, Settings};
 use crate::worker::compile::Limits;
 
 /// Compiles what the plan says must compile. The report says how it went; an
@@ -57,7 +66,7 @@ pub fn build(
         committed,
         started,
         plan,
-        notes,
+        mut notes,
         _locks,
     } = prepared;
     let crate::plan::run::Committed {
@@ -108,7 +117,6 @@ pub fn build(
         .flat_map(|(_, rows)| rows.iter().map(|row| row.path.clone()))
         .collect();
     prune::prune(root, &layout.directories(), &owned);
-    let upload = cache.uploader();
     if let Err(error) = recorder.flush() {
         pool.shutdown();
         return Err(error);
@@ -136,13 +144,37 @@ pub fn build(
         .iter()
         .map(|(unit, row)| (*unit, row.duration_ms.max(1)))
         .collect();
+    let verifying = verification(workspace, &layout, cache.writes(), &mut notes);
+    let baseline: Vec<(String, blake3::Hash)> = environment
+        .databases
+        .iter()
+        .map(|database| (database.info.ldb.clone(), database.schema.identity()))
+        .collect();
+    let imaging = (verifying && !baseline.is_empty()).then(|| Imaging {
+        databases: baseline.iter().map(|(ldb, _)| ldb.clone()).collect(),
+        timeout: spec.unit_timeout,
+    });
+    let verify = verifying.then(|| Verify {
+        rehasher: Rehasher::new(root, &outcome, &keys.keyed.dlc, spec.unit_timeout),
+        reads: Reads::new(
+            &outcome.names,
+            environment.facts.get("dlc"),
+            &spec.worker_root,
+            &layout.rcode,
+        ),
+        user_xref: layout.xref.is_some(),
+    });
+    let fetch = fetch_plan(&infos, &settings.state_dir, &spec.build_id);
     let ctx = Ctx {
         root,
         outcome: &outcome,
         infos,
         propaths,
         options,
-        xref: layout.xref_mode(),
+        xref: match (verifying, layout.xref.is_some()) {
+            (true, false) => "private",
+            _ => layout.xref_mode(),
+        },
         debug_list: layout.debug_list.is_some(),
         listing: layout.listing.is_some(),
         limits: Limits {
@@ -150,6 +182,10 @@ pub fn build(
             cancel_grace: workspace.config.build.workers.cancel_grace.0,
         },
         cancel: &cancel,
+        cache: &*cache,
+        fetch,
+        verify,
+        imaging,
         fail_fast,
         generation: plan.generation,
         weights,
@@ -159,7 +195,19 @@ pub fn build(
     let mut state = State {
         recorder,
         sink,
-        uploader: Some(upload),
+        uploader: verifying.then(|| cache.uploader()),
+        release: verifying.then(|| {
+            let verify = &workspace.config.build.verify;
+            Releaser::new(
+                baseline,
+                Settings {
+                    units: verify.batch_units.max(1) as usize,
+                    interval: verify.batch_interval.0,
+                },
+            )
+        }),
+        pushed: 0,
+        uploader_broken: false,
         units: FxHashMap::default(),
         failed: FxHashSet::default(),
         notes,
@@ -178,7 +226,7 @@ pub fn build(
     targets.sort_unstable();
     let mut end = PassEnd::Complete;
     if !targets.is_empty() {
-        end = pass::run(&ctx, &mut state, &mut pool, &targets);
+        end = pass::run(&ctx, &mut state, &mut pool, &targets, true);
         if end == PassEnd::Complete {
             let mut retry: Vec<u32> = state
                 .failed
@@ -188,23 +236,34 @@ pub fn build(
                 .collect();
             retry.sort_unstable();
             if !retry.is_empty() {
-                end = pass::run(&ctx, &mut state, &mut pool, &retry);
+                end = pass::run(&ctx, &mut state, &mut pool, &retry, false);
             }
         }
     }
 
+    release::finish(&mut state, &mut pool, end);
     let State {
         recorder,
         mut sink,
         uploader,
+        release,
+        pushed,
         units,
-        notes,
+        mut notes,
         fatal,
         ..
     } = state;
-    let offered = uploader
-        .map(|uploader| uploader.finish())
+    let outcomes = uploader
+        .and_then(|uploader| catch_panic(|| uploader.finish()).ok())
         .unwrap_or_default();
+    let cache_report = cache_report(
+        cache.label(),
+        verifying,
+        pushed,
+        &outcomes,
+        release,
+        &mut notes,
+    );
     let closed = recorder.close();
     pool.shutdown();
     stage::remove_stale(&settings.state_dir);
@@ -225,7 +284,7 @@ pub fn build(
             elapsed_ms: started_at.elapsed().as_millis() as u64,
         },
     );
-    report.offered = offered.len();
+    report.cache = cache_report;
     if let Some(sink) = &mut sink {
         let summary = &report.summary;
         sink(&Event::Summary {
@@ -288,4 +347,116 @@ fn worker_entry(
         Some(path) => path.clone(),
         None => entry.to_string(),
     }
+}
+
+/// Whether this build verifies its units: a cache stores sets, the read check
+/// is on and the compiler writes the `XREF-XML` that the check reads.
+fn verification(
+    workspace: &BuildWorkspace,
+    layout: &OutputLayout,
+    writes: bool,
+    notes: &mut Vec<String>,
+) -> bool {
+    if !writes {
+        return false;
+    }
+    if matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))) {
+        notes.push(
+            "no cache entries are written: [build.outputs].xref_format = \"text\" gives no compiler-resolved file names to check"
+                .to_string(),
+        );
+        return false;
+    }
+    if !workspace.config.build.verify.reads {
+        notes.push(
+            "no cache entries are written: [build.verify].reads = false turns the read check off"
+                .to_string(),
+        );
+        return false;
+    }
+    true
+}
+
+/// The lookups of the first pass: every keyable unit of the rebuild set.
+fn fetch_plan(
+    infos: &FxHashMap<u32, UnitInfo>,
+    state_dir: &std::path::Path,
+    build_id: &str,
+) -> Option<FetchPlan> {
+    let mut keyed: Vec<(&u32, &UnitInfo)> = infos
+        .iter()
+        .filter(|(_, info)| info.key.is_some())
+        .collect();
+    if keyed.is_empty() {
+        return None;
+    }
+    keyed.sort_by(|a, b| a.1.path.cmp(&b.1.path));
+    let mut requests = Vec::with_capacity(keyed.len());
+    let mut unit_of = FxHashMap::default();
+    for (unit, info) in keyed {
+        let key = CompileKey(info.key.expect("filtered on a key"));
+        requests.push(FetchRequest {
+            key,
+            expect: info
+                .expected
+                .iter()
+                .map(|expected| ArtifactPath(expected.staged.clone()))
+                .collect(),
+        });
+        unit_of.insert(key, *unit);
+    }
+    Some(FetchPlan {
+        requests,
+        unit_of,
+        stage: state_dir.join("stage").join(build_id).join("fetch"),
+    })
+}
+
+/// What the caches did, and the notes about what verification kept out.
+fn cache_report(
+    label: &str,
+    writes: bool,
+    pushed: usize,
+    outcomes: &[(CompileKey, StoreOutcome)],
+    release: Option<Releaser>,
+    notes: &mut Vec<String>,
+) -> report::CacheReport {
+    let mut cache = report::CacheReport {
+        label: label.to_string(),
+        writes,
+        offered: pushed,
+        ..Default::default()
+    };
+    let mut refused: Vec<(NotStoredReason, usize)> = Vec::new();
+    for (_, outcome) in outcomes {
+        match outcome {
+            StoreOutcome::Stored => cache.stored += 1,
+            StoreOutcome::AlreadyPresent => cache.already_present += 1,
+            StoreOutcome::NotStored(reason) => {
+                match refused.iter_mut().find(|(r, _)| r == reason) {
+                    Some((_, count)) => *count += 1,
+                    None => refused.push((*reason, 1)),
+                }
+            }
+        }
+    }
+    cache.not_stored = refused;
+    if let Some(release) = release {
+        let dropped = release.dropped;
+        cache.changed_inputs = dropped.inputs.len();
+        cache.schema_dropped = dropped.schema.len();
+        if let Some((path, file)) = dropped.inputs.first() {
+            notes.push(format!(
+                "{} units are not cached because a file changed while they compiled, for example {file} for {path}",
+                dropped.inputs.len()
+            ));
+        }
+        if let Some(reason) = dropped.schema_reason {
+            notes.push(format!(
+                "{reason}: {} units compiled after it are not cached",
+                dropped.schema.len()
+            ));
+        }
+    }
+    cache
 }

@@ -68,7 +68,8 @@ fn sha256_hex(text: &str) -> String {
         .collect()
 }
 
-/// Emits the `SENT` lines of share `part` of `parts`, then `SCHEMA-END`. The
+/// Emits the `SENT` lines of share `part` of `parts`, then `SCHEMA-END`. With
+/// `changed` every entry hashes as if the schema had been edited. The
 /// tables sorted by name are dealt out round robin; share 0 also holds the
 /// database record and the sequences.
 pub fn emit_image(
@@ -77,9 +78,16 @@ pub fn emit_image(
     part: usize,
     parts: usize,
     faults: &Faults,
+    changed: bool,
+    broken: bool,
 ) -> io::Result<()> {
     let ldb = database.ldb.as_bytes();
     let mut all = entries(database);
+    if changed {
+        for entry in &mut all {
+            entry.text.push_str("changed\n");
+        }
+    }
     let mut tables: Vec<String> = all
         .iter()
         .filter(|e| e.kind == "table")
@@ -107,7 +115,11 @@ pub fn emit_image(
         })
         .collect();
     let mut count = lines.len();
-    match faults.schema_fault.as_deref() {
+    let fault = match broken {
+        true => Some("bad-count"),
+        false => faults.schema_fault.as_deref(),
+    };
+    match fault {
         Some("bad-count") => count += 1,
         Some("duplicate-entry") if !lines.is_empty() => {
             let first = lines[0].clone();
@@ -116,6 +128,9 @@ pub fn emit_image(
         }
         Some("bad-hash") if !lines.is_empty() => lines[0][3] = b"not-a-hash".to_vec(),
         _ => {}
+    }
+    if let Some(delay) = faults.schema_delay {
+        std::thread::sleep(delay);
     }
     for (n, [kind, name, records, sha]) in lines.iter().enumerate() {
         if faults.noise && n % 3 == 0 {

@@ -12,3 +12,14 @@ pub fn append(log: Option<&Path>, what: &str) {
         let _ = file.write_all(format!("{} {what}\n", std::process::id()).as_bytes());
     }
 }
+
+/// Appends `<nanoseconds since the epoch> <pid> <what>` to the request log.
+pub fn request(log: Option<&Path>, what: &str) {
+    let Some(path) = log else { return };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(format!("{nanos} {} {what}\n", std::process::id()).as_bytes());
+    }
+}

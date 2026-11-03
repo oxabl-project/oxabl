@@ -1,7 +1,7 @@
 //! One worker slot: its process, its stage and what it has been told.
 
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cancel::Cancel;
 use super::compile::{CompiledUnit, Limits};
@@ -10,9 +10,10 @@ use super::frame::CompileRequest;
 use super::logs::Logs;
 use super::pool::PoolSpec;
 use super::program::Program;
+use super::schema_fetch;
 use super::session::Session;
 use super::start::{SlotFailure, start_slot};
-use crate::key::Profile;
+use crate::key::{FileDigest, Profile, SchemaPart};
 use crate::output::Stage;
 
 /// What a replacement worker is started with and checked against.
@@ -120,6 +121,34 @@ impl Worker {
             limits,
             on_done,
         )
+    }
+
+    /// Hashes one worker-side file with `HASH`.
+    pub fn hash_file(&mut self, path: &str, timeout: Duration) -> Result<FileDigest, WorkerError> {
+        self.session.hash(path, Instant::now() + timeout)
+    }
+
+    /// Images share `part` of `parts` of every database in `databases`, one
+    /// share per database, in that order.
+    pub fn image_share(
+        &mut self,
+        databases: &[String],
+        part: usize,
+        parts: usize,
+        timeout: Duration,
+    ) -> Result<Vec<SchemaPart>, WorkerError> {
+        databases
+            .iter()
+            .map(|ldb| {
+                schema_fetch::fetch(
+                    &mut self.session,
+                    ldb,
+                    part,
+                    parts,
+                    Instant::now() + timeout,
+                )
+            })
+            .collect()
     }
 
     /// Stops the process of a lost worker and starts another in its place,

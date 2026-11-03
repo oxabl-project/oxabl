@@ -27,4 +27,5 @@ pub mod refresh;
 pub mod run;
 pub mod schedule;
 pub mod store;
+pub mod verify;
 pub mod worker;

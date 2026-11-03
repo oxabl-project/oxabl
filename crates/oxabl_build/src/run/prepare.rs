@@ -2,6 +2,7 @@
 //! the plan.
 
 use std::thread;
+use std::time::{Duration, Instant};
 
 use super::BuildRequest;
 use crate::config::BuildWorkspace;
@@ -13,7 +14,7 @@ use crate::paths::PathMap;
 use crate::plan::run::{Committed, refresh_and_commit};
 use crate::plan::{Plan, StoredInputs, decide};
 use crate::refresh::Request;
-use crate::worker::{Pool, PoolSpec, Started, random};
+use crate::worker::{Cancel, Pool, PoolSpec, Started, random};
 
 /// A build that is ready to compile: its locks, its workers and its plan.
 pub struct Prepared {
@@ -25,6 +26,27 @@ pub struct Prepared {
     pub notes: Vec<String>,
     /// The workspace lock and the output lock, held to the end.
     pub _locks: (WorkspaceLock, WorkspaceLock),
+}
+
+/// Takes a lock with `attempt`, trying again every 100 ms for up to `wait`.
+fn acquire(
+    attempt: impl Fn() -> LockOutcome,
+    what: &str,
+    wait: Option<Duration>,
+    cancel: &Cancel,
+) -> Result<WorkspaceLock, BuildError> {
+    let deadline = Instant::now() + wait.unwrap_or_default();
+    loop {
+        match attempt() {
+            LockOutcome::Busy(_) if Instant::now() < deadline => {
+                if cancel.is_cancelled() {
+                    return Err(BuildError::Cancelled);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            outcome => return lock(outcome, what),
+        }
+    }
 }
 
 fn lock(outcome: LockOutcome, what: &str) -> Result<WorkspaceLock, BuildError> {
@@ -51,15 +73,19 @@ pub fn prepare(
     let settings = &workspace.settings;
     let spec = PoolSpec::from_config(workspace, request.workers, random::build_id())?;
     let layout = OutputLayout::lower(&workspace.config, &settings.root)?;
-    let workspace_lock = lock(
-        try_acquire(&settings.state_dir),
+    let workspace_lock = acquire(
+        || try_acquire(&settings.state_dir),
         &format!("{}/build.lock", settings.state_dir.display()),
+        request.wait_lock,
+        &request.cancel,
     )?;
     ownership::claim(&settings.root, &layout.directories())?;
     let output_dir = settings.root.join(&layout.rcode);
-    let output_lock = lock(
-        try_acquire_file(&output_dir, ownership::LOCK),
+    let output_lock = acquire(
+        || try_acquire_file(&output_dir, ownership::LOCK),
         &format!("{}/{}", layout.rcode, ownership::LOCK),
+        request.wait_lock,
+        &request.cancel,
     )?;
     stage::remove_stale(&settings.state_dir);
 

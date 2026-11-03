@@ -3,77 +3,40 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use common::built::Built;
-use oxabl::build::cache::{
-    ArtifactCache, ArtifactSetRef, ArtifactUploader, CompileKey, StoreOutcome,
-};
+use common::remote_double::Remote;
 use oxabl::build::config::BuildWorkspace;
 use oxabl::build::run::{BuildReport, BuildRequest, build};
 use oxabl::build::worker::Cancel;
 
-#[derive(Default)]
-struct Seen {
-    pushed: Mutex<Vec<ArtifactSetRef>>,
-    finished: AtomicUsize,
-}
-
-struct Recording(Arc<Seen>);
-
-struct Uploader(Arc<Seen>);
-
-impl ArtifactCache for Recording {
-    fn label(&self) -> &str {
-        "recording"
-    }
-
-    fn uploader(&self) -> Box<dyn ArtifactUploader> {
-        Box::new(Uploader(self.0.clone()))
-    }
-}
-
-impl ArtifactUploader for Uploader {
-    fn push(&mut self, set: ArtifactSetRef) {
-        self.0.pushed.lock().unwrap().push(set);
-    }
-
-    fn finish(self: Box<Self>) -> Vec<(CompileKey, StoreOutcome)> {
-        self.0.finished.fetch_add(1, Ordering::SeqCst);
-        Vec::new()
-    }
-}
+/// The recording cache of these tests is the shared remote double.
+struct Seen(Remote);
 
 impl Seen {
-    /// The artifact paths of everything pushed, sorted.
     fn paths(&self) -> Vec<String> {
-        let mut paths: Vec<String> = self
-            .pushed
-            .lock()
-            .unwrap()
-            .iter()
-            .flat_map(|set| set.files.iter().map(|file| file.path.0.clone()))
-            .collect();
-        paths.sort();
-        paths
+        self.0.pushed_paths()
+    }
+
+    fn finished(&self) -> usize {
+        self.0.finished()
     }
 }
 
-fn run_build(workspace: &Built, cancel: Cancel) -> (BuildReport, Arc<Seen>) {
+fn run_build(workspace: &Built, cancel: Cancel) -> (BuildReport, Seen) {
     let config = BuildWorkspace::open(Some(workspace.root())).expect("a usable configuration");
-    let seen = Arc::new(Seen::default());
+    let remote = Remote::new();
     let report = build(
         &config,
         BuildRequest {
             cancel,
-            cache: Box::new(Recording(seen.clone())),
+            cache: remote.cache(),
             ..BuildRequest::default()
         },
     )
     .expect("the build runs");
-    (report, seen)
+    (report, Seen(remote))
 }
 
 #[test]
@@ -87,16 +50,12 @@ fn every_keyable_unit_that_compiled_is_offered_once_and_the_uploader_finishes_on
 
     assert_eq!(report.exit, 1, "an unresolved include fails the compile");
     assert_eq!(seen.paths(), ["r/a.r", "r/b.r"]);
-    assert_eq!(seen.finished.load(Ordering::SeqCst), 1);
-    for set in seen.pushed.lock().unwrap().iter() {
-        let file = &set.files[0];
-        assert!(file.disk_path.is_file(), "{:?}", file.disk_path);
-        assert_eq!(file.size, std::fs::metadata(&file.disk_path).unwrap().len());
-        assert_eq!(
-            file.blake3,
-            *blake3::hash(&std::fs::read(&file.disk_path).unwrap()).as_bytes()
-        );
-    }
+    assert_eq!(seen.finished(), 1);
+    assert_eq!(
+        seen.0.outcomes().len(),
+        2,
+        "each pushed set is stored: its size and hash matched the file"
+    );
 }
 
 #[test]
@@ -188,10 +147,51 @@ fn a_cancel_offers_what_was_released_before_it_and_nothing_still_compiling() {
         ["r/a1.r", "r/a2.r"],
         "z1 was still compiling at the signal and is recorded but not offered"
     );
-    assert_eq!(seen.finished.load(Ordering::SeqCst), 1, "finish runs once");
+    assert_eq!(seen.finished(), 1, "finish runs once");
     assert!(
         workspace.exists("build/r/z1.r"),
         "the unit in flight was installed"
     );
     assert!(!workspace.exists("build/r/z2.r"));
+}
+
+#[test]
+fn a_cancel_releases_nothing_that_no_schema_check_released() {
+    let workspace = Built::new();
+    workspace.workers("count = 1\ncancel_grace = \"30s\"");
+    workspace.databases(&["ledger"]);
+    let records: Vec<Vec<String>> =
+        serde_json::from_str(r#"[["db","ledger"],["file","customer"]]"#).unwrap();
+    workspace.set_environment(&common::env_with_schema(records));
+    for name in ["a1", "a2"] {
+        workspace.write(&format!("src/{name}.p"), "MESSAGE \"fast\".\n");
+    }
+    workspace.write("src/z1.p", "/* FAKE-SLOW */\nMESSAGE \"slow\".\n");
+    let cancel = Cancel::new();
+    let watcher = {
+        let cancel = cancel.clone();
+        let log = workspace.log();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                if text.lines().any(|line| line.ends_with(" z1.p")) {
+                    cancel.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    };
+
+    let (report, seen) = run_build(&workspace, cancel);
+    watcher.join().unwrap();
+
+    assert_eq!(report.exit, 130);
+    assert!(
+        seen.paths().is_empty(),
+        "the default batch holds both units for a check that never ran: {:?}",
+        seen.paths()
+    );
+    assert_eq!(seen.finished(), 1);
 }

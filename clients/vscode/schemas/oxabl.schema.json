@@ -227,6 +227,21 @@
       "additionalProperties": false,
       "description": "The `[build.verify]` table.",
       "properties": {
+        "batch_interval": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TimeSpan"
+            }
+          ],
+          "description": "Longest time a unit waits for the schema check. Default `60s`."
+        },
+        "batch_units": {
+          "default": 500,
+          "description": "Units held for the schema check that release them to a cache. Default 500.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "reads": {
           "default": true,
           "description": "Read the compiler's own list of opened files and check it. Without it no cache write happens.",

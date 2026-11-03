@@ -20,6 +20,11 @@ pub enum Event<'a> {
         path: &'a str,
         worker: usize,
     },
+    UnitFetched {
+        path: &'a str,
+        /// `local` or `remote`.
+        cache: &'a str,
+    },
     Message {
         path: &'a str,
         message: &'a CompilerMessage,
@@ -66,6 +71,9 @@ impl Event<'_> {
             }),
             Event::UnitStarted { path, worker } => {
                 json!({ "event": "unit-started", "path": path, "worker": worker })
+            }
+            Event::UnitFetched { path, cache } => {
+                json!({ "event": "unit-fetched", "path": path, "cache": cache })
             }
             Event::Message { path, message } => json!({
                 "event": "message",

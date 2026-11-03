@@ -66,6 +66,18 @@ impl Session {
         }
     }
 
+    /// One line of the request log: the request type and its first field,
+    /// and for `COMPILE` the presence of each watched path.
+    fn log_request(&self, line: &Line) {
+        let mut what = line.kind.clone();
+        if line.kind == "COMPILE" {
+            for path in &self.faults.watch {
+                what.push_str(&format!(" watch:{}={}", path.display(), path.exists()));
+            }
+        }
+        log::request(self.faults.request_log.as_deref(), &what);
+    }
+
     fn noise(&self, out: &mut impl Write) -> io::Result<()> {
         if self.faults.noise {
             writeln!(out, "** noise: session starting")?;
@@ -138,6 +150,7 @@ impl Session {
             let Some(line) = frame::parse(text.trim_end_matches('\n')) else {
                 continue;
             };
+            self.log_request(&line);
             match line.kind.as_str() {
                 "HELLO" => {
                     if self.faults.exit_in_handshake {
@@ -180,7 +193,28 @@ impl Session {
                                 self.faults.log.as_deref(),
                                 &format!("schema {ldb} {part}/{parts}"),
                             );
-                            schema::emit_image(out, database, part, parts, &self.faults)?
+                            let changed = self
+                                .faults
+                                .schema_change_after
+                                .is_some_and(|after| self.compiler.compiled >= after)
+                                || self
+                                    .faults
+                                    .schema_change_file
+                                    .as_ref()
+                                    .is_some_and(|file| file.exists());
+                            let broken = self
+                                .faults
+                                .schema_error_after
+                                .is_some_and(|after| self.compiler.compiled >= after);
+                            schema::emit_image(
+                                out,
+                                database,
+                                part,
+                                parts,
+                                &self.faults,
+                                changed,
+                                broken,
+                            )?
                         }
                         None => emit(out, "ERROR", &[format!("no database {ldb}").as_bytes()])?,
                     }

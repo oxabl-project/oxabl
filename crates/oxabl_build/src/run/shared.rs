@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use rustc_hash::FxHashMap;
 
+use super::context::{Imaging, Verify};
 use super::types::UnitInfo;
+use crate::refresh::Outcome;
 use crate::schedule::Queue;
 use crate::worker::compile::Limits;
 use crate::worker::{Cancel, Restart};
@@ -14,6 +16,7 @@ use crate::worker::{Cancel, Restart};
 /// The same for all jobs of a pass.
 pub struct Shared<'a> {
     pub root: &'a Path,
+    pub outcome: &'a Outcome,
     pub infos: &'a FxHashMap<u32, UnitInfo>,
     /// The units of each job.
     pub jobs: Vec<Vec<u32>>,
@@ -27,6 +30,8 @@ pub struct Shared<'a> {
     pub listing: bool,
     pub limits: Limits,
     pub cancel: &'a Cancel,
+    pub verify: Option<&'a Verify<'a>>,
+    pub imaging: Option<&'a Imaging>,
     /// Stop handing out jobs at the first failed unit.
     pub fail_fast: bool,
     pub restart: Arc<Restart>,

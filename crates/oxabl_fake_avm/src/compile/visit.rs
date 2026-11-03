@@ -91,7 +91,16 @@ impl Compiler {
             }
         }
         for include in &found_in_text.includes {
-            match resolve::find(ctx.propath, include, ctx.dlc) {
+            let other = found_in_text
+                .resolve_other
+                .iter()
+                .find(|(name, _)| name == include)
+                .map(|(_, path)| resolve::Found {
+                    shown: path.clone(),
+                    real: PathBuf::from(path),
+                })
+                .filter(|file| file.real.is_file());
+            match other.or_else(|| resolve::find(ctx.propath, include, ctx.dlc)) {
                 Some(file) if out.has_read(&file.shown) => {}
                 Some(file) => self.visit_file(ctx, unit, &file, out, visited, false),
                 None => out.fail(

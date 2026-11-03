@@ -13,6 +13,8 @@ pub const FAILED: u8 = 2;
 
 /// `results.origin`.
 pub const COMPILED: u8 = 1;
+pub const LOCAL_CACHE: u8 = 2;
+pub const REMOTE_CACHE: u8 = 3;
 
 /// Meta key: a build has recorded results in this store.
 const BUILT: &str = "built";

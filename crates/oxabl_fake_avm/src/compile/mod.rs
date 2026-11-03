@@ -24,6 +24,8 @@ pub struct Compiler {
     /// Classes read from source, by lower-case class name, with the files each
     /// one read. A session keeps them for good, as `MULTI-COMPILE` does.
     classes: HashMap<String, Vec<Read>>,
+    /// The units this worker has compiled.
+    pub compiled: usize,
 }
 
 fn text(line: &frame::Line, index: usize) -> String {
@@ -89,6 +91,7 @@ impl Compiler {
             let started = Instant::now();
             log::append(faults.log.as_deref(), &name);
             let result = self.compile_unit(&context, &name)?;
+            self.compiled += 1;
             for message in &result.messages {
                 emit(
                     out,

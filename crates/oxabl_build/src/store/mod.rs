@@ -20,8 +20,8 @@ pub use error::StoreError;
 pub use load::{Loaded, Reading};
 pub use open::{Opened, Store};
 pub use results::{
-    COMPILED, Components, FAILED, OutputRow, ResultBatch, ResultRow, Results, SECTIONS, SUCCESS,
-    StoredEnvironment,
+    COMPILED, Components, FAILED, LOCAL_CACHE, OutputRow, REMOTE_CACHE, ResultBatch, ResultRow,
+    Results, SECTIONS, SUCCESS, StoredEnvironment,
 };
 pub use rows::{
     Analysis, Edge, FileRow, ListingRow, Observation, StoredAnalysis, Unresolved, tracked,

@@ -277,3 +277,48 @@ fn compile_a_class_and_its_user() {
     let again: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
     assert_eq!(again["summary"]["compiled"], 0, "{again}");
 }
+
+/// The same project built in two workspaces that share a local cache. With
+/// no XREF output requested, the build writes a private `XREF-XML` and reads
+/// it back: this is the first time that the read check meets the file names
+/// of a real compiler. The second workspace must compile nothing, and its
+/// r-code must load.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn two_workspaces_share_compiled_units_through_the_local_cache() {
+    let setup = setup();
+    let cache = tempfile::TempDir::new().unwrap();
+    let first = compile_workspace(&setup.target);
+    first.without_xref_output();
+    first.write("src/pkg/Greeter.cls", BASE);
+    first.write("src/greet.p", USER);
+
+    let output = first.build_with_cache(&["--json"], 0, "developer", Some(cache.path()));
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    eprintln!("{report}");
+    assert_eq!(report["summary"]["compiled"], 2, "{report}");
+    assert_eq!(
+        report["cache"]["stored"], 2,
+        "both units pass the checks: {report}"
+    );
+    assert!(
+        !report["notes"].to_string().contains("outside the closure"),
+        "the compiler opened a file that the analysis did not see: {}",
+        report["notes"]
+    );
+
+    let second = compile_workspace(&setup.target);
+    second.without_xref_output();
+    second.write("src/pkg/Greeter.cls", BASE);
+    second.write("src/greet.p", USER);
+    let output = second.build_with_cache(&["--json"], 0, "developer", Some(cache.path()));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["summary"]["compiled"], 0, "{report}");
+    assert_eq!(report["summary"]["fetched"], 2, "{report}");
+    let printed = second.run_program(&setup.target, LOAD);
+    assert!(
+        printed.contains("hello from a class"),
+        "the fetched r-code did not run: {printed}"
+    );
+}

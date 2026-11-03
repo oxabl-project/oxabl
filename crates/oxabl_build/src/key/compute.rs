@@ -45,6 +45,8 @@ pub struct Keyed {
     /// The readable record of the environment, as the store keeps it.
     pub environment_record: Option<String>,
     pub warnings: Vec<String>,
+    /// The SHA-256 of each `$DLC/...` closure file as the workers hashed it.
+    pub dlc: FxHashMap<String, [u8; 32]>,
 }
 
 fn config_error(message: String) -> PoolError {
@@ -421,5 +423,6 @@ pub fn compute(
         environment: Some(identity),
         environment_record: Some(super::record::record(environment)),
         warnings,
+        dlc: dlc_sha,
     })
 }

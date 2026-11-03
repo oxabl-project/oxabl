@@ -21,7 +21,7 @@ use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::FileDigest;
 use crate::key::digest::hash_set_digest;
-use crate::key::{Environment, Profile};
+use crate::key::{Environment, Profile, SchemaImage};
 
 /// Lines of a worker log shown when no worker starts.
 const LOG_TAIL_LINES: usize = 20;
@@ -359,6 +359,20 @@ impl Pool {
                 first.number
             )))
         }
+    }
+
+    /// Images every database across the live workers, as the probe does.
+    pub fn image(&mut self, databases: &[String]) -> Result<Vec<SchemaImage>, WorkerError> {
+        let mut sessions: Vec<&mut Session> = self
+            .workers
+            .iter_mut()
+            .filter(|worker| !worker.is_dead())
+            .map(|worker| &mut worker.session)
+            .collect();
+        if sessions.is_empty() {
+            return Err(WorkerError::Lost("no worker is left".into()));
+        }
+        imaging::image_databases(&mut sessions, databases, self.unit_timeout)
     }
 
     /// Sends `QUIT` to every worker and stops what does not quit.

@@ -9,12 +9,24 @@
 //! request's PROPATH, and writes a text r-code file that lists what it read
 //! with a hash of each, and a time. Text in a source asks for a fault:
 //! `FAKE-FAIL` (an error at that line), `FAKE-FAIL-ONCE` (the first compile
-//! only), `FAKE-FAIL-SILENT` (a failure with no message), `FAKE-WARN`, `FAKE-CRASH` (exit 1), `FAKE-CRASH-ONCE`, `FAKE-HANG`,
-//! `FAKE-SLOW` (two seconds before the outputs), `FAKE-NO-OUTPUT` (success
-//! with no output files) and `FAKE-READ <path>` (a file the analysis cannot
-//! see). Like the real compiler, it opens an XREF or XREF-XML file whose
-//! relative name starts with `.` with that dot removed. `FAKE_AVM_STATE` is a directory for the markers of the `-ONCE`
-//! faults; `FAKE_AVM_LOG` receives one line for each compiled unit.
+//! only), `FAKE-FAIL-SILENT` (a failure with no message), `FAKE-WARN`,
+//! `FAKE-CRASH` (exit 1), `FAKE-CRASH-ONCE`, `FAKE-HANG`, `FAKE-SLOW` (two
+//! seconds before the outputs), `FAKE-NO-OUTPUT` (success with no output
+//! files), `FAKE-READ <path>` (a file the analysis cannot see) and
+//! `FAKE-RESOLVE-OTHER <name> <path>` (the include resolves to that path).
+//! Like the real compiler, it opens an XREF or XREF-XML file whose relative
+//! name starts with `.` with that dot removed. A request with the XREF mode
+//! `private` writes an XREF-XML under `verify/`.
+//!
+//! Environment variables: `FAKE_AVM_STATE` is a directory for the markers of
+//! the `-ONCE` faults; `FAKE_AVM_LOG` receives one line for each compiled
+//! unit; `FAKE_AVM_REQUEST_LOG` receives the time and type of each request,
+//! and for `COMPILE` the presence of each path of `FAKE_AVM_WATCH`;
+//! `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` and `FAKE_AVM_SCHEMA_CHANGE_FILE=<path>`
+//! change the schema image after `n` compiles, or while the file exists;
+//! `FAKE_AVM_SCHEMA_DELAY_MS` delays each schema answer;
+//! `FAKE_AVM_SCHEMA_ERROR_AFTER=<n>` gives a wrong count after `n` compiles;
+//! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private `XREF-XML`.
 
 mod compile;
 mod faults;
