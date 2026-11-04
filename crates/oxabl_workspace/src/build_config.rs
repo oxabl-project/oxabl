@@ -11,10 +11,10 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
 use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The `[build]` table.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildConfig {
     /// R-code output directory, under the workspace root. Required to compile.
@@ -84,7 +84,7 @@ impl BuildConfig {
 }
 
 /// The form of the cross-reference output.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum XrefFormat {
     /// `XREF-XML`.
@@ -95,7 +95,7 @@ pub enum XrefFormat {
 }
 
 /// The `[build.outputs]` table. An empty directory turns the output off.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildOutputs {
     pub xref: PathBuf,
@@ -105,7 +105,7 @@ pub struct BuildOutputs {
 }
 
 /// The `[build.compile]` table.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildCompile {
     pub min_size: bool,
@@ -118,7 +118,7 @@ pub struct BuildCompile {
 }
 
 /// The `[build.workers]` table.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildWorkers {
     /// The argument list that starts one worker. Empty means unset.
@@ -158,7 +158,7 @@ impl Default for BuildWorkers {
 }
 
 /// The `[build.verify]` table.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildVerify {
     /// Read the compiler's own list of opened files and check it. Without it no
@@ -184,7 +184,7 @@ impl Default for BuildVerify {
 }
 
 /// The `[build.cache]` table.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildCache {
     /// Both caches. Default `true`.
@@ -254,6 +254,16 @@ impl TimeSpan {
             .map(|seconds| TimeSpan(Duration::from_secs(seconds)))
             .ok_or_else(|| format!("`{text}` is too large"))
     }
+
+    /// The text that [`TimeSpan::parse`] reads back, in the largest whole unit.
+    pub fn to_text(self) -> String {
+        let seconds = self.0.as_secs();
+        match seconds {
+            s if s != 0 && s.is_multiple_of(3600) => format!("{}h", s / 3600),
+            s if s != 0 && s.is_multiple_of(60) => format!("{}m", s / 60),
+            s => format!("{s}s"),
+        }
+    }
 }
 
 impl Size {
@@ -271,6 +281,28 @@ impl Size {
             .checked_mul(1 << shift)
             .map(Size)
             .ok_or_else(|| format!("`{text}` is too large"))
+    }
+
+    /// The text that [`Size::parse`] reads back, in the largest whole unit.
+    pub fn to_text(self) -> String {
+        for (shift, unit) in [(40, "TiB"), (30, "GiB"), (20, "MiB"), (10, "KiB")] {
+            if self.0 != 0 && self.0.is_multiple_of(1 << shift) {
+                return format!("{}{unit}", self.0 >> shift);
+            }
+        }
+        format!("{}KiB", self.0.div_ceil(1 << 10))
+    }
+}
+
+impl Serialize for TimeSpan {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_text())
+    }
+}
+
+impl Serialize for Size {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_text())
     }
 }
 

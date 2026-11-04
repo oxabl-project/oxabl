@@ -256,6 +256,7 @@ impl Built {
         command
             .current_dir(self.root())
             .env_remove("OXABL_DLC_SOURCES")
+            .env_remove("OXABL_BUILD_OVERLAY")
             .env("FAKE_AVM_LOG", self.log())
             .env("FAKE_AVM_STATE", self.path("fake-state"))
             .arg("build")

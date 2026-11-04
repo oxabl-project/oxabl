@@ -33,6 +33,7 @@
               "$ref": "#/definitions/TimeSpan"
             }
           ],
+          "default": "30s",
           "description": "A fetch with no progress for this long ends. Default `30s`."
         },
         "local": {
@@ -51,6 +52,7 @@
               "$ref": "#/definitions/Size"
             }
           ],
+          "default": "20GiB",
           "description": "Eviction limit of the local cache. Default `20GiB`."
         },
         "remote": {
@@ -115,6 +117,14 @@
               "$ref": "#/definitions/BuildCache"
             }
           ],
+          "default": {
+            "enabled": true,
+            "idle_timeout": "30s",
+            "local": "",
+            "local_job_dir": "",
+            "local_max_size": "20GiB",
+            "remote": null
+          },
           "description": "The compile caches."
         },
         "compile": {
@@ -123,6 +133,15 @@
               "$ref": "#/definitions/BuildCompile"
             }
           ],
+          "default": {
+            "attr_space": false,
+            "generate_md5": false,
+            "languages": [],
+            "min_size": false,
+            "options": [],
+            "stream_io": false,
+            "v6frame": false
+          },
           "description": "Options of the `COMPILE` statement."
         },
         "exclude": {
@@ -170,6 +189,12 @@
               "$ref": "#/definitions/BuildOutputs"
             }
           ],
+          "default": {
+            "debug_list": "",
+            "listing": "",
+            "xref": "",
+            "xref_format": "xml"
+          },
           "description": "Directories for the optional compiler outputs."
         },
         "state": {
@@ -188,6 +213,11 @@
               "$ref": "#/definitions/BuildVerify"
             }
           ],
+          "default": {
+            "batch_interval": "1m",
+            "batch_units": 500,
+            "reads": true
+          },
           "description": "Verification of what a compile read."
         },
         "workers": {
@@ -196,6 +226,15 @@
               "$ref": "#/definitions/BuildWorkers"
             }
           ],
+          "default": {
+            "cancel_grace": "30s",
+            "command": [],
+            "count": null,
+            "env": {},
+            "root": null,
+            "start_timeout": "1m",
+            "unit_timeout": "10m"
+          },
           "description": "How workers start."
         }
       },
@@ -218,7 +257,12 @@
           "type": "string"
         },
         "xref_format": {
-          "$ref": "#/definitions/XrefFormat"
+          "allOf": [
+            {
+              "$ref": "#/definitions/XrefFormat"
+            }
+          ],
+          "default": "xml"
         }
       },
       "type": "object"
@@ -233,6 +277,7 @@
               "$ref": "#/definitions/TimeSpan"
             }
           ],
+          "default": "1m",
           "description": "Longest time a unit waits for the schema check. Default `60s`."
         },
         "batch_units": {
@@ -260,6 +305,7 @@
               "$ref": "#/definitions/TimeSpan"
             }
           ],
+          "default": "30s",
           "description": "Time for busy workers after a cancel. Default `30s`."
         },
         "command": {
@@ -302,6 +348,7 @@
               "$ref": "#/definitions/TimeSpan"
             }
           ],
+          "default": "1m",
           "description": "Time for one handshake. Default `60s`."
         },
         "unit_timeout": {
@@ -310,6 +357,7 @@
               "$ref": "#/definitions/TimeSpan"
             }
           ],
+          "default": "10m",
           "description": "Time for one unit. Default `10m`."
         }
       },
@@ -520,6 +568,7 @@
       "type": "object"
     },
     "SchemaConfig": {
+      "additionalProperties": false,
       "description": "The `[workspace.schema]` section.",
       "properties": {
         "files": {
@@ -567,6 +616,7 @@
       ]
     },
     "SourcesConfig": {
+      "additionalProperties": false,
       "description": "The `[workspace.sources]` section.",
       "properties": {
         "case_insensitive_lookup": {
@@ -596,6 +646,7 @@
               "$ref": "#/definitions/SourceEncoding"
             }
           ],
+          "default": "utf-8",
           "description": "The character encoding of source files: `\"utf-8\"` (the default), `\"iso-8859-1\"` or `\"windows-1252\"`.\n\nIt applies to every file read from disk: roots, include files, classes and `.df` schema files, and `oxabl format` writes a file back in the same encoding. A UTF-8 byte order mark always means UTF-8 and is removed, whatever this says. `\"utf-8\"` rejects a file with invalid UTF-8; see `fallback_encoding`."
         },
         "fallback_encoding": {
@@ -607,6 +658,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "description": "The encoding to use for a file that is not valid UTF-8. Unset by default, so such a file cannot be read.\n\nFor a tree that mixes UTF-8 files and single-byte ones. It only matters when `encoding` is `\"utf-8\"`: a single-byte encoding decodes every file."
         },
         "include_paths": {
@@ -1027,6 +1079,9 @@
               "$ref": "#/definitions/SchemaConfig"
             }
           ],
+          "default": {
+            "files": []
+          },
           "description": "Optional schema (`.df`) file declarations."
         },
         "sources": {
@@ -1035,6 +1090,25 @@
               "$ref": "#/definitions/SourcesConfig"
             }
           ],
+          "default": {
+            "case_insensitive_lookup": false,
+            "directories": [],
+            "dlc": null,
+            "encoding": "utf-8",
+            "fallback_encoding": null,
+            "include_paths": [],
+            "root_extensions": [
+              "p",
+              "w",
+              "cls",
+              "v"
+            ],
+            "root_relative_include_paths": [],
+            "run_extensions": [
+              "p",
+              "w"
+            ]
+          },
           "description": "Source file locations and include paths."
         },
         "style": {
@@ -1127,6 +1201,58 @@
           "$ref": "#/definitions/BuildConfig"
         }
       ],
+      "default": {
+        "cache": {
+          "enabled": true,
+          "idle_timeout": "30s",
+          "local": "",
+          "local_job_dir": "",
+          "local_max_size": "20GiB",
+          "remote": null
+        },
+        "compile": {
+          "attr_space": false,
+          "generate_md5": false,
+          "languages": [],
+          "min_size": false,
+          "options": [],
+          "stream_io": false,
+          "v6frame": false
+        },
+        "exclude": [],
+        "external_packages": {
+          "OpenEdge.": [
+            "$DLC"
+          ],
+          "Progress.": [
+            "$DLC"
+          ]
+        },
+        "libraries": {},
+        "output": "",
+        "outputs": {
+          "debug_list": "",
+          "listing": "",
+          "xref": "",
+          "xref_format": "xml"
+        },
+        "state": ".oxabl/build",
+        "store": "",
+        "verify": {
+          "batch_interval": "1m",
+          "batch_units": 500,
+          "reads": true
+        },
+        "workers": {
+          "cancel_grace": "30s",
+          "command": [],
+          "count": null,
+          "env": {},
+          "root": null,
+          "start_timeout": "1m",
+          "unit_timeout": "10m"
+        }
+      },
       "description": "How `oxabl build` keeps state and compiles (`[build]`)."
     },
     "workspace": {

@@ -378,6 +378,23 @@ enum Cli {
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
 
+        /// A TOML file with the same schema as `oxabl.toml`, merged over it key
+        /// by key (an array replaces). It may set `[workspace]` `name`,
+        /// `sources`, `preprocessor` and `schema`, and `[build]`. Without an
+        /// `oxabl.toml` it is the whole configuration. `OXABL_BUILD_OVERLAY`
+        /// names it too; the flag wins.
+        #[arg(long, value_name = "FILE")]
+        config_overlay: Option<PathBuf>,
+
+        /// Print the effective configuration, each value with the flag,
+        /// environment variable, overlay, `oxabl.toml` or default it came from,
+        /// and stop. With `--json`, print it as a JSON document.
+        #[arg(
+            long,
+            conflicts_with_all = ["plan", "probe", "all", "files", "since", "events", "report", "fail_fast", "wait_lock"]
+        )]
+        print_config: bool,
+
         /// Number of workers; overrides `[build.workers].count`.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
         workers: Option<u32>,
@@ -659,6 +676,8 @@ fn main() -> ExitCode {
             since,
             json,
             root,
+            config_overlay,
+            print_config,
             workers,
             events,
             report,
@@ -674,6 +693,8 @@ fn main() -> ExitCode {
             since,
             json,
             root: root.as_deref(),
+            config_overlay: config_overlay.as_deref(),
+            print_config,
             workers: workers.map(|n| n as usize),
             events,
             report: report.as_deref(),

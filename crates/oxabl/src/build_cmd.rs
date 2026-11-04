@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use oxabl_build::config::BuildWorkspace;
+use oxabl_build::config::{
+    BuildWorkspace, Overlay, OverlayOrigin, Overrides, effective, render_config, render_config_json,
+};
 use oxabl_build::error::BuildError;
 use oxabl_build::plan::{PlanRequest, Probe, plan, render, render_json};
 
@@ -28,6 +30,29 @@ fn named(files: &[PathBuf]) -> Result<Vec<PathBuf>, BuildError> {
         .collect()
 }
 
+/// The value of an environment variable that is set and not empty.
+fn non_empty_variable(name: &str) -> Option<String> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string_lossy().into_owned())
+}
+
+/// The overlay that `--config-overlay` or, failing that, `OXABL_BUILD_OVERLAY`
+/// names.
+fn overlay_file(flag: Option<&Path>) -> Option<Overlay> {
+    match (flag, non_empty_variable("OXABL_BUILD_OVERLAY")) {
+        (Some(path), _) => Some(Overlay {
+            path: path.to_path_buf(),
+            origin: OverlayOrigin::Flag,
+        }),
+        (None, Some(path)) => Some(Overlay {
+            path: PathBuf::from(path),
+            origin: OverlayOrigin::Environment,
+        }),
+        (None, None) => None,
+    }
+}
+
 /// What the command line asked `oxabl build` to do.
 pub struct Options<'a> {
     pub plan: bool,
@@ -37,6 +62,8 @@ pub struct Options<'a> {
     pub since: Option<String>,
     pub json: bool,
     pub root: Option<&'a Path>,
+    pub config_overlay: Option<&'a Path>,
+    pub print_config: bool,
     pub workers: Option<usize>,
     pub events: bool,
     pub report: Option<&'a Path>,
@@ -55,6 +82,8 @@ pub fn run(options: Options<'_>) -> ExitCode {
         since,
         json,
         root,
+        config_overlay,
+        print_config,
         workers,
         events,
         report,
@@ -63,10 +92,31 @@ pub fn run(options: Options<'_>) -> ExitCode {
         no_remote_cache,
         wait_lock,
     } = options;
-    let workspace = match BuildWorkspace::open(root) {
+    let overlay = overlay_file(config_overlay);
+    let workspace = match BuildWorkspace::open_with(root, overlay.as_ref()) {
         Ok(workspace) => workspace,
         Err(error) => return fail(&error),
     };
+    if print_config {
+        let overrides = Overrides {
+            workers: workers.map(|n| n as u32),
+            no_cache,
+            no_remote_cache,
+            dlc_sources: non_empty_variable("OXABL_DLC_SOURCES"),
+            cache_dir: non_empty_variable("OXABL_BUILD_CACHE_DIR"),
+        };
+        let entries = effective(&workspace.config, &workspace.layers, &overrides);
+        let render = if json {
+            render_config_json
+        } else {
+            render_config
+        };
+        print!(
+            "{}",
+            render(&workspace.settings.root, &workspace.layers, &entries)
+        );
+        return ExitCode::SUCCESS;
+    }
     if probe && !plan_only {
         return build_probe::run(&workspace, json, workers);
     }
