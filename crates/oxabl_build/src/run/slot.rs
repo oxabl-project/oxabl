@@ -104,7 +104,7 @@ fn run_job(
     units.retain(|unit| match unsendable(worker, shared, *unit) {
         Some(note) => {
             promote::remove(shared.root, &shared.infos[unit].expected);
-            let _ = tx.send(Msg::UnitDone(refused(job, *unit, note)));
+            shared.send_done(tx, refused(job, *unit, note));
             false
         }
         None => true,
@@ -195,7 +195,7 @@ fn compile_group(
         if shared.verify.is_some() && finished.ok && shared.infos[&unit].key.is_some() {
             verifiable.push((unit, finished.finished));
         }
-        let _ = tx.send(Msg::UnitDone(finished));
+        shared.send_done(tx, finished);
         if let Some(next) = group.get(done) {
             let _ = tx.send(Msg::UnitStarted {
                 unit: *next,
@@ -324,18 +324,21 @@ fn lost(
         if count >= 2 {
             undone.remove(0);
             crate::output::promote::remove(shared.root, &shared.infos[&unit].expected);
-            let _ = tx.send(Msg::UnitDone(UnitDone {
-                job,
-                unit,
-                ok: false,
-                ms: 0,
-                messages: Vec::new(),
-                note: Some("worker lost twice while compiling this unit".to_string()),
-                outputs: Vec::new(),
-                lost: true,
-                finished: Instant::now(),
-                reads: None,
-            }));
+            shared.send_done(
+                tx,
+                UnitDone {
+                    job,
+                    unit,
+                    ok: false,
+                    ms: 0,
+                    messages: Vec::new(),
+                    note: Some("worker lost twice while compiling this unit".to_string()),
+                    outputs: Vec::new(),
+                    lost: true,
+                    finished: Instant::now(),
+                    reads: None,
+                },
+            );
         }
     }
     if !undone.is_empty() {

@@ -22,6 +22,8 @@ struct State {
     stopped: bool,
     /// Jobs that were taken and not released yet.
     busy: usize,
+    /// Completions that a worker reported and the coordinator has not handled.
+    unsettled: usize,
 }
 
 /// One part of a schema check that an idle worker does between jobs.
@@ -53,14 +55,18 @@ impl Queue {
         Queue::default()
     }
 
-    pub fn push(&self, job: usize, priority: u64, path: &str) {
+    /// Makes `jobs` ready together, each with its priority and the path of its
+    /// first unit, so that no worker takes one before the others are in.
+    pub fn push_all(&self, jobs: impl IntoIterator<Item = (usize, u64, String)>) {
         let mut state = self.state.lock().unwrap();
-        state.heap.push(Entry {
-            priority,
-            tie: Reverse(path.to_string()),
-            job,
-        });
-        self.wake.notify_one();
+        for (job, priority, path) in jobs {
+            state.heap.push(Entry {
+                priority,
+                tie: Reverse(path),
+                job,
+            });
+            self.wake.notify_one();
+        }
     }
 
     /// Offers a task to the next idle worker; tasks go before jobs.
@@ -87,6 +93,20 @@ impl Queue {
         self.wake.notify_all();
     }
 
+    /// A worker is about to report a completion. No job goes out until the
+    /// coordinator has handled it, so the jobs that it made ready are in the
+    /// queue before any worker takes its next job.
+    pub fn completion_sent(&self) {
+        self.state.lock().unwrap().unsettled += 1;
+    }
+
+    /// The coordinator handled one reported completion.
+    pub fn completion_handled(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.unsettled -= 1;
+        self.wake.notify_all();
+    }
+
     /// Says that a worker is done with the job it took.
     pub fn release(&self) {
         self.state.lock().unwrap().busy -= 1;
@@ -109,11 +129,13 @@ impl Queue {
             if !state.tasks.is_empty() {
                 return Take::Task(state.tasks.remove(0));
             }
-            if let Some(entry) = state.heap.pop() {
+            if state.unsettled == 0
+                && let Some(entry) = state.heap.pop()
+            {
                 state.busy += 1;
                 return Take::Job(entry.job);
             }
-            if state.done {
+            if state.done && state.heap.is_empty() {
                 return Take::Closed;
             }
             state = self.wake.wait(state).unwrap();

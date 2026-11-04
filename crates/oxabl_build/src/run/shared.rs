@@ -2,12 +2,13 @@
 
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use rustc_hash::FxHashMap;
 
 use super::context::{Imaging, Verify};
-use super::types::UnitInfo;
+use super::types::{Msg, UnitDone, UnitInfo};
 use crate::refresh::Outcome;
 use crate::schedule::Queue;
 use crate::worker::compile::Limits;
@@ -43,10 +44,34 @@ pub struct Shared<'a> {
 }
 
 impl Shared<'_> {
+    /// Reports the completion of a unit to the coordinator.
+    pub fn send_done(&self, tx: &Sender<Msg>, done: UnitDone) {
+        self.queue.completion_sent();
+        if tx.send(Msg::UnitDone(done)).is_err() {
+            self.queue.completion_handled();
+        }
+    }
+
+    /// Puts each `(job, units)` back as the open part of the job and makes the
+    /// jobs ready together.
+    pub fn requeue_all(&self, jobs: Vec<(usize, Vec<u32>)>) {
+        let mut ready = Vec::with_capacity(jobs.len());
+        {
+            let mut remaining = self.remaining.lock().unwrap();
+            for (job, units) in jobs {
+                ready.push((
+                    job,
+                    self.priorities[job],
+                    self.infos[&units[0]].path.clone(),
+                ));
+                remaining[job] = units;
+            }
+        }
+        self.queue.push_all(ready);
+    }
+
     /// Puts `units` back as the open part of `job` and makes the job ready.
     pub fn requeue(&self, job: usize, units: Vec<u32>) {
-        let first = self.infos[&units[0]].path.clone();
-        self.remaining.lock().unwrap()[job] = units;
-        self.queue.push(job, self.priorities[job], &first);
+        self.requeue_all(vec![(job, units)]);
     }
 }

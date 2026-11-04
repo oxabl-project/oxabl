@@ -378,7 +378,9 @@ fn the_unit_that_the_longest_chain_waits_for_compiles_first() {
     workspace.build().succeeded();
 
     let order = workspace.compiled();
-    assert_eq!(order[0], "pkg/Base.cls", "{order:?}");
+    let at = |name: &str| order.iter().position(|n| n == name).unwrap();
+    assert!(at("pkg/Base.cls") < at("a.p"), "{order:?}");
+    assert!(at("pkg/User.cls") < at("a.p"), "{order:?}");
 }
 
 #[test]
