@@ -394,3 +394,20 @@ fn the_xref_is_written_although_the_state_directory_starts_with_a_dot() {
     workspace.build().succeeded();
     assert!(workspace.exists("build/xref/a.p.xref.xml"));
 }
+
+#[test]
+fn a_build_after_a_plan_compiles_every_unit_that_has_no_result() {
+    let workspace = class_chain();
+
+    let plan = workspace.build_with(&["--plan"]);
+    plan.succeeded();
+    let run = workspace.build_with(&["--events"]);
+
+    run.succeeded();
+    let events = run.events();
+    assert_eq!(of_kind(&events, "build-started")[0]["rebuild"], 3);
+    assert_eq!(of_kind(&events, "summary")[0]["compiled"], 3);
+    for output in ["pkg/Base", "pkg/User", "main"] {
+        assert!(workspace.exists(&format!("build/r/{output}.r")), "{output}");
+    }
+}
