@@ -17,9 +17,10 @@ Part of [the oxabl build PRD](../build-tool.md).
   `WorkspaceConfig`, `WorkspaceSection`, `[workspace.sources]` and `[workspace.schema]`. A
   misspelled table such as `[biuld]`, or a key such as `include_pahts`, is an error and not
   a silent no-op. The same types serve every client, so a typo in those tables affects
-  every command: `oxabl check` and `oxabl build` print the parse error and exit with code 2;
-  `oxabl format`, `analyze`, `explain` and `conformance`, the language server and the daemon
-  print it as a warning and use the default configuration. Only keys that were already
+  every command. `oxabl check`, `oxabl format` and `oxabl build` refuse a configuration they
+  cannot use: they print the parse error and exit with code 2 (for `format` in every mode;
+  that part lands with PR #279). `oxabl analyze`, `explain` and `conformance`, the language
+  server and the daemon print it as a warning and use the default configuration. Only keys that were already
   wrong are affected; no valid configuration changes meaning.
 - The PROPATH is `[workspace.sources]`. The build adds no second search path, so the
   analysis and the compile search the same entries.
