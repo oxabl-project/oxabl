@@ -247,8 +247,14 @@ AVM; every earlier attempt to design it found a new hole:
    wrong class. A fix needs either a proof that the compiler prefers the source on the
    unit's PROPATH over `$OUT`, or a per-unit view of `$OUT`, which conflicts with one
    deployable output tree.
-2. **`MULTI-COMPILE` sessions** keep a class by name across PROPATH changes. Sessions must
-   be separated by PROPATH id, or toggling `MULTI-COMPILE` must be proven to clear them.
+2. **`MULTI-COMPILE` sessions** keep a class by name across PROPATH changes. Measured on
+   OpenEdge 12.8.9 (`per_unit_propath_class_binding`): with `a/pkg/Foo.cls` and a
+   `b/pkg/Foo.cls` that has one more method, `b/y.p` calling that method **fails to
+   compile** with error 12927 (`Could not locate element 'Extra' in class 'pkg.Foo'`): the
+   session bound it to `a`'s `Foo`, the class it compiled first. A user that calls no
+   differing member silently binds to the other class. So under per-unit PROPATHs a valid
+   program can fail locally, not only lose its key. Sessions must be separated by PROPATH id
+   (a fresh worker session per id), or toggling `MULTI-COMPILE` must be proven to clear them.
 3. **External names.** A K3-accepted name must not collide with a workspace class under any
    PROPATH id.
 4. **Class units.** A class unit's package root must be an entry of every user's PROPATH, and
@@ -256,8 +262,9 @@ AVM; every earlier attempt to design it found a new hole:
 5. **Classes that are not units** are compiled in memory under each user's PROPATH, so
    their includes and class references must be analysed per reaching PROPATH id (edges
    stored per id), not once on the class's own PROPATH.
-6. **V3 coverage of classes** (`xref_xml_classes`) must show what the compiler opened inside
-   each class, so a divergence is caught.
+6. **V3 coverage of classes.** `xref_xml_classes` shows that `XREF-XML` names no class file
+   at all ([cache.md](cache.md#what-v3-covers)), so another source of what the compiler
+   opened inside each class is needed before a divergence can be caught.
 
 Until all six exist, K9 holds.
 
@@ -424,7 +431,10 @@ The worker also reports a **fingerprint** per database: `_Db._Db-guid` and
 `_DbStatus._DbStatus-CacheStamp` (`?` when unavailable). It is part of the environment
 agreement: every worker must report the same fingerprints, which catches two workers that
 reach different databases. It is **never** used to skip imaging, because it does not see
-every change that changes r-code. Measured on scratch databases, one `.df` edit per probe:
+every change that changes r-code. Measured on scratch databases, one `.df` edit per probe
+(OpenEdge 12.8.9; reproduced by `schema_edit_table` in the slice 10 suite). The stamp does
+**not** move for a primary-index change, an added sequence or a dropped field, all of which
+change r-code:
 
 | Edit | Schema identity changed | Cache stamp changed |
 | --- | --- | --- |

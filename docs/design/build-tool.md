@@ -472,11 +472,16 @@ oxabl build [--plan [--all] [--probe]] [--files <path>... | --since <rev>]
 - A build stops dispatch on the first failure only with `--fail-fast`; the default keeps
   going, because the full error list is more useful for a large tree.
 
-`oxabl build` stays hidden from `--help` until slice 10 passes on a real AVM: the worker
-program's `COMPILE` path, the private `XREF-XML` and check V3 against real file names have
-run only against the fake AVM until then, and the umbrella cannot be published while the
-remote cache client is a git dependency ([cache.md](build-tool/cache.md#crate-and-feature)).
-Unhiding is one line (`hide = true` on the command) and a sentence in `docs/overview.md`.
+`oxabl build` leaves hidden `--help` with slice 10: the OpenEdge suite passed on a real AVM,
+so the worker program's `COMPILE` path, class order and cycles, the private `XREF-XML` and
+check V3 on real file names, cache sharing between two roots and the signal handling are
+proven. Unhiding adds `build` to the advertised commands in `docs/overview.md` and needs a
+`feat` commit for release-please. The documentation states the known limits at the same
+time: per-unit PROPATH layouts can fail to compile valid class users (K9 keeps them out of
+the caches; [compile-key.md](build-tool/compile-key.md#follow-up-classes-under-per-unit-propaths)),
+`.v` files are units under the default `root_extensions`, and units whose parse recovers
+have no key. Publishing the umbrella still waits for the remote cache client
+([cache.md](build-tool/cache.md#crate-and-feature)).
 
 ## Security
 
@@ -500,6 +505,19 @@ Unhiding is one line (`hide = true` on the command) and a sentence in `docs/over
 | Store size | under 300 MB for about 28,000 files | file size after a full build |
 | Rebuild-set parity | 0 missed | the parity script |
 | Wrong cache hits | 0 | black-box adversarial tests, and the r-code oracle in the OpenEdge suite |
+
+**Real-code trial (slice 10, once, outside the suite).** A 7,678-unit subset of a large
+real-world ABL codebase, 4 workers, a developer-mode local cache, OpenEdge 12.8.9:
+
+| Measure | Result |
+| --- | --- |
+| Units compiled | 7,309 (17 genuine failures, 40 tainted users, 26 skipped: 25 `output-collision`, 1 `package-mismatch`) |
+| Keyed units that passed V1, V2 and V3 | all 7,055; no read outside the closure |
+| Units without a key | 250: 225 `degraded` (parser recovery), 25 `output-collision`, 4 `unresolved-include`, a few unresolved classes |
+| Cold build | 854 s (setup 56 s) |
+| A second root, same cache | 7,381 fetched, 254 compiled, 170 s |
+| No-change build | 7 s |
+| Edit of one include | `--plan` named exactly its 4 includers |
 
 ## Slices
 
@@ -567,13 +585,24 @@ a black-box acceptance test. The tests are in [testing.md](build-tool/testing.md
 10. **OpenEdge end-to-end suite.** The opt-in suite of
     [testing.md](build-tool/testing.md#opt-in-openedge-suite), including the r-code
     portability check. *Acceptance:* the suite passes on a machine with OpenEdge; its
-    output is attached to the pull request.
+    output is attached to the pull request. Done on OpenEdge 12.8.9: 25 tests in
+    `build_openedge` and 3 in `build_openedge_scratch` pass, with no `oxabl build` bug
+    found; see the real-code trial under [Metrics](#metrics). `oxabl build` leaves hidden
+    `--help` with this slice.
 
 Slices 1 to 3 need no AVM. Slice 4 can start at the same time as slice 2.
 
 ## Follow-ups
 
 These are out of scope. Each needs its own design note before code.
+
+- **A fresh worker session per PROPATH id.** So that per-unit PROPATH layouts compile
+  class users correctly, not only without a key (`per_unit_propath_class_binding`).
+- **A V3 source for classes and definitions-only includes.** `XREF-XML` lists neither
+  ([cache.md](build-tool/cache.md#what-v3-covers)); until another source exists, the plan's
+  closure rules are the only guard for those reads.
+- **Parser recoveries in real code.** 225 of 7,678 units of the real-code trial have no key
+  because the parse recovered; each fix there turns into cache hits.
 
 - **Classes under per-unit PROPATHs.** Key class users when `root_relative_include_paths`
   gives units different PROPATHs. See

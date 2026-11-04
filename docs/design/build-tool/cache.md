@@ -266,19 +266,26 @@ with compiling.
 
 ### What V3 covers
 
-V3 is proven for **includes**: `xref_xml_resolution` shows that the `Source` elements name
-every include the compiler opened, as it resolved it. Whether they also name class sources
-that `MULTI-COMPILE` compiles implicitly, r-code read from `$OUT`, or r-code read from a
-`.pl`, is not established. The OpenEdge test `xref_xml_classes` records what `XREF-XML`
-lists for a unit that uses a class from source, from `$OUT` r-code and from a `.pl`.
+Measured on OpenEdge 12.8.9 (`xref_xml_classes`, `xref_xml_resolution`):
 
-Until that test passes and this section maps those names (an `$OUT/<stem>.r` name to the
-class unit with that stem, which must be in the closure; a `.pl` member to its library
-entry, which must be on the unit PROPATH with a `sha256:` digest), V3 for a unit whose
-closure holds a class checks includes only. A `Source` name that is r-code under `$OUT` or a
-`.pl` member is then skipped, not failed. Class resolution is protected by the plan
-rules, not by V3: classes are keyed only with one PROPATH id (K9) and without an external
-name collision (K8, [compile-key.md](compile-key.md#per-unit-propath-classes)).
+- **Classes: not covered.** For a unit that uses a class from source (not a unit), from
+  `$OUT` r-code or from a `.pl`, the `XREF-XML` lists only the unit itself as a `Source`. It
+  names no class file at all (the reference appears as `Reference-type="NEW"` with the class
+  name, never with a file).
+- **Includes with only preprocessor definitions: not covered.** The compiler lists a
+  `Source` only for a file that holds a reference. An include that holds only
+  `&GLOBAL-DEFINE`s is not listed, and neither the listing, the debug list nor the text XREF
+  gives its resolved path (they give the name as written).
+- **Other includes: covered.** Every include that holds a reference is a `Source`, with its
+  name as the compiler resolved it.
+
+So V3 cannot see a divergent resolution of a class or of a definitions-only include. For
+those reads the **closure that the plan builds is the only guard**: K1 and K2 make a unit
+unkeyable when its analysis (with includes judged in the includer's context) is degraded or
+leaves an include unresolved, and class resolution is keyed only with one PROPATH id (K9)
+and without an external name collision (K8,
+[compile-key.md](compile-key.md#per-unit-propath-classes)). A V3 source for these reads is
+an open follow-up ([build-tool.md](../build-tool.md#follow-ups)).
 
 V2 has one residual case: a schema that changes and changes back between two imagings, with
 a compile in between. This needs two dictionary loads into the build's database during

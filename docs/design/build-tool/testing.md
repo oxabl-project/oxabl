@@ -391,9 +391,10 @@ fails; it never skips.
   `{root}`), `OXABL_OPENEDGE_WORKSPACE` (the host directory the worker sees),
   `OXABL_OPENEDGE_WORKER_ROOT` (the same directory as the worker sees it),
   `OXABL_OPENEDGE_PROVERSION` (exactly as `PROVERSION` prints it, for example `12.8`),
-  `OXABL_OPENEDGE_DATABASES` (the connection order), `OXABL_OPENEDGE_SAME_DF` (databases
-  loaded from one `.df`) and `OXABL_OPENEDGE_WORKERS` (worker counts for the timing test,
-  default `1,4,8`).
+  `OXABL_OPENEDGE_DATABASES` (the connection order, at least one database) and
+  `OXABL_OPENEDGE_WORKERS` (worker counts for the timing test, default `1,4,8`). That two
+  databases loaded from one `.df` give one identity is proven by the scratch suite, so no
+  variable names such databases.
 - `crates/oxabl/tests/build_openedge_scratch.rs` creates scratch databases from the empty
   database of the installation and loads `.df` edits into them, never touching existing
   databases. Variables: `OXABL_OPENEDGE_EXEC` (the exec prefix as a JSON array with
@@ -412,10 +413,16 @@ of two classes, a temp-table, and a procedure that reads a database table.
 
 ### The r-code oracle
 
-r-code is not byte-deterministic, so the suite compares r-code with a **mask**: compile one
-unit twice in one root and record the byte offsets that differ. Two r-code files are
-**equivalent** when they have the same size and differ only at masked offsets. A test that
-needs equivalence first checks that the mask is small (under 1 % of the file).
+r-code is not byte-deterministic, so the suite compares r-code with a **mask**. The varying
+bytes are 6-byte time stamps at 3 to 5 places of a file, whose first byte flips between two
+values and whose last byte changes slowly, so two or three compiles miss some of them
+(measured: three samples left 3 varying bytes outside the mask, in class r-code). The mask
+is built once per run, in a root of its own, from **8 compiles 1.2 s apart**, and covers 2
+bytes on each side of every byte that varied. Two r-code files are **equivalent** when they
+have the same size and differ only at masked offsets. The mask must be under 1 % of the file
+for every unit above 20,000 bytes, and at least one such unit must exist (the fixture's
+`bulk.p`, about 190 KB of r-code, has 0.64 %); small units sit at 0.7 to 1.1 %. A tamper
+control in `portable_rcode` flips one unmasked byte and expects the oracle to refuse it.
 
 ### Tests
 
@@ -428,9 +435,9 @@ needs equivalence first checks that the mask is small (under 1 % of the file).
 | `probe_time_by_worker_count` | Prints `TIMING workers=N wall=...` for each `OXABL_OPENEDGE_WORKERS` count and asserts equal identities. |
 | `databases_loaded_from_one_df_give_one_schema_identity` (scratch) | Two databases created from the empty database at different times, with one `.df` loaded: different cache stamps, one schema identity. |
 | `schema_edit_table` (scratch) | Each `.df` edit of the [fingerprint table](compile-key.md#database-fingerprints) changes the schema identity; the test records whether the cache stamp moved. |
-| `schema_long_field` | A field description over 32,000 bytes hashes without error (`LONGCHAR` path). |
+| `schema_long_field` (scratch) | A field description of 30,600 bytes hashes without error and changes the identity. A longer value cannot be made: the `.df` load (error 63), an ABL assignment (9324) and the dictionary (12370) refuse more than about 32,000 bytes. The worker reads every character value through a `LONGCHAR`, so this exercises the only path. |
 | `startup_pf` | A parameter set only in a `.pf` is in the probe, and its canonical form equals the same parameter on the command line. |
-| `param_file_hash` | Changing the bytes of a `-compileroptionsfile` file changes the environment identity. |
+| `param_file_hash` | Changing the bytes of a `-compileroptionsfile` file changes the environment identity. The AVM reads that file at its start and refuses a line that is not an option (error 18408), so the test changes a `#` comment line. |
 | `library_hash` | `HASH` gives the SHA-256 of a `.pl`; a changed `.pl` changes the keys of its users. |
 | `dlc_default_entries` | A unit that uses an `OpenEdge.*` class compiles with no `$DLC` entry in `include_paths`. |
 | `compile_fixture` | The fixture builds; outputs exist; a planted error gives a `MSG` with row and column. |
@@ -439,12 +446,15 @@ needs equivalence first checks that the mask is small (under 1 % of the file).
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
 | `two_workspaces_share_compiled_units_through_the_local_cache` | A first workspace compiles, a second one at another path compiles nothing, fetches every unit from the local cache, and the fetched r-code runs (passed on OpenEdge 12.8 with slice 7). |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
-| `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them, the exit code is 0, and the run records which `Foo` each user got from the AVM (recorded, not asserted; it is evidence for the follow-up). |
-| `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: records what the `XREF-XML` `Source` elements list for each, so V3's class coverage can be stated ([cache.md](cache.md#what-v3-covers)). |
+| `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them (`a/plain.p` is), the exit code is 0. Recorded: both users run with `a`'s `Foo`. |
+| `per_unit_propath_class_binding` | The same layout, where `b/pkg/Foo.cls` has one more method and `b/y.p` calls it: `b/y.p` fails with error 12927 (`Could not locate element 'Extra' in class 'pkg.Foo'`), because `MULTI-COMPILE` bound it to `a`'s `Foo`. Pins the [follow-up](compile-key.md#follow-up-classes-under-per-unit-propaths). |
+| `one_propath_gives_keyable_class_users` | With one PROPATH id, class users are keyable and stored. |
+| `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: in all three cases the `XREF-XML` `Source` elements list only the unit itself, no class file ([cache.md](cache.md#what-v3-covers)). Goes red if a later OpenEdge lists one. |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |
-| `xref_xml_resolution` | The `XREF-XML` `Source` elements name each include as the compiler resolved it, including an include with only preprocessor definitions. |
-| `xref_readers` | The text and XML XREF readers find every include of the fixture. |
-| `orphans` | After `SIGKILL` of oxabl, no `_progres` of that build is alive after its current compile. |
+| `xref_xml_resolution` | The `XREF-XML` `Source` elements name each include that holds a reference, as the compiler resolved it (`src/defs.i`, `src/ttrows.i`); an include with only `&GLOBAL-DEFINE`s (`consts.i`) is **not** listed; every fixture unit passes V3 and is stored. Goes red if a later OpenEdge lists the definitions-only include. |
+| `xref_readers` | The text reader finds every include of the fixture (its `INCLUDE` rows give the name as written, not as resolved); the XML reader finds the includes that hold a reference. |
+| `orphans` | After `SIGKILL` of oxabl during a 3,000-unit build, no `_progres` of that build is alive within 120 s. |
+| `cancel_leaves_no_worker` | `SIGINT` during a build gives exit code 130, and no worker of the build stays alive. |
 
 If `portable_rcode` or `xref_does_not_change_rcode` fails, the key specification changes as
 [compile-key.md](compile-key.md) says, before any cache slice ships.
