@@ -79,6 +79,9 @@ pub fn run(
     let (tx, rx) = mpsc::channel();
     let workers = pool.workers_mut().iter().filter(|w| !w.is_dead()).count();
     let mut end = PassEnd::Complete;
+    // The ready jobs are queued before a worker can take one, so the first
+    // job a worker takes is the one of highest priority.
+    let coordinator = Coordinator::new(ctx, &shared, schedule, &awaiting, workers);
     thread::scope(|scope| {
         for worker in pool.workers_mut().iter_mut().filter(|w| !w.is_dead()) {
             let (tx, shared) = (tx.clone(), &shared);
@@ -90,7 +93,6 @@ pub fn run(
         }
         drop(tx);
         let _stop = StopOnDrop(&shared.queue);
-        let coordinator = Coordinator::new(ctx, &shared, schedule, &awaiting, workers);
         end = coordinator.run(state, &rx);
     });
     shared.queue.clear_tasks();
