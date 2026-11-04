@@ -2540,9 +2540,9 @@ dependencies = [
 
 [[package]]
 name = "oxabl-cache-client"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47830011e55d4d2c2b66ad171bfb85155a47fd41de609878f37dbcbe877f3f70"
+checksum = "c61f929f7d92e75685c65deff6574ddf8c9857aaf90dfb50e0100ff576063892"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -2567,9 +2567,9 @@ dependencies = [
 
 [[package]]
 name = "oxabl-cache-crypto"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c45ad344e0c9aed865c37898395055667311fc66cca097d31b8c92752e837244"
+checksum = "3fa81f6d91a40a5daf80459be8cf655e16a0a71a7c3c082c3367e094f4b41ead"
 dependencies = [
  "age",
  "aws-lc-rs",
@@ -2583,9 +2583,9 @@ dependencies = [
 
 [[package]]
 name = "oxabl-cache-format"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a6d3c14fdea9cfb31f18678c703cac68883545aadcd89c2488b493f5be2efed"
+checksum = "ebe6471bfa78eb6f9a1c3e161b9baf72d7e9f21f04db9af8c0930b8850c923d5"
 
 [[package]]
 name = "oxabl_analyze"

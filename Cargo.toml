@@ -32,9 +32,9 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-oxabl-cache-client = "0.1.0"
+oxabl-cache-client = "0.2.0"
 
 # The oxabl-cache server, admin and member binaries the remote-cache tests run
 # against: the revision the client above was published from.
 [workspace.metadata.oxabl-cache]
-binaries-rev = "cb4782f18f3bbf805844017717ea1a7e58c467a4"
+binaries-rev = "0adaa4899993205d48ba994799ed21b59d0529f9"
