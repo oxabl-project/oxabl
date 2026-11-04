@@ -634,13 +634,19 @@ fn a_cancel_during_the_start_stops_every_worker_and_exits_130() {
 }
 
 #[test]
-fn build_stays_out_of_the_help() {
+fn build_is_listed_in_the_help() {
     let output = run({
         let mut command = Command::new(env!("CARGO_BIN_EXE_oxabl"));
         command.arg("--help");
         command
     });
-    assert!(!stdout(&output).contains("build"), "{}", stdout(&output));
+    assert!(
+        stdout(&output)
+            .lines()
+            .any(|line| line.trim_start().starts_with("build ")),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[test]

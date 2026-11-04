@@ -56,7 +56,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Build system
   - Incremental compiling (via the Progress compiler)
   - Remote cache
-  - Status: Experimental, not available. `oxabl build` (a hidden command, checked against OpenEdge 12.8 by an opt-in suite) refreshes a persisted dependency graph, says which units must rebuild and why (`--plan`), and compiles them through AVM workers that your own command starts, in dependency order, with retry, crash handling and cancellation. An overlay file (`--config-overlay`) lets a tool that owns the environment of a workspace give the machine-specific settings for one run, and `--print-config` shows where each setting came from. A local cache of compile outputs lets two copies of a workspace share compiles, and a binary built with the `remote-cache` feature also shares them through an oxabl-cache server. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build).
+  - Status: Experimental. `oxabl build` (checked against OpenEdge 12.8 by an opt-in suite) refreshes a persisted dependency graph, says which units must rebuild and why (`--plan`), and compiles them through AVM workers that your own command starts, in dependency order, with retry, crash handling and cancellation. An overlay file (`--config-overlay`) lets a tool that owns the environment of a workspace give the machine-specific settings for one run, and `--print-config` shows where each setting came from. A local cache of compile outputs lets two copies of a workspace share compiles, and a binary built with the `remote-cache` feature also shares them through an oxabl-cache server. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build).
 
 ## Project Status
 
@@ -86,7 +86,7 @@ Requirements:
   - Postfix operations, and
   - Has error recovery via synchronization on period boundaries
   - Still getting new features, bug fixes, and improvements.
-- CLI entry points in `crates/oxabl`. The advertised surface is exactly four commands — `check`, `format`, `lsp`, and `schema` — plus two **hidden but fully supported** instruments described below.
+- CLI entry points in `crates/oxabl`. The advertised surface is `check`, `explain`, `format`, `lsp`, `schema` and `build` (experimental), plus two **hidden but fully supported** instruments described below.
   - `check` walks a directory (or single file) for ABL files and reports lint findings plus formatting drift in two channels. This is the pre-commit gate: exit 1 when either channel has something to say.
   - `format` fixes layout in place, or reports/prints without writing (`--check`, `--stdout`).
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
@@ -105,7 +105,7 @@ Current Work: continued dogfood-driven trust-hardening, and typing `:`-qualified
 
 ### `oxabl build --plan`
 
-`oxabl build --plan` reads `oxabl.toml` and refreshes a graph of the working tree. It then lists the compile units that a change reaches. It compiles nothing. It starts no worker unless you add `--probe` (see [Compile keys](#compile-keys)). The command is hidden from `oxabl --help` until the build is complete. The design is in `docs/design/build-tool.md`.
+`oxabl build --plan` reads `oxabl.toml` and refreshes a graph of the working tree. It then lists the compile units that a change reaches. It compiles nothing. It starts no worker unless you add `--probe` (see [Compile keys](#compile-keys)). The command is listed in `oxabl --help`. The design is in `docs/design/build-tool.md`.
 
 Until a build has recorded results, a plan lists what changed since the last refresh. After that it compares each unit with its last result, see [What the plan compares](#oxabl-build---plan).
 
@@ -215,7 +215,7 @@ The closure of a unit is every file the compiler can read for it: its includes a
 
 ### `oxabl build`
 
-`oxabl build` compiles the units that the plan lists. It is hidden from `oxabl --help`. It needs `[build.workers].command` (the command that starts one AVM worker, see `docs/design/build-tool/worker-protocol.md`) and `[build].output` (the directory for the r-code). Oxabl ships no Progress code but its own small worker program. The build runs in this order:
+`oxabl build` compiles the units that the plan lists. It needs `[build.workers].command` (the command that starts one AVM worker, see `docs/design/build-tool/worker-protocol.md`) and `[build].output` (the directory for the r-code). Oxabl ships no Progress code but its own small worker program. The build runs in this order:
 
 1. It takes the workspace lock (`<state>/build.lock`) and, in the r-code directory, `.oxabl-build.lock`. A second build stops with exit code 3 and the process id of the first.
 2. It refreshes the graph and, at the same time, starts the workers, probes the environment and hashes the worker-side files. It computes the compile key of every unit and the plan.
