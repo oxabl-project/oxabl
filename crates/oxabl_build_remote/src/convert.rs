@@ -42,8 +42,7 @@ pub fn origin(provenance: &client::Provenance) -> seam::Origin {
     })
 }
 
-/// A reason the client may add later reads as `Unavailable`: the key is a miss
-/// and the build compiles it.
+/// Every client reason maps to one of the build's; a new one fails to compile.
 pub fn miss_reason(reason: client::MissReason) -> seam::MissReason {
     match reason {
         client::MissReason::NotFound => seam::MissReason::NotFound,
@@ -53,11 +52,10 @@ pub fn miss_reason(reason: client::MissReason) -> seam::MissReason {
         client::MissReason::Timeout => seam::MissReason::Timeout,
         client::MissReason::Install(_) => seam::MissReason::InstallFailed,
         client::MissReason::Unavailable => seam::MissReason::Unavailable,
-        _ => seam::MissReason::Unavailable,
     }
 }
 
-/// An outcome the client may add later reads as not stored.
+/// Every client outcome maps to one of the build's; a new one fails to compile.
 pub fn store_outcome(outcome: client::StoreOutcome) -> seam::StoreOutcome {
     use seam::NotStoredReason as Reason;
     match outcome {
@@ -70,8 +68,6 @@ pub fn store_outcome(outcome: client::StoreOutcome) -> seam::StoreOutcome {
             client::StoreFailure::Unreadable => Reason::Unreadable,
             client::StoreFailure::QuotaExceeded => Reason::QuotaExceeded,
             client::StoreFailure::Unavailable => Reason::Unavailable,
-            _ => Reason::Unavailable,
         }),
-        _ => seam::StoreOutcome::NotStored(Reason::Unavailable),
     }
 }

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Builds oxabl-cache-server and oxabl-cache-admin at the revision that Cargo.toml
-# pins for the oxabl-cache client, into <install dir>/bin. The remote-cache tests
-# take both from OXABL_CACHE_SERVER_BIN and OXABL_CACHE_ADMIN_BIN. It builds
-# nothing when <install dir> already holds that revision.
+# Builds oxabl-cache-server, oxabl-cache-admin and the oxabl-cache member command
+# line at the revision that Cargo.toml pins for the oxabl-cache client, into
+# <install dir>/bin. The remote-cache tests take them from OXABL_CACHE_SERVER_BIN,
+# OXABL_CACHE_ADMIN_BIN and OXABL_CACHE_BIN. It builds nothing when <install dir>
+# already holds that revision.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -13,11 +14,12 @@ if [ -z "$rev" ]; then
   exit 1
 fi
 if [ "$(cat "$dir/rev" 2>/dev/null)" = "$rev" ] \
-  && [ -x "$dir/bin/oxabl-cache-server" ] && [ -x "$dir/bin/oxabl-cache-admin" ]; then
+  && [ -x "$dir/bin/oxabl-cache-server" ] && [ -x "$dir/bin/oxabl-cache-admin" ] \
+  && [ -x "$dir/bin/oxabl-cache" ]; then
   echo "oxabl-cache $rev is built in $dir"
   exit 0
 fi
 rm -f "$dir/rev"
 cargo install --git https://github.com/oxabl-project/oxabl-cache --rev "$rev" --locked --force \
-  --root "$dir" oxabl-cache-server oxabl-cache-admin
+  --root "$dir" oxabl-cache-server oxabl-cache-admin oxabl-cache-cli
 echo "$rev" >"$dir/rev"

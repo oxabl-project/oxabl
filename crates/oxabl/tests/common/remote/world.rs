@@ -4,11 +4,10 @@
 use std::fs;
 use std::net::TcpListener;
 
-use oxabl_cache_format::Role;
 use serde_json::json;
 
+use super::member_cli::{Member, Owner};
 use super::proxy::Proxy;
-use super::roster::{Member, genesis, hex};
 use super::server::Server;
 use super::{admin, http};
 use crate::common::built::Built;
@@ -24,7 +23,7 @@ pub struct World {
     pub proxy: Proxy,
     pub tenant: String,
     pub cache: String,
-    pub owner: Member,
+    pub owner: Owner,
     pub ci: Account,
     pub developer: Account,
     pub reader: Account,
@@ -53,13 +52,13 @@ impl World {
         let server = Server::start(Some(&format!("http://127.0.0.1:{port}")));
         let proxy = Proxy::start(listener, &server.public);
         let (tenant, tenant_admin) = admin::tenant(&server, "acme");
-        let owner = Member::new("owner", Role::Owner);
+        let owner = Owner::new();
         let created = http::json(
             &server.public,
             "POST",
             "/v1/tenant/caches",
             &tenant_admin,
-            &json!({"display_name": "codebase", "owner_keys": [hex(&owner.public_key())]}),
+            &json!({"display_name": "codebase", "owner_keys": [owner.key_hex]}),
             201,
         );
         let cache = created["id"].as_str().expect("a cache id").to_string();
@@ -75,30 +74,19 @@ impl World {
             created["token"].as_str().expect("a token").to_string()
         };
         let cache_admin = token("owner", &["read", "cache:admin"]);
-        let account = |label: &'static str, role: Role, scopes: &[&str]| Account {
-            member: Member::new(label, role),
+        owner.init(
+            &format!("http://{}", server.public),
+            &tenant,
+            &cache,
+            &cache_admin,
+        );
+        let account = |label: &'static str, role: &'static str, scopes: &[&str]| Account {
+            member: owner.add_member(label, role),
             token: token(label, scopes),
         };
-        let ci = account("ci", Role::Ci, &["read", "write:trusted"]);
-        let developer = account("developer", Role::Developer, &["read", "write:personal"]);
-        let reader = account("reader", Role::Reader, &["read"]);
-        let roster = genesis(
-            &cache,
-            &owner,
-            &[&ci.member, &developer.member, &reader.member],
-        );
-        let (status, answer) = http::request(
-            &server.public,
-            "PUT",
-            &format!("/v1/caches/{cache}/roster"),
-            &[
-                ("authorization", format!("Bearer {cache_admin}")),
-                ("if-match", "\"v0\"".to_string()),
-                ("content-type", "application/vnd.oxabl-cache.v1".to_string()),
-            ],
-            &roster,
-        );
-        assert_eq!(status, 204, "{}", String::from_utf8_lossy(&answer));
+        let ci = account("ci", "ci", &["read", "write:trusted"]);
+        let developer = account("developer", "developer", &["read", "write:personal"]);
+        let reader = account("reader", "reader", &["read"]);
         World {
             server,
             proxy,
@@ -118,7 +106,7 @@ impl World {
             self.proxy.url(),
             self.tenant,
             self.cache,
-            self.owner.key_text(),
+            self.owner.key,
         )
     }
 

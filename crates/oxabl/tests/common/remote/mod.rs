@@ -7,7 +7,7 @@
 pub mod admin;
 pub mod binaries;
 pub mod http;
+pub mod member_cli;
 pub mod proxy;
-pub mod roster;
 pub mod server;
 pub mod world;

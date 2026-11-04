@@ -60,19 +60,20 @@ jobs:
       - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
-      # The tests start the real cache server and its admin tool, built at the
-      # revision that Cargo.toml pins. The script builds them only when the
-      # cached directory does not hold that revision.
+      # The tests start the real cache server and drive its admin tool and member
+      # command line, built at the revision that Cargo.toml pins. The script builds
+      # them only when the cached directory does not hold that revision.
       - uses: actions/cache@v4
         with:
           path: ~/oxabl-cache-bin
           key: oxabl-cache-bin-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'scripts/remote-cache-binaries.sh') }}
-      - name: Build the cache server and the admin tool
+      - name: Build the cache server, the admin tool and the member command line
         run: ./scripts/remote-cache-binaries.sh ~/oxabl-cache-bin
       - name: Test the remote cache
         run: |
           export OXABL_CACHE_SERVER_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache-server"
           export OXABL_CACHE_ADMIN_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache-admin"
+          export OXABL_CACHE_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache"
           cargo test -p oxabl --features remote-cache --locked \
             --test build_remote_cache --test build_remote_faults --test build_remote_trust
 

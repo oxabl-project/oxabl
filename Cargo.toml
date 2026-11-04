@@ -31,10 +31,7 @@ members = [
 ]
 resolver = "2"
 
-# The oxabl-cache crates, pinned to one revision. The client is the one that the
-# product needs; a crates.io version replaces its line when the client is
-# published. The other two serve the black-box tests that set up a roster.
+# The oxabl-cache client, pinned to one revision. A crates.io version replaces
+# its line when the client is published.
 [workspace.dependencies]
-oxabl-cache-client = { git = "https://github.com/oxabl-project/oxabl-cache", rev = "053dae48c1fa2101aaa9c9d7442429f5e3c4fd18" }
-oxabl-cache-crypto = { git = "https://github.com/oxabl-project/oxabl-cache", rev = "053dae48c1fa2101aaa9c9d7442429f5e3c4fd18" }
-oxabl-cache-format = { git = "https://github.com/oxabl-project/oxabl-cache", rev = "053dae48c1fa2101aaa9c9d7442429f5e3c4fd18" }
+oxabl-cache-client = { git = "https://github.com/oxabl-project/oxabl-cache", rev = "5e382fdb3536d9c5693251b1f7b0a1714b0d71be" }

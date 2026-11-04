@@ -2497,7 +2497,6 @@ checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 name = "oxabl"
 version = "3.0.2"
 dependencies = [
- "base64 0.22.1",
  "blake3",
  "clap",
  "ctrlc",
@@ -2505,8 +2504,6 @@ dependencies = [
  "lsp-server",
  "notify",
  "notify-debouncer-full",
- "oxabl-cache-crypto",
- "oxabl-cache-format",
  "oxabl_analyze",
  "oxabl_ast",
  "oxabl_build",
@@ -2544,7 +2541,7 @@ dependencies = [
 [[package]]
 name = "oxabl-cache-client"
 version = "0.0.0"
-source = "git+https://github.com/oxabl-project/oxabl-cache?rev=053dae48c1fa2101aaa9c9d7442429f5e3c4fd18#053dae48c1fa2101aaa9c9d7442429f5e3c4fd18"
+source = "git+https://github.com/oxabl-project/oxabl-cache?rev=5e382fdb3536d9c5693251b1f7b0a1714b0d71be#5e382fdb3536d9c5693251b1f7b0a1714b0d71be"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -2564,12 +2561,13 @@ dependencies = [
  "tracing",
  "url",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]
 name = "oxabl-cache-crypto"
 version = "0.0.0"
-source = "git+https://github.com/oxabl-project/oxabl-cache?rev=053dae48c1fa2101aaa9c9d7442429f5e3c4fd18#053dae48c1fa2101aaa9c9d7442429f5e3c4fd18"
+source = "git+https://github.com/oxabl-project/oxabl-cache?rev=5e382fdb3536d9c5693251b1f7b0a1714b0d71be#5e382fdb3536d9c5693251b1f7b0a1714b0d71be"
 dependencies = [
  "age",
  "aws-lc-rs",
@@ -2584,7 +2582,7 @@ dependencies = [
 [[package]]
 name = "oxabl-cache-format"
 version = "0.0.0"
-source = "git+https://github.com/oxabl-project/oxabl-cache?rev=053dae48c1fa2101aaa9c9d7442429f5e3c4fd18#053dae48c1fa2101aaa9c9d7442429f5e3c4fd18"
+source = "git+https://github.com/oxabl-project/oxabl-cache?rev=5e382fdb3536d9c5693251b1f7b0a1714b0d71be#5e382fdb3536d9c5693251b1f7b0a1714b0d71be"
 
 [[package]]
 name = "oxabl_analyze"
@@ -3506,6 +3504,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -3756,6 +3755,12 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "salsa"
@@ -4046,6 +4051,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
