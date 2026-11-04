@@ -106,7 +106,7 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
 
 ```text
 oxabl (umbrella, CLI)
- ├── oxabl_build_remote        [feature remote-cache] → oxabl-cache-client (crates.io)
+ ├── oxabl_build_remote        [feature remote-cache] → oxabl-cache-client (git rev, then crates.io)
  │    └── oxabl_build
  ├── oxabl_build               [feature cli]
  │    ├── oxabl_pipeline       edges_of, SharedRun, observed analysis
@@ -280,6 +280,12 @@ closure component only says that it differs: the reason lists the closure files 
 so they need `--probe`, except where a stored component already differs. A store with no
 completed build yet plans "what changed since the last refresh", as slices 2 to 5 do.
 
+**`oxabl build` always compares each unit with its stored result**, whatever the store
+holds. The "what changed since the last refresh" rule above applies to `--plan` only. A
+build that used it would skip every unit that has never been built once a `--plan` had
+refreshed the store, so a wrapper that plans first and then builds would compile nothing.
+A unit with no result is always `new` for a build.
+
 ### Probe output
 
 `oxabl build --probe` (with or without `--plan`) prints the environment: every environment
@@ -354,7 +360,21 @@ never compiled on its own.
    **pass-through**: it finishes as soon as all the components it points at finish.
 3. **Ready queue.** A job is ready when every component it points at has finished. There
    is no level barrier: a worker that becomes idle takes the ready job with the highest
-   priority.
+   priority. Two rules make "the highest-priority ready job" exact, because workers and
+   the coordinator run on different threads:
+   - **No job goes out while a completion is unhandled.** A worker counts each completion
+     it reports before it sends it; the coordinator releases the count after it has handled
+     the message, and so after it has queued the dependents that the completion made ready.
+     While the count is above 0, the queue hands out no job (schema-check tasks are not
+     held). So a dependent that a finished job made ready competes with the jobs already
+     queued.
+   - **Jobs that become ready together are queued at once**, under one lock, so a woken
+     worker never takes a lower-priority job before a higher-priority one of the same step
+     is in the queue. The coordinator also queues the first ready jobs before any worker
+     starts.
+
+   A job that waits for a cache answer is not ready until the answer arrives (rule 6), so
+   with a cache the order across lookups follows the order of the answers.
 4. **Priority.** The longest path from the job to a component that nothing depends on,
    weighted by the last compile duration of each unit (`results.duration_ms`, 1 ms when
    unknown). Ties break by path. This starts the long chains first.
@@ -452,7 +472,11 @@ oxabl build [--plan [--all] [--probe]] [--files <path>... | --since <rev>]
 - A build stops dispatch on the first failure only with `--fail-fast`; the default keeps
   going, because the full error list is more useful for a large tree.
 
-`oxabl build` stays hidden from `--help` until slice 5 lands.
+`oxabl build` stays hidden from `--help` until slice 10 passes on a real AVM: the worker
+program's `COMPILE` path, the private `XREF-XML` and check V3 against real file names have
+run only against the fake AVM until then, and the umbrella cannot be published while the
+remote cache client is a git dependency ([cache.md](build-tool/cache.md#crate-and-feature)).
+Unhiding is one line (`hide = true` on the command) and a sentence in `docs/overview.md`.
 
 ## Security
 
@@ -530,13 +554,16 @@ a black-box acceptance test. The tests are in [testing.md](build-tool/testing.md
    through `Config::from_repo`. *Acceptance:* tests against the real oxabl-cache server
    binary: CI writes, a second workspace fetches everything; a server that returns garbage
    gives misses and a correct build; a server that is down gives a correct build; a slow
-   server that keeps sending is not cut off; an overlay that names `owner_keys` is exit 2;
+   server that keeps sending is not cut off; `owner_keys` in `oxabl.toml` is exit 2 (the
+   overlay case lands with slice 9);
    each trust variable in the environment (`TrustOverride`) is exit 2; a non-default output
    layout uploads and installs correctly.
 9. **Handover.** `--config-overlay`, the event stream documentation, the downstream wrapper
-   guide. *Acceptance:* an overlay test (overlay wins key by key; an unknown key is an
-   error; a secret-looking key is refused); the downstream tool's own test suite passes
-   when it calls `oxabl build`.
+   guide, `--print-config`. *Acceptance:* overlay tests (overlay wins key by key; an
+   unknown key, a secret-looking key and a trust key are refused); a wrapper-shaped test (a
+   script that writes an overlay, runs `oxabl build --events --report` and reads the
+   events while the build runs). That the downstream tool's own suite passes when it calls
+   `oxabl build` is checked in that tool's repository, not here.
 10. **OpenEdge end-to-end suite.** The opt-in suite of
     [testing.md](build-tool/testing.md#opt-in-openedge-suite), including the r-code
     portability check. *Acceptance:* the suite passes on a machine with OpenEdge; its

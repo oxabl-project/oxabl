@@ -29,7 +29,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | Observed analysis (slice 1) | `crates/oxabl_pipeline/tests/observations.rs` |
 | CLI build and plan | `crates/oxabl/tests/build_*.rs`, one file per behaviour group |
 | Golden key vectors | `crates/oxabl/tests/build_key_vectors.rs` with `crates/oxabl_build/tests/key_vectors.json` |
-| Remote cache | `crates/oxabl_build_remote/tests/` |
+| Remote cache | `crates/oxabl/tests/build_remote_*.rs` (only the package that owns the `oxabl` binary gets `CARGO_BIN_EXE_oxabl`) |
 | OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `crates/oxabl/tests/build_openedge_scratch.rs` |
 | Parity | `scripts/plan-parity.sh` |
 
@@ -201,6 +201,16 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 
 - A class and its user: the class compiles first (the fake log order), and the user's `.r`
   reads the class's new `.r`.
+- Priority: `main.p` waits on `pkg/User.cls`, which waits on `pkg/Base.cls`, and `a.p` waits
+  on nothing; one worker. The order starts with `pkg/Base.cls`, and `pkg/User.cls` compiles
+  before `a.p` (the completion of `Base` makes `User` ready before the worker takes its next
+  job). Three deterministic tests through the public `oxabl::build::schedule::Queue` back
+  the two rules of [scheduler rule 3](../build-tool.md#scheduler): no job goes out while a
+  reported completion is unhandled; a job that a completion made ready goes before a
+  lower-priority one; jobs that become ready together go out by priority whatever their push
+  order.
+- Plan, then build: `oxabl build --plan` on a fresh store, then `oxabl build`: every unit
+  with no result compiles.
 - `FAKE-FAIL-ONCE`: the unit fails, compiles on the retry pass and counts as one success;
   `FAKE-FAIL` compiles twice and fails. A unit lost twice is not retried.
 - `FAKE-FAIL-SILENT` and `FAKE-NO-OUTPUT`: each failed unit has its reason (`the compiler
@@ -303,9 +313,20 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 
 ### Slice 8: remote cache
 
-These start the real oxabl-cache server binary, from the path in `OXABL_CACHE_SERVER_BIN`
-(CI builds it from the pinned release). With the `remote-cache` feature on and the variable
-missing, the tests fail.
+These start the real oxabl-cache binaries: the server (`OXABL_CACHE_SERVER_BIN`), the admin
+tool (`OXABL_CACHE_ADMIN_BIN`) and the member CLI (`OXABL_CACHE_BIN`).
+`scripts/remote-cache-binaries.sh <dir>` builds all three at the revision pinned in the root
+`Cargo.toml`; the CI job `remote-cache` runs it (cached on that file and the script) and then
+the tests with `--features remote-cache`. A missing variable or file fails every test with a
+message that says how to build them; nothing skips. The tests are `required-features =
+["remote-cache"]`; `build_remote_absent.rs`, built only without the feature, checks the exit
+2 of a binary without it.
+
+**Rosters are set up only through the binaries,** as a customer would: the admin tool makes
+the tenant; the member CLI makes the owner identity (`identity new` with a passphrase file),
+the cache is created over HTTP with the owner key the CLI printed, then `init` (with a
+`cache:admin` token file) and `member add` for a `ci`, a `developer` and a `reader` member.
+Secret files are mode `0600`. No test links the cache's crypto or format crates.
 
 - A CI-mode build writes; a second workspace with a fresh local cache fetches everything and
   compiles nothing; outputs are byte-identical.
@@ -337,9 +358,27 @@ missing, the tests fail.
 ### Slice 9: handover
 
 - An overlay over `oxabl.toml`: overlay values win key by key, arrays replace;
-  `--print-config` shows the sources.
-- An overlay with `[workspace.lint]` or an unknown key: exit code 2.
-- No `oxabl.toml` and a complete overlay: the build works.
+  `--print-config` shows the sources. The overlay reaches the analysis (an include that
+  resolves only through the overlay's `include_paths`), the workers and the outputs.
+- Precedence flag, environment, overlay, `oxabl.toml`, default, for `dlc`, `count`, the
+  cache directory and the two cache flags; `--config-overlay` beats `OXABL_BUILD_OVERLAY`.
+- `--print-config` stops before any lock, worker or store write; its `--json` shape; its
+  conflicts with `--plan`, `--probe` and the other build flags (exit 2).
+- An overlay with `[workspace.lint]`, `[workspace.style]`, a misspelled table or an unknown
+  key in any allowed table: exit code 2 naming the file and the key.
+- A secret-looking key (five spellings), in the overlay and in `oxabl.toml`: exit 2, and the
+  value is never printed.
+- Each trust key (`tenant`, `cache`, `owner_keys`, `min_roster_version` in `[build.cache]`)
+  and a `[build.cache.remote]` table, in the overlay and in `oxabl.toml`: exit 2 with a
+  message that names `.oxabl/cache.toml`.
+- No `oxabl.toml` and a complete overlay: the build works; without `[workspace] name`, exit 2.
+- A typo in `[workspace.sources]` or `[workspace.schema]`: exit 2 for `oxabl check` and
+  `oxabl build`; a warning and the default configuration for `format`, `analyze`, `explain`
+  and `conformance`.
+- Wrapper: a shell script writes an overlay, runs `oxabl build --root --config-overlay
+  --events --report`, reads the events line by line while the build runs, checks the report
+  and exits with the build's code: a build, a no-change build, a failing unit. A test checks
+  that `docs/build-wrapper.md` holds the script verbatim.
 
 ## Opt-in OpenEdge suite
 
@@ -398,6 +437,7 @@ needs equivalence first checks that the mask is small (under 1 % of the file).
 | `class_order` | The cycle and the hierarchy compile; users of a changed class compile after it. |
 | `portable_rcode` | The fixture copied to two roots gives equivalent r-code for every unit. |
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
+| `two_workspaces_share_compiled_units_through_the_local_cache` | A first workspace compiles, a second one at another path compiles nothing, fetches every unit from the local cache, and the fetched r-code runs (passed on OpenEdge 12.8 with slice 7). |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
 | `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them, the exit code is 0, and the run records which `Foo` each user got from the AVM (recorded, not asserted; it is evidence for the follow-up). |
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: records what the `XREF-XML` `Source` elements list for each, so V3's class coverage can be stated ([cache.md](cache.md#what-v3-covers)). |

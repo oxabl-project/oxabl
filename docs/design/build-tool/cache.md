@@ -89,6 +89,8 @@ pub trait ArtifactCache: Send + Sync {
         on_outcome: &mut dyn FnMut(FetchOutcome),
     );
     fn uploader(&self) -> Box<dyn ArtifactUploader>;
+    fn cancel_fetch(&self);
+    fn notes(&self) -> Vec<String>;
 }
 
 pub trait ArtifactUploader: Send {
@@ -179,6 +181,15 @@ it calls the client's `uploader()`:
   back-pressure. The cache must check, when it reads a file, that its size and BLAKE3 hash
   equal `size` and `blake3`, and must drop the set otherwise: a file that changed after
   verification is never stored. `finish` flushes and returns one outcome per key.
+- **`cancel_fetch` ends a fetch at once.** `fetch` blocks its thread, and a remote fetch can
+  run for minutes. On a cancel, a watcher thread calls `cancel_fetch` within 20 ms; the
+  cache ends its stream, reports every key not yet reported as a miss and returns. Sets
+  already installed stay installed. `Layered` forwards it to both caches. Without it,
+  Ctrl-C during a long download would wait for the whole download.
+- **`notes` carries the warnings of a cache** (a remote cache that is not used and why, a
+  count of misses that were not plain absence, an uploader that could not start). The build
+  prints each once and puts them in the report. `MissReason` has, besides plain absence,
+  `PathMismatch`, `Untrusted` and `InstallFailed`.
 - **Errors are misses.** The trait methods return no `Result`: a failure is a `Miss` or a
   failed `StoreOutcome`. `run.rs` also wraps each call in `catch_panic`; a panic ends the
   call, and every key not yet reported is a miss.
@@ -250,7 +261,7 @@ with compiling.
 | Check | How | On failure |
 | --- | --- | --- |
 | V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. A `$DLC/...` file is hashed again by an idle worker (`HASH`), from the copy the AVM compiles with, not from the host mirror. Every hash must equal the hash the key used. | The unit is not written. |
-| V2 schema | The databases are imaged again before each upload batch is released (every 60 s or 500 units, and at the end), split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. | Every held and later unit of this build is not written. |
+| V2 schema | The databases are imaged again before each upload batch is released (`[build.verify] batch_interval` and `batch_units`, default every 60 s or 500 units, and at the end), split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. | Every held and later unit of this build is not written. |
 | V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
 
 ### What V3 covers
@@ -391,9 +402,18 @@ loses an entry during eviction gets a read error, which is a miss.
 `crates/oxabl_build_remote` holds one type, `RemoteCache`, which implements `ArtifactCache`
 over the client of the oxabl-cache project.
 
-- Dependency: the published crate `oxabl-cache-client` (`oxabl_cache_client`), a normal
-  semver range. Only this crate depends on it. Every crate of the oxabl-cache project is
-  named `oxabl-cache-<part>`.
+- Dependency: `oxabl-cache-client` (`oxabl_cache_client`), declared once, in the root
+  `Cargo.toml` under `[workspace.dependencies]`; `oxabl_build_remote` takes it with
+  `workspace = true`. Only this crate depends on it, and CI fails when `cargo tree -p
+  oxabl_build` or a default `cargo tree -p oxabl` names an `oxabl-cache` crate. Every crate
+  of the oxabl-cache project is named `oxabl-cache-<part>`.
+- **Until the client is published, it is a git dependency pinned to an exact `rev`** of the
+  oxabl-cache repository. Publishing `oxabl-cache-client` (and `oxabl-cache-crypto` and
+  `oxabl-cache-format`, which it depends on) is the project owner's decision. After it, the
+  switch is one line: the `rev` becomes a version. **Until then the umbrella cannot be
+  published with `cargo publish`**: crates.io refuses a crate with a git dependency, and the
+  umbrella needs `oxabl_build_remote` on the registry even as an optional dependency, so the
+  release's publish job fails on a branch that contains the remote cache.
 - The umbrella has the feature `remote-cache = ["cli", "dep:oxabl_build_remote"]`. It is not
   a default feature, so `oxabl_wasm`, library users and a plain `cargo install oxabl` do not
   build the network and crypto stack. The release workflow builds the published binaries
@@ -403,7 +423,8 @@ over the client of the oxabl-cache project.
   --features remote-cache or pass --no-remote-cache`. A silent fallback would make a CI job
   slow forever with no signal.
 
-Rejected: a git dependency (crates.io cannot publish a crate with one); a feature inside
+Rejected: a git dependency as the lasting form (crates.io cannot publish a crate with one;
+it is the interim form only); a feature inside
 `oxabl_build` (every dependent of `oxabl_build` would then decide it through feature
 unification).
 

@@ -13,9 +13,14 @@ Part of [the oxabl build PRD](../build-tool.md).
 - One schema. `oxabl.toml`, the overlay file and the JSON Schema that the editor uses all
   come from the same Rust types in `oxabl_workspace::config`. `oxabl_build::config` lowers
   them into typed settings.
-- **Strict.** Every build table has `deny_unknown_fields`. Slice 2 also puts
-  `deny_unknown_fields` on the top-level `WorkspaceConfig` and on `WorkspaceSection`, so a
-  misspelled table such as `[biuld]` is an error and not a silent no-op.
+- **Strict.** Every build table has `deny_unknown_fields`, and so do the top-level
+  `WorkspaceConfig`, `WorkspaceSection`, `[workspace.sources]` and `[workspace.schema]`. A
+  misspelled table such as `[biuld]`, or a key such as `include_pahts`, is an error and not
+  a silent no-op. The same types serve every client, so a typo in those tables affects
+  every command: `oxabl check` and `oxabl build` print the parse error and exit with code 2;
+  `oxabl format`, `analyze`, `explain` and `conformance`, the language server and the daemon
+  print it as a warning and use the default configuration. Only keys that were already
+  wrong are affected; no valid configuration changes meaning.
 - The PROPATH is `[workspace.sources]`. The build adds no second search path, so the
   analysis and the compile search the same entries.
 - Secrets are never in a file. Oxabl defines no secret setting. The remote cache client
@@ -139,10 +144,14 @@ env = { TERM = "dumb" }
 ```toml
 [build.verify]
 reads = true
+batch_units = 500
+batch_interval = "60s"
 ```
 
 `reads` turns on the private XREF and the read check ([cache.md](cache.md#verification)).
-With `reads = false`, no cache write happens.
+With `reads = false`, no cache write happens. `batch_units` and `batch_interval` decide when
+a schema check (V2) releases the held sets: after that many units, or when the oldest held
+unit has waited that long, and always at the end of the build.
 
 ### `[build.cache]`
 
@@ -193,7 +202,7 @@ Precedence for one key: CLI flag, then environment variable, then overlay, then
 | --- | --- |
 | `--plan` | Print the plan; compile nothing; start no worker. |
 | `--all` | With `--plan`, also list up-to-date units. |
-| `--probe` | With `--plan`, start one worker to probe the environment. |
+| `--probe` | With `--plan`, start the pool to probe the environment. |
 | `--files <path>...` | Treat these files as changed. |
 | `--since <rev>` | Treat the files changed since `<rev>` as changed. |
 | `--json` | JSON plan, or JSON summary at the end of a build. |
@@ -201,7 +210,7 @@ Precedence for one key: CLI flag, then environment variable, then overlay, then
 | `--report <file>` | Per-unit results as JSON. |
 | `--root <dir>` | Workspace root (default: the nearest ancestor with `oxabl.toml`). |
 | `--config-overlay <file>` | Overlay file. |
-| `--print-config` | Print the effective configuration, with the source of each overridden key, and stop. |
+| `--print-config` | Print the effective configuration, with the source of each value, and stop ([below](#the-effective-configuration)). |
 | `--workers <n>` | Overrides `[build.workers].count`. |
 | `--no-cache`, `--no-remote-cache` | Turn off caches. |
 | `--fail-fast` | Stop dispatch at the first failure. |
@@ -213,12 +222,40 @@ Precedence for one key: CLI flag, then environment variable, then overlay, then
 Oxabl merges it over `oxabl.toml`: tables merge key by key, and an array or a scalar in the
 overlay replaces the value. The merged document is then parsed strictly. The overlay may
 set only `[workspace]` `name`, `[workspace.sources]`, `[workspace.preprocessor]`,
-`[workspace.schema]` and the `[build]` tables; any other key is an error. When the root has
-no `oxabl.toml`, the overlay is the whole configuration and must set `[workspace] name`.
+`[workspace.schema]` and the `[build]` tables; any other table (`[workspace.lint]`,
+`[workspace.style]`, a misspelled table) or unknown key is exit code 2, and the error names
+the file and the key. When the root has no `oxabl.toml`, the overlay is the whole
+configuration, `--root` is required (root discovery looks for `oxabl.toml`), and the overlay
+must set `[workspace] name`. Relative paths in the overlay are relative to the root. An
+error in the merged document names both files; serde gives no line number for it, because
+the merged document has no source text.
+
+Two kinds of key are refused, in the overlay **and** in `oxabl.toml`, with exit code 2:
+
+- **Secret-looking keys.** A key whose name, with `-` and `_` removed and in any case,
+  contains `password`, `passwd`, `secret`, `token`, `apikey`, `privatekey`, `accesskey` or
+  `credential`, at any depth. It matters most for `[build.workers.env]`, whose keys are
+  free. The error never prints the value.
+- **Trust keys.** `tenant`, `cache`, `owner_keys` and `min_roster_version` in
+  `[build.cache]`, and any `[build.cache.remote]` table. The message says that only
+  `.oxabl/cache.toml` sets them ([cache.md](cache.md#configuration-and-trust-root)).
 
 The overlay exists for machine-specific values (worker command, DLC sources, cache
 directory) and for a wrapper that generates them per run. A repository commits
-`oxabl.toml`; a wrapper writes the overlay.
+`oxabl.toml`; a wrapper writes the overlay. `docs/build-wrapper.md` is the guide for wrapper
+authors and `docs/build-output.md` documents every event and the report.
+
+## The effective configuration
+
+`oxabl build --print-config` prints every setting of `[workspace]` `name`, `sources`,
+`schema`, `preprocessor` and of `[build]`, sorted by key, with its value and its source:
+`flag --workers`, `flag --no-cache`, `flag --no-remote-cache`, `environment
+OXABL_DLC_SOURCES`, `environment OXABL_BUILD_CACHE_DIR`, `overlay`, `oxabl.toml` or
+`default`. An unset value shows `(unset)`. With `--json` it prints one JSON document with the
+same values and sources. `[workspace.lint]` and `[workspace.style]` are not shown, because a
+build does not read them. It stops before any lock, worker or store write, and it cannot be
+combined with `--plan`, `--probe`, `--all`, `--files`, `--since`, `--events`, `--report`,
+`--fail-fast` or `--wait-lock` (exit code 2).
 
 ## Event stream
 
