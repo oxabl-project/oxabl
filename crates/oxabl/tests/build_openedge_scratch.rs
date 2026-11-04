@@ -124,11 +124,11 @@ impl Scratch {
         let trailer = format!(".\nPSC\ncpstream=ISO8859-1\n.\n{:010}\n", body.len());
         let output = self.run(&format!(
             "cd {dir}\ncat > edit.df <<'DF'\n{body}{trailer}DF\n\
-             {dlc}/bin/_progres -b -q -db {db} -1 -p {dir}/load.p -param {dir}/edit.df 2>&1 || true",
+             {dlc}/bin/_progres -b -q -db {db} -1 -s 100000 -stsh 100000 -p {dir}/load.p -param {dir}/edit.df 2>&1 || true",
             dlc = self.dlc
         ));
         assert!(
-            !output.contains("rror") && !output.contains("**"),
+            !output.to_ascii_lowercase().contains("error") && !output.contains("**"),
             "load failed:\n{output}"
         );
     }
@@ -291,7 +291,7 @@ const EDITS: &[(&str, &str, bool)] = &[
 /// skip imaging.
 #[test]
 #[ignore = "needs a real AVM; see the module docs"]
-fn the_schema_stamp_is_checked_against_every_kind_of_edit() {
+fn schema_edit_table() {
     let mut scratch = Scratch::new();
     let db = format!("oxst{}", std::process::id());
     scratch.create(&db);
@@ -325,4 +325,28 @@ fn the_schema_stamp_is_checked_against_every_kind_of_edit() {
 
     eprintln!("{table}");
     eprintln!("edits the stamp does not see: {untrusted:?}");
+}
+
+/// A field description of 30,600 bytes, close to the longest value that a
+/// schema record holds (the dictionary refuses a record over 32,000 bytes), hashes without error, and the schema identity follows it.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn schema_long_field() {
+    let mut scratch = Scratch::new();
+    let db = format!("oxlf{}", std::process::id());
+    scratch.create(&db);
+    scratch.load(&db, BASE);
+    let before = scratch.probe(&db);
+    let description = "long description ".repeat(1_800);
+    assert_eq!(description.len(), 30_600);
+
+    scratch.load(
+        &db,
+        &format!("UPDATE FIELD \"f1\" OF \"t1\"\n  DESCRIPTION \"{description}\"\n\n"),
+    );
+    let after = scratch.probe(&db);
+    let again = scratch.probe(&db);
+
+    assert_ne!(schema_identity(&before), schema_identity(&after));
+    assert_eq!(schema_identity(&after), schema_identity(&again));
 }
