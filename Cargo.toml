@@ -31,7 +31,10 @@ members = [
 ]
 resolver = "2"
 
-# The oxabl-cache client, pinned to one revision. A crates.io version replaces
-# its line when the client is published.
 [workspace.dependencies]
-oxabl-cache-client = { git = "https://github.com/oxabl-project/oxabl-cache", rev = "5e382fdb3536d9c5693251b1f7b0a1714b0d71be" }
+oxabl-cache-client = "0.1.0"
+
+# The oxabl-cache server, admin and member binaries the remote-cache tests run
+# against: the revision the client above was published from.
+[workspace.metadata.oxabl-cache]
+binaries-rev = "cb4782f18f3bbf805844017717ea1a7e58c467a4"
