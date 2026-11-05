@@ -2332,9 +2332,36 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A token the keyword table already reads as a data type.
+    fn is_data_type_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Integer
+                | Kind::Int64
+                | Kind::Decimal
+                | Kind::Character
+                | Kind::Logical
+                | Kind::Date
+                | Kind::Datetime
+                | Kind::DatetimeTz
+                | Kind::Handle
+                | Kind::Rowid
+                | Kind::Recid
+                | Kind::Raw
+                | Kind::Memptr
+                | Kind::Longchar
+                | Kind::Clob
+                | Kind::Blob
+                | Kind::ComHandle
+                | Kind::KwIn
+        )
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
-        if let Some(data_type) = self.short_data_type_at(0) {
+        if !Self::is_data_type_keyword(token.kind)
+            && let Some(data_type) = self.short_data_type_at(0)
+        {
             self.advance();
             return Ok(data_type);
         }
@@ -2459,8 +2486,14 @@ const SHORT_DATA_TYPES: &[(&str, usize, DataType)] = &[
 ];
 
 fn short_data_type(text: &str) -> Option<DataType> {
+    // Most words in a type position are class names: reject them on the first letter.
+    let first = text.as_bytes().first()?.to_ascii_uppercase();
+    if !matches!(first, b'C' | b'I' | b'L' | b'D' | b'H' | b'W' | b'R' | b'M') {
+        return None;
+    }
     SHORT_DATA_TYPES
         .iter()
+        .filter(|(name, _, _)| name.as_bytes()[0] == first)
         .find(|(name, min, _)| {
             (*min..=name.len()).contains(&text.len())
                 && name[..text.len()].eq_ignore_ascii_case(text)
