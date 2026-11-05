@@ -14,7 +14,7 @@ fn worker_path(relative: &Path, build: &str, name: &str) -> String {
 }
 
 /// The directories of a stage that a request writes into.
-const KINDS: [&str; 4] = ["r", "xref", "dbg", "lst"];
+const KINDS: [&str; 5] = ["r", "xref", "dbg", "lst", "verify"];
 
 /// The stage of one worker process: `<state>/stage/<build>/w<n>-<s>`.
 #[derive(Clone, Debug)]

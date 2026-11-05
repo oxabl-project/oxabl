@@ -21,6 +21,14 @@ pub struct Built {
     build_keys: RefCell<String>,
     extra: RefCell<String>,
     workers: RefCell<String>,
+    /// Environment changes for every `oxabl build` run: `None` removes.
+    envs: RefCell<Vec<(String, Option<String>)>>,
+    /// Each worker reads `env-<worker>.json` instead of `env.json`.
+    per_worker: std::cell::Cell<bool>,
+    /// Further lines of `[workspace.preprocessor]`.
+    preprocessor: RefCell<String>,
+    /// Further entries of `[build.workers].env`.
+    worker_envs: RefCell<Vec<(String, String)>>,
 }
 
 /// The answer of one `oxabl build` run.
@@ -66,12 +74,37 @@ impl Built {
 
     /// `sources` are `[workspace.sources]` keys, `extra` further tables.
     pub fn with(sources: &str, extra: &str) -> Built {
+        Built::with_dir(
+            TempDir::new().expect("a temporary directory"),
+            sources,
+            extra,
+        )
+    }
+
+    /// Like [`Built::new`], in a new directory below `parent`.
+    pub fn new_in(parent: &Path) -> Built {
+        Built::with_dir(
+            TempDir::new_in(parent).expect("a temporary directory"),
+            "include_paths = [\"src\"]",
+            "",
+        )
+    }
+
+    fn with_dir(dir: TempDir, sources: &str, extra: &str) -> Built {
         let workspace = Built {
-            dir: TempDir::new().expect("a temporary directory"),
+            dir,
             sources: RefCell::new(sources.to_string()),
             build_keys: RefCell::new(String::new()),
             extra: RefCell::new(extra.to_string()),
             workers: RefCell::new("count = 1".to_string()),
+            per_worker: std::cell::Cell::new(false),
+            preprocessor: RefCell::new(String::new()),
+            worker_envs: RefCell::new(Vec::new()),
+            envs: RefCell::new(vec![
+                ("OXABL_CACHE_MODE".to_string(), Some("ci".to_string())),
+                ("OXABL_BUILD_CACHE_DIR".to_string(), None),
+                ("CI".to_string(), None),
+            ]),
         };
         workspace.write_config();
         workspace.write("env.json", "{}");
@@ -84,7 +117,10 @@ impl Built {
             fake_avm().to_string_lossy().into_owned(),
             "{program}".to_string(),
             "--env".to_string(),
-            "{root}/env.json".to_string(),
+            match self.per_worker.get() {
+                true => "{root}/env-{worker}.json".to_string(),
+                false => "{root}/env.json".to_string(),
+            },
         ];
         let quoted: Vec<String> = command.iter().map(|arg| format!("{arg:?}")).collect();
         let sources = self.sources.borrow();
@@ -95,13 +131,19 @@ impl Built {
         self.write(
             "oxabl.toml",
             &format!(
-                "[workspace]\nname = \"built\"\n\n[workspace.preprocessor]\nproversion = \"12.8\"\n\n[workspace.sources]\n{directories}\n{sources}\n\n[build]\noutput = \"build/r\"\n{}\n\n{}\n\n[build.workers]\ncommand = [{}]\n{}\nenv = {{ FAKE_AVM_LOG = {:?}, FAKE_AVM_STATE = {:?} }}\n",
+                "[workspace]\nname = \"built\"\n\n[workspace.preprocessor]\nproversion = \"12.8\"\n{}\n\n[workspace.sources]\n{directories}\n{sources}\n\n[build]\noutput = \"build/r\"\n{}\n\n{}\n\n[build.workers]\ncommand = [{}]\n{}\nenv = {{ FAKE_AVM_LOG = {:?}, FAKE_AVM_STATE = {:?}{} }}\n",
+                self.preprocessor.borrow(),
                 self.build_keys.borrow(),
                 self.extra.borrow(),
                 quoted.join(", "),
                 self.workers.borrow(),
                 self.log().to_string_lossy(),
-                self.path("fake-state").to_string_lossy()
+                self.path("fake-state").to_string_lossy(),
+                self.worker_envs
+                    .borrow()
+                    .iter()
+                    .map(|(name, value)| format!(", {name} = {value:?}"))
+                    .collect::<String>()
             ),
         );
     }
@@ -123,6 +165,44 @@ impl Built {
     pub fn build_keys(&self, lines: &str) {
         *self.build_keys.borrow_mut() = lines.to_string();
         self.write_config();
+    }
+
+    /// Sets `[build.workers].env`'s `name`, which the worker sees.
+    pub fn worker_env(&self, name: &str, value: &str) {
+        self.worker_envs
+            .borrow_mut()
+            .push((name.to_string(), value.to_string()));
+        self.write_config();
+    }
+
+    /// The databases the worker connects: `[workspace.preprocessor] databases`.
+    pub fn databases(&self, names: &[&str]) {
+        let quoted: Vec<String> = names.iter().map(|name| format!("{name:?}")).collect();
+        *self.preprocessor.borrow_mut() = format!("databases = [{}]", quoted.join(", "));
+        self.write_config();
+    }
+
+    /// Gives each worker an environment file of its own, `env-<n>.json`.
+    pub fn per_worker_environments(&self, environments: &[Value]) {
+        self.per_worker.set(true);
+        for (at, environment) in environments.iter().enumerate() {
+            self.write(&format!("env-{}.json", at + 1), &environment.to_string());
+        }
+        self.write_config();
+    }
+
+    /// Sets (`Some`) or removes (`None`) an environment variable of every
+    /// later run.
+    pub fn env(&self, name: &str, value: Option<&str>) {
+        let mut envs = self.envs.borrow_mut();
+        envs.retain(|(known, _)| known != name);
+        envs.push((name.to_string(), value.map(str::to_string)));
+    }
+
+    /// Turns the local cache on in `directory`, in developer mode.
+    pub fn cache_in(&self, directory: &Path) {
+        self.env("OXABL_CACHE_MODE", Some("developer"));
+        self.env("OXABL_BUILD_CACHE_DIR", Some(&directory.to_string_lossy()));
     }
 
     pub fn root(&self) -> &Path {
@@ -171,6 +251,12 @@ impl Built {
             .env("FAKE_AVM_STATE", self.path("fake-state"))
             .arg("build")
             .args(args);
+        for (name, value) in self.envs.borrow().iter() {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
         command
     }
 

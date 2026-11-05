@@ -41,6 +41,9 @@ pub struct Options<'a> {
     pub events: bool,
     pub report: Option<&'a Path>,
     pub fail_fast: bool,
+    pub no_cache: bool,
+    pub no_remote_cache: bool,
+    pub wait_lock: Option<u64>,
 }
 
 pub fn run(options: Options<'_>) -> ExitCode {
@@ -56,6 +59,9 @@ pub fn run(options: Options<'_>) -> ExitCode {
         events,
         report,
         fail_fast,
+        no_cache,
+        no_remote_cache,
+        wait_lock,
     } = options;
     let workspace = match BuildWorkspace::open(root) {
         Ok(workspace) => workspace,
@@ -73,6 +79,9 @@ pub fn run(options: Options<'_>) -> ExitCode {
                 events,
                 report,
                 fail_fast,
+                no_cache,
+                no_remote_cache,
+                wait_lock,
             },
         );
     }

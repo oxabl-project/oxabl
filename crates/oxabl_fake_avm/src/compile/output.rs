@@ -84,6 +84,11 @@ pub fn write(ctx: &Context<'_>, name: &str, out: &Outcome) -> io::Result<()> {
             &xref_path(ctx.stage.join("xref").join(format!("{name}.xref"))),
             &xref_text(out),
         )?,
+        "private" if ctx.faults.no_private_xref => {}
+        "private" => put(
+            &xref_path(ctx.stage.join("verify").join(format!("{name}.xref.xml"))),
+            &xref_xml(out),
+        )?,
         _ => {}
     }
     if ctx.debug_list {

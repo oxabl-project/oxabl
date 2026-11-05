@@ -15,6 +15,7 @@ struct Entry {
 #[derive(Default)]
 struct State {
     heap: BinaryHeap<Entry>,
+    tasks: Vec<Task>,
     /// No more jobs will be pushed.
     done: bool,
     /// Stop handing out jobs.
@@ -23,10 +24,19 @@ struct State {
     busy: usize,
 }
 
+/// One part of a schema check that an idle worker does between jobs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Task {
+    pub round: u64,
+    pub part: usize,
+    pub parts: usize,
+}
+
 /// What a worker gets when it asks for work.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Take {
     Job(usize),
+    Task(Task),
     /// Nothing more to do.
     Closed,
 }
@@ -51,6 +61,18 @@ impl Queue {
             job,
         });
         self.wake.notify_one();
+    }
+
+    /// Offers a task to the next idle worker; tasks go before jobs.
+    pub fn push_task(&self, task: Task) {
+        let mut state = self.state.lock().unwrap();
+        state.tasks.push(task);
+        self.wake.notify_one();
+    }
+
+    /// Drops the tasks no worker has taken.
+    pub fn clear_tasks(&self) {
+        self.state.lock().unwrap().tasks.clear();
     }
 
     /// No job will be pushed any more: workers leave when the queue runs dry.
@@ -83,6 +105,9 @@ impl Queue {
         loop {
             if state.stopped {
                 return Take::Closed;
+            }
+            if !state.tasks.is_empty() {
+                return Take::Task(state.tasks.remove(0));
             }
             if let Some(entry) = state.heap.pop() {
                 state.busy += 1;

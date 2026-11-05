@@ -3,7 +3,9 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 
+use oxabl_build::cache::{Environment, Flags, select};
 use oxabl_build::config::BuildWorkspace;
 use oxabl_build::error::BuildError;
 use oxabl_build::events::Event;
@@ -19,6 +21,9 @@ pub struct Options<'a> {
     pub events: bool,
     pub report: Option<&'a Path>,
     pub fail_fast: bool,
+    pub no_cache: bool,
+    pub no_remote_cache: bool,
+    pub wait_lock: Option<u64>,
 }
 
 fn fail(error: &BuildError) -> ExitCode {
@@ -46,12 +51,27 @@ fn write_report(path: &Path, report: &BuildReport) -> Result<(), BuildError> {
 pub fn run(workspace: &BuildWorkspace, options: Options<'_>) -> ExitCode {
     let cancel = Cancel::new();
     build_probe::install_signal_handler(&cancel);
+    let selection = match select(
+        workspace,
+        Flags {
+            no_cache: options.no_cache,
+            no_remote_cache: options.no_remote_cache,
+        },
+        &Environment::from_process(),
+    ) {
+        Ok(selection) => selection,
+        Err(error) => return fail(&error),
+    };
+    for note in &selection.notes {
+        eprintln!("warning: {note}");
+    }
     let request = BuildRequest {
         workers: options.workers,
         fail_fast: options.fail_fast,
         cancel,
         sink: options.events.then(|| Box::new(print_event) as _),
-        ..BuildRequest::default()
+        cache: selection.cache,
+        wait_lock: options.wait_lock.map(Duration::from_secs),
     };
     let report = match build(workspace, request) {
         Ok(report) => report,

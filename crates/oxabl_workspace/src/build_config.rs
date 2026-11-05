@@ -164,11 +164,22 @@ pub struct BuildVerify {
     /// Read the compiler's own list of opened files and check it. Without it no
     /// cache write happens.
     pub reads: bool,
+
+    /// Units held for the schema check that release them to a cache. Default
+    /// 500.
+    pub batch_units: u32,
+
+    /// Longest time a unit waits for the schema check. Default `60s`.
+    pub batch_interval: TimeSpan,
 }
 
 impl Default for BuildVerify {
     fn default() -> Self {
-        BuildVerify { reads: true }
+        BuildVerify {
+            reads: true,
+            batch_units: 500,
+            batch_interval: TimeSpan(Duration::from_secs(60)),
+        }
     }
 }
 

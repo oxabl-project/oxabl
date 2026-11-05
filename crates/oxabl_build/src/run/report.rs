@@ -2,6 +2,7 @@
 
 use serde_json::{Value, json};
 
+use crate::cache::{NotStoredReason, Origin};
 use crate::worker::compile::CompilerMessage;
 
 /// The `format` number of the report document.
@@ -11,6 +12,8 @@ pub const FORMAT: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnitStatus {
     Compiled,
+    /// A cache gave the outputs; no compile ran.
+    Fetched(Origin),
     Failed,
     /// The unit cannot compile where it is, and why.
     Skipped(String),
@@ -21,7 +24,7 @@ pub enum UnitStatus {
 impl UnitStatus {
     pub fn name(&self) -> &'static str {
         match self {
-            UnitStatus::Compiled => "ok",
+            UnitStatus::Compiled | UnitStatus::Fetched(_) => "ok",
             UnitStatus::Failed => "fail",
             UnitStatus::Skipped(_) => "skipped",
             UnitStatus::NotRun => "not-run",
@@ -55,6 +58,24 @@ pub struct Summary {
     pub up_to_date: usize,
 }
 
+/// What the caches did in one build.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheReport {
+    /// The label of the cache, `none` when no cache was used.
+    pub label: String,
+    /// Whether any cache stores sets, which turns verification on.
+    pub writes: bool,
+    /// Sets that passed verification and were pushed.
+    pub offered: usize,
+    pub stored: usize,
+    pub already_present: usize,
+    pub not_stored: Vec<(NotStoredReason, usize)>,
+    /// Units whose set was not offered: a file changed during the build.
+    pub changed_inputs: usize,
+    /// Units whose set was not offered: the schema check failed.
+    pub schema_dropped: usize,
+}
+
 /// The outcome of `oxabl build`.
 #[derive(Debug)]
 pub struct BuildReport {
@@ -66,11 +87,39 @@ pub struct BuildReport {
     pub units: Vec<UnitReport>,
     pub summary: Summary,
     pub notes: Vec<String>,
-    /// The sets of outputs offered to the cache.
-    pub offered: usize,
+    pub cache: CacheReport,
     /// How long the refresh, the probe and the keys took before any compile.
     pub setup_ms: u64,
     pub elapsed_ms: u64,
+}
+
+impl CacheReport {
+    /// The summary line of the caches, when one was used.
+    pub fn line(&self) -> Option<String> {
+        if self.label == "none" {
+            return None;
+        }
+        if !self.writes {
+            return Some(format!("{}: read-only, 0 sets offered", self.label));
+        }
+        let mut parts = vec![format!("{} sets offered", self.offered)];
+        if self.stored > 0 {
+            parts.push(format!("{} stored", self.stored));
+        }
+        if self.already_present > 0 {
+            parts.push(format!("{} already present", self.already_present));
+        }
+        for (reason, count) in &self.not_stored {
+            parts.push(format!("{count} not stored ({reason:?})"));
+        }
+        if self.changed_inputs > 0 {
+            parts.push(format!("{} dropped: a file changed", self.changed_inputs));
+        }
+        if self.schema_dropped > 0 {
+            parts.push(format!("{} dropped: schema", self.schema_dropped));
+        }
+        Some(format!("{}: {}", self.label, parts.join(", ")))
+    }
 }
 
 fn message(message: &CompilerMessage) -> Value {
@@ -94,8 +143,16 @@ impl BuildReport {
                 json!({
                     "path": unit.path,
                     "status": unit.status.name(),
-                    "source": match unit.status {
+                    "source": match &unit.status {
                         UnitStatus::Compiled | UnitStatus::Failed => json!("compiled"),
+                        UnitStatus::Fetched(Origin::Local { .. }) => json!("local-cache"),
+                        UnitStatus::Fetched(Origin::Remote(_)) => json!("remote-cache"),
+                        _ => Value::Null,
+                    },
+                    "origin_unverified": match &unit.status {
+                        UnitStatus::Fetched(Origin::Local { recorded: Some(remote) }) => {
+                            json!(format!("remote {} {}", remote.tier, remote.signer))
+                        }
                         _ => Value::Null,
                     },
                     "reason": unit.reason,
@@ -125,6 +182,18 @@ impl BuildReport {
                 "not_run": summary.not_run,
                 "tainted": summary.tainted,
                 "up_to_date": summary.up_to_date,
+            },
+            "cache": {
+                "label": self.cache.label,
+                "writes": self.cache.writes,
+                "offered": self.cache.offered,
+                "stored": self.cache.stored,
+                "already_present": self.cache.already_present,
+                "not_stored": self.cache.not_stored.iter().map(|(reason, count)| {
+                    json!({ "reason": format!("{reason:?}"), "count": count })
+                }).collect::<Vec<_>>(),
+                "changed_inputs": self.cache.changed_inputs,
+                "schema_dropped": self.cache.schema_dropped,
             },
             "timing": { "setup_ms": self.setup_ms, "elapsed_ms": self.elapsed_ms },
             "notes": self.notes,
@@ -158,6 +227,9 @@ impl BuildReport {
         }
         let s = &self.summary;
         out.push_str(&format!("compiled {}", s.compiled));
+        if s.fetched > 0 {
+            out.push_str(&format!(", fetched {}", s.fetched));
+        }
         if s.failed > 0 {
             out.push_str(&format!(", failed {}", s.failed));
         }
@@ -175,6 +247,10 @@ impl BuildReport {
             s.up_to_date,
             self.elapsed_ms as f64 / 1000.0
         ));
+        if let Some(line) = self.cache.line() {
+            out.push_str(&line);
+            out.push('\n');
+        }
         out
     }
 }

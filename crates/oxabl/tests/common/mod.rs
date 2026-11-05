@@ -4,9 +4,11 @@
 #![allow(dead_code)]
 
 pub mod built;
+pub mod cache;
 pub mod key_spec;
 pub mod keyed;
 pub mod openedge;
+pub mod remote_double;
 
 use std::fs;
 use std::path::{Path, PathBuf};

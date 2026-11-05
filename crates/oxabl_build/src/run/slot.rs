@@ -2,11 +2,14 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 
 use super::shared::Shared;
 use super::types::{Msg, UnitDone};
+use crate::graph::Scratch;
 use crate::output::{Stage, promote};
-use crate::schedule::Take;
+use crate::schedule::{Take, Task};
+use crate::verify::reads;
 use crate::worker::compile::CompiledUnit;
 use crate::worker::{Definitions, Job, Worker, WorkerError};
 
@@ -19,15 +22,28 @@ enum Flow {
     Dead(String),
 }
 
-/// Runs jobs until the queue closes.
+/// Runs jobs and schema checks until the queue closes.
 pub fn run(worker: &mut Worker, shared: &Shared<'_>, tx: &Sender<Msg>) {
     let mut error = None;
-    while let Take::Job(job) = shared.queue.take() {
-        if shared.cancel.is_cancelled() {
-            break;
-        }
-        let flow = run_job(worker, shared, tx, job);
-        shared.queue.release();
+    let mut scratch = Scratch::new(shared.outcome.names.len());
+    loop {
+        let flow = match shared.queue.take() {
+            Take::Closed => break,
+            Take::Task(task) => {
+                if shared.cancel.is_cancelled() {
+                    break;
+                }
+                run_task(worker, shared, tx, task)
+            }
+            Take::Job(job) => {
+                if shared.cancel.is_cancelled() {
+                    break;
+                }
+                let flow = run_job(worker, shared, tx, job, &mut scratch);
+                shared.queue.release();
+                flow
+            }
+        };
         match flow {
             Flow::Continue => {}
             Flow::Stop => break,
@@ -43,7 +59,47 @@ pub fn run(worker: &mut Worker, shared: &Shared<'_>, tx: &Sender<Msg>) {
     });
 }
 
-fn run_job(worker: &mut Worker, shared: &Shared<'_>, tx: &Sender<Msg>, job: usize) -> Flow {
+/// One part of a schema check. A worker that fails it is lost.
+fn run_task(worker: &mut Worker, shared: &Shared<'_>, tx: &Sender<Msg>, task: Task) -> Flow {
+    let Some(imaging) = shared.imaging else {
+        return Flow::Continue;
+    };
+    let result = worker.image_share(&imaging.databases, task.part, task.parts, imaging.timeout);
+    let failed = result
+        .as_ref()
+        .err()
+        .map(|error| (reason(error), error.to_string()));
+    let _ = tx.send(Msg::Image {
+        round: task.round,
+        part: task.part,
+        result: result.map_err(|error| error.to_string()),
+    });
+    let Some((why, detail)) = failed else {
+        return Flow::Continue;
+    };
+    if shared.cancel.is_cancelled() {
+        worker.kill();
+        return Flow::Stop;
+    }
+    let _ = tx.send(Msg::WorkerLost {
+        worker: worker.number,
+        reason: why,
+        detail,
+        unit: None,
+    });
+    match worker.replace(&shared.restart) {
+        Ok(()) => Flow::Continue,
+        Err(message) => Flow::Dead(message),
+    }
+}
+
+fn run_job(
+    worker: &mut Worker,
+    shared: &Shared<'_>,
+    tx: &Sender<Msg>,
+    job: usize,
+    scratch: &mut Scratch,
+) -> Flow {
     let mut units = std::mem::take(&mut shared.remaining.lock().unwrap()[job]);
     units.retain(|unit| match unsendable(worker, shared, *unit) {
         Some(note) => {
@@ -60,7 +116,7 @@ fn run_job(worker: &mut Worker, shared: &Shared<'_>, tx: &Sender<Msg>, job: usiz
             .position(|unit| shared.infos[unit].propath != first)
             .unwrap_or(units.len());
         let rest = units.split_off(split);
-        match compile_group(worker, shared, tx, job, &units) {
+        match compile_group(worker, shared, tx, job, &units, scratch) {
             Ok(()) => units = rest,
             Err((error, done)) => {
                 let mut undone = units.split_off(done);
@@ -91,6 +147,8 @@ fn refused(job: usize, unit: u32, note: String) -> UnitDone {
         note: Some(note),
         outputs: Vec::new(),
         lost: true,
+        finished: Instant::now(),
+        reads: None,
     }
 }
 
@@ -102,6 +160,7 @@ fn compile_group(
     tx: &Sender<Msg>,
     job: usize,
     group: &[u32],
+    scratch: &mut Scratch,
 ) -> Result<(), (WorkerError, usize)> {
     let names: Vec<String> = group
         .iter()
@@ -128,12 +187,15 @@ fn compile_group(
     });
     let number = worker.number;
     let mut done = 0;
+    let mut verifiable: Vec<(u32, Instant)> = Vec::new();
     let result = worker.run(&request, shared.limits, &mut |compiled| {
         let unit = group[done];
         done += 1;
-        let _ = tx.send(Msg::UnitDone(finish_unit(
-            shared, &stage, job, unit, compiled,
-        )));
+        let finished = finish_unit(shared, &stage, job, unit, compiled);
+        if shared.verify.is_some() && finished.ok && shared.infos[&unit].key.is_some() {
+            verifiable.push((unit, finished.finished));
+        }
+        let _ = tx.send(Msg::UnitDone(finished));
         if let Some(next) = group.get(done) {
             let _ = tx.send(Msg::UnitStarted {
                 unit: *next,
@@ -142,7 +204,30 @@ fn compile_group(
         }
     });
     stage.clear();
+    if result.is_ok() {
+        rehash(worker, shared, tx, &verifiable, scratch);
+    }
     result.map_err(|error| (error, done))
+}
+
+/// V1 for the units of a request that compiled: hashes the unit and its
+/// closure again on this worker, which is idle.
+fn rehash(
+    worker: &mut Worker,
+    shared: &Shared<'_>,
+    tx: &Sender<Msg>,
+    units: &[(u32, Instant)],
+    scratch: &mut Scratch,
+) {
+    let Some(verify) = shared.verify else { return };
+    for (unit, done_at) in units {
+        let closure = shared.outcome.after.closure(*unit, scratch);
+        let result = verify.rehasher.check(*unit, &closure, *done_at, worker);
+        let _ = tx.send(Msg::Rehashed {
+            unit: *unit,
+            result,
+        });
+    }
 }
 
 /// Installs the outputs of a unit that compiled, or removes the ones it had.
@@ -164,7 +249,19 @@ fn finish_unit(
         note: silent.then(|| "the compile failed and the worker gave no message".to_string()),
         outputs: Vec::new(),
         lost: false,
+        finished: Instant::now(),
+        reads: None,
     };
+    if compiled.ok
+        && info.key.is_some()
+        && let Some(verify) = shared.verify
+    {
+        let file = match verify.user_xref {
+            true => format!("xref/{}.xref.xml", info.name),
+            false => format!("verify/{}.xref.xml", info.name),
+        };
+        done.reads = Some(reads::read_names(&stage.host().join(file)));
+    }
     if compiled.ok {
         match promote::promote(shared.root, stage.host(), &info.expected) {
             Ok(rows) => done.outputs = rows,
@@ -236,6 +333,8 @@ fn lost(
                 note: Some("worker lost twice while compiling this unit".to_string()),
                 outputs: Vec::new(),
                 lost: true,
+                finished: Instant::now(),
+                reads: None,
             }));
         }
     }

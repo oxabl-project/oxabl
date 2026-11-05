@@ -51,9 +51,10 @@ pub fn report(
         let report = match state {
             Some(state) => UnitReport {
                 path: entry.path.clone(),
-                status: match state.ok {
-                    true => UnitStatus::Compiled,
-                    false => UnitStatus::Failed,
+                status: match (state.ok, state.fetched) {
+                    (true, Some(origin)) => UnitStatus::Fetched(origin),
+                    (true, None) => UnitStatus::Compiled,
+                    (false, _) => UnitStatus::Failed,
                 },
                 reason,
                 duration_ms: state.ms,
@@ -73,6 +74,7 @@ pub fn report(
         };
         match report.status {
             UnitStatus::Compiled => summary.compiled += 1,
+            UnitStatus::Fetched(_) => summary.fetched += 1,
             UnitStatus::Failed => summary.failed += 1,
             UnitStatus::NotRun => summary.not_run += 1,
             UnitStatus::Skipped(_) => {}
@@ -105,7 +107,7 @@ pub fn report(
         units: reports,
         summary,
         notes,
-        offered: 0,
+        cache: Default::default(),
         setup_ms: facts.setup_ms,
         elapsed_ms: facts.elapsed_ms,
     }

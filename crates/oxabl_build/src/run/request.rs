@@ -1,5 +1,7 @@
 //! What a caller asks of `oxabl build`.
 
+use std::time::Duration;
+
 use crate::cache::{ArtifactCache, NoCache};
 use crate::events::Sink;
 use crate::worker::Cancel;
@@ -13,8 +15,11 @@ pub struct BuildRequest<'a> {
     pub cancel: Cancel,
     /// Hears the events of the build.
     pub sink: Option<Sink<'a>>,
-    /// Takes the outputs of the units that compiled.
+    /// Serves and takes the outputs of the units.
     pub cache: Box<dyn ArtifactCache>,
+    /// How long to wait for the workspace lock; none stops at once when
+    /// another build holds it.
+    pub wait_lock: Option<Duration>,
 }
 
 impl Default for BuildRequest<'_> {
@@ -25,6 +30,7 @@ impl Default for BuildRequest<'_> {
             cancel: Cancel::new(),
             sink: None,
             cache: Box::new(NoCache),
+            wait_lock: None,
         }
     }
 }

@@ -101,6 +101,16 @@ impl Compile {
         self.host.join(relative)
     }
 
+    /// Takes the XREF output out of the configuration, so that the build
+    /// writes a private `XREF-XML` for its own checks.
+    pub fn without_xref_output(&self) {
+        let path = self.path("oxabl.toml");
+        let text = fs::read_to_string(&path).unwrap();
+        let plain = text.replace("[build.outputs]\nxref = \"build/xref\"\n\n", "");
+        assert_ne!(text, plain, "the configuration has an XREF output");
+        fs::write(path, plain).unwrap();
+    }
+
     /// Writes a file below the workspace.
     pub fn write(&self, relative: &str, text: &str) {
         let path = self.path(relative);
@@ -108,14 +118,32 @@ impl Compile {
         fs::write(path, text).unwrap();
     }
 
-    /// `oxabl build` with `args`; the build must exit with `code`.
+    /// `oxabl build` with `args`, no cache; the build must exit with `code`.
     pub fn build(&self, args: &[&str], code: i32) -> std::process::Output {
-        let output = Command::new(env!("CARGO_BIN_EXE_oxabl"))
+        self.build_with_cache(args, code, "ci", None)
+    }
+
+    /// `oxabl build` with `args` in cache mode `mode`, and the shared local
+    /// cache in `cache` when given.
+    pub fn build_with_cache(
+        &self,
+        args: &[&str],
+        code: i32,
+        mode: &str,
+        cache: Option<&std::path::Path>,
+    ) -> std::process::Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oxabl"));
+        command
             .current_dir(&self.host)
+            .env("OXABL_CACHE_MODE", mode)
+            .env_remove("CI")
+            .env_remove("OXABL_BUILD_CACHE_DIR")
             .arg("build")
-            .args(args)
-            .output()
-            .expect("oxabl runs");
+            .args(args);
+        if let Some(cache) = cache {
+            command.env("OXABL_BUILD_CACHE_DIR", cache);
+        }
+        let output = command.output().expect("oxabl runs");
         assert_eq!(
             output.status.code(),
             Some(code),

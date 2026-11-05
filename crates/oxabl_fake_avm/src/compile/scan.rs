@@ -25,6 +25,8 @@ pub struct Scan {
     pub reads: Vec<String>,
     /// Each fault with the line it is on, counted from 1.
     pub faults: Vec<(Fault, usize)>,
+    /// `FAKE-RESOLVE-OTHER <name> <path>`: the include `name` resolves to `path`.
+    pub resolve_other: Vec<(String, String)>,
 }
 
 const FAULTS: [(&str, Fault); 9] = [
@@ -93,6 +95,15 @@ pub fn scan(text: &str) -> Scan {
                 found.faults.push((fault, index + 1));
                 break;
             }
+        }
+        if let Some((_, rest)) = line.split_once("FAKE-RESOLVE-OTHER") {
+            let mut words = rest.trim().trim_end_matches("*/").split_whitespace();
+            if let (Some(name), Some(path)) = (words.next(), words.next()) {
+                found
+                    .resolve_other
+                    .push((name.to_string(), path.to_string()));
+            }
+            continue;
         }
         if let Some((_, path)) = line.split_once("FAKE-READ") {
             let path = path.trim().trim_end_matches("*/").trim();

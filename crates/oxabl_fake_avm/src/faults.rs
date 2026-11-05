@@ -22,6 +22,22 @@ pub struct Faults {
     /// A directory a test gives for markers that outlive one process.
     pub state: Option<PathBuf>,
     pub dlc: Option<PathBuf>,
+    /// Compiles after which the schema image differs (`FAKE_AVM_SCHEMA_CHANGE_AFTER`).
+    pub schema_change_after: Option<usize>,
+    /// Compiles after which a schema answer has a wrong count
+    /// (`FAKE_AVM_SCHEMA_ERROR_AFTER`).
+    pub schema_error_after: Option<usize>,
+    /// The private `XREF-XML` is not written (`FAKE_AVM_NO_PRIVATE_XREF`).
+    pub no_private_xref: bool,
+    /// While this file exists the schema image differs (`FAKE_AVM_SCHEMA_CHANGE_FILE`).
+    pub schema_change_file: Option<PathBuf>,
+    /// Time a worker waits after it read the schema and before it answers
+    /// (`FAKE_AVM_SCHEMA_DELAY_MS`).
+    pub schema_delay: Option<Duration>,
+    /// Receives one line with the time for each request (`FAKE_AVM_REQUEST_LOG`).
+    pub request_log: Option<PathBuf>,
+    /// Paths whose presence each `COMPILE` request logs (`FAKE_AVM_WATCH`, `:`-separated).
+    pub watch: Vec<PathBuf>,
 }
 
 impl Faults {
@@ -47,6 +63,22 @@ impl Faults {
                 .and_then(|n| n.parse().ok()),
             log: std::env::var_os("FAKE_AVM_LOG").map(PathBuf::from),
             dlc: std::env::var_os("FAKE_AVM_DLC").map(PathBuf::from),
+            schema_change_after: std::env::var("FAKE_AVM_SCHEMA_CHANGE_AFTER")
+                .ok()
+                .and_then(|n| n.parse().ok()),
+            schema_error_after: std::env::var("FAKE_AVM_SCHEMA_ERROR_AFTER")
+                .ok()
+                .and_then(|n| n.parse().ok()),
+            no_private_xref: flag("FAKE_AVM_NO_PRIVATE_XREF"),
+            schema_change_file: std::env::var_os("FAKE_AVM_SCHEMA_CHANGE_FILE").map(PathBuf::from),
+            schema_delay: std::env::var("FAKE_AVM_SCHEMA_DELAY_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map(Duration::from_millis),
+            request_log: std::env::var_os("FAKE_AVM_REQUEST_LOG").map(PathBuf::from),
+            watch: std::env::var_os("FAKE_AVM_WATCH")
+                .map(|paths| std::env::split_paths(&paths).collect())
+                .unwrap_or_default(),
         }
     }
 }

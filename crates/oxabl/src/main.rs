@@ -394,6 +394,19 @@ enum Cli {
         /// Stop dispatching at the first failure.
         #[arg(long, conflicts_with_all = ["plan", "probe"])]
         fail_fast: bool,
+
+        /// Neither read from nor write to any compile cache.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        no_cache: bool,
+
+        /// Do not use the remote cache; the local cache stays on.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        no_remote_cache: bool,
+
+        /// Wait up to this many seconds for the workspace lock instead of
+        /// stopping when another build holds it.
+        #[arg(long, value_name = "SECONDS", conflicts_with_all = ["plan", "probe"])]
+        wait_lock: Option<u64>,
     },
 }
 
@@ -650,6 +663,9 @@ fn main() -> ExitCode {
             events,
             report,
             fail_fast,
+            no_cache,
+            no_remote_cache,
+            wait_lock,
         } => build_cmd::run(build_cmd::Options {
             plan,
             probe,
@@ -662,6 +678,9 @@ fn main() -> ExitCode {
             events,
             report: report.as_deref(),
             fail_fast,
+            no_cache,
+            no_remote_cache,
+            wait_lock,
         }),
     }
 }
