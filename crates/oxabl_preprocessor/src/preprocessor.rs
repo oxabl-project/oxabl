@@ -145,8 +145,6 @@ impl<'fs> Preprocessor<'fs> {
         source: &str,
     ) -> Result<PreprocessedFile, Vec<Diagnostic>> {
         let predefined = self.predefined.as_ref().unwrap_or(&DEFAULT_PREDEFINED);
-        let mut sources = Vec::with_capacity(1 + count_markers(source.as_bytes()).0);
-        sources.push((file, Arc::from(source)));
         let mut ctx = ProcessContext {
             fs: self.fs,
             include_paths: self.include_paths,
@@ -163,7 +161,7 @@ impl<'fs> Preprocessor<'fs> {
             elided: Vec::new(),
             line_starts: HashMap::new(),
             expanding_vars: Vec::new(),
-            sources,
+            sources: vec![(file, Arc::from(source))],
             diagnostics: Vec::new(),
             include_stack: HashSet::new(),
             site_stack: Vec::new(),
@@ -306,10 +304,16 @@ impl ProcessContext<'_> {
         let bytes = source.as_bytes();
         let len = bytes.len();
         // Each reference adds up to two nodes and a source, each directive one
-        // node. Reserving once keeps the vectors from regrowing as it scans.
-        let (refs, directives) = count_markers(bytes);
-        let mut nodes: Vec<SpanNode> = Vec::with_capacity(2 * refs + directives + 1);
-        self.sources.reserve(refs);
+        // node. Reserving once keeps the root's vectors from regrowing as it
+        // scans. Nested sources grow on demand: counting them too would scan
+        // every include once more for every file that includes it.
+        let mut nodes: Vec<SpanNode> = if depth == 0 {
+            let (refs, directives) = count_markers(bytes);
+            self.sources.reserve(refs);
+            Vec::with_capacity(2 * refs + directives + 1)
+        } else {
+            Vec::new()
+        };
         // `chunk_start` tracks the beginning of the current un-emitted text chunk.
         let mut chunk_start: u32 = 0;
         let mut i: usize = 0;
