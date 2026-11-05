@@ -18,3 +18,13 @@ procedure notify-owner:
     run notify/log.p (input lv-body, input lv-ok).,
     message "notified".
 end procedure.
+
+/* An empty WHEN branch before END ends the CASE; END belongs to the enclosing block. */
+procedure route-owner:
+    do:
+        case lv-state:
+            when "a" then lv-count = 1.
+            when "b" or when "c" then
+    end.
+    message "routed".
+end procedure.

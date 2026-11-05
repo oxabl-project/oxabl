@@ -3448,6 +3448,7 @@ impl Parser<'_> {
             }
 
             self.expect_kind(Kind::Then, "Expected THEN after WHEN value")?;
+            let empty_before_end = self.check(Kind::End);
 
             // parse statements until next WHEN, OTHERWISE, or END
             let mut body = Vec::new();
@@ -3459,8 +3460,24 @@ impl Parser<'_> {
                 self.parse_block_statement_recovering(&mut body);
             }
 
+            if body.is_empty() && self.check(Kind::Otherwise) {
+                self.record_error(ParseError {
+                    message: "Expected a statement after THEN".to_string(),
+                    span: self.current_span(),
+                });
+            }
+
             crate::parser::debug_assert_expr_sibling_order(&values);
             when_branches.push(WhenBranch { values, body });
+
+            if empty_before_end {
+                // An empty last branch ends the CASE; END belongs to the enclosing block.
+                return Ok(self.stmt(StatementKind::Case {
+                    expression,
+                    when_branches,
+                    otherwise: None,
+                }));
+            }
         }
 
         let otherwise = if self.check(Kind::Otherwise) {

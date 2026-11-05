@@ -203,6 +203,121 @@ fn an_if_without_a_branch_stays_an_error_unless_a_block_end_follows() {
     assert_errors("IF NOT lOk THEN ELSE MESSAGE 'x'.");
 }
 
+// ---- 3b. CASE ... WHEN ... THEN with the block's END right behind ---------
+
+fn case_branches(stmt: &Statement) -> &[oxabl_ast::WhenBranch] {
+    let StatementKind::Case { when_branches, .. } = &stmt.kind else {
+        panic!("expected CASE, got {:?}", stmt.kind);
+    };
+    when_branches
+}
+
+#[test]
+fn an_empty_when_branch_leaves_the_end_to_the_enclosing_block() {
+    let program = parse_clean(
+        "PROCEDURE p1:
+  DO:
+    CASE s:
+      WHEN 'Init' THEN
+    END.
+  n = TRUE.
+END PROCEDURE.
+MESSAGE 'top'.",
+    );
+    let [procedure, top] = program.statements.as_slice() else {
+        panic!("expected PROCEDURE and MESSAGE");
+    };
+    assert!(matches!(top.kind, StatementKind::Message { .. }));
+    let StatementKind::Procedure { body, .. } = &procedure.kind else {
+        panic!("expected PROCEDURE, got {:?}", procedure.kind);
+    };
+    let [block, after] = body.as_slice() else {
+        panic!("expected DO and an assignment, got {}", body.len());
+    };
+    assert!(matches!(after.kind, StatementKind::Assignment { .. }));
+    let StatementKind::Do { body, .. } = &block.kind else {
+        panic!("expected DO, got {:?}", block.kind);
+    };
+    let [case] = body.as_slice() else {
+        panic!("expected only the CASE in the DO, got {}", body.len());
+    };
+    let branches = case_branches(case);
+    assert_eq!(branches.len(), 1);
+    assert!(branches[0].body.is_empty());
+}
+
+#[test]
+fn an_earlier_when_with_a_statement_does_not_change_the_rule() {
+    let program = parse_clean(
+        "DO:
+  CASE s:
+    WHEN 'a' THEN x = 1.
+    WHEN 'b' OR WHEN 'c' THEN
+  END.
+y = 2.",
+    );
+    let [block, after] = program.statements.as_slice() else {
+        panic!(
+            "expected DO and an assignment, got {}",
+            program.statements.len()
+        );
+    };
+    assert!(matches!(after.kind, StatementKind::Assignment { .. }));
+    let StatementKind::Do { body, .. } = &block.kind else {
+        panic!("expected DO, got {:?}", block.kind);
+    };
+    assert_eq!(body.len(), 1);
+    let branches = case_branches(&body[0]);
+    assert_eq!(branches.len(), 2);
+    assert_eq!(branches[0].body.len(), 1);
+    assert_eq!(branches[1].values.len(), 2);
+    assert!(branches[1].body.is_empty());
+}
+
+#[test]
+fn a_comment_between_then_and_end_changes_nothing() {
+    parse_clean("DO: CASE s: WHEN 'a' THEN /* nothing */ END. END.");
+}
+
+#[test]
+fn a_filled_or_closed_case_keeps_its_own_end() {
+    let program = parse_clean("DO: CASE s: WHEN 'a' THEN x = 1. END. y = 2. END.");
+    let [block] = program.statements.as_slice() else {
+        panic!("expected one DO");
+    };
+    let StatementKind::Do { body, .. } = &block.kind else {
+        panic!("expected DO, got {:?}", block.kind);
+    };
+    assert_eq!(body.len(), 2);
+    parse_clean("DO: CASE s: WHEN 'a' THEN. END CASE. END.");
+}
+
+#[test]
+fn the_end_of_an_empty_when_does_not_close_the_case_twice() {
+    // The CASE takes no END, so the DO owns the first one and the second is
+    // left over at the top level.
+    let program = parse("DO: CASE s: WHEN 'a' THEN END. x = 5. END.");
+    let [block, assign, orphan] = program.statements.as_slice() else {
+        panic!(
+            "expected DO, assignment and orphan END, got {}",
+            program.statements.len()
+        );
+    };
+    assert!(matches!(block.kind, StatementKind::Do { .. }));
+    assert!(matches!(assign.kind, StatementKind::Assignment { .. }));
+    assert!(matches!(orphan.kind, StatementKind::Empty));
+}
+
+#[test]
+fn an_empty_when_before_end_stays_an_error_where_the_compiler_refuses() {
+    // END CASE has no CASE to close.
+    assert_errors("DO: CASE s: WHEN 'a' THEN END CASE. END.");
+    assert_errors("CASE s: WHEN 'a' THEN END CASE.");
+    // An empty branch cannot run into OTHERWISE.
+    assert_errors("CASE s: WHEN 'a' THEN OTHERWISE x = 1. END CASE.");
+    assert_errors("DO: CASE s: WHEN 'a' THEN OTHERWISE x = 1. END. END.");
+}
+
 // ---- 4. CAN-FIND record-phrase options in any order ------------------------
 
 #[track_caller]
