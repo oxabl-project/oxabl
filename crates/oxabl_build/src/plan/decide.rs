@@ -50,6 +50,10 @@ pub struct StoredInputs<'a> {
     pub layout: Option<&'a OutputLayout>,
     /// The record of the environment this plan probed.
     pub environment: Option<&'a str>,
+    /// Compare every unit with its stored result even before a build has
+    /// finished, so a unit with no result is `new`. A build sets it; a plan
+    /// before the first build lists what changed since the last refresh.
+    pub judge_all: bool,
 }
 
 /// The compile keys of a plan, by unit path.
@@ -147,14 +151,17 @@ pub fn decide(
     let touched_before = reverse_before.reaching(roots.iter().copied());
 
     let mut scratch = Scratch::new(outcome.names.len());
-    let judge = stored.as_ref().filter(|s| s.results.built).map(|s| Stored {
-        outcome,
-        results: s.results,
-        layout: s.layout,
-        root: paths.root(),
-        environment: s.environment,
-        after,
-    });
+    let judge = stored
+        .as_ref()
+        .filter(|s| s.judge_all || s.results.built)
+        .map(|s| Stored {
+            outcome,
+            results: s.results,
+            layout: s.layout,
+            root: paths.root(),
+            environment: s.environment,
+            after,
+        });
     let mut restat = Vec::new();
     let mut rebuild = Vec::new();
     let mut unchanged = Vec::new();

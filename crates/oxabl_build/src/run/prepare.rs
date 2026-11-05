@@ -136,6 +136,7 @@ pub fn prepare(
             results: &committed.results,
             layout: Some(&layout),
             environment: environment.as_deref(),
+            judge_all: true,
         }),
     );
     Ok(Prepared {

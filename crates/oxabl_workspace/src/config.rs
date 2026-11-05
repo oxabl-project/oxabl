@@ -385,7 +385,8 @@ impl Default for PreprocessorConfig {
 }
 
 /// The `[workspace.sources]` section.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SourcesConfig {
     /// Directories to walk for ABL *root* files — `.p`, `.w`, `.cls`, and `.v`,
     /// matched case-insensitively. `.i` is deliberately not among them: an
@@ -580,7 +581,8 @@ impl Default for SourcesConfig {
 }
 
 /// The `[workspace.schema]` section.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaConfig {
     /// Paths to `.df` schema dump files.
     #[serde(default)]

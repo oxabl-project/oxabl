@@ -134,6 +134,7 @@ pub fn plan(workspace: &BuildWorkspace, request: &PlanRequest) -> Result<PlanRep
             results: &results,
             layout: layout.as_ref(),
             environment: environment.as_deref(),
+            judge_all: false,
         }),
     );
     if since.is_some() {

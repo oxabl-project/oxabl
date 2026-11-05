@@ -94,6 +94,8 @@ impl<'a, 'b> Coordinator<'a, 'b> {
     /// no compile; closing a job can make others ready.
     fn advance(&mut self, start: Vec<usize>) {
         let mut stack = start;
+        let mut ready_jobs = Vec::new();
+        let mut finishing = false;
         while let Some(job) = stack.pop() {
             if self.closed[job] || self.pending[job] > 0 {
                 continue;
@@ -111,12 +113,16 @@ impl<'a, 'b> Coordinator<'a, 'b> {
                     stack.push(ready);
                 }
                 if self.jobs_left == 0 {
-                    self.shared.queue.finish();
+                    finishing = true;
                 }
             } else if self.deps_done[job] && !self.pushed[job] {
                 self.pushed[job] = true;
-                self.shared.requeue(job, left);
+                ready_jobs.push((job, left));
             }
+        }
+        self.shared.requeue_all(ready_jobs);
+        if finishing {
+            self.shared.queue.finish();
         }
     }
 
@@ -206,7 +212,10 @@ impl<'a, 'b> Coordinator<'a, 'b> {
                     let path = self.ctx.infos[&unit].path.as_str();
                     state.emit(&Event::UnitStarted { path, worker });
                 }
-                Ok(Msg::UnitDone(done)) => self.unit_done(state, done),
+                Ok(Msg::UnitDone(done)) => {
+                    self.unit_done(state, done);
+                    self.shared.queue.completion_handled();
+                }
                 Ok(Msg::Rehashed { unit, result }) => {
                     if let Some(release) = state.release.as_mut() {
                         let sets = release.rehashed(unit, result);
