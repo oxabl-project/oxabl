@@ -2338,8 +2338,63 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// The data type spelled by the word `offset` tokens ahead when it is a
+    /// shorter spelling than the lexer's keyword table gives (`AS i`, `AS c`,
+    /// `AS de`). A word followed by a qualifier (`c.Foo`) or a glued
+    /// preprocessor name is a class name, not a type.
+    fn short_data_type_at(&self, offset: usize) -> Option<DataType> {
+        let token = self.peek_at(offset);
+        if !Self::is_word_kind(token.kind) {
+            return None;
+        }
+        let data_type = short_data_type(&self.source[token.start..token.end])?;
+        let next = self.peek_at(offset + 1);
+        match next.kind {
+            Kind::Preprop if next.start == token.end => None,
+            Kind::Period => {
+                // Same rule as `parse_class_qualified_name`.
+                let word = self.peek_at(offset + 2);
+                let qualified = Self::is_word_kind(word.kind)
+                    && !self.source[next.end..word.start].contains('\n');
+                (!qualified).then_some(data_type)
+            }
+            _ => Some(data_type),
+        }
+    }
+
+    /// A token the keyword table already reads as a data type.
+    fn is_data_type_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Integer
+                | Kind::Int64
+                | Kind::Decimal
+                | Kind::Character
+                | Kind::Logical
+                | Kind::Date
+                | Kind::Datetime
+                | Kind::DatetimeTz
+                | Kind::Handle
+                | Kind::Rowid
+                | Kind::Recid
+                | Kind::Raw
+                | Kind::Memptr
+                | Kind::Longchar
+                | Kind::Clob
+                | Kind::Blob
+                | Kind::ComHandle
+                | Kind::KwIn
+        )
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
+        if !Self::is_data_type_keyword(token.kind)
+            && let Some(data_type) = self.short_data_type_at(0)
+        {
+            self.advance();
+            return Ok(data_type);
+        }
         let data_type = match token.kind {
             Kind::Integer => DataType::Integer,
             Kind::Int64 => DataType::Int64,
@@ -2435,6 +2490,45 @@ impl<'a> Parser<'a> {
         self.advance();
         Ok(data_type)
     }
+}
+
+/// Data type spellings with the shortest prefix the compiler accepts, in the
+/// compiler's order for ties (`i`..`int` is INTEGER, not INT64; `l`, `lo` are
+/// LOGICAL, not LONGCHAR). The lexer's keyword table must stay as it is: `i`, `c`
+/// and `l` are common variable names, so these apply only where a type is expected.
+const SHORT_DATA_TYPES: &[(&str, usize, DataType)] = &[
+    ("CHARACTER", 1, DataType::Character),
+    ("INTEGER", 1, DataType::Integer),
+    ("INT64", 5, DataType::Int64),
+    ("LOGICAL", 1, DataType::Logical),
+    ("LONGCHAR", 6, DataType::Longchar),
+    ("DECIMAL", 2, DataType::Decimal),
+    ("DATE", 2, DataType::Date),
+    ("DATETIME", 8, DataType::DateTime),
+    ("DATETIME-TZ", 11, DataType::DateTimeTz),
+    ("HANDLE", 6, DataType::Handle),
+    ("WIDGET-HANDLE", 4, DataType::Handle),
+    ("COM-HANDLE", 10, DataType::Com),
+    ("RAW", 2, DataType::Raw),
+    ("RECID", 2, DataType::Recid),
+    ("ROWID", 3, DataType::Rowid),
+    ("MEMPTR", 1, DataType::Memptr),
+];
+
+fn short_data_type(text: &str) -> Option<DataType> {
+    // Most words in a type position are class names: reject them on the first letter.
+    let first = text.as_bytes().first()?.to_ascii_uppercase();
+    if !matches!(first, b'C' | b'I' | b'L' | b'D' | b'H' | b'W' | b'R' | b'M') {
+        return None;
+    }
+    SHORT_DATA_TYPES
+        .iter()
+        .filter(|(name, _, _)| name.as_bytes()[0] == first)
+        .find(|(name, min, _)| {
+            (*min..=name.len()).contains(&text.len())
+                && name[..text.len()].eq_ignore_ascii_case(text)
+        })
+        .map(|(_, _, data_type)| data_type.clone())
 }
 
 #[cfg(all(test, feature = "serde"))]
