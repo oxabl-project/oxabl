@@ -92,6 +92,17 @@ impl ArtifactCache for Layered {
         })
     }
 
+    fn cancel_fetch(&self) {
+        self.near.cancel_fetch();
+        self.far.cancel_fetch();
+    }
+
+    fn notes(&self) -> Vec<String> {
+        let mut notes = self.near.notes();
+        notes.extend(self.far.notes());
+        notes
+    }
+
     fn fill(&self, set: ArtifactSetRef, origin: &RemoteOrigin) {
         self.near.fill(set, origin);
     }

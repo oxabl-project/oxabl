@@ -24,5 +24,6 @@
   "crates/oxabl_scope": "0.2.2",
   "crates/oxabl_effects": "0.2.2",
   "crates/oxabl_nulls": "0.2.2",
-  "crates/oxabl_build": "0.1.0"
+  "crates/oxabl_build": "0.1.0",
+  "crates/oxabl_build_remote": "0.1.0"
 }

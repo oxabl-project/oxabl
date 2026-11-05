@@ -100,6 +100,10 @@ pub enum MissReason {
     NotFound,
     /// The entry failed a check and was set aside.
     Corrupt,
+    /// The signer of the entry is not accepted.
+    Untrusted,
+    /// The set could not be installed in the stage.
+    InstallFailed,
     /// The entry holds other artifact paths than the build requires.
     PathMismatch,
     Unreadable,
@@ -154,6 +158,16 @@ pub trait ArtifactCache: Send + Sync {
     );
 
     fn uploader(&self) -> Box<dyn ArtifactUploader>;
+
+    /// Ends a `fetch` that runs on another thread, at once: the keys it has
+    /// not reported are misses.
+    fn cancel_fetch(&self) {}
+
+    /// Warnings the cache collected since the last call, each one a line for
+    /// the user. Taking them clears them.
+    fn notes(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     /// Stores a set that a remote tier gave, from its final paths, where it is
     /// nearer the machine. Best effort.

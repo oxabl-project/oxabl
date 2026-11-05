@@ -19,6 +19,7 @@ pub struct Built {
     dir: TempDir,
     sources: RefCell<String>,
     build_keys: RefCell<String>,
+    output: RefCell<String>,
     extra: RefCell<String>,
     workers: RefCell<String>,
     /// Environment changes for every `oxabl build` run: `None` removes.
@@ -95,6 +96,7 @@ impl Built {
             dir,
             sources: RefCell::new(sources.to_string()),
             build_keys: RefCell::new(String::new()),
+            output: RefCell::new("build/r".to_string()),
             extra: RefCell::new(extra.to_string()),
             workers: RefCell::new("count = 1".to_string()),
             per_worker: std::cell::Cell::new(false),
@@ -131,8 +133,9 @@ impl Built {
         self.write(
             "oxabl.toml",
             &format!(
-                "[workspace]\nname = \"built\"\n\n[workspace.preprocessor]\nproversion = \"12.8\"\n{}\n\n[workspace.sources]\n{directories}\n{sources}\n\n[build]\noutput = \"build/r\"\n{}\n\n{}\n\n[build.workers]\ncommand = [{}]\n{}\nenv = {{ FAKE_AVM_LOG = {:?}, FAKE_AVM_STATE = {:?}{} }}\n",
+                "[workspace]\nname = \"built\"\n\n[workspace.preprocessor]\nproversion = \"12.8\"\n{}\n\n[workspace.sources]\n{directories}\n{sources}\n\n[build]\noutput = {:?}\n{}\n\n{}\n\n[build.workers]\ncommand = [{}]\n{}\nenv = {{ FAKE_AVM_LOG = {:?}, FAKE_AVM_STATE = {:?}{} }}\n",
                 self.preprocessor.borrow(),
+                self.output.borrow(),
                 self.build_keys.borrow(),
                 self.extra.borrow(),
                 quoted.join(", "),
@@ -158,6 +161,12 @@ impl Built {
     /// Replaces the lines of `[build.workers]` after `command`.
     pub fn workers(&self, lines: &str) {
         *self.workers.borrow_mut() = lines.to_string();
+        self.write_config();
+    }
+
+    /// Replaces the output directory `[build].output`, `build/r` at first.
+    pub fn output(&self, directory: &str) {
+        *self.output.borrow_mut() = directory.to_string();
         self.write_config();
     }
 
