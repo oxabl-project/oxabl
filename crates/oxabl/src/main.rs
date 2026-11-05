@@ -10,6 +10,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod baseline;
 mod build_cmd;
+mod build_probe;
 mod explain;
 mod watch;
 
@@ -333,13 +334,22 @@ enum Cli {
     ///
     /// Refreshes the persisted dependency graph from the working tree (reading
     /// only the files that changed), then lists the units that a change reaches.
-    /// Exit codes: `0` when a plan was printed, `2` on a usage or configuration
-    /// error, `3` when the store or the workspace could not be used.
+    /// `--probe` instead starts the worker pool from `[build.workers]`, prints
+    /// the environment identity and the schema identity of each database, and
+    /// exits.
+    /// Exit codes: `0` when a plan or a probe was printed, `2` on a usage or
+    /// configuration error (including workers that disagree), `3` when the
+    /// store, the workspace or the workers could not be used, `130` when a
+    /// probe is cancelled.
     #[command(hide = true)]
     Build {
         /// Print the plan and compile nothing.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "probe")]
         plan: bool,
+
+        /// Start the worker pool, print what the workers report, and exit.
+        #[arg(long)]
+        probe: bool,
 
         /// With `--plan`, also list the units that do not need to rebuild.
         #[arg(long, requires = "plan")]
@@ -355,14 +365,18 @@ enum Cli {
         #[arg(long, value_name = "REV", requires = "plan", conflicts_with = "files")]
         since: Option<String>,
 
-        /// Print the plan as one JSON document.
-        #[arg(long, requires = "plan")]
+        /// Print the plan or the probe as one JSON document.
+        #[arg(long)]
         json: bool,
 
         /// The workspace root. Defaults to the nearest ancestor of the current
         /// directory that holds an `oxabl.toml`.
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
+
+        /// Number of workers; overrides `[build.workers].count`.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        workers: Option<u32>,
     },
 }
 
@@ -609,12 +623,23 @@ fn main() -> ExitCode {
         Cli::Schema => run_schema(),
         Cli::Build {
             plan,
+            probe,
             all,
             files,
             since,
             json,
             root,
-        } => build_cmd::run(plan, all, &files, since, json, root.as_deref()),
+            workers,
+        } => build_cmd::run(build_cmd::Options {
+            plan,
+            probe,
+            all,
+            files: &files,
+            since,
+            json,
+            root: root.as_deref(),
+            workers: workers.map(|n| n as usize),
+        }),
     }
 }
 

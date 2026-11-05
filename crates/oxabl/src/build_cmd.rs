@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use oxabl_build::config::BuildWorkspace;
 use oxabl_build::error::BuildError;
 use oxabl_build::plan::{PlanRequest, plan, render, render_json};
+use oxabl_build::worker::pool::NO_COMMAND;
 
-const NO_WORKER_COMMAND: &str = "oxabl build needs a worker command; set [build.workers].command \
-     (see docs/design/build-tool/config.md) or run oxabl build --plan";
+use crate::build_probe;
 
 fn fail(error: &BuildError) -> ExitCode {
     eprintln!("error: {error}");
@@ -27,25 +27,43 @@ fn named(files: &[PathBuf]) -> Result<Vec<PathBuf>, BuildError> {
         .collect()
 }
 
-pub fn run(
-    plan_only: bool,
-    all: bool,
-    files: &[PathBuf],
-    since: Option<String>,
-    json: bool,
-    root: Option<&Path>,
-) -> ExitCode {
+/// What the command line asked `oxabl build` to do.
+pub struct Options<'a> {
+    pub plan: bool,
+    pub probe: bool,
+    pub all: bool,
+    pub files: &'a [PathBuf],
+    pub since: Option<String>,
+    pub json: bool,
+    pub root: Option<&'a Path>,
+    pub workers: Option<usize>,
+}
+
+pub fn run(options: Options<'_>) -> ExitCode {
+    let Options {
+        plan: plan_only,
+        probe,
+        all,
+        files,
+        since,
+        json,
+        root,
+        workers,
+    } = options;
     let workspace = match BuildWorkspace::open(root) {
         Ok(workspace) => workspace,
         Err(error) => return fail(&error),
     };
+    if probe {
+        return build_probe::run(&workspace, json, workers);
+    }
     if !plan_only {
         eprintln!(
             "error: {}",
             if workspace.settings.worker_command.is_empty() {
-                NO_WORKER_COMMAND
+                NO_COMMAND
             } else {
-                "oxabl build compiles in a later release; run oxabl build --plan"
+                "oxabl build compiles in a later release; run oxabl build --plan or --probe"
             }
         );
         return ExitCode::from(2);

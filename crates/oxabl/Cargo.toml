@@ -34,7 +34,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 indicatif = { version = "0.17", optional = true }
 notify = { version = "8", optional = true }
 notify-debouncer-full = { version = "0.6", optional = true }
-ctrlc = { version = "3", optional = true }
+ctrlc = { version = "3", features = ["termination"], optional = true }
 lsp-server = { version = "0.7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
@@ -74,6 +74,8 @@ tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+blake3 = "1"
+sha2 = "0.10"
 # Tests change the format number of the build store and read it back.
 rusqlite = { version = "0.37", features = ["bundled"] }
 oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.3.0" }

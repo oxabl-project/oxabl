@@ -3,7 +3,7 @@ name = "oxabl_build"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "The oxabl build tool: graph store, incremental refresh and planner"
+description = "The oxabl build tool: graph store, incremental refresh, planner, AVM worker pool and worker protocol"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_build"
 
 [dependencies]
@@ -13,11 +13,13 @@ oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.2.0" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "3.0.2" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "3.2.0" }
 blake3 = "1"
+encoding_rs = "0.8"
 glob = "0.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
 rustc-hash = "2"
 serde_json = "1"
+sha2 = "0.10"
 walkdir = "2"
 
 [dev-dependencies]
