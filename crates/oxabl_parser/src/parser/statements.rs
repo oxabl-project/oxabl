@@ -788,6 +788,13 @@ impl Parser<'_> {
             return self.parse_down_up_statement();
         }
 
+        // CALL routine [argument] ... — Host Language Call; a name must follow, so
+        // a variable called `call` still reads as an assignment target.
+        if self.check(Kind::Call) && Self::is_word_kind(self.peek_at(1).kind) {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+
         if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
@@ -3161,6 +3168,21 @@ impl Parser<'_> {
         // Lock type may appear before or after WHERE (ABL is flexible)
         let lock_type_pre = self.parse_lock_type();
 
+        // USE-INDEX may also come before WHERE
+        let used_index_early = self.check(Kind::UseIndex);
+        while self.check(Kind::UseIndex) {
+            self.advance();
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance();
+            }
+        }
+        let lock_type_pre = if lock_type_pre != LockType::ShareLock {
+            self.parse_lock_type();
+            lock_type_pre
+        } else {
+            self.parse_lock_type()
+        };
+
         // optional WHERE clause — skip if WHERE is immediately followed by ':' / '.' / sort clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
@@ -3187,6 +3209,7 @@ impl Parser<'_> {
             && !self.check(Kind::Transaction)
             && !self.check(Kind::KwBreak)
             && !self.at_end()
+            && !used_index_early
             && Self::can_be_identifier(self.peek().kind)
         {
             // Implicit WHERE: table name came from a preprocessor macro that included WHERE.
@@ -3403,6 +3426,18 @@ impl Parser<'_> {
         // Parse an optional leading lock type, then WHERE, then trailing lock type.
         let lock_type_before = self.parse_lock_type();
 
+        // USE-INDEX may also come before WHERE
+        while self.check(Kind::UseIndex) {
+            self.advance();
+            self.parse_identifier().ok();
+        }
+        let lock_type_before = if lock_type_before != LockType::ShareLock {
+            self.parse_lock_type();
+            lock_type_before
+        } else {
+            self.parse_lock_type()
+        };
+
         // parse optional where clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
@@ -3597,7 +3632,7 @@ impl Parser<'_> {
                     .to_string(),
             }
         } else {
-            self.parse_identifier()?
+            self.parse_declared_name(true)?
         };
 
         // Dotted version-number procedure names: e.g. config_18.4.2_extra lexes as
@@ -4115,8 +4150,8 @@ impl Parser<'_> {
     }
 
     /// `[STREAM s]` at the head of a stream statement. `Err(())` when the stream
-    /// is not a plain name (`STREAM-HANDLE h`, `STREAM 2dstream`), with the
-    /// cursor left on it: the caller then keeps the rest as the skipped tail.
+    /// is not a plain name (`STREAM-HANDLE h`), with the cursor left on it: the
+    /// caller then keeps the rest as the skipped tail.
     fn parse_stream_head(&mut self) -> Result<Option<Identifier>, ()> {
         if self.check(Kind::StreamHandle) {
             return Err(());
@@ -4126,7 +4161,7 @@ impl Parser<'_> {
         }
         let mark = self.current;
         self.advance();
-        match self.parse_identifier() {
+        match self.parse_stream_name() {
             Ok(name) => Ok(Some(name)),
             Err(_) => {
                 self.current = mark;
@@ -4704,12 +4739,12 @@ impl Parser<'_> {
     fn parse_put_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume PUT
 
-        // A stream name that is not an identifier (e.g. `2dstream`) leaves the
-        // whole statement to the skipped tail.
+        // A stream that is not a plain name leaves the whole statement to the
+        // skipped tail.
         let stream_mark = self.current;
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
-            match self.parse_identifier() {
+            match self.parse_stream_name() {
                 Ok(name) => Some(name),
                 Err(_) => {
                     self.current = stream_mark;
@@ -4785,7 +4820,7 @@ impl Parser<'_> {
         // Optional STREAM clause: DISPLAY STREAM stream-name ...
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
-            Some(self.parse_identifier()?)
+            Some(self.parse_stream_name()?)
         } else {
             None
         };
@@ -6036,7 +6071,7 @@ impl Parser<'_> {
         };
 
         // Parse method name
-        let name = self.parse_identifier()?;
+        let name = self.parse_declared_name(false)?;
 
         // Parse parameter list
         let parameters = self.parse_parenthesized_params()?;
@@ -7313,7 +7348,7 @@ impl Parser<'_> {
     /// Parse DEFINE STREAM stream-name.
     fn parse_define_stream(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume STREAM
-        let name = self.parse_identifier()?;
+        let name = self.parse_stream_name()?;
         // Skip any options or include files before the terminating period
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::DefineStream { name }, tail))
@@ -7396,7 +7431,7 @@ impl Parser<'_> {
         // e.g. OUTPUT STREAM s-log TO ...  or  OUTPUT {&stream} TO ...
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
-            Some(self.parse_identifier()?)
+            Some(self.parse_stream_name()?)
         } else if self.check(Kind::Preprop) || self.check(Kind::IncludeReference) {
             // {&stream} used directly as stream name — consume and treat like a named stream
             let tok = self.advance().clone();

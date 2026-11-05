@@ -12897,8 +12897,26 @@ fn put_dynamic_function_item_is_an_expression() {
 }
 
 #[test]
-fn put_with_a_non_identifier_stream_name_still_parses() {
+fn put_with_a_digit_first_stream_name_keeps_its_items() {
     let source = "PUT STREAM 2dstream UNFORMATTED apage.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let StatementKind::Put {
+        stream_name, items, ..
+    } = &program.statements[0].kind
+    else {
+        panic!("expected Put, got {:?}", program.statements[0].kind);
+    };
+    assert_eq!(
+        stream_name.as_ref().map(|n| n.name.as_str()),
+        Some("2dstream")
+    );
+    assert_eq!(items.len(), 1);
+}
+
+#[test]
+fn put_with_a_non_identifier_stream_name_still_parses() {
+    let source = "PUT STREAM 2 UNFORMATTED apage.";
     let program = Parser::new(&tokenize(source), source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let stmt = &program.statements[0];

@@ -1,0 +1,85 @@
+/* Names and clause orders the compiler accepts: reserved keywords as
+   procedure and method names, digit-first stream and procedure names,
+   USE-INDEX before WHERE, the CALL statement and INPUT NOT arguments. */
+define variable cArg as character no-undo initial "10".
+define variable lActive as logical no-undo.
+define variable hLib as handle no-undo.
+define variable iCount as integer no-undo.
+define stream 2dstream.
+define stream 3rdlog.
+
+procedure check:
+  message "check".
+end procedure.
+
+procedure Status:
+  message "status".
+end procedure.
+
+procedure 128_set_width:
+  message "width".
+end procedure.
+
+procedure View:
+  message "view".
+end procedure.
+
+run check.
+run Status.
+run 128_set_width.
+
+output stream 2dstream to "out.txt".
+put stream 2dstream unformatted "x" skip.
+output stream 2dstream close.
+output stream 3rdlog to "log.txt" append.
+put stream 3rdlog unformatted "y" skip.
+output stream 3rdlog close.
+
+find first orders use-index order-num where orders.order-num > 0 no-lock no-error.
+find last orders use-index order-num no-lock where orders.order-num > 0 no-error.
+find next orders where orders.order-num > 0 use-index order-num no-lock no-error.
+
+for each orders use-index order-num where orders.cust-name = "A" break by orders.order-num:
+  iCount = iCount + 1.
+end.
+
+for each orders no-lock use-index order-num where orders.cust-name = "B" by orders.order-num:
+  iCount = iCount + 1.
+end.
+
+for each orders use-index order-num no-lock where orders.order-num > 10:
+  iCount = iCount + 1.
+end.
+
+call barwidth cArg.
+call barwidth cArg iCount.
+
+dynamic-function("set-flag":U in hLib, input not lActive).
+dynamic-function("set-flag":U in hLib, input not lActive, input not lActive).
+run check (input not lActive).
+lActive = dynamic-function("get-flag":U in hLib, input not lActive).
+
+class NameForms:
+  method public void Clear():
+  end method.
+
+  method public character View(input pId as character):
+    return pId.
+  end method.
+
+  method public logical Any(input pList as character):
+    return pList <> "".
+  end method.
+
+  method public void Check():
+  end method.
+
+  method public void Run2():
+    define variable oObj as NameForms no-undo.
+    define variable x as character no-undo.
+    x = oObj:View(x).
+    x = this-object:View(x).
+    lActive = this-object:Any(x).
+    oObj:Check().
+  end method.
+end class.
