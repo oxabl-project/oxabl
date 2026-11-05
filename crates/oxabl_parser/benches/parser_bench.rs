@@ -86,6 +86,7 @@ fn parser_benchmarks(c: &mut Criterion) {
         "type_spellings",
         "bench_parser_type_spellings.abl",
     );
+    bench_fixture(&mut group, "name_forms", "bench_parser_name_forms.abl");
     // Recognized-but-unmodelled forms (PUT / EXPORT / ENABLE / UPDATE / SET /
     // APPLY / WAIT-FOR …). No other bench_parser_* fixture contains any of
     // them, so without this target the skip + harvest path scores zero.

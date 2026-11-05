@@ -1694,7 +1694,37 @@ impl<'a> Parser<'a> {
     ///
     /// Requires no whitespace between parts to avoid consuming operators.
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
-        if !Self::can_be_identifier(self.peek().kind) {
+        let start_ok = Self::can_be_identifier(self.peek().kind);
+        self.parse_name(start_ok)
+    }
+
+    /// A name that declares a method or procedure. Reserved keywords are valid
+    /// here (`METHOD View(...)`, `PROCEDURE check:`), as are digit-first
+    /// procedure names (`PROCEDURE 128_set_width:`).
+    fn parse_declared_name(&mut self, digit_first: bool) -> ParseResult<Identifier> {
+        let start_ok =
+            Self::is_word_kind(self.peek().kind) || (digit_first && self.digit_first_name_ahead());
+        self.parse_name(start_ok)
+    }
+
+    /// A stream name: an identifier, or a digit-first name (`2dstream`).
+    fn parse_stream_name(&mut self) -> ParseResult<Identifier> {
+        let start_ok = Self::can_be_identifier(self.peek().kind) || self.digit_first_name_ahead();
+        self.parse_name(start_ok)
+    }
+
+    /// An integer directly followed by a name part, as the lexer splits
+    /// `2dstream` into `2` and `dstream`. A bare number is not a name.
+    fn digit_first_name_ahead(&self) -> bool {
+        let first = self.peek();
+        let next = self.peek_at(1);
+        first.kind == Kind::IntegerLiteral
+            && next.start == first.end
+            && Self::can_be_identifier(next.kind)
+    }
+
+    fn parse_name(&mut self, start_ok: bool) -> ParseResult<Identifier> {
+        if !start_ok {
             return Err(ParseError {
                 message: "Expected identifier".to_string(),
                 span: self.current_span(),
