@@ -2283,7 +2283,7 @@ struct IncludeArgs {
 /// - `{file.i "SHARED" &extra=yes}` — mixed
 ///
 /// Positional arg `{0}` = the include name. `{1}`, `{2}`, ... = user args.
-/// Named args are `&name=value` pairs where value quotes are stripped.
+/// Named args are `&name=value` pairs. [`read_arg_value`] reads each value.
 fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
     let mut positional = vec![include_name.to_string()];
     let mut named = Vec::new();
@@ -2349,7 +2349,13 @@ fn parse_include_args(inner: &str, include_name: &str) -> IncludeArgs {
     IncludeArgs { positional, named }
 }
 
-/// Read a single argument value, handling quotes. Advances `i` past the value.
+/// Read one argument word. Advances `i` past it.
+///
+/// A word runs to the next whitespace or `&`. Only a double quote groups: the
+/// text between a pair of them may hold whitespace, the quotes are dropped, a
+/// doubled `""` inside stands for one quote, and text written straight before
+/// or after stays in the word (`"a b":U` is `a b:U`). A single quote is plain
+/// text, so `'a,b':U` is one word as written and `'a b'` is two.
 fn read_arg_value(s: &str, i: &mut usize) -> String {
     let bytes = s.as_bytes();
 
@@ -2358,20 +2364,19 @@ fn read_arg_value(s: &str, i: &mut usize) -> String {
         *i += 1;
     }
 
-    if *i >= bytes.len() {
-        return String::new();
-    }
-
-    if bytes[*i] == b'"' || bytes[*i] == b'\'' {
-        // Quoted value — read to the matching quote. A doubled quote inside
-        // the string stands for one quote character.
-        let quote = bytes[*i];
-        *i += 1;
-        let mut value = String::new();
-        let mut start = *i;
+    let mut value = String::new();
+    let mut start = *i;
+    while *i < bytes.len() && !bytes[*i].is_ascii_whitespace() && bytes[*i] != b'&' {
+        if bytes[*i] != b'"' {
+            *i += 1;
+            continue;
+        }
+        value.push_str(&s[start..*i]);
+        *i += 1; // skip opening quote
+        start = *i;
         while *i < bytes.len() {
-            if bytes[*i] == quote {
-                if bytes.get(*i + 1) != Some(&quote) {
+            if bytes[*i] == b'"' {
+                if bytes.get(*i + 1) != Some(&b'"') {
                     break;
                 }
                 *i += 1; // keep the first quote of the pair, drop the second
@@ -2384,15 +2389,10 @@ fn read_arg_value(s: &str, i: &mut usize) -> String {
         if *i < bytes.len() {
             *i += 1; // skip closing quote
         }
-        value
-    } else {
-        // Unquoted — read to next whitespace or &
-        let start = *i;
-        while *i < bytes.len() && !bytes[*i].is_ascii_whitespace() && bytes[*i] != b'&' {
-            *i += 1;
-        }
-        s[start..*i].to_string()
+        start = *i;
     }
+    value.push_str(&s[start..*i]);
+    value
 }
 
 /// Find the byte offset where arguments start (after the include name).
@@ -2759,8 +2759,8 @@ mod tests {
         for (source, text) in [
             ("{a.i \"{\"}", "A{"),
             ("{a.i \"}\"}", "A}"),
-            ("{a.i \"~\"}\"}Z", "A~Z"),
-            ("{a.i '}' }Z", "A}Z"),
+            ("{a.i \"~\"}\"}Z", "A~}Z"),
+            ("{a.i '}' }Z", "A'}'Z"),
         ] {
             let result = pp.process(FileId::new(1), source).unwrap();
             assert_eq!(&*result.to_text(), text, "for {source:?}");
@@ -2777,7 +2777,7 @@ mod tests {
         for (source, text) in [
             ("{a.i \"'\"\"x'\"}Z", "A'\"x'B"),
             ("{a.i \"'\"\"x'\" y}Z", "A'\"x'By"),
-            ("{a.i '\"''x\"' y}Z", "A\"'x\"By"),
+            ("{a.i '\"''x\"' y}Z", "A'''x'By"),
             ("{a.i \"a\"\"\" y}Z", "Aa\"By"),
             ("{a.i \"{\"\"}\"}Z", "A{\"}B"),
             ("{a.i \"\"\"\"}Z", "A\"B"),
@@ -5422,27 +5422,42 @@ DEFINE VARIABLE ghProp AS HANDLE NO-UNDO.
     }
 
     #[test]
-    fn set_single_quoted_comma_list_arg_characterization() {
-        // Characterization (#66 Fable amendment): single-quoted host args are
-        // stripped by read_arg_value (quotes are delimiters). Trailing `:U`
-        // after the closing quote is a separate token/arg — pin current
-        // behavior; no quote-policy change in this PR.
-        let set_stub = "val={2}.\n";
+    fn set_single_quoted_comma_list_arg_is_one_argument_as_written() {
+        let set_stub = "val={2}. hdl=[{3}].\n";
         let fs = make_fs(&[("/tty/set", set_stub)]);
         let paths = vec![PathBuf::from("/tty")];
         let pp = Preprocessor::new(&fs, &paths);
         let result = pp.process(FileId::new(1), "{set X 'a,b,c':U}").unwrap();
-        let text = result.to_text();
-        // Quotes stripped from the positional value.
-        assert!(
-            text.contains("val=a,b,c") || text.contains("val='a,b,c'"),
-            "pin single-quoted comma-list expansion, got: {text}"
-        );
-        // Prefer documenting strip (Progress-like delimiter semantics).
-        assert!(
-            text.contains("a,b,c"),
-            "comma list content must appear, got: {text}"
-        );
+        assert_eq!(&*result.to_text(), "val='a,b,c':U. hdl=[].\n");
+    }
+
+    /// Arguments as `COMPILE ... PREPROCESS` splits them (OpenEdge 12.8).
+    #[test]
+    fn include_arguments_split_into_words_as_the_compiler_does() {
+        let fs = make_fs(&[("/inc/w.i", "1=<{1}> 2=<{2}> 3=<{3}> n=<{&n}>")]);
+        let paths = vec![PathBuf::from("/inc")];
+        let pp = Preprocessor::new(&fs, &paths);
+        for (source, text) in [
+            ("{w.i 'b c':U y}", "1=<'b> 2=<c':U> 3=<y> n=<>"),
+            ("{w.i \"b c\":U y}", "1=<b c:U> 2=<y> 3=<> n=<>"),
+            ("{w.i 'b c' y}", "1=<'b> 2=<c'> 3=<y> n=<>"),
+            ("{w.i \"b c\" y}", "1=<b c> 2=<y> 3=<> n=<>"),
+            ("{w.i \"b c\":R20 y}", "1=<b c:R20> 2=<y> 3=<> n=<>"),
+            ("{w.i 'b c'y z}", "1=<'b> 2=<c'y> 3=<z> n=<>"),
+            ("{w.i 'b,c':U}", "1=<'b,c':U> 2=<> 3=<> n=<>"),
+            ("{w.i \"b c\"y z}", "1=<b cy> 2=<z> 3=<> n=<>"),
+            ("{w.i a\"b c\"d y}", "1=<ab cd> 2=<y> 3=<> n=<>"),
+            ("{w.i \"a\"\"b\" y}", "1=<a\"b> 2=<y> 3=<> n=<>"),
+            (
+                "{w.i &n='b,c':U &m=y}",
+                "1=<'b,c':U> 2=<y> 3=<> n=<'b,c':U>",
+            ),
+            ("{w.i &n=\"b c\":U &m=y}", "1=<b c:U> 2=<y> 3=<> n=<b c:U>"),
+            ("{w.i &n=a\"b c\"d &m=y}", "1=<ab cd> 2=<y> 3=<> n=<ab cd>"),
+        ] {
+            let result = pp.process(FileId::new(1), source).unwrap();
+            assert_eq!(&*result.to_text(), text, "for {source:?}");
+        }
     }
 
     #[test]

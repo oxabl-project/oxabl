@@ -4797,7 +4797,11 @@ impl<'a> ResolveWalker<'a> {
                 // The scope tree first, always: a locally declared name must not
                 // be shadowed by a workspace class that happens to share it.
                 self.walk_expression(expr, scope, AccessMode::Read);
-                self.try_receiver_type(expr.id, &id.name, scope, identifier_span(id), whole);
+                // `:name` reads an attribute of the widget in focus; it is never
+                // a type name.
+                if !id.name.starts_with(':') {
+                    self.try_receiver_type(expr.id, &id.name, scope, identifier_span(id), whole);
+                }
                 self.soften_unresolved_to_external(expr.id);
             }
             ExpressionKind::FieldAccess { qualifier, field } => {
