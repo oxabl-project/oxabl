@@ -1,7 +1,7 @@
 use rusqlite::{TransactionBehavior, params};
 
-use super::meta::{self, ANALYSIS_IDENTITY, GENERATION};
-use super::rows::{FileRow, ListingRow, StoredAnalysis};
+use super::meta::{self, ANALYSIS_IDENTITY, BINARY_HASH, GENERATION};
+use super::rows::{BinaryRow, FileRow, ListingRow, StoredAnalysis};
 use super::{Store, StoreError};
 
 /// Everything one refresh writes. It is applied in one transaction.
@@ -18,6 +18,8 @@ pub struct Changes {
     pub analyses_deleted: Vec<u32>,
     pub generation: Option<u64>,
     pub identity: Option<[u8; 32]>,
+    /// The hash of the running executable, when it was taken again.
+    pub binary: Option<BinaryRow>,
 }
 
 impl Changes {
@@ -32,6 +34,7 @@ impl Changes {
             && self.analyses_deleted.is_empty()
             && self.generation.is_none()
             && self.identity.is_none()
+            && self.binary.is_none()
     }
 }
 
@@ -138,6 +141,9 @@ impl Store {
         }
         if let Some(identity) = &changes.identity {
             meta::put(&tx, ANALYSIS_IDENTITY, identity)?;
+        }
+        if let Some(binary) = &changes.binary {
+            meta::put(&tx, BINARY_HASH, &binary.encode())?;
         }
         tx.commit()?;
         Ok(())

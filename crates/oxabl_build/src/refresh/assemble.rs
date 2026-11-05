@@ -10,7 +10,7 @@ use super::probe::{directory_hash, unreadable_hash};
 use super::settle::Analyses;
 use crate::graph::Graph;
 use crate::kinds::ObservationKind;
-use crate::store::{Changes, tracked};
+use crate::store::{BinaryRow, Changes, tracked};
 
 /// What the refresh has when it is done analysing.
 pub struct Parts {
@@ -18,6 +18,8 @@ pub struct Parts {
     pub loaded_generation: u64,
     /// The new analysis identity, when it changed.
     pub identity: Option<[u8; 32]>,
+    /// The hash of the running executable, when it was taken again.
+    pub binary: Option<BinaryRow>,
     pub unit_ids: Vec<u32>,
     /// Stored file rows that nothing tracks any more.
     pub orphan_rows: Vec<u32>,
@@ -59,6 +61,7 @@ pub fn assemble(parts: Parts) -> Outcome {
         generation,
         loaded_generation,
         identity,
+        binary,
         unit_ids,
         orphan_rows,
         interner,
@@ -153,6 +156,7 @@ pub fn assemble(parts: Parts) -> Outcome {
         changes.generation = Some(generation);
     }
     changes.identity = identity;
+    changes.binary = binary;
 
     let (names, committed) = interner.into_names();
     let content = if need_keys {
