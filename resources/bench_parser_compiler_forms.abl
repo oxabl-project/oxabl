@@ -1,0 +1,40 @@
+/* Forms the OpenEdge compiler accepts that earlier parsers rejected. */
+
+/* Parameter modes and table arguments in dynamic calls. */
+lv-flag = dynamic-function("getNextSteps" in h-lib, input-output table tt-step, input lv-order, input false, output dataset ds-x by-reference).
+lv-flag = dynamic-function("check" in h-lib, output lv-msg, table-handle h-tt bind, dataset-handle h-ds by-value).
+
+/* CAN-FIND options in any order. */
+if can-find(first customer where customer.name eq "x":U use-index cust-name /* hint */ no-lock) then lv-flag = true.
+if can-find(first customer use-index cust-name no-lock where customer.num = 1) then lv-flag = true.
+if can-find(customer using customer.num and customer.name share-lock no-wait no-error) then lv-flag = true.
+
+/* An empty THEN branch leaves END to the enclosing block; a stray comma follows a period. */
+procedure notify-owner:
+    do:
+        assign lv-ok = send-mail("owner", lv-body).
+        if not lv-ok then
+    end.
+    run notify/log.p (input lv-body, input lv-ok).,
+    message "notified".
+end procedure.
+
+/* An empty WHEN branch before END ends the CASE; END belongs to the enclosing block. */
+procedure route-owner:
+    do:
+        case lv-state:
+            when "a" then lv-count = 1.
+            when "b" or when "c" then
+    end.
+    message "routed".
+end procedure.
+
+/* The same holds for an empty OTHERWISE. */
+procedure route-fallback:
+    do:
+        case lv-state:
+            when "a" then lv-count = 1.
+            otherwise
+    end.
+    message "fallback".
+end procedure.
