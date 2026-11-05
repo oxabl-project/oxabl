@@ -23,6 +23,8 @@ pub struct UnitInfo {
     pub observable: bool,
     /// The key holds the closure observed at the last compile.
     pub observed: bool,
+    /// With `observed`: the files of that closure, classes included.
+    pub observed_closure: Vec<u32>,
 }
 
 /// The end of one unit's compile.

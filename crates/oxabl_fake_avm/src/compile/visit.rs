@@ -90,8 +90,12 @@ impl Compiler {
                 });
             }
         }
-        for include in &found_in_text.includes {
-            out.references.push(("INCLUDE", include.clone()));
+        for (include, text) in found_in_text
+            .includes
+            .iter()
+            .zip(&found_in_text.include_texts)
+        {
+            out.references.push(("INCLUDE", text.clone()));
             let other = found_in_text
                 .resolve_other
                 .iter()

@@ -92,12 +92,19 @@ pub fn run(
             Observed {
                 files: ids(&closure.files),
                 absent: ids(&closure.absent),
+                classes: ids(&closure.classes),
             },
         );
     }
     let untracked: FxHashSet<u32> = observed
         .values()
-        .flat_map(|closure| closure.files.iter().chain(&closure.absent))
+        .flat_map(|closure| {
+            closure
+                .files
+                .iter()
+                .chain(&closure.absent)
+                .chain(&closure.classes)
+        })
         .copied()
         .filter(|id| !unit_set.contains(id) && !old_rows.contains_key(id))
         .collect();

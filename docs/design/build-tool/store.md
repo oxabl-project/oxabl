@@ -179,8 +179,8 @@ CREATE TABLE environments (
   reason. `origin`: `1` compiled, `2` local cache, `3` remote cache. `note` holds the
   file that check V3 found outside the closure, for the `unverified` reason.
 - `observed` holds the [observed closure](compile-key.md#the-observed-closure) of each unit
-  that has one: the files its last observed compile read and the paths that must stay
-  absent, as canonical paths (see [Blob encoding](#blob-encoding)). A row goes when its unit
+  that has one: the files its last observed compile read, the paths that must stay
+  absent and the class sources the compile could read, as canonical paths (see [Blob encoding](#blob-encoding)). A row goes when its unit
   leaves the working tree, when its result goes, when a compile of the unit gives no
   observed closure, and when the unit compiles with a key from its own source.
 - `environments` holds each environment record that a result refers to, as canonical JSON
@@ -231,8 +231,8 @@ database as a whole.
 Observation kinds: `1` read, `2` absent, `3` listed.
 
 - `observed.closure`: `varint count`, then each entry as `u8 kind` (`1` a file of the
-  closure, `2` an absent path), `varint length` and the UTF-8 canonical path, sorted by
-  `(kind, path)`. Paths, not path ids: a build records the closure, and only a refresh mints
+  closure, `2` an absent path, `3` a listed class source), `varint length` and the UTF-8
+  canonical path, sorted by `(kind, path)`. Paths, not path ids: a build records the closure, and only a refresh mints
   path ids.
 
 Unresolved kinds are the edge kinds. Reasons: `1` absent from workspace, `2` present but

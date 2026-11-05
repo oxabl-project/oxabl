@@ -110,8 +110,7 @@ fn xref_xml_resolution() {
 
 /// What the observed closure reads from an `XREF-XML`: one `INCLUDE`
 /// reference for each include, the one with only preprocessor definitions
-/// too, and no class for a unit that uses none; a class reference for a unit
-/// that uses one. The observed closure is sound only while this holds.
+/// too. The observed closure is sound only while this holds.
 #[test]
 #[ignore = "needs a real AVM; see the module docs"]
 fn xref_xml_observed_closure() {
@@ -130,15 +129,6 @@ fn xref_xml_observed_closure() {
             "no INCLUDE reference names {include}: the observed closure would miss it"
         );
     }
-    assert_eq!(main.class, None, "main.p uses no class");
-    let user = workspace.read("build/xref/useleaf.p.xref.xml");
-    let user = oxabl::build::observe::xref::parse(&user)
-        .unwrap_or_else(|e| panic!("the XREF-XML is not read: {e}\n{user}"));
-    eprintln!("EVIDENCE xref_xml_observed_closure useleaf.p: {user:?}");
-    assert!(
-        user.class.is_some(),
-        "no reference shows that useleaf.p uses pkg.Leaf: an observed closure would miss the class"
-    );
 }
 
 /// The text reader finds every include of the fixture by the name written in

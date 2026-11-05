@@ -1,6 +1,36 @@
 //! Strongly connected components of the ordering graph.
 
+use rustc_hash::FxHashMap;
+
 use crate::graph::Graph;
+
+/// The ordering graph: the compile-time graph and further edges, from a unit
+/// to units that must compile before it.
+pub struct Order<'a> {
+    pub graph: &'a Graph,
+    pub extra: &'a FxHashMap<u32, Vec<u32>>,
+}
+
+impl Order<'_> {
+    /// The edge of `node` at position `at`, the extra edges after the graph's.
+    fn edge(&self, node: u32, at: usize) -> Option<u32> {
+        let edges = self.graph.edges(node);
+        match edges.get(at) {
+            Some(target) => Some(*target),
+            None => self
+                .extra
+                .get(&node)
+                .and_then(|extra| extra.get(at - edges.len()))
+                .copied(),
+        }
+    }
+
+    /// Every edge of `node`.
+    pub fn edges(&self, node: u32) -> impl Iterator<Item = u32> + '_ {
+        let extra = self.extra.get(&node).map_or(&[][..], Vec::as_slice);
+        self.graph.edges(node).iter().chain(extra).copied()
+    }
+}
 
 /// The components reachable from some roots, numbered so that a component
 /// comes after every component it points at.
@@ -14,7 +44,7 @@ pub struct Components {
 pub const NONE: u32 = u32::MAX;
 
 /// Tarjan's algorithm, iterative, over the nodes `roots` reach.
-pub fn components(graph: &Graph, nodes: usize, roots: &[u32]) -> Components {
+pub fn components(graph: &Order<'_>, nodes: usize, roots: &[u32]) -> Components {
     const UNSEEN: u32 = u32::MAX;
     let mut index = vec![UNSEEN; nodes];
     let mut low = vec![0u32; nodes];
@@ -39,8 +69,7 @@ pub fn components(graph: &Graph, nodes: usize, roots: &[u32]) -> Components {
                 stack.push(node);
                 on_stack[n] = true;
             }
-            let edges = graph.edges(node);
-            if let Some(&target) = edges.get(*at) {
+            if let Some(target) = graph.edge(node, *at) {
                 *at += 1;
                 let t = target as usize;
                 if index[t] == UNSEEN {

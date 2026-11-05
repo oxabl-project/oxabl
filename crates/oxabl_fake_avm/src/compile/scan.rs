@@ -17,8 +17,10 @@ pub enum Fault {
 /// The references and faults of one text.
 #[derive(Default)]
 pub struct Scan {
-    /// Include names, from `{name}` and `{name args}`.
+    /// Include names, from `{name}`, `{name args}` and `{"name" args}`.
     pub includes: Vec<String>,
+    /// The text between the braces of each include, as an XREF names it.
+    pub include_texts: Vec<String>,
     /// Class names, from `INHERITS`, `IMPLEMENTS` and `NEW`.
     pub classes: Vec<String>,
     /// Paths named by `FAKE-READ`.
@@ -41,19 +43,22 @@ const FAULTS: [(&str, Fault); 9] = [
     ("FAKE-NO-OUTPUT", Fault::NoOutput),
 ];
 
-fn include_name(text: &str) -> Vec<String> {
+/// Each include of a line: its name and the text between its braces.
+fn include_name(text: &str) -> Vec<(String, String)> {
     let mut names = Vec::new();
     let mut rest = text;
     while let Some(open) = rest.find('{') {
         let after = &rest[open + 1..];
         let Some(close) = after.find('}') else { break };
-        let first = after[..close].split_whitespace().next().unwrap_or("");
+        let inner = after[..close].trim();
+        let first = inner.split_whitespace().next().unwrap_or("");
+        let first = first.trim_matches('"');
         let usable = !first.is_empty()
             && !first.starts_with(['&', '{', '*'])
             && !first.chars().next().is_some_and(|c| c.is_ascii_digit())
             && !first.contains('&');
         if usable {
-            names.push(first.to_string());
+            names.push((first.to_string(), inner.to_string()));
         }
         rest = &after[close + 1..];
     }
@@ -109,7 +114,10 @@ pub fn scan(text: &str) -> Scan {
             let path = path.trim().trim_end_matches("*/").trim();
             found.reads.push(path.to_string());
         }
-        found.includes.extend(include_name(line));
+        for (name, text) in include_name(line) {
+            found.includes.push(name);
+            found.include_texts.push(text);
+        }
         found.classes.extend(classes_of(line));
     }
     found

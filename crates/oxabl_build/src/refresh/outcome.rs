@@ -40,6 +40,8 @@ pub struct Observed {
     pub files: Vec<u32>,
     /// The paths that must stay absent.
     pub absent: Vec<u32>,
+    /// The class sources the compile could read.
+    pub classes: Vec<u32>,
 }
 
 /// The result of one refresh: the working tree as the graph, and what changed.

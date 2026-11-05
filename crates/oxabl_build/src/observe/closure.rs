@@ -75,30 +75,42 @@ impl Places<'_> {
     }
 }
 
-/// The closure that one compile of `unit` read, by its `XREF-XML`. Each
-/// include is resolved on the unit PROPATH on the host, and each file the
-/// compiler names must be where an include resolves to: else the host and the
-/// compiler disagree, and there is no closure. A use of a class gives none
-/// either, because no `XREF-XML` names the file of a class.
+/// The closure that one compile of `unit` read, by its `XREF-XML`, with the
+/// class sources `classes` that it could read. Each include is resolved on the
+/// unit PROPATH on the host, and each file the compiler names must be where an
+/// include resolves to or a listed class: else the host and the compiler
+/// disagree, and there is no closure. Class r-code in `$OUT` and members of a
+/// library pass, as in V3: the class listing, the order of the compiles and
+/// the PROPATH digests cover them.
 pub fn observe(
     xref: &Xref,
     unit: &str,
     propath: &[String],
+    classes: &[String],
     places: &Places<'_>,
 ) -> Result<ObservedClosure, String> {
-    if let Some(class) = &xref.class {
-        return Err(format!("the compile used a class ({class})"));
-    }
-    let mut closure = ObservedClosure::default();
+    let mut closure = ObservedClosure {
+        classes: classes.to_vec(),
+        ..ObservedClosure::default()
+    };
     for name in &xref.includes {
         let file = places.resolve(name, propath, &mut closure)?;
         closure.files.push(file);
     }
     for name in &xref.sources {
+        if name.contains(".pl<<") {
+            continue;
+        }
         let source = canonical_name(name, places.worker_dlc, places.worker_root)
             .filter(|_| !name.contains("<<"))
             .ok_or_else(|| format!("the compiler read {name}, which has no canonical path"))?;
-        if source != unit && !closure.files.contains(&source) {
+        let rcode = source.ends_with(".r")
+            && source
+                .strip_prefix(places.rcode)
+                .is_some_and(|rest| rest.starts_with('/'));
+        let known =
+            rcode || closure.files.contains(&source) || classes.binary_search(&source).is_ok();
+        if source != unit && !known {
             return Err(format!(
                 "the compiler read {source}, which no include resolves to on the host"
             ));

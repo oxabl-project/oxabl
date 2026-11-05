@@ -265,7 +265,7 @@ with compiling.
 | V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
 
 For a unit keyed by its [observed closure](compile-key.md#the-observed-closure), the closure
-of V1 and V3 is the observed one. Before them, the build observes the compile again: when it
+of V1 and V3 is the observed one, with its class part. Before them, the build observes the compile again: when it
 read another closure than the key holds, the key does not describe the outputs, so the build
 stores the new closure and writes nothing.
 

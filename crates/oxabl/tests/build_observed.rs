@@ -7,7 +7,7 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::built::{Built, unit};
+use common::built::{Built, of_kind, unit};
 use common::cache::entries;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -50,7 +50,7 @@ fn a_unit_oxabl_cannot_read_compiles_once_then_only_when_a_file_it_read_changes(
     );
     workspace.write(
         "src/enc.p",
-        &format!("{UNREADABLE}{{inc/seen.i}}\n/* {{inc/hidden.i}} */\n"),
+        &format!("{UNREADABLE}{{inc/seen.i &PASS}}\n/* {{\"inc/hidden.i\" &company = x}} */\n"),
     );
     settle();
 
@@ -197,28 +197,125 @@ fn an_observed_key_differs_from_the_parsed_key_of_the_same_files() {
     assert_eq!(after["action"], "rebuild", "{parsed}");
 }
 
-#[test]
-fn a_unit_whose_compile_used_a_class_gets_no_observed_key() {
+/// `src/pkg/Used.cls` (with an include), `src/pkg/Other.cls`, and a unit
+/// oxabl cannot read that uses `pkg.Used`, as the compiler sees it.
+fn class_user() -> Built {
     let workspace = Built::new();
-    workspace.write("src/pkg/Foo.cls", "CLASS pkg.Foo:\nEND CLASS.\n");
-    workspace.write("src/enc.p", &format!("{UNREADABLE}/* NEW pkg.Foo() */\n"));
-    settle();
-
-    let run = workspace.build();
-    run.succeeded();
-    assert!(
-        run.stderr
-            .contains("src/enc.p: no key from what the compiler read: the compile used a class"),
-        "{}",
-        run.stderr
+    workspace.write("src/inc/used.i", "DEFINE VARIABLE u AS INTEGER NO-UNDO.\n");
+    workspace.write(
+        "src/pkg/Used.cls",
+        "CLASS pkg.Used:\n{inc/used.i}\nEND CLASS.\n",
     );
+    workspace.write("src/pkg/Other.cls", "CLASS pkg.Other:\nEND CLASS.\n");
+    workspace.write("src/enc.p", &format!("{UNREADABLE}/* NEW pkg.Used() */\n"));
+    workspace.build().succeeded();
     let plan = workspace.plan();
     let enc = unit(&plan, "src/enc.p");
-    assert_eq!(enc["action"], "rebuild", "{plan}");
+    assert_eq!(enc["closure"], "observed", "{plan}");
+    assert_eq!(enc["action"], "up-to-date", "{plan}");
+    workspace.clear_log();
+    workspace
+}
+
+#[test]
+fn an_observed_key_holds_every_workspace_class_and_what_each_class_reads() {
+    let workspace = class_user();
+
+    workspace.write(
+        "src/pkg/Other.cls",
+        "CLASS pkg.Other:\n    DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO GET. SET.\nEND CLASS.\n",
+    );
+    let plan = workspace.plan();
+    assert_eq!(
+        unit(&plan, "src/enc.p")["action"],
+        "rebuild",
+        "the XREF-XML does not say which classes the unit uses: any class counts: {plan}"
+    );
+    workspace.build().succeeded();
+    workspace.clear_log();
+
+    workspace.write("src/inc/used.i", "DEFINE VARIABLE v AS INTEGER NO-UNDO.\n");
+    let plan = workspace.plan();
+    assert_eq!(
+        unit(&plan, "src/enc.p")["action"],
+        "rebuild",
+        "an include of a class is an input of its users: {plan}"
+    );
+    workspace.build().succeeded();
+    let mut compiled = workspace.compiled();
+    compiled.sort();
+    assert_eq!(compiled, ["enc.p", "pkg/Used.cls"]);
+}
+
+#[test]
+fn a_new_class_source_on_the_propath_takes_the_observed_key_away() {
+    let workspace = class_user();
+    workspace.write("src/pkg/New.cls", "CLASS pkg.New:\nEND CLASS.\n");
+
+    let plan = workspace.plan();
+    let enc = unit(&plan, "src/enc.p");
     assert_eq!(enc["key"], Value::Null, "{plan}");
+    assert!(
+        strings(&enc["unkeyable"])
+            .contains(&"observed-classes-changed: +src/pkg/New.cls".to_string()),
+        "{plan}"
+    );
+    workspace.build().succeeded();
     workspace.clear_log();
     workspace.build().succeeded();
-    assert_eq!(workspace.compiled(), ["enc.p"]);
+    assert!(
+        workspace.compiled().is_empty(),
+        "the compile records the new list of classes: {:?}",
+        workspace.compiled()
+    );
+}
+
+#[test]
+fn a_workspace_class_that_has_no_key_gives_no_observed_key() {
+    let workspace = class_user();
+    workspace.write(
+        "src/pkg/Bad.cls",
+        &format!("{UNREADABLE}CLASS pkg.Bad:\nEND CLASS.\n"),
+    );
+    workspace.build().succeeded();
+
+    let plan = workspace.plan();
+    let enc = unit(&plan, "src/enc.p");
+    assert_eq!(enc["key"], Value::Null, "{plan}");
+    let reasons = strings(&enc["unkeyable"]);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.starts_with("observed-class: src/pkg/Bad.cls: degraded")),
+        "{plan}"
+    );
+}
+
+#[test]
+fn a_unit_oxabl_cannot_read_compiles_after_every_class_unit_of_the_build() {
+    let workspace = Built::new();
+    workspace.workers("count = 2");
+    workspace.write(
+        "src/pkg/Slow.cls",
+        "CLASS pkg.Slow:\n/* FAKE-SLOW */\nEND CLASS.\n",
+    );
+    workspace.write("src/a.p", &format!("{UNREADABLE}MESSAGE \"a\".\n"));
+
+    let run = workspace.build_with(&["--events"]);
+    run.succeeded();
+
+    let events = run.events();
+    let position = |kind: &str, path: &str| {
+        events
+            .iter()
+            .position(|event| event["event"] == kind && event["path"] == path)
+            .unwrap_or_else(|| panic!("no {kind} for {path}: {events:?}"))
+    };
+    assert_eq!(of_kind(&events, "unit-started").len(), 2, "{events:?}");
+    assert!(
+        position("unit-finished", "src/pkg/Slow.cls") < position("unit-started", "src/a.p"),
+        "the unit oxabl cannot read can read the class's r-code: it must start after the class finished: {events:?}"
+    );
 }
 
 #[test]

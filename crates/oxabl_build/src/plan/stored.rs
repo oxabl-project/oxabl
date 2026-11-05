@@ -78,7 +78,10 @@ impl Stored<'_> {
         let gen_of = |id: u32| outcome.changed_gen_of(id) > result.compiled_gen;
         let mut closure = self.after.closure(unit, scratch);
         if let Some(observed) = outcome.observed.get(&unit) {
-            closure.extend(&observed.files);
+            closure.extend(observed.files.iter().chain(&observed.classes));
+            for class in &observed.classes {
+                closure.extend(self.after.closure(*class, scratch));
+            }
             closure.sort_unstable();
             closure.dedup();
         }

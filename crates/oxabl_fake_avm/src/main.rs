@@ -17,8 +17,9 @@
 //! Like the real compiler, it opens an XREF or XREF-XML file whose relative
 //! name starts with `.` with that dot removed. A request with the XREF mode
 //! `private` writes an XREF-XML under `verify/`. An XREF-XML names each file
-//! read as a `Source`, each include as an `INCLUDE` reference with its name
-//! as written, and each class as a `NEW` reference.
+//! read as a `Source`, each include as an `INCLUDE` reference with the text
+//! between its braces (its name and arguments), and each class as a `NEW`
+//! reference.
 //!
 //! Environment variables: `FAKE_AVM_STATE` is a directory for the markers of
 //! the `-ONCE` faults; `FAKE_AVM_LOG` receives one line for each compiled

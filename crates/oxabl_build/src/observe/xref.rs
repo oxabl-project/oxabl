@@ -1,5 +1,9 @@
-//! What a compile's `XREF-XML` says it read: the `Source` files, the include
-//! references and any use of a class.
+//! What a compile's `XREF-XML` says it read: the `Source` files and the
+//! include references.
+//!
+//! The document says nothing reliable about classes: a class used only as a
+//! type gives no reference at all (measured on OpenEdge 12.8), so nothing here
+//! looks for one.
 
 use std::path::Path;
 
@@ -10,32 +14,7 @@ pub struct Xref {
     pub sources: Vec<String>,
     /// The include file name of each `INCLUDE` reference, as written.
     pub includes: Vec<String>,
-    /// The first reference that shows a class, as `<type> <identifier>`.
-    pub class: Option<String>,
 }
-
-/// Reference types that name a class, an interface, an enum or a member of
-/// one. The compiler reads such a type from a file that no `Source` names.
-const CLASS_TYPES: [&str; 15] = [
-    "CLASS",
-    "INTERFACE",
-    "ENUM",
-    "INHERITS",
-    "IMPLEMENTS",
-    "NEW",
-    "INVOKE",
-    "REFERENCE",
-    "CONSTRUCTOR",
-    "DESTRUCTOR",
-    "METHOD",
-    "PROPERTY",
-    "DATA-MEMBER",
-    "EVENT",
-    "DELEGATE",
-];
-
-/// Element names that describe a class or an interface.
-const CLASS_ELEMENTS: [&str; 2] = ["<Class-ref", "<Interface-ref"];
 
 /// Reads the `XREF-XML` file at `path`.
 pub fn read(path: &Path) -> Result<Xref, String> {
@@ -52,11 +31,6 @@ pub fn parse(xml: &str) -> Result<Xref, String> {
         sources,
         ..Xref::default()
     };
-    for element in CLASS_ELEMENTS {
-        if xml.contains(element) && xref.class.is_none() {
-            xref.class = Some(element[1..].to_string());
-        }
-    }
     let mut rest = xml;
     while let Some(at) = rest.find("<Reference") {
         let after = &rest[at + "<Reference".len()..];
@@ -71,19 +45,13 @@ pub fn parse(xml: &str) -> Result<Xref, String> {
         rest = &after[end..];
         let kind = attribute(tag, "Reference-type")
             .ok_or_else(|| "a Reference element has no Reference-type".to_string())?;
-        let identifier = attribute(tag, "Object-identifier").unwrap_or_default();
-        let kind = kind.trim().to_ascii_uppercase();
-        if kind == "INCLUDE" {
-            let name = include_name(&identifier)
-                .ok_or_else(|| format!("an INCLUDE reference names no file: {identifier:?}"))?;
-            xref.includes.push(name);
-        } else if (CLASS_TYPES.contains(&kind.as_str())
-            // A member of a class reads `<class>:<member>`; a string can hold `:`.
-            || (kind != "STRING" && identifier.contains(':')))
-            && xref.class.is_none()
-        {
-            xref.class = Some(format!("{kind} {identifier}"));
+        if !kind.trim().eq_ignore_ascii_case("INCLUDE") {
+            continue;
         }
+        let identifier = attribute(tag, "Object-identifier").unwrap_or_default();
+        let name = include_name(&identifier)
+            .ok_or_else(|| format!("an INCLUDE reference names no file: {identifier:?}"))?;
+        xref.includes.push(name);
     }
     Ok(xref)
 }
@@ -150,4 +118,42 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
         return Some(unescape(&body[..end]));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    fn document(references: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\"?>\n<Cross-reference>\n<Source File-num=\"1\" File-name=\"src/a.p\"/>\n{references}</Cross-reference>\n"
+        )
+    }
+
+    /// The shapes OpenEdge 12.8 writes: a plain name, arguments after the
+    /// name, and the whole text in quotes with arguments and many spaces.
+    #[test]
+    fn include_names_are_the_first_word_of_the_identifier() {
+        let xml = document(concat!(
+            "<Reference Reference-type=\"INCLUDE\" Object-identifier=\"ms/workspace.i\"/>\n",
+            "<Reference Reference-type=\"INCLUDE\" Object-identifier=\"gl/global-input.i &amp;PASS\"/>\n",
+            "<Reference Reference-type=\"INCLUDE\" Object-identifier=\"&quot;se/decrypt.i               &amp;company  = v-company&quot;\"/>\n",
+            "<Reference Reference-type=\"STRING\" Object-identifier=\"&quot;a:b&quot;\"/>\n",
+        ));
+
+        let xref = parse(&xml).unwrap();
+
+        assert_eq!(xref.sources, ["src/a.p"]);
+        assert_eq!(
+            xref.includes,
+            ["ms/workspace.i", "gl/global-input.i", "se/decrypt.i"]
+        );
+    }
+
+    #[test]
+    fn an_include_reference_without_a_name_is_an_error() {
+        let xml = document("<Reference Reference-type=\"INCLUDE\" Object-identifier=\"\"/>\n");
+
+        assert!(parse(&xml).is_err());
+    }
 }

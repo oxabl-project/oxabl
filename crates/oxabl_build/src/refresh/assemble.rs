@@ -113,7 +113,12 @@ pub fn assemble(parts: Parts) -> Outcome {
             }
         }
         for closure in observed.values() {
-            for id in closure.files.iter().chain(&closure.absent) {
+            for id in closure
+                .files
+                .iter()
+                .chain(&closure.absent)
+                .chain(&closure.classes)
+            {
                 *bits.entry(*id).or_default() |= tracked::OBSERVED;
             }
         }

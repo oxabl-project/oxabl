@@ -354,6 +354,7 @@ fn info(layout: &OutputLayout, path: &str, key: &UnitKey) -> UnitInfo {
         components: key.components,
         observable: key.observable,
         observed: key.observed,
+        observed_closure: key.observed_closure.clone(),
     }
 }
 
@@ -408,9 +409,9 @@ pub(crate) fn closure_of(
     unit: u32,
     scratch: &mut Scratch,
 ) -> Vec<u32> {
-    match outcome.observed.get(&unit).filter(|_| info.observed) {
-        Some(observed) => observed.files.clone(),
-        None => outcome.after.closure(unit, scratch),
+    match info.observed {
+        true => info.observed_closure.clone(),
+        false => outcome.after.closure(unit, scratch),
     }
 }
 
@@ -456,6 +457,13 @@ fn observer<'a>(
         },
         outcome,
         base: keyed.base.as_ref()?,
+        classes: &keyed.classes,
+        class_units: outcome
+            .units
+            .iter()
+            .map(|unit| outcome.name(*unit))
+            .filter(|name| crate::paths::propath::is_class_unit(name))
+            .collect(),
         ids: outcome
             .names
             .iter()

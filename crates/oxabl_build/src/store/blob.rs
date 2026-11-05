@@ -220,7 +220,8 @@ pub fn decode_completeness(bytes: &[u8]) -> Result<Vec<u8>, StoreError> {
 }
 
 /// Encode an observed closure: `varint count`, then each entry as `u8 kind`
-/// (`1` file, `2` absent path) and its canonical path, sorted by kind and path.
+/// (`1` file, `2` absent path, `3` listed class source) and its canonical
+/// path, sorted by kind and path.
 pub fn encode_observed(closure: &ObservedClosure) -> Vec<u8> {
     let mut entries: Vec<(ObservationKind, &str)> = closure
         .files
@@ -231,6 +232,12 @@ pub fn encode_observed(closure: &ObservedClosure) -> Vec<u8> {
                 .absent
                 .iter()
                 .map(|path| (ObservationKind::Absent, path.as_str())),
+        )
+        .chain(
+            closure
+                .classes
+                .iter()
+                .map(|path| (ObservationKind::Listed, path.as_str())),
         )
         .collect();
     entries.sort();
@@ -254,7 +261,8 @@ pub fn decode_observed(bytes: &[u8]) -> Result<ObservedClosure, StoreError> {
         match ObservationKind::from_code(kind) {
             Some(ObservationKind::Read) => closure.files.push(path),
             Some(ObservationKind::Absent) => closure.absent.push(path),
-            _ => return Err(corrupt("observed closure kind")),
+            Some(ObservationKind::Listed) => closure.classes.push(path),
+            None => return Err(corrupt("observed closure kind")),
         }
     }
     reader.finish()?;

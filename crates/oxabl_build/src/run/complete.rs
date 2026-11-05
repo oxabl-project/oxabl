@@ -75,8 +75,12 @@ fn observe_compile(ctx: &Ctx<'_>, state: &mut State<'_>, done: &UnitDone) -> Opt
     };
     let propath = &observer.base.propaths[info.propath];
     let entries: Vec<String> = propath.iter().map(|(entry, _)| entry.clone()).collect();
+    let classes = observer
+        .classes
+        .get(&info.propath)
+        .map_or(&[][..], |part| part.listing.as_slice());
     let observed = match done.reads.as_ref() {
-        Some(Ok(xref)) => observe(xref, &info.path, &entries, &observer.places),
+        Some(Ok(xref)) => observe(xref, &info.path, &entries, classes, &observer.places),
         Some(Err(why)) => Err(why.clone()),
         None => Err("no XREF-XML".to_string()),
     };

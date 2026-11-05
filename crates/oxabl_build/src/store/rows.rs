@@ -101,13 +101,15 @@ pub mod tracked {
     pub const OBSERVED: u8 = 8;
 }
 
-/// The files a compile of a unit read, as its `XREF-XML` named them, and the
+/// The files a compile of a unit read, as its `XREF-XML` named them, the
 /// paths that must stay absent so that each include resolves to the same
-/// file. Canonical paths, sorted, without the unit itself.
+/// file, and the class sources the compile could read. Canonical paths,
+/// sorted, without the unit itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObservedClosure {
     pub files: Vec<String>,
     pub absent: Vec<String>,
+    pub classes: Vec<String>,
 }
 
 /// A directory that a case-insensitive lookup listed.
