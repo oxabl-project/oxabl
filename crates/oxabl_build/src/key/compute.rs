@@ -12,8 +12,8 @@ use super::keyability::{ExternalPackage, Resolved, Rules};
 use super::layout::{Layout, lay_out};
 use super::options::CompileSettings;
 use crate::config::BuildWorkspace;
-use crate::paths::PathMap;
 use crate::paths::propath::{OUT, Placement, Search, canonical_entry, library_name};
+use crate::paths::{Declared, PathMap};
 use crate::refresh::{Content, Outcome, parallel};
 use crate::store::Components;
 use crate::worker::{Pool, PoolError, program};
@@ -191,10 +191,10 @@ fn compare_mirror(
 fn workspace_classes(outcome: &Outcome, layout: &Layout) -> FxHashMap<String, (String, String)> {
     let mut names: FxHashMap<String, (String, String)> = FxHashMap::default();
     for (id, placed) in outcome.units.iter().zip(&layout.units) {
-        if let Some(declared) = &placed.declared {
+        if let Some(declared) = placed.declared.name() {
             names
                 .entry(declared.to_ascii_lowercase())
-                .or_insert_with(|| (declared.clone(), outcome.name(*id).to_string()));
+                .or_insert_with(|| (declared.to_string(), outcome.name(*id).to_string()));
         }
     }
     for (_, analysis) in outcome.analyses.iter() {
@@ -294,9 +294,17 @@ pub fn compute(
     let mut without_key = 0;
     for (k, verdict) in verdicts.iter_mut().enumerate() {
         let placed = &layout.units[active[k]];
-        if placed.class && placed.declared.is_none() {
+        if placed.class {
             let path = outcome.name(active_ids[k]);
-            verdict.add_reason(4, format!("computed-name: class statement in {path}"));
+            match placed.declared {
+                Declared::Name(_) => {}
+                Declared::Conditional => {
+                    verdict.add_reason(4, format!("conditional-name: class statement in {path}"));
+                }
+                Declared::Absent => {
+                    verdict.add_reason(4, format!("computed-name: class statement in {path}"));
+                }
+            }
         }
         let accepted = std::mem::take(&mut verdict.accepted);
         for name in &accepted {
