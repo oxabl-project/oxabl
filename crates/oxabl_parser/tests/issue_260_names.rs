@@ -73,11 +73,13 @@ fn reserved_keywords_are_method_names() {
            END METHOD.
            METHOD PUBLIC STATIC VOID Check():
            END METHOD.
+           METHOD PUBLIC VOID Add(INPUT pcCode AS CHARACTER, INPUT piNumber AS INTEGER):
+           END METHOD.
          END CLASS.",
     );
     assert_eq!(
         method_names(&program.statements),
-        ["Clear", "View", "Any", "Check"]
+        ["Clear", "View", "Any", "Check", "Add"]
     );
 }
 
@@ -151,6 +153,12 @@ fn reserved_keywords_are_procedure_names() {
 fn a_procedure_still_needs_a_name() {
     assert_errors("PROCEDURE :\nEND PROCEDURE.");
     assert_errors("PROCEDURE.\nEND PROCEDURE.");
+}
+
+#[test]
+fn add_is_a_procedure_name() {
+    let program = parse_clean("PROCEDURE Add:\nEND PROCEDURE.");
+    assert_eq!(procedure_names(&program), ["Add"]);
 }
 
 // ---- 8d. USE-INDEX before WHERE --------------------------------------------

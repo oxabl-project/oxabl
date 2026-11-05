@@ -1699,11 +1699,14 @@ impl<'a> Parser<'a> {
     }
 
     /// A name that declares a method or procedure. Reserved keywords are valid
-    /// here (`METHOD View(...)`, `PROCEDURE check:`), as are digit-first
-    /// procedure names (`PROCEDURE 128_set_width:`).
+    /// here (`METHOD View(...)`, `PROCEDURE check:`), and so is `Add`, which is
+    /// an identifier kind but not word-like. Procedure names may also start
+    /// with a digit (`PROCEDURE 128_set_width:`).
     fn parse_declared_name(&mut self, digit_first: bool) -> ParseResult<Identifier> {
-        let start_ok =
-            Self::is_word_kind(self.peek().kind) || (digit_first && self.digit_first_name_ahead());
+        let kind = self.peek().kind;
+        let start_ok = Self::is_word_kind(kind)
+            || Self::can_be_identifier(kind)
+            || (digit_first && self.digit_first_name_ahead());
         self.parse_name(start_ok)
     }
 
