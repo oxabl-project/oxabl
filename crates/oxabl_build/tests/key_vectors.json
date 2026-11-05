@@ -1,0 +1,993 @@
+{
+  "prd_example": {
+    "environment_identity": "88379412ea5b9c91d75b53fed5c30c3ed18048293664ed0ec0deff2ec441a079",
+    "key": "1e7e5c8c6213fb125ce83de8bf24bd702a339b554d7a39794204687c8aba304a",
+    "key_material_length": 817,
+    "schema_identity": "8a495ef6b5c1d99915758a8773441ab7adf1b6abe407bf19c1a4f097ac62a199",
+    "unit_content": "46fc37de67aabc0750c364e9958c080394046a163ac10ffa9f2f482e811d3b9a",
+    "vector": "worked-example",
+    "worker_program": "/* oxabl worker */\n",
+    "worker_program_hash": "c90f59b20862aa76cdd3a16915d2662583c01e49f381d7db0810e5d9bc397fb8"
+  },
+  "vectors": [
+    {
+      "compile_name": "ar/post.p",
+      "dlc_files": {
+        "src/adecomm/x.i": "DEFINE VARIABLE y AS CHARACTER NO-UNDO.\n",
+        "tty/netlib/OpenEdge.Net.pl": "library bytes"
+      },
+      "env": {
+        "databases": [
+          {
+            "aliases": [
+              "dictdb"
+            ],
+            "ldb": "ledger",
+            "schema": [
+              [
+                "db",
+                "_db-coll-name=ICU-UCA",
+                "_db-type=PROGRESS",
+                "_db-xl-name=UTF-8"
+              ],
+              [
+                "table",
+                "customer",
+                "_can-read=*",
+                "_crc=12345",
+                "_dump-name=customer",
+                "_prime-index=index/customer/custnum"
+              ],
+              [
+                "field",
+                "customer",
+                "custnum",
+                "_data-type=integer",
+                "_decimals=?",
+                "_format=>>>>9",
+                "_label=Cust Num",
+                "_view-as=?"
+              ],
+              [
+                "field",
+                "customer",
+                "name",
+                "_data-type=character",
+                "_decimals=?",
+                "_format=x(30)",
+                "_label=Name",
+                "_view-as=?"
+              ],
+              [
+                "index",
+                "customer",
+                "custnum",
+                "_active=yes",
+                "_unique=yes"
+              ],
+              [
+                "index-field",
+                "customer",
+                "custnum",
+                "1",
+                "custnum",
+                "_ascending=yes"
+              ],
+              [
+                "sequence",
+                "next-cust",
+                "_cycle-ok=no",
+                "_seq-incr=1",
+                "_seq-init=1"
+              ]
+            ]
+          }
+        ],
+        "dlc_dir": "dlc",
+        "env": {
+          "cpcoll": "ICU-UCA",
+          "dlc": "/usr/dlc",
+          "dlc_version": "OpenEdge Release 12.8.9",
+          "propath": "/usr/dlc/tty/netlib/OpenEdge.Net.pl"
+        },
+        "parameters": [
+          "-cpinternal UTF-8",
+          "-cpstream UTF-8",
+          "-d mdy",
+          "-inp 32000"
+        ]
+      },
+      "environment_identity": "88379412ea5b9c91d75b53fed5c30c3ed18048293664ed0ec0deff2ec441a079",
+      "expected": {
+        "closure": [
+          [
+            "$DLC/src/adecomm/x.i",
+            "sha256",
+            "63789d696f620f34d75a81ee06dbac5cc9f6be2bccee4052f067e021ffa1acdd"
+          ],
+          [
+            "src/inc/ledger.i",
+            "blake3",
+            "0b547367c7b6f2702a1cedf8d6e7a6c4a646ba1e89229a91052712e69427b058"
+          ]
+        ],
+        "databases": [
+          {
+            "aliases": [
+              "dictdb"
+            ],
+            "dbtype": "PROGRESS",
+            "name": "ledger",
+            "schema": [
+              [
+                "db",
+                "_db-coll-name=ICU-UCA",
+                "_db-type=PROGRESS",
+                "_db-xl-name=UTF-8"
+              ],
+              [
+                "table",
+                "customer",
+                "_can-read=*",
+                "_crc=12345",
+                "_dump-name=customer",
+                "_prime-index=index/customer/custnum"
+              ],
+              [
+                "field",
+                "customer",
+                "custnum",
+                "_data-type=integer",
+                "_decimals=?",
+                "_format=>>>>9",
+                "_label=Cust Num",
+                "_view-as=?"
+              ],
+              [
+                "field",
+                "customer",
+                "name",
+                "_data-type=character",
+                "_decimals=?",
+                "_format=x(30)",
+                "_label=Name",
+                "_view-as=?"
+              ],
+              [
+                "index",
+                "customer",
+                "custnum",
+                "_active=yes",
+                "_unique=yes"
+              ],
+              [
+                "index-field",
+                "customer",
+                "custnum",
+                "1",
+                "custnum",
+                "_ascending=yes"
+              ],
+              [
+                "sequence",
+                "next-cust",
+                "_cycle-ok=no",
+                "_seq-incr=1",
+                "_seq-init=1"
+              ]
+            ]
+          }
+        ],
+        "openedge": [
+          "OpenEdge Release 12.8.9",
+          "12.8"
+        ],
+        "options": [
+          [
+            "attr-space",
+            "false"
+          ],
+          [
+            "generate-md5",
+            "false"
+          ],
+          [
+            "languages",
+            ""
+          ],
+          [
+            "min-size",
+            "false"
+          ],
+          [
+            "options",
+            ""
+          ],
+          [
+            "stream-io",
+            "false"
+          ],
+          [
+            "v6frame",
+            "false"
+          ]
+        ],
+        "outputs": [
+          "rcode"
+        ],
+        "parameters": [
+          [
+            "-cpinternal",
+            "UTF-8"
+          ],
+          [
+            "-cpstream",
+            "UTF-8"
+          ],
+          [
+            "-d",
+            "mdy"
+          ],
+          [
+            "-inp",
+            "32000"
+          ]
+        ],
+        "platform": [
+          "UNIX",
+          "TTY",
+          "yes",
+          "64"
+        ],
+        "propath": [
+          [
+            "$OUT",
+            "dir"
+          ],
+          [
+            "src",
+            "dir"
+          ],
+          [
+            "$DLC/src",
+            "dir"
+          ],
+          [
+            "$DLC/tty/netlib/OpenEdge.Net.pl",
+            "sha256:8c45ce4e5a5cb0c03670ca09e153a24b1c7b7f94141c4da68f31ce8e91bc1bf8"
+          ]
+        ],
+        "session": [
+          "UTF-8",
+          "UTF-8",
+          "ICU-UCA",
+          "BASIC",
+          "mdy",
+          "1950",
+          ".",
+          ","
+        ]
+      },
+      "extra_config": "",
+      "files": {
+        "src/ar/post.p": "{inc/ledger.i}\n{adecomm/x.i}\nMESSAGE \"post\".\n",
+        "src/inc/ledger.i": "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n"
+      },
+      "material_hex": "0400000000000000756e69740d000000000000007372632f61722f706f73742e70090000000000000061722f706f73742e7046fc37de67aabc0750c364e9958c080394046a163ac10ffa9f2f482e811d3b9a0700000000000000636c6f737572650200000000000000140000000000000024444c432f7372632f616465636f6d6d2f782e69060000000000000073686132353663789d696f620f34d75a81ee06dbac5cc9f6be2bccee4052f067e021ffa1acdd10000000000000007372632f696e632f6c65646765722e690600000000000000626c616b65330b547367c7b6f2702a1cedf8d6e7a6c4a646ba1e89229a91052712e69427b058070000000000000070726f7061746804000000000000000400000000000000244f5554030000000000000064697203000000000000007372630300000000000000646972080000000000000024444c432f73726303000000000000006469721f0000000000000024444c432f7474792f6e65746c69622f4f70656e456467652e4e65742e706c47000000000000007368613235363a386334356365346535613563623063303336373063613039653135336132346231633762376639343134316334646136386633316365386539316263316266380b00000000000000656e7669726f6e6d656e7488379412ea5b9c91d75b53fed5c30c3ed18048293664ed0ec0deff2ec441a07907000000000000006f7074696f6e7307000000000000000a00000000000000617474722d7370616365050000000000000066616c73650c0000000000000067656e65726174652d6d6435050000000000000066616c736509000000000000006c616e677561676573000000000000000008000000000000006d696e2d73697a65050000000000000066616c736507000000000000006f7074696f6e730000000000000000090000000000000073747265616d2d696f050000000000000066616c7365070000000000000076366672616d65050000000000000066616c736507000000000000006f7574707574730100000000000000050000000000000072636f6465",
+      "name": "worked-example",
+      "preprocessor": "databases = [\"ledger\"]",
+      "sources": "include_paths = [\"src\", \"$DLC/src\"]",
+      "unit": "src/ar/post.p",
+      "unit_content": "46fc37de67aabc0750c364e9958c080394046a163ac10ffa9f2f482e811d3b9a"
+    },
+    {
+      "compile_name": "a.p",
+      "dlc_files": {},
+      "env": {
+        "dlc_dir": "dlc",
+        "env": {
+          "dlc": "/usr/dlc",
+          "dlc_version": "OpenEdge Release 12.8.9"
+        },
+        "parameters": [
+          "-cpstream UTF-8"
+        ]
+      },
+      "environment_identity": "9756aae65ac295ac9ae9d284896e7610740056637d9811e9f297284c2ec4b6a3",
+      "expected": {
+        "closure": [],
+        "databases": [],
+        "openedge": [
+          "OpenEdge Release 12.8.9",
+          "12.8"
+        ],
+        "options": [
+          [
+            "attr-space",
+            "false"
+          ],
+          [
+            "generate-md5",
+            "false"
+          ],
+          [
+            "languages",
+            ""
+          ],
+          [
+            "min-size",
+            "false"
+          ],
+          [
+            "options",
+            ""
+          ],
+          [
+            "stream-io",
+            "false"
+          ],
+          [
+            "v6frame",
+            "false"
+          ]
+        ],
+        "outputs": [
+          "rcode"
+        ],
+        "parameters": [
+          [
+            "-cpstream",
+            "UTF-8"
+          ]
+        ],
+        "platform": [
+          "UNIX",
+          "TTY",
+          "yes",
+          "64"
+        ],
+        "propath": [
+          [
+            "$OUT",
+            "dir"
+          ],
+          [
+            "src",
+            "dir"
+          ]
+        ],
+        "session": [
+          "UTF-8",
+          "UTF-8",
+          "BASIC",
+          "BASIC",
+          "mdy",
+          "1950",
+          ".",
+          ","
+        ]
+      },
+      "extra_config": "",
+      "files": {
+        "src/a.p": "MESSAGE \"hello\".\n"
+      },
+      "material_hex": "0400000000000000756e697407000000000000007372632f612e700300000000000000612e7082a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f0700000000000000636c6f737572650000000000000000070000000000000070726f7061746802000000000000000400000000000000244f55540300000000000000646972030000000000000073726303000000000000006469720b00000000000000656e7669726f6e6d656e749756aae65ac295ac9ae9d284896e7610740056637d9811e9f297284c2ec4b6a307000000000000006f7074696f6e7307000000000000000a00000000000000617474722d7370616365050000000000000066616c73650c0000000000000067656e65726174652d6d6435050000000000000066616c736509000000000000006c616e677561676573000000000000000008000000000000006d696e2d73697a65050000000000000066616c736507000000000000006f7074696f6e730000000000000000090000000000000073747265616d2d696f050000000000000066616c7365070000000000000076366672616d65050000000000000066616c736507000000000000006f7574707574730100000000000000050000000000000072636f6465",
+      "name": "empty-closure",
+      "preprocessor": "databases = []",
+      "sources": "include_paths = [\"src\"]",
+      "unit": "src/a.p",
+      "unit_content": "82a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f"
+    },
+    {
+      "compile_name": "a.p",
+      "dlc_files": {},
+      "env": {
+        "databases": [
+          {
+            "aliases": [
+              "B",
+              "a"
+            ],
+            "ldb": "ledger",
+            "schema": [
+              [
+                "db",
+                "_db-type=PROGRESS"
+              ],
+              [
+                "table",
+                "customer",
+                "_crc=1"
+              ]
+            ]
+          },
+          {
+            "ldb": "Audit",
+            "schema": [
+              [
+                "db",
+                "_db-type=PROGRESS"
+              ],
+              [
+                "table",
+                "event",
+                "_crc=1"
+              ]
+            ]
+          }
+        ],
+        "dlc_dir": "dlc",
+        "env": {
+          "dlc": "/usr/dlc",
+          "dlc_version": "OpenEdge Release 12.8.9"
+        },
+        "parameters": [
+          "-cpstream UTF-8"
+        ]
+      },
+      "environment_identity": "76956d70583c0644be705dab35cfe322998f91199878649efe07ec2143f4211d",
+      "expected": {
+        "closure": [],
+        "databases": [
+          {
+            "aliases": [
+              "a",
+              "b"
+            ],
+            "dbtype": "PROGRESS",
+            "name": "ledger",
+            "schema": [
+              [
+                "db",
+                "_db-type=PROGRESS"
+              ],
+              [
+                "table",
+                "customer",
+                "_crc=1"
+              ]
+            ]
+          },
+          {
+            "aliases": [],
+            "dbtype": "PROGRESS",
+            "name": "audit",
+            "schema": [
+              [
+                "db",
+                "_db-type=PROGRESS"
+              ],
+              [
+                "table",
+                "event",
+                "_crc=1"
+              ]
+            ]
+          }
+        ],
+        "openedge": [
+          "OpenEdge Release 12.8.9",
+          "12.8"
+        ],
+        "options": [
+          [
+            "attr-space",
+            "false"
+          ],
+          [
+            "generate-md5",
+            "false"
+          ],
+          [
+            "languages",
+            ""
+          ],
+          [
+            "min-size",
+            "false"
+          ],
+          [
+            "options",
+            ""
+          ],
+          [
+            "stream-io",
+            "false"
+          ],
+          [
+            "v6frame",
+            "false"
+          ]
+        ],
+        "outputs": [
+          "rcode"
+        ],
+        "parameters": [
+          [
+            "-cpstream",
+            "UTF-8"
+          ]
+        ],
+        "platform": [
+          "UNIX",
+          "TTY",
+          "yes",
+          "64"
+        ],
+        "propath": [
+          [
+            "$OUT",
+            "dir"
+          ],
+          [
+            "src",
+            "dir"
+          ]
+        ],
+        "session": [
+          "UTF-8",
+          "UTF-8",
+          "BASIC",
+          "BASIC",
+          "mdy",
+          "1950",
+          ".",
+          ","
+        ]
+      },
+      "extra_config": "",
+      "files": {
+        "src/a.p": "MESSAGE \"hello\".\n"
+      },
+      "material_hex": "0400000000000000756e697407000000000000007372632f612e700300000000000000612e7082a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f0700000000000000636c6f737572650000000000000000070000000000000070726f7061746802000000000000000400000000000000244f55540300000000000000646972030000000000000073726303000000000000006469720b00000000000000656e7669726f6e6d656e7476956d70583c0644be705dab35cfe322998f91199878649efe07ec2143f4211d07000000000000006f7074696f6e7307000000000000000a00000000000000617474722d7370616365050000000000000066616c73650c0000000000000067656e65726174652d6d6435050000000000000066616c736509000000000000006c616e677561676573000000000000000008000000000000006d696e2d73697a65050000000000000066616c736507000000000000006f7074696f6e730000000000000000090000000000000073747265616d2d696f050000000000000066616c7365070000000000000076366672616d65050000000000000066616c736507000000000000006f7574707574730100000000000000050000000000000072636f6465",
+      "name": "two-databases",
+      "preprocessor": "databases = [\"ledger\", \"audit\"]",
+      "sources": "include_paths = [\"src\"]",
+      "unit": "src/a.p",
+      "unit_content": "82a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f"
+    },
+    {
+      "compile_name": "a.p",
+      "dlc_files": {},
+      "env": {
+        "dlc_dir": "dlc",
+        "env": {
+          "dlc": "/usr/dlc",
+          "dlc_version": "OpenEdge Release 12.8.9"
+        },
+        "parameters": [
+          "-inp 1",
+          "-cpstream UTF-8",
+          "-Bt 10",
+          "-inp 2",
+          "-U someone"
+        ]
+      },
+      "environment_identity": "ea909d8c57283215379349045c06cadbdcd51c82a46aa87f31072fbc309e852e",
+      "expected": {
+        "closure": [],
+        "databases": [],
+        "openedge": [
+          "OpenEdge Release 12.8.9",
+          "12.8"
+        ],
+        "options": [
+          [
+            "attr-space",
+            "false"
+          ],
+          [
+            "generate-md5",
+            "false"
+          ],
+          [
+            "languages",
+            ""
+          ],
+          [
+            "min-size",
+            "false"
+          ],
+          [
+            "options",
+            ""
+          ],
+          [
+            "stream-io",
+            "false"
+          ],
+          [
+            "v6frame",
+            "false"
+          ]
+        ],
+        "outputs": [
+          "rcode"
+        ],
+        "parameters": [
+          [
+            "-Bt",
+            "10"
+          ],
+          [
+            "-cpstream",
+            "UTF-8"
+          ],
+          [
+            "-inp",
+            "2"
+          ]
+        ],
+        "platform": [
+          "UNIX",
+          "TTY",
+          "yes",
+          "64"
+        ],
+        "propath": [
+          [
+            "$OUT",
+            "dir"
+          ],
+          [
+            "src",
+            "dir"
+          ]
+        ],
+        "session": [
+          "UTF-8",
+          "UTF-8",
+          "BASIC",
+          "BASIC",
+          "mdy",
+          "1950",
+          ".",
+          ","
+        ]
+      },
+      "extra_config": "",
+      "files": {
+        "src/a.p": "MESSAGE \"hello\".\n"
+      },
+      "material_hex": "0400000000000000756e697407000000000000007372632f612e700300000000000000612e7082a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f0700000000000000636c6f737572650000000000000000070000000000000070726f7061746802000000000000000400000000000000244f55540300000000000000646972030000000000000073726303000000000000006469720b00000000000000656e7669726f6e6d656e74ea909d8c57283215379349045c06cadbdcd51c82a46aa87f31072fbc309e852e07000000000000006f7074696f6e7307000000000000000a00000000000000617474722d7370616365050000000000000066616c73650c0000000000000067656e65726174652d6d6435050000000000000066616c736509000000000000006c616e677561676573000000000000000008000000000000006d696e2d73697a65050000000000000066616c736507000000000000006f7074696f6e730000000000000000090000000000000073747265616d2d696f050000000000000066616c7365070000000000000076366672616d65050000000000000066616c736507000000000000006f7574707574730100000000000000050000000000000072636f6465",
+      "name": "parameter-twice",
+      "preprocessor": "databases = []",
+      "sources": "include_paths = [\"src\"]",
+      "unit": "src/a.p",
+      "unit_content": "82a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f"
+    },
+    {
+      "compile_name": "a.p",
+      "dlc_files": {},
+      "env": {
+        "dlc_dir": "dlc",
+        "env": {
+          "dlc": "/usr/dlc",
+          "dlc_version": "OpenEdge Release 12.8.9"
+        },
+        "parameters": [
+          "-cpstream UTF-8",
+          "-ininame a,b",
+          "-d mdy"
+        ]
+      },
+      "environment_identity": "4c8ae856a713b754c000f8db59e9650444bfcbdd59ae5b33c6da1108cd7182a5",
+      "expected": {
+        "closure": [],
+        "databases": [],
+        "openedge": [
+          "OpenEdge Release 12.8.9",
+          "12.8"
+        ],
+        "options": [
+          [
+            "attr-space",
+            "false"
+          ],
+          [
+            "generate-md5",
+            "false"
+          ],
+          [
+            "languages",
+            ""
+          ],
+          [
+            "min-size",
+            "false"
+          ],
+          [
+            "options",
+            ""
+          ],
+          [
+            "stream-io",
+            "false"
+          ],
+          [
+            "v6frame",
+            "false"
+          ]
+        ],
+        "outputs": [
+          "rcode"
+        ],
+        "parameters": [
+          [
+            "-cpstream",
+            "UTF-8"
+          ],
+          [
+            "-d",
+            "mdy"
+          ],
+          [
+            "-ininame",
+            "a,b"
+          ]
+        ],
+        "platform": [
+          "UNIX",
+          "TTY",
+          "yes",
+          "64"
+        ],
+        "propath": [
+          [
+            "$OUT",
+            "dir"
+          ],
+          [
+            "src",
+            "dir"
+          ]
+        ],
+        "session": [
+          "UTF-8",
+          "UTF-8",
+          "BASIC",
+          "BASIC",
+          "mdy",
+          "1950",
+          ".",
+          ","
+        ]
+      },
+      "extra_config": "",
+      "files": {
+        "src/a.p": "MESSAGE \"hello\".\n"
+      },
+      "material_hex": "0400000000000000756e697407000000000000007372632f612e700300000000000000612e7082a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f0700000000000000636c6f737572650000000000000000070000000000000070726f7061746802000000000000000400000000000000244f55540300000000000000646972030000000000000073726303000000000000006469720b00000000000000656e7669726f6e6d656e744c8ae856a713b754c000f8db59e9650444bfcbdd59ae5b33c6da1108cd7182a507000000000000006f7074696f6e7307000000000000000a00000000000000617474722d7370616365050000000000000066616c73650c0000000000000067656e65726174652d6d6435050000000000000066616c736509000000000000006c616e677561676573000000000000000008000000000000006d696e2d73697a65050000000000000066616c736507000000000000006f7074696f6e730000000000000000090000000000000073747265616d2d696f050000000000000066616c7365070000000000000076366672616d65050000000000000066616c736507000000000000006f7574707574730100000000000000050000000000000072636f6465",
+      "name": "value-with-a-comma",
+      "preprocessor": "databases = []",
+      "sources": "include_paths = [\"src\"]",
+      "unit": "src/a.p",
+      "unit_content": "82a3872167b2c22c8fbb395c6bf8980774a04995f93d139b2b84ff4960d65a8f"
+    },
+    {
+      "compile_name": "a.p",
+      "dlc_files": {},
+      "env": {
+        "dlc_dir": "dlc",
+        "env": {
+          "dlc": "/usr/dlc",
+          "dlc_version": "OpenEdge Release 12.8.9"
+        },
+        "parameters": [
+          "-cpstream UTF-8"
+        ]
+      },
+      "environment_identity": "9756aae65ac295ac9ae9d284896e7610740056637d9811e9f297284c2ec4b6a3",
+      "expected": {
+        "closure": [
+          [
+            "src/inc/b.i",
+            "blake3",
+            "5b096011c758d1b9f120d05ac3f59dabe7a4f0581e78ef5d1c93c38ed1dcb2be"
+          ]
+        ],
+        "databases": [],
+        "openedge": [
+          "OpenEdge Release 12.8.9",
+          "12.8"
+        ],
+        "options": [
+          [
+            "attr-space",
+            "false"
+          ],
+          [
+            "generate-md5",
+            "false"
+          ],
+          [
+            "languages",
+            "fr:de"
+          ],
+          [
+            "min-size",
+            "true"
+          ],
+          [
+            "options",
+            "require-field-qualifiers,require-full-names"
+          ],
+          [
+            "stream-io",
+            "false"
+          ],
+          [
+            "v6frame",
+            "false"
+          ]
+        ],
+        "outputs": [
+          "debug-list",
+          "listing",
+          "rcode",
+          "xref-xml"
+        ],
+        "parameters": [
+          [
+            "-cpstream",
+            "UTF-8"
+          ]
+        ],
+        "platform": [
+          "UNIX",
+          "TTY",
+          "yes",
+          "64"
+        ],
+        "propath": [
+          [
+            "$OUT",
+            "dir"
+          ],
+          [
+            "src",
+            "dir"
+          ]
+        ],
+        "session": [
+          "UTF-8",
+          "UTF-8",
+          "BASIC",
+          "BASIC",
+          "mdy",
+          "1950",
+          ".",
+          ","
+        ]
+      },
+      "extra_config": "[build.compile]\nmin_size = true\nlanguages = [\"fr\", \"de\"]\noptions = [\"Require-Full-Names\", \"require-field-qualifiers\", \"REQUIRE-FULL-NAMES\"]\n\n[build.outputs]\nxref = \"build/xref\"\nxref_format = \"xml\"\ndebug_list = \"build/dbg\"\nlisting = \"build/lst\"\n",
+      "files": {
+        "src/a.p": "{inc/b.i}\n",
+        "src/inc/b.i": "MESSAGE \"b\".\n"
+      },
+      "material_hex": "0400000000000000756e697407000000000000007372632f612e700300000000000000612e702c7d9348beedff2f71cd906394edb2c06c51783becbf01fbac1c456dc181e0ad0700000000000000636c6f7375726501000000000000000b000000000000007372632f696e632f622e690600000000000000626c616b65335b096011c758d1b9f120d05ac3f59dabe7a4f0581e78ef5d1c93c38ed1dcb2be070000000000000070726f7061746802000000000000000400000000000000244f55540300000000000000646972030000000000000073726303000000000000006469720b00000000000000656e7669726f6e6d656e749756aae65ac295ac9ae9d284896e7610740056637d9811e9f297284c2ec4b6a307000000000000006f7074696f6e7307000000000000000a00000000000000617474722d7370616365050000000000000066616c73650c0000000000000067656e65726174652d6d6435050000000000000066616c736509000000000000006c616e677561676573050000000000000066723a646508000000000000006d696e2d73697a6504000000000000007472756507000000000000006f7074696f6e732b00000000000000726571756972652d6669656c642d7175616c6966696572732c726571756972652d66756c6c2d6e616d6573090000000000000073747265616d2d696f050000000000000066616c7365070000000000000076366672616d65050000000000000066616c736507000000000000006f75747075747304000000000000000a0000000000000064656275672d6c69737407000000000000006c697374696e67050000000000000072636f64650800000000000000787265662d786d6c",
+      "name": "options-and-outputs",
+      "preprocessor": "databases = []",
+      "sources": "include_paths = [\"src\"]",
+      "unit": "src/a.p",
+      "unit_content": "2c7d9348beedff2f71cd906394edb2c06c51783becbf01fbac1c456dc181e0ad"
+    },
+    {
+      "compile_name": "a.p",
+      "dlc_files": {},
+      "env": {
+        "dlc_dir": "dlc",
+        "env": {
+          "dlc": "/usr/dlc",
+          "dlc_version": "OpenEdge Release 12.8.9"
+        },
+        "parameters": [
+          "-cpstream UTF-8"
+        ]
+      },
+      "environment_identity": "9756aae65ac295ac9ae9d284896e7610740056637d9811e9f297284c2ec4b6a3",
+      "expected": {
+        "closure": [
+          [
+            "src/b.i",
+            "blake3",
+            "dcbb34029e62aeb1182cb65bdeca36b05a76c93593eddc65603b7538a1bdcda8"
+          ],
+          [
+            "src/m.i",
+            "blake3",
+            "cdb30cccdf53ccccf298506657a5ba93b4e64ddf57729b1b8e9a9bd29ee0d7ec"
+          ],
+          [
+            "src/z.i",
+            "blake3",
+            "c8f0c9743e8230196813a27eccadc21db78d30e9f87072be26c992aa2c841646"
+          ]
+        ],
+        "databases": [],
+        "openedge": [
+          "OpenEdge Release 12.8.9",
+          "12.8"
+        ],
+        "options": [
+          [
+            "attr-space",
+            "false"
+          ],
+          [
+            "generate-md5",
+            "false"
+          ],
+          [
+            "languages",
+            ""
+          ],
+          [
+            "min-size",
+            "false"
+          ],
+          [
+            "options",
+            ""
+          ],
+          [
+            "stream-io",
+            "false"
+          ],
+          [
+            "v6frame",
+            "false"
+          ]
+        ],
+        "outputs": [
+          "rcode"
+        ],
+        "parameters": [
+          [
+            "-cpstream",
+            "UTF-8"
+          ]
+        ],
+        "platform": [
+          "UNIX",
+          "TTY",
+          "yes",
+          "64"
+        ],
+        "propath": [
+          [
+            "$OUT",
+            "dir"
+          ],
+          [
+            "src",
+            "dir"
+          ]
+        ],
+        "session": [
+          "UTF-8",
+          "UTF-8",
+          "BASIC",
+          "BASIC",
+          "mdy",
+          "1950",
+          ".",
+          ","
+        ]
+      },
+      "extra_config": "",
+      "files": {
+        "src/a.p": "{z.i}\n{m.i}\n{b.i}\nMESSAGE \"a\".\n",
+        "src/b.i": "DEFINE VARIABLE b AS INTEGER NO-UNDO.\n",
+        "src/m.i": "DEFINE VARIABLE m AS INTEGER NO-UNDO.\n",
+        "src/z.i": "DEFINE VARIABLE z AS INTEGER NO-UNDO.\n"
+      },
+      "material_hex": "0400000000000000756e697407000000000000007372632f612e700300000000000000612e70a03f86102c599f6536b9255109836ae9946fadd4f97a5398353f547717b3c7c20700000000000000636c6f73757265030000000000000007000000000000007372632f622e690600000000000000626c616b6533dcbb34029e62aeb1182cb65bdeca36b05a76c93593eddc65603b7538a1bdcda807000000000000007372632f6d2e690600000000000000626c616b6533cdb30cccdf53ccccf298506657a5ba93b4e64ddf57729b1b8e9a9bd29ee0d7ec07000000000000007372632f7a2e690600000000000000626c616b6533c8f0c9743e8230196813a27eccadc21db78d30e9f87072be26c992aa2c841646070000000000000070726f7061746802000000000000000400000000000000244f55540300000000000000646972030000000000000073726303000000000000006469720b00000000000000656e7669726f6e6d656e749756aae65ac295ac9ae9d284896e7610740056637d9811e9f297284c2ec4b6a307000000000000006f7074696f6e7307000000000000000a00000000000000617474722d7370616365050000000000000066616c73650c0000000000000067656e65726174652d6d6435050000000000000066616c736509000000000000006c616e677561676573000000000000000008000000000000006d696e2d73697a65050000000000000066616c736507000000000000006f7074696f6e730000000000000000090000000000000073747265616d2d696f050000000000000066616c7365070000000000000076366672616d65050000000000000066616c736507000000000000006f7574707574730100000000000000050000000000000072636f6465",
+      "name": "closure-order",
+      "preprocessor": "databases = []",
+      "sources": "include_paths = [\"src\"]",
+      "unit": "src/a.p",
+      "unit_content": "a03f86102c599f6536b9255109836ae9946fadd4f97a5398353f547717b3c7c2"
+    }
+  ]
+}

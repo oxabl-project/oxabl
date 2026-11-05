@@ -344,10 +344,11 @@ enum Cli {
     #[command(hide = true)]
     Build {
         /// Print the plan and compile nothing.
-        #[arg(long, conflicts_with = "probe")]
+        #[arg(long)]
         plan: bool,
 
-        /// Start the worker pool, print what the workers report, and exit.
+        /// Start the worker pool and print what the workers report; with
+        /// `--plan`, also key every unit.
         #[arg(long)]
         probe: bool,
 

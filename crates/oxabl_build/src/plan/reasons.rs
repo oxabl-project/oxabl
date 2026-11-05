@@ -12,6 +12,9 @@ pub struct Named {
 pub enum Reason {
     /// The store had not seen the unit.
     New,
+    /// The unit has no compile key, so it compiles on every build: the rules
+    /// that apply to it.
+    Unkeyable(Vec<String>),
     /// `--files` named a file in its closure.
     Named(Vec<Named>),
     /// The unit's own bytes changed.
@@ -45,6 +48,7 @@ impl Reason {
     pub fn kind(&self) -> &'static str {
         match self {
             Reason::New => "new",
+            Reason::Unkeyable(_) => "unkeyable",
             Reason::Named(_) => "named",
             Reason::SourceChanged => "source-changed",
             Reason::DependencyChanged(_) => "dependency-changed",
@@ -66,6 +70,7 @@ impl Reason {
                     .collect();
                 format!("named: {}", list(&files))
             }
+            Reason::Unkeyable(rules) => format!("unkeyable: {}", list(rules)),
             Reason::DependencyChanged(files) => format!("dependency-changed: {}", list(files)),
             Reason::ClosureChanged { gained, lost } => {
                 let changes: Vec<String> = gained

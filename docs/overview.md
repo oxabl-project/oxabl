@@ -94,7 +94,7 @@ Requirements:
 - Hidden commands. Both are real, documented, and reachable — `oxabl <command> --help` works — they simply do not appear in `oxabl --help`, because each answers a question about *oxabl* rather than about your source, and neither belongs in the surface a new user reads.
   - `oxabl conformance <path>` — the parser-refinement instrument: how many files parse, which fail and where, and the ranked error patterns behind the failures.
   - `oxabl explain <file>[:line]` — show each unit's direct database effects and transitive summary. Add `--json` for the version 1 explain document. Use `-I` and `--schema` to override project paths and schema. Preprocessing is on. A line selects the innermost unit at that root line; printed lines refer to expanded text. Partial summaries list their reasons. Index choices remain estimates until the XREF gate passes. Exit codes: 0 for a report, 2 for a bad line or unreadable file, 3 for fatal preprocessing failure, 4 for an internal panic, 6 for serialization failure.
-  - `oxabl build --plan [--all] [--files <path>... | --since <rev>] [--json] [--root <dir>]` — which compile units must rebuild, and why. See [`oxabl build --plan`](#oxabl-build---plan). Exit codes: 0 when a plan was printed, 2 for a usage or configuration error, 3 when the store or the workspace cannot be used.
+  - `oxabl build --plan [--probe] [--all] [--files <path>... | --since <rev>] [--json] [--root <dir>]` — which compile units must rebuild, and why. With `--probe` it also computes the compile key of every unit. See [`oxabl build --plan`](#oxabl-build---plan). Exit codes: 0 when a plan was printed, 2 for a usage or configuration error, 3 when the store or the workspace cannot be used or no worker can start, 130 when a signal stops a probe.
   - `oxabl analyze <file>` — a single file's resolved semantic model, dumped as a per-section-versioned JSON envelope or as text (`--schema <file|dir>` for schema-backed resolution). Introspection, not a gate: it exits 0 whatever it finds. Eight sections are emitted — `scopes`, `symbols`, `types`, `references`, `diagnostics`, `preproc`, `coverage`, and `dependencies` — each carrying its own version under `sections`, so a change to one leaves the others' numbers alone. `dependencies` is where cross-file resolution is observable: which files the run's workspace index actually consulted, and which cross-file names came back empty and why.
 - `oxabl_wasm`: browser bindings in `crates/oxabl_wasm`.
   - Three `wasm-bindgen` exports — `analyze_source`, `format_source`, and `version()` (a crate version plus a build identifier, so a crash report names the exact artifact a hand-vendored copy is running) — the first two returning JSON: diagnostics carry source/severity/code/message, byte offsets, and line/column positions; a format result carries the new source, a `changed` flag, and an `error` string when the formatter declines to format (in which case the original source comes back untouched). Line and column come from the shared position helper the CLI's text output uses, so the two cannot drift.
@@ -105,7 +105,7 @@ Current Work: continued dogfood-driven trust-hardening, and typing `:`-qualified
 
 ### `oxabl build --plan`
 
-`oxabl build --plan` reads `oxabl.toml` and refreshes a graph of the working tree. It then lists the compile units that a change reaches. It starts no worker and compiles nothing. The command is hidden from `oxabl --help` until the build is complete. The design is in `docs/design/build-tool.md`.
+`oxabl build --plan` reads `oxabl.toml` and refreshes a graph of the working tree. It then lists the compile units that a change reaches. It compiles nothing. It starts no worker unless you add `--probe` (see [Compile keys](#compile-keys)). The command is hidden from `oxabl --help` until the build is complete. The design is in `docs/design/build-tool.md`.
 
 ```sh
 oxabl build --plan                       # the units that changed since the last run
@@ -113,6 +113,7 @@ oxabl build --plan --all                 # also list the units that did not chan
 oxabl build --plan --files inc/ledger.i  # treat these files as changed (paths are relative to the current directory)
 oxabl build --plan --since origin/main   # treat every file that differs from a git revision as changed
 oxabl build --plan --json                # the plan as one JSON document
+oxabl build --plan --probe --json        # the same, with the compile key of each unit
 ```
 
 A compile unit is a file under `[workspace.sources].directories` with a root extension (`p`, `w`, `cls`, `v`, or what `root_extensions` says), minus the globs in `[build].exclude`. Without `directories`, the whole workspace is walked. One line names each unit that must rebuild, with the first reason that applies:
@@ -124,6 +125,7 @@ A compile unit is a file under `[workspace.sources].directories` with a root ext
 | `source-changed` | The bytes of the unit changed. |
 | `dependency-changed` | A file that stayed in its closure changed. |
 | `closure-changed` | Its closure gained or lost a file. This includes a new file that now shadows an include. |
+| `unkeyable` | The unit has no compile key, so it compiles on every build. The rules that apply follow the reason. Only with `--probe`. |
 
 **`--since <rev>`.** Oxabl runs the `git` binary (no libgit2) in the workspace root: `git diff --name-only --no-renames --relative <rev>` for committed, staged and unstaged edits and deletions (a rename is the old path deleted and the new one added), and `git ls-files --others --exclude-standard` for untracked files that git does not ignore. Each file counts as if `--files` had named it. A file that is not in the graph (a `README`, a build script) is dropped without a message. Exit code 2 when the root is not in a git work tree, when `<rev>` is not a commit, or together with `--files`. Only files under the workspace root are looked at. The graph is still the graph of the working tree: an edit that git does not show (an ignored file) is seen by the refresh like any other.
 
@@ -141,7 +143,7 @@ A compile unit is a file under `[workspace.sources].directories` with a root ext
       "action": "rebuild",
       "reasons": [{ "kind": "dependency-changed", "paths": ["inc/ledger.i"] }],
       "key": null,
-      "unkeyable": []
+      "unkeyable": ["environment-unknown"]
     }
   ],
   "removed": ["ar/old.p"],
@@ -150,11 +152,34 @@ A compile unit is a file under `[workspace.sources].directories` with a root ext
 }
 ```
 
-- `units` is sorted by path and holds the units to rebuild (`action: "rebuild"`). With `--all` it also holds the others (`action: "up-to-date"`, `reasons: []`). `skip` is for a later release.
-- Every reason has `kind` and `paths`. `named` also has `via`, one path from the unit to each named file. `closure-changed` also has `gained` and `lost`, and its `paths` is both lists. `new` and `source-changed` have no paths.
+- `units` is sorted by path and holds the units to rebuild (`action: "rebuild"`) and the units that cannot compile where they are (`action: "skip"`, `reasons: []`, the reason in `unkeyable`). With `--all` it also holds the others (`action: "up-to-date"`, `reasons: []`).
+- Every reason has `kind` and `paths`. `named` also has `via`, one path from the unit to each named file. `closure-changed` also has `gained` and `lost`, and its `paths` is both lists. `unkeyable` also has `details`, the rules that apply. `new` and `source-changed` have no paths.
 - `store.committed` is `false` when the plan found the lock taken and wrote nothing.
 - `removed` lists units of the store that are gone from the working tree. `unknown_files` lists the files `--files` named that are not in the graph (always empty with `--since`).
-- `environment`, `compile_name`, `key` and `unkeyable` have no value yet (`source: "none"`, `null`, `null`, `[]`). They are filled when compile keys land.
+- Without `--probe`, `environment` is `{ "source": "none", "identity": null, "at": null }` and every unit has `compile_name: null`, `key: null` and `unkeyable: ["environment-unknown"]`. That is a statement about the plan, not a rebuild reason: the plan still lists only what changed.
+- With `--probe`, `environment` is `{ "source": "probe", "identity": "<hex>", "at": "<RFC 3339 time>" }`, and the document has two more fields. `propaths` lists the distinct unit PROPATHs, each as a list of `{ "entry": ..., "digest": ... }` (`dir`, `absent` or `sha256:<hex>`). Each unit has `propath`, an index into `propaths`, `compile_name`, and `key` (64 hex digits) or `null` with the reasons in `unkeyable`.
+
+### Compile keys
+
+A compile key is 32 bytes. It names one compile: the unit, its closure, its PROPATH, the environment of the worker, the compile options, the requested outputs and the worker program. `oxabl build --plan --probe` starts the worker pool, reads the environment, and computes the key of every unit. The pool starts at the same time as the refresh and stops when the keys are done. A failed probe fails the plan with the exit codes of `oxabl build --probe`. The key is BLAKE3 over a length-prefixed encoding of its inputs, with its own context string; `docs/design/build-tool/compile-key.md` gives the encoding and a worked example.
+
+The PROPATH of a unit is `$OUT`, the `root_relative_include_paths` joined to the base directory of the unit (its own directory, or the package root of a class), `include_paths` (under the root, under `$DLC`, or `$LIB:<name>` from `[build.libraries]`), and the entries of the worker's own startup PROPATH that are under its `$DLC`. An `include_paths` entry that has none of these forms is a usage error. The compile name is the unit path below the first entry that holds it.
+
+**A unit without a key.** Each reason is listed. The unit is in the rebuild set at every plan and compiles at every build.
+
+| Rule | Reason | When |
+|---|---|---|
+| K1 | `degraded: <path>: <reason>` | The unit, or a class in its closure, has an edge set that may miss dependencies. An include is judged inside the unit that includes it, not as a root. |
+| K2 | `unresolved-include: <name> in <path>` | An include does not resolve, in any branch. |
+| K3 | `unresolved-class: <name> in <path>` | A class does not resolve, unless its name starts with a prefix of `[build.external_packages]` and a listed library is on the PROPATH with a SHA-256 digest. A directory never supplies a prefix. |
+| K4 | `computed-name: <name> in <path>` | An include or class name is computed. This includes a class unit whose `CLASS` statement oxabl cannot read in its own text. |
+| K5 | `outside-workspace: <path>`, `unreadable: <path>` | A file in the closure is outside the root and `$DLC`, or cannot be read. |
+| K6 | `environment-unknown`, `unhashable-parameter: <name>`, `unhashable-library: $LIB:<name>`, `dlc-mirror-mismatch: <path>` | The environment is not known, a startup parameter names a directory, a `$LIB:` entry is a directory, or the worker's copy of a `$DLC` file differs from `[workspace.sources].dlc`. |
+| K7 | `not-on-propath`, `shadowed-by: <path>`, `output-collision: <path>`, `package-mismatch: <name>`, `package-root-not-on-propath: <dir>` | The unit cannot compile where it is. Its action is `skip`. Of units whose r-code lands on one path (compared ignoring ASCII case), the smallest path compiles. |
+| K8 | `class-conflict: <name>` | A name accepted as external is also the name of a workspace class. |
+| K9 | `per-unit-propath-classes` | The units have more than one distinct PROPATH, and the unit is a class or reaches one. |
+
+K3 sees only the class names that the analysis records. It records none from `OpenEdge.*` and `Progress.*`, so a prefix that names those namespaces does not change the key of a unit that uses them; the library digests on the PROPATH are in every key all the same.
 
 **Parity with another tool.** `scripts/plan-parity.sh <plan.json> <list.txt>` compares the rebuild set of `oxabl build --plan --json` with a list of paths (one root-relative path per line) that another tool rebuilds for the same change. It prints the paths it **missed** (in the list, not in oxabl's set) and the **extras** (in oxabl's set, not in the list) grouped by oxabl's first reason, and exits 1 when anything is missed. It needs `jq`. `scripts/parity/run.sh` runs the scenarios under `scripts/parity/scenarios/` on the synthetic corpus in `scripts/parity/corpus/` (`OXABL=target/debug/oxabl scripts/parity/run.sh`); `cargo test -p oxabl` runs it too. A scenario is `edit.sh` (applied to a copy of the corpus after a first plan) and `expected.txt` (the list).
 

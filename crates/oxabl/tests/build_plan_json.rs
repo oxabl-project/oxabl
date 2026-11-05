@@ -79,7 +79,10 @@ fn the_document_has_the_documented_shape() {
     assert_eq!(unit["action"], "rebuild");
     assert!(unit["compile_name"].is_null());
     assert!(unit["key"].is_null());
-    assert!(unit["unkeyable"].as_array().unwrap().is_empty());
+    assert_eq!(
+        unit["unkeyable"],
+        serde_json::json!(["environment-unknown"])
+    );
     assert_eq!(unit["reasons"][0]["kind"], "new");
     assert!(unit["reasons"][0]["paths"].as_array().unwrap().is_empty());
 }

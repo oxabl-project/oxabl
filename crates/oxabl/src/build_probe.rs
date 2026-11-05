@@ -22,7 +22,7 @@ fn fail(code: u8, message: impl std::fmt::Display) -> ExitCode {
 }
 
 /// The first SIGINT or SIGTERM cancels the build; the second kills every worker at once.
-fn install_signal_handler(cancel: &Cancel) {
+pub fn install_signal_handler(cancel: &Cancel) {
     let cancel = cancel.clone();
     let result = ctrlc::set_handler(move || {
         if cancel.is_cancelled() {

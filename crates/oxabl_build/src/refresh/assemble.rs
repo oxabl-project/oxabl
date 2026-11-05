@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::files::Files;
+use super::files::{Current, Files};
 use super::intern::Interner;
 use super::listing::Listings;
-use super::outcome::{Delta, Outcome};
+use super::outcome::{Content, Delta, Outcome};
+use super::probe::{directory_hash, unreadable_hash};
 use super::settle::Analyses;
 use crate::graph::Graph;
 use crate::kinds::ObservationKind;
@@ -27,6 +28,8 @@ pub struct Parts {
     pub delta: Delta,
     /// The analyses were not loaded: nothing changed and no one asked.
     pub skipped: bool,
+    /// Report the content of every tracked path.
+    pub need_keys: bool,
 }
 
 /// The analyses reachable from the units through class edges: the units and
@@ -62,6 +65,7 @@ pub fn assemble(parts: Parts) -> Outcome {
         analyses,
         mut delta,
         skipped,
+        need_keys,
     } = parts;
 
     let reach = if skipped {
@@ -148,6 +152,11 @@ pub fn assemble(parts: Parts) -> Outcome {
     changes.identity = identity;
 
     let (names, committed) = interner.into_names();
+    let content = if need_keys {
+        content_of(&files, names.len())
+    } else {
+        Vec::new()
+    };
     changes.new_paths = names
         .iter()
         .enumerate()
@@ -183,7 +192,26 @@ pub fn assemble(parts: Parts) -> Outcome {
         delta,
         before,
         after,
+        analyses,
+        content,
         warnings: Vec::new(),
         changes,
     }
+}
+
+/// The content of every tracked path, by id.
+fn content_of(files: &Files, ids: usize) -> Vec<Content> {
+    let unreadable = [unreadable_hash(), directory_hash()];
+    let mut content = vec![Content::Untracked; ids];
+    for id in files.ids() {
+        let Some(tracked) = files.get(id) else {
+            continue;
+        };
+        content[id as usize] = match tracked.current {
+            Current::Absent => Content::Absent,
+            Current::Present { hash, .. } if unreadable.contains(&hash) => Content::Unreadable,
+            Current::Present { hash, .. } => Content::Hash(hash),
+        };
+    }
+    content
 }

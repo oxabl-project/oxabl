@@ -6,8 +6,10 @@
 //! [`store`] holds the graph in SQLite, [`refresh`] brings it up to date,
 //! [`graph`] is its in-memory form, and [`config`] lowers `oxabl.toml`.
 //!
-//! [`worker`] runs the AVM worker pool and speaks the worker protocol, and
-//! [`key`] holds the compile environment and its identity.
+//! [`worker`] runs the AVM worker pool and speaks the worker protocol.
+//! [`key`] holds the compile environment and its identity, and the compile key
+//! of each unit with the rules that withhold it; [`paths`] holds the canonical
+//! paths, the unit PROPATH and the compile name.
 
 pub mod config;
 pub mod encode;

@@ -6,7 +6,7 @@ const DLC_PREFIX: &str = "$DLC";
 
 /// Converts between host paths and canonical paths: UTF-8, `/`-separated and
 /// without `.` or `..`, relative to the workspace root, or `$DLC/` plus a path
-/// under the DLC source directory.
+/// under the DLC source directory. A path under both is a DLC path.
 ///
 /// A path under neither has no portable form. It keeps its absolute spelling,
 /// which starts with `/` and so cannot equal a canonical path, so a change to
@@ -37,11 +37,11 @@ impl PathMap {
     /// The canonical form of the absolute host path `path`.
     pub fn canonical(&self, path: &Path) -> String {
         let path = normalize_lexically(path);
-        if let Ok(below) = path.strip_prefix(&self.root) {
-            return join_components(None, below);
-        }
         if let Some(below) = self.dlc.as_deref().and_then(|d| path.strip_prefix(d).ok()) {
             return join_components(Some(DLC_PREFIX), below);
+        }
+        if let Ok(below) = path.strip_prefix(&self.root) {
+            return join_components(None, below);
         }
         path.to_string_lossy().into_owned()
     }
