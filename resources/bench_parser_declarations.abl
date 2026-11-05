@@ -62,3 +62,14 @@ define output parameter op-result as logical no-undo.
 define output parameter op-message as character no-undo.
 define input-output parameter iop-count as integer no-undo.
 define input-output parameter iop-data as longchar no-undo.
+
+/* Short data type spellings */
+define variable sv-int as i no-undo.
+define variable sv-char as c no-undo.
+define variable sv-log as l no-undo.
+define variable sv-dec as de no-undo.
+define variable sv-date as da no-undo.
+define variable sv-recid as re no-undo.
+define variable sv-memptr as m no-undo.
+define input parameter sp-count as i no-undo.
+define input parameter sp-name as ch no-undo.
