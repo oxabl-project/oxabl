@@ -3,8 +3,10 @@
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use rustc_hash::FxHashMap;
 
+use super::blob::encode_observed;
 use super::load::Reading;
 use super::meta;
+use super::rows::ObservedClosure;
 use super::{Store, StoreError};
 
 /// `results.status`.
@@ -89,6 +91,8 @@ pub struct ResultBatch {
     pub deletes: Vec<u32>,
     /// Outputs whose stat the planner refreshed after hashing them.
     pub refreshed: Vec<(u32, OutputRow)>,
+    /// The observed closure to keep for a unit; `None` forgets it.
+    pub observed: Vec<(u32, Option<ObservedClosure>)>,
     pub environment: Option<StoredEnvironment>,
 }
 
@@ -97,6 +101,7 @@ impl ResultBatch {
         self.upserts.is_empty()
             && self.deletes.is_empty()
             && self.refreshed.is_empty()
+            && self.observed.is_empty()
             && self.environment.is_none()
     }
 }
@@ -240,6 +245,16 @@ impl Store {
         for unit in &batch.deletes {
             tx.execute("DELETE FROM outputs WHERE unit_id = ?1", [unit])?;
             tx.execute("DELETE FROM results WHERE unit_id = ?1", [unit])?;
+            tx.execute("DELETE FROM observed WHERE unit_id = ?1", [unit])?;
+        }
+        for (unit, closure) in &batch.observed {
+            match closure {
+                Some(closure) => tx.execute(
+                    "INSERT OR REPLACE INTO observed (unit_id, closure) VALUES (?1, ?2)",
+                    params![unit, encode_observed(closure)],
+                )?,
+                None => tx.execute("DELETE FROM observed WHERE unit_id = ?1", [unit])?,
+            };
         }
         for (unit, result, outputs) in &batch.upserts {
             tx.execute("DELETE FROM outputs WHERE unit_id = ?1", [unit])?;

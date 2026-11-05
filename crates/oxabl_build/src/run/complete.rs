@@ -7,7 +7,8 @@ use super::context::{Ctx, State, UnitState};
 use super::types::{Hit, UnitDone};
 use crate::cache::{ArtifactFileRef, ArtifactPath, ArtifactSetRef, CompileKey, Origin};
 use crate::events::Event;
-use crate::store::{COMPILED, FAILED, LOCAL_CACHE, REMOTE_CACHE, ResultRow, SUCCESS};
+use crate::observe::observe;
+use crate::store::{COMPILED, Components, FAILED, LOCAL_CACHE, REMOTE_CACHE, ResultRow, SUCCESS};
 
 pub fn seconds() -> i64 {
     SystemTime::now()
@@ -28,9 +29,9 @@ fn check_reads(
     };
     let path = &ctx.infos[&done.unit].path;
     match done.reads.as_ref() {
-        Some(Ok(names)) => verify
+        Some(Ok(xref)) => verify
             .reads
-            .check(done.unit, closure, names)
+            .check(done.unit, closure, &xref.sources)
             .map_err(|file| {
                 state.notes.push(format!(
                     "{path}: the compiler opened {file}, which is not in the closure of the unit; the unit is not cached and compiles at each build. This is a bug in the analysis of oxabl: please report it"
@@ -47,13 +48,68 @@ fn check_reads(
     }
 }
 
+/// What the observation of one compile changes in its record.
+enum Observation {
+    /// The compiler read the closure the key holds.
+    Same,
+    /// It read another closure: the key made from it now, if any.
+    Changed(Option<Box<([u8; 32], Components)>>),
+    /// No closure can be taken from the compile.
+    Refused,
+}
+
+/// Takes the closure that the compile of a unit oxabl cannot read reported,
+/// and stores it when it differs from the one the unit's key holds. A key
+/// made from an observed closure stands only when the compile is observed.
+fn observe_compile(ctx: &Ctx<'_>, state: &mut State<'_>, done: &UnitDone) -> Option<Observation> {
+    let info = &ctx.infos[&done.unit];
+    if !done.ok || !info.observable {
+        return None;
+    }
+    let Some(observer) = ctx.observer.as_ref() else {
+        if !info.observed {
+            return None;
+        }
+        state.recorder.batch().observed.push((done.unit, None));
+        return Some(Observation::Refused);
+    };
+    let propath = &observer.base.propaths[info.propath];
+    let entries: Vec<String> = propath.iter().map(|(entry, _)| entry.clone()).collect();
+    let observed = match done.reads.as_ref() {
+        Some(Ok(xref)) => observe(xref, &info.path, &entries, &observer.places),
+        Some(Err(why)) => Err(why.clone()),
+        None => Err("no XREF-XML".to_string()),
+    };
+    let closure = match observed {
+        Ok(closure) => closure,
+        Err(why) => {
+            state.notes.push(format!(
+                "{}: no key from what the compiler read: {why}; the unit compiles at each build",
+                info.path
+            ));
+            state.recorder.batch().observed.push((done.unit, None));
+            return Some(Observation::Refused);
+        }
+    };
+    if info.observed && observer.stored(done.unit).as_ref() == Some(&closure) {
+        return Some(Observation::Same);
+    }
+    let key = observer.key_after(done.unit, &info.name, info.propath, &closure);
+    state
+        .recorder
+        .batch()
+        .observed
+        .push((done.unit, Some(closure)));
+    Some(Observation::Changed(key.map(Box::new)))
+}
+
 /// Records the end of one unit, tells the events and offers the outputs.
 pub fn complete(ctx: &Ctx<'_>, state: &mut State<'_>, done: UnitDone) {
     let info = &ctx.infos[&done.unit];
     state.failed.remove(&done.unit);
     let verifying = ctx.verify.is_some() && done.ok && info.key.is_some();
     let closure = if verifying || (done.ok && !state.failed.is_empty()) {
-        ctx.outcome.after.closure(done.unit, &mut state.scratch)
+        super::closure_of(ctx.outcome, info, done.unit, &mut state.scratch)
     } else {
         Vec::new()
     };
@@ -76,11 +132,31 @@ pub fn complete(ctx: &Ctx<'_>, state: &mut State<'_>, done: UnitDone) {
     let mut components = info.components;
     let mut note = None;
     let mut cacheable = verifying && !tainted && !ctx.cancel.is_cancelled();
-    if verifying && let Err(why) = check_reads(ctx, state, &done, &closure) {
+    let rekeyed = match observe_compile(ctx, state, &done) {
+        Some(Observation::Same) | None => false,
+        Some(Observation::Changed(after)) => {
+            key = after.as_ref().map(|after| after.0);
+            components = after.map(|after| after.1);
+            true
+        }
+        Some(Observation::Refused) => {
+            key = None;
+            components = None;
+            true
+        }
+    };
+    cacheable &= !rekeyed;
+    if verifying
+        && !rekeyed
+        && let Err(why) = check_reads(ctx, state, &done, &closure)
+    {
         key = None;
         components = None;
         note = Some(why);
         cacheable = false;
+    }
+    if done.ok && !info.observable && ctx.outcome.observed.contains_key(&done.unit) {
+        state.recorder.batch().observed.push((done.unit, None));
     }
     let result = ResultRow {
         status: if done.ok { SUCCESS } else { FAILED },

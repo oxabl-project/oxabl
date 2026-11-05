@@ -1,16 +1,6 @@
 //! V3: the compiler opened no file outside the closure of the unit.
 
-use std::path::Path;
-
 use rustc_hash::{FxHashMap, FxHashSet};
-
-/// Reads the `Source` file names of the `XREF-XML` file at `path`.
-pub fn read_names(path: &Path) -> Result<Vec<String>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("cannot read the XREF-XML of the compile: {error}"))?;
-    oxabl_effects::xref_xml::source_files(&text)
-        .map_err(|error| format!("the XREF-XML of the compile is unusable: {error}"))
-}
 
 /// Maps the names the compiler reports to canonical paths and checks them
 /// against a closure.
@@ -25,7 +15,32 @@ pub struct Reads<'a> {
     rcode: String,
 }
 
-fn trim_slash(text: &str) -> &str {
+/// The canonical path of a file name as the compiler gave it: relative to the
+/// worker root, or absolute under the worker root or the worker's `$DLC`
+/// (both without a trailing `/`). `None` when it maps to neither.
+pub fn canonical_name(name: &str, worker_dlc: &str, worker_root: &str) -> Option<String> {
+    let below = |prefix: &str| -> Option<String> {
+        let rest = name.strip_prefix(prefix)?;
+        rest.strip_prefix('/').map(str::to_string)
+    };
+    let relative = if name.starts_with('/') {
+        if !worker_dlc.is_empty()
+            && let Some(rest) = below(worker_dlc)
+        {
+            return normalise(&rest).map(|rest| format!("$DLC/{rest}"));
+        }
+        below(worker_root)?
+    } else {
+        name.to_string()
+    };
+    match relative.strip_prefix("$DLC/") {
+        Some(rest) => normalise(rest).map(|rest| format!("$DLC/{rest}")),
+        None => normalise(&relative),
+    }
+}
+
+/// `text` without trailing `/`, unless that leaves nothing.
+pub fn trim_slash(text: &str) -> &str {
     let trimmed = text.trim_end_matches('/');
     if trimmed.is_empty() { text } else { trimmed }
 }
@@ -45,28 +60,8 @@ impl<'a> Reads<'a> {
         }
     }
 
-    /// The canonical path of a name as the compiler gave it: relative to the
-    /// worker root, or absolute under the worker root or `$DLC`. `None` when
-    /// it maps to neither.
     fn canonical(&self, name: &str) -> Option<String> {
-        let below = |prefix: &str| -> Option<String> {
-            let rest = name.strip_prefix(prefix)?;
-            rest.strip_prefix('/').map(str::to_string)
-        };
-        let relative = if name.starts_with('/') {
-            if !self.worker_dlc.is_empty()
-                && let Some(rest) = below(&self.worker_dlc)
-            {
-                return normalise(&rest).map(|rest| format!("$DLC/{rest}"));
-            }
-            below(&self.worker_root)?
-        } else {
-            name.to_string()
-        };
-        match relative.strip_prefix("$DLC/") {
-            Some(rest) => normalise(rest).map(|rest| format!("$DLC/{rest}")),
-            None => normalise(&relative),
-        }
+        canonical_name(name, &self.worker_dlc, &self.worker_root)
     }
 
     /// `Ok` when every name is the unit or in its closure. R-code under the
@@ -102,7 +97,7 @@ impl<'a> Reads<'a> {
 
 /// `path` without `.` components and doubled slashes; `None` when it has a
 /// `..` component or is empty.
-fn normalise(path: &str) -> Option<String> {
+pub fn normalise(path: &str) -> Option<String> {
     let mut parts = Vec::new();
     for part in path.split('/') {
         match part {

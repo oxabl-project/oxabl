@@ -74,7 +74,8 @@ starts with the worker program's header line.
   source differ between compiles, like real r-code. A test can read a `.r` and check that it
   matches the current files: that is the wrong-hit oracle. It writes the text XREF or the
   `XREF-XML` as requested; the `XREF-XML` has a `Source` element for each file it opened, with
-  the name as it resolved it. Debug lists and listings hold the
+  the name as it resolved it, an `INCLUDE` reference for each include with the name as
+  written, and a `NEW` reference for each class. Debug lists and listings hold the
   source text.
 - **Faults**, from text in the source or from environment variables:
 
@@ -311,6 +312,30 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - Eviction: with a tiny `local_max_size`, the oldest entries go and a later fetch of one of
   them is a miss, not an error.
 
+### The observed closure
+
+`crates/oxabl/tests/build_observed.rs`, with a unit that starts with bytes the analysis
+cannot parse (as an encrypted source looks to it) and that the fake compiles:
+
+- It compiles in the first build and is not cached; the plan then keys it with
+  `closure: "observed"`, the second build compiles nothing, and a second plan does not move
+  the store generation. A change to an include that only the fake sees (in a comment) gives
+  `dependency-changed`; that build compiles it and caches it; the next compiles nothing.
+- A file of its observed closure that is gone gives no key (`observed-missing`), and the unit
+  compiles; the new closure keys it again.
+- A new file in an earlier PROPATH entry gives no key (`observed-shadowed`), and the compile
+  reads the new file.
+- With the same files and bytes, the observed-closure key differs from the key of the parsed
+  closure (`databases = []` lets the analysis read the unit).
+- A compile that uses a class, or that reads a file where the host resolves another
+  (`FAKE-RESOLVE-OTHER`), gives no observed key and a note.
+- With `xref_format = "text"` an observed key does not stand: the unit compiles at each
+  build.
+- A compile that reads another closure than its key holds is not cached, and its closure
+  keys the unit.
+- A file that the refresh did not hash and that changed just before the build gives no key
+  after the first compile; the second compile, under a key made before it, does.
+
 ### Slice 8: remote cache
 
 These start the real oxabl-cache binaries: the server (`OXABL_CACHE_SERVER_BIN`), the admin
@@ -452,6 +477,7 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: in all three cases the `XREF-XML` `Source` elements list only the unit itself, no class file ([cache.md](cache.md#what-v3-covers)). Goes red if a later OpenEdge lists one. |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |
 | `xref_xml_resolution` | The `XREF-XML` `Source` elements name each include that holds a reference, as the compiler resolved it (`src/defs.i`, `src/ttrows.i`); an include with only `&GLOBAL-DEFINE`s (`consts.i`) is **not** listed; every fixture unit passes V3 and is stored. Goes red if a later OpenEdge lists the definitions-only include. |
+| `xref_xml_observed_closure` | The `XREF-XML` of `main.p` has an `INCLUDE` reference for `defs.i`, `ttrows.i` and the definitions-only `consts.i`, and no class reference; the one of `useleaf.p` has a class reference. The [observed closure](compile-key.md#the-observed-closure) is sound only while this holds. |
 | `xref_readers` | The text reader finds every include of the fixture (its `INCLUDE` rows give the name as written, not as resolved); the XML reader finds the includes that hold a reference. |
 | `orphans` | After `SIGKILL` of oxabl during a 3,000-unit build, no `_progres` of that build is alive within 120 s. |
 | `cancel_leaves_no_worker` | `SIGINT` during a build gives exit code 130, and no worker of the build stays alive. |

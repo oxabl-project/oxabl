@@ -11,7 +11,7 @@ use super::files::{Current, Files, Job};
 use super::identity::analysis_identity;
 use super::intern::Interner;
 use super::listing::Listings;
-use super::outcome::{Delta, Outcome};
+use super::outcome::{Delta, Observed, Outcome};
 use super::probe::now_ns;
 use super::settle::{Analyses, Settle};
 use super::snapshot::SnapshotFs;
@@ -79,9 +79,33 @@ pub fn run(
     removed_units.sort_unstable();
     let new_units: FxHashSet<u32> = unit_set.difference(&old_units).copied().collect();
 
+    let mut observed: FxHashMap<u32, Observed> = FxHashMap::default();
+    let mut observed_deleted = Vec::new();
+    for (unit, closure) in loaded.observed {
+        if !unit_set.contains(&unit) {
+            observed_deleted.push(unit);
+            continue;
+        }
+        let ids = |names: &[String]| names.iter().map(|name| interner.intern(name)).collect();
+        observed.insert(
+            unit,
+            Observed {
+                files: ids(&closure.files),
+                absent: ids(&closure.absent),
+            },
+        );
+    }
+    let untracked: FxHashSet<u32> = observed
+        .values()
+        .flat_map(|closure| closure.files.iter().chain(&closure.absent))
+        .copied()
+        .filter(|id| !unit_set.contains(id) && !old_rows.contains_key(id))
+        .collect();
+
     let snapshot = SnapshotFs::new(pipeline.decoding);
     let others: Vec<(u32, PathBuf)> = old_rows
         .keys()
+        .chain(&untracked)
         .filter(|id| !unit_set.contains(id))
         .map(|id| {
             let name = interner.name_of(*id).unwrap_or_default();
@@ -193,6 +217,8 @@ pub fn run(
             removed_units,
             ..Delta::default()
         },
+        observed,
+        observed_deleted,
         skipped,
         need_keys: request.need_keys,
         need_generations: request.need_graph,

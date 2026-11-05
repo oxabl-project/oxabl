@@ -5,7 +5,7 @@
 //! path id is stored as the difference to the previous one of its kind.
 
 use super::StoreError;
-use super::rows::{Analysis, Edge, Observation, StoredAnalysis, Unresolved};
+use super::rows::{Analysis, Edge, Observation, ObservedClosure, StoredAnalysis, Unresolved};
 use crate::kinds::{EdgeKind, ObservationKind};
 
 const VERSION: u8 = 1;
@@ -217,6 +217,48 @@ pub fn decode_completeness(bytes: &[u8]) -> Result<Vec<u8>, StoreError> {
         .collect::<Result<_, _>>()?;
     reader.finish()?;
     Ok(reasons)
+}
+
+/// Encode an observed closure: `varint count`, then each entry as `u8 kind`
+/// (`1` file, `2` absent path) and its canonical path, sorted by kind and path.
+pub fn encode_observed(closure: &ObservedClosure) -> Vec<u8> {
+    let mut entries: Vec<(ObservationKind, &str)> = closure
+        .files
+        .iter()
+        .map(|path| (ObservationKind::Read, path.as_str()))
+        .chain(
+            closure
+                .absent
+                .iter()
+                .map(|path| (ObservationKind::Absent, path.as_str())),
+        )
+        .collect();
+    entries.sort();
+    entries.dedup();
+    let mut out = vec![VERSION];
+    put_varint(&mut out, entries.len() as u64);
+    for (kind, path) in entries {
+        out.push(kind.code());
+        put_text(&mut out, path);
+    }
+    out
+}
+
+pub fn decode_observed(bytes: &[u8]) -> Result<ObservedClosure, StoreError> {
+    let mut reader = Reader::new(bytes)?;
+    let count = reader.varint()? as usize;
+    let mut closure = ObservedClosure::default();
+    for _ in 0..count {
+        let kind = reader.byte()?;
+        let path = reader.text()?;
+        match ObservationKind::from_code(kind) {
+            Some(ObservationKind::Read) => closure.files.push(path),
+            Some(ObservationKind::Absent) => closure.absent.push(path),
+            _ => return Err(corrupt("observed closure kind")),
+        }
+    }
+    reader.finish()?;
+    Ok(closure)
 }
 
 impl Analysis {

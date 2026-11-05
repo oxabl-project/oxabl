@@ -24,6 +24,8 @@ pub struct Outcome {
     pub ok: bool,
     pub messages: Vec<Message>,
     pub reads: Vec<Read>,
+    /// Each reference the XREF names: its type and identifier, as written.
+    pub references: Vec<(&'static str, String)>,
     /// The text of the unit itself.
     pub source: String,
     pub slow: bool,
@@ -38,6 +40,7 @@ impl Outcome {
             ok: true,
             messages: Vec::new(),
             reads: Vec::new(),
+            references: Vec::new(),
             source: String::new(),
             slow: false,
             no_output: false,
@@ -86,5 +89,6 @@ impl Outcome {
         for read in other.reads {
             self.record(read);
         }
+        self.references.extend(other.references);
     }
 }

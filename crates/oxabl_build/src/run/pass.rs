@@ -66,6 +66,8 @@ pub fn run(
         limits: ctx.limits,
         cancel: ctx.cancel,
         verify: ctx.verify.as_ref(),
+        observing: ctx.observer.is_some(),
+        user_xref: ctx.user_xref,
         imaging: ctx.imaging.as_ref(),
         fail_fast: ctx.fail_fast,
         restart: pool.restart(),

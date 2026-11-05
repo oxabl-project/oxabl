@@ -268,6 +268,114 @@ AVM; every earlier attempt to design it found a new hole:
 
 Until all six exist, K9 holds.
 
+## The observed closure
+
+Some units have no key only because oxabl cannot read their closure from their source: an
+`XCODE`-encrypted source, or a source that includes an encrypted include. The analysis of
+such a unit is degraded (K1), or finds include names that do not resolve (K2) or that it
+cannot compute (K4). The compiler reads these files without a problem, and its `XREF-XML`
+names what it read. Such a unit gets a key from its **observed closure**: the files that
+the compiler read at the last successful compile of the unit.
+
+### Which units qualify
+
+A unit qualifies when each reason that it has no key is one of these, found in the
+analysis of the unit itself (not of a class source in its closure):
+
+- K1 `degraded: <unit>: <reason>`;
+- K2 `unresolved-include: <name> in <unit>`;
+- K4 `computed-name: <name> in <unit>` for an include.
+
+Any other reason keeps the unit unkeyable: K3, K4 for a class name or a class statement,
+K5 to K9. A class unit never qualifies, because its compile reads classes that no
+`XREF-XML` names. A unit whose include the compiler cannot find either fails to compile,
+so it records no observed closure.
+
+### What a compile records
+
+After a successful compile of a unit that qualifies, the build reads the unit's
+`XREF-XML`: the private one, or the one the user asked for. With `xref_format = "text"` no
+compile is observed, and such a unit compiles at each build. The build records nothing,
+and the unit keeps no key, when one of these steps fails:
+
+1. **No class.** A reference that shows a class records nothing: the types `CLASS`,
+   `INTERFACE`, `ENUM`, `INHERITS`, `IMPLEMENTS`, `NEW`, `INVOKE`, `REFERENCE`,
+   `CONSTRUCTOR`, `DESTRUCTOR`, `METHOD`, `PROPERTY`, `DATA-MEMBER`, `EVENT` and `DELEGATE`,
+   a `Class-ref` or `Interface-ref` element, or an identifier `<class>:<member>` of any type
+   but `STRING`. An `XREF-XML` names no class file ([cache.md](cache.md#what-v3-covers)), so
+   an observed closure cannot cover a class.
+2. **Each include, resolved on the host.** Each `INCLUDE` reference gives an include name as
+   written (its first word, also inside quotes). The build resolves the name on the unit
+   PROPATH on the host, as the compiler does: the first entry that holds the file. `$OUT` is
+   the r-code directory; a `$LIB:` entry is passed over, because the key holds its bytes. The
+   file goes into the closure, and each path searched before it goes into the **absent
+   set**. A name that resolves to nothing, that leaves its entry, or that is absolute with no
+   canonical form, records nothing. This step covers an include that holds only
+   preprocessor definitions, which has no `Source` element.
+3. **The compiler agrees.** Each `Source` element must map to a canonical path, as V3 maps
+   it, and must be the unit or a file that step 2 found. Otherwise the host and the compiler
+   resolve differently.
+
+The store keeps the closure and the absent set of each unit
+([store.md](store.md#columns)). The refresh tracks their files as it tracks the files an
+analysis read.
+
+### The observed-closure key
+
+At the next plan, a unit that qualifies and has a stored observed closure gets a key: the
+material of [the key](#the-key), with the observed files as the closure, each by content (a
+`$DLC/...` file by the worker's SHA-256, as in a parsed closure), in a section named
+`observed-closure` in place of `closure`. So an observed-closure key never equals a key from
+the parsed closure. The absent set is not in the material. The unit has no key when:
+
+- a file of the closure is absent now (`observed-missing: <path>`), cannot be read, or is a
+  `$DLC/...` file whose worker copy differs from the host mirror
+  (`observed-unreadable: <path>`);
+- a path of the absent set holds something now (`observed-shadowed: <path>`): an include can
+  resolve to it first.
+
+These reasons follow the other reasons of the unit. The unit compiles, and the compile
+records a new observed closure.
+
+**Why this is sound.** A compile is a function of the unit, the files it reads and the
+environment. The compiler decides which file to read next only from the bytes it read
+already, from the PROPATH and from the environment, and the key holds all of them. When the
+unit and each file it read are the same, and no new file can shadow an include, it reads
+the same files again and makes equivalent r-code. ccache's manifest mode uses the same
+argument.
+
+### The key after the compile
+
+So that the next build compiles nothing, the build also keys the unit right after a compile
+that recorded a new observed closure, from the bytes on disk. It does so only when each
+file is the one the compiler read: the refresh of this build hashed the same bytes before
+the compile, or the file did not change (its `ctime` and `mtime`) since two seconds before
+the build started. Each path of the absent set must still be absent, and a `$DLC/...` file
+gives no key here. Otherwise the result has no key: the next plan keys the unit from the
+stored closure, and the unit compiles once more under that key.
+
+### Verification and the cache
+
+When a unit compiles under an observed-closure key, the build reads its `XREF-XML` again.
+
+- **The same closure** (the same files and the same absent set): the key stands. V1, V2 and
+  V3 apply as for any keyed unit, with the observed files as the closure, and the outputs are
+  written to the local and the remote cache.
+- **Another closure**: the key does not describe this compile. The build stores the new
+  closure, writes nothing to a cache, and records the key made after the compile, or none.
+
+A compile with no key before it is never written to a cache.
+
+### Limits
+
+- A machine with no store (a fresh CI runner) has no observed closure, so it compiles such a
+  unit once. The remote cache serves such a unit only under a key that a machine with a store
+  wrote.
+- A unit whose compile uses a class stays unkeyable.
+- The rules trust the compiler's `XREF-XML`: an `INCLUDE` reference for each include, the
+  definitions-only ones too, and a class reference for each use of a class. The opt-in
+  OpenEdge test `xref_xml_observed_closure` ([testing.md](testing.md#tests)) pins both.
+
 ## Environment identity
 
 The environment identity is a hash of what the AVM session brings to the compile. It comes
@@ -493,6 +601,7 @@ material =
     section("unit")         str(unit_path) str(compile_name) hash(content(unit))
     section("closure")      list(entry, closure sorted by path bytes)
                             entry = str(path) str(algorithm) hash(content(path))
+                            (section("observed-closure") for the observed closure)
     section("propath")      list(propath_entry, unit PROPATH in search order)
                             propath_entry = str(entry) str(digest)
     section("environment")  hash(environment_identity)
@@ -504,7 +613,8 @@ compile_key = derive_key("oxabl 2026-11 compile key v1", material)
 ```
 
 `unit_path` and each closure path are canonical paths. The unit path is in the key, because
-the r-code names its source.
+the r-code names its source. For a unit keyed by [the observed closure](#the-observed-closure),
+the closure is the observed one and the section is named `observed-closure`.
 
 ### What the key leaves out, and why
 
@@ -530,7 +640,8 @@ specification.
 
 A unit is **unkeyable** when any of these is true. An unkeyable unit has no key. It is never
 fetched from a cache and never written to a cache. It compiles on every build, and the plan
-gives each reason.
+gives each reason. The one exception is a unit that has no key only because oxabl cannot
+read its closure: [the observed closure](#the-observed-closure) can key it.
 
 | Rule | Condition | Reason text |
 | --- | --- | --- |

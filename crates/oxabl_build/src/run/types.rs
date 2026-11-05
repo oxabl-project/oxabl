@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::cache::Origin;
 use crate::key::SchemaPart;
+use crate::observe::xref::Xref;
 use crate::output::Expected;
 use crate::store::{Components, OutputRow};
 use crate::worker::compile::CompilerMessage;
@@ -17,6 +18,11 @@ pub struct UnitInfo {
     pub key: Option<[u8; 32]>,
     pub components: Option<Components>,
     pub expected: Vec<Expected>,
+    /// Only oxabl's reading of the unit stands in the way of a key: what its
+    /// compile reads is observed.
+    pub observable: bool,
+    /// The key holds the closure observed at the last compile.
+    pub observed: bool,
 }
 
 /// The end of one unit's compile.
@@ -34,9 +40,9 @@ pub struct UnitDone {
     pub lost: bool,
     /// When the worker reported the end of the unit.
     pub finished: Instant,
-    /// The files the compiler opened, read from its `XREF-XML`, when
-    /// verification asks for them.
-    pub reads: Option<Result<Vec<String>, String>>,
+    /// What the compiler read, from its `XREF-XML`, when verification or
+    /// the observed closure asks for it.
+    pub reads: Option<Result<Xref, String>>,
 }
 
 /// A set the cache gave for one unit, installed at its final paths.

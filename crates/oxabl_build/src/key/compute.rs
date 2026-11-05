@@ -5,16 +5,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::closure;
-use super::compile_key::{Algorithm, ClosureFile, EntryDigest, Material, compile_key, components};
+use super::compile_key::{
+    Algorithm, ClosureFile, ClosureSource, EntryDigest, Material, compile_key, components,
+};
 use super::digest::{FileDigest, sha256_bytes, sha256_hex};
 use super::environment::Environment;
-use super::keyability::{ExternalPackage, Resolved, Rules};
-use super::layout::{Layout, lay_out};
+use super::keyability::{ExternalPackage, Resolved, Rules, Verdict};
+use super::layout::{Layout, Placed, lay_out};
 use super::options::CompileSettings;
 use crate::config::BuildWorkspace;
 use crate::paths::propath::{OUT, Placement, Search, canonical_entry, library_name};
 use crate::paths::{Declared, PathMap};
-use crate::refresh::{Content, Outcome, parallel};
+use crate::refresh::{Content, Observed, Outcome, parallel};
 use crate::store::Components;
 use crate::worker::{Pool, PoolError, program};
 
@@ -32,6 +34,48 @@ pub struct UnitKey {
     pub skipped: bool,
     /// The index of the unit PROPATH in [`Keyed::propaths`].
     pub propath: Option<usize>,
+    /// The unit has no key from its source only because oxabl cannot read its
+    /// closure, so the closure its compiler reports can give it one.
+    pub observable: bool,
+    /// The key holds the closure observed at the last compile.
+    pub observed: bool,
+}
+
+/// What every key of a plan shares, so that a key can also be made after a
+/// compile, from the closure the compiler reported.
+#[derive(Debug, Clone)]
+pub struct KeyBase {
+    pub environment: blake3::Hash,
+    pub settings: CompileSettings,
+    pub worker: blake3::Hash,
+    /// Each distinct unit PROPATH, each entry with its digest.
+    pub propaths: Vec<Vec<(String, EntryDigest)>>,
+}
+
+impl KeyBase {
+    /// The key of a unit and the digest of each of its sections. `closure`
+    /// is sorted by path bytes.
+    pub fn key(
+        &self,
+        unit: (&str, &str, [u8; 32]),
+        closure: &[ClosureFile<'_>],
+        source: ClosureSource,
+        propath: usize,
+    ) -> ([u8; 32], Components) {
+        let (unit_path, compile_name, unit_content) = unit;
+        let material = Material {
+            unit_path,
+            compile_name,
+            unit_content,
+            closure,
+            source,
+            propath: &self.propaths[propath],
+            environment: self.environment,
+            settings: &self.settings,
+            worker: self.worker,
+        };
+        (*compile_key(&material).as_bytes(), components(&material))
+    }
 }
 
 /// The keys of all units of a plan.
@@ -47,6 +91,7 @@ pub struct Keyed {
     pub warnings: Vec<String>,
     /// The SHA-256 of each `$DLC/...` closure file as the workers hashed it.
     pub dlc: FxHashMap<String, [u8; 32]>,
+    pub base: Option<KeyBase>,
 }
 
 fn config_error(message: String) -> PoolError {
@@ -247,9 +292,11 @@ pub fn compute(
     let active_ids: Vec<u32> = active.iter().map(|at| outcome.units[*at]).collect();
     let closures = closure::of_units(outcome, &active_ids);
 
+    let observed = outcome.observed.values().flat_map(|o| &o.files);
     let dlc_files: BTreeSet<String> = closures
         .iter()
         .flatten()
+        .chain(observed)
         .map(|id| outcome.name(*id))
         .filter(|name| name.starts_with("$DLC/"))
         .map(str::to_string)
@@ -324,9 +371,6 @@ pub fn compute(
             "class {name} is accepted as external ({entry}) but {file} also has that name; {units} units that use it are compiled without a key"
         ));
     }
-    let settings_lowered = CompileSettings::lower(build);
-    let identity = environment.identity();
-    let worker = program::hash();
     let propath_digests: Vec<Vec<(String, EntryDigest)>> = layout
         .propaths
         .iter()
@@ -340,47 +384,51 @@ pub fn compute(
                 .collect()
         })
         .collect();
+    let base = KeyBase {
+        environment: environment.identity(),
+        settings: CompileSettings::lower(build),
+        worker: program::hash(),
+        propaths: propath_digests,
+    };
 
     let keys = parallel::map(&positions, |k| {
-        if !verdicts[*k].is_keyable() {
-            return None;
-        }
+        let verdict = &verdicts[*k];
         let at = active[*k];
         let unit = active_ids[*k];
         let Placement::Compiles { name } = &layout.units[at].placement else {
-            return None;
+            return Err(Vec::new());
         };
         let Content::Hash(unit_content) = outcome.content_of(unit) else {
-            return None;
+            return Err(Vec::new());
         };
-        let mut files = Vec::with_capacity(closures[*k].len());
-        for id in &closures[*k] {
-            let path = outcome.name(*id);
-            let (algorithm, hash) = match dlc_sha.get(path) {
-                Some(sha) => (Algorithm::Sha256, *sha),
-                None => match outcome.content_of(*id) {
-                    Content::Hash(hash) => (Algorithm::Blake3, hash),
-                    _ => return None,
-                },
-            };
-            files.push(ClosureFile {
-                path,
-                algorithm,
-                hash,
-            });
-        }
-        let propath = &propath_digests[layout.units[at].propath?];
-        let material = Material {
-            unit_path: outcome.name(unit),
-            compile_name: name,
-            unit_content,
-            closure: &files,
-            propath,
-            environment: identity,
-            settings: &settings_lowered,
-            worker,
+        let propath = layout.units[at].propath.ok_or_else(Vec::new)?;
+        let (files, source) = if verdict.is_keyable() {
+            let mut files = Vec::with_capacity(closures[*k].len());
+            for id in &closures[*k] {
+                let path = outcome.name(*id);
+                let (algorithm, hash) = match dlc_sha.get(path) {
+                    Some(sha) => (Algorithm::Sha256, *sha),
+                    None => match outcome.content_of(*id) {
+                        Content::Hash(hash) => (Algorithm::Blake3, hash),
+                        _ => return Err(Vec::new()),
+                    },
+                };
+                files.push(ClosureFile {
+                    path,
+                    algorithm,
+                    hash,
+                });
+            }
+            (files, ClosureSource::Parsed)
+        } else if is_observable(verdict, &layout.units[at]) {
+            let observed = outcome.observed.get(&unit).ok_or_else(Vec::new)?;
+            let files = observed_files(outcome, observed, &dlc_sha, &mirror_mismatch)?;
+            (files, ClosureSource::Observed)
+        } else {
+            return Err(Vec::new());
         };
-        Some((compile_key(&material), components(&material)))
+        let unit = (outcome.name(unit), name.as_str(), unit_content);
+        Ok((base.key(unit, &files, source, propath), source))
     });
 
     let mut units: Vec<UnitKey> = layout
@@ -402,17 +450,19 @@ pub fn compute(
         .collect();
     for ((k, verdict), key) in verdicts.into_iter().enumerate().zip(keys) {
         let unit = &mut units[active[k]];
+        unit.observable = is_observable(&verdict, &layout.units[active[k]]);
         let reasons = verdict.into_reasons();
         match key {
-            Some((key, parts)) if reasons.is_empty() => {
-                unit.key = Some(*key.as_bytes());
+            Ok(((key, parts), source)) => {
+                unit.key = Some(key);
                 unit.components = Some(parts);
+                unit.observed = source == ClosureSource::Observed;
             }
-            _ => {
+            Err(extra) => {
                 without_key += usize::from(reasons.iter().any(|r| r == "per-unit-propath-classes"));
                 unit.unkeyable = match reasons.is_empty() {
                     true => vec!["unreadable: the unit's own bytes".to_string()],
-                    false => reasons,
+                    false => reasons.into_iter().chain(extra).collect(),
                 };
             }
         }
@@ -422,16 +472,74 @@ pub fn compute(
             "{without_key} units that use classes are compiled without a key: the units have different PROPATHs"
         ));
     }
-    let propaths = propath_digests
+    let propaths = base
+        .propaths
         .iter()
         .map(|propath| propath.iter().map(|(e, d)| (e.clone(), d.text())).collect())
         .collect();
     Ok(Keyed {
         units,
         propaths,
-        environment: Some(identity),
+        environment: Some(base.environment),
         environment_record: Some(super::record::record(environment)),
         warnings,
         dlc: dlc_sha,
+        base: Some(base),
     })
+}
+
+/// Whether a closure the compiler reported can key the unit: no rule applies
+/// but those that say oxabl cannot read the unit, and the unit is not a class,
+/// whose compile reads classes that no `XREF-XML` names.
+fn is_observable(verdict: &Verdict, placed: &Placed) -> bool {
+    verdict.is_observable() && !placed.class
+}
+
+/// The files of an observed closure with their hashes now, sorted by path
+/// bytes, or why the closure does not hold now. Each file must still be
+/// there and readable, and each path that was absent must still be absent: a
+/// file there would shadow an include.
+fn observed_files<'a>(
+    outcome: &'a Outcome,
+    observed: &Observed,
+    dlc_sha: &FxHashMap<String, [u8; 32]>,
+    mirror_mismatch: &FxHashSet<String>,
+) -> Result<Vec<ClosureFile<'a>>, Vec<String>> {
+    let mut reasons = Vec::new();
+    let mut files = Vec::with_capacity(observed.files.len());
+    for id in &observed.files {
+        let path = outcome.name(*id);
+        if path.starts_with("$DLC/") {
+            match dlc_sha.get(path) {
+                Some(sha) if !mirror_mismatch.contains(path) => files.push(ClosureFile {
+                    path,
+                    algorithm: Algorithm::Sha256,
+                    hash: *sha,
+                }),
+                _ => reasons.push(format!("observed-unreadable: {path}")),
+            }
+            continue;
+        }
+        match outcome.content_of(*id) {
+            Content::Hash(hash) if !path.is_empty() && !path.starts_with('/') => {
+                files.push(ClosureFile {
+                    path,
+                    algorithm: Algorithm::Blake3,
+                    hash,
+                })
+            }
+            Content::Absent => reasons.push(format!("observed-missing: {path}")),
+            _ => reasons.push(format!("observed-unreadable: {path}")),
+        }
+    }
+    for id in &observed.absent {
+        if outcome.content_of(*id) != Content::Absent {
+            reasons.push(format!("observed-shadowed: {}", outcome.name(*id)));
+        }
+    }
+    if !reasons.is_empty() {
+        return Err(reasons);
+    }
+    files.sort_unstable_by(|a, b| a.path.cmp(b.path));
+    Ok(files)
 }

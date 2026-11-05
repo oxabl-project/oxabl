@@ -47,8 +47,21 @@ fn xref_xml(out: &Outcome) -> String {
             read.shown
         ));
     }
+    for (kind, identifier) in &out.references {
+        text.push_str(&format!(
+            "<Reference Reference-type=\"{kind}\" Object-identifier=\"{}\"/>\n",
+            escape(identifier)
+        ));
+    }
     text.push_str("</Cross-reference>\n");
     text
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn xref_text(out: &Outcome) -> String {

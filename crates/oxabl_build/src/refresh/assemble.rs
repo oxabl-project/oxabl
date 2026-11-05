@@ -5,7 +5,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::files::{Current, Files};
 use super::intern::Interner;
 use super::listing::Listings;
-use super::outcome::{Content, Delta, Outcome};
+use super::outcome::{Content, Delta, Observed, Outcome};
 use super::probe::{directory_hash, unreadable_hash};
 use super::settle::Analyses;
 use crate::graph::Graph;
@@ -28,6 +28,9 @@ pub struct Parts {
     pub listings: Listings,
     pub analyses: Analyses,
     pub delta: Delta,
+    pub observed: FxHashMap<u32, Observed>,
+    /// Units whose observed closure the store forgets.
+    pub observed_deleted: Vec<u32>,
     /// The analyses were not loaded: nothing changed and no one asked.
     pub skipped: bool,
     /// Report the content of every tracked path.
@@ -69,6 +72,8 @@ pub fn assemble(parts: Parts) -> Outcome {
         listings,
         analyses,
         mut delta,
+        observed,
+        observed_deleted,
         skipped,
         need_keys,
         need_generations,
@@ -107,6 +112,11 @@ pub fn assemble(parts: Parts) -> Outcome {
                 }
             }
         }
+        for closure in observed.values() {
+            for id in closure.files.iter().chain(&closure.absent) {
+                *bits.entry(*id).or_default() |= tracked::OBSERVED;
+            }
+        }
     }
 
     let mut changes = Changes::default();
@@ -124,6 +134,7 @@ pub fn assemble(parts: Parts) -> Outcome {
         }
     }
     changes.files_deleted.extend(orphan_rows);
+    changes.observed_deleted = observed_deleted;
     let (listing_rows, listings_deleted) = listings.rows_for(&listed);
     changes.listings = listing_rows;
     changes.listings_deleted = listings_deleted;
@@ -207,6 +218,7 @@ pub fn assemble(parts: Parts) -> Outcome {
         analyses,
         content,
         changed_gen,
+        observed,
         warnings: Vec::new(),
         changes,
     }

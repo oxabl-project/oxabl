@@ -55,12 +55,23 @@ pub struct ClosureFile<'a> {
     pub hash: [u8; 32],
 }
 
+/// Where the closure of a key comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosureSource {
+    /// The analysis of the source: section `closure`.
+    Parsed,
+    /// The files the compiler read at the last compile: section
+    /// `observed-closure`, so the two kinds of key are never equal.
+    Observed,
+}
+
 /// Everything one compile key is made of. `closure` is sorted by path bytes.
 pub struct Material<'a> {
     pub unit_path: &'a str,
     pub compile_name: &'a str,
     pub unit_content: [u8; 32],
     pub closure: &'a [ClosureFile<'a>],
+    pub source: ClosureSource,
     pub propath: &'a [(String, EntryDigest)],
     pub environment: blake3::Hash,
     pub settings: &'a CompileSettings,
@@ -75,9 +86,11 @@ fn sections(material: &Material<'_>) -> [Vec<u8>; SECTIONS] {
         .str(material.compile_name)
         .hash(&blake3::Hash::from_bytes(material.unit_content));
     let mut closure = Encoder::new();
-    closure
-        .section("closure")
-        .u64(material.closure.len() as u64);
+    let name = match material.source {
+        ClosureSource::Parsed => "closure",
+        ClosureSource::Observed => "observed-closure",
+    };
+    closure.section(name).u64(material.closure.len() as u64);
     for file in material.closure {
         closure
             .str(file.path)

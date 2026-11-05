@@ -67,11 +67,20 @@ pub struct Verdict {
     reasons: [Vec<String>; 9],
     /// The class names K3 accepted in the unit's closure.
     pub accepted: Vec<Accepted>,
+    /// A reason other than one that says oxabl cannot read the unit applies.
+    blocking: bool,
 }
 
 impl Verdict {
     /// Adds a reason under rule `rule` (1 to 9).
     pub fn add_reason(&mut self, rule: usize, reason: String) {
+        self.reasons[rule - 1].push(reason);
+        self.blocking = true;
+    }
+
+    /// Adds a reason that only says oxabl cannot read the closure of the unit
+    /// from its source: a closure the compiler observed can stand in.
+    fn add_unreadable(&mut self, rule: usize, reason: String) {
         self.reasons[rule - 1].push(reason);
     }
 
@@ -95,6 +104,12 @@ impl Verdict {
 
     pub fn is_keyable(&self) -> bool {
         self.reasons.iter().all(Vec::is_empty)
+    }
+
+    /// Whether the unit has no key only because oxabl cannot read its own
+    /// closure: K1, K2 and K4 for an include, each in the unit itself.
+    pub fn is_observable(&self) -> bool {
+        !self.is_keyable() && !self.blocking
     }
 }
 
@@ -146,6 +161,7 @@ impl Rules<'_> {
         path: &str,
         unresolved: &[Unresolved],
         propath: &[String],
+        is_unit: bool,
     ) {
         for row in unresolved {
             let name = &row.name;
@@ -157,7 +173,11 @@ impl Rules<'_> {
                         true => (4, "computed-name"),
                         false => (2, "unresolved-include"),
                     };
-                    verdict.add_reason(rule, format!("{label}: {name} in {path}"));
+                    let reason = format!("{label}: {name} in {path}");
+                    match is_unit {
+                        true => verdict.add_unreadable(rule, reason),
+                        false => verdict.add_reason(rule, reason),
+                    }
                 }
                 EdgeKind::Class | EdgeKind::ConditionalClass => {
                     if is_computed(row) {
@@ -214,9 +234,14 @@ impl Rules<'_> {
             };
             let path = self.outcome.name(node);
             for code in &analysis.completeness {
-                verdict.add_reason(1, format!("degraded: {path}: {}", degraded_name(*code)));
+                let reason = format!("degraded: {path}: {}", degraded_name(*code));
+                match node == unit {
+                    true => verdict.add_unreadable(1, reason),
+                    false => verdict.add_reason(1, reason),
+                }
             }
-            self.check_references(&mut verdict, path, &analysis.unresolved, propath);
+            let is_unit = node == unit;
+            self.check_references(&mut verdict, path, &analysis.unresolved, propath, is_unit);
         }
         for entry in propath.iter().filter(|entry| entry.starts_with('/')) {
             verdict.add_reason(5, format!("outside-workspace: {entry}"));
