@@ -45,6 +45,12 @@
 //! build tool that asks for every file's dependency edges reads and analyses
 //! what the files share once.
 //!
+//! [`LintPipeline::edges_of_observed`] — the same edge set, with the files the
+//! analysis read, the paths it found absent and the directories it listed. A
+//! build tool that stores edges stores these too, so it knows which files a new
+//! or deleted file puts in question. The run reads through an
+//! [`ObservingFileSystem`](oxabl_workspace::ObservingFileSystem).
+//!
 //! [`FormatPipeline`] — the format run, built from a resolved style guide and
 //! *nothing else*, so "the formatter never sees expanded macros" is a property
 //! of the type rather than a caller's discipline (R4, KTD4). Every client
@@ -75,7 +81,7 @@ mod reverse;
 
 pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
-pub use lint::{Expansion, LintPipeline, LintResult, SharedRun};
+pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{
