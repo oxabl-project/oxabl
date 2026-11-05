@@ -13035,6 +13035,106 @@ fn a_do_block_takes_while_transaction_and_on_phrases_in_any_order() {
 }
 
 #[test]
+fn a_do_counting_loop_comes_before_or_after_while() {
+    for (before, after) in [
+        (
+            "DO i = 1 TO 10 WHILE more:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "DO i = 1 TO 10 BY 2 WHILE more:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10 BY 2:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "DO i = 1 TO 10 WHILE more TRANSACTION ON ERROR UNDO, LEAVE:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10 TRANSACTION ON ERROR UNDO, LEAVE:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "DO i = 1 TO 10 IN FRAME f WHILE more:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10 IN FRAME f:\n  more = i < 5.\nEND.",
+        ),
+    ] {
+        let shape = |source: &str| {
+            let stmts = assert_parses_clean(source);
+            let StatementKind::Do {
+                loop_var,
+                from,
+                to,
+                by,
+                while_condition,
+                transaction,
+                body,
+                ..
+            } = &stmts[0].kind
+            else {
+                panic!("{source}: expected DO, got {:?}", stmts[0].kind);
+            };
+            (
+                loop_var.as_ref().map(|v| v.name.clone()),
+                from.is_some(),
+                to.is_some(),
+                by.is_some(),
+                while_condition.is_some(),
+                *transaction,
+                body.len(),
+            )
+        };
+        let expected = shape(before);
+        assert_eq!(expected.0.as_deref(), Some("i"), "{before}");
+        assert!(expected.1 && expected.2 && expected.4, "{before}");
+        assert_eq!(shape(after), expected, "{after}");
+    }
+}
+
+#[test]
+fn a_repeat_counting_loop_comes_before_or_after_while() {
+    for (before, after) in [
+        (
+            "REPEAT i = 1 TO 10 WHILE more:\n  more = i < 5.\nEND.",
+            "REPEAT WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "REPEAT i = 1 TO 10 BY 2 WHILE more:\n  more = i < 5.\nEND.",
+            "REPEAT WHILE more i = 1 TO 10 BY 2:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "REPEAT i = 1 TO 10 WHILE more TRANSACTION:\n  more = i < 5.\nEND.",
+            "REPEAT WHILE more i = 1 TO 10 TRANSACTION:\n  more = i < 5.\nEND.",
+        ),
+    ] {
+        let shape = |source: &str| {
+            let stmts = assert_parses_clean(source);
+            let StatementKind::Repeat {
+                while_condition,
+                body,
+                ..
+            } = &stmts[0].kind
+            else {
+                panic!("{source}: expected REPEAT, got {:?}", stmts[0].kind);
+            };
+            (while_condition.is_some(), body.len())
+        };
+        assert_eq!(shape(before), (true, 1), "{before}");
+        assert_eq!(shape(after), shape(before), "{after}");
+    }
+}
+
+#[test]
+fn a_counting_loop_after_while_still_needs_its_to_and_stays_single() {
+    for source in [
+        "DO WHILE more i = 1:\n  more = FALSE.\nEND.",
+        "DO WHILE more i = 1 TO 3 j = 1 TO 3:\n  more = FALSE.\nEND.",
+        "DO i = 1 TO 3 WHILE more j = 1 TO 3:\n  more = FALSE.\nEND.",
+        "REPEAT WHILE more i = 1:\n  more = FALSE.\nEND.",
+        "REPEAT WHILE more i = 1 TO 3 j = 1 TO 3:\n  more = FALSE.\nEND.",
+        "REPEAT i = 1 TO 3 WHILE more j = 1 TO 3:\n  more = FALSE.\nEND.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(!program.errors.is_empty(), "{source} must stay an error");
+    }
+}
+
+#[test]
 fn override_and_abstract_on_a_property_come_in_either_order() {
     for source in [
         "DEFINE PUBLIC ABSTRACT OVERRIDE PROPERTY P AS CHARACTER NO-UNDO GET. SET.",

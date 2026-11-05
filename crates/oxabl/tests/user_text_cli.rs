@@ -3,12 +3,13 @@
 
 use std::process::Command;
 
-const COMMANDS: [&str; 8] = [
+const COMMANDS: [&str; 9] = [
     "check",
     "format",
     "lsp",
     "schema",
     "explain",
+    "build",
     "analyze",
     "conformance",
     "daemon",
@@ -59,7 +60,7 @@ fn the_scanner_finds_what_it_is_meant_to_find() {
 #[test]
 fn help_of_every_command_has_no_internal_tags() {
     let top = oxabl(&["--help"]);
-    for visible in ["check", "format", "lsp", "schema", "explain"] {
+    for visible in ["check", "format", "lsp", "schema", "explain", "build"] {
         assert!(top.contains(visible), "{top}");
     }
     for command in COMMANDS {

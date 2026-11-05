@@ -10,7 +10,7 @@ use std::path::Path;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
 use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject, SubschemaValidation};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -19,7 +19,7 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 ///
 /// Every encoding decodes to the same Unicode text in memory; spans and offsets
 /// the tools report are byte offsets into that text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize, Serialize)]
 pub enum SourceEncoding {
     /// UTF-8. A file with invalid UTF-8 cannot be read.
     #[default]

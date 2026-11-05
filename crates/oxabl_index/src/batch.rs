@@ -20,7 +20,7 @@ use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, ProgramSignatures, Signature, WorkspaceIndex,
 };
-use oxabl_workspace::{FileSystem, PreprocessorConfig};
+use oxabl_workspace::{FileSystem, Observed, PreprocessorConfig, unobserved};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::facts::{ClassFacts, FileFacts};
@@ -128,7 +128,7 @@ struct Memo {
     /// Lexical, not [`std::fs::canonicalize`] — see
     /// [`search::normalize_lexically`] for why the real filesystem is not
     /// available here.
-    facts: FxHashMap<PathBuf, Arc<FileFacts>>,
+    facts: FxHashMap<PathBuf, Observed<Arc<FileFacts>>>,
     /// Files a lookup has claimed and is indexing outside the lock, by the same
     /// key as `facts`. An entry moves to `facts` when its facts are published.
     pending: FxHashMap<PathBuf, Arc<Pending>>,
@@ -148,17 +148,17 @@ struct Memo {
     /// It does not cost an extra *parse*: both spellings resolve to the same
     /// path, and `facts` is keyed by path, so the second search finds the file
     /// already indexed.
-    classes: FxHashMap<OxablAtom, IndexAnswer<ClassFacts>>,
+    classes: FxHashMap<OxablAtom, Observed<IndexAnswer<ClassFacts>>>,
     /// Answers per `RUN` target key, for the same reasons.
-    programs: FxHashMap<OxablAtom, IndexAnswer<IndexedFileId>>,
+    programs: FxHashMap<OxablAtom, Observed<IndexAnswer<IndexedFileId>>>,
     /// Answers per asking file's directory and class key, when root-relative
     /// paths are configured: the directory decides which paths come first.
-    scoped_classes: FxHashMap<(PathBuf, OxablAtom), IndexAnswer<ClassFacts>>,
+    scoped_classes: FxHashMap<(PathBuf, OxablAtom), Observed<IndexAnswer<ClassFacts>>>,
     /// Answers per asking file's directory and `RUN` target key.
-    scoped_programs: FxHashMap<(PathBuf, OxablAtom), IndexAnswer<IndexedFileId>>,
+    scoped_programs: FxHashMap<(PathBuf, OxablAtom), Observed<IndexAnswer<IndexedFileId>>>,
     /// Parameter lists per indexed file, read on the first question about them:
     /// a run that asks none reads nothing.
-    signatures: FxHashMap<IndexedFileId, Option<Arc<ProgramSignatures>>>,
+    signatures: FxHashMap<IndexedFileId, Observed<Option<Arc<ProgramSignatures>>>>,
     /// The inverse of `facts`: the path each minted id was indexed under.
     ///
     /// Kept rather than derived. Deriving it means scanning `facts` for the entry
@@ -339,19 +339,23 @@ impl<'a> BatchIndex<'a> {
         };
         let key = (dir, name.as_written_atom().clone());
         if let Some(hit) = self.memo_read().scoped_classes.get(&key) {
-            return hit.clone();
+            return hit.attributed(self.fs).clone();
         }
-        let answer = match self.find_scoped(&paths, name, search::NameKind::Class) {
-            IndexAnswer::Found(path) => self.class_in(name, &path),
-            IndexAnswer::NotFound => self.class_facts(name),
-            IndexAnswer::Unusable => IndexAnswer::Unusable,
-            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-        };
-        self.memo()
+        let answer = Observed::capture(self.fs, || {
+            match self.find_scoped(&paths, name, search::NameKind::Class) {
+                IndexAnswer::Found(path) => self.class_in(name, &path),
+                IndexAnswer::NotFound => self.class_facts(name),
+                IndexAnswer::Unusable => IndexAnswer::Unusable,
+                IndexAnswer::Unknowable => IndexAnswer::Unknowable,
+            }
+        });
+        let kept = self
+            .memo()
             .scoped_classes
             .entry(key)
             .or_insert(answer)
-            .clone()
+            .clone();
+        kept.attributed(self.fs).clone()
     }
 
     /// The class `name` in the file at `path`, indexing it on first touch.
@@ -370,26 +374,30 @@ impl<'a> BatchIndex<'a> {
         };
         let key = (dir, target.as_written_atom().clone());
         if let Some(hit) = self.memo_read().scoped_programs.get(&key) {
-            return hit.clone();
+            return hit.attributed(self.fs).clone();
         }
-        let answer = match self.find_scoped(&paths, target, search::NameKind::Program) {
-            IndexAnswer::Found(path) => {
-                let facts = self.facts_for(&path);
-                if facts.parsed {
-                    IndexAnswer::Found(facts.file)
-                } else {
-                    IndexAnswer::Unusable
+        let answer = Observed::capture(self.fs, || {
+            match self.find_scoped(&paths, target, search::NameKind::Program) {
+                IndexAnswer::Found(path) => {
+                    let facts = self.facts_for(&path);
+                    if facts.parsed {
+                        IndexAnswer::Found(facts.file)
+                    } else {
+                        IndexAnswer::Unusable
+                    }
                 }
+                IndexAnswer::NotFound => self.program(target),
+                IndexAnswer::Unusable => IndexAnswer::Unusable,
+                IndexAnswer::Unknowable => IndexAnswer::Unknowable,
             }
-            IndexAnswer::NotFound => self.program(target),
-            IndexAnswer::Unusable => IndexAnswer::Unusable,
-            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-        };
-        self.memo()
+        });
+        let kept = self
+            .memo()
             .scoped_programs
             .entry(key)
             .or_insert(answer)
-            .clone()
+            .clone();
+        kept.attributed(self.fs).clone()
     }
 
     /// [`located`](WorkspaceIndex::located) for a lookup from the file at `file`.
@@ -515,13 +523,14 @@ impl<'a> BatchIndex<'a> {
         let path = {
             let memo = self.memo_read();
             if let Some(hit) = memo.signatures.get(&file) {
-                return hit.clone();
+                return hit.attributed(self.fs).clone();
             }
             memo.paths.get(&file).cloned()?
         };
-        let answer = self.read_signatures(&path).map(Arc::new);
-        self.memo().signatures.insert(file, answer.clone());
-        answer
+        let answer = Observed::capture(self.fs, || self.read_signatures(&path).map(Arc::new));
+        let kept = answer.clone();
+        self.memo().signatures.insert(file, answer);
+        kept.attributed(self.fs).clone()
     }
 
     fn read_signatures(&self, path: &Path) -> Option<ProgramSignatures> {
@@ -534,13 +543,19 @@ impl<'a> BatchIndex<'a> {
     fn defines_procedure(&self, name: &IndexName) -> Option<bool> {
         let predefined = self.predefined();
         let includes = self.includes(&predefined);
+        // The answer reads the run's whole file list, which no one analysis
+        // owns, so what it reads is not observed.
         match self.producers {
             ProducerSource::None => None,
-            ProducerSource::Shared(map) => Some(map.defines_procedure(name, &includes)),
+            ProducerSource::Shared(map) => Some(unobserved(self.fs, || {
+                map.defines_procedure(name, &includes)
+            })),
             ProducerSource::Files(files) => {
-                let names = self
-                    .procedure_names
-                    .get_or_init(|| scan_procedures(files, &includes, self.scan_threads()));
+                let names = self.procedure_names.get_or_init(|| {
+                    unobserved(self.fs, || {
+                        scan_procedures(files, &includes, self.scan_threads())
+                    })
+                });
                 Some(names.contains(name.as_str()))
             }
         }
@@ -548,7 +563,10 @@ impl<'a> BatchIndex<'a> {
 
     fn indexed_id(&self, path: &Path) -> Option<IndexedFileId> {
         let key = search::normalize_lexically(path);
-        self.memo_read().facts.get(&key).map(|facts| facts.file)
+        self.memo_read()
+            .facts
+            .get(&key)
+            .map(|facts| facts.value().file)
     }
 
     /// The path this run indexed `id` under, or `None` if `id` came from another
@@ -601,10 +619,10 @@ impl<'a> BatchIndex<'a> {
         // question the caller actually posed.
         let key = search::normalize_lexically(path);
         if let Some(hit) = self.memo_read().facts.get(&key) {
-            return Arc::clone(hit);
+            return Arc::clone(hit.attributed(self.fs));
         }
         let pending = match self.memo().claim(&key) {
-            Ok(hit) => return hit,
+            Ok(hit) => return Arc::clone(hit.attributed(self.fs)),
             Err(pending) => pending,
         };
         let predefined = self.predefined();
@@ -612,8 +630,9 @@ impl<'a> BatchIndex<'a> {
         // Located but unreadable is not an error case: a file we cannot read is
         // knowably unusable, and remembering that keeps us from re-attempting the
         // read on every reference to the same name.
-        let facts = pending.index(&key, || includes.fs.read(path).ok(), &includes);
-        self.memo().publish(key, facts)
+        let indexed = pending.index(&key, || includes.fs.read(path).ok(), &includes);
+        let facts = self.memo().publish(key, indexed);
+        Arc::clone(facts.attributed(self.fs))
     }
 
     /// The file that produces the `SHARED` name `name`, answered from the run's
@@ -674,7 +693,7 @@ impl<'a> BatchIndex<'a> {
             }
         }
         let memo = self.memo_read();
-        for facts in memo.facts.values() {
+        for facts in memo.facts.values().map(Observed::value) {
             let candidate = reached.is_none_or(|reached| {
                 reached.contains(&facts.file) || seeded.is_some_and(|ids| ids.contains(&facts.file))
             });
@@ -726,10 +745,14 @@ impl<'a> BatchIndex<'a> {
         let candidates = map_parallel(files, threads, |path| {
             let key = search::normalize_lexically(path);
             if let Some(known) = self.memo_read().facts.get(&key) {
-                return Some(Err(known.file));
+                return Some(Err(known.value().file));
             }
-            let source = includes.fs.read(path).ok()?;
-            may_define_shared(&key, &source, &includes).then_some(Ok((key, source)))
+            let (source, seen) = Observed::capture(includes.fs, || {
+                let source = includes.fs.read(path).ok()?;
+                may_define_shared(&key, &source, &includes).then_some(source)
+            })
+            .into_parts();
+            source.map(|source| Ok((key, source, seen)))
         });
         let mut seeded = FxHashSet::default();
         let mut claimed = Vec::new();
@@ -740,65 +763,79 @@ impl<'a> BatchIndex<'a> {
                     Err(known) => {
                         seeded.insert(known);
                     }
-                    Ok((key, source)) => match memo.claim(&key) {
+                    Ok((key, source, seen)) => match memo.claim(&key) {
                         Ok(known) => {
-                            seeded.insert(known.file);
+                            seeded.insert(known.value().file);
                         }
-                        Err(pending) => claimed.push((key, pending, source)),
+                        Err(pending) => claimed.push((key, pending, source, seen)),
                     },
                 }
             }
         }
-        seeded.extend(map_parallel(&claimed, threads, |(key, pending, source)| {
-            let facts = pending.index(key, || Some(Arc::clone(source)), &includes);
-            self.memo().publish(key.clone(), facts).file
-        }));
+        seeded.extend(map_parallel(
+            &claimed,
+            threads,
+            |(key, pending, source, seen)| {
+                let read = || {
+                    if let Some(seen) = seen {
+                        includes.fs.attribute(seen);
+                    }
+                    Some(Arc::clone(source))
+                };
+                let facts = pending.index(key, read, &includes);
+                self.memo().publish(key.clone(), facts).value().file
+            },
+        ));
         seeded
     }
 
     /// Resolve `name` to the facts of the class it names, memoized per key.
     fn class_facts(&self, name: &IndexName) -> IndexAnswer<ClassFacts> {
         if let Some(hit) = self.memo_read().classes.get(name.as_written_atom()) {
-            return hit.clone();
+            return hit.attributed(self.fs).clone();
         }
 
-        let answer = match self.find_name(name, search::NameKind::Class) {
-            IndexAnswer::Found(path) => {
-                let facts = self.facts_for(&path);
-                // A file *was* located at the path the class name derives, and
-                // it does not visibly declare the class. That is `Unusable`,
-                // not `NotFound`, and the difference decides whether a
-                // consumer may tell a user the name does not exist — which
-                // here it may not, because the file plainly exists.
-                //
-                // Three causes, and the index cannot distinguish them: the
-                // parse recovered errors; the declaration is spliced in from
-                // an `{include}` the index could not read; or the class header
-                // is genuinely mis-namespaced.
-                // Only the third is the user's mistake, and it is the rarest —
-                // an include-built class is an ordinary ABL idiom. `NotFound`
-                // stays reserved for the one case that *is* conclusive: no
-                // file at the derived path at all.
-                //
-                // The class comparison is case-insensitive, since the
-                // declaring file is free to spell the name differently from
-                // the reference.
-                match facts.class(name).cloned() {
-                    Some(class) => IndexAnswer::Found(class),
-                    None => IndexAnswer::Unusable,
+        let answer = Observed::capture(self.fs, || {
+            match self.find_name(name, search::NameKind::Class) {
+                IndexAnswer::Found(path) => {
+                    let facts = self.facts_for(&path);
+                    // A file *was* located at the path the class name derives, and
+                    // it does not visibly declare the class. That is `Unusable`,
+                    // not `NotFound`, and the difference decides whether a
+                    // consumer may tell a user the name does not exist — which
+                    // here it may not, because the file plainly exists.
+                    //
+                    // Three causes, and the index cannot distinguish them: the
+                    // parse recovered errors; the declaration is spliced in from
+                    // an `{include}` the index could not read; or the class header
+                    // is genuinely mis-namespaced.
+                    // Only the third is the user's mistake, and it is the rarest —
+                    // an include-built class is an ordinary ABL idiom. `NotFound`
+                    // stays reserved for the one case that *is* conclusive: no
+                    // file at the derived path at all.
+                    //
+                    // The class comparison is case-insensitive, since the
+                    // declaring file is free to spell the name differently from
+                    // the reference.
+                    match facts.class(name).cloned() {
+                        Some(class) => IndexAnswer::Found(class),
+                        None => IndexAnswer::Unusable,
+                    }
                 }
+                IndexAnswer::NotFound => IndexAnswer::NotFound,
+                IndexAnswer::Unusable => IndexAnswer::Unusable,
+                IndexAnswer::Unknowable => IndexAnswer::Unknowable,
             }
-            IndexAnswer::NotFound => IndexAnswer::NotFound,
-            IndexAnswer::Unusable => IndexAnswer::Unusable,
-            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-        };
+        });
         // Another thread may have answered meanwhile; the answers agree, and the
         // first one stays.
-        self.memo()
+        let kept = self
+            .memo()
             .classes
             .entry(name.as_written_atom().clone())
             .or_insert(answer)
-            .clone()
+            .clone();
+        kept.attributed(self.fs).clone()
     }
 }
 
@@ -847,26 +884,32 @@ fn map_parallel<T: Sync, R: Send>(
 #[derive(Debug)]
 struct Pending {
     id: IndexedFileId,
-    facts: OnceLock<Arc<FileFacts>>,
+    facts: OnceLock<Observed<Arc<FileFacts>>>,
 }
 
 impl Pending {
     /// The facts of the file at `key`, extracted from what `read` returns on
     /// first call; `None` is an unreadable file. Nothing here takes the memo
     /// lock, so a lookup may wait on it while holding the lock.
+    ///
+    /// The observations of `read` and of the include expansion are kept with
+    /// the facts.
     fn index(
         &self,
         key: &Path,
         read: impl FnOnce() -> Option<Arc<str>>,
         includes: &IncludeContext<'_>,
-    ) -> Arc<FileFacts> {
-        let facts = self.facts.get_or_init(|| {
-            Arc::new(match read() {
-                Some(source) => index_file_at(self.id, key, &source, includes).0,
-                None => FileFacts::unparseable(self.id),
+    ) -> Observed<Arc<FileFacts>> {
+        self.facts
+            .get_or_init(|| {
+                Observed::capture(includes.fs, || {
+                    Arc::new(match read() {
+                        Some(source) => index_file_at(self.id, key, &source, includes).0,
+                        None => FileFacts::unparseable(self.id),
+                    })
+                })
             })
-        });
-        Arc::clone(facts)
+            .clone()
     }
 }
 
@@ -874,9 +917,9 @@ impl Memo {
     /// The facts of `key` if it is indexed, otherwise the slot it is indexed
     /// in, claimed now if no lookup has claimed it yet. The claim mints the id,
     /// so ids follow the order in which lookups first reach files.
-    fn claim(&mut self, key: &Path) -> Result<Arc<FileFacts>, Arc<Pending>> {
+    fn claim(&mut self, key: &Path) -> Result<Observed<Arc<FileFacts>>, Arc<Pending>> {
         if let Some(hit) = self.facts.get(key) {
-            return Ok(Arc::clone(hit));
+            return Ok(hit.clone());
         }
         if let Some(pending) = self.pending.get(key) {
             return Err(Arc::clone(pending));
@@ -892,15 +935,19 @@ impl Memo {
 
     /// Record `facts` as the facts of `key`, unless another lookup recorded them
     /// first; either way, the recorded facts.
-    fn publish(&mut self, key: PathBuf, facts: Arc<FileFacts>) -> Arc<FileFacts> {
+    fn publish(
+        &mut self,
+        key: PathBuf,
+        facts: Observed<Arc<FileFacts>>,
+    ) -> Observed<Arc<FileFacts>> {
         self.pending.remove(&key);
         if let Some(known) = self.facts.get(&key) {
-            return Arc::clone(known);
+            return known.clone();
         }
         // Both halves of one mapping, inserted together: `indexed_path` is only sound
         // because nothing can add an entry to one without adding it to the other.
-        self.paths.insert(facts.file, key.clone());
-        self.facts.insert(key, Arc::clone(&facts));
+        self.paths.insert(facts.value().file, key.clone());
+        self.facts.insert(key, facts.clone());
         facts
     }
 }
@@ -919,34 +966,38 @@ impl WorkspaceIndex for BatchIndex<'_> {
 
     fn program(&self, target: &IndexName) -> IndexAnswer<IndexedFileId> {
         if let Some(hit) = self.memo_read().programs.get(target.as_written_atom()) {
-            return hit.clone();
+            return hit.attributed(self.fs).clone();
         }
 
-        let answer = match self.find_path(target, search::NameKind::Program) {
-            IndexAnswer::Found(path) => {
-                // The target is indexed rather than merely existence-checked,
-                // for two reasons: the seam's totality rule needs a verdict for
-                // an unusable file, and a program a file `RUN`s is the realistic
-                // producer of the `SHARED` names that file consumes — indexing it
-                // here is what gives `shared_producer` something true to say.
-                let facts = self.facts_for(&path);
-                if facts.parsed {
-                    IndexAnswer::Found(facts.file)
-                } else {
-                    // Located, and oxabl could not parse it. Reporting the target
-                    // as absent would blame the caller for oxabl's own gap.
-                    IndexAnswer::Unusable
+        let answer = Observed::capture(self.fs, || {
+            match self.find_path(target, search::NameKind::Program) {
+                IndexAnswer::Found(path) => {
+                    // The target is indexed rather than merely existence-checked,
+                    // for two reasons: the seam's totality rule needs a verdict for
+                    // an unusable file, and a program a file `RUN`s is the realistic
+                    // producer of the `SHARED` names that file consumes — indexing it
+                    // here is what gives `shared_producer` something true to say.
+                    let facts = self.facts_for(&path);
+                    if facts.parsed {
+                        IndexAnswer::Found(facts.file)
+                    } else {
+                        // Located, and oxabl could not parse it. Reporting the target
+                        // as absent would blame the caller for oxabl's own gap.
+                        IndexAnswer::Unusable
+                    }
                 }
+                IndexAnswer::NotFound => IndexAnswer::NotFound,
+                IndexAnswer::Unusable => IndexAnswer::Unusable,
+                IndexAnswer::Unknowable => IndexAnswer::Unknowable,
             }
-            IndexAnswer::NotFound => IndexAnswer::NotFound,
-            IndexAnswer::Unusable => IndexAnswer::Unusable,
-            IndexAnswer::Unknowable => IndexAnswer::Unknowable,
-        };
-        self.memo()
+        });
+        let kept = self
+            .memo()
             .programs
             .entry(target.as_written_atom().clone())
             .or_insert(answer)
-            .clone()
+            .clone();
+        kept.attributed(self.fs).clone()
     }
 
     fn shared_producer(&self, name: &IndexName) -> IndexAnswer<IndexedFileId> {
@@ -1651,11 +1702,12 @@ mod tests {
             let memo = index.memo();
             memo.facts
                 .values()
+                .map(Observed::value)
                 .map(|facts| {
                     let by_scan = memo
                         .facts
                         .iter()
-                        .find(|(_, candidate)| candidate.file == facts.file)
+                        .find(|(_, candidate)| candidate.value().file == facts.file)
                         .map(|(path, _)| path.clone());
                     (facts.file, by_scan)
                 })

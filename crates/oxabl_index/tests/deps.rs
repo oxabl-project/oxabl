@@ -379,6 +379,44 @@ fn an_unresolved_reference_is_its_own_row_and_no_resolved_edge() {
     assert_eq!(rows[0].reason, UnresolvedReason::AbsentFromWorkspace);
 }
 
+/// The class names a source leaves unresolved, as a workspace with no classes
+/// answers for it.
+fn unresolved_class_names(source: &str) -> Vec<String> {
+    let fs = InMemoryFileSystem::new();
+    let paths = dirs(&["/src"]);
+    let index = BatchIndex::new(&fs, &paths);
+    let schema = Schema::empty();
+    let semantic = analyse(source, &schema, &index);
+    let edges = build_edge_set(&inputs(&semantic, &schema, &[], &[], &[]));
+    assert_eq!(edges.of_kind(EdgeKind::ClassReference).count(), 0);
+    edges
+        .unresolved()
+        .iter()
+        .filter(|row| row.kind == EdgeKind::ClassReference)
+        .map(|row| row.name.clone())
+        .collect()
+}
+
+#[test]
+fn a_short_data_type_spelling_is_no_class_reference() {
+    let source = "DEFINE VARIABLE a AS i NO-UNDO.\n\
+                  DEFINE VARIABLE b AS c NO-UNDO.\n\
+                  DEFINE VARIABLE e AS l NO-UNDO.\n\
+                  DEFINE VARIABLE f AS de NO-UNDO.\n\
+                  DEFINE VARIABLE g AS da NO-UNDO.\n\
+                  FUNCTION fn1 RETURNS i (INPUT p AS m):\n\
+                  RETURN 0.\n\
+                  END FUNCTION.\n";
+    assert_eq!(unresolved_class_names(source), Vec::<String>::new());
+}
+
+#[test]
+fn a_spelling_the_compiler_rejects_is_still_a_class_reference() {
+    let source = "DEFINE VARIABLE a AS d NO-UNDO.\n\
+                  DEFINE VARIABLE b AS ro NO-UNDO.\n";
+    assert_eq!(unresolved_class_names(source), ["d", "ro"]);
+}
+
 #[test]
 fn an_unresolvable_include_is_its_own_row_with_a_reason() {
     let schema = Schema::empty();

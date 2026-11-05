@@ -41,9 +41,9 @@ use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    EncodedFileSystem, LintConfig, PreprocessorConfig, SourceDecoding, WorkspaceConfig,
-    default_root_extensions, default_run_extensions, find_workspace_root,
-    normalize_root_extensions, normalize_run_extensions,
+    EncodedFileSystem, IncludeEntry, LintConfig, PreprocessorConfig, SourceDecoding,
+    WorkspaceConfig, default_root_extensions, default_run_extensions, dlc_sources,
+    find_workspace_root, include_entry, normalize_root_extensions, normalize_run_extensions,
 };
 
 /// A non-fatal problem hit while resolving configuration.
@@ -384,13 +384,17 @@ fn derive(
     // order-preserving dedup so a directory named by both a flag and the config
     // is not stat'd twice per include lookup.
     let mut include_paths: Vec<PathBuf> = overrides.include_paths.iter().map(absolutize).collect();
+    let dlc = dlc_sources(config.workspace.sources.dlc.as_deref(), root);
     include_paths.extend(
         config
             .workspace
             .sources
             .include_paths
             .iter()
-            .map(|p| anchor_to(root, p)),
+            .filter_map(|entry| match include_entry(root, dlc.as_deref(), entry) {
+                IncludeEntry::Directory(directory) => Some(directory),
+                IncludeEntry::UnresolvedDlc | IncludeEntry::Library(_) => None,
+            }),
     );
     let mut seen = std::collections::HashSet::new();
     include_paths.retain(|p| seen.insert(p.clone()));
@@ -459,42 +463,14 @@ fn derive(
         }
     };
 
-    // `--schema` replaces the configured set rather than adding to it; absent it,
-    // `[workspace.schema].files` is the set. Either way the entries go through the
-    // same expansion, so a directory means the same thing wherever it is written.
-    let entries: Vec<PathBuf> = match schema_path {
-        Some(path) => vec![path.clone()],
-        None => config
-            .workspace
-            .schema
-            .files
-            .iter()
-            .map(|f| anchor_to(root, f))
-            .collect(),
-    };
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in &entries {
-        files.extend(expand_schema_entry(entry, &mut warnings));
-    }
-
-    // Nothing to open — no entries at all, or every entry was a directory that
-    // yielded nothing (already warned about) — reads as no schema, so
-    // schema-dependent diagnostics stay off. Otherwise load diagnostics are
-    // non-fatal: a partially-loaded schema drives resolution better than none,
-    // and an intentionally empty `.df` is a schema the user supplied.
-    let (schema, schema_loaded) = if files.is_empty() {
-        (Schema::empty(), false)
-    } else {
-        // The databases the schema describes are the ones connected, unless the
-        // config says which are. A file name is only a guess at the logical name,
-        // so this list stays apart from the one the config states.
-        if preprocessor.databases.is_none() {
-            preprocessor.inferred_databases = Some(logical_database_names(&files));
-        }
-        let (schema, diags) = SchemaLoader::load_files(&files, &EncodedFileSystem::new(decoding));
-        warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
-        (schema, true)
-    };
+    let (schema, schema_loaded) = load_schema(
+        config,
+        root,
+        schema_path,
+        &mut preprocessor,
+        decoding,
+        &mut warnings,
+    );
 
     (
         PipelineConfig {
@@ -516,6 +492,115 @@ fn derive(
         },
         warnings,
     )
+}
+
+/// The schema a configuration names, and whether one was loaded.
+///
+/// `--schema` replaces the configured set rather than adding to it; absent it,
+/// `[workspace.schema].files` is the set. Either way the entries go through the
+/// same expansion, so a directory means the same thing wherever it is written.
+fn load_schema(
+    config: &WorkspaceConfig,
+    root: &Path,
+    schema_path: Option<&PathBuf>,
+    preprocessor: &mut PreprocessorConfig,
+    decoding: SourceDecoding,
+    warnings: &mut Vec<ConfigWarning>,
+) -> (Schema, bool) {
+    let files = schema_files(config, root, schema_path, warnings);
+
+    // Nothing to open — no entries at all, or every entry was a directory that
+    // yielded nothing (already warned about) — reads as no schema, so
+    // schema-dependent diagnostics stay off. Otherwise load diagnostics are
+    // non-fatal: a partially-loaded schema drives resolution better than none,
+    // and an intentionally empty `.df` is a schema the user supplied.
+    if files.is_empty() {
+        return (Schema::empty(), false);
+    }
+    // The databases the schema describes are the ones connected, unless the
+    // config says which are. A file name is only a guess at the logical name,
+    // so this list stays apart from the one the config states.
+    if preprocessor.databases.is_none() {
+        preprocessor.inferred_databases = Some(logical_database_names(&files));
+    }
+    let (schema, diags) = SchemaLoader::load_files(&files, &EncodedFileSystem::new(decoding));
+    warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
+    (schema, true)
+}
+
+/// The `.df` files a configuration names, directories expanded.
+fn schema_files(
+    config: &WorkspaceConfig,
+    root: &Path,
+    schema_path: Option<&PathBuf>,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Vec<PathBuf> {
+    let entries: Vec<PathBuf> = match schema_path {
+        Some(path) => vec![path.clone()],
+        None => config
+            .workspace
+            .schema
+            .files
+            .iter()
+            .map(|f| anchor_to(root, f))
+            .collect(),
+    };
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in &entries {
+        files.extend(expand_schema_entry(entry, warnings));
+    }
+    files
+}
+
+/// Resolve like [`resolve_from_config`], but leave the schema empty and
+/// unloaded. [`PipelineConfig::load_schema`] loads it when a run needs it, and
+/// [`configured_schema_files`] names the files without reading them.
+///
+/// For a client that decides after resolving whether it analyses anything, so
+/// that a run which analyses nothing never parses a `.df`.
+pub fn resolve_from_config_deferred(
+    config: &WorkspaceConfig,
+    root: &Path,
+    overrides: &ConfigOverrides,
+) -> (PipelineConfig, Vec<ConfigWarning>) {
+    derive(config, root, overrides, SchemaLoading::Skip)
+}
+
+/// The `.df` files `config` names under `overrides`, directories expanded, in
+/// the order [`resolve_from_config`] loads them. Nothing is read.
+pub fn configured_schema_files(
+    config: &WorkspaceConfig,
+    root: &Path,
+    overrides: &ConfigOverrides,
+) -> (Vec<PathBuf>, Vec<ConfigWarning>) {
+    let mut warnings = Vec::new();
+    let files = schema_files(config, root, overrides.schema_path.as_ref(), &mut warnings);
+    (files, warnings)
+}
+
+impl PipelineConfig {
+    /// Load the schema of `config` into a configuration that
+    /// [`resolve_from_config_deferred`] left without one, as
+    /// [`resolve_from_config`] would have.
+    pub fn load_schema(
+        &mut self,
+        config: &WorkspaceConfig,
+        root: &Path,
+        overrides: &ConfigOverrides,
+    ) -> Vec<ConfigWarning> {
+        let mut warnings = Vec::new();
+        let (schema, loaded) = load_schema(
+            config,
+            root,
+            overrides.schema_path.as_ref(),
+            &mut self.preprocessor,
+            self.decoding,
+            &mut warnings,
+        );
+        self.schema = schema;
+        self.schema_loaded = loaded;
+        warnings
+    }
 }
 
 /// A warning for each `[workspace.lint]` name the built-in rule registry does

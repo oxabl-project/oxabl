@@ -13,7 +13,8 @@
 //! call graph into transitive summaries, with a fixed point over cycles.
 //! [`xref`] parses the compiler's `COMPILE ... XREF` output and compares its
 //! `SEARCH` rows with the model's index choices: the oracle for the index
-//! rules.
+//! rules. [`xref_xml`] reads the files that `XREF-XML` says the compiler
+//! opened.
 //!
 //! The ABL rules this follows, with confidence marks, are in
 //! `docs/design/strict-analysis-open-questions.md`, section 8.
@@ -32,6 +33,7 @@ mod phrase;
 mod select;
 pub mod summary;
 pub mod xref;
+pub mod xref_xml;
 
 pub use model::{
     Access, Effect, EffectUnknown, IndexChoice, IndexReason, IndexUnknown, Op, Shape, TieBreak,

@@ -9,6 +9,9 @@ use std::time::Instant;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod baseline;
+mod build_cmd;
+mod build_probe;
+mod build_run;
 mod display_path;
 mod explain;
 mod watch;
@@ -336,6 +339,99 @@ enum Cli {
     /// no hand-maintained mirror. Editors (e.g. Even Better TOML) consume it for
     /// autocomplete/validation inside `oxabl.toml`.
     Schema,
+    /// Build the ABL sources: plan, compile in dependency order, install.
+    ///
+    /// Refreshes the persisted dependency graph from the working tree (reading
+    /// only the files that changed), then compiles the units that a change
+    /// reaches on the workers that `[build.workers]` starts. `--plan` only
+    /// lists those units, and why. `--probe` instead starts the worker pool,
+    /// prints the environment identity and the schema identity of each
+    /// database, and exits.
+    /// Exit codes: `0` when everything compiled or a plan or a probe was
+    /// printed, `1` when a unit failed to compile, `2` on a usage or
+    /// configuration error (including workers that disagree), `3` when the
+    /// store, the workspace or the workers could not be used, `130` when the
+    /// command is cancelled.
+    Build {
+        /// Print the plan and compile nothing.
+        #[arg(long)]
+        plan: bool,
+
+        /// Start the worker pool and print what the workers report; with
+        /// `--plan`, also key every unit.
+        #[arg(long)]
+        probe: bool,
+
+        /// With `--plan`, also list the units that do not need to rebuild.
+        #[arg(long, requires = "plan")]
+        all: bool,
+
+        /// Treat these files as changed, as if each one had been edited.
+        #[arg(long, num_args = 1.., value_name = "PATH", requires = "plan")]
+        files: Vec<PathBuf>,
+
+        /// Treat every file that differs from this git revision as changed:
+        /// committed, staged and unstaged edits, deletions, renames and
+        /// untracked files.
+        #[arg(long, value_name = "REV", requires = "plan", conflicts_with = "files")]
+        since: Option<String>,
+
+        /// Print the plan or the probe as one JSON document.
+        #[arg(long)]
+        json: bool,
+
+        /// The workspace root. Defaults to the nearest ancestor of the current
+        /// directory that holds an `oxabl.toml`.
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+
+        /// A TOML file with the same schema as `oxabl.toml`, merged over it key
+        /// by key (an array replaces). It may set `[workspace]` `name`,
+        /// `sources`, `preprocessor` and `schema`, and `[build]`. Without an
+        /// `oxabl.toml` it is the whole configuration. `OXABL_BUILD_OVERLAY`
+        /// names it too; the flag wins.
+        #[arg(long, value_name = "FILE")]
+        config_overlay: Option<PathBuf>,
+
+        /// Print the effective configuration, each value with the flag,
+        /// environment variable, overlay, `oxabl.toml` or default it came from,
+        /// and stop. With `--json`, print it as a JSON document.
+        #[arg(
+            long,
+            conflicts_with_all = ["plan", "probe", "all", "files", "since", "events", "report", "fail_fast", "wait_lock"]
+        )]
+        print_config: bool,
+
+        /// Number of workers; overrides `[build.workers].count`.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        workers: Option<u32>,
+
+        /// Write one JSON object for each event to stdout while the build
+        /// runs; the human output goes to stderr.
+        #[arg(long, conflicts_with_all = ["plan", "probe", "json"])]
+        events: bool,
+
+        /// Write the per-unit results of the build to this file as JSON.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["plan", "probe"])]
+        report: Option<PathBuf>,
+
+        /// Stop dispatching at the first failure.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        fail_fast: bool,
+
+        /// Neither read from nor write to any compile cache.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        no_cache: bool,
+
+        /// Do not use the remote cache; the local cache stays on.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        no_remote_cache: bool,
+
+        /// Wait up to this many seconds for the workspace lock instead of
+        /// stopping when another build holds it.
+        #[arg(long, value_name = "SECONDS", conflicts_with_all = ["plan", "probe"])]
+        wait_lock: Option<u64>,
+    },
 }
 
 enum FileResult {
@@ -579,6 +675,41 @@ fn main() -> ExitCode {
         Cli::Lsp => run_lsp(),
         Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
         Cli::Schema => run_schema(),
+        Cli::Build {
+            plan,
+            probe,
+            all,
+            files,
+            since,
+            json,
+            root,
+            config_overlay,
+            print_config,
+            workers,
+            events,
+            report,
+            fail_fast,
+            no_cache,
+            no_remote_cache,
+            wait_lock,
+        } => build_cmd::run(build_cmd::Options {
+            plan,
+            probe,
+            all,
+            files: &files,
+            since,
+            json,
+            root: root.as_deref(),
+            config_overlay: config_overlay.as_deref(),
+            print_config,
+            workers: workers.map(|n| n as usize),
+            events,
+            report: report.as_deref(),
+            fail_fast,
+            no_cache,
+            no_remote_cache,
+            wait_lock,
+        }),
     }
 }
 

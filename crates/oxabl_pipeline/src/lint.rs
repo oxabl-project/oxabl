@@ -102,7 +102,7 @@ use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, Semantic, Signature, SourceContext, UnresolvedReason, WorkspaceIndex,
 };
-use oxabl_workspace::{FileSystem, is_include_fragment};
+use oxabl_workspace::{FileSystem, Observations, Observed, is_include_fragment};
 
 use crate::{PipelineConfig, ROOT_FILE_ID};
 
@@ -439,6 +439,29 @@ impl std::fmt::Debug for LintResult {
     }
 }
 
+/// The edge set of one root and what it observed; see
+/// [`LintPipeline::edges_of_observed`].
+#[derive(Debug)]
+pub struct ObservedEdges {
+    /// What [`LintPipeline::edge_set`] answers.
+    pub edges: Result<oxabl_index::DependencyEdges, String>,
+    /// The file system inputs of the analysis, whether it succeeded or not.
+    pub observations: Observations,
+}
+
+/// The run's file system does not observe; see
+/// [`LintPipeline::edges_of_observed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotObserving;
+
+impl std::fmt::Display for NotObserving {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the run's file system does not observe")
+    }
+}
+
+impl std::error::Error for NotObserving {}
+
 /// The shared lint run, constructed once from resolved configuration and reused
 /// across many files or many edits of one buffer (R1).
 ///
@@ -566,7 +589,7 @@ fn batch_index<'a>(config: &'a PipelineConfig, fs: &'a dyn FileSystem) -> BatchI
 #[derive(Default)]
 struct ClosureCache {
     expansions: ClosureExpansions,
-    entries: Mutex<HashMap<ClosureKey, Arc<OnceLock<ClosureEntry>>>>,
+    entries: Mutex<HashMap<ClosureKey, Arc<OnceLock<Observed<ClosureEntry>>>>>,
 }
 
 /// One target as one file's handle analyses it: the file and the name it is
@@ -1082,6 +1105,39 @@ impl<'a> LintPipeline<'a> {
         outcome.map_err(|panic| format!("analysis panicked: {panic}"))?
     }
 
+    /// [`edge_set`](Self::edge_set), with the file system inputs the analysis
+    /// observed.
+    ///
+    /// The observations are everything the analysis took from the file
+    /// system, whether it read it or took it from the run's shared state:
+    /// the include files at any depth, the class and program sources whose
+    /// facts it took from the index, and the paths it looked for and did not
+    /// find, such as the search directories before the one that held an
+    /// include. An entry that [`SharedRun`] or the index computed for another
+    /// file is observed again by every file that uses it. They hold also when
+    /// the analysis failed. The root's own bytes are `source`, the caller's
+    /// input, and are not observed.
+    ///
+    /// Two inputs are not observed, as no one file owns them: the files that
+    /// `SHARED` producer and workspace procedure questions are answered from
+    /// when the run is seeded with a file list.
+    ///
+    /// The run must read through a file system that observes (see
+    /// [`ObservingFileSystem`](oxabl_workspace::ObservingFileSystem)), the
+    /// outermost of any wrappers, and every handle of a [`SharedRun`] must
+    /// share it. Any other file system is [`NotObserving`].
+    pub fn edges_of_observed(&self, source: &str) -> Result<ObservedEdges, NotObserving> {
+        let mut edges = None;
+        let observations = self.fs.observe(&mut || edges = Some(self.edge_set(source)));
+        match (edges, observations) {
+            (Some(edges), Some(observations)) => Ok(ObservedEdges {
+                edges,
+                observations: Arc::unwrap_or_clone(observations),
+            }),
+            _ => Err(NotObserving),
+        }
+    }
+
     /// The edge set for an expansion and result this handle already produced.
     ///
     /// For a caller that has run the two phases for its own reasons — the CLI
@@ -1289,28 +1345,34 @@ impl<'a> LintPipeline<'a> {
                 .entry(key)
                 .or_default(),
         );
-        let entry = slot.get_or_init(|| {
-            let (first, second) = (
-                index.searching_from(self.file()),
-                index.searching_from(self.file()),
-            );
-            let (analysis, names) = (Recording::new(&first), Recording::new(&second));
-            let references = self.closure_references_in(target, include_paths, &analysis, &names);
-            let reached = analysis
-                .into_files()
-                .zip(names.into_files())
-                .map(|(analysis, names)| {
-                    analysis
-                        .into_iter()
-                        .chain(names)
-                        .filter_map(|file| index.indexed_path(file))
-                        .collect()
-                });
-            ClosureEntry {
-                references,
-                reached,
-            }
-        });
+        let entry = slot
+            .get_or_init(|| {
+                Observed::capture(self.fs, || {
+                    let (first, second) = (
+                        index.searching_from(self.file()),
+                        index.searching_from(self.file()),
+                    );
+                    let (analysis, names) = (Recording::new(&first), Recording::new(&second));
+                    let references =
+                        self.closure_references_in(target, include_paths, &analysis, &names);
+                    let reached =
+                        analysis
+                            .into_files()
+                            .zip(names.into_files())
+                            .map(|(analysis, names)| {
+                                analysis
+                                    .into_iter()
+                                    .chain(names)
+                                    .filter_map(|file| index.indexed_path(file))
+                                    .collect()
+                            });
+                    ClosureEntry {
+                        references,
+                        reached,
+                    }
+                })
+            })
+            .attributed(self.fs);
         let analysed = self.file().map(oxabl_index::search::normalize_lexically);
         let holds = match &entry.reached {
             Some(reached) => analysed.is_none_or(|file| !reached.contains(&file)),

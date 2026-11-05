@@ -1,9 +1,11 @@
-use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rustc_hash::FxHashMap;
+
 use crate::encoding::SourceDecoding;
+use crate::observations::Observations;
 
 /// Abstraction over file I/O so that every component that reads files
 /// (preprocessor, workspace scanner, LSP document sync) can be tested
@@ -55,6 +57,49 @@ pub trait FileSystem: Send + Sync {
         Vec::new()
     }
 
+    /// [`find_ignoring_case`](Self::find_ignoring_case), also pushing onto
+    /// `listed` each directory the lookup listed.
+    ///
+    /// A filesystem that overrides `find_ignoring_case` overrides this too, as
+    /// [`ObservingFileSystem`](crate::ObservingFileSystem) reads the
+    /// directories from here. The default reports `dir`, the least a lookup
+    /// that finds anything lists.
+    fn find_ignoring_case_listing(
+        &self,
+        dir: &Path,
+        relative: &Path,
+        listed: &mut Vec<PathBuf>,
+    ) -> Vec<PathBuf> {
+        listed.push(dir.to_path_buf());
+        self.find_ignoring_case(dir, relative)
+    }
+
+    /// Whether [`observe`](Self::observe) records what runs under it. `false`
+    /// by default.
+    fn observes(&self) -> bool {
+        false
+    }
+
+    /// Run `run`, and return what the questions it asked this filesystem on
+    /// this thread observed. The default runs `run` and returns `None`: this
+    /// filesystem does not observe.
+    ///
+    /// What the run observed is returned and is not added to an enclosing
+    /// run; [`attribute`](Self::attribute) adds it.
+    fn observe(&self, run: &mut dyn FnMut()) -> Option<Arc<Observations>> {
+        run();
+        None
+    }
+
+    /// Add `observations` to the run that [`observe`](Self::observe) has open
+    /// on this thread, if any. The default does nothing.
+    ///
+    /// A memo calls it for each use of an entry, so that every run that uses
+    /// the entry observes what computing it observed.
+    fn attribute(&self, observations: &Observations) {
+        let _ = observations;
+    }
+
     /// This filesystem reading with `decoding`, or `None` when its source of
     /// text has no encoding to configure (the default).
     ///
@@ -93,7 +138,16 @@ impl FileSystem for RealFileSystem {
     }
 
     fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
-        find_on_disk_ignoring_case(dir, relative)
+        find_on_disk_ignoring_case(dir, relative, None)
+    }
+
+    fn find_ignoring_case_listing(
+        &self,
+        dir: &Path,
+        relative: &Path,
+        listed: &mut Vec<PathBuf>,
+    ) -> Vec<PathBuf> {
+        find_on_disk_ignoring_case(dir, relative, Some(listed))
     }
 
     fn with_decoding(&self, decoding: SourceDecoding) -> Option<Arc<dyn FileSystem>> {
@@ -126,7 +180,16 @@ impl FileSystem for EncodedFileSystem {
     }
 
     fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
-        find_on_disk_ignoring_case(dir, relative)
+        find_on_disk_ignoring_case(dir, relative, None)
+    }
+
+    fn find_ignoring_case_listing(
+        &self,
+        dir: &Path,
+        relative: &Path,
+        listed: &mut Vec<PathBuf>,
+    ) -> Vec<PathBuf> {
+        find_on_disk_ignoring_case(dir, relative, Some(listed))
     }
 
     fn with_decoding(&self, decoding: SourceDecoding) -> Option<Arc<dyn FileSystem>> {
@@ -134,7 +197,11 @@ impl FileSystem for EncodedFileSystem {
     }
 }
 
-fn find_on_disk_ignoring_case(dir: &Path, relative: &Path) -> Vec<PathBuf> {
+fn find_on_disk_ignoring_case(
+    dir: &Path,
+    relative: &Path,
+    mut listed: Option<&mut Vec<PathBuf>>,
+) -> Vec<PathBuf> {
     let Some(parts) = plain_components(relative) else {
         return Vec::new();
     };
@@ -142,6 +209,9 @@ fn find_on_disk_ignoring_case(dir: &Path, relative: &Path) -> Vec<PathBuf> {
     for part in parts {
         let mut next = Vec::new();
         for parent in &level {
+            if let Some(listed) = listed.as_deref_mut() {
+                listed.push(parent.clone());
+            }
             let Ok(entries) = std::fs::read_dir(parent) else {
                 continue;
             };
@@ -160,13 +230,16 @@ fn find_on_disk_ignoring_case(dir: &Path, relative: &Path) -> Vec<PathBuf> {
     level
 }
 
-/// [`FileSystem`] implementation backed by an in-memory `HashMap`.
+/// [`FileSystem`] implementation backed by an in-memory hash map.
+///
+/// The map is unseeded so a lookup costs the same on every run; a random seed
+/// changes how often a probe compares whole paths.
 ///
 /// Used for hermetic tests and for the LSP server (where file contents
 /// come from document sync, not disk).
 #[derive(Debug, Default)]
 pub struct InMemoryFileSystem {
-    files: HashMap<PathBuf, Arc<str>>,
+    files: FxHashMap<PathBuf, Arc<str>>,
 }
 
 impl InMemoryFileSystem {
@@ -198,20 +271,52 @@ impl FileSystem for InMemoryFileSystem {
     }
 
     fn find_ignoring_case(&self, dir: &Path, relative: &Path) -> Vec<PathBuf> {
+        self.find_ignoring_case_listing(dir, relative, &mut Vec::new())
+    }
+
+    /// Lists `dir` and each directory below it that matches a leading
+    /// component of `relative` and holds a file.
+    fn find_ignoring_case_listing(
+        &self,
+        dir: &Path,
+        relative: &Path,
+        listed: &mut Vec<PathBuf>,
+    ) -> Vec<PathBuf> {
         let Some(parts) = plain_components(relative) else {
             return Vec::new();
         };
+        let matching = |path: &PathBuf, depth: usize| {
+            let Ok(below) = path.strip_prefix(dir) else {
+                return false;
+            };
+            let mut actual = below.components();
+            parts[..depth].iter().all(|part| {
+                matches!(actual.next(), Some(std::path::Component::Normal(a)) if a.eq_ignore_ascii_case(part))
+            })
+        };
+        listed.push(dir.to_path_buf());
+        for depth in 1..parts.len() {
+            let mut level: Vec<PathBuf> = self
+                .files
+                .keys()
+                .filter(|path| matching(path, depth))
+                .filter_map(|path| {
+                    let below = path.strip_prefix(dir).ok()?;
+                    Some(dir.join(below.components().take(depth).collect::<PathBuf>()))
+                })
+                .collect();
+            level.sort();
+            level.dedup();
+            listed.extend(level);
+        }
         let mut found: Vec<PathBuf> = self
             .files
             .keys()
             .filter(|path| {
-                let Ok(below) = path.strip_prefix(dir) else {
-                    return false;
-                };
-                let mut actual = below.components();
-                parts.iter().all(|part| {
-                    matches!(actual.next(), Some(std::path::Component::Normal(a)) if a.eq_ignore_ascii_case(part))
-                }) && actual.next().is_none()
+                matching(path, parts.len())
+                    && path
+                        .strip_prefix(dir)
+                        .is_ok_and(|below| below.components().count() == parts.len())
             })
             .cloned()
             .collect();

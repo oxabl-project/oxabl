@@ -496,3 +496,11 @@ pub mod workspace {
         walk_directory, walk_directory_in,
     };
 }
+
+/// The ABL build tool: the persisted graph store, the incremental refresh and
+/// the planner behind `oxabl build`.
+///
+/// Gated on the `cli` feature: it needs SQLite and process control, which do not
+/// build for `wasm32`.
+#[cfg(feature = "cli")]
+pub use oxabl_build as build;
