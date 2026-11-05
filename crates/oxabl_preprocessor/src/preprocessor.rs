@@ -303,7 +303,17 @@ impl ProcessContext<'_> {
     ) -> Vec<SpanNode> {
         let bytes = source.as_bytes();
         let len = bytes.len();
-        let mut nodes: Vec<SpanNode> = Vec::new();
+        // Each reference adds up to two nodes and a source, each directive one
+        // node. Reserving once keeps the root's vectors from regrowing as it
+        // scans. Nested sources grow on demand: counting them too would scan
+        // every include once more for every file that includes it.
+        let mut nodes: Vec<SpanNode> = if depth == 0 {
+            let (refs, directives) = count_markers(bytes);
+            self.sources.reserve(refs);
+            Vec::with_capacity(2 * refs + directives + 1)
+        } else {
+            Vec::new()
+        };
         // `chunk_start` tracks the beginning of the current un-emitted text chunk.
         let mut chunk_start: u32 = 0;
         let mut i: usize = 0;
@@ -2145,6 +2155,24 @@ fn include_ref_start(bytes: &[u8], open: usize) -> bool {
         first,
         Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'.' | b'"' | b'{')
     )
+}
+
+/// The number of `{` and of `&` bytes in `bytes`: an upper bound on the
+/// references and the directives a scan of it will meet.
+fn count_markers(bytes: &[u8]) -> (usize, usize) {
+    let (mut refs, mut directives) = (0, 0);
+    // Byte counters over blocks that cannot overflow them: the loop vectorizes
+    // where one wide counter does not.
+    for block in bytes.chunks(usize::from(u8::MAX)) {
+        let (mut r, mut d) = (0u8, 0u8);
+        for &b in block {
+            r += u8::from(b == b'{');
+            d += u8::from(b == b'&');
+        }
+        refs += usize::from(r);
+        directives += usize::from(d);
+    }
+    (refs, directives)
 }
 
 /// Whether `text` holds a `{` that starts a file include reference.
