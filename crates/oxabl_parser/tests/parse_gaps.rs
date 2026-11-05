@@ -293,6 +293,38 @@ fn a_filled_or_closed_case_keeps_its_own_end() {
 }
 
 #[test]
+fn an_empty_otherwise_leaves_the_end_to_the_enclosing_block() {
+    let program = parse_clean(
+        "DO:
+  CASE s:
+    WHEN 'a' THEN x = 1.
+    OTHERWISE
+  END.
+n = TRUE.",
+    );
+    let [block, after] = program.statements.as_slice() else {
+        panic!(
+            "expected DO and an assignment, got {}",
+            program.statements.len()
+        );
+    };
+    assert!(matches!(after.kind, StatementKind::Assignment { .. }));
+    let StatementKind::Do { body, .. } = &block.kind else {
+        panic!("expected DO, got {:?}", block.kind);
+    };
+    let [case] = body.as_slice() else {
+        panic!("expected only the CASE in the DO, got {}", body.len());
+    };
+    let StatementKind::Case { otherwise, .. } = &case.kind else {
+        panic!("expected CASE, got {:?}", case.kind);
+    };
+    assert!(otherwise.as_ref().is_some_and(Vec::is_empty));
+    // A filled OTHERWISE keeps its own END.
+    parse_clean("DO: CASE s: WHEN 'a' THEN x = 1. OTHERWISE y = 2. END. END.");
+    parse_clean("DO: CASE s: OTHERWISE y = 2. END CASE. END.");
+}
+
+#[test]
 fn the_end_of_an_empty_when_does_not_close_the_case_twice() {
     // The CASE takes no END, so the DO owns the first one and the second is
     // left over at the top level.
@@ -313,9 +345,14 @@ fn an_empty_when_before_end_stays_an_error_where_the_compiler_refuses() {
     // END CASE has no CASE to close.
     assert_errors("DO: CASE s: WHEN 'a' THEN END CASE. END.");
     assert_errors("CASE s: WHEN 'a' THEN END CASE.");
+    // An empty branch cannot run into another WHEN.
+    assert_errors("CASE s: WHEN 'a' THEN WHEN 'b' THEN x = 2. END CASE.");
+    assert_errors("DO: CASE s: WHEN 'a' THEN WHEN 'b' THEN x = 2. END CASE. END.");
     // An empty branch cannot run into OTHERWISE.
     assert_errors("CASE s: WHEN 'a' THEN OTHERWISE x = 1. END CASE.");
     assert_errors("DO: CASE s: WHEN 'a' THEN OTHERWISE x = 1. END. END.");
+    // END CASE after an empty OTHERWISE has no CASE to close either.
+    assert_errors("DO: CASE s: OTHERWISE END CASE. END.");
 }
 
 // ---- 4. CAN-FIND record-phrase options in any order ------------------------

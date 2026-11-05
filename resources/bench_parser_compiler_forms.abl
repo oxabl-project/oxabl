@@ -28,3 +28,13 @@ procedure route-owner:
     end.
     message "routed".
 end procedure.
+
+/* The same holds for an empty OTHERWISE. */
+procedure route-fallback:
+    do:
+        case lv-state:
+            when "a" then lv-count = 1.
+            otherwise
+    end.
+    message "fallback".
+end procedure.

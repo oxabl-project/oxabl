@@ -3460,7 +3460,7 @@ impl Parser<'_> {
                 self.parse_block_statement_recovering(&mut body);
             }
 
-            if body.is_empty() && self.check(Kind::Otherwise) {
+            if body.is_empty() && matches!(self.peek().kind, Kind::Otherwise | Kind::When) {
                 self.record_error(ParseError {
                     message: "Expected a statement after THEN".to_string(),
                     span: self.current_span(),
@@ -3482,9 +3482,18 @@ impl Parser<'_> {
 
         let otherwise = if self.check(Kind::Otherwise) {
             self.advance();
+            let empty_before_end = self.check(Kind::End);
             let mut body = Vec::new();
             while !self.check(Kind::End) && !self.at_end() {
                 self.parse_block_statement_recovering(&mut body);
+            }
+            if empty_before_end {
+                // As for an empty WHEN branch, END belongs to the enclosing block.
+                return Ok(self.stmt(StatementKind::Case {
+                    expression,
+                    when_branches,
+                    otherwise: Some(body),
+                }));
             }
             Some(body)
         } else {
