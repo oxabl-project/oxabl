@@ -30,6 +30,8 @@ pub struct Parts {
     pub skipped: bool,
     /// Report the content of every tracked path.
     pub need_keys: bool,
+    /// Report the generation in which each tracked path last changed.
+    pub need_generations: bool,
 }
 
 /// The analyses reachable from the units through class edges: the units and
@@ -66,6 +68,7 @@ pub fn assemble(parts: Parts) -> Outcome {
         mut delta,
         skipped,
         need_keys,
+        need_generations,
     } = parts;
 
     let reach = if skipped {
@@ -157,6 +160,11 @@ pub fn assemble(parts: Parts) -> Outcome {
     } else {
         Vec::new()
     };
+    let changed_gen = if need_keys || need_generations {
+        changed_gens(&files, names.len())
+    } else {
+        Vec::new()
+    };
     changes.new_paths = names
         .iter()
         .enumerate()
@@ -194,6 +202,7 @@ pub fn assemble(parts: Parts) -> Outcome {
         after,
         analyses,
         content,
+        changed_gen,
         warnings: Vec::new(),
         changes,
     }
@@ -214,4 +223,13 @@ fn content_of(files: &Files, ids: usize) -> Vec<Content> {
         };
     }
     content
+}
+
+/// The generation in which each tracked path last changed, by id.
+fn changed_gens(files: &Files, ids: usize) -> Vec<u64> {
+    let mut generations = vec![0; ids];
+    for id in files.ids() {
+        generations[id as usize] = files.changed_gen(id);
+    }
+    generations
 }

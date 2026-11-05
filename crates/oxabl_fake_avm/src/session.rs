@@ -3,6 +3,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use crate::compile::Compiler;
 use crate::faults::Faults;
 use crate::frame::{self, Line, emit};
 use crate::hashing::{self, Hashed};
@@ -13,6 +14,7 @@ use crate::schema;
 pub struct Session {
     pub model: Model,
     pub faults: Faults,
+    pub compiler: Compiler,
 }
 
 const ENV_FIELDS: &[&str] = &[
@@ -125,7 +127,7 @@ impl Session {
     }
 
     /// Runs until `QUIT`, end of input, or an injected exit.
-    pub fn run(&self, input: &mut impl BufRead, out: &mut impl Write) -> io::Result<()> {
+    pub fn run(&mut self, input: &mut impl BufRead, out: &mut impl Write) -> io::Result<()> {
         let mut text = String::new();
         let mut handshook = false;
         loop {
@@ -201,6 +203,13 @@ impl Session {
                     }
                     let digest = hashing::hash_set(&paths, &self.dlc());
                     emit(out, "HASHSET-DONE", &[id.as_bytes(), digest.as_bytes()])?;
+                }
+                "PROPATH" if handshook => self.compiler.define_propath(out, &line)?,
+                "OPTIONS" if handshook => Compiler::define_options(out, &line)?,
+                "COMPILE" if handshook => {
+                    let dlc = self.dlc();
+                    self.compiler
+                        .request(input, out, &line, &self.faults, &dlc)?
                 }
                 "PING" if handshook => {
                     emit(out, "PONG", &[Self::text(&line, 0).as_bytes()])?;

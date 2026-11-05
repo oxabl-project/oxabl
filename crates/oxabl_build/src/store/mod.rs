@@ -7,6 +7,7 @@ mod inspect;
 mod load;
 mod meta;
 mod open;
+mod results;
 mod rows;
 
 pub use blob::{
@@ -18,6 +19,10 @@ pub use ddl::STORE_FORMAT;
 pub use error::StoreError;
 pub use load::{Loaded, Reading};
 pub use open::{Opened, Store};
+pub use results::{
+    COMPILED, Components, FAILED, OutputRow, ResultBatch, ResultRow, Results, SECTIONS, SUCCESS,
+    StoredEnvironment,
+};
 pub use rows::{
     Analysis, Edge, FileRow, ListingRow, Observation, StoredAnalysis, Unresolved, tracked,
 };

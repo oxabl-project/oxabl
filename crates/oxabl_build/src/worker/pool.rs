@@ -2,28 +2,27 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use oxabl_workspace::PreprocessorConfig;
 
 use super::cancel::Cancel;
-use super::command::{self, Values};
+use super::command;
 use super::error::{PoolError, WorkerError};
-use super::handshake::{self, Context, Failure};
 use super::imaging;
 use super::logs::{self, Logs};
-use super::program::{self, Program};
-use super::random;
-use super::session::{Session, SpawnSpec};
+use super::program;
+use super::session::Session;
+use super::slot::{Restart, Worker};
+use super::start::{Slot, SlotFailure, start_slot};
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::FileDigest;
 use crate::key::digest::hash_set_digest;
 use crate::key::{Environment, Profile};
 
-/// A worker that fails to start is started again at most this often.
-const RESTARTS_PER_SLOT: usize = 2;
 /// Lines of a worker log shown when no worker starts.
 const LOG_TAIL_LINES: usize = 20;
 
@@ -113,15 +112,11 @@ impl PoolSpec {
     }
 }
 
-struct Worker {
-    number: usize,
-    session: Session,
-}
-
 /// Workers that finished their handshake and agree on one environment.
 pub struct Pool {
     workers: Vec<Worker>,
     unit_timeout: Duration,
+    restart: Arc<Restart>,
 }
 
 /// A started pool with what the workers reported.
@@ -130,96 +125,6 @@ pub struct Started {
     /// The environment all workers agree on.
     pub environment: Environment,
     pub warnings: Vec<String>,
-}
-
-enum SlotFailure {
-    Config(String),
-    Infra { number: usize, message: String },
-    Cancelled,
-}
-
-type Slot = Result<(Worker, Profile, Vec<String>), SlotFailure>;
-
-fn try_start(
-    spec: &PoolSpec,
-    program: &Program,
-    logs: &Logs,
-    cancel: &Cancel,
-    number: usize,
-) -> Result<(Session, Profile, Vec<String>), Failure> {
-    let argv = command::expand(
-        &spec.command,
-        &Values {
-            program: &program.worker_path,
-            root: &spec.worker_root,
-            worker: number,
-            build: &spec.build_id,
-        },
-    )
-    .map_err(Failure::Config)?;
-    let io =
-        |error: std::io::Error| WorkerError::Spawn(format!("cannot open the worker log: {error}"));
-    let stderr = logs.open(number).map_err(io)?;
-    let noise = logs.open(number).map_err(io)?;
-    let mut session = Session::spawn(
-        SpawnSpec {
-            argv: &argv,
-            cwd: &spec.host_root,
-            env: &spec.env,
-            stderr,
-            noise,
-        },
-        cancel,
-    )?;
-    let context = Context {
-        worker_root: &spec.worker_root,
-        preprocessor: &spec.preprocessor,
-        schema_names: &spec.schema_names,
-    };
-    let deadline = Instant::now() + spec.start_timeout;
-    match handshake::run(&mut session, &context, &random::token(), deadline) {
-        Ok((environment, warnings)) => Ok((session, environment, warnings)),
-        Err(failure) => {
-            session.kill();
-            Err(failure)
-        }
-    }
-}
-
-fn start_slot(
-    spec: &PoolSpec,
-    program: &Program,
-    logs: &Logs,
-    cancel: &Cancel,
-    number: usize,
-) -> Slot {
-    let mut last = String::new();
-    for attempt in 1..=RESTARTS_PER_SLOT + 1 {
-        if cancel.is_cancelled() {
-            return Err(SlotFailure::Cancelled);
-        }
-        match try_start(spec, program, logs, cancel, number) {
-            Ok((session, environment, warnings)) => {
-                return Ok((Worker { number, session }, environment, warnings));
-            }
-            Err(Failure::Config(message)) => return Err(SlotFailure::Config(message)),
-            Err(Failure::Worker(WorkerError::Cancelled)) => return Err(SlotFailure::Cancelled),
-            Err(Failure::Worker(error)) => {
-                last = error.to_string();
-                use std::io::Write;
-                if let Ok(mut file) = logs.open(number) {
-                    let _ = writeln!(
-                        file,
-                        "oxabl: start {attempt} of worker {number} failed: {last}"
-                    );
-                }
-            }
-        }
-    }
-    Err(SlotFailure::Infra {
-        number,
-        message: last,
-    })
 }
 
 fn describe_differences(a: &Worker, b: &Worker, left: &Profile, right: &Profile) -> String {
@@ -263,9 +168,11 @@ impl Pool {
         let mut failures: Vec<(usize, String)> = Vec::new();
         let mut config_error = None;
         let mut cancelled = false;
-        for slot in slots {
+        for (at, slot) in slots.into_iter().enumerate() {
             match slot {
-                Ok(ok) => started.push(ok),
+                Ok((session, profile, warnings)) => {
+                    started.push((Worker::new(at + 1, session, spec), profile, warnings));
+                }
                 Err(SlotFailure::Config(message)) => config_error = config_error.or(Some(message)),
                 Err(SlotFailure::Cancelled) => cancelled = true,
                 Err(SlotFailure::Infra { number, message }) => failures.push((number, message)),
@@ -342,12 +249,20 @@ impl Pool {
                 )));
             }
         };
-        let environment = Environment::assemble(profile, schemas);
+        let environment = Environment::assemble(profile.clone(), schemas);
         let workers = started.into_iter().map(|(worker, _, _)| worker).collect();
+        let restart = Arc::new(Restart {
+            spec: spec.clone(),
+            program,
+            logs,
+            cancel: cancel.clone(),
+            profile,
+        });
         Ok(Started {
             pool: Pool {
                 workers,
                 unit_timeout: spec.unit_timeout,
+                restart,
             },
             environment,
             warnings,
@@ -356,6 +271,21 @@ impl Pool {
 
     pub fn len(&self) -> usize {
         self.workers.len()
+    }
+
+    /// The workers, for a compile phase that runs one thread for each.
+    pub fn workers_mut(&mut self) -> &mut [Worker] {
+        &mut self.workers
+    }
+
+    /// What replaces a lost worker.
+    pub fn restart(&self) -> Arc<Restart> {
+        self.restart.clone()
+    }
+
+    /// The pool's limits and the `PoolSpec` it started from.
+    pub fn spec(&self) -> &PoolSpec {
+        &self.restart.spec
     }
 
     pub fn is_empty(&self) -> bool {

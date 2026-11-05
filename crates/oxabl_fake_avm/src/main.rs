@@ -4,7 +4,19 @@
 //! worker program path that oxabl passes as `{program}`; the fake checks it.
 //! The environment comes from the JSON file named by `--env`, else by
 //! `FAKE_AVM_ENV`.
+//!
+//! A compile reads the unit, its includes and the classes it uses on the
+//! request's PROPATH, and writes a text r-code file that lists what it read
+//! with a hash of each, and a time. Text in a source asks for a fault:
+//! `FAKE-FAIL` (an error at that line), `FAKE-FAIL-ONCE` (the first compile
+//! only), `FAKE-FAIL-SILENT` (a failure with no message), `FAKE-WARN`, `FAKE-CRASH` (exit 1), `FAKE-CRASH-ONCE`, `FAKE-HANG`,
+//! `FAKE-SLOW` (two seconds before the outputs), `FAKE-NO-OUTPUT` (success
+//! with no output files) and `FAKE-READ <path>` (a file the analysis cannot
+//! see). Like the real compiler, it opens an XREF or XREF-XML file whose
+//! relative name starts with `.` with that dot removed. `FAKE_AVM_STATE` is a directory for the markers of the `-ONCE`
+//! faults; `FAKE_AVM_LOG` receives one line for each compiled unit.
 
+mod compile;
 mod faults;
 mod frame;
 mod hashing;
@@ -75,7 +87,11 @@ fn main() {
     if let Some(delay) = faults.start_delay {
         std::thread::sleep(delay);
     }
-    let session = Session { model, faults };
+    let mut session = Session {
+        model,
+        faults,
+        compiler: compile::Compiler::default(),
+    };
     let stdin = io::stdin();
     let mut input = BufReader::new(stdin.lock());
     let mut out = io::stdout().lock();

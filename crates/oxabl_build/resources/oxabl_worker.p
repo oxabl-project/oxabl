@@ -1,7 +1,9 @@
 /* oxabl-worker protocol 1 */
 /* The oxabl build worker. It reads OXW1 lines on stdin and answers on stdout
-   with PUT UNFORMATTED ... SKIP. It connects no database, runs no other
-   program and writes no file. Start it as: _progres -b -p oxabl_worker.p */
+   with PUT UNFORMATTED ... SKIP. It connects no database and runs no other
+   program than the compile procedure it writes. It writes no file except the
+   compile outputs and that procedure, in the stage directory of the request.
+   Start it as: _progres -b -p oxabl_worker.p */
 
 DEFINE VARIABLE gcTab      AS CHARACTER NO-UNDO.
 DEFINE VARIABLE gcCwd      AS CHARACTER NO-UNDO.
@@ -43,6 +45,25 @@ DEFINE VARIABLE gcDbWKey   AS CHARACTER NO-UNDO.
 
 DEFINE STREAM sIn.
 DEFINE STREAM sFile.
+
+/* The PROPATHs and the compile options the requests refer to by id, and the
+   compile procedures written so far, by shape. */
+DEFINE TEMP-TABLE ttPath NO-UNDO
+    FIELD cId   AS CHARACTER
+    FIELD cPath AS CHARACTER
+    INDEX ixId IS UNIQUE PRIMARY cId.
+DEFINE TEMP-TABLE ttOpt NO-UNDO
+    FIELD cId   AS CHARACTER
+    FIELD cHead AS CHARACTER
+    FIELD cTail AS CHARACTER
+    INDEX ixId IS UNIQUE PRIMARY cId.
+DEFINE TEMP-TABLE ttGen NO-UNDO
+    FIELD cKey AS CHARACTER
+    INDEX ixKey IS UNIQUE PRIMARY cKey.
+DEFINE TEMP-TABLE ttUnit NO-UNDO
+    FIELD iSeq  AS INTEGER
+    FIELD cName AS CHARACTER
+    INDEX ixSeq IS UNIQUE PRIMARY iSeq.
 
 /* Every row of a user table, field and index, by record id. */
 DEFINE TEMP-TABLE ttPtr NO-UNDO
@@ -847,6 +868,297 @@ PROCEDURE hashSet:
     RUN sendLine("HASHSET-DONE" + gcTab + toWire(pcId) + gcTab + cSha).
 END PROCEDURE.
 
+/* The name of a unit without its extension: the path of its r-code. */
+FUNCTION stemOf RETURNS CHARACTER (INPUT pcName AS CHARACTER):
+    DEFINE VARIABLE iSlash AS INTEGER NO-UNDO.
+    DEFINE VARIABLE iDot   AS INTEGER NO-UNDO.
+
+    iSlash = R-INDEX(pcName, "/").
+    iDot = R-INDEX(pcName, ".").
+    IF iDot > iSlash AND iDot > 1 THEN RETURN SUBSTRING(pcName, 1, iDot - 1).
+    RETURN pcName.
+END FUNCTION.
+
+FUNCTION dirOf RETURNS CHARACTER (INPUT pcPath AS CHARACTER):
+    DEFINE VARIABLE iSlash AS INTEGER NO-UNDO.
+
+    iSlash = R-INDEX(pcPath, "/").
+    IF iSlash > 1 THEN RETURN SUBSTRING(pcPath, 1, iSlash - 1).
+    RETURN "".
+END FUNCTION.
+
+/* Creates every missing level of a directory: SAVE INTO makes the package
+   directories of a class but not the directory of a procedure. */
+PROCEDURE ensureDir:
+    DEFINE INPUT PARAMETER pcDir AS CHARACTER NO-UNDO.
+
+    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE cPart  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cSoFar AS CHARACTER NO-UNDO.
+
+    IF pcDir = "" THEN RETURN.
+    DO i = 1 TO NUM-ENTRIES(pcDir, "/"):
+        cPart = ENTRY(i, pcDir, "/").
+        cSoFar = cSoFar + (IF i > 1 THEN "/" ELSE "") + cPart.
+        IF cPart <> "" AND cPart <> "." THEN OS-CREATE-DIR VALUE(cSoFar).
+    END.
+END PROCEDURE.
+
+/* PROPATH id entry...: remembers a PROPATH under its id. An entry that starts
+   with $DLC names the installation, so it is written out with the DLC of this
+   process. */
+PROCEDURE definePropath:
+    DEFINE INPUT PARAMETER pcLine AS CHARACTER NO-UNDO.
+
+    DEFINE VARIABLE cWantId   AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cList  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cEntry AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cDlc   AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
+
+    cDlc = OS-GETENV("DLC").
+    IF cDlc = ? THEN cDlc = "".
+    cWantId = fromWire(ENTRY(3, pcLine, gcTab)).
+    DO i = 4 TO NUM-ENTRIES(pcLine, gcTab):
+        cEntry = fromWire(ENTRY(i, pcLine, gcTab)).
+        IF cEntry = "$DLC" OR cEntry BEGINS "$DLC/" THEN
+            cEntry = RIGHT-TRIM(cDlc, "/") + SUBSTRING(cEntry, 5).
+        cList = cList + (IF cList = "" THEN "" ELSE ",") + cEntry.
+    END.
+    FIND ttPath WHERE ttPath.cId = cWantId NO-ERROR.
+    IF NOT AVAILABLE ttPath THEN CREATE ttPath.
+    ASSIGN ttPath.cId = cWantId
+           ttPath.cPath = cList.
+    RUN sendLine("OK" + gcTab + toWire(cWantId)).
+END PROCEDURE.
+
+/* OPTIONS id name=value...: remembers the compile options under their id as
+   the two halves of the COMPILE phrase. oxabl sends only names made of
+   letters, digits and "-_:,.", so a value needs no quoting. */
+PROCEDURE defineOptions:
+    DEFINE INPUT PARAMETER pcLine AS CHARACTER NO-UNDO.
+
+    DEFINE VARIABLE cWantId    AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cPair  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cName  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cValue AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cHeadText  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cLang  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cFlags AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cOpts  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE iAt    AS INTEGER   NO-UNDO.
+
+    cWantId = fromWire(ENTRY(3, pcLine, gcTab)).
+    DO i = 4 TO NUM-ENTRIES(pcLine, gcTab):
+        cPair = fromWire(ENTRY(i, pcLine, gcTab)).
+        iAt = INDEX(cPair, "=").
+        cName = SUBSTRING(cPair, 1, iAt - 1).
+        cValue = SUBSTRING(cPair, iAt + 1).
+        CASE cName:
+            WHEN "attr-space" THEN DO:
+                IF cValue = "true" THEN cHeadText = " ATTR-SPACE".
+            END.
+            WHEN "languages" THEN DO:
+                IF cValue <> "" THEN cLang = ' LANGUAGES ("' + REPLACE(cValue, ":", '","') + '")'.
+            END.
+            WHEN "min-size" THEN DO:
+                IF cValue = "true" THEN cFlags = cFlags + " MIN-SIZE".
+            END.
+            WHEN "generate-md5" THEN DO:
+                IF cValue = "true" THEN cFlags = cFlags + " GENERATE-MD5".
+            END.
+            WHEN "stream-io" THEN DO:
+                IF cValue = "true" THEN cFlags = cFlags + " STREAM-IO".
+            END.
+            WHEN "v6frame" THEN DO:
+                IF cValue = "true" THEN cFlags = cFlags + " V6FRAME".
+            END.
+            WHEN "options" THEN DO:
+                IF cValue <> "" THEN cOpts = ' OPTIONS "' + cValue + '"'.
+            END.
+        END CASE.
+    END.
+    FIND ttOpt WHERE ttOpt.cId = cWantId NO-ERROR.
+    IF NOT AVAILABLE ttOpt THEN CREATE ttOpt.
+    ASSIGN ttOpt.cId = cWantId
+           ttOpt.cHead = cHeadText
+           ttOpt.cTail = cLang + cFlags + cOpts.
+    RUN sendLine("OK" + gcTab + toWire(cWantId)).
+END PROCEDURE.
+
+/* Writes the procedure that holds one shape of COMPILE statement. The
+   statement takes the output files as run-time values, but its phrases
+   (XREF-XML, MIN-SIZE, ...) are keywords, so each shape is its own source. */
+PROCEDURE writeCompiler:
+    DEFINE INPUT PARAMETER pcFile AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcXref AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER plDebug AS LOGICAL  NO-UNDO.
+    DEFINE INPUT PARAMETER plList AS LOGICAL   NO-UNDO.
+    DEFINE INPUT PARAMETER pcHead AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcTail AS CHARACTER NO-UNDO.
+
+    DEFINE VARIABLE cStatement AS CHARACTER NO-UNDO.
+
+    cStatement = "COMPILE VALUE(pcName)" + pcHead + " SAVE INTO VALUE(pcInto)".
+    IF plList THEN cStatement = cStatement + " LISTING VALUE(pcLst)".
+    IF pcXref = "xref-xml" THEN cStatement = cStatement + " XREF-XML VALUE(pcXref)".
+    IF pcXref = "xref" THEN cStatement = cStatement + " XREF VALUE(pcXref)".
+    IF plDebug THEN cStatement = cStatement + " DEBUG-LIST VALUE(pcDbg)".
+    cStatement = cStatement + pcTail + " NO-ERROR.".
+
+    RUN ensureDir(dirOf(pcFile)).
+    OUTPUT STREAM sFile TO VALUE(pcFile).
+    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcInto AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcXref AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcDbg AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcLst AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE OUTPUT PARAMETER pcErr AS CHARACTER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED "DEFINE VARIABLE i AS INTEGER NO-UNDO." SKIP.
+    PUT STREAM sFile UNFORMATTED cStatement SKIP.
+    PUT STREAM sFile UNFORMATTED "IF ERROR-STATUS:ERROR THEN DO i = 1 TO ERROR-STATUS:NUM-MESSAGES:" SKIP.
+    PUT STREAM sFile UNFORMATTED "    pcErr = pcErr + (IF pcErr = '' THEN '' ELSE ' ') + ERROR-STATUS:GET-MESSAGE(i)." SKIP.
+    PUT STREAM sFile UNFORMATTED "END." SKIP.
+    OUTPUT STREAM sFile CLOSE.
+END PROCEDURE.
+
+/* Compiles one unit into the stage and answers with its messages and DONE.
+   A failure before the compile counts as a failed unit with a message of
+   number 0. */
+PROCEDURE compileUnit:
+    DEFINE INPUT PARAMETER pcReq   AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcName  AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcStage AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcOpt   AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcXref  AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER plDebug AS LOGICAL   NO-UNDO.
+    DEFINE INPUT PARAMETER plList  AS LOGICAL   NO-UNDO.
+
+    DEFINE VARIABLE cStem     AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cShape      AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cGen      AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cXrefFile AS CHARACTER NO-UNDO INITIAL "".
+    DEFINE VARIABLE cDbgFile  AS CHARACTER NO-UNDO INITIAL "".
+    DEFINE VARIABLE cLstFile  AS CHARACTER NO-UNDO INITIAL "".
+    DEFINE VARIABLE cCompErr  AS CHARACTER NO-UNDO INITIAL "".
+    DEFINE VARIABLE lOk       AS LOGICAL   NO-UNDO INITIAL TRUE.
+    DEFINE VARIABLE iMsg      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE iMs       AS INT64     NO-UNDO.
+    DEFINE VARIABLE cType     AS CHARACTER NO-UNDO.
+
+    ETIME(TRUE).
+    cStem = stemOf(pcName).
+    FIND ttOpt WHERE ttOpt.cId = pcOpt NO-ERROR.
+    IF NOT AVAILABLE ttOpt THEN DO:
+        RUN failWith("unknown OPTIONS " + pcOpt).
+        RETURN.
+    END.
+    cShape = pcOpt + "-" + pcXref + "-" + STRING(plDebug, "1/0") + STRING(plList, "1/0").
+    cGen = pcStage + "/gen/c-" + cShape + ".p".
+    FIND ttGen WHERE ttGen.cKey = cShape NO-ERROR.
+    IF NOT AVAILABLE ttGen THEN DO:
+        RUN writeCompiler(cGen, pcXref, plDebug, plList, ttOpt.cHead, ttOpt.cTail).
+        CREATE ttGen.
+        ttGen.cKey = cShape.
+    END.
+
+    RUN ensureDir(pcStage + "/r/" + dirOf(cStem)).
+    IF pcXref = "xref-xml" THEN cXrefFile = pcStage + "/xref/" + pcName + ".xref.xml".
+    IF pcXref = "xref" THEN cXrefFile = pcStage + "/xref/" + pcName + ".xref".
+    IF cXrefFile <> "" THEN RUN ensureDir(dirOf(cXrefFile)).
+    IF plDebug THEN DO:
+        cDbgFile = pcStage + "/dbg/" + pcName + ".dbg".
+        RUN ensureDir(dirOf(cDbgFile)).
+    END.
+    IF plList THEN DO:
+        cLstFile = pcStage + "/lst/" + pcName + ".lst".
+        RUN ensureDir(dirOf(cLstFile)).
+    END.
+
+    RUN VALUE(gcCwd + "/" + cGen)
+        (INPUT pcName, INPUT pcStage + "/r", INPUT cXrefFile, INPUT cDbgFile, INPUT cLstFile,
+         OUTPUT cCompErr) NO-ERROR.
+    IF ERROR-STATUS:ERROR THEN DO:
+        lOk = FALSE.
+        RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + "error"
+                     + gcTab + "0" + gcTab + toWire(pcName) + gcTab + "0" + gcTab + "0" + gcTab
+                     + toWire(IF ERROR-STATUS:NUM-MESSAGES > 0 THEN ERROR-STATUS:GET-MESSAGE(1)
+                              ELSE "the compile procedure failed")).
+    END.
+    ELSE DO:
+        IF COMPILER:ERROR THEN lOk = FALSE.
+        IF cCompErr <> "" THEN DO:
+            lOk = FALSE.
+            RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + "error"
+                         + gcTab + "0" + gcTab + toWire(pcName) + gcTab + "0" + gcTab + "0" + gcTab
+                         + toWire(cCompErr)).
+        END.
+        DO iMsg = 1 TO COMPILER:NUM-MESSAGES:
+            cType = IF COMPILER:GET-MESSAGE-TYPE(iMsg) = 2 THEN "warning" ELSE "error".
+            RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + cType
+                         + gcTab + intText(COMPILER:GET-NUMBER(iMsg))
+                         + gcTab + toWire(COMPILER:GET-FILE-NAME(iMsg))
+                         + gcTab + intText(COMPILER:GET-ROW(iMsg))
+                         + gcTab + intText(COMPILER:GET-COLUMN(iMsg))
+                         + gcTab + toWire(COMPILER:GET-MESSAGE(iMsg))).
+        END.
+    END.
+    iMs = ETIME.
+    RUN sendLine("DONE" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab
+                 + (IF lOk THEN "ok" ELSE "fail") + gcTab + intText(iMs)).
+END PROCEDURE.
+
+/* COMPILE req propath options stage xref debug-list listing count, then count
+   UNIT lines. Each unit gets its MSG lines and a DONE; END closes the request. */
+PROCEDURE compileRequest:
+    DEFINE INPUT PARAMETER pcLine AS CHARACTER NO-UNDO.
+
+    DEFINE VARIABLE cReq   AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cProp  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cOpt   AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cStage AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cXref  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE lDebug AS LOGICAL   NO-UNDO.
+    DEFINE VARIABLE lList  AS LOGICAL   NO-UNDO.
+    DEFINE VARIABLE iCount AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE cRead  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
+
+    cReq = fromWire(ENTRY(3, pcLine, gcTab)).
+    cProp = fromWire(ENTRY(4, pcLine, gcTab)).
+    cOpt = fromWire(ENTRY(5, pcLine, gcTab)).
+    cStage = fromWire(ENTRY(6, pcLine, gcTab)).
+    cXref = fromWire(ENTRY(7, pcLine, gcTab)).
+    lDebug = (fromWire(ENTRY(8, pcLine, gcTab)) = "1").
+    lList = (fromWire(ENTRY(9, pcLine, gcTab)) = "1").
+    iCount = INTEGER(fromWire(ENTRY(10, pcLine, gcTab))).
+
+    EMPTY TEMP-TABLE ttUnit.
+    DO i = 1 TO iCount:
+        IMPORT STREAM sIn UNFORMATTED cRead.
+        cRead = RIGHT-TRIM(cRead, CHR(13)).
+        IF ENTRY(1, cRead, gcTab) <> "OXW1" OR ENTRY(2, cRead, gcTab) <> "UNIT" THEN DO:
+            RUN failWith("expected UNIT").
+            RETURN.
+        END.
+        CREATE ttUnit.
+        ASSIGN ttUnit.iSeq = i
+               ttUnit.cName = fromWire(ENTRY(4, cRead, gcTab)).
+    END.
+    FIND ttPath WHERE ttPath.cId = cProp NO-ERROR.
+    IF NOT AVAILABLE ttPath THEN DO:
+        RUN failWith("unknown PROPATH " + cProp).
+        RETURN.
+    END.
+    PROPATH = ttPath.cPath.
+    FOR EACH ttUnit BY ttUnit.iSeq:
+        RUN compileUnit(cReq, ttUnit.cName, cStage, cOpt, cXref, lDebug, lList).
+        IF glQuit THEN RETURN.
+    END.
+    RUN sendLine("END" + gcTab + toWire(cReq)).
+END PROCEDURE.
+
 /* Handles one request line. */
 PROCEDURE dispatch:
     DEFINE INPUT PARAMETER pcLine AS CHARACTER NO-UNDO.
@@ -872,6 +1184,9 @@ PROCEDURE dispatch:
         WHEN "FINGERPRINT" THEN RUN fingerprint(fromWire(ENTRY(3, pcLine, gcTab))).
         WHEN "HASH" THEN RUN hashOne(fromWire(ENTRY(3, pcLine, gcTab)), fromWire(ENTRY(4, pcLine, gcTab))).
         WHEN "HASHSET" THEN RUN hashSet(fromWire(ENTRY(3, pcLine, gcTab)), INTEGER(fromWire(ENTRY(4, pcLine, gcTab)))).
+        WHEN "PROPATH" THEN RUN definePropath(pcLine).
+        WHEN "OPTIONS" THEN RUN defineOptions(pcLine).
+        WHEN "COMPILE" THEN RUN compileRequest(pcLine).
         WHEN "PING" THEN RUN sendLine("PONG" + gcTab + toWire(fromWire(ENTRY(3, pcLine, gcTab)))).
         WHEN "QUIT" THEN DO:
             RUN sendLine("BYE").
@@ -893,6 +1208,7 @@ gcTab = CHR(9).
 gcStartPath = PROPATH.
 FILE-INFO:FILE-NAME = ".".
 gcCwd = FILE-INFO:FULL-PATHNAME.
+COMPILER:MULTI-COMPILE = TRUE.
 
 INPUT STREAM sIn FROM VALUE("/dev/stdin").
 

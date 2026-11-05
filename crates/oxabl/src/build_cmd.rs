@@ -6,9 +6,8 @@ use std::process::ExitCode;
 use oxabl_build::config::BuildWorkspace;
 use oxabl_build::error::BuildError;
 use oxabl_build::plan::{PlanRequest, Probe, plan, render, render_json};
-use oxabl_build::worker::pool::NO_COMMAND;
 
-use crate::build_probe;
+use crate::{build_probe, build_run};
 
 fn fail(error: &BuildError) -> ExitCode {
     if !matches!(error, BuildError::Cancelled) {
@@ -39,6 +38,9 @@ pub struct Options<'a> {
     pub json: bool,
     pub root: Option<&'a Path>,
     pub workers: Option<usize>,
+    pub events: bool,
+    pub report: Option<&'a Path>,
+    pub fail_fast: bool,
 }
 
 pub fn run(options: Options<'_>) -> ExitCode {
@@ -51,6 +53,9 @@ pub fn run(options: Options<'_>) -> ExitCode {
         json,
         root,
         workers,
+        events,
+        report,
+        fail_fast,
     } = options;
     let workspace = match BuildWorkspace::open(root) {
         Ok(workspace) => workspace,
@@ -60,15 +65,16 @@ pub fn run(options: Options<'_>) -> ExitCode {
         return build_probe::run(&workspace, json, workers);
     }
     if !plan_only {
-        eprintln!(
-            "error: {}",
-            if workspace.settings.worker_command.is_empty() {
-                NO_COMMAND
-            } else {
-                "oxabl build compiles in a later release; run oxabl build --plan or --probe"
-            }
+        return build_run::run(
+            &workspace,
+            build_run::Options {
+                workers,
+                json,
+                events,
+                report,
+                fail_fast,
+            },
         );
-        return ExitCode::from(2);
     }
     let probe = probe.then(|| {
         let probe = Probe {

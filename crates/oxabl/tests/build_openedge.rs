@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 mod common;
 
-use common::openedge::{Target, is_hex64, probe};
+use common::openedge::{Target, compile_workspace, is_hex64, probe};
 
 struct Setup {
     target: Target,
@@ -200,4 +200,80 @@ fn databases_loaded_from_one_df_give_one_schema_identity() {
         identities.windows(2).all(|pair| pair[0].1 == pair[1].1),
         "schema identities differ: {identities:?}"
     );
+}
+
+const BASE: &str = "CLASS pkg.Greeter:
+    METHOD PUBLIC CHARACTER Greeting():
+        RETURN \"hello from a class\".
+    END METHOD.
+END CLASS.
+";
+
+const USER: &str = "DEFINE VARIABLE o AS pkg.Greeter NO-UNDO.
+o = NEW pkg.Greeter().
+PUT UNFORMATTED o:Greeting() SKIP.
+";
+
+/// Reads the CRC of each r-code file and runs the user from r-code alone.
+const LOAD: &str = "FILE-INFO:FILE-NAME = \".\".
+PROPATH = FILE-INFO:FULL-PATHNAME + \"/build/r\".
+RCODE-INFO:FILE-NAME = FILE-INFO:FULL-PATHNAME + \"/build/r/pkg/Greeter.r\".
+PUT UNFORMATTED \"CRC-GREETER \" STRING(RCODE-INFO:CRC-VALUE) SKIP.
+RCODE-INFO:FILE-NAME = FILE-INFO:FULL-PATHNAME + \"/build/r/greet.r\".
+PUT UNFORMATTED \"CRC-GREET \" STRING(RCODE-INFO:CRC-VALUE) SKIP.
+RUN greet.p.
+QUIT.
+";
+
+/// A class and its user compile on a real AVM: the class first, both r-code
+/// files exist and load, the user runs from r-code alone, and a second build
+/// compiles nothing.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn compile_a_class_and_its_user() {
+    let setup = setup();
+    let workspace = compile_workspace(&setup.target);
+    workspace.write("src/pkg/Greeter.cls", BASE);
+    workspace.write("src/greet.p", USER);
+
+    let output = workspace.build(&["--json", "--report", "report.json"], 0);
+
+    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one JSON document");
+    assert_eq!(report["summary"]["compiled"], 2, "{report}");
+    assert_eq!(report["summary"]["failed"], 0, "{report}");
+    for unit in ["src/pkg/Greeter.cls", "src/greet.p"] {
+        let found = report["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["path"] == unit)
+            .expect("the unit is in the report");
+        assert_eq!(found["status"], "ok", "{found}");
+    }
+    for rcode in ["build/r/pkg/Greeter.r", "build/r/greet.r"] {
+        let size = std::fs::metadata(workspace.path(rcode))
+            .unwrap_or_else(|e| panic!("{rcode} was not produced: {e}"))
+            .len();
+        assert!(size > 0, "{rcode} is empty");
+    }
+    let xref = std::fs::read_to_string(workspace.path("build/xref/greet.p.xref.xml"))
+        .expect("the XREF-XML of the user");
+    eprintln!("XREF-XML of greet.p:\n{xref}");
+
+    let printed = workspace.run_program(&setup.target, LOAD);
+    eprintln!("the program printed:\n{printed}");
+    assert!(
+        printed.contains("hello from a class"),
+        "the user did not run from r-code: {printed}"
+    );
+    assert!(
+        !printed.contains("CRC-GREETER ?") && !printed.contains("CRC-GREET ?"),
+        "r-code did not load: {printed}"
+    );
+
+    let again = workspace.build(&["--json"], 0);
+    let again: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["summary"]["compiled"], 0, "{again}");
 }

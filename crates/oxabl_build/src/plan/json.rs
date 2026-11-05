@@ -10,7 +10,24 @@ pub const FORMAT: u32 = 1;
 
 fn reason(reason: &Reason) -> Value {
     match reason {
-        Reason::New | Reason::SourceChanged => json!({ "kind": reason.kind(), "paths": [] }),
+        Reason::New
+        | Reason::Failed
+        | Reason::SourceChanged
+        | Reason::PropathChanged
+        | Reason::WorkerChanged => json!({ "kind": reason.kind(), "paths": [] }),
+        Reason::EnvironmentChanged(fields) | Reason::OptionsChanged(fields) => json!({
+            "kind": reason.kind(),
+            "paths": [],
+            "details": fields,
+        }),
+        Reason::Unverified(note) => json!({
+            "kind": reason.kind(),
+            "paths": [],
+            "details": [note],
+        }),
+        Reason::OutputMissing(path) | Reason::OutputChanged(path) => {
+            json!({ "kind": reason.kind(), "paths": [path] })
+        }
         Reason::Named(named) => json!({
             "kind": reason.kind(),
             "paths": named.iter().map(|n| &n.file).collect::<Vec<_>>(),
@@ -66,7 +83,14 @@ fn environment(plan: &Plan) -> Value {
             "identity": identity.to_hex().to_string(),
             "at": now_rfc3339(),
         }),
-        None => json!({ "source": "none", "identity": null, "at": null }),
+        None => match &plan.stored_environment {
+            Some(stored) => json!({
+                "source": "stored",
+                "identity": hex(&stored.identity),
+                "at": stored.at,
+            }),
+            None => json!({ "source": "none", "identity": null, "at": null }),
+        },
     }
 }
 

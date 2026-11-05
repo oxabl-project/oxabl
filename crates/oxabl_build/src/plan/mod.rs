@@ -1,12 +1,13 @@
 mod decide;
 mod json;
 mod reasons;
-mod run;
+pub mod run;
 mod since;
+mod stored;
 mod text;
-mod time;
+pub(crate) mod time;
 
-pub use decide::{Entry, Plan, PlanKeys, decide};
+pub use decide::{Entry, Plan, PlanKeys, StoredInputs, decide};
 pub use json::render_json;
 pub use reasons::{Named, Reason};
 pub use run::{PlanReport, PlanRequest, Probe, plan};

@@ -94,6 +94,9 @@ pub fn render(plan: &Plan, committed: bool, all: bool) -> String {
         out.push_str(&format!(", {} removed", thousands(plan.removed.len())));
     }
     out.push_str(&format!(", store generation {}", plan.generation));
+    if let Some(stored) = &plan.stored_environment {
+        out.push_str(&format!(", environment from build at {}", stored.at));
+    }
     if !committed {
         out.push_str(" (not committed)");
     }

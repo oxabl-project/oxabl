@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use rustc_hash::FxHashSet;
 
 use super::reasons::{Named, Reason};
+use super::stored::Stored;
 use crate::graph::{Graph, Reverse, Scratch};
 use crate::key::compute::{Keyed, UnitKey};
+use crate::output::OutputLayout;
 use crate::paths::PathMap;
 use crate::refresh::Outcome;
+use crate::store::{OutputRow, Results, StoredEnvironment};
 
 /// One unit in the rebuild set, with every reason that applies, first reason
 /// first.
@@ -34,6 +37,19 @@ pub struct Plan {
     pub generation: u64,
     /// The compile keys, when the environment was probed.
     pub keys: Option<PlanKeys>,
+    /// Outputs that stayed current although their stat changed: the stat to
+    /// record, by unit id.
+    pub restat: Vec<(u32, OutputRow)>,
+    /// The environment of the last build, when this plan did not probe.
+    pub stored_environment: Option<StoredEnvironment>,
+}
+
+/// What the store knows from earlier builds.
+pub struct StoredInputs<'a> {
+    pub results: &'a Results,
+    pub layout: Option<&'a OutputLayout>,
+    /// The record of the environment this plan probed.
+    pub environment: Option<&'a str>,
 }
 
 /// The compile keys of a plan, by unit path.
@@ -96,6 +112,7 @@ pub fn decide(
     paths: &PathMap,
     named: &[std::path::PathBuf],
     keyed: Option<Keyed>,
+    stored: Option<StoredInputs<'_>>,
 ) -> Plan {
     let after = &outcome.after;
     let before = &outcome.before;
@@ -130,6 +147,15 @@ pub fn decide(
     let touched_before = reverse_before.reaching(roots.iter().copied());
 
     let mut scratch = Scratch::new(outcome.names.len());
+    let judge = stored.as_ref().filter(|s| s.results.built).map(|s| Stored {
+        outcome,
+        results: s.results,
+        layout: s.layout,
+        root: paths.root(),
+        environment: s.environment,
+        after,
+    });
+    let mut restat = Vec::new();
     let mut rebuild = Vec::new();
     let mut unchanged = Vec::new();
     let mut skipped = Vec::new();
@@ -141,13 +167,39 @@ pub fn decide(
             continue;
         }
         let touched = touched_after.contains_key(&unit) || touched_before.contains_key(&unit);
-        let mut reasons = match touched {
-            true => reasons_of(outcome, unit, &targets, &mut scratch, after, before),
-            false => Vec::new(),
+        let mut reasons = match &judge {
+            Some(judge) => {
+                let in_refresh = match touched {
+                    true => reasons_of(outcome, unit, &targets, &mut scratch, after, before),
+                    false => Vec::new(),
+                };
+                let (named, closure): (Vec<Reason>, Vec<Reason>) = in_refresh
+                    .into_iter()
+                    .filter(|r| matches!(r, Reason::Named(_) | Reason::ClosureChanged { .. }))
+                    .partition(|r| matches!(r, Reason::Named(_)));
+                let verdict = judge.reasons(unit, key, closure.into_iter().next(), &mut scratch);
+                restat.extend(verdict.restat);
+                let mut reasons = verdict.reasons;
+                let leading = usize::from(matches!(
+                    reasons.first(),
+                    Some(Reason::New | Reason::Failed)
+                ));
+                for (at, reason) in named.into_iter().enumerate() {
+                    reasons.insert(leading + at, reason);
+                }
+                reasons
+            }
+            None => match touched {
+                true => reasons_of(outcome, unit, &targets, &mut scratch, after, before),
+                false => Vec::new(),
+            },
         };
         if let Some(key) = key.filter(|key| key.key.is_none()) {
-            let after_new = usize::from(matches!(reasons.first(), Some(Reason::New)));
-            reasons.insert(after_new, Reason::Unkeyable(key.unkeyable.clone()));
+            let leading = usize::from(matches!(
+                reasons.first(),
+                Some(Reason::New | Reason::Failed)
+            ));
+            reasons.insert(leading, Reason::Unkeyable(key.unkeyable.clone()));
         }
         if reasons.is_empty() {
             unchanged.push(name);
@@ -159,6 +211,10 @@ pub fn decide(
         }
     }
 
+    let stored_environment = match (&keyed, &stored) {
+        (None, Some(stored)) if stored.results.built => stored.results.environment.clone(),
+        _ => None,
+    };
     let keys = keyed.map(|keyed| {
         let index = outcome
             .units
@@ -176,6 +232,8 @@ pub fn decide(
         removed: names(outcome, delta.removed_units.iter().copied()),
         unknown,
         generation: outcome.generation,
+        restat,
+        stored_environment,
     }
 }
 

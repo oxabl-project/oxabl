@@ -1,13 +1,15 @@
 //! Cancellation shared by the CLI's signal handler and the pool.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use super::kill;
 
 #[derive(Default)]
 struct Inner {
     cancelled: AtomicBool,
+    at: OnceLock<Instant>,
     groups: Mutex<Vec<u32>>,
 }
 
@@ -28,7 +30,13 @@ impl Cancel {
 
     /// Marks the build cancelled. Pool code stops waiting and stops workers.
     pub fn cancel(&self) {
+        let _ = self.0.at.set(Instant::now());
         self.0.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    /// When the first cancel arrived.
+    pub fn cancelled_at(&self) -> Option<Instant> {
+        self.0.at.get().copied()
     }
 
     pub fn is_cancelled(&self) -> bool {

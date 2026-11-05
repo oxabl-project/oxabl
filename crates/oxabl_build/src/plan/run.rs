@@ -1,15 +1,16 @@
 use std::path::PathBuf;
 use std::thread;
 
-use super::decide::{Plan, decide};
+use super::decide::{Plan, StoredInputs, decide};
 use super::since::changed_since;
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::compute::compute;
 use crate::lock::{LockOutcome, try_acquire};
+use crate::output::OutputLayout;
 use crate::paths::PathMap;
 use crate::refresh::{self, Outcome, RefreshError, Request};
-use crate::store::{Store, StoreError};
+use crate::store::{Results, Store, StoreError};
 use crate::worker::{Cancel, Pool, PoolSpec, random};
 
 /// What `oxabl build --plan` is asked.
@@ -55,9 +56,9 @@ fn refresh_failure(error: RefreshError) -> BuildError {
     }
 }
 
-/// A refresh: its outcome, whether it was written to the store, and the notes
-/// it made.
-type Refreshed = (Outcome, bool, Vec<String>);
+/// A refresh: its outcome, the results it started from, whether it was
+/// written to the store, and the notes it made.
+type Refreshed = (Outcome, Results, bool, Vec<String>);
 
 /// Plan the rebuild of the workspace: refresh the graph, then decide which
 /// units must compile and why. With the workspace lock the refresh is
@@ -98,7 +99,7 @@ pub fn plan(workspace: &BuildWorkspace, request: &PlanRequest) -> Result<PlanRep
         let started = starting.map(|handle| handle.join().expect("the pool start panicked"));
         (refreshed, started)
     });
-    let (outcome, committed, mut notes) = match refreshed {
+    let (outcome, results, committed, mut notes) = match refreshed {
         Ok(refreshed) => refreshed,
         Err(error) => {
             if let Some(Ok(started)) = started {
@@ -120,7 +121,21 @@ pub fn plan(workspace: &BuildWorkspace, request: &PlanRequest) -> Result<PlanRep
         }
     };
     let paths = PathMap::new(&settings.root, settings.dlc.as_deref());
-    let mut plan = decide(&outcome, &paths, named, keyed);
+    let layout = OutputLayout::lower(&workspace.config, &settings.root).ok();
+    let environment = keyed
+        .as_ref()
+        .and_then(|keyed| keyed.environment_record.clone());
+    let mut plan = decide(
+        &outcome,
+        &paths,
+        named,
+        keyed,
+        Some(StoredInputs {
+            results: &results,
+            layout: layout.as_ref(),
+            environment: environment.as_deref(),
+        }),
+    );
     if since.is_some() {
         plan.unknown.clear();
     }
@@ -139,21 +154,40 @@ pub fn plan(workspace: &BuildWorkspace, request: &PlanRequest) -> Result<PlanRep
 fn refresh(workspace: &BuildWorkspace, request: Request) -> Result<Refreshed, BuildError> {
     match try_acquire(&workspace.settings.state_dir) {
         LockOutcome::Held(_lock) => {
-            let (outcome, notes) = refresh_and_commit(workspace, request)?;
-            Ok((outcome, true, notes))
+            let committed = refresh_and_commit(workspace, request)?;
+            committed.store.close().map_err(infrastructure)?;
+            Ok((committed.outcome, committed.results, true, committed.notes))
         }
         LockOutcome::Busy(_) | LockOutcome::Unavailable(_) => {
-            Ok((refresh_snapshot(workspace, request)?, false, Vec::new()))
+            let (outcome, results) = refresh_snapshot(workspace, request)?;
+            Ok((outcome, results, false, Vec::new()))
         }
     }
 }
 
-/// Refresh under the lock and commit. A store found damaged while reading it
-/// is moved aside once and the refresh starts again on a new one.
-fn refresh_and_commit(
+/// A refresh that was committed, with the store still open for writing.
+pub struct Committed {
+    pub outcome: Outcome,
+    pub results: Results,
+    pub store: Store,
+    pub notes: Vec<String>,
+}
+
+/// A refresh asks for the graph when results exist: they are compared with it.
+fn widen(request: Request, results: &Results) -> Request {
+    Request {
+        need_graph: request.need_graph || results.built,
+        ..request
+    }
+}
+
+/// Refresh under the workspace lock, which the caller holds, and commit. A
+/// store found damaged while reading it is moved aside once and the refresh
+/// starts again on a new one.
+pub fn refresh_and_commit(
     workspace: &BuildWorkspace,
     request: Request,
-) -> Result<(Outcome, Vec<String>), BuildError> {
+) -> Result<Committed, BuildError> {
     let directory = &workspace.settings.store_dir;
     let mut notes = Vec::new();
     let mut retried = false;
@@ -163,39 +197,55 @@ fn refresh_and_commit(
         let mut store = opened.store;
         let result = {
             let reading = store.read().map_err(infrastructure)?;
-            refresh::run(workspace, Some(&reading), request)
+            reading.results().map(|results| {
+                let request = widen(request, &results);
+                (refresh::run(workspace, Some(&reading), request), results)
+            })
         };
         match result {
-            Ok(outcome) => {
+            Ok((Ok(outcome), results)) => {
                 store.commit(&outcome.changes).map_err(infrastructure)?;
-                store.close().map_err(infrastructure)?;
-                return Ok((outcome, notes));
+                return Ok(Committed {
+                    outcome,
+                    results,
+                    store,
+                    notes,
+                });
             }
-            Err(RefreshError::Store(StoreError::Corrupt(reason))) if !retried => {
+            Ok((Err(RefreshError::Store(StoreError::Corrupt(reason))), _))
+            | Err(StoreError::Corrupt(reason))
+                if !retried =>
+            {
                 retried = true;
                 drop(store);
                 notes.push(Store::move_aside(directory, &reason).map_err(infrastructure)?);
             }
-            Err(error) => return Err(refresh_failure(error)),
+            Ok((Err(error), _)) => return Err(refresh_failure(error)),
+            Err(error) => return Err(infrastructure(error)),
         }
     }
 }
 
 /// Refresh on a snapshot of the store without writing. A store this process
 /// cannot read is the same as none.
-fn refresh_snapshot(workspace: &BuildWorkspace, request: Request) -> Result<Outcome, BuildError> {
+fn refresh_snapshot(
+    workspace: &BuildWorkspace,
+    request: Request,
+) -> Result<(Outcome, Results), BuildError> {
     let store = Store::open_reader(&workspace.settings.store_dir).map_err(infrastructure)?;
     let result = match store {
         Some(mut store) => {
             let reading = store.read().map_err(infrastructure)?;
-            refresh::run(workspace, Some(&reading), request)
+            let results = reading.results().map_err(infrastructure)?;
+            let request = widen(request, &results);
+            refresh::run(workspace, Some(&reading), request).map(|outcome| (outcome, results))
         }
-        None => refresh::run(workspace, None, request),
+        None => refresh::run(workspace, None, request).map(|outcome| (outcome, Results::default())),
     };
     match result {
-        Err(RefreshError::Store(StoreError::Corrupt(_))) => {
-            refresh::run(workspace, None, request).map_err(refresh_failure)
-        }
+        Err(RefreshError::Store(StoreError::Corrupt(_))) => refresh::run(workspace, None, request)
+            .map(|outcome| (outcome, Results::default()))
+            .map_err(refresh_failure),
         other => other.map_err(refresh_failure),
     }
 }
