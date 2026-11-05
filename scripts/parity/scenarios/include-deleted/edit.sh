@@ -1,0 +1,1 @@
+rm inc/members.i

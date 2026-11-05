@@ -1,0 +1,6 @@
+[workspace]
+name = "parity"
+
+[workspace.sources]
+directories = ["src"]
+include_paths = ["inc", "src"]

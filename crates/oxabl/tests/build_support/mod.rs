@@ -128,3 +128,38 @@ pub fn run_of(output: Output) -> Run {
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
 }
+
+impl Workspace {
+    /// Run `git` in the workspace with a fixed identity and no global config.
+    pub fn git(&self, arguments: &[&str]) {
+        let output = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(arguments)
+            .current_dir(self.root())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Make the workspace a git repository with everything committed.
+    pub fn commit_all(&self, message: &str) {
+        if !self.path(".git").exists() {
+            self.git(&["init", "--quiet"]);
+        }
+        self.write(".gitignore", ".oxabl/\n");
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "--quiet", "-m", message]);
+    }
+}

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::decide::{Plan, decide};
+use super::since::changed_since;
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::lock::{LockOutcome, try_acquire};
@@ -13,6 +14,9 @@ use crate::store::{Store, StoreError};
 pub struct PlanRequest {
     /// The files to treat as changed, as host paths.
     pub named: Vec<PathBuf>,
+    /// A git revision: every file that differs from it counts as changed.
+    /// Excludes `named`.
+    pub since: Option<String>,
 }
 
 /// The plan, and how the refresh behind it ran.
@@ -43,8 +47,18 @@ fn refresh_failure(error: RefreshError) -> BuildError {
 /// commits nothing.
 pub fn plan(workspace: &BuildWorkspace, request: &PlanRequest) -> Result<PlanReport, BuildError> {
     let settings = &workspace.settings;
+    let since = match (&request.since, request.named.is_empty()) {
+        (Some(_), false) => {
+            return Err(BuildError::Usage(
+                "--since and --files cannot be combined".to_string(),
+            ));
+        }
+        (Some(rev), true) => Some(changed_since(&settings.root, rev)?),
+        (None, _) => None,
+    };
+    let named = since.as_deref().unwrap_or(&request.named);
     let refresh_request = Request {
-        need_graph: !request.named.is_empty(),
+        need_graph: !named.is_empty(),
     };
     let (outcome, committed, mut notes) = match try_acquire(&settings.state_dir) {
         LockOutcome::Held(_lock) => {
@@ -58,7 +72,10 @@ pub fn plan(workspace: &BuildWorkspace, request: &PlanRequest) -> Result<PlanRep
         ),
     };
     let paths = PathMap::new(&settings.root, settings.dlc.as_deref());
-    let mut plan = decide(&outcome, &paths, &request.named);
+    let mut plan = decide(&outcome, &paths, named);
+    if since.is_some() {
+        plan.unknown.clear();
+    }
     if !committed {
         plan.generation = outcome.stored_generation;
     }
