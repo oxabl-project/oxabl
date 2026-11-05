@@ -25,9 +25,11 @@ fn option<T>(encoder: &mut Encoder, value: Option<&T>, each: impl FnOnce(&mut En
 }
 
 /// The hash of everything besides file contents that decides what an analysis
-/// finds: the oxabl version, the source and preprocessor settings and the
-/// schema files. When it changes, every node is analysed again.
+/// finds: the oxabl version, the hash of the running executable, the source
+/// and preprocessor settings and the schema files. When it changes, every node
+/// is analysed again.
 pub fn analysis_identity(
+    binary: &[u8; 32],
     config: &WorkspaceConfig,
     settings: &BuildSettings,
     schema_files: &[PathBuf],
@@ -36,6 +38,7 @@ pub fn analysis_identity(
     let preprocessor = &config.workspace.preprocessor;
     let mut encoder = Encoder::new();
     encoder.str(env!("CARGO_PKG_VERSION"));
+    encoder.hash(binary);
 
     encoder.str("sources");
     let paths = |encoder: &mut Encoder, items: &[PathBuf]| {

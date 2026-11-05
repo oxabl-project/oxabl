@@ -1,5 +1,6 @@
 mod analyse;
 mod assemble;
+mod binary;
 mod convert;
 mod files;
 mod identity;

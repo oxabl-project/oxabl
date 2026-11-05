@@ -41,6 +41,54 @@ pub struct FileRow {
     pub tracked_by: u8,
 }
 
+/// The hash of the running executable, with the stat it was taken at, so that
+/// an unchanged executable is not read again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryRow {
+    pub path: String,
+    pub size: u64,
+    pub mtime_ns: i64,
+    pub ctime_ns: i64,
+    pub ino: u64,
+    pub dev: u64,
+    pub observed_ns: i64,
+    pub hash: [u8; 32],
+}
+
+impl BinaryRow {
+    /// Six 8-byte fields, the hash, then the path.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(80 + self.path.len());
+        out.extend_from_slice(&self.size.to_le_bytes());
+        out.extend_from_slice(&self.mtime_ns.to_le_bytes());
+        out.extend_from_slice(&self.ctime_ns.to_le_bytes());
+        out.extend_from_slice(&self.ino.to_le_bytes());
+        out.extend_from_slice(&self.dev.to_le_bytes());
+        out.extend_from_slice(&self.observed_ns.to_le_bytes());
+        out.extend_from_slice(&self.hash);
+        out.extend_from_slice(self.path.as_bytes());
+        out
+    }
+
+    /// `None` for bytes that are not an encoded row.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 80 {
+            return None;
+        }
+        let word = |at: usize| <[u8; 8]>::try_from(&bytes[at..at + 8]).ok();
+        Some(BinaryRow {
+            size: u64::from_le_bytes(word(0)?),
+            mtime_ns: i64::from_le_bytes(word(8)?),
+            ctime_ns: i64::from_le_bytes(word(16)?),
+            ino: u64::from_le_bytes(word(24)?),
+            dev: u64::from_le_bytes(word(32)?),
+            observed_ns: i64::from_le_bytes(word(40)?),
+            hash: <[u8; 32]>::try_from(&bytes[48..80]).ok()?,
+            path: String::from_utf8(bytes[80..].to_vec()).ok()?,
+        })
+    }
+}
+
 /// `tracked_by` bits.
 pub mod tracked {
     /// A unit found by the walk.

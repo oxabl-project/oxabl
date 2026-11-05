@@ -24,5 +24,6 @@ pub use results::{
     Results, SECTIONS, SUCCESS, StoredEnvironment,
 };
 pub use rows::{
-    Analysis, Edge, FileRow, ListingRow, Observation, StoredAnalysis, Unresolved, tracked,
+    Analysis, BinaryRow, Edge, FileRow, ListingRow, Observation, StoredAnalysis, Unresolved,
+    tracked,
 };

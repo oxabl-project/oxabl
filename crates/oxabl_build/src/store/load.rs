@@ -1,7 +1,7 @@
 use rusqlite::Transaction;
 
-use super::meta::{self, ANALYSIS_IDENTITY, GENERATION};
-use super::rows::{FileRow, ListingRow, StoredAnalysis};
+use super::meta::{self, ANALYSIS_IDENTITY, BINARY_HASH, GENERATION};
+use super::rows::{BinaryRow, FileRow, ListingRow, StoredAnalysis};
 use super::{Store, StoreError};
 
 /// A read transaction: everything read through it is one snapshot of the store.
@@ -14,6 +14,8 @@ pub struct Reading<'a> {
 pub struct Loaded {
     pub generation: u64,
     pub identity: Option<[u8; 32]>,
+    /// The stored hash of the executable that wrote the store.
+    pub binary: Option<BinaryRow>,
     /// The canonical path of each path id; index 0 is unused.
     pub paths: Vec<String>,
     pub files: Vec<(u32, FileRow)>,
@@ -32,6 +34,7 @@ impl Loaded {
         Loaded {
             generation: 0,
             identity: None,
+            binary: None,
             paths: vec![String::new()],
             files: Vec::new(),
             listings: Vec::new(),
@@ -66,6 +69,8 @@ impl Reading<'_> {
             Some(bytes) => Some(hash_of(bytes)?),
             None => None,
         };
+
+        let binary = meta::get(&self.tx, BINARY_HASH)?.and_then(|bytes| BinaryRow::decode(&bytes));
 
         let mut paths = vec![String::new()];
         let mut statement = self.tx.prepare("SELECT id, path FROM paths ORDER BY id")?;
@@ -142,6 +147,7 @@ impl Reading<'_> {
         Ok(Loaded {
             generation,
             identity,
+            binary,
             paths,
             files,
             listings,

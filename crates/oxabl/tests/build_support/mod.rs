@@ -100,7 +100,12 @@ impl Workspace {
     }
 
     pub fn command(&self, arguments: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_oxabl"));
+        self.command_of(Path::new(env!("CARGO_BIN_EXE_oxabl")), arguments)
+    }
+
+    /// `arguments` for `oxabl build`, run by the executable at `program`.
+    pub fn command_of(&self, program: &Path, arguments: &[&str]) -> Command {
+        let mut command = Command::new(program);
         command
             .arg("build")
             .arg("--root")

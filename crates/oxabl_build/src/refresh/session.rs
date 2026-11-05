@@ -6,6 +6,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::RefreshError;
 use super::assemble::{Parts, assemble};
+use super::binary::executable_hash;
 use super::files::{Current, Files, Job};
 use super::identity::analysis_identity;
 use super::intern::Interner;
@@ -56,7 +57,8 @@ pub fn run(
         .chain(&schema_warnings)
         .map(ToString::to_string)
         .collect();
-    let identity = analysis_identity(config, settings, &schema_files);
+    let (binary, binary_row) = executable_hash(loaded.binary.as_ref(), observed_ns);
+    let identity = analysis_identity(&binary, config, settings, &schema_files);
     let identity_changed = loaded.identity != Some(identity);
 
     let interner = Interner::from_names(loaded.paths);
@@ -179,6 +181,7 @@ pub fn run(
         generation,
         loaded_generation: loaded.generation,
         identity: identity_changed.then_some(identity),
+        binary: binary_row,
         unit_ids,
         orphan_rows,
         interner,

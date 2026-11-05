@@ -4,6 +4,7 @@ use super::{Store, StoreError};
 
 pub const GENERATION: &str = "generation";
 pub const ANALYSIS_IDENTITY: &str = "analysis_identity";
+pub const BINARY_HASH: &str = "binary_hash";
 const CLEAN: &str = "clean";
 
 pub fn get(conn: &rusqlite::Connection, key: &str) -> Result<Option<Vec<u8>>, StoreError> {

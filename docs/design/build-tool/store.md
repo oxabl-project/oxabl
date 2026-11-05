@@ -188,6 +188,7 @@ CREATE TABLE environments (
 | `clean` | `0` or `1` |
 | `generation` | The current generation, a decimal integer. |
 | `analysis_identity` | 32 bytes, see [Analysis identity](#analysis-identity). |
+| `binary_hash` | The hash of the executable that last wrote the store, with its stat: six little-endian 8-byte fields (`size`, `mtime_ns`, `ctime_ns`, `ino`, `dev`, `observed_ns`), the 32-byte hash, then the path in UTF-8. |
 | `environment` | The canonical environment record of the last probe (JSON, no secrets). |
 | `environment_identity` | 32 bytes. |
 | `environment_at` | RFC 3339 time of the last probe. |
@@ -255,11 +256,29 @@ The analysis identity is BLAKE3 in derive-key mode with the context
 
 1. the `oxabl_build` crate version (`CARGO_PKG_VERSION`), because any oxabl release can
    change what the analysis finds;
-2. `[workspace.sources]`: `directories`, `include_paths`, `root_relative_include_paths`,
+2. the BLAKE3 hash of the running executable (see below), because two builds of one version
+   can analyse differently: every build between two releases has the version of the last
+   release;
+3. `[workspace.sources]`: `directories`, `include_paths`, `root_relative_include_paths`,
    `run_extensions`, `case_insensitive_lookup`, `encoding`, `fallback_encoding`,
    `root_extensions`, and `[build].exclude`, each in its canonical form;
-3. `[workspace.preprocessor]`: every field, in declaration order;
-4. the content hash of each `[workspace.schema]` file, in order.
+4. `[workspace.preprocessor]`: every field, in declaration order;
+5. the content hash of each `[workspace.schema]` file, in order.
+
+The executable is the one that runs the refresh, so a caller other than the `oxabl` binary
+(the language server, the daemon) uses its own executable. On Linux oxabl opens
+`/proc/self/exe`, which names the running file even when its path was replaced; elsewhere it
+opens `std::env::current_exe()`. A build that is the same file shares a store with itself:
+a release build and a debug build of one commit do not, because their bytes differ.
+
+The hash is cached in `meta.binary_hash` with the stat of the executable. The hash is reused
+when `size`, `mtime_ns`, `ctime_ns`, `ino` and `dev` are equal and the stored stat was not
+racy (the rule in [Steps](#steps), step 4). Otherwise oxabl reads the executable and hashes it
+again, so a plan with no change does one `open` and `fstat` for this input. A refresh stores
+the row again only when it hashed the executable again; that never moves the generation.
+
+If oxabl cannot open, stat or read the executable, the identity takes a random value that no
+stored identity equals. Every node is analysed again and the version alone is never trusted.
 
 When the stored identity differs, the refresh deletes every `analyses` row and analyses all
 nodes. It keeps `paths`, `files`, `listings`, `results` and `outputs`. Keys that come out
