@@ -119,3 +119,12 @@ INPUT /* stream */ CLOSE.
 DO ON STOP UNDO, LEAVE:
     STOP /* condition */ .
 END.
+
+/* WHILE before the counting loop in a block header */
+REPEAT WHILE lMore iCount = 1 TO 10:
+    lMore = iCount < 5.
+END.
+
+DO WHILE lMore iCount = 1 TO 10 BY 2:
+    lMore = iCount < 5.
+END.
