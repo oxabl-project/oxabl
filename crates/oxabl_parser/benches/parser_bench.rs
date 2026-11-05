@@ -78,6 +78,11 @@ fn parser_benchmarks(c: &mut Criterion) {
     bench_fixture(&mut group, "datasets", "bench_parser_datasets.abl");
     bench_fixture(
         &mut group,
+        "compiler_forms",
+        "bench_parser_compiler_forms.abl",
+    );
+    bench_fixture(
+        &mut group,
         "type_spellings",
         "bench_parser_type_spellings.abl",
     );

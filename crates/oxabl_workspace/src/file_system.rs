@@ -1,7 +1,8 @@
-use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use rustc_hash::FxHashMap;
 
 use crate::encoding::SourceDecoding;
 
@@ -160,13 +161,16 @@ fn find_on_disk_ignoring_case(dir: &Path, relative: &Path) -> Vec<PathBuf> {
     level
 }
 
-/// [`FileSystem`] implementation backed by an in-memory `HashMap`.
+/// [`FileSystem`] implementation backed by an in-memory hash map.
+///
+/// The map is unseeded so a lookup costs the same on every run; a random seed
+/// changes how often a probe compares whole paths.
 ///
 /// Used for hermetic tests and for the LSP server (where file contents
 /// come from document sync, not disk).
 #[derive(Debug, Default)]
 pub struct InMemoryFileSystem {
-    files: HashMap<PathBuf, Arc<str>>,
+    files: FxHashMap<PathBuf, Arc<str>>,
 }
 
 impl InMemoryFileSystem {

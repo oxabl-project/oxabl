@@ -914,15 +914,7 @@ impl Parser<'_> {
                 self.advance();
                 if !self.check(Kind::RightParen) {
                     loop {
-                        if matches!(
-                            self.peek().kind,
-                            Kind::Input | Kind::Output | Kind::InputOutput
-                        ) {
-                            self.advance();
-                        }
-                        if let Ok(arg) = self.parse_expression() {
-                            arguments.push(arg);
-                        }
+                        arguments.push(self.parse_call_argument()?);
                         if !self.check(Kind::Comma) {
                             break;
                         }
@@ -956,10 +948,10 @@ impl Parser<'_> {
                     self.advance();
                     arguments.push(self.parse_expression()?);
                 }
-                // Additional comma-separated arguments
+                // Additional comma-separated arguments, with parameter modes
                 while self.check(Kind::Comma) {
                     self.advance();
-                    arguments.push(self.parse_expression()?);
+                    arguments.push(self.parse_call_argument()?);
                 }
             }
             self.expect_kind(Kind::RightParen, "Expected ')' after DYNAMIC-FUNCTION")?;
@@ -999,45 +991,47 @@ impl Parser<'_> {
                 self.parse_identifier().ok(); // consume parent table name
             }
 
-            // Lock type may appear before or after WHERE (ABL is flexible).
-            let lock_type_before = self.parse_lock_type();
-
-            // Optional WHERE clause
-            let where_clause = if self.check(Kind::KwWhere) {
-                self.advance();
-                Some(Box::new(self.parse_expression()?))
-            } else {
-                None
-            };
-
-            // Trailing lock type (canonical position); prefer the first one found
-            let lock_type_after = self.parse_lock_type();
-            let lock_type = if lock_type_before != oxabl_ast::LockType::ShareLock {
-                lock_type_before
-            } else {
-                lock_type_after
-            };
-
-            // Optional USE-INDEX hint (e.g. CAN-FIND(t WHERE cond USE-INDEX idx))
-            if self.check(Kind::UseIndex) {
-                self.advance(); // consume USE-INDEX
-                if Self::can_be_identifier(self.peek().kind) {
-                    self.advance(); // consume index name
+            // The record-phrase options may come in any order; the first explicit
+            // lock type wins and WHERE may appear once.
+            let mut lock_type = None;
+            let mut where_clause = None;
+            let mut no_error = false;
+            loop {
+                match self.peek().kind {
+                    Kind::NoLock | Kind::ShareLock | Kind::ExclusiveLock | Kind::Preprop => {
+                        let parsed = self.parse_lock_type();
+                        lock_type.get_or_insert(parsed);
+                    }
+                    Kind::KwWhere if where_clause.is_none() => {
+                        self.advance();
+                        where_clause = Some(Box::new(self.parse_expression()?));
+                    }
+                    Kind::UseIndex => {
+                        self.advance();
+                        if Self::can_be_identifier(self.peek().kind) {
+                            self.advance(); // consume index name
+                        }
+                    }
+                    // USING field [AND field]...
+                    Kind::Using => {
+                        self.advance();
+                        self.parse_postfix()?;
+                        while self.check(Kind::And) {
+                            self.advance();
+                            self.parse_postfix()?;
+                        }
+                    }
+                    Kind::NoWait => {
+                        self.advance();
+                    }
+                    Kind::NoError => {
+                        self.advance();
+                        no_error = true;
+                    }
+                    _ => break,
                 }
             }
-
-            // Optional NO-WAIT — don't block if record is locked by another user
-            if self.check(Kind::NoWait) {
-                self.advance();
-            }
-
-            // Optional NO-ERROR
-            let no_error = if self.check(Kind::NoError) {
-                self.advance();
-                true
-            } else {
-                false
-            };
+            let lock_type = lock_type.unwrap_or(oxabl_ast::LockType::ShareLock);
 
             self.expect_kind(
                 Kind::RightParen,
@@ -1333,6 +1327,41 @@ impl Parser<'_> {
                 end: self.peek().end as u32,
             },
         })
+    }
+
+    /// One call argument: `[INPUT|OUTPUT|INPUT-OUTPUT] [TABLE|TABLE-HANDLE|DATASET|
+    /// DATASET-HANDLE|DATA-SOURCE] expr [IN FRAME|BROWSE name] [BIND|BY-VALUE|
+    /// BY-REFERENCE|APPEND]...`. Only the operand is kept, like the other call forms.
+    fn parse_call_argument(&mut self) -> ParseResult<Expression> {
+        if matches!(
+            self.peek().kind,
+            Kind::Input | Kind::Output | Kind::InputOutput
+        ) {
+            self.advance();
+        }
+        if matches!(
+            self.peek().kind,
+            Kind::Table
+                | Kind::TableHandle
+                | Kind::Dataset
+                | Kind::DatasetHandle
+                | Kind::DataSource
+        ) {
+            self.advance();
+        }
+        let argument = self.parse_expression()?;
+        if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
+            self.advance(); // consume IN
+            self.advance(); // consume FRAME or BROWSE
+            self.consume_widget_name();
+        }
+        while matches!(
+            self.peek().kind,
+            Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+        ) {
+            self.advance();
+        }
+        Ok(argument)
     }
 
     pub fn parse_function_call(&mut self, name: Identifier) -> ParseResult<Expression> {

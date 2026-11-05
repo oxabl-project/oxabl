@@ -98,6 +98,9 @@ impl Parser<'_> {
     /// nested or top-level — is stamped at its own dispatch. Genuinely
     /// token-less synthetic nodes (nothing consumed) collapse to a zero-width
     /// span at `lo` (R1.4).
+    // Forced: left to the inliner, it lands in another codegen unit after
+    // unrelated edits and every statement returned is copied once more.
+    #[inline(always)]
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         let lo = self.peek().start as u32;
         // Anchor the unmodelled-form harvest range on this statement's first
@@ -112,6 +115,25 @@ impl Parser<'_> {
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
         Ok(stmt)
+    }
+
+    /// The compiler tolerates one stray comma right after a statement's
+    /// terminating period (`RUN a.p.,`); it belongs to no statement. Called
+    /// by the statement loops once the statement is stored: checking inside
+    /// `parse_statement` costs a copy of every statement it returns.
+    #[inline]
+    pub(crate) fn skip_stray_comma(&mut self) {
+        if self.check(Kind::Comma) {
+            self.skip_comma_after_period();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn skip_comma_after_period(&mut self) {
+        if self.prev_token_kind() == Some(Kind::Period) {
+            self.advance();
+        }
     }
 
     /// Whether the statement at the cursor is `word(...)` with the paren directly
@@ -2699,8 +2721,14 @@ impl Parser<'_> {
         let then_lo = self.peek().start as u32;
         let mut then_branch = if self.check(Kind::Do) {
             self.parse_do_statement()?
+        } else if self.check(Kind::End) {
+            // Empty THEN branch: END belongs to the enclosing block, as for ELSE below.
+            self.stmt(StatementKind::Empty)
         } else {
-            self.parse_statement()?
+            let stmt = self.parse_statement()?;
+            // A stray comma may stand between the branch and ELSE.
+            self.skip_stray_comma();
+            stmt
         };
         then_branch.span = Span {
             start: then_lo,
@@ -3441,6 +3469,7 @@ impl Parser<'_> {
             }
 
             self.expect_kind(Kind::Then, "Expected THEN after WHEN value")?;
+            let empty_before_end = self.check(Kind::End);
 
             // parse statements until next WHEN, OTHERWISE, or END
             let mut body = Vec::new();
@@ -3452,15 +3481,40 @@ impl Parser<'_> {
                 self.parse_block_statement_recovering(&mut body);
             }
 
+            if body.is_empty() && matches!(self.peek().kind, Kind::Otherwise | Kind::When) {
+                self.record_error(ParseError {
+                    message: "Expected a statement after THEN".to_string(),
+                    span: self.current_span(),
+                });
+            }
+
             crate::parser::debug_assert_expr_sibling_order(&values);
             when_branches.push(WhenBranch { values, body });
+
+            if empty_before_end {
+                // An empty last branch ends the CASE; END belongs to the enclosing block.
+                return Ok(self.stmt(StatementKind::Case {
+                    expression,
+                    when_branches,
+                    otherwise: None,
+                }));
+            }
         }
 
         let otherwise = if self.check(Kind::Otherwise) {
             self.advance();
+            let empty_before_end = self.check(Kind::End);
             let mut body = Vec::new();
             while !self.check(Kind::End) && !self.at_end() {
                 self.parse_block_statement_recovering(&mut body);
+            }
+            if empty_before_end {
+                // As for an empty WHEN branch, END belongs to the enclosing block.
+                return Ok(self.stmt(StatementKind::Case {
+                    expression,
+                    when_branches,
+                    otherwise: Some(body),
+                }));
             }
             Some(body)
         } else {
@@ -7589,6 +7643,7 @@ impl Parser<'_> {
             && !self.check(Kind::PreprocEndif)
         {
             stmts.push(self.parse_statement()?);
+            self.skip_stray_comma();
         }
         crate::parser::debug_assert_stmt_sibling_order(&stmts);
         Ok(stmts)
