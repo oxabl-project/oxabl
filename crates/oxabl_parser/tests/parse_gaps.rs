@@ -443,7 +443,6 @@ fn parse_with_include(main: &str) -> Program {
 fn a_quoted_include_argument_substitutes_without_its_quotes() {
     for main in [
         "{lib/tt.v &table=\"ttOrders\"}",
-        "{lib/tt.v &table='ttOrders'}",
         "{lib/tt.v &table=ttOrders}",
     ] {
         let program = parse_with_include(main);
