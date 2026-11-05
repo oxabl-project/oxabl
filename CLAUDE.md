@@ -163,7 +163,10 @@ cargo bench -p oxabl_common --bench source_map_bench
 
 **When the `/codspeed` skills are available, use them for benchmark work** — setup, optimization, and flamegraph analysis.
 
-**When implementing new features**, consider whether a new benchmark is warranted. If the feature adds a new parsing construct, expression type, or hot path, add a benchmark or extend an existing fixture file to cover it. This ensures CodSpeed catches regressions as the codebase grows.
+**When implementing new features**, consider whether a new benchmark is warranted. If the feature adds a new parsing construct, expression type, or hot path, add a benchmark to cover it. This ensures CodSpeed catches regressions as the codebase grows.
+
+- Put new forms in a **new fixture with its own bench** (as `compiler_forms` and `type_spellings` do), not in an existing fixture. CodSpeed compares a bench by name, so a grown fixture reads as a regression, and it hides a real cost of the change in the old input.
+- Measure the existing benches against the base **before** you add a fixture, with the same input on both sides. When the machine is loaded, count instructions instead of wall time: `valgrind --tool=callgrind --toggle-collect='*parse_program*' oxabl conformance -j 1 <file>` on a base and a candidate release binary.
 
 ## ASD-STE100 Simplified Technical English
 
