@@ -191,7 +191,7 @@ fn compare_mirror(
 fn workspace_classes(outcome: &Outcome, layout: &Layout) -> FxHashMap<String, (String, String)> {
     let mut names: FxHashMap<String, (String, String)> = FxHashMap::default();
     for (id, placed) in outcome.units.iter().zip(&layout.units) {
-        if let Some(declared) = placed.declared.name() {
+        if let Some(declared) = placed.class_name() {
             names
                 .entry(declared.to_ascii_lowercase())
                 .or_insert_with(|| (declared.to_string(), outcome.name(*id).to_string()));
@@ -298,6 +298,7 @@ pub fn compute(
             let path = outcome.name(active_ids[k]);
             match placed.declared {
                 Declared::Name(_) => {}
+                _ if placed.derived.is_some() => {}
                 Declared::Conditional => {
                     verdict.add_reason(4, format!("conditional-name: class statement in {path}"));
                 }

@@ -114,19 +114,151 @@ fn a_computed_include_name_in_the_code_gives_no_key() {
     assert_unkeyable(&plan, "src/a.p", &["unresolved-include: .i in src/a.p"]);
 }
 
+/// A class whose name comes from a preprocessor definition.
+fn defined_class(name: &str) -> String {
+    format!("&GLOBAL-DEFINE n {name}\nCLASS {{&n}}:\nEND CLASS.\n")
+}
+
 #[test]
-fn a_class_whose_statement_comes_from_an_include_gives_no_key() {
+fn a_class_whose_statement_comes_from_an_include_gets_the_name_of_its_path() {
     let workspace = Keyed::simple();
-    workspace.write("src/inc/head.i", "CLASS pkg.Foo:\nEND CLASS.\n");
-    workspace.write("src/Foo.cls", "{inc/head.i}\n");
+    workspace.write("src/pkg/stmt.i", "CLASS pkg.Inc:\nEND CLASS.\n");
+    workspace.write("src/pkg/Inc.cls", "{pkg/stmt.i}\n");
+
+    let plan = workspace.plan();
+
+    assert_eq!(plan.unit("src/pkg/Inc.cls")["compile_name"], "pkg/Inc.cls");
+    assert!(
+        plan.key("src/pkg/Inc.cls").is_some(),
+        "{}",
+        plan.unit("src/pkg/Inc.cls")
+    );
+}
+
+#[test]
+fn a_class_named_by_a_define_gets_the_name_of_its_path() {
+    let workspace = Keyed::simple();
+    workspace.write(
+        "src/pkg/Pp.cls",
+        "&GLOBAL-DEFINE n pkg.Pp\nCLASS {&n}:\nEND CLASS.\n",
+    );
+
+    let plan = workspace.plan();
+
+    assert_eq!(plan.unit("src/pkg/Pp.cls")["compile_name"], "pkg/Pp.cls");
+    assert!(
+        plan.key("src/pkg/Pp.cls").is_some(),
+        "{}",
+        plan.unit("src/pkg/Pp.cls")
+    );
+}
+
+#[test]
+fn a_derived_class_name_gives_a_key_and_an_output_collision_still_skips() {
+    let workspace = Keyed::new(
+        "directories = [\"a\", \"b\"]\ninclude_paths = [\"a\", \"b\"]",
+        "",
+    );
+    workspace.write("a/pkg/Pp.cls", &defined_class("pkg.Pp"));
+    workspace.write("b/pkg/Pp.cls", &defined_class("pkg.Pp"));
+    workspace.write("a/pkg/Qq.cls", &defined_class("pkg.Qq"));
+
+    let plan = workspace.plan();
+
+    assert_eq!(plan.unit("a/pkg/Qq.cls")["compile_name"], "pkg/Qq.cls");
+    assert!(plan.key("a/pkg/Pp.cls").is_some());
+    assert!(plan.key("a/pkg/Qq.cls").is_some());
+    assert_eq!(plan.action("b/pkg/Pp.cls"), "skip");
+}
+
+#[test]
+fn a_class_with_a_derived_name_is_a_class_in_the_closure_of_its_users() {
+    let workspace = Keyed::simple();
+    workspace.write(
+        "src/use.p",
+        "DEFINE VARIABLE o AS pkg.Thin NO-UNDO.\no = NEW pkg.Thin().\n",
+    );
+    workspace.write("src/pkg/Thin.cls", &defined_class("pkg.Thin"));
+    let before = workspace.plan();
+    assert!(
+        before.key("src/use.p").is_some(),
+        "{}",
+        before.unit("src/use.p")
+    );
+
+    workspace.write(
+        "src/pkg/Thin.cls",
+        "&GLOBAL-DEFINE n pkg.Thin\nCLASS {&n}:\nMETHOD PUBLIC VOID Go():\nEND METHOD.\nEND CLASS.\n",
+    );
+    let after = workspace.plan();
+
+    assert_ne!(before.key("src/use.p"), after.key("src/use.p"));
+    assert!(after.key("src/use.p").is_some());
+    assert!(after.key("src/pkg/Thin.cls").is_some());
+}
+
+#[test]
+fn a_derived_class_name_that_two_entries_could_give_keeps_the_reason() {
+    let workspace = Keyed::new("include_paths = [\"src\", \"src/pkg\"]", "");
+    workspace.write("src/pkg/Amb.cls", &defined_class("pkg.Amb"));
+    workspace.write(
+        "src/pkg/Cond.cls",
+        "&IF DEFINED(web_variant) = 0 &THEN\nCLASS pkg.Cond:\n&ELSE\nCLASS pkg.WebCond:\n&ENDIF\nEND CLASS.\n",
+    );
 
     let plan = workspace.plan();
 
     assert_unkeyable(
         &plan,
-        "src/Foo.cls",
-        &["computed-name: class statement in src/Foo.cls"],
+        "src/pkg/Amb.cls",
+        &["computed-name: class statement in src/pkg/Amb.cls"],
     );
+    assert_unkeyable(
+        &plan,
+        "src/pkg/Cond.cls",
+        &["conditional-name: class statement in src/pkg/Cond.cls"],
+    );
+}
+
+#[test]
+fn a_path_that_no_class_name_can_spell_keeps_the_reason() {
+    let workspace = Keyed::simple();
+    workspace.write("src/my.dir/Foo.cls", &defined_class("my.dir.Foo"));
+
+    let plan = workspace.plan();
+
+    assert_unkeyable(
+        &plan,
+        "src/my.dir/Foo.cls",
+        &["computed-name: class statement in src/my.dir/Foo.cls"],
+    );
+}
+
+#[test]
+fn with_root_relative_include_paths_a_derived_class_name_keeps_the_reason() {
+    let workspace = Keyed::new(
+        "directories = [\"a\"]\nroot_relative_include_paths = [\".\"]",
+        "",
+    );
+    workspace.write("a/pkg/Foo.cls", &defined_class("pkg.Foo"));
+
+    let plan = workspace.plan();
+
+    assert_unkeyable(
+        &plan,
+        "a/pkg/Foo.cls",
+        &["computed-name: class statement in a/pkg/Foo.cls"],
+    );
+}
+
+#[test]
+fn a_derived_class_name_that_collides_with_an_external_class_is_a_class_conflict_k8() {
+    let workspace = acme_workspace(false);
+    workspace.write("src/Acme/Util/X.cls", &defined_class("Acme.Util.X"));
+
+    let plan = workspace.plan();
+
+    assert_unkeyable(&plan, "src/q.p", &["class-conflict: Acme.Util.X"]);
 }
 
 #[test]
@@ -183,7 +315,7 @@ fn a_type_statement_after_a_directive_gets_its_declared_name() {
 }
 
 #[test]
-fn a_class_name_chosen_by_a_condition_gives_no_key() {
+fn a_class_name_chosen_by_a_condition_gets_the_name_of_its_path() {
     let workspace = Keyed::simple();
     workspace.write(
         "src/pkg/Order.cls",
@@ -202,11 +334,8 @@ fn a_class_name_chosen_by_a_condition_gives_no_key() {
 
     for unit in ["Order", "Only", "Part"] {
         let path = format!("src/pkg/{unit}.cls");
-        assert_unkeyable(
-            &plan,
-            &path,
-            &[&format!("conditional-name: class statement in {path}")],
-        );
+        assert_eq!(plan.unit(&path)["compile_name"], format!("pkg/{unit}.cls"));
+        assert!(plan.key(&path).is_some(), "{}", plan.unit(&path));
     }
 }
 

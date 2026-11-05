@@ -133,6 +133,48 @@ pub fn base_directory(unit: &str, declared: Option<&str>) -> Result<String, Stri
     })
 }
 
+/// The package root and the class name of a class unit whose own text does
+/// not give its name, when exactly one directory can be the package root:
+/// the unit's directory or an ancestor of it that is on the unit PROPATH
+/// built for it. The compiler checks the `CLASS` name against the compile
+/// name, so that is the only name the unit can compile with. A unit whose
+/// real name differs fails with error 12629, and a failed unit is never
+/// cached.
+pub fn derive_base(search: &Search, paths: &PathMap, unit: &str) -> Option<(String, String)> {
+    let mut found: Option<(String, String)> = None;
+    let mut directory = Some(directory_of(unit).to_string());
+    while let Some(base) = directory {
+        let on_propath = || {
+            let propath = search.propath(paths, &base);
+            propath.iter().skip(1).any(|entry| *entry == base)
+        };
+        if let Some(name) = class_name_below(&base, unit)
+            && on_propath()
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((base.clone(), name));
+        }
+        directory = match base.rsplit_once('/') {
+            Some((parent, _)) if !parent.is_empty() => Some(parent.to_string()),
+            _ if base != "." => Some(".".to_string()),
+            _ => None,
+        };
+    }
+    found
+}
+
+/// The class name of `unit` when its package root is `base`: the path below
+/// `base` without its extension, with `/` as `.`. A name with a `.` in a
+/// component cannot be read back from the path.
+fn class_name_below(base: &str, unit: &str) -> Option<String> {
+    let name = below(base, unit)?;
+    let stem = name.rsplit_once('.')?.0;
+    (!stem.is_empty() && !stem.contains('.') && !stem.split('/').any(str::is_empty))
+        .then(|| stem.replace('/', "."))
+}
+
 /// Whether the unit is a class source.
 pub fn is_class_unit(unit: &str) -> bool {
     Path::new(unit)
