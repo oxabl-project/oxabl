@@ -180,17 +180,11 @@ fn collect(
     }
 }
 
-/// Case a block-type keyword to match the resolved keyword case.
-fn cased_type(ty: &str, style: &StyleGuide) -> String {
-    match style.keyword_case {
-        oxabl_style::KeywordCase::Lowercase => ty.to_ascii_lowercase(),
-        _ => ty.to_string(),
-    }
-}
-
 /// Insert the block-type keyword after a bare closing `END` on `content`, or
-/// return `None` if the `END` is already typed or absent (idempotent).
-fn apply_end_type(content: &str, ty: &str) -> Option<String> {
+/// return `None` if the `END` is already typed or absent (idempotent). The
+/// keyword takes the case the style names, and under `Preserve` the case of the
+/// `END` it follows.
+fn apply_end_type(content: &str, ty: &str, style: &StyleGuide) -> Option<String> {
     let toks = tokenize(content);
     let end_idx = toks.iter().rposition(|t| t.kind == Kind::End)?;
     let end_tok = &toks[end_idx];
@@ -200,11 +194,18 @@ fn apply_end_type(content: &str, ty: &str) -> Option<String> {
             return None;
         }
     }
+    let ty = match style.keyword_case {
+        oxabl_style::KeywordCase::Uppercase => ty.to_ascii_uppercase(),
+        oxabl_style::KeywordCase::Lowercase => ty.to_ascii_lowercase(),
+        oxabl_style::KeywordCase::Preserve => {
+            keywords::case_like(ty, &content[end_tok.start..end_tok.end])
+        }
+    };
     let at = end_tok.end;
     let mut s = String::with_capacity(content.len() + ty.len() + 1);
     s.push_str(&content[..at]);
     s.push(' ');
-    s.push_str(ty);
+    s.push_str(&ty);
     s.push_str(&content[at..]);
     Some(s)
 }
@@ -461,16 +462,14 @@ pub(crate) fn print(
         }
     }
 
-    // `end_with_type`: insert the (correctly-cased) type keyword after each
-    // typed block's bare END. Runs after recasing so an inserted keyword is
-    // consistent with the rest.
+    // `end_with_type`: insert the type keyword after each typed block's bare
+    // END. Runs after recasing so the END it follows already has its final case.
     if style.end_with_type {
         for (line, ty) in &typed_ends {
             if tab_at[*line].is_some() {
                 continue;
             }
-            let cased = cased_type(ty, style);
-            if let Some(updated) = apply_end_type(&content[*line], &cased) {
+            if let Some(updated) = apply_end_type(&content[*line], ty, style) {
                 content[*line] = updated;
             }
         }

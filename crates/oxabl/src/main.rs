@@ -12,6 +12,7 @@ mod baseline;
 mod build_cmd;
 mod build_probe;
 mod build_run;
+mod display_path;
 mod explain;
 mod watch;
 
@@ -32,16 +33,20 @@ use oxabl_workspace::{
 use serde::Serialize;
 
 #[derive(ClapParser)]
-#[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
+#[command(
+    name = "oxabl",
+    version,
+    about = "High-performance tooling for Progress ABL"
+)]
 enum Cli {
     /// Lint ABL source and report formatting drift — the one pre-commit gate.
     ///
-    /// Two channels, deliberately not merged (KTD7): lint diagnostics are
+    /// Two channels, deliberately not merged: lint diagnostics are
     /// span-anchored findings, while format drift is a per-file boolean. Folding
     /// the second into the first would mean inventing spans that do not exist,
     /// so `--json` carries two findings keys instead of one array.
     ///
-    /// Exit codes (R15): `0` with neither a lint finding nor drift, `1` when
+    /// Exit codes: `0` with neither a lint finding nor drift, `1` when
     /// either is present (or a file could not be read or analyzed), `2` on a
     /// usage or config error. `--json` adds `6` for a serialization failure,
     /// matching `analyze`.
@@ -73,7 +78,7 @@ enum Cli {
         /// Skip preprocessing: do not expand includes or evaluate `&IF`.
         ///
         /// Preprocessing is **on by default** here, unlike `conformance` and
-        /// `analyze` (R19). A lint gate that does not expand includes cannot see
+        /// `analyze`. A lint gate that does not expand includes cannot see
         /// the symbols an include declares, so it reports every one of them as
         /// `undefined-symbol` — a flood of findings about the caller's own
         /// correct code. The language server always preprocesses, so leaving it
@@ -105,7 +110,7 @@ enum Cli {
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
 
-        /// Suppress lint findings; parse/semantic errors still gate (R16).
+        /// Suppress lint findings; parse/semantic errors still gate.
         ///
         /// A **filter on the reported set**, not a skipped run — the same meaning
         /// `analyze --no-lint` has always had. The pipeline that produces lint
@@ -115,7 +120,7 @@ enum Cli {
         #[arg(long)]
         no_lint: bool,
 
-        /// Suppress the format-drift channel: report lint findings only (R16).
+        /// Suppress the format-drift channel: report lint findings only.
         #[arg(long)]
         no_format: bool,
 
@@ -179,7 +184,7 @@ enum Cli {
     /// This is the parser-refinement instrument, not a user-facing check — it
     /// answers "how much ABL can oxabl parse today?", which is a question about
     /// oxabl rather than about the caller's source. It is deliberately
-    /// **hidden** from `--help` (R17/R23): it stays reachable and documented for
+    /// **hidden** from `--help`: it stays reachable and documented for
     /// the corpus loop and the A/B gate without growing the advertised CLI
     /// surface.
     #[command(hide = true)]
@@ -215,10 +220,10 @@ enum Cli {
     ///
     /// This is the semantic layer's introspection tool, not a gate: it answers
     /// "what did oxabl understand about this file?", so it **exits 0 whatever it
-    /// finds** (KTD9). A file full of lint findings and a clean one are the same
+    /// finds**. A file full of lint findings and a clean one are the same
     /// success here; `oxabl check` is the command whose exit code means something.
     ///
-    /// Deliberately **hidden** from `--help` (R23), alongside `conformance`: it is
+    /// Deliberately **hidden** from `--help`, alongside `conformance`: it is
     /// a debugging instrument for oxabl's own model, so it earns its own command
     /// but not a place in the advertised surface. It stays fully reachable and
     /// `oxabl analyze --help` works as normal.
@@ -227,8 +232,8 @@ enum Cli {
     /// the file cannot be read, `3` on a fatal preprocessing failure (no model to
     /// dump), `4` on a contained internal panic, `6` on a serialization failure,
     /// `7` on an unrecognized `--format`. Single-file by design, which is why a
-    /// panic aborts here rather than being reported-and-skipped as `check` does
-    /// (R24): there is no "rest of the walk" to protect.
+    /// panic aborts here rather than being reported-and-skipped as `check` does:
+    /// there is no "rest of the walk" to protect.
     #[command(hide = true)]
     Analyze {
         /// Path to the ABL source file to analyze.
@@ -287,6 +292,9 @@ enum Cli {
     /// [workspace.style] > the safe non-mangling default. Any file that cannot be
     /// formatted faithfully (parse errors, or output that would alter the token
     /// stream) is left byte-for-byte unchanged and the reason is reported.
+    ///
+    /// An `oxabl.toml` this run cannot use is a config error (exit 2), as for
+    /// `check`; `--style` skips the file instead.
     Format {
         /// Path to a single ABL file or a directory to format
         /// (`.p`/`.w`/`.cls`/`.v` under a directory).
@@ -829,6 +837,15 @@ fn resolve_style_arg(value: &str) -> Result<StyleGuide, String> {
         .map_err(|e| format!("--style `{value}`: invalid style TOML: {e}"))
 }
 
+/// The message of an `oxabl.toml` the run could not use, if any: the whole file
+/// was discarded, so continuing would run on defaults the user did not write.
+fn config_error(warnings: &[ConfigWarning]) -> Option<&str> {
+    warnings.iter().find_map(|w| match w {
+        ConfigWarning::Config(msg) => Some(msg.as_str()),
+        _ => None,
+    })
+}
+
 /// `oxabl format`: resolve configuration once, then render the shared
 /// [`FormatPipeline`]'s decision for each discovered file per the selected mode.
 ///
@@ -887,10 +904,9 @@ fn run_format(
     // `--style` names a whole guide, so it leaves nothing in `oxabl.toml` for the
     // run to need: it short-circuits discovery entirely rather than resolving a
     // config only to override it. That is what makes `--style` work in a tree
-    // whose `oxabl.toml` cannot be parsed. Without it, a malformed config still
-    // degrades to defaults with one `warning:` line (R7) — `format` rewrites
-    // layout rather than answering a pass/fail question, so unlike `check` (A3) it
-    // has nothing to report wrongly.
+    // whose `oxabl.toml` cannot be parsed. Without it, a config the run cannot use
+    // is a config error (exit 2), as for `check`: `--check` answers a pass/fail
+    // question, and a write would reformat the tree in a style nobody chose.
     //
     // The source encoding is the exception: `--style` still has to read the files
     // the way the tree is stored, so it takes the encoding from the config and
@@ -908,6 +924,10 @@ fn run_format(
         ),
         None => PipelineConfig::resolve_style_only(path, &ConfigOverrides::default()),
     };
+    if let Some(msg) = config_error(&warnings) {
+        eprintln!("error: {msg}");
+        return ExitCode::from(2);
+    }
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
@@ -1288,16 +1308,15 @@ fn run_check(
     };
     let (config, warnings) = PipelineConfig::resolve(path, &overrides);
 
-    // The one place the gate hardens where every other command degrades (A3): an
-    // `oxabl.toml` the resolver could not use is a **config error**, exit 2.
+    // An `oxabl.toml` the resolver could not use is a **config error**, exit 2.
     //
     // `ConfigWarning::Config` means the whole file was discarded, so the run would
     // proceed on defaults — and defaults are not what the user wrote. A dropped
     // `[workspace.lint]` table takes every `off` with it, so the gate reports
     // findings for rules the project switched off, and reports them under a green
-    // exit code if nothing else fires. `format`, `analyze`, `conformance` and the
-    // LSP keep degrading with a warning: none of them answers a pass/fail
-    // question, so none of them can answer it wrongly.
+    // exit code if nothing else fires. `format` and `watch` refuse likewise.
+    // `analyze`, `explain`, `conformance` and the LSP keep degrading with a
+    // warning: they dump or serve what oxabl found rather than gate on it.
     //
     // "Could not use" is broader than "malformed TOML": `StyleGuide` denies
     // unknown fields, so a syntactically valid file naming a key oxabl does not
@@ -1307,10 +1326,7 @@ fn run_check(
     // Every other warning stays a warning. A `.df` that would not load, or a
     // `--schema` directory that matched nothing (A2), leaves the rest of the
     // configuration intact, so the run still means what it says.
-    if let Some(msg) = warnings.iter().find_map(|w| match w {
-        ConfigWarning::Config(msg) => Some(msg),
-        _ => None,
-    }) {
+    if let Some(msg) = config_error(&warnings) {
         eprintln!("error: {msg}");
         return ExitCode::from(2);
     }
@@ -2092,7 +2108,7 @@ fn report_include_findings(
     unit: &mut Unit,
 ) {
     for finding in found {
-        let display = finding.path.display().to_string();
+        let display = display_path::spell(&finding.path, root);
         let mut diagnostic = finding.diagnostic.clone();
         diagnostic.span.file = ROOT_FILE_ID;
         let text = texts.get(&finding.path).map(str::to_owned);
@@ -2116,7 +2132,7 @@ fn report_include_findings(
                 for step in &expansion.chain {
                     via.push(site_label(&previous.0, previous.1.as_deref(), step.site));
                     previous = (
-                        step.path.display().to_string(),
+                        display_path::spell(&step.path, root),
                         texts.get(&step.path).map(str::to_owned),
                     );
                 }
@@ -2155,7 +2171,7 @@ fn report_include_findings(
                         };
                         previous = texts.get(&step.path).map(str::to_owned);
                         CheckJsonChainStep {
-                            path: step.path.display().to_string(),
+                            path: display_path::spell(&step.path, root),
                             site: step.site.map(|at| CheckJsonSpan {
                                 start: at.start,
                                 end: at.end,

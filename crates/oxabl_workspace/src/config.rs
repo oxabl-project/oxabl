@@ -446,7 +446,8 @@ pub struct SourcesConfig {
     pub case_insensitive_lookup: bool,
 
     /// The character encoding of source files: `"utf-8"` (the default),
-    /// `"iso-8859-1"` or `"windows-1252"`.
+    /// `"iso-8859-1"` or `"windows-1252"`. `"utf8"`, `"latin1"` and `"cp1252"`
+    /// are accepted as aliases.
     ///
     /// It applies to every file read from disk: roots, include files, classes and
     /// `.df` schema files, and `oxabl format` writes a file back in the same
