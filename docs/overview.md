@@ -56,7 +56,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
 - Build system
   - Incremental compiling (via the Progress compiler)
   - Remote cache
-  - Status: Experimental, not available. `oxabl build` (a hidden command) refreshes a persisted dependency graph, says which units must rebuild and why (`--plan`), and compiles them through AVM workers that your own command starts, in dependency order, with retry, crash handling and cancellation. An overlay file (`--config-overlay`) lets a tool that owns the environment of a workspace give the machine-specific settings for one run, and `--print-config` shows where each setting came from. A local cache of compile outputs lets two copies of a workspace share compiles, and a binary built with the `remote-cache` feature also shares them through an oxabl-cache server. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build).
+  - Status: Experimental. `oxabl build` (checked against OpenEdge 12.8 by an opt-in suite) refreshes a persisted dependency graph, says which units must rebuild and why (`--plan`), and compiles them through AVM workers that your own command starts, in dependency order, with retry, crash handling and cancellation. An overlay file (`--config-overlay`) lets a tool that owns the environment of a workspace give the machine-specific settings for one run, and `--print-config` shows where each setting came from. A local cache of compile outputs lets two copies of a workspace share compiles, and a binary built with the `remote-cache` feature also shares them through an oxabl-cache server. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build).
 
 ## Project Status
 
@@ -86,7 +86,7 @@ Requirements:
   - Postfix operations, and
   - Has error recovery via synchronization on period boundaries
   - Still getting new features, bug fixes, and improvements.
-- CLI entry points in `crates/oxabl`. The advertised surface is exactly four commands — `check`, `format`, `lsp`, and `schema` — plus two **hidden but fully supported** instruments described below.
+- CLI entry points in `crates/oxabl`. The advertised surface is `check`, `explain`, `format`, `lsp`, `schema` and `build` (experimental), plus two **hidden but fully supported** instruments described below.
   - `check` walks a directory (or single file) for ABL files and reports lint findings plus formatting drift in two channels. This is the pre-commit gate: exit 1 when either channel has something to say.
   - `format` fixes layout in place, or reports/prints without writing (`--check`, `--stdout`).
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
@@ -105,7 +105,7 @@ Current Work: continued dogfood-driven trust-hardening, and typing `:`-qualified
 
 ### `oxabl build --plan`
 
-`oxabl build --plan` reads `oxabl.toml` and refreshes a graph of the working tree. It then lists the compile units that a change reaches. It compiles nothing. It starts no worker unless you add `--probe` (see [Compile keys](#compile-keys)). The command is hidden from `oxabl --help` until the build is complete. The design is in `docs/design/build-tool.md`.
+`oxabl build --plan` reads `oxabl.toml` and refreshes a graph of the working tree. It then lists the compile units that a change reaches. It compiles nothing. It starts no worker unless you add `--probe` (see [Compile keys](#compile-keys)). The command is listed in `oxabl --help`. The design is in `docs/design/build-tool.md`.
 
 Until a build has recorded results, a plan lists what changed since the last refresh. After that it compares each unit with its last result, see [What the plan compares](#oxabl-build---plan).
 
@@ -188,7 +188,7 @@ The PROPATH of a unit is `$OUT`, the `root_relative_include_paths` joined to the
 | K1 | `degraded: <path>: <reason>` | The unit, or a class in its closure, has an edge set that may miss dependencies. An include is judged inside the unit that includes it, not as a root. |
 | K2 | `unresolved-include: <name> in <path>` | An include does not resolve, in any branch. |
 | K3 | `unresolved-class: <name> in <path>` | A class does not resolve, unless its name starts with a prefix of `[build.external_packages]` and a listed library is on the PROPATH with a SHA-256 digest. A directory never supplies a prefix. |
-| K4 | `computed-name: <name> in <path>` | An include or class name is computed. This includes a class unit whose `CLASS` statement oxabl cannot read in its own text. |
+| K4 | `computed-name: <name> in <path>`, `conditional-name: class statement in <path>` | An include or class name is computed. This includes a class unit whose `CLASS` statement oxabl cannot read in its own text. A class unit whose `CLASS`, `INTERFACE` or `ENUM` statement, or its name, is inside an `&IF` block is `conditional-name`: the branch the compile takes picks the name, and oxabl does not choose one. |
 | K5 | `outside-workspace: <path>`, `unreadable: <path>` | A file in the closure is outside the root and `$DLC`, or cannot be read. |
 | K6 | `environment-unknown`, `unhashable-parameter: <name>`, `unhashable-library: $LIB:<name>`, `dlc-mirror-mismatch: <path>` | The environment is not known, a startup parameter names a directory, a `$LIB:` entry is a directory, or the worker's copy of a `$DLC` file differs from `[workspace.sources].dlc`. |
 | K7 | `not-on-propath`, `shadowed-by: <path>`, `output-collision: <path>`, `package-mismatch: <name>`, `package-root-not-on-propath: <dir>` | The unit cannot compile where it is. Its action is `skip`. Of units whose r-code lands on one path (compared ignoring ASCII case), the smallest path compiles. |
@@ -215,7 +215,7 @@ The closure of a unit is every file the compiler can read for it: its includes a
 
 ### `oxabl build`
 
-`oxabl build` compiles the units that the plan lists. It is hidden from `oxabl --help`. It needs `[build.workers].command` (the command that starts one AVM worker, see `docs/design/build-tool/worker-protocol.md`) and `[build].output` (the directory for the r-code). Oxabl ships no Progress code but its own small worker program. The build runs in this order:
+`oxabl build` compiles the units that the plan lists. It needs `[build.workers].command` (the command that starts one AVM worker, see `docs/design/build-tool/worker-protocol.md`) and `[build].output` (the directory for the r-code). Oxabl ships no Progress code but its own small worker program. The build runs in this order:
 
 1. It takes the workspace lock (`<state>/build.lock`) and, in the r-code directory, `.oxabl-build.lock`. A second build stops with exit code 3 and the process id of the first.
 2. It refreshes the graph and, at the same time, starts the workers, probes the environment and hashes the worker-side files. It computes the compile key of every unit and the plan.
@@ -255,13 +255,27 @@ A mode that writes (`ci`, `developer`) offers every verified set; the credential
 
 - **V1, inputs.** The unit and every file of its closure are hashed again after the unit finished and must equal the hashes of the key. A `$DLC` file is hashed again by the worker that compiled, from the copy the AVM compiles with. A file that changed during the compile (an edit while the unit compiles) keeps the unit out of the caches; the summary counts such units, and the next build compiles them again.
 - **V2, schema.** Before a set is released the databases are imaged again, split across the idle workers, by a check that started after the unit finished. It must give the schema identities of the probe. Checks start when `[build.verify].batch_units` sets are waiting (500) or the oldest has waited `batch_interval` (`"60s"`), and once at the end. A check that differs, or fails, stops every held and every later write of the build. A cancel releases only the sets that a check already released.
-- **V3, reads.** The compile also writes a private `XREF-XML` (the one you ask for with `[build.outputs].xref_format = "xml"` serves, otherwise a file under the stage that is not an output). Every `Source` file name must be the unit or in its closure, as the compiler resolved it. R-code under the output directory and members of a procedure library are skipped when the closure holds a class: class resolution is protected by the plan rules. A unit that fails V3 is not written; its result gets no key and the file in its note, so it compiles at each build and the plan says `unverified: <file>`. The analysis missed an input: please report it.
+- **V3, reads.** The compile also writes a private `XREF-XML` (the one you ask for with `[build.outputs].xref_format = "xml"` serves, otherwise a file under the stage that is not an output). Every `Source` file name must be the unit or in its closure, as the compiler resolved it. R-code under the output directory and members of a procedure library are skipped when the closure holds a class: class resolution is protected by the plan rules. A unit that fails V3 is not written; its result gets no key and the file in its note, so it compiles at each build and the plan says `unverified: <file>`. The analysis missed an input: please report it. On OpenEdge 12.8 the compiler lists a `Source` element only for a file that holds a reference. An include with only preprocessor definitions has none, and no class file has one (not a class from source, from the output directory or from a procedure library), so V3 cannot check how those were resolved. The plan rules protect them: classes are keyed only with one PROPATH id and without an external name collision, and every closure file counts by its path and bytes.
 
 With `[build.verify].reads = false`, or `[build.outputs].xref_format = "text"`, nothing is written to any cache, and the build says so. A cache that does not write (`read-only`, `--no-cache`) skips verification.
 
 **The seam.** `oxabl::build::cache::ArtifactCache` has `fetch` (all keys at once, one outcome per key as each completes, every set installed below a stage and complete before it is reported), `uploader` (one `push` per verified set, with the artifact paths and the paths of the files in the output directories, never their bytes; `finish` returns one `StoreOutcome` per key), `writes` and `fill`. A panic in a cache call is caught and is a miss. `Layered` asks a near cache first and a far cache for the misses, and stores what the far cache gave in the near one.
 
 **The worker program.** `PROPATH`, `OPTIONS` and `COMPILE` requests are answered by `OK`, `MSG`, `DONE` and `END`. The worker writes one small procedure for each shape of `COMPILE` statement into its stage, because the phrases (`XREF-XML`, `MIN-SIZE`, `GENERATE-MD5`, ...) are keywords; `languages` and `options` hold only letters, digits and `-_:,.`. The stage path that oxabl sends starts with `./`, because the compiler removes a leading `.` from a relative XREF file name. A failed unit always has a reason: the compiler messages, the error that stopped the compile, or a note that the worker gave none. The PROPATH entries that oxabl sends are relative to the worker's working directory (the output directory first), `$DLC` entries (the worker expands them) or the paths of `[build.libraries]`.
+
+#### Testing against a real AVM
+
+The black-box tests of `oxabl build` use a fake AVM. Two opt-in test files run it against OpenEdge. Every test in them is `#[ignore]`, and a test fails, never skips, when its variables are missing.
+
+- `crates/oxabl/tests/build_openedge.rs` needs an installation or container with databases. `OXABL_OPENEDGE_COMMAND` is the worker command as a JSON array with `{program}` and `{root}` (it connects the databases through its `.pf` and starts in `{root}`). `OXABL_OPENEDGE_WORKSPACE` is a host directory that the worker sees, `OXABL_OPENEDGE_WORKER_ROOT` is the same directory as the worker sees it, `OXABL_OPENEDGE_PROVERSION` is the version as `PROVERSION` prints it (`12.8`), and `OXABL_OPENEDGE_DATABASES` lists the connected databases in order. `OXABL_OPENEDGE_WORKERS` (default `1,4,8`) gives the worker counts of the timing test.
+- `crates/oxabl/tests/build_openedge_scratch.rs` creates scratch databases from the empty database of the installation and never touches another. `OXABL_OPENEDGE_EXEC` is the prefix that runs a program where OpenEdge is (`["docker","exec","-i","-w","{root}","<container>"]`), `OXABL_OPENEDGE_SCRATCH` is a directory there, and `OXABL_OPENEDGE_DLC` (default `/psc/dlc`) is the installation. It also reads the workspace, worker root and version variables above.
+
+```bash
+cargo test -p oxabl --test build_openedge -- --ignored --nocapture --test-threads 1
+cargo test -p oxabl --test build_openedge_scratch -- --ignored --nocapture --test-threads 1
+```
+
+The compile tests build the fixture in `crates/oxabl/tests/fixtures/openedge/`. They compare r-code with a mask: r-code is not byte-deterministic, so two files are equivalent when they have the same size and differ only where repeated compiles of one unit in one root differ (and two bytes around each such byte). The tests print `EVIDENCE` lines for what the compiler lists in `XREF-XML` and which class a unit is compiled against.
 
 ### Lint configuration
 

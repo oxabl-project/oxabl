@@ -344,7 +344,6 @@ enum Cli {
     /// configuration error (including workers that disagree), `3` when the
     /// store, the workspace or the workers could not be used, `130` when the
     /// command is cancelled.
-    #[command(hide = true)]
     Build {
         /// Print the plan and compile nothing.
         #[arg(long)]

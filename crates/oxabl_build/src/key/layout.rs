@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use rustc_hash::FxHashMap;
 
 use crate::paths::propath::{Placement, Search, base_directory, is_class_unit, place};
-use crate::paths::{PathMap, declared_name};
+use crate::paths::{Declared, PathMap, declared_name};
 use crate::refresh::{Outcome, parallel};
 
 /// One unit's place in the build.
@@ -16,8 +16,9 @@ pub struct Placed {
     /// package directory does not match the class it declares.
     pub propath: Option<usize>,
     pub class: bool,
-    /// The name a class unit declares, when its own text states one.
-    pub declared: Option<String>,
+    /// What a class unit's own text says about its name; `Absent` for a
+    /// unit that is not a class.
+    pub declared: Declared,
     pub placement: Placement,
 }
 
@@ -29,9 +30,11 @@ pub struct Layout {
     pub units: Vec<Placed>,
 }
 
-fn read_declared(paths: &PathMap, unit: &str) -> Option<String> {
-    let bytes = std::fs::read(paths.absolute(unit)).ok()?;
-    declared_name(&String::from_utf8_lossy(&bytes))
+fn read_declared(paths: &PathMap, unit: &str) -> Declared {
+    match std::fs::read(paths.absolute(unit)) {
+        Ok(bytes) => declared_name(&String::from_utf8_lossy(&bytes)),
+        Err(_) => Declared::Absent,
+    }
 }
 
 /// The stem r-code of `name` lands at, lower-cased: r-code is often deployed
@@ -67,11 +70,13 @@ fn skip_collisions(outcome: &Outcome, units: &mut [Placed]) {
 
 /// Places every unit of `outcome`.
 pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
-    let declared: Vec<Option<String>> = parallel::map(&outcome.units, |id| {
+    let declared: Vec<Declared> = parallel::map(&outcome.units, |id| {
         let path = outcome.name(*id);
-        is_class_unit(path)
-            .then(|| read_declared(paths, path))
-            .flatten()
+        if is_class_unit(path) {
+            read_declared(paths, path)
+        } else {
+            Declared::Absent
+        }
     });
     let mut by_base: FxHashMap<String, usize> = FxHashMap::default();
     let mut ids: FxHashMap<Vec<String>, usize> = FxHashMap::default();
@@ -79,7 +84,7 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
     let mut staged: Vec<(Option<usize>, Result<String, String>)> = Vec::new();
     for (id, declared) in outcome.units.iter().zip(&declared) {
         let path = outcome.name(*id);
-        let base = base_directory(path, declared.as_deref());
+        let base = base_directory(path, declared.name());
         let propath = base.as_ref().ok().map(|base| {
             *by_base.entry(base.clone()).or_insert_with(|| {
                 let propath = search.propath(paths, base);
@@ -101,7 +106,7 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
             (Some(propath), Ok(base)) => place(
                 path,
                 base,
-                declared[*at].is_some(),
+                declared[*at].name().is_some(),
                 &propaths[*propath],
                 is_file,
             ),

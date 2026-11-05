@@ -130,6 +130,87 @@ fn a_class_whose_statement_comes_from_an_include_gives_no_key() {
 }
 
 #[test]
+fn a_class_statement_after_an_endif_gets_its_declared_name() {
+    let workspace = Keyed::simple();
+    workspace.write(
+        "src/pkg/Price.cls",
+        "&IF DEFINED(order) = 0 &THEN\n  &SCOPED-DEFINE order web-order\n&ENDIF\n\nCLASS pkg.Price:\nEND CLASS.\n",
+    );
+
+    let plan = workspace.plan();
+
+    assert_eq!(
+        plan.unit("src/pkg/Price.cls")["compile_name"],
+        "pkg/Price.cls"
+    );
+    assert!(
+        plan.key("src/pkg/Price.cls").is_some(),
+        "{}",
+        plan.unit("src/pkg/Price.cls")
+    );
+}
+
+#[test]
+fn a_type_statement_after_a_directive_gets_its_declared_name() {
+    let workspace = Keyed::simple();
+    let sources = [
+        (
+            "src/pkg/Api.cls",
+            "&SCOPED-DEFINE x true\nINTERFACE pkg.Api:\nEND INTERFACE.\n",
+        ),
+        (
+            "src/pkg/Color.cls",
+            "&UNDEFINE x\nENUM pkg.Color:\nEND ENUM.\n",
+        ),
+        (
+            "src/pkg/Base.cls",
+            "&MESSAGE hi\nFINAL CLASS pkg.Base:\nEND CLASS.\n",
+        ),
+        (
+            "src/pkg/Lead.cls",
+            "&IF 1 = 1 &THEN\n&ENDIF CLASS pkg.Lead:\nEND CLASS.\n",
+        ),
+    ];
+    for (path, body) in sources {
+        workspace.write(path, body);
+    }
+
+    let plan = workspace.plan();
+
+    for (path, _) in sources {
+        assert!(plan.key(path).is_some(), "{}", plan.unit(path));
+    }
+}
+
+#[test]
+fn a_class_name_chosen_by_a_condition_gives_no_key() {
+    let workspace = Keyed::simple();
+    workspace.write(
+        "src/pkg/Order.cls",
+        "&IF DEFINED(web_variant) = 0 &THEN\nCLASS pkg.Order:\n&ELSE\nCLASS pkg.WebOrder:\n&ENDIF\nEND CLASS.\n",
+    );
+    workspace.write(
+        "src/pkg/Only.cls",
+        "&IF DEFINED(web_variant) = 0 &THEN\nCLASS pkg.Only:\n&ENDIF\nEND CLASS.\n",
+    );
+    workspace.write(
+        "src/pkg/Part.cls",
+        "CLASS pkg.&IF DEFINED(web_variant) = 0 &THEN Part &ELSE WebPart &ENDIF:\nEND CLASS.\n",
+    );
+
+    let plan = workspace.plan();
+
+    for unit in ["Order", "Only", "Part"] {
+        let path = format!("src/pkg/{unit}.cls");
+        assert_unkeyable(
+            &plan,
+            &path,
+            &[&format!("conditional-name: class statement in {path}")],
+        );
+    }
+}
+
+#[test]
 fn a_closure_file_outside_the_workspace_gives_no_key_k5() {
     let outside = tempfile::TempDir::new().unwrap();
     let external = outside.path().join("ext.i");
