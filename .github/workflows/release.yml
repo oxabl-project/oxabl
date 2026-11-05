@@ -13,6 +13,13 @@ jobs:
   release-please:
     name: Release Please
     runs-on: ubuntu-latest
+    # Several merges in a row start one run each, and every run reads the whole
+    # history with the release token: together they hit its API rate limit.
+    # One run at a time; GitHub keeps only the newest pending run. A running
+    # one is never cancelled, so a release it is tagging always completes.
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
     steps:
