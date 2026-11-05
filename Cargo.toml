@@ -25,5 +25,6 @@ members = [
     "crates/oxabl_scope",
     "crates/oxabl_effects",
     "crates/oxabl_nulls",
+    "crates/oxabl_build",
 ]
 resolver = "2"

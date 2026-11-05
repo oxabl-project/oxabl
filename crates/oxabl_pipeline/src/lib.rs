@@ -79,7 +79,10 @@ mod parity;
 pub mod position;
 mod reverse;
 
-pub use config::{ConfigOverrides, ConfigWarning, PipelineConfig, resolve_from_config};
+pub use config::{
+    ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
+    resolve_from_config_deferred,
+};
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.

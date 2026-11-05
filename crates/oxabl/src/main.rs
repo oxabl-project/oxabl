@@ -9,6 +9,7 @@ use std::time::Instant;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod baseline;
+mod build_cmd;
 mod explain;
 mod watch;
 
@@ -328,6 +329,31 @@ enum Cli {
     /// no hand-maintained mirror. Editors (e.g. Even Better TOML) consume it for
     /// autocomplete/validation inside `oxabl.toml`.
     Schema,
+    /// Plan the ABL build: which units must compile, and why.
+    ///
+    /// Refreshes the persisted dependency graph from the working tree (reading
+    /// only the files that changed), then lists the units that a change reaches.
+    /// Exit codes: `0` when a plan was printed, `2` on a usage or configuration
+    /// error, `3` when the store or the workspace could not be used.
+    #[command(hide = true)]
+    Build {
+        /// Print the plan and compile nothing.
+        #[arg(long)]
+        plan: bool,
+
+        /// With `--plan`, also list the units that do not need to rebuild.
+        #[arg(long, requires = "plan")]
+        all: bool,
+
+        /// Treat these files as changed, as if each one had been edited.
+        #[arg(long, num_args = 1.., value_name = "PATH", requires = "plan")]
+        files: Vec<PathBuf>,
+
+        /// The workspace root. Defaults to the nearest ancestor of the current
+        /// directory that holds an `oxabl.toml`.
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
 }
 
 enum FileResult {
@@ -571,6 +597,12 @@ fn main() -> ExitCode {
         Cli::Lsp => run_lsp(),
         Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
         Cli::Schema => run_schema(),
+        Cli::Build {
+            plan,
+            all,
+            files,
+            root,
+        } => build_cmd::run(plan, all, &files, root.as_deref()),
     }
 }
 

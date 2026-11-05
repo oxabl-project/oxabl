@@ -8,14 +8,25 @@ use schemars::r#gen::SchemaGenerator;
 use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject};
 use serde::{Deserialize, Serialize};
 
+use crate::build_config::BuildConfig;
+
 /// Top-level configuration deserialized from `oxabl.toml`.
+///
+/// An unknown top-level table is an error, so a misspelled `[biuld]` is not a
+/// silent no-op.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub workspace: WorkspaceSection,
+
+    /// How `oxabl build` keeps state and compiles (`[build]`).
+    #[serde(default)]
+    pub build: BuildConfig,
 }
 
 /// The `[workspace]` section of `oxabl.toml`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceSection {
     /// Human-readable project name.
     pub name: String,
@@ -384,8 +395,19 @@ pub struct SourcesConfig {
     pub directories: Vec<PathBuf>,
 
     /// Include search paths, searched in order (PROPATH equivalent).
+    ///
+    /// An entry that starts with `$DLC/` (or is `$DLC`) names a directory under
+    /// [`dlc`](Self::dlc). An entry `$LIB:<name>` names a procedure library of
+    /// `[build.libraries]`; it holds r-code, so the analysis does not search it.
     #[serde(default)]
     pub include_paths: Vec<PathBuf>,
+
+    /// The host directory that holds the include sources of the OpenEdge
+    /// installation the workers use. Machine-specific, so usually set through
+    /// `OXABL_DLC_SOURCES`, which overrides it. Without either, the includes
+    /// under a `$DLC/` entry do not resolve.
+    #[serde(default)]
+    pub dlc: Option<PathBuf>,
 
     /// Search paths resolved against the directory of each root file and
     /// searched before `include_paths`, in order. Default empty.
@@ -546,6 +568,7 @@ impl Default for SourcesConfig {
         SourcesConfig {
             directories: Vec::new(),
             include_paths: Vec::new(),
+            dlc: None,
             root_relative_include_paths: Vec::new(),
             run_extensions: default_run_extensions(),
             case_insensitive_lookup: false,
@@ -584,6 +607,7 @@ impl WorkspaceConfig {
                 style: StyleGuide::default_base(),
                 preprocessor: PreprocessorConfig::default(),
             },
+            build: BuildConfig::default(),
         }
     }
 

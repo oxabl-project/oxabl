@@ -1,0 +1,23 @@
+[package]
+name = "oxabl_build"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "The oxabl build tool: graph store, incremental refresh and planner"
+repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_build"
+
+[dependencies]
+oxabl_common = { path = "../oxabl_common", version = "1.2.1" }
+oxabl_index = { path = "../oxabl_index", version = "3.1.0" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.2.0" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "3.0.2" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "3.2.0" }
+blake3 = "1"
+glob = "0.3"
+rusqlite = { version = "0.37", features = ["bundled"] }
+rustix = { version = "1", features = ["fs"] }
+rustc-hash = "2"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
