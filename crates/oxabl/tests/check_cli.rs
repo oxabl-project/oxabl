@@ -1022,6 +1022,31 @@ fn the_same_walk_with_no_search_path_keeps_the_json_shape_and_does_not_guess() {
     );
 }
 
+/// `WHILE` before the counting loop in a block header, and whitespace before the
+/// closing brace of `{&name }`, are valid ABL that used to be parse errors.
+#[test]
+fn a_while_before_the_counting_loop_and_a_spaced_variable_ref_parse_clean() {
+    let (_tmp, file) = project(
+        "header.p",
+        "&SCOPED-DEFINE first-arg 1\nDEFINE VARIABLE i AS INTEGER NO-UNDO.\nDEFINE VARIABLE more AS LOGICAL NO-UNDO INITIAL TRUE.\nREPEAT WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.\nDO WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.\ni = MAXIMUM({&first-arg }, {&first-arg   }).\nMESSAGE i.\n",
+    );
+
+    let run = check([
+        Path::new("--json").as_os_str(),
+        Path::new("--no-format").as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    let parse_errors: Vec<_> = run.json()["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "PARSE001")
+        .cloned()
+        .collect();
+    assert!(parse_errors.is_empty(), "{}", run.stdout);
+}
+
 /// An integer literal past `i64` used to make the lexer print to stdout ahead of
 /// the JSON document, corrupting machine-readable output.
 #[test]

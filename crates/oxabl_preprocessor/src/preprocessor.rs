@@ -931,8 +931,10 @@ impl ProcessContext<'_> {
     }
 
     /// The value of `{&name}` at byte offset `at` of `source`: a defined name
-    /// first, then one of the computed predefined names.
+    /// first, then one of the computed predefined names. Whitespace before the
+    /// closing brace (`{&name }`) is not part of the name.
     fn lookup_ref(&mut self, name: &str, source: &str, at: usize) -> Option<Arc<str>> {
+        let name = name.trim_ascii_end();
         if let Some(val) = self.vars.get(name) {
             return Some(val.clone());
         }
@@ -1554,7 +1556,7 @@ impl ProcessContext<'_> {
                 && let Some(close_rel) = text[i..].find('}')
             {
                 let end = i + close_rel;
-                let name = &text[i + 2..end];
+                let name = text[i + 2..end].trim_ascii_end();
                 // A computed name is read where the define is written, as the
                 // AVM does, rather than where the define is later used.
                 let val = self.vars.get(name).cloned().or_else(|| {
@@ -2459,6 +2461,40 @@ mod tests {
         let result = pp.process(FileId::new(1), source).unwrap();
 
         assert_eq!(&*result.to_text(), "FIND customer.");
+    }
+
+    #[test]
+    fn variable_ref_ignores_whitespace_before_the_closing_brace() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE first-arg 1\nMAXIMUM({&first-arg }, {&first-arg   }, \"{&first-arg }\").";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert_eq!(&*result.to_text(), "MAXIMUM(1, 1, \"1\").");
+    }
+
+    #[test]
+    fn predefined_ref_ignores_whitespace_before_the_closing_brace() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE a {&OPSYS }\nx = \"{&a }\".";
+        let spaced = pp.process(FileId::new(1), source).unwrap();
+        let plain = pp
+            .process(FileId::new(1), "&SCOPED-DEFINE a {&OPSYS}\nx = \"{&a}\".")
+            .unwrap();
+
+        assert_eq!(&*spaced.to_text(), &*plain.to_text());
+        assert_ne!(&*spaced.to_text(), "x = \"\".");
+    }
+
+    #[test]
+    fn whitespace_after_the_open_brace_is_not_a_variable_ref() {
+        let fs = make_fs(&[]);
+        let pp = Preprocessor::new(&fs, &[]);
+        let source = "&SCOPED-DEFINE first-arg 1\nx = { &first-arg }.";
+        let result = pp.process(FileId::new(1), source).unwrap();
+
+        assert!(!result.to_text().contains('1'));
     }
 
     #[test]
