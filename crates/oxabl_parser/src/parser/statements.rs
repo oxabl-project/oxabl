@@ -98,6 +98,9 @@ impl Parser<'_> {
     /// nested or top-level — is stamped at its own dispatch. Genuinely
     /// token-less synthetic nodes (nothing consumed) collapse to a zero-width
     /// span at `lo` (R1.4).
+    // Forced: left to the inliner, it lands in another codegen unit after
+    // unrelated edits and every statement returned is copied once more.
+    #[inline(always)]
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         let lo = self.peek().start as u32;
         // Anchor the unmodelled-form harvest range on this statement's first
@@ -111,12 +114,26 @@ impl Parser<'_> {
         let mut stmt = self.parse_statement_inner()?;
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
-        // The compiler tolerates one stray comma right after a statement's
-        // terminating period (`RUN a.p.,`); it belongs to no statement.
-        if self.check(Kind::Comma) && self.prev_token_kind() == Some(Kind::Period) {
+        Ok(stmt)
+    }
+
+    /// The compiler tolerates one stray comma right after a statement's
+    /// terminating period (`RUN a.p.,`); it belongs to no statement. Called
+    /// by the statement loops once the statement is stored: checking inside
+    /// `parse_statement` costs a copy of every statement it returns.
+    #[inline]
+    pub(crate) fn skip_stray_comma(&mut self) {
+        if self.check(Kind::Comma) {
+            self.skip_comma_after_period();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn skip_comma_after_period(&mut self) {
+        if self.prev_token_kind() == Some(Kind::Period) {
             self.advance();
         }
-        Ok(stmt)
     }
 
     /// Whether the statement at the cursor is `word(...)` with the paren directly
@@ -2707,7 +2724,10 @@ impl Parser<'_> {
             // Empty THEN branch: END belongs to the enclosing block, as for ELSE below.
             self.stmt(StatementKind::Empty)
         } else {
-            self.parse_statement()?
+            let stmt = self.parse_statement()?;
+            // A stray comma may stand between the branch and ELSE.
+            self.skip_stray_comma();
+            stmt
         };
         then_branch.span = Span {
             start: then_lo,
@@ -7622,6 +7642,7 @@ impl Parser<'_> {
             && !self.check(Kind::PreprocEndif)
         {
             stmts.push(self.parse_statement()?);
+            self.skip_stray_comma();
         }
         crate::parser::debug_assert_stmt_sibling_order(&stmts);
         Ok(stmts)

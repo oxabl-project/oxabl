@@ -301,8 +301,11 @@ impl<'a> Parser<'a> {
                 break;
             }
             let pos_before = self.current;
-            match self.parse_statement() {
-                Ok(stmt) => statements.push(stmt),
+            let parsed = match self.parse_statement() {
+                Ok(stmt) => {
+                    statements.push(stmt);
+                    true
+                }
                 Err(err) => {
                     self.record_error(err);
                     if self.errors.len() >= Self::MAX_ERRORS {
@@ -316,7 +319,13 @@ impl<'a> Parser<'a> {
                     if self.current == pos_before {
                         self.advance();
                     }
+                    false
                 }
+            };
+            // Outside the match: a call inside the `Ok` arm costs a copy of
+            // every statement.
+            if parsed {
+                self.skip_stray_comma();
             }
         }
 
@@ -421,6 +430,16 @@ impl<'a> Parser<'a> {
     /// must also bound its loop with `!self.at_end()` to terminate on an
     /// unterminated block.
     fn parse_block_statement_recovering(&mut self, out: &mut Vec<Statement>) {
+        if self.parse_block_statement(out) {
+            self.skip_stray_comma();
+        }
+    }
+
+    /// One statement of a block body, recovering as above; true when it parsed.
+    /// Out of line: any code after the match in the same function costs a
+    /// copy of every statement.
+    #[inline(never)]
+    fn parse_block_statement(&mut self, out: &mut Vec<Statement>) -> bool {
         let pos_before = self.current;
         match self.parse_statement() {
             Ok(stmt) => {
@@ -437,6 +456,7 @@ impl<'a> Parser<'a> {
                         last.span,
                     );
                 }
+                true
             }
             Err(err) => {
                 self.record_error(err);
@@ -447,6 +467,7 @@ impl<'a> Parser<'a> {
                 if self.current == pos_before && !self.at_end() {
                     self.advance();
                 }
+                false
             }
         }
     }
