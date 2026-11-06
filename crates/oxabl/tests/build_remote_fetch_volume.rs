@@ -23,10 +23,11 @@ use tempfile::TempDir;
 
 /// More entries than the client's outcome buffer (1024).
 const ENTRIES: usize = 1300;
-/// Idle timeout of the fetch.
-const IDLE: Duration = Duration::from_secs(5);
+/// Idle timeout of the fetch: long enough for a slow CI runner to give the
+/// first answer of a debug build.
+const IDLE: Duration = Duration::from_secs(20);
 /// One stall of the reader, longer than the idle timeout.
-const STALL: Duration = Duration::from_secs(7);
+const STALL: Duration = Duration::from_secs(25);
 
 fn key(index: usize) -> CompileKey {
     CompileKey(*blake3::hash(format!("unit {index}").as_bytes()).as_bytes())
