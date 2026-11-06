@@ -14,6 +14,7 @@ use super::types::UnitInfo;
 use crate::cache::{ArtifactCache, ArtifactUploader, CompileKey, FetchRequest, Origin};
 use crate::events::{Event, Sink};
 use crate::graph::Scratch;
+use crate::observe::Observer;
 use crate::refresh::Outcome;
 use crate::verify::reads::Reads;
 use crate::verify::rehash::Rehasher;
@@ -25,8 +26,6 @@ use crate::worker::compile::{CompilerMessage, Limits};
 pub struct Verify<'a> {
     pub rehasher: Rehasher<'a>,
     pub reads: Reads<'a>,
-    /// The user asked for `XREF-XML`: it serves as the private one.
-    pub user_xref: bool,
 }
 
 /// The databases a schema check images, and the time one share may take.
@@ -59,6 +58,10 @@ pub struct Ctx<'a> {
     pub cache: &'a dyn ArtifactCache,
     pub fetch: Option<FetchPlan>,
     pub verify: Option<Verify<'a>>,
+    /// Observes what the compiler reads for units oxabl cannot read.
+    pub observer: Option<Observer<'a>>,
+    /// The user asked for `XREF-XML`: it serves as the private one.
+    pub user_xref: bool,
     pub imaging: Option<Imaging>,
     pub fail_fast: bool,
     pub generation: u64,

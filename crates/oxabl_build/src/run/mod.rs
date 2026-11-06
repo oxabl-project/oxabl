@@ -35,11 +35,15 @@ use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::events::Event;
 use crate::graph::Scratch;
-use crate::key::compute::UnitKey;
+use crate::key::compute::{Keyed, UnitKey};
+use crate::observe::{Observer, Places};
 use crate::output::{OutputLayout, prune, stage};
+use crate::paths::PathMap;
 use crate::paths::propath::{OUT, library_name};
+use crate::plan::Plan;
+use crate::refresh::Outcome;
 use crate::store::StoredEnvironment;
-use crate::verify::reads::Reads;
+use crate::verify::reads::{Reads, trim_slash};
 use crate::verify::rehash::Rehasher;
 use crate::verify::release::{Releaser, Settings};
 use crate::worker::compile::Limits;
@@ -51,6 +55,7 @@ pub fn build(
     request: BuildRequest<'_>,
 ) -> Result<BuildReport, BuildError> {
     let started_at = Instant::now();
+    let started_ns = crate::refresh::now_ns();
     let options = compile_options(&workspace.config.build)?;
     let prepared = prepare(workspace, &request)?;
     let BuildRequest {
@@ -82,6 +87,7 @@ pub fn build(
     } = started;
     let settings = &workspace.settings;
     let root = settings.root.as_path();
+    let paths = PathMap::new(root, settings.dlc.as_deref());
     let keys = plan.keys.as_ref().expect("a build computes keys");
 
     let mut recorder = Recorder::new(store, root);
@@ -162,8 +168,20 @@ pub fn build(
             &spec.worker_root,
             &layout.rcode,
         ),
-        user_xref: layout.xref.is_some(),
     });
+    let observer = observer(
+        &plan,
+        &outcome,
+        &layout,
+        &paths,
+        &keys.keyed,
+        Facts {
+            worker_dlc: environment.facts.get("dlc"),
+            worker_root: &spec.worker_root,
+            started_ns,
+        },
+        &mut notes,
+    );
     let fetch = fetch_plan(&infos, &settings.state_dir, &spec.build_id);
     let ctx = Ctx {
         root,
@@ -171,7 +189,7 @@ pub fn build(
         infos,
         propaths,
         options,
-        xref: match (verifying, layout.xref.is_some()) {
+        xref: match (verifying || observer.is_some(), layout.xref.is_some()) {
             (true, false) => "private",
             _ => layout.xref_mode(),
         },
@@ -185,6 +203,8 @@ pub fn build(
         cache: &*cache,
         fetch,
         verify,
+        observer,
+        user_xref: layout.xref.is_some(),
         imaging,
         fail_fast,
         generation: plan.generation,
@@ -332,6 +352,9 @@ fn info(layout: &OutputLayout, path: &str, key: &UnitKey) -> UnitInfo {
         propath: key.propath.expect("a compiling unit has a PROPATH"),
         key: key.key,
         components: key.components,
+        observable: key.observable,
+        observed: key.observed,
+        observed_closure: key.observed_closure.clone(),
     }
 }
 
@@ -376,6 +399,79 @@ fn verification(
         return false;
     }
     true
+}
+
+/// The closure that a unit's key holds: the one the compiler reported at the
+/// last compile, or the one the analysis found.
+pub(crate) fn closure_of(
+    outcome: &Outcome,
+    info: &UnitInfo,
+    unit: u32,
+    scratch: &mut Scratch,
+) -> Vec<u32> {
+    match info.observed {
+        true => info.observed_closure.clone(),
+        false => outcome.after.closure(unit, scratch),
+    }
+}
+
+/// Where the workers are, and when the build started.
+struct Facts<'a> {
+    worker_dlc: &'a str,
+    worker_root: &'a str,
+    started_ns: i64,
+}
+
+/// What observes the closure of the units that oxabl cannot read, when the
+/// plan compiles one. A text XREF gives no file names the compiler resolved.
+fn observer<'a>(
+    plan: &Plan,
+    outcome: &'a Outcome,
+    layout: &'a OutputLayout,
+    paths: &'a PathMap,
+    keyed: &'a Keyed,
+    facts: Facts<'a>,
+    notes: &mut Vec<String>,
+) -> Option<Observer<'a>> {
+    let keys = plan.keys.as_ref()?;
+    let observable = plan
+        .rebuild
+        .iter()
+        .filter(|entry| keys.get(&entry.path).is_some_and(|key| key.observable))
+        .count();
+    if observable == 0 {
+        return None;
+    }
+    if matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))) {
+        notes.push(format!(
+            "{observable} units that oxabl cannot read compile at each build: [build.outputs].xref_format = \"text\" gives no file names that the compiler resolved"
+        ));
+        return None;
+    }
+    Some(Observer {
+        places: Places {
+            paths,
+            worker_dlc: trim_slash(facts.worker_dlc),
+            worker_root: trim_slash(facts.worker_root),
+            rcode: &layout.rcode,
+        },
+        outcome,
+        base: keyed.base.as_ref()?,
+        classes: &keyed.classes,
+        class_units: outcome
+            .units
+            .iter()
+            .map(|unit| outcome.name(*unit))
+            .filter(|name| crate::paths::propath::is_class_unit(name))
+            .collect(),
+        ids: outcome
+            .names
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (name.as_str(), id as u32))
+            .collect(),
+        started_ns: facts.started_ns,
+    })
 }
 
 /// The lookups of the first pass: every keyable unit of the rebuild set.

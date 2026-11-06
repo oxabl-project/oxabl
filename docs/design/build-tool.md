@@ -355,6 +355,9 @@ never compiled on its own.
    edges, class edges and their conditional forms. `RUN` edges, shared-producer edges and
    schema-table edges are not in it: the compiler does not read a `RUN` target, and those
    edges make most of the cycles in real code.
+   A unit keyed by its [observed closure](build-tool/compile-key.md#the-observed-closure)
+   also has an edge to each class unit of the pass, because its compile can read any class
+   r-code in `$OUT`. In a job, such units compile last.
 2. **Condensation.** Compute the strongly connected components (Tarjan, iterative). A
    component with units of the rebuild set is a **job**. A component with none is
    **pass-through**: it finishes as soon as all the components it points at finish.

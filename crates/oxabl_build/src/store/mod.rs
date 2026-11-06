@@ -11,8 +11,8 @@ mod results;
 mod rows;
 
 pub use blob::{
-    decode_completeness, decode_edges, decode_observations, decode_unresolved, encode_edges,
-    encode_observations,
+    decode_completeness, decode_edges, decode_observations, decode_observed, decode_unresolved,
+    encode_edges, encode_observations, encode_observed,
 };
 pub use commit::Changes;
 pub use ddl::STORE_FORMAT;
@@ -24,6 +24,6 @@ pub use results::{
     Results, SECTIONS, SUCCESS, StoredEnvironment,
 };
 pub use rows::{
-    Analysis, BinaryRow, Edge, FileRow, ListingRow, Observation, StoredAnalysis, Unresolved,
-    tracked,
+    Analysis, BinaryRow, Edge, FileRow, ListingRow, Observation, ObservedClosure, StoredAnalysis,
+    Unresolved, tracked,
 };

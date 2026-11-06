@@ -90,7 +90,12 @@ impl Compiler {
                 });
             }
         }
-        for include in &found_in_text.includes {
+        for (include, text) in found_in_text
+            .includes
+            .iter()
+            .zip(&found_in_text.include_texts)
+        {
+            out.references.push(("INCLUDE", text.clone()));
             let other = found_in_text
                 .resolve_other
                 .iter()
@@ -112,6 +117,7 @@ impl Compiler {
             }
         }
         for class in &found_in_text.classes {
+            out.references.push(("NEW", class.clone()));
             self.visit_class(ctx, unit, class, out, visited);
         }
     }

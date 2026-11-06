@@ -72,6 +72,10 @@ fn unit(plan: &Plan, path: &str, action: &str, reasons: Vec<Value>) -> Value {
     });
     if plan.keys.is_some() {
         unit["propath"] = json!(state.and_then(|s| s.propath));
+        unit["closure"] = json!(state.filter(|s| s.key.is_some()).map(|s| match s.observed {
+            true => "observed",
+            false => "parsed",
+        }));
     }
     unit
 }

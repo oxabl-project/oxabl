@@ -7,9 +7,9 @@ use std::time::Instant;
 use super::shared::Shared;
 use super::types::{Msg, UnitDone};
 use crate::graph::Scratch;
+use crate::observe::xref;
 use crate::output::{Stage, promote};
 use crate::schedule::{Take, Task};
-use crate::verify::reads;
 use crate::worker::compile::CompiledUnit;
 use crate::worker::{Definitions, Job, Worker, WorkerError};
 
@@ -221,7 +221,7 @@ fn rehash(
 ) {
     let Some(verify) = shared.verify else { return };
     for (unit, done_at) in units {
-        let closure = shared.outcome.after.closure(*unit, scratch);
+        let closure = super::closure_of(shared.outcome, &shared.infos[unit], *unit, scratch);
         let result = verify.rehasher.check(*unit, &closure, *done_at, worker);
         let _ = tx.send(Msg::Rehashed {
             unit: *unit,
@@ -252,15 +252,13 @@ fn finish_unit(
         finished: Instant::now(),
         reads: None,
     };
-    if compiled.ok
-        && info.key.is_some()
-        && let Some(verify) = shared.verify
-    {
-        let file = match verify.user_xref {
+    let verified = info.key.is_some() && shared.verify.is_some();
+    if compiled.ok && (verified || (info.observable && shared.observing)) {
+        let file = match shared.user_xref {
             true => format!("xref/{}.xref.xml", info.name),
             false => format!("verify/{}.xref.xml", info.name),
         };
-        done.reads = Some(reads::read_names(&stage.host().join(file)));
+        done.reads = Some(xref::read(&stage.host().join(file)));
     }
     if compiled.ok {
         match promote::promote(shared.root, stage.host(), &info.expected) {

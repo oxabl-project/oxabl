@@ -14,7 +14,8 @@ mod settle;
 mod snapshot;
 mod walk;
 
-pub use outcome::{Content, Delta, Outcome};
+pub use outcome::{Content, Delta, Observed, Outcome};
+pub(crate) use probe::{RACY_NS, now_ns};
 pub use session::{Request, run};
 pub use settle::Analyses;
 

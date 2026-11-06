@@ -1,6 +1,8 @@
 //! Jobs: the components that hold units to compile, and what each waits for.
 
-use super::components::{NONE, components};
+use rustc_hash::FxHashMap;
+
+use super::components::{NONE, Order, components};
 use crate::graph::Graph;
 
 /// One request's worth of units: a component of the ordering graph that holds
@@ -24,15 +26,22 @@ pub struct Schedule {
 impl Schedule {
     /// The jobs for compiling `targets`. A component with no target is
     /// pass-through: a job waits for the jobs it reaches through it.
+    /// `after` gives further edges, from a unit to the units that must compile
+    /// before it; inside one job, a unit with such edges comes last.
     /// `weight` is the duration of a unit and `path` sorts units.
     pub fn build<'a>(
         graph: &Graph,
+        after: &FxHashMap<u32, Vec<u32>>,
         nodes: usize,
         targets: &[u32],
         weight: impl Fn(u32) -> u64,
         path: impl Fn(u32) -> &'a str,
     ) -> Schedule {
-        let found = components(graph, nodes, targets);
+        let graph = Order {
+            graph,
+            extra: after,
+        };
+        let found = components(&graph, nodes, targets);
         let mut is_target = vec![false; nodes];
         for &unit in targets {
             is_target[unit as usize] = true;
@@ -48,7 +57,7 @@ impl Schedule {
         for (c, members) in found.members.iter().enumerate() {
             let mut reached: Vec<usize> = Vec::new();
             for &node in members {
-                for &to in graph.edges(node) {
+                for to in graph.edges(node) {
                     let other = found.of[to as usize];
                     if other == NONE || other as usize == c {
                         continue;
@@ -74,7 +83,9 @@ impl Schedule {
                 .copied()
                 .filter(|node| is_target[*node as usize])
                 .collect();
-            units.sort_by(|a, b| path(*a).cmp(path(*b)));
+            units.sort_by(|a, b| {
+                (after.contains_key(a), path(*a)).cmp(&(after.contains_key(b), path(*b)))
+            });
             job_of[c] = jobs.len();
             jobs.push(Job { units, priority: 0 });
         }
