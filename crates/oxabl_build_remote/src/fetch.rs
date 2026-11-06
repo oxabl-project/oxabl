@@ -88,14 +88,32 @@ pub fn run(
     options.durability = client::Durability::Caller;
     options.idle_timeout = remote.idle_timeout;
     let mut misses: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let taken_count = taken.len();
+    let (mut answered, mut cancelled) = (0, false);
     remote.runtime.block_on(async {
         let mut fetch = remote.cache.fetch(taken, options);
+        // The client counts the time its outcome buffer is full as no progress, and
+        // ends the fetch after the idle timeout. Installing an outcome here is slower
+        // than a download, so the stream is drained at once and installed from the
+        // queue.
+        let (queue, mut queued) = tokio::sync::mpsc::unbounded_channel();
+        let drain = tokio::spawn(async move {
+            while let Some(next) = fetch.next().await {
+                if queue.send(next).is_err() {
+                    break;
+                }
+            }
+        });
         loop {
             let next = tokio::select! {
-                next = fetch.next() => next,
-                () = remote.cancel.notified() => None,
+                next = queued.recv() => next,
+                () = remote.cancel.notified() => {
+                    cancelled = true;
+                    None
+                }
             };
             let Some(next) = next else { break };
+            answered += 1;
             let next = outcome(next);
             if let FetchOutcome::Miss { reason, .. } = &next
                 && let Some(reason) = name(*reason)
@@ -104,8 +122,17 @@ pub fn run(
             }
             on_outcome(next);
         }
+        drain.abort();
     });
     if let Some(note) = trouble(&misses, asked) {
         remote.notes.push(note);
+    }
+    // The client answers every key it takes, so a key without an answer is a
+    // fault of the client, never a plain miss.
+    if !cancelled && answered < taken_count {
+        remote.notes.push(format!(
+            "the remote cache gave no answer for {} of {asked} keys; those units compile",
+            taken_count - answered
+        ));
     }
 }

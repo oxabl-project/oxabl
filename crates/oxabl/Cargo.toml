@@ -46,6 +46,10 @@ name = "build_remote_cache"
 required-features = ["remote-cache"]
 
 [[test]]
+name = "build_remote_fetch_volume"
+required-features = ["remote-cache"]
+
+[[test]]
 name = "build_remote_faults"
 required-features = ["remote-cache"]
 
