@@ -90,9 +90,21 @@ pub fn run(
     let mut misses: BTreeMap<&'static str, usize> = BTreeMap::new();
     remote.runtime.block_on(async {
         let mut fetch = remote.cache.fetch(taken, options);
+        // The client counts the time its outcome buffer is full as no progress, and
+        // ends the fetch after the idle timeout. Installing an outcome here is slower
+        // than a download, so the stream is drained at once and installed from the
+        // queue.
+        let (queue, mut queued) = tokio::sync::mpsc::unbounded_channel();
+        let drain = tokio::spawn(async move {
+            while let Some(next) = fetch.next().await {
+                if queue.send(next).is_err() {
+                    break;
+                }
+            }
+        });
         loop {
             let next = tokio::select! {
-                next = fetch.next() => next,
+                next = queued.recv() => next,
                 () = remote.cancel.notified() => None,
             };
             let Some(next) = next else { break };
@@ -104,6 +116,7 @@ pub fn run(
             }
             on_outcome(next);
         }
+        drain.abort();
     });
     if let Some(note) = trouble(&misses, asked) {
         remote.notes.push(note);

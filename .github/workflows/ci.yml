@@ -75,7 +75,8 @@ jobs:
           export OXABL_CACHE_ADMIN_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache-admin"
           export OXABL_CACHE_BIN="$HOME/oxabl-cache-bin/bin/oxabl-cache"
           cargo test -p oxabl --features remote-cache --locked \
-            --test build_remote_cache --test build_remote_faults --test build_remote_trust
+            --test build_remote_cache --test build_remote_faults --test build_remote_trust \
+            --test build_remote_fetch_volume
 
   fmt:
     name: Format

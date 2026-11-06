@@ -159,11 +159,16 @@ it calls the client's `uploader()`:
   promotes from there. `expect` is the list of
   artifact paths oxabl requires; a set with another list is a `Miss` with reason
   `PathMismatch`. A key the call never reports (a crash of the adapter, a timeout) is a
+  miss, and the build prints one note with their number ("the cache gave no answer for N
+  keys"): a cache answers every key, so a key without an answer is a fault, never a plain
   miss. `Origin` names the cache, and for a remote hit its tier and signer.
 - **`fetch` has an idle timeout, not a call timeout.** The call ends with a miss for each
   key not yet reported when no outcome and no byte progress has arrived for
   `[build.cache].idle_timeout` (default 30 s). A slow link that keeps moving is never cut
-  off.
+  off. The client's outcome buffer is bounded, and the client counts the time it waits on
+  a full buffer as no progress. Promoting a set is slower than downloading it, so the
+  remote adapter drains the client's stream into its own queue at once: a stall of the
+  build (a long `syncfs`) never ends a fetch, and never loses an outcome.
 - **Durability.** The adapter installs into the stage without `fsync`
   (`Durability::Caller` in the client). Oxabl calls `syncfs(2)` on the stage filesystem
   once before it promotes a batch of fetched sets
