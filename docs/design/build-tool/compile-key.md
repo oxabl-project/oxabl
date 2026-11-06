@@ -270,13 +270,25 @@ Until all six exist, K9 holds.
 
 ## The observed closure
 
-Some units have no key only because oxabl cannot read their closure from their source: an
-`XCODE`-encrypted source, or a source that includes an encrypted include. The analysis of
-such a unit is degraded (K1), or finds include names that do not resolve (K2) or that it
-cannot compute (K4). The compiler reads these files without a problem, and its `XREF-XML`
-names the includes it read. Such a unit gets a key from its **observed closure**: the files
-that the compiler read at the last successful compile of the unit, and every class source
-that the compile could read.
+Some units have no key only because oxabl cannot read their closure from their source: a
+construct that the analysis does not model, or an include name that it cannot compute. The
+analysis of such a unit is degraded (K1), or finds include names that do not resolve (K2) or
+that it cannot compute (K4). The compiler reads these files without a problem, and its
+`XREF-XML` names the includes it read. Such a unit gets a key from its **observed closure**:
+the files that the compiler read at the last successful compile of the unit, and every class
+source that the compile could read.
+
+**Encrypted source never qualifies.** The compiler gives no `INCLUDE` reference for an
+include made inside `XCODE`-encrypted source (measured on OpenEdge 12.8: an encrypted program
+read six files through its own includes, and every `INCLUDE` reference of its `XREF-XML` came
+from an unencrypted include). A definitions-only include made there leaves no trace at all,
+so the observed closure of such a unit can miss a file it read. A unit whose source, or any
+file of whose closure, looks encrypted gets no observed closure: the compile records none
+(the note says the file looks encrypted), and a stored closure gives
+`observed-encrypted: <path>`. A file looks encrypted when its first 512 bytes hold a control
+byte other than tab, line feed, carriage return and form feed: encrypted files start with
+one (measured: `0x11` and `0x13`), and plain source has none there. A file that cannot be
+read counts as encrypted. Such a unit compiles at each build.
 
 ### Which units qualify
 
@@ -373,6 +385,7 @@ material: they are checked. The unit has no key when:
   (`observed-unreadable: <path>`);
 - a path of the absent set holds something now (`observed-shadowed: <path>`): an include can
   resolve to it first;
+- the unit or a file of the closure looks encrypted (`observed-encrypted: <path>`);
 - the listing now differs from the stored one (`observed-classes-changed: +<class>` or
   `-<class>`);
 - the class part has a reason (see above).
@@ -428,8 +441,8 @@ A compile with no key before it is never written to a cache.
   unit again, and one workspace class without a key leaves such units without a key.
 - With more than one PROPATH id, each class unit is unkeyable under K9, so a unit that
   qualifies gets no key when the workspace has a class unit.
-- The rules trust the compiler's `XREF-XML` to give an `INCLUDE` reference for each include,
-  the definitions-only ones too. The opt-in OpenEdge test `xref_xml_observed_closure`
+- The rules trust the compiler's `XREF-XML` to give an `INCLUDE` reference for each include
+  made in unencrypted source, the definitions-only ones too. The opt-in OpenEdge test `xref_xml_observed_closure`
   ([testing.md](testing.md#tests)) pins it.
 
 ## Environment identity
