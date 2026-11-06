@@ -1,6 +1,8 @@
-//! A unit whose closure oxabl cannot read from its source (an encrypted
-//! source, an encrypted include) gets a key from the closure that its
-//! compiler reported at the last compile: the observed closure.
+//! A unit whose closure oxabl cannot read from its source (a construct the
+//! analysis does not model, an include whose name it cannot compute) gets a
+//! key from the closure that its compiler reported at the last compile: the
+//! observed closure. Encrypted source never does: the compiler reports no
+//! include made inside it.
 
 mod common;
 
@@ -12,9 +14,12 @@ use common::cache::entries;
 use serde_json::Value;
 use tempfile::TempDir;
 
-/// Bytes that the analysis cannot parse, as an encrypted source looks to it.
-/// The fake AVM still finds the includes written after them.
-const UNREADABLE: &str = "\u{1}\u{2}\u{3} 0x9f 0x00 ((( %%% .\n";
+/// Text that the analysis cannot parse, with no control byte: the source is
+/// not encrypted. The fake AVM still finds the includes written after it.
+const UNREADABLE: &str = "§ ¤ 0x9f ((( %%% .\n";
+
+/// The first bytes of an XCODE-encrypted source: a control byte first.
+const ENCRYPTED: &str = "\u{11}Y/%\u{7}\t1I;% ((( %%% .\n";
 
 /// A file that the refresh did not hash before a compile counts only when it
 /// was last changed well before the build: wait until the files written now
@@ -478,5 +483,72 @@ fn a_class_unit_that_cannot_compile_where_it_is_leaves_the_observed_key_in_place
         unit(&plan, "src/enc.p")["action"],
         "rebuild",
         "the bytes of a skipped class are still in the key: {plan}"
+    );
+}
+
+#[test]
+fn an_encrypted_unit_never_gets_an_observed_key_and_compiles_at_each_build() {
+    let workspace = Built::new();
+    workspace.write("src/inc/seen.i", "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n");
+    workspace.write("src/enc.p", &format!("{ENCRYPTED}{{inc/seen.i}}\n"));
+    settle();
+
+    let first = workspace.build();
+    first.succeeded();
+    assert!(
+        first.stderr.contains("src/enc.p looks encrypted"),
+        "{}",
+        first.stderr
+    );
+    let plan = workspace.plan();
+    let enc = unit(&plan, "src/enc.p");
+    assert_eq!(enc["key"], Value::Null, "{plan}");
+    assert_eq!(enc["action"], "rebuild", "{plan}");
+    workspace.clear_log();
+    workspace.build().succeeded();
+    assert_eq!(workspace.compiled(), ["enc.p"], "it compiles again");
+}
+
+#[test]
+fn a_unit_that_includes_an_encrypted_file_gets_no_observed_key() {
+    let workspace = Built::new();
+    workspace.write("src/inc/inner.i", "DEFINE VARIABLE b AS INTEGER NO-UNDO.\n");
+    workspace.write("src/inc/locked.i", &format!("{ENCRYPTED}{{inc/inner.i}}\n"));
+    workspace.write("src/use.p", &format!("{UNREADABLE}{{inc/locked.i}}\n"));
+    settle();
+
+    let first = workspace.build();
+    first.succeeded();
+    assert!(
+        first.stderr.contains("src/inc/locked.i looks encrypted"),
+        "{}",
+        first.stderr
+    );
+    let plan = workspace.plan();
+    assert_eq!(unit(&plan, "src/use.p")["key"], Value::Null, "{plan}");
+}
+
+#[test]
+fn a_file_of_an_observed_closure_that_turns_encrypted_takes_the_key_away() {
+    let workspace = Built::new();
+    workspace.write("src/inc/seen.i", "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n");
+    workspace.write("src/enc.p", &format!("{UNREADABLE}{{inc/seen.i}}\n"));
+    settle();
+    workspace.build().succeeded();
+    let plan = workspace.plan();
+    assert_eq!(unit(&plan, "src/enc.p")["closure"], "observed", "{plan}");
+
+    workspace.write(
+        "src/inc/seen.i",
+        &format!("{ENCRYPTED}DEFINE VARIABLE a AS INTEGER NO-UNDO.\n"),
+    );
+    let plan = workspace.plan();
+    let enc = unit(&plan, "src/enc.p");
+    assert_eq!(enc["key"], Value::Null, "{plan}");
+    assert!(
+        strings(&enc["unkeyable"])
+            .iter()
+            .any(|reason| reason == "observed-encrypted: src/inc/seen.i"),
+        "{plan}"
     );
 }

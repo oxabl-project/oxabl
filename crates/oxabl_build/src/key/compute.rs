@@ -464,8 +464,14 @@ pub fn compute(
         } else if is_observable(verdict, &layout.units[at]) {
             let observed = outcome.observed.get(&unit).ok_or_else(Vec::new)?;
             let part = class_parts.get(&propath).ok_or_else(Vec::new)?;
-            let (files, closure) =
-                observed_files(outcome, observed, part, &dlc_sha, &mirror_mismatch)?;
+            let (files, closure) = observed_files(
+                outcome,
+                (unit, observed),
+                part,
+                &paths,
+                &dlc_sha,
+                &mirror_mismatch,
+            )?;
             ids = closure;
             (files, ClosureSource::Observed)
         } else {
@@ -655,12 +661,14 @@ fn is_observable(verdict: &Verdict, placed: &Placed) -> bool {
 /// bytes, and their ids; or why the closure does not hold now. The closure is
 /// the files the compiler read and the class part of the unit PROPATH. Each
 /// file must still be there and readable, each path that was absent must
-/// still be absent (a file there would shadow an include), and the classes
-/// listed now must be the ones listed at the compile.
+/// still be absent (a file there would shadow an include), the classes
+/// listed now must be the ones listed at the compile, and neither the unit nor
+/// a file may look encrypted.
 fn observed_files<'a>(
     outcome: &'a Outcome,
-    observed: &Observed,
+    (unit, observed): (u32, &Observed),
     part: &ClassPart,
+    paths: &PathMap,
     dlc_sha: &FxHashMap<String, [u8; 32]>,
     mirror_mismatch: &FxHashSet<String>,
 ) -> Result<(Vec<ClosureFile<'a>>, Vec<u32>), Vec<String>> {
@@ -668,6 +676,12 @@ fn observed_files<'a>(
         return Err(part.reasons.clone());
     }
     let mut reasons = Vec::new();
+    for id in std::iter::once(&unit).chain(&observed.files) {
+        let path = outcome.name(*id);
+        if !path.starts_with('$') && crate::observe::looks_encrypted(&paths.absolute(path)) {
+            reasons.push(format!("observed-encrypted: {path}"));
+        }
+    }
     let then: BTreeSet<&str> = observed
         .classes
         .iter()

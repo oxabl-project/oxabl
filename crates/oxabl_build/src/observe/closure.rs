@@ -116,6 +116,13 @@ pub fn observe(
             ));
         }
     }
+    for path in std::iter::once(unit).chain(closure.files.iter().map(String::as_str)) {
+        if !path.starts_with('$') && super::looks_encrypted(&places.paths.absolute(path)) {
+            return Err(format!(
+                "{path} looks encrypted, and the compiler does not report the includes of encrypted source"
+            ));
+        }
+    }
     closure.files.retain(|file| file != unit);
     closure.files.sort();
     closure.files.dedup();
