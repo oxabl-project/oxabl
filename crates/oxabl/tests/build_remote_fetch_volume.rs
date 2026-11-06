@@ -107,6 +107,11 @@ fn a_reader_that_stalls_still_gets_an_answer_for_every_key() {
         }
     });
 
+    let notes = cache.notes();
+    assert!(
+        notes.is_empty(),
+        "a complete fetch leaves no note: {notes:?}"
+    );
     assert_eq!(
         installed + missed.len(),
         ENTRIES,

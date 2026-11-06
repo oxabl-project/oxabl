@@ -159,9 +159,9 @@ it calls the client's `uploader()`:
   promotes from there. `expect` is the list of
   artifact paths oxabl requires; a set with another list is a `Miss` with reason
   `PathMismatch`. A key the call never reports (a crash of the adapter, a timeout) is a
-  miss, and the build prints one note with their number ("the cache gave no answer for N
-  keys"): a cache answers every key, so a key without an answer is a fault, never a plain
-  miss. `Origin` names the cache, and for a remote hit its tier and signer.
+  miss. The remote adapter prints one note with their number ("the remote cache gave no
+  answer for N of M keys"): the client answers every key it takes, so for the remote
+  cache a key without an answer is a fault, never a plain miss. `Origin` names the cache, and for a remote hit its tier and signer.
 - **`fetch` has an idle timeout, not a call timeout.** The call ends with a miss for each
   key not yet reported when no outcome and no byte progress has arrived for
   `[build.cache].idle_timeout` (default 30 s). A slow link that keeps moving is never cut

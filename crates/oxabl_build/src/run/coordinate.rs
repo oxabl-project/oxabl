@@ -171,17 +171,9 @@ impl<'a, 'b> Coordinator<'a, 'b> {
         self.advance(vec![job]);
     }
 
-    fn fetch_ended(&mut self, state: &mut State<'_>) {
+    fn fetch_ended(&mut self) {
         self.fetch_open = false;
         let rest: Vec<u32> = self.unresolved.drain().collect();
-        // A cache answers every key it is asked for; a key with no answer is a
-        // fault of the cache, not a plain miss.
-        if !rest.is_empty() && !self.ctx.cancel.is_cancelled() {
-            state.notes.push(format!(
-                "the cache gave no answer for {} keys; those units compile",
-                rest.len()
-            ));
-        }
         let mut jobs = Vec::new();
         for unit in rest {
             let job = self.job_of[&unit];
@@ -241,7 +233,7 @@ impl<'a, 'b> Coordinator<'a, 'b> {
                     }
                 }
                 Ok(Msg::Fetched { unit, hit }) => self.answered(state, unit, hit),
-                Ok(Msg::FetchEnded) => self.fetch_ended(state),
+                Ok(Msg::FetchEnded) => self.fetch_ended(),
                 Ok(Msg::WorkerLost {
                     worker,
                     reason,

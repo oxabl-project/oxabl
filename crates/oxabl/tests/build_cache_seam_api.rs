@@ -179,14 +179,6 @@ fn a_fetch_that_stops_after_half_the_keys_keeps_the_installed_half_recorded_and_
     assert_eq!(report.summary.fetched, 2);
     assert_eq!(report.summary.compiled, 2);
     assert_eq!(second.compiled(), ["c.p", "d.p"]);
-    assert!(
-        report
-            .notes
-            .iter()
-            .any(|note| note == "the cache gave no answer for 2 keys; those units compile"),
-        "a key the cache left without an answer is reported: {:?}",
-        report.notes
-    );
     second.clear_log();
     let again = run(&second, Box::new(oxabl::build::cache::NoCache));
     assert_eq!(again.summary.compiled, 0, "the installed half was recorded");
@@ -276,14 +268,6 @@ fn a_cache_that_panics_in_fetch_gives_misses_and_a_correct_build() {
     assert_eq!(report.exit, 0);
     assert_eq!(report.summary.compiled, 4);
     assert_eq!(report.summary.fetched, 0);
-    assert!(
-        report
-            .notes
-            .iter()
-            .any(|note| note.contains("no answer for 4 keys")),
-        "{:?}",
-        report.notes
-    );
 }
 
 #[test]
