@@ -38,8 +38,7 @@ pub fn parse(xml: &str) -> Result<Xref, String> {
         if !after.starts_with(|c: char| c.is_whitespace() || c == '/' || c == '>') {
             continue;
         }
-        let end = after
-            .find('>')
+        let end = oxabl_effects::xref_xml::tag_end(after)
             .ok_or_else(|| "a Reference element is not closed".to_string())?;
         let tag = &after[..end];
         rest = &after[end..];
@@ -148,6 +147,21 @@ mod tests {
             xref.includes,
             ["ms/workspace.i", "gl/global-input.i", "se/decrypt.i"]
         );
+    }
+
+    /// OpenEdge 12.8 escapes `<` in an attribute value but leaves `>`, as an
+    /// ADM2 `{set ...}` reference shows.
+    #[test]
+    fn a_greater_than_sign_inside_an_identifier_does_not_end_the_reference() {
+        let xml = document(concat!(
+            "<Reference Reference-type=\"INCLUDE\" Object-identifier=\"set PhysicalObjectName &quot;(IF '':U &lt;> '':U THEN '':U ELSE THIS-PROCEDURE:FILE-NAME)&quot;\">\n",
+            "<File-num>31</File-num>\n</Reference>\n",
+            "<Reference Reference-type=\"INCLUDE\" Object-identifier=\"ms/workspace.i\"/>\n",
+        ));
+
+        let xref = parse(&xml).unwrap();
+
+        assert_eq!(xref.includes, ["set", "ms/workspace.i"]);
     }
 
     #[test]

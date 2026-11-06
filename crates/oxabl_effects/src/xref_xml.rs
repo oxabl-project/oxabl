@@ -66,6 +66,22 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     None
 }
 
+/// The offset of the `>` that ends the start tag `tag`. The compiler escapes
+/// `<` in an attribute value but not `>` (`&lt;>` for `<>`), so a `>` inside
+/// quotes does not end the tag.
+pub fn tag_end(tag: &str) -> Option<usize> {
+    let mut quote = None;
+    for (at, c) in tag.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(open), _) if c == open => quote = None,
+            (None, '>') => return Some(at),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The `File-name` of each `Source` element of an `XREF-XML` document. A
 /// document with no `Cross-reference` root, or a `Source` element with no
 /// `File-name`, is an error: nothing is guessed about what the compiler read.
@@ -81,7 +97,7 @@ pub fn source_files(xml: &str) -> Result<Vec<String>, NotXref> {
         if !tag_start.starts_with(|c: char| c.is_whitespace() || c == '/' || c == '>') {
             continue;
         }
-        let Some(end) = tag_start.find('>') else {
+        let Some(end) = tag_end(tag_start) else {
             return Err(NotXref("a Source element is not closed".to_string()));
         };
         let tag = &tag_start[..end];
