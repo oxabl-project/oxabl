@@ -22,6 +22,10 @@ jobs:
       cancel-in-progress: false
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
+      # One run can release several crates. Only the release of the oxabl crate
+      # gets the binary.
+      oxabl_released: ${{ steps.release.outputs['crates/oxabl--release_created'] }}
+      oxabl_tag: ${{ steps.release.outputs['crates/oxabl--tag_name'] }}
     steps:
       # TODO: Upgrade to v5 when released (Node 24 support). Tracked: https://github.com/googleapis/release-please-action/pull/1188
       - uses: googleapis/release-please-action@v4
@@ -62,3 +66,30 @@ jobs:
         timeout-minutes: 75
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  binary:
+    name: Static Linux binary
+    needs: release-please
+    # Never on workflow_dispatch: it must not upload to a release.
+    if: ${{ github.event_name == 'push' && needs.release-please.outputs.oxabl_released == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # The build runs in a rust:alpine container that the script starts. This way
+      # the toolchain, musl and the C build tools are the same here and on a
+      # developer machine, and a job container is not needed: the JavaScript
+      # actions of the runner do not start in an Alpine job container.
+      - run: ./scripts/build-musl.sh dist
+        env:
+          OXABL_MUSL_CACHE: ${{ runner.temp }}/oxabl-musl
+      - run: ./scripts/check-musl.sh dist/oxabl-x86_64-unknown-linux-musl
+      - name: Upload to the release
+        run: |
+          gh release upload "$TAG" \
+            dist/oxabl-x86_64-unknown-linux-musl \
+            dist/oxabl-x86_64-unknown-linux-musl.sha256 \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.oxabl_tag }}

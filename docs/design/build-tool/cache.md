@@ -428,8 +428,11 @@ over the client of the oxabl-cache project.
   release's publish job fails on a branch that contains the remote cache.
 - The umbrella has the feature `remote-cache = ["cli", "dep:oxabl_build_remote"]`. It is not
   a default feature, so `oxabl_wasm`, library users and a plain `cargo install oxabl` do not
-  build the network and crypto stack. The release workflow builds the published binaries
-  with `--features remote-cache`.
+  build the network and crypto stack. The release workflow builds one published binary
+  with `--features remote-cache`: a static `x86_64-unknown-linux-musl` binary that is
+  attached to the GitHub release of the `oxabl` crate with a `.sha256` file
+  (`scripts/build-musl.sh`; [install in CI](../../overview.md#install-the-binary-in-ci)).
+  CI builds it on every pull request and starts it in an `ubuntu:22.04` container.
 - A binary without the feature, in a workspace where the remote cache is on (see below),
   stops with exit code 2: `this oxabl was built without remote-cache; rebuild with
   --features remote-cache or pass --no-remote-cache`. A silent fallback would make a CI job

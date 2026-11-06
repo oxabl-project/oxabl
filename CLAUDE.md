@@ -154,6 +154,8 @@ Uses [Release Please](https://github.com/googleapis/release-please) for fully au
 
 While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor instead of major.
 
+The release workflow's `binary` job builds the static Linux binary with `--features remote-cache` (`scripts/build-musl.sh`, in a `rust:alpine` container) and uploads it with a `.sha256` file to the release of the `oxabl` crate. It never runs on `workflow_dispatch`. The CI job `musl-binary` builds the same binary on every pull request and starts it in `ubuntu:22.04` (`scripts/check-musl.sh`).
+
 ## Benchmarks
 
 Benchmarks use `codspeed-criterion-compat` (Criterion with CodSpeed integration). CodSpeed CI runs on every push/PR via `.github/workflows/codspeed.yml` and auto-discovers all `[[bench]]` targets.

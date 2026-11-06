@@ -77,6 +77,24 @@ jobs:
           cargo test -p oxabl --features remote-cache --locked \
             --test build_remote_cache --test build_remote_faults --test build_remote_trust
 
+  musl-binary:
+    name: Static Linux binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/oxabl-musl
+          key: oxabl-musl-${{ hashFiles('Cargo.lock', 'scripts/build-musl.sh') }}
+          restore-keys: oxabl-musl-
+      # The release workflow publishes this binary. A change that breaks the static
+      # build fails here, before a release. The binary must start in the usual
+      # OpenEdge image (glibc 2.35) and must not need a shared library.
+      - run: ./scripts/build-musl.sh dist
+        env:
+          OXABL_MUSL_CACHE: ${{ runner.temp }}/oxabl-musl
+      - run: ./scripts/check-musl.sh dist/oxabl-x86_64-unknown-linux-musl
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

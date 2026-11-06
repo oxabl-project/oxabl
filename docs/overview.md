@@ -266,6 +266,29 @@ With `[build.verify].reads = false`, or `[build.outputs].xref_format = "text"`, 
 
 **The worker program.** `PROPATH`, `OPTIONS` and `COMPILE` requests are answered by `OK`, `MSG`, `DONE` and `END`. The worker writes one small procedure for each shape of `COMPILE` statement into its stage, because the phrases (`XREF-XML`, `MIN-SIZE`, `GENERATE-MD5`, ...) are keywords; `languages` and `options` hold only letters, digits and `-_:,.`. The stage path that oxabl sends starts with `./`, because the compiler removes a leading `.` from a relative XREF file name. A failed unit always has a reason: the compiler messages, the error that stopped the compile, or a note that the worker gave none. The PROPATH entries that oxabl sends are relative to the worker's working directory (the output directory first), `$DLC` entries (the worker expands them) or the paths of `[build.libraries]`.
 
+#### Install the binary in CI
+
+Each release of the `oxabl` crate attaches `oxabl-x86_64-unknown-linux-musl` and `oxabl-x86_64-unknown-linux-musl.sha256` to its GitHub release (the tag is `oxabl-v<version>`). The binary has the `remote-cache` feature. It is static, so it does not need glibc and it starts in any Linux image, such as the usual OpenEdge images (Ubuntu 22.04). It uses the jemalloc allocator.
+
+Download the binary, check the SHA-256, and run it. This is an example for a GitHub Actions or Gitea Actions job:
+
+```yaml
+- name: Install oxabl
+  run: |
+    version=3.0.2   # the release you want
+    base=https://github.com/oxabl-project/oxabl/releases/download/oxabl-v$version
+    curl -fsSL -O "$base/oxabl-x86_64-unknown-linux-musl"
+    curl -fsSL -O "$base/oxabl-x86_64-unknown-linux-musl.sha256"
+    sha256sum -c oxabl-x86_64-unknown-linux-musl.sha256
+    install -m 0755 oxabl-x86_64-unknown-linux-musl /usr/local/bin/oxabl
+    oxabl --version
+- run: oxabl build
+```
+
+The `sha256sum -c` step fails the job when the file is not the one that the release holds. Pin the version: do not download "latest" in a job that you cannot repeat.
+
+To build the same binary yourself, run `scripts/build-musl.sh <out dir>` (it needs Docker), then `scripts/check-musl.sh <out dir>/oxabl-x86_64-unknown-linux-musl`. CI runs both scripts on each pull request.
+
 #### Testing against a real AVM
 
 The black-box tests of `oxabl build` use a fake AVM. Two opt-in test files run it against OpenEdge. Every test in them is `#[ignore]`, and a test fails, never skips, when its variables are missing.
@@ -522,6 +545,7 @@ Releases are fully automated via [Release Please](https://github.com/googleapis/
 1. Merge PRs with conventional commit messages into `master`
 2. Release Please accumulates commits and maintains an open release PR with a generated changelog and version bumps across all `Cargo.toml` files
 3. When the release PR is merged, a GitHub Release and git tag are created automatically
+4. The release of the `oxabl` crate also gets a static Linux binary with the remote cache (`scripts/build-musl.sh`) and its `.sha256` file
 
 No manual version bumping is needed.
 
