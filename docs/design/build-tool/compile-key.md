@@ -724,6 +724,16 @@ read its closure: [the observed closure](#the-observed-closure) can key it.
 | K8 | The unit's closure holds a class name that K3 accepted as external, and a class unit or class edge target in the whole graph has that name ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
 | K9 | The build has more than one PROPATH id, and the unit is a class unit or its closure reaches a class source ([Per-unit PROPATH classes](#per-unit-propath-classes)). | `per-unit-propath-classes` |
 
+**A name a superclass declares is not a class.** A class that `INHERITS` a workspace
+class reads the data members of that class as names in its own scope: variables, buffers,
+temp-tables, datasets, data-sources and events, as well as methods and properties. This
+holds through any depth of `INHERITS`. `PROTECTED` and `PUBLIC` members are inherited. A
+`PRIVATE` member is not, and a data member written without an access modifier is `PRIVATE`.
+So `req_:ToString()`, with `req_` a `PROTECTED` variable of the superclass, is no class
+reference and gives no K3 reason. A name that no class in the chain declares, and that is
+not a class either, keeps its K3 reason. A superclass that oxabl cannot read keeps its own
+K3 reason, so the unit has no key.
+
 **An include is judged in its includer's context.** K1 to K4 read the analyses of the
 unit and of the class sources in its closure only. A closure file reached only through
 include edges contributes nothing of its own standalone analysis, even when it is also a

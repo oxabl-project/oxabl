@@ -1241,18 +1241,28 @@ impl Parser<'_> {
             return self.parse_define_data_source(access, is_static);
         }
 
-        // If we consumed an access modifier or STATIC but it's not PROPERTY/DATASET/DATA-SOURCE,
-        // fall through to normal DEFINE handling (access modifier is ignored
-        // for VARIABLE/TEMP-TABLE for now — tracked in Future)
+        // Any other member keeps its access modifier and STATIC.
 
         // DEFINE TEMP-TABLE
         if self.check(Kind::TempTable) {
-            return self.parse_define_temp_table(is_new_shared, is_shared, is_new_global_shared);
+            return self.parse_define_temp_table(
+                access,
+                is_static,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+            );
         }
 
         // DEFINE BUFFER
         if self.check(Kind::Buffer) {
-            return self.parse_define_buffer(is_new_shared, is_shared, is_new_global_shared);
+            return self.parse_define_buffer(
+                access,
+                is_static,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+            );
         }
 
         // DEFINE STREAM
@@ -1276,7 +1286,13 @@ impl Parser<'_> {
 
         // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE.
         if self.check(Kind::Workfile) || self.check(Kind::WorkTable) {
-            return self.parse_define_temp_table(is_new_shared, is_shared, is_new_global_shared);
+            return self.parse_define_temp_table(
+                access,
+                is_static,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+            );
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
@@ -1418,6 +1434,8 @@ impl Parser<'_> {
                             initial_value,
                             no_undo,
                             extent,
+                            access,
+                            is_static,
                             is_new_shared,
                             is_shared,
                             is_new_global_shared,
@@ -1437,6 +1455,8 @@ impl Parser<'_> {
             initial_value,
             no_undo,
             extent,
+            access,
+            is_static,
             is_new_shared,
             is_shared,
             is_new_global_shared,
@@ -1522,6 +1542,8 @@ impl Parser<'_> {
             initial_value,
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
+            access: None,
+            is_static: false,
             // VAR has no SHARED syntax.
             is_new_shared: false,
             is_shared: false,
@@ -1781,6 +1803,8 @@ impl Parser<'_> {
     // Parse DEFINE TEMP-TABLE
     fn parse_define_temp_table(
         &mut self,
+        access: Option<AccessModifier>,
+        is_static: bool,
         is_new_shared: bool,
         is_shared: bool,
         is_new_global_shared: bool,
@@ -2036,6 +2060,8 @@ impl Parser<'_> {
             no_undo,
             like_table,
             validate,
+            access,
+            is_static,
             use_indexes,
             fields,
             indexes,
@@ -2049,6 +2075,8 @@ impl Parser<'_> {
     // Parse DEFINE BUFFER name FOR [TEMP-TABLE] table [PRESELECT] [LABEL "str"].
     fn parse_define_buffer(
         &mut self,
+        access: Option<AccessModifier>,
+        is_static: bool,
         is_new_shared: bool,
         is_shared: bool,
         is_new_global_shared: bool,
@@ -2121,6 +2149,8 @@ impl Parser<'_> {
             target,
             preselect,
             label,
+            access,
+            is_static,
             xml_options,
             is_new_shared,
             is_shared,

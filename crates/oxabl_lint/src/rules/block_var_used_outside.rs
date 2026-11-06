@@ -925,6 +925,8 @@ mod tests {
     }
     fn var_decl(n: &str) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,

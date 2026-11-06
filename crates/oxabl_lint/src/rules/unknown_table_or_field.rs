@@ -495,6 +495,8 @@ mod tests {
         });
         vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -532,6 +534,8 @@ mod tests {
         let diags = lint_with(
             vec![
                 stmt_n(StatementKind::DefineBuffer {
+                    access: None,
+                    is_static: false,
                     name: id("bCust"),
                     target: BufferTarget::Table(id("Customer")),
                     preselect: false,
@@ -576,6 +580,8 @@ mod tests {
         let diags = lint_with_schema(
             vec![
                 stmt_n(StatementKind::DefineTempTable {
+                    access: None,
+                    is_static: false,
                     name: id("tt"),
                     no_undo: false,
                     like_table: None,
@@ -665,6 +671,8 @@ mod tests {
         let diags = lint_with(
             vec![
                 stmt_n(StatementKind::VariableDeclaration {
+                    access: None,
+                    is_static: false,
                     name: id("x"),
                     type_source: TypeSource::Explicit(DataType::Integer),
                     initial_value: None,

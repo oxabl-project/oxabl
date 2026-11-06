@@ -45,6 +45,10 @@ pub enum StatementKind {
         no_undo: bool,
         /// Extent/Array, none for scalar, some(0) for dynamic
         extent: Option<u32>,
+        /// The access modifier a class member declares; `None` when unwritten.
+        access: Option<AccessModifier>,
+        /// `STATIC` was written.
+        is_static: bool,
         /// `DEFINE NEW SHARED …` — producer, visible to callees in this file.
         is_new_shared: bool,
         /// `DEFINE SHARED …` — consumer, binds an existing shared var.
@@ -408,6 +412,10 @@ pub enum StatementKind {
         like_table: Option<Identifier>,
         /// Whether VALIDATE was specified with LIKE.
         validate: bool,
+        /// The access modifier a class member declares; `None` when unwritten.
+        access: Option<AccessModifier>,
+        /// `STATIC` was written.
+        is_static: bool,
         /// USE-INDEX clauses for LIKE.
         use_indexes: Vec<UseIndex>,
         /// Field definitions.
@@ -437,6 +445,10 @@ pub enum StatementKind {
         preselect: bool,
         /// Optional label for error messages.
         label: Option<String>,
+        /// The access modifier a class member declares; `None` when unwritten.
+        access: Option<AccessModifier>,
+        /// `STATIC` was written.
+        is_static: bool,
         /// XML and serialization options (NAMESPACE-URI, SERIALIZE-NAME, etc.).
         xml_options: XmlSerializeOptions,
         /// `DEFINE NEW SHARED …` — producer, visible to callees in this file.

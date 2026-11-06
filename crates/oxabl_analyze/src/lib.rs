@@ -1122,6 +1122,8 @@ mod tests {
 
     fn var_decl(n: &str, ty: DataType) -> Statement {
         Statement::new(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: ident(n),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -1296,6 +1298,8 @@ mod tests {
                 NodeId::from_u32(4),
                 oxabl_ast::Span::DUMMY,
                 StatementKind::DefineBuffer {
+                    access: None,
+                    is_static: false,
                     name: ident("bCust"),
                     target: BufferTarget::Table(ident("Customer")),
                     preselect: false,
