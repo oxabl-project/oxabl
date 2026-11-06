@@ -1,5 +1,40 @@
 # Changelog
 
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.1.0...oxabl_index-v4.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** inherited data members are in scope in a subclass
+
+### Features
+
+* **pipeline:** add LintPipeline::edges_of_observed ([4ebf2b1](https://github.com/oxabl-project/oxabl/commit/4ebf2b1f6e3f078cb51d85de9bdf3691eef0c80e))
+* **pipeline:** observed analysis for the build tool's refresh ([af09fc0](https://github.com/oxabl-project/oxabl/commit/af09fc059328ea814d51b0a481e1cc2f7e64f65f))
+
+
+### Bug Fixes
+
+* **index:** inherited data members are in scope in a subclass ([fde4113](https://github.com/oxabl-project/oxabl/commit/fde41134d4d4cfd7f2d6a8e70f00bbe759146d70))
+* **parser:** read short data type spellings as data types ([2510e7f](https://github.com/oxabl-project/oxabl/commit/2510e7f2221d8747ee6cd816c76322aa65f466df))
+* **parser:** read short data type spellings as data types ([84bd0d3](https://github.com/oxabl-project/oxabl/commit/84bd0d3c8a8b0c8f5d6d48a006ce92948dcd90e0)), closes [#283](https://github.com/oxabl-project/oxabl/issues/283)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+    * oxabl_preprocessor bumped from 0.7.2 to 0.7.3
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+    * oxabl_semantic bumped from 3.0.2 to 4.0.0
+    * oxabl_workspace bumped from 3.2.0 to 3.3.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+
 ## [3.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.0.1...oxabl_index-v3.1.0) (2026-10-20)
 
 

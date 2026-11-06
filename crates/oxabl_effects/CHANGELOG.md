@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.2.2...oxabl_effects-v0.3.0) (2026-11-06)
+
+
+### Features
+
+* **build:** verify compile results and cache them in a local cache ([f87a7b0](https://github.com/oxabl-project/oxabl/commit/f87a7b04a2784c79dc74f621e993b3ec49b10f06))
+* **build:** verify compile results and cache them in a local cache ([61ba98e](https://github.com/oxabl-project/oxabl/commit/61ba98e6b856bdc08bb5814bf09c090a9ca15010))
+
+
+### Bug Fixes
+
+* **build:** a &gt; inside an XREF-XML attribute value does not end the element ([3874bf3](https://github.com/oxabl-project/oxabl/commit/3874bf3db908cfc82ee636f45e189dfd03fae130))
+* **build:** a &gt; inside an XREF-XML attribute value does not end the element ([ae5fbe6](https://github.com/oxabl-project/oxabl/commit/ae5fbe65ca2a05e99e4fc441d11a8a8dbd6385e5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_flow bumped from 0.3.2 to 0.3.3
+    * oxabl_index bumped from 3.1.0 to 4.0.0
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+    * oxabl_scope bumped from 0.2.2 to 0.2.3
+  * dev-dependencies
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+
 ## [0.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.2.1...oxabl_effects-v0.2.2) (2026-10-20)
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v3.0.0...oxabl_ast-v4.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** inherited data members are in scope in a subclass
+
+### Bug Fixes
+
+* **index:** inherited data members are in scope in a subclass ([fde4113](https://github.com/oxabl-project/oxabl/commit/fde41134d4d4cfd7f2d6a8e70f00bbe759146d70))
+
 ## [3.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v2.0.0...oxabl_ast-v3.0.0) (2026-10-16)
 
 

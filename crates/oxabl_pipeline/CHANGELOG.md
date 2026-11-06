@@ -1,5 +1,45 @@
 # Changelog
 
+## [3.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.2.0...oxabl_pipeline-v3.3.0) (2026-11-06)
+
+
+### Features
+
+* **build:** graph store, incremental refresh and oxabl build --plan ([50d3004](https://github.com/oxabl-project/oxabl/commit/50d3004216da610003c27a3a1430bdb97fdfcbe3))
+* **pipeline:** add LintPipeline::edges_of_observed ([4ebf2b1](https://github.com/oxabl-project/oxabl/commit/4ebf2b1f6e3f078cb51d85de9bdf3691eef0c80e))
+* **pipeline:** observed analysis for the build tool's refresh ([af09fc0](https://github.com/oxabl-project/oxabl/commit/af09fc059328ea814d51b0a481e1cc2f7e64f65f))
+* **workspace:** add the [build] tables, [workspace.sources].dlc and $DLC include path entries ([4dae3e6](https://github.com/oxabl-project/oxabl/commit/4dae3e69e8308fb3a2ccaf2982cc2f7339a5b62e))
+
+
+### Performance Improvements
+
+* **pipeline:** build TX004's workspace summaries on all cores ([75d9f8e](https://github.com/oxabl-project/oxabl/commit/75d9f8e1bc29a50364db54900c7161e53680dcb6))
+* **pipeline:** build TX004's workspace summaries on all cores ([f289387](https://github.com/oxabl-project/oxabl/commit/f289387b593c36806a16f7c546e96b2237e974aa))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.2.2 to 0.3.0
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+    * oxabl_flow bumped from 0.3.2 to 0.3.3
+    * oxabl_scope bumped from 0.2.2 to 0.2.3
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_analyze bumped from 3.0.2 to 4.0.0
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_formatter bumped from 2.0.2 to 2.0.3
+    * oxabl_index bumped from 3.1.0 to 4.0.0
+    * oxabl_lint bumped from 3.0.2 to 4.0.0
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+    * oxabl_semantic bumped from 3.0.2 to 4.0.0
+    * oxabl_style bumped from 0.2.0 to 0.2.1
+    * oxabl_workspace bumped from 3.2.0 to 3.3.0
+  * dev-dependencies
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+
 ## [3.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.1.0...oxabl_pipeline-v3.2.0) (2026-10-20)
 
 
