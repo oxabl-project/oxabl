@@ -332,6 +332,8 @@ cannot parse (as an encrypted source looks to it) and that the fake compiles:
   of the class it uses, rebuilds it. A new `.cls` gives `observed-classes-changed`, the
   compile records it, and the next build compiles nothing. A degraded workspace class gives
   `observed-class: <class>: degraded...`.
+- Two class units skipped with `package-root-not-on-propath` leave the observed key in
+  place; an edit to one of them still rebuilds the unit.
 - With two workers, a unit that qualifies starts only after a slow class unit finished
   (`--events`).
 - A compile that reads a file where the host resolves another (`FAKE-RESOLVE-OTHER`) gives

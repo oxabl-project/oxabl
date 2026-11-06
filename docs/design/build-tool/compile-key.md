@@ -314,8 +314,16 @@ part** of the unit PROPATH:
   ([The closure](#the-closure)): its includes and the classes it reads. The bytes of a class do
   not cover an include that the class reads.
 
-Each listed class must pass the rules of the key as if it were the unit (K1 to K9, with the
-unit PROPATH), and must not hold a name that K8 finds in conflict. Otherwise no unit on that
+Each listed class must pass the rules of the key as if it were the unit (K1 to K6, K8 and K9,
+with the unit PROPATH), and must not hold a name that K8 finds in conflict. K7 does not
+apply: a class unit that is skipped (for example `package-root-not-on-propath`, a class with
+no package in a directory that is not on the PROPATH) does not take the key away. It stays
+in the listing, with its bytes and its closure. This is sound: no successful compile can use
+it as a class. By the name it declares, the PROPATH holds no such source, and `$OUT` holds no
+r-code of it, because it never compiles and the build removes outputs that no unit owns. By
+its path name, the compiler finds the source, sees another name and fails (error 12629), and
+a failed compile records nothing. Any other read of the file is covered by its bytes in the
+key. Otherwise no unit on that
 PROPATH gets a key from an observed closure: `observed-class: <class>: <reason>`. A listed
 class that oxabl did not analyse (a `.cls` outside `[workspace.sources].directories` that no
 analysis reaches) gives `observed-class-unanalysed: <class>`, and a directory that cannot be

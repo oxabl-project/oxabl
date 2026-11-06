@@ -444,3 +444,39 @@ fn a_file_changed_just_before_the_build_that_the_refresh_did_not_hash_keys_the_u
         workspace.compiled()
     );
 }
+
+#[test]
+fn a_class_unit_that_cannot_compile_where_it_is_leaves_the_observed_key_in_place() {
+    let workspace = class_user();
+    workspace.write(
+        "src/tools/Helper.cls",
+        "CLASS Helper:\n    METHOD PUBLIC VOID Run():\n    END METHOD.\nEND CLASS.\n",
+    );
+    workspace.write("src/tools/Other.cls", "CLASS Other:\nEND CLASS.\n");
+    workspace.build().succeeded();
+
+    let plan = workspace.plan();
+    for path in ["src/tools/Helper.cls", "src/tools/Other.cls"] {
+        let class = unit(&plan, path);
+        assert_eq!(class["action"], "skip", "{plan}");
+        assert_eq!(
+            strings(&class["unkeyable"]),
+            ["package-root-not-on-propath: src/tools"],
+            "{plan}"
+        );
+    }
+    let enc = unit(&plan, "src/enc.p");
+    assert_eq!(enc["closure"], "observed", "{plan}");
+    assert_eq!(enc["action"], "up-to-date", "{plan}");
+
+    workspace.write(
+        "src/tools/Helper.cls",
+        "CLASS Helper:\n    METHOD PUBLIC VOID Run2():\n    END METHOD.\nEND CLASS.\n",
+    );
+    let plan = workspace.plan();
+    assert_eq!(
+        unit(&plan, "src/enc.p")["action"],
+        "rebuild",
+        "the bytes of a skipped class are still in the key: {plan}"
+    );
+}
