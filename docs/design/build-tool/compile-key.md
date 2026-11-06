@@ -537,7 +537,7 @@ gives each reason.
 | K1 | The unit, or a class source in its closure, has a degraded edge set. | `degraded: <path>: <reason>` |
 | K2 | The unit, or a class source in its closure, has an unresolved include (any kind, any reason). | `unresolved-include: <name> in <path>` |
 | K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]` (compared ignoring ASCII case), and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
-| K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). | `computed-name: <name> in <path>` |
+| K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). A class unit whose `CLASS` name is not written out is also K4 (`computed-name: class statement in <path>`, `conditional-name: class statement in <path>`), unless exactly one directory can be its package root. | `computed-name: <name> in <path>` |
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
 | K6 | The environment was not established in this build (no probe, a failed probe, or a schema imaging failure for any database). | `environment-unknown` |
 | K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`, `package-mismatch`, `package-root-not-on-propath`). | the skip reason |
@@ -552,6 +552,17 @@ it uses `{&table}` does not make its includer unkeyable, because the includer's 
 expands it with the includer's definitions, and anything degraded there is a K1 of the
 includer. K5 and K6 still check every closure file. A file that is both an include target and
 a class source is always judged by its own analysis too (fail-closed).
+
+**A class name that is not written out.** The compiler checks the `CLASS` name against
+the compile name (the name given to `COMPILE`, without its extension, `/` as `.`) and
+refuses a unit with error 12629 otherwise. This holds when the name is `{&n}`, is set in
+an `&IF`, or comes from an include. Oxabl chooses the compile name, so for such a unit it
+derives the class name from it. A unit whose real name differs fails to compile, and a
+failed unit is never cached: the derivation cannot give a wrong cache hit. The package
+root is the one directory that is the unit's directory or an ancestor of it and is on the
+unit PROPATH built for it. With two or more such directories (`root_relative_include_paths`,
+or two `include_paths` entries that hold the file), or when a name part has a `.`, no one
+name is known and K4 stays. The derived name also serves the class-conflict check (K8).
 
 `[build.external_packages]` maps a class name prefix to the library entries that supply
 it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any `.pl` library

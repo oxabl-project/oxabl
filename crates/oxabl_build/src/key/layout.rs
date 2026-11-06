@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
 
-use crate::paths::propath::{Placement, Search, base_directory, is_class_unit, place};
+use crate::paths::propath::{Placement, Search, base_directory, derive_base, is_class_unit, place};
 use crate::paths::{Declared, PathMap, declared_name};
 use crate::refresh::{Outcome, parallel};
 
@@ -19,7 +19,17 @@ pub struct Placed {
     /// What a class unit's own text says about its name; `Absent` for a
     /// unit that is not a class.
     pub declared: Declared,
+    /// The class name taken from the compile name, for a class unit whose
+    /// text does not give it and that has exactly one possible package root.
+    pub derived: Option<String>,
     pub placement: Placement,
+}
+
+impl Placed {
+    /// The name the class has: the one its text gives, else the derived one.
+    pub fn class_name(&self) -> Option<&str> {
+        self.declared.name().or(self.derived.as_deref())
+    }
 }
 
 /// The placements of all units, by position in `Outcome::units`.
@@ -78,13 +88,24 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
             Declared::Absent
         }
     });
+    let work: Vec<usize> = (0..outcome.units.len()).collect();
+    let derived: Vec<Option<(String, String)>> = parallel::map(&work, |at| {
+        let path = outcome.name(outcome.units[*at]);
+        match is_class_unit(path) && declared[*at].name().is_none() {
+            true => derive_base(search, paths, path),
+            false => None,
+        }
+    });
     let mut by_base: FxHashMap<String, usize> = FxHashMap::default();
     let mut ids: FxHashMap<Vec<String>, usize> = FxHashMap::default();
     let mut propaths: Vec<Vec<String>> = Vec::new();
     let mut staged: Vec<(Option<usize>, Result<String, String>)> = Vec::new();
-    for (id, declared) in outcome.units.iter().zip(&declared) {
+    for ((id, declared), derived) in outcome.units.iter().zip(&declared).zip(&derived) {
         let path = outcome.name(*id);
-        let base = base_directory(path, declared.name());
+        let base = match (declared, derived) {
+            (Declared::Name(_), _) | (_, None) => base_directory(path, declared.name()),
+            (_, Some((base, _))) => Ok(base.clone()),
+        };
         let propath = base.as_ref().ok().map(|base| {
             *by_base.entry(base.clone()).or_insert_with(|| {
                 let propath = search.propath(paths, base);
@@ -99,14 +120,13 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
     let is_file = |canonical: &str| {
         std::fs::metadata(paths.absolute(canonical)).is_ok_and(|meta| meta.is_file())
     };
-    let work: Vec<usize> = (0..outcome.units.len()).collect();
     let placements = parallel::map(&work, |at| {
         let path = outcome.name(outcome.units[*at]);
         match &staged[*at] {
             (Some(propath), Ok(base)) => place(
                 path,
                 base,
-                declared[*at].name().is_some(),
+                declared[*at].name().is_some() || derived[*at].is_some(),
                 &propaths[*propath],
                 is_file,
             ),
@@ -118,13 +138,17 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
         .into_iter()
         .zip(staged)
         .zip(declared)
+        .zip(derived)
         .zip(&outcome.units)
-        .map(|(((placement, (propath, _)), declared), id)| Placed {
-            propath,
-            class: is_class_unit(outcome.name(*id)),
-            declared,
-            placement,
-        })
+        .map(
+            |((((placement, (propath, _)), declared), derived), id)| Placed {
+                propath,
+                class: is_class_unit(outcome.name(*id)),
+                declared,
+                derived: derived.map(|(_, name)| name),
+                placement,
+            },
+        )
         .collect();
     skip_collisions(outcome, &mut units);
     Layout { propaths, units }
