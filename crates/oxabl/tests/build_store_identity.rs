@@ -31,8 +31,21 @@ fn copy_with_tail(dir: &TempDir, name: &str, tail: &[u8]) -> PathBuf {
     copy
 }
 
+/// Runs `--plan` with `program`. A test thread that forks while this test
+/// still writes the copy holds it open for writing until its child execs, and
+/// a start in that window fails with ETXTBSY; the start is tried again.
 fn plan_with(workspace: &Workspace, program: &Path) -> Run {
-    let run = run_of(workspace.command_of(program, &["--plan"]).output().unwrap());
+    let mut tries = 0;
+    let output = loop {
+        match workspace.command_of(program, &["--plan"]).output() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => break result.unwrap(),
+        }
+    };
+    let run = run_of(output);
     run.succeeded();
     run
 }
