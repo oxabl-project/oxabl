@@ -11,6 +11,7 @@ use super::place::{open_no_follow, place};
 use crate::cache::seam::{
     ArtifactSetRef, ArtifactUploader, CompileKey, NotStoredReason, RemoteOrigin, StoreOutcome,
 };
+use crate::refresh::parallel;
 use crate::worker::random;
 
 /// Entries built and not yet renamed are installed in batches of this size.
@@ -173,20 +174,28 @@ impl ArtifactUploader for Uploader {
     }
 }
 
-/// Stores one set at once, with a remote origin.
-pub fn store_now(layout: &Layout, set: ArtifactSetRef, remote: &RemoteOrigin, limit: u64) {
-    if layout.entry(&set.key).join(MANIFEST).is_file() {
+/// Stores the sets of a remote tier, with their origin, after one `syncfs`.
+/// The entries are built on several threads.
+pub fn store_remote(layout: &Layout, sets: Vec<(ArtifactSetRef, RemoteOrigin)>, limit: u64) {
+    let built: Vec<Built> = parallel::map(&sets, |(set, remote)| {
+        match layout.entry(&set.key).join(MANIFEST).is_file() {
+            true => None,
+            false => build(layout, set, Some(remote)).ok(),
+        }
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    if built.is_empty() {
         return;
     }
-    if let Ok(built) = build(layout, &set, Some(remote)) {
-        let mut added = 0;
-        for (_, outcome, bytes) in install(layout, vec![built]) {
-            if outcome == StoreOutcome::Stored {
-                added += bytes;
-            }
-        }
-        if added > 0 && accounting::add(layout, added) > limit {
-            accounting::evict(layout, limit);
-        }
+    let installed = install(layout, built);
+    let added: u64 = installed
+        .into_iter()
+        .filter(|(_, outcome, _)| *outcome == StoreOutcome::Stored)
+        .map(|(_, _, bytes)| bytes)
+        .sum();
+    if added > 0 && accounting::add(layout, added) > limit {
+        accounting::evict(layout, limit);
     }
 }

@@ -52,7 +52,7 @@ impl ArtifactCache for LocalCache {
         Box::new(store::Uploader::new(self.layout.clone(), self.limit))
     }
 
-    fn fill(&self, set: ArtifactSetRef, origin: &RemoteOrigin) {
-        store::store_now(&self.layout, set, origin, self.limit);
+    fn fill(&self, sets: Vec<(ArtifactSetRef, RemoteOrigin)>) {
+        store::store_remote(&self.layout, sets, self.limit);
     }
 }

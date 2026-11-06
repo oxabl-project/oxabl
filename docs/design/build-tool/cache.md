@@ -213,17 +213,29 @@ After the plan ([build-tool.md](../build-tool.md#the-build-flow), step 6):
 2. **Fetch.** One layered `fetch` for all of `K`, into `<state>/stage/<build-id>/fetch/`.
    The scheduler starts compiling units that do not wait on a pending node at the same
    time, so fetching and compiling overlap.
-3. **Outcome.** An `Installed` outcome goes to a promote batch. Before each promote batch
-   (every 500 sets or every 2 s), oxabl calls `syncfs` on the stage, renames each file to
-   its final path, and records the results with `origin` `2` (local) or `3` (remote). Oxabl
+3. **Outcome.** The thread that runs `fetch` only reads outcomes. A `Miss` turns the node
+   into a compile job at once. An `Installed` outcome goes to the installer thread, which
+   collects a promote batch (500 sets, or what arrived within 2 s of the first). For each
+   batch it calls `syncfs` on the stage once, renames each file to its final path (on
+   several threads), and answers each unit; a batch whose `syncfs` fails is a miss for each
+   unit. The build records the results with `origin` `2` (local) or `3` (remote). Oxabl
    hashes each promoted file itself for the `outputs` table; the client reports no per-file
-   hash, and oxabl does not need one. The
-   node is finished. A `Miss` turns the node into a compile job.
+   hash, and oxabl does not need one. The node is finished. Without a cancel, the installer
+   answers every set it takes, and the fetch ends only after it has stopped. After a
+   cancel, it starts no new batch: a file it renamed but did not answer has no record, so
+   the next build compiles its unit again.
 4. **Local fill.** After promotion, each remote hit is also stored in the local cache (when
    the local cache is on), by reflink or hard link **from the final path**, and by copy
-   otherwise. The promoted file is the only copy left once the stage file is renamed away,
+   otherwise. A filler thread does this in batches of the same size (`fill` takes a batch),
+   with one `syncfs` on the cache filesystem for each batch, so the installer never waits
+   for it. The promoted file is the only copy left once the stage file is renamed away,
    and the verified local read covers any later edit of it. The local entry records the
    remote tier and signer.
+
+   A whole-tree fetch of 10,000 sets of a few KB to tens of KB from a local server on the
+   same machine (`build_remote_fetch_tree` with `OXABL_FETCH_TREE_UNITS=10000`, debug
+   build) takes about 14 s, of which the download is about 7 s. With one set at a time
+   and one `syncfs` per local fill it took about 100-110 s, about 90 s of them in the fill.
 5. **Compile** the rest.
 6. **Verify and write** each compiled unit as it completes
    ([Verification](#verification)): a unit that passes goes to the local cache and is
