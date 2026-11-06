@@ -103,7 +103,7 @@ impl ArtifactCache for Layered {
         notes
     }
 
-    fn fill(&self, set: ArtifactSetRef, origin: &RemoteOrigin) {
-        self.near.fill(set, origin);
+    fn fill(&self, sets: Vec<(ArtifactSetRef, RemoteOrigin)>) {
+        self.near.fill(sets);
     }
 }

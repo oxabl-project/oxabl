@@ -169,7 +169,8 @@ pub trait ArtifactCache: Send + Sync {
         Vec::new()
     }
 
-    /// Stores a set that a remote tier gave, from its final paths, where it is
-    /// nearer the machine. Best effort.
-    fn fill(&self, _set: ArtifactSetRef, _origin: &RemoteOrigin) {}
+    /// Stores sets that a remote tier gave, from their final paths, where they
+    /// are nearer the machine. The build calls it with batches, on a thread of
+    /// its own. Best effort.
+    fn fill(&self, _sets: Vec<(ArtifactSetRef, RemoteOrigin)>) {}
 }

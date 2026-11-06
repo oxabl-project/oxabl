@@ -263,7 +263,8 @@ impl ArtifactCache for Remote {
         }
     }
 
-    fn fill(&self, set: ArtifactSetRef, _: &RemoteOrigin) {
-        self.0.fills.lock().unwrap().push(set.key);
+    fn fill(&self, sets: Vec<(ArtifactSetRef, RemoteOrigin)>) {
+        let mut fills = self.0.fills.lock().unwrap();
+        fills.extend(sets.iter().map(|(set, _)| set.key));
     }
 }
