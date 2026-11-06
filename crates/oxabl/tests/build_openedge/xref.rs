@@ -108,6 +108,29 @@ fn xref_xml_resolution() {
     );
 }
 
+/// What the observed closure reads from an `XREF-XML`: one `INCLUDE`
+/// reference for each include, the one with only preprocessor definitions
+/// too. The observed closure is sound only while this holds.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn xref_xml_observed_closure() {
+    let target = setup();
+    let workspace = compile_workspace(&target);
+    workspace.copy_fixture();
+    workspace.build(&["--json"], 0);
+
+    let main = workspace.read("build/xref/main.p.xref.xml");
+    let main = oxabl::build::observe::xref::parse(&main)
+        .unwrap_or_else(|e| panic!("the XREF-XML is not read: {e}\n{main}"));
+    eprintln!("EVIDENCE xref_xml_observed_closure main.p: {main:?}");
+    for include in ["defs.i", "ttrows.i", "consts.i"] {
+        assert!(
+            main.includes.iter().any(|name| name.ends_with(include)),
+            "no INCLUDE reference names {include}: the observed closure would miss it"
+        );
+    }
+}
+
 /// The text reader finds every include of the fixture by the name written in
 /// the source; the XML reader finds the includes that hold a reference.
 #[test]

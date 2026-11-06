@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::settle::Analyses;
 use crate::graph::Graph;
@@ -33,6 +33,17 @@ pub struct Delta {
     pub reanalysed: FxHashSet<u32>,
 }
 
+/// The observed closure of a unit, by path id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// The files the last compile read, without the unit.
+    pub files: Vec<u32>,
+    /// The paths that must stay absent.
+    pub absent: Vec<u32>,
+    /// The class sources the compile could read.
+    pub classes: Vec<u32>,
+}
+
 /// The result of one refresh: the working tree as the graph, and what changed.
 pub struct Outcome {
     /// The generation of the store after the refresh commits.
@@ -57,6 +68,8 @@ pub struct Outcome {
     /// The generation in which each tracked path last changed, by id. Empty
     /// unless the request asked for keys.
     pub changed_gen: Vec<u64>,
+    /// The observed closure of each unit that has one.
+    pub observed: FxHashMap<u32, Observed>,
     /// Problems a client shows and goes on from.
     pub warnings: Vec<String>,
     /// What to write to the store.

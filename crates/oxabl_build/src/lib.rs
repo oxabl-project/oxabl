@@ -20,6 +20,7 @@ pub mod graph;
 pub mod key;
 pub mod kinds;
 pub mod lock;
+pub mod observe;
 pub mod output;
 pub mod paths;
 pub mod plan;

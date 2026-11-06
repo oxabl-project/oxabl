@@ -44,7 +44,8 @@ Each connection sets, in this order: `busy_timeout = 5000`, `journal_mode = WAL`
 ### Versioning
 
 `STORE_FORMAT` is one integer in `store/ddl.rs`. Any change to the DDL, a blob encoding or
-the meaning of a column increments it. There are no migrations.
+the meaning of a column increments it. There are no migrations. Format 2 adds the
+`observed` table: a store of format 1 is replaced by step 3 below.
 
 On open:
 
@@ -144,6 +145,11 @@ CREATE TABLE outputs (
 
 CREATE UNIQUE INDEX outputs_by_path ON outputs(path);
 
+CREATE TABLE observed (
+    unit_id INTEGER PRIMARY KEY REFERENCES paths(id),
+    closure BLOB NOT NULL
+);
+
 CREATE TABLE environments (
     identity   BLOB PRIMARY KEY,
     record     TEXT NOT NULL,
@@ -161,7 +167,7 @@ CREATE TABLE environments (
 - `files.present`: `0` absent, `1` regular file. `hash` is the BLAKE3 hash of the raw
   bytes, `NULL` when absent. `observed_ns` is the wall clock when oxabl took the stat.
   `tracked_by` is a bit set: `1` a unit found by the walk, `2` a file an analysis read,
-  `4` a path an analysis found absent.
+  `4` a path an analysis found absent, `8` a file or an absent path of an observed closure.
 - `listings` holds the directories that a case-insensitive lookup listed. `digest` is the
   BLAKE3 hash of the sorted entry names, each followed by a NUL byte.
 - `analyses` holds one row per analysed node: every unit and every class source that a
@@ -172,6 +178,11 @@ CREATE TABLE environments (
   ([compile-key.md](compile-key.md#component-digests)), which the planner compares to name a
   reason. `origin`: `1` compiled, `2` local cache, `3` remote cache. `note` holds the
   file that check V3 found outside the closure, for the `unverified` reason.
+- `observed` holds the [observed closure](compile-key.md#the-observed-closure) of each unit
+  that has one: the files its last observed compile read, the paths that must stay
+  absent and the class sources the compile could read, as canonical paths (see [Blob encoding](#blob-encoding)). A row goes when its unit
+  leaves the working tree, when its result goes, when a compile of the unit gives no
+  observed closure, and when the unit compiles with a key from its own source.
 - `environments` holds each environment record that a result refers to, as canonical JSON
   without dropped parameters. The planner compares two records field by field to name an
   `environment-changed` reason. Rows that no result refers to are deleted at commit.
@@ -218,6 +229,11 @@ conditional program (resolved). Schema-table edges are not stored; the key cover
 database as a whole.
 
 Observation kinds: `1` read, `2` absent, `3` listed.
+
+- `observed.closure`: `varint count`, then each entry as `u8 kind` (`1` a file of the
+  closure, `2` an absent path, `3` a listed class source), `varint length` and the UTF-8
+  canonical path, sorted by `(kind, path)`. Paths, not path ids: a build records the closure, and only a refresh mints
+  path ids.
 
 Unresolved kinds are the edge kinds. Reasons: `1` absent from workspace, `2` present but
 unusable, `3` unknowable, `4` external, `5` computed name.
@@ -290,7 +306,8 @@ nothing.
 1. **Load.** Read `paths`, `files`, `listings` and `analyses` in one read transaction.
 2. **Walk.** Walk `[workspace.sources].directories` with the shared walk primitive and
    `root_extensions`, minus `[build].exclude`. Each file found is a unit.
-3. **Stat.** Stat every unit and every tracked path, in parallel with scoped threads. For a
+3. **Stat.** Stat every unit and every tracked path, in parallel with scoped threads. The
+   files and absent paths of each stored observed closure are tracked paths too. For a
    present file, the stored hash is reused when `size`, `mtime_ns`, `ctime_ns`, `ino` and
    `dev` are equal to the stored values **and** the stored stat is not racy. Otherwise oxabl
    reads and hashes the file. A different hash, or a change of presence, sets `changed_gen =
@@ -317,7 +334,8 @@ nothing.
    to step 6. After three rounds, stop with exit code 3: `the workspace kept changing
    during the refresh`.
 10. **Drop.** A node that is no longer a unit and that no edge reaches loses its `analyses`
-    row. A `files` row whose `tracked_by` is now `0` is deleted.
+    row. A unit that is gone loses its `observed` row. A `files` row whose `tracked_by` is
+    now `0` is deleted.
 11. **Commit.** Write all changes and `generation = G` in one `IMMEDIATE` transaction. When
     nothing changed, write nothing.
 

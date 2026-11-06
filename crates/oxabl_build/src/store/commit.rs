@@ -16,6 +16,8 @@ pub struct Changes {
     pub listings_deleted: Vec<u32>,
     pub analyses: Vec<(u32, StoredAnalysis)>,
     pub analyses_deleted: Vec<u32>,
+    /// Units whose observed closure the store forgets: they are no longer units.
+    pub observed_deleted: Vec<u32>,
     pub generation: Option<u64>,
     pub identity: Option<[u8; 32]>,
     /// The hash of the running executable, when it was taken again.
@@ -32,6 +34,7 @@ impl Changes {
             && self.listings_deleted.is_empty()
             && self.analyses.is_empty()
             && self.analyses_deleted.is_empty()
+            && self.observed_deleted.is_empty()
             && self.generation.is_none()
             && self.identity.is_none()
             && self.binary.is_none()
@@ -133,6 +136,12 @@ impl Store {
             }
             let mut delete = tx.prepare_cached("DELETE FROM analyses WHERE path_id = ?1")?;
             for id in &changes.analyses_deleted {
+                delete.execute([id])?;
+            }
+        }
+        {
+            let mut delete = tx.prepare_cached("DELETE FROM observed WHERE unit_id = ?1")?;
+            for id in &changes.observed_deleted {
                 delete.execute([id])?;
             }
         }

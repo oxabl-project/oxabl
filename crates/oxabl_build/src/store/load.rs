@@ -1,7 +1,8 @@
 use rusqlite::Transaction;
 
+use super::blob::decode_observed;
 use super::meta::{self, ANALYSIS_IDENTITY, BINARY_HASH, GENERATION};
-use super::rows::{BinaryRow, FileRow, ListingRow, StoredAnalysis};
+use super::rows::{BinaryRow, FileRow, ListingRow, ObservedClosure, StoredAnalysis};
 use super::{Store, StoreError};
 
 /// A read transaction: everything read through it is one snapshot of the store.
@@ -21,6 +22,8 @@ pub struct Loaded {
     pub files: Vec<(u32, FileRow)>,
     pub listings: Vec<(u32, ListingRow)>,
     pub analysis_heads: Vec<(u32, u64, [u8; 32])>,
+    /// The observed closure of each unit that has one.
+    pub observed: Vec<(u32, ObservedClosure)>,
 }
 
 fn hash_of(bytes: Vec<u8>) -> Result<[u8; 32], StoreError> {
@@ -39,6 +42,7 @@ impl Loaded {
             files: Vec::new(),
             listings: Vec::new(),
             analysis_heads: Vec::new(),
+            observed: Vec::new(),
         }
     }
 }
@@ -144,6 +148,14 @@ impl Reading<'_> {
             ));
         }
 
+        let mut observed = Vec::new();
+        let mut statement = self.tx.prepare("SELECT unit_id, closure FROM observed")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(1)?;
+            observed.push((row.get::<_, i64>(0)? as u32, decode_observed(&bytes)?));
+        }
+
         Ok(Loaded {
             generation,
             identity,
@@ -152,6 +164,7 @@ impl Reading<'_> {
             files,
             listings,
             analysis_heads,
+            observed,
         })
     }
 

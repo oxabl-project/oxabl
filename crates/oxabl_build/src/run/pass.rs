@@ -4,11 +4,14 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
 
+use rustc_hash::FxHashMap;
+
 use super::context::{Ctx, State};
 use super::coordinate::Coordinator;
 use super::fetch;
 use super::shared::Shared;
 use super::slot;
+use crate::paths::propath::is_class_unit;
 use crate::schedule::{Queue, Schedule};
 use crate::worker::Pool;
 
@@ -24,6 +27,24 @@ pub enum PassEnd {
     Fatal,
 }
 
+/// A unit oxabl cannot read compiles after every class unit of `targets`:
+/// its compile can read their r-code from `$OUT`, which must be this build's.
+fn observed_after_classes(ctx: &Ctx<'_>, targets: &[u32]) -> FxHashMap<u32, Vec<u32>> {
+    let classes: Vec<u32> = targets
+        .iter()
+        .copied()
+        .filter(|unit| is_class_unit(&ctx.infos[unit].path))
+        .collect();
+    if classes.is_empty() {
+        return FxHashMap::default();
+    }
+    targets
+        .iter()
+        .filter(|unit| ctx.infos[unit].observable)
+        .map(|unit| (*unit, classes.clone()))
+        .collect()
+}
+
 /// Compiles `targets` on the workers of `pool`, classes before their users.
 /// With `fetching`, the keyable units are first looked up in the cache, while
 /// the units that wait on no lookup compile.
@@ -37,6 +58,7 @@ pub fn run(
     let outcome = ctx.outcome;
     let schedule = Schedule::build(
         &outcome.after,
+        &observed_after_classes(ctx, targets),
         outcome.names.len(),
         targets,
         |unit| ctx.weights.get(&unit).copied().unwrap_or(1),
@@ -66,6 +88,8 @@ pub fn run(
         limits: ctx.limits,
         cancel: ctx.cancel,
         verify: ctx.verify.as_ref(),
+        observing: ctx.observer.is_some(),
+        user_xref: ctx.user_xref,
         imaging: ctx.imaging.as_ref(),
         fail_fast: ctx.fail_fast,
         restart: pool.restart(),

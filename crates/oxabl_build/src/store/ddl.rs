@@ -1,7 +1,7 @@
 /// The format of the store. Any change to the tables, to a blob encoding or to
 /// the meaning of a column increments it; a store of another format is
 /// replaced, never migrated.
-pub const STORE_FORMAT: i32 = 1;
+pub const STORE_FORMAT: i32 = 2;
 
 /// `OXBL`: marks a file as an oxabl store.
 pub const APPLICATION_ID: i32 = 0x4F58_424C;
@@ -74,6 +74,11 @@ CREATE TABLE outputs (
 ) WITHOUT ROWID;
 
 CREATE UNIQUE INDEX outputs_by_path ON outputs(path);
+
+CREATE TABLE observed (
+    unit_id INTEGER PRIMARY KEY REFERENCES paths(id),
+    closure BLOB NOT NULL
+);
 
 CREATE TABLE environments (
     identity   BLOB PRIMARY KEY,

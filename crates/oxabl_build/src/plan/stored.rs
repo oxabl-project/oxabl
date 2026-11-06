@@ -66,6 +66,8 @@ impl Stored<'_> {
         verdict
     }
 
+    /// Whether the unit changed since `result`, and the files of its closure
+    /// that did, the closure its compiler last reported included.
     fn changed_since(
         &self,
         unit: u32,
@@ -74,7 +76,15 @@ impl Stored<'_> {
     ) -> (bool, Vec<String>) {
         let outcome = self.outcome;
         let gen_of = |id: u32| outcome.changed_gen_of(id) > result.compiled_gen;
-        let closure = self.after.closure(unit, scratch);
+        let mut closure = self.after.closure(unit, scratch);
+        if let Some(observed) = outcome.observed.get(&unit) {
+            closure.extend(observed.files.iter().chain(&observed.classes));
+            for class in &observed.classes {
+                closure.extend(self.after.closure(*class, scratch));
+            }
+            closure.sort_unstable();
+            closure.dedup();
+        }
         let files = closure.into_iter().filter(|id| gen_of(*id));
         (gen_of(unit), names(outcome, files))
     }
