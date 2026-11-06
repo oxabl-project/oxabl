@@ -596,6 +596,8 @@ pub struct MemberDescriptor {
     /// The symbol kind to synthesize. Methods are
     /// [`SymbolKind::Function`] — the same kind the declare pass gives a
     /// method declared locally — and properties are [`SymbolKind::Property`].
+    /// Class-level data members carry the kind the declare pass gives them:
+    /// variable, buffer, temp-table, dataset, data-source or event.
     pub kind: SymbolKind,
     /// Declared return type for a method, value type for a property.
     pub ty: MemberType,

@@ -689,6 +689,8 @@ mod tests {
     }
     fn var_decl(n: &str, ty: DataType) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -968,6 +970,8 @@ mod tests {
         });
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: oxabl_ast::BufferTarget::Table(id("Customer")),
                 preselect: false,

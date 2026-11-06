@@ -84,7 +84,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxabl_ast::{AccessModifier, DataType, Statement, StatementKind};
+use oxabl_ast::{AccessModifier, DataType, Statement, StatementKind, TypeSource};
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
@@ -673,23 +673,38 @@ fn enum_members(tokens: &[Token], source: &str) -> (Option<Vec<MemberDescriptor>
     (ok.then_some(members), i)
 }
 
-/// Project the members a class or interface body declares itself.
+/// Project the members a class or interface body declares itself: methods,
+/// properties, and the data members a subclass reaches by name (variables,
+/// buffers, temp-tables, datasets, data-sources, events).
 ///
-/// Methods and properties only. A class-level `DEFINE VARIABLE` is reachable as
-/// a data member in ABL, but no planned consumer asks for one, so indexing it
-/// would be a fact nothing reads.
+/// A data member written without an access modifier is `PRIVATE`, as in ABL.
 fn declared_members(body: &[Statement]) -> Arc<[MemberDescriptor]> {
     let mut members = Vec::new();
+    collect_members(body, &mut members);
+    members.into()
+}
+
+fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
+    let data = |name: &oxabl_ast::Identifier,
+                kind: SymbolKind,
+                ty: MemberType,
+                access: Option<AccessModifier>,
+                is_static: bool| MemberDescriptor {
+        name: IndexName::new(&name.name),
+        kind,
+        ty,
+        access: access.unwrap_or(AccessModifier::Private),
+        is_static,
+    };
     for stmt in body {
-        if let StatementKind::Method {
-            access,
-            is_static,
-            return_type,
-            name,
-            ..
-        } = &stmt.kind
-        {
-            members.push(MemberDescriptor {
+        match &stmt.kind {
+            StatementKind::Method {
+                access,
+                is_static,
+                return_type,
+                name,
+                ..
+            } => members.push(MemberDescriptor {
                 name: IndexName::new(&name.name),
                 // The same kind the declare pass gives a locally declared
                 // method, so a synthesized member is indistinguishable from a
@@ -702,25 +717,107 @@ fn declared_members(body: &[Statement]) -> Arc<[MemberDescriptor]> {
                     .map_or(MemberType::Untyped, member_type),
                 access: *access,
                 is_static: *is_static,
-            });
-        } else if let StatementKind::Property {
-            access,
-            is_static,
-            name,
-            data_type,
-            ..
-        } = &stmt.kind
-        {
-            members.push(MemberDescriptor {
+            }),
+            StatementKind::Property {
+                access,
+                is_static,
+                name,
+                data_type,
+                ..
+            } => members.push(MemberDescriptor {
                 name: IndexName::new(&name.name),
                 kind: SymbolKind::Property,
                 ty: member_type(data_type),
                 access: *access,
                 is_static: *is_static,
-            });
+            }),
+            StatementKind::VariableDeclaration {
+                name,
+                type_source,
+                extent,
+                access,
+                is_static,
+                ..
+            } => {
+                let ty = match type_source {
+                    TypeSource::Explicit(declared) => match (declared.class_name(), extent) {
+                        (Some(_), _) | (None, None) => member_type(declared),
+                        (None, Some(n)) => MemberType::portable(ResolvedType::Array {
+                            element: Box::new(ResolvedType::from_data_type(declared)),
+                            extent: if *n == 0 { None } else { Some(*n) },
+                        })
+                        .unwrap_or(MemberType::Untyped),
+                    },
+                    TypeSource::Like { .. } => MemberType::Untyped,
+                };
+                members.push(data(name, SymbolKind::Variable, ty, *access, *is_static));
+            }
+            StatementKind::DefineTempTable {
+                name,
+                access,
+                is_static,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::TempTable,
+                MemberType::Untyped,
+                *access,
+                *is_static,
+            )),
+            StatementKind::DefineBuffer {
+                name,
+                access,
+                is_static,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::Buffer,
+                MemberType::Untyped,
+                *access,
+                *is_static,
+            )),
+            StatementKind::DefineDataset {
+                name,
+                access,
+                is_static,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::Dataset,
+                MemberType::Untyped,
+                *access,
+                *is_static,
+            )),
+            StatementKind::DefineDataSource {
+                name,
+                access,
+                is_static,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::DataSource,
+                MemberType::Untyped,
+                *access,
+                *is_static,
+            )),
+            StatementKind::DefineEvent {
+                access,
+                is_static,
+                name,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::Event,
+                MemberType::Untyped,
+                Some(*access),
+                *is_static,
+            )),
+            StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
+                collect_members(inner, members);
+            }
+            _ => {}
         }
     }
-    members.into()
 }
 
 /// Lower a declared [`DataType`] into a form that survives the file boundary.

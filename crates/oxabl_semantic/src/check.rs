@@ -947,6 +947,8 @@ mod tests {
 
     fn var_decl(name: &str, ty: DataType) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: ident(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -1226,6 +1228,8 @@ mod tests {
         let cid = cf.id;
         let sem = analyze(vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: ident("bCust"),
                 target: BufferTarget::Table(ident("Customer")),
                 preselect: false,
@@ -1276,6 +1280,8 @@ mod tests {
         let aid = ax.id;
         let sem = analyze(vec![
             stmt_n(StatementKind::VariableDeclaration {
+                access: None,
+                is_static: false,
                 name: ident("arr"),
                 type_source: TypeSource::Explicit(DataType::Integer),
                 initial_value: None,
@@ -1430,6 +1436,8 @@ mod tests {
         // The check pass must not emit diagnostics — LINT0004 owns them.
         // Construct a mismatch: `x: LOGICAL = 1` (integer into logical).
         let sem = analyze(vec![stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: ident("x"),
             type_source: TypeSource::Explicit(DataType::Logical),
             initial_value: Some(int_lit(1)),

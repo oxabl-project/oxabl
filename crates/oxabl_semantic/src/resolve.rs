@@ -5894,7 +5894,12 @@ impl<'a> ResolveWalker<'a> {
                         // reference that was never about it.
                         let namespace = match member.kind {
                             SymbolKind::Function => NamespaceId::Functions,
-                            SymbolKind::Property => NamespaceId::Values,
+                            SymbolKind::Property
+                            | SymbolKind::Variable
+                            | SymbolKind::Dataset
+                            | SymbolKind::DataSource => NamespaceId::Values,
+                            SymbolKind::Buffer | SymbolKind::TempTable => NamespaceId::Buffers,
+                            SymbolKind::Event => NamespaceId::Events,
                             // The index reports methods and properties and
                             // nothing else; a kind that gained membership later
                             // must choose its own namespace rather than
@@ -6751,6 +6756,8 @@ mod tests {
 
     fn var_stmt(name: &str, ty: DataType) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -6764,6 +6771,8 @@ mod tests {
 
     fn var_stmt_extent(name: &str, ty: DataType, extent: u32) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -6830,6 +6839,8 @@ mod tests {
     #[test]
     fn variable_like_leaves_type_none() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id("x"),
             type_source: TypeSource::Like {
                 source: id("Customer.CustNum"),
@@ -6919,6 +6930,8 @@ mod tests {
     #[test]
     fn define_buffer_lives_in_buffers() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("bCust"),
             target: BufferTarget::Table(id("Customer")),
             preselect: false,
@@ -6935,6 +6948,8 @@ mod tests {
     #[test]
     fn define_temp_table_declares_table_and_fields() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id("ttCust"),
             no_undo: false,
             like_table: None,
@@ -6994,6 +7009,8 @@ mod tests {
         };
         let tt = |name: &str, fname: &str| {
             stmt(StatementKind::DefineTempTable {
+                access: None,
+                is_static: false,
                 name: id(name),
                 no_undo: true,
                 like_table: None,
@@ -7043,6 +7060,8 @@ mod tests {
             extent: None,
         };
         let (_, _, diags) = run(vec![stmt(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id("tt-order"),
             no_undo: true,
             like_table: None,
@@ -7865,6 +7884,8 @@ mod tests {
         is_new_global: bool,
     ) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -7915,6 +7936,8 @@ mod tests {
     #[test]
     fn shared_temp_table_has_shared_flag() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id("tt"),
             no_undo: false,
             like_table: None,
@@ -7934,6 +7957,8 @@ mod tests {
     #[test]
     fn shared_buffer_has_new_shared_flag() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("b"),
             target: BufferTarget::Table(id("customer")),
             preselect: false,
@@ -8424,6 +8449,8 @@ mod tests {
 
     fn var_stmt_n(name: &str, ty: DataType) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -8437,6 +8464,8 @@ mod tests {
 
     fn var_stmt_with_init(name: &str, ty: DataType, init: Expression) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: Some(init),
@@ -8803,6 +8832,8 @@ mod tests {
         let cf_id = cf.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -8902,6 +8933,8 @@ mod tests {
         let fa_id = fa.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -8945,6 +8978,8 @@ mod tests {
         (
             vec![
                 stmt_n(StatementKind::DefineBuffer {
+                    access: None,
+                    is_static: false,
                     name: id("bCust"),
                     target: BufferTarget::Table(id("Customer")),
                     preselect: false,
@@ -8980,6 +9015,8 @@ mod tests {
     fn declare_buffer_for_missing_table_is_none() {
         let schema = test_schema();
         let stmts = vec![stmt_n(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("b"),
             target: BufferTarget::Table(id("Ghost")),
             preselect: false,
@@ -9001,6 +9038,8 @@ mod tests {
     fn declare_buffer_for_temp_table_is_none() {
         let schema = test_schema();
         let stmts = vec![stmt_n(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("b"),
             target: BufferTarget::TempTable(id("tt")),
             preselect: false,
@@ -9152,6 +9191,8 @@ mod tests {
         });
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9230,6 +9271,8 @@ mod tests {
         let fa_id = fa.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("b"),
                 target: BufferTarget::Table(id("Ghost")),
                 preselect: false,
@@ -9266,6 +9309,8 @@ mod tests {
         let fa2_id = fa2.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9656,6 +9701,8 @@ mod tests {
     fn unmodelled_statement_credits_only_the_values_namespace() {
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("b-cust"),
                 target: BufferTarget::Table(id("customer")),
                 preselect: false,
@@ -9740,6 +9787,8 @@ mod tests {
     fn resolve_delete_buffer_bumps_read_count() {
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9881,6 +9930,8 @@ mod tests {
         let stmts = vec![
             var_stmt_n("customer", DataType::Integer),
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("customer"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9912,6 +9963,8 @@ mod tests {
         let stmts = vec![
             var_stmt_n("customer", DataType::Integer),
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("customer"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -10266,6 +10319,8 @@ mod tests {
     fn resolve_create_buffer_bumps_write() {
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -10353,6 +10408,8 @@ mod tests {
 
     fn tt_stmt_n(name: &str) -> Statement {
         stmt_n(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id(name),
             no_undo: false,
             like_table: None,
@@ -10369,6 +10426,8 @@ mod tests {
 
     fn buffer_stmt_n(name: &str, target: BufferTarget) -> Statement {
         stmt_n(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id(name),
             target,
             preselect: false,

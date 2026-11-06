@@ -2411,6 +2411,8 @@ fn parse_define_variable_simple() {
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: Identifier {
                 span: Span { start: 16, end: 21 },
                 name: "myVar".to_string()
@@ -2435,6 +2437,8 @@ fn parse_define_variable_with_initial() {
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: Identifier {
                 span: Span { start: 16, end: 23 },
                 name: "counter".to_string()
@@ -2486,6 +2490,8 @@ fn parse_var_statement_simple() {
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: Identifier {
                 span: Span { start: 12, end: 19 },
                 name: "myCount".to_string()
