@@ -1,5 +1,34 @@
 # Changelog
 
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v3.0.2...oxabl_analyze-v4.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** inherited data members are in scope in a subclass
+
+### Bug Fixes
+
+* **index:** inherited data members are in scope in a subclass ([fde4113](https://github.com/oxabl-project/oxabl/commit/fde41134d4d4cfd7f2d6a8e70f00bbe759146d70))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_lint bumped from 3.0.2 to 4.0.0
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+    * oxabl_preprocessor bumped from 0.7.2 to 0.7.3
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+    * oxabl_semantic bumped from 3.0.2 to 4.0.0
+    * oxabl_workspace bumped from 3.2.0 to 3.3.0
+  * dev-dependencies
+    * oxabl_index bumped from 3.1.0 to 4.0.0
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+
 ## [3.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v3.0.1...oxabl_analyze-v3.0.2) (2026-10-20)
 
 

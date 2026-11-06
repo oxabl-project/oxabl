@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v3.0.2...oxabl_semantic-v4.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** inherited data members are in scope in a subclass
+
+### Bug Fixes
+
+* **index:** inherited data members are in scope in a subclass ([fde4113](https://github.com/oxabl-project/oxabl/commit/fde41134d4d4cfd7f2d6a8e70f00bbe759146d70))
+* **preprocessor:** split include arguments into words as the compiler does ([6911c59](https://github.com/oxabl-project/oxabl/commit/6911c5965084a74cbdafa59d9ffe7bcda686a6a8))
+* **preprocessor:** split include arguments into words as the compiler does ([bdff1d7](https://github.com/oxabl-project/oxabl/commit/bdff1d79c22cf396b39ed07b76f3d6ce670e6544)), closes [#285](https://github.com/oxabl-project/oxabl/issues/285)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+  * dev-dependencies
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+
 ## [3.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v3.0.1...oxabl_semantic-v3.0.2) (2026-10-20)
 
 

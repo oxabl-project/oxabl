@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.2...oxabl_formatter-v2.0.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **cli:** user-facing gaps found while writing the user docs ([d34d5e7](https://github.com/oxabl-project/oxabl/commit/d34d5e790391fddecf68ced90ba79edd8c20e432))
+* **cli:** words the formatter expands or inserts keep the case of the surrounding keywords under Preserve ([049abfe](https://github.com/oxabl-project/oxabl/commit/049abfe176da0ff00cc20c70d4d2c97e879d937e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+    * oxabl_style bumped from 0.2.0 to 0.2.1
+
 ## [2.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.1...oxabl_formatter-v2.0.2) (2026-10-20)
 
 

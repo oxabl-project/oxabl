@@ -1,5 +1,40 @@
 # Changelog
 
+## [3.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.2.0...oxabl_workspace-v3.3.0) (2026-11-06)
+
+
+### Features
+
+* **build:** config overlay, effective config, and the wrapper guide ([df21e74](https://github.com/oxabl-project/oxabl/commit/df21e74656c08b87ee18828621f65e49e435b5f1))
+* **build:** graph store, incremental refresh and oxabl build --plan ([50d3004](https://github.com/oxabl-project/oxabl/commit/50d3004216da610003c27a3a1430bdb97fdfcbe3))
+* **build:** merge an overlay over oxabl.toml and print the effective configuration ([5d26d87](https://github.com/oxabl-project/oxabl/commit/5d26d877d70be0423690310fa05442d8405367f3))
+* **build:** verify compile results and cache them in a local cache ([f87a7b0](https://github.com/oxabl-project/oxabl/commit/f87a7b04a2784c79dc74f621e993b3ec49b10f06))
+* **build:** verify compile results and cache them in a local cache ([61ba98e](https://github.com/oxabl-project/oxabl/commit/61ba98e6b856bdc08bb5814bf09c090a9ca15010))
+* **pipeline:** observed analysis for the build tool's refresh ([af09fc0](https://github.com/oxabl-project/oxabl/commit/af09fc059328ea814d51b0a481e1cc2f7e64f65f))
+* **workspace:** add an observing file system ([fd23836](https://github.com/oxabl-project/oxabl/commit/fd2383655ebbc6d890f80dbd9d0b9c447f6fbcd7))
+* **workspace:** add the [build] tables, [workspace.sources].dlc and $DLC include path entries ([4dae3e6](https://github.com/oxabl-project/oxabl/commit/4dae3e69e8308fb3a2ccaf2982cc2f7339a5b62e))
+
+
+### Bug Fixes
+
+* **cli:** the schema lists every encoding the binary accepts ([791ada6](https://github.com/oxabl-project/oxabl/commit/791ada6192e3db1e11269985e08402efba2b808b))
+* **cli:** user-facing gaps found while writing the user docs ([d34d5e7](https://github.com/oxabl-project/oxabl/commit/d34d5e790391fddecf68ced90ba79edd8c20e432))
+
+
+### Performance Improvements
+
+* make the noisy preprocessor benchmarks deterministic ([8f93dec](https://github.com/oxabl-project/oxabl/commit/8f93dec385ce1e57f3adeaf42bbff922440ffdf5))
+* **workspace:** unseeded hasher for the in-memory file system ([e85871a](https://github.com/oxabl-project/oxabl/commit/e85871a16e4287848ecb8f962ae306e1e1074618))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_style bumped from 0.2.0 to 0.2.1
+
 ## [3.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.1.0...oxabl_workspace-v3.2.0) (2026-10-20)
 
 
