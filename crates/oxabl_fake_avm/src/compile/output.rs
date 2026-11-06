@@ -57,10 +57,10 @@ fn xref_xml(out: &Outcome) -> String {
     text
 }
 
+/// Escapes an attribute value as OpenEdge 12.8 does: `>` stays as it is.
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
-        .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
 

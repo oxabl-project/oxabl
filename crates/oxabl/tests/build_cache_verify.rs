@@ -181,6 +181,27 @@ fn an_include_that_the_compiler_resolved_to_another_file_blocks_the_write() {
     assert!(run.stderr.contains("other/defs.i"), "{}", run.stderr);
 }
 
+#[test]
+fn a_unit_whose_include_argument_holds_a_greater_than_sign_is_cached() {
+    let cache = TempDir::new().unwrap();
+    let workspace = Built::new();
+    workspace.cache_in(cache.path());
+    workspace.write("src/set.i", "MESSAGE {1}.\n");
+    workspace.write(
+        "src/user.p",
+        "{set.i \"(IF 'a' <> 'b' THEN 'c' ELSE 'd')\"}\n",
+    );
+
+    let run = workspace.build();
+
+    run.succeeded();
+    assert!(
+        holds(&cache, "r/user.r"),
+        "the XREF-XML of the compile is read whole: {}",
+        run.stderr
+    );
+}
+
 const RECORDS: &str = r#"[["db","ledger"],["file","customer"],["field","customer","name"]]"#;
 
 fn schema_environment() -> Value {
