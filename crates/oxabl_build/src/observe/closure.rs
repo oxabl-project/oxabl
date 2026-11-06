@@ -89,6 +89,11 @@ pub fn observe(
     classes: &[String],
     places: &Places<'_>,
 ) -> Result<ObservedClosure, String> {
+    if super::looks_encrypted(&places.paths.absolute(unit)) {
+        return Err(format!(
+            "{unit} looks encrypted, and the compiler does not report the includes of encrypted source"
+        ));
+    }
     let mut closure = ObservedClosure {
         classes: classes.to_vec(),
         ..ObservedClosure::default()
@@ -116,7 +121,7 @@ pub fn observe(
             ));
         }
     }
-    for path in std::iter::once(unit).chain(closure.files.iter().map(String::as_str)) {
+    for path in closure.files.iter().map(String::as_str) {
         if !path.starts_with('$') && super::looks_encrypted(&places.paths.absolute(path)) {
             return Err(format!(
                 "{path} looks encrypted, and the compiler does not report the includes of encrypted source"
