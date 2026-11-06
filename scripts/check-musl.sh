@@ -13,7 +13,8 @@ docker run --rm -v "$bin:/oxabl:ro" ubuntu:22.04 bash -euc '
   /oxabl --version
   /oxabl build --help >/dev/null
   file -L /oxabl
-  file -L /oxabl | grep -q "statically linked"
+  # file says "static-pie linked" for a static PIE, "statically linked" otherwise.
+  file -L /oxabl | grep -Eq "static-pie linked|statically linked"
   # A static-pie file makes ldd print "statically linked"; a plain static one
   # makes it exit with "not a dynamic executable".
   ldd /oxabl 2>&1 | grep -Eq "statically linked|not a dynamic executable"
