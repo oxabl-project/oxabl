@@ -724,48 +724,39 @@
       "match": "(?i)(?<![\\w#$%&.-])(?:no|share|exclusive)[ \\t]+lock(?![\\w#$%&-])"
     },
     "keywords": {
-      "patterns": [
-        {
-          "name": "constant.language.boolean.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:boolean}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+      "match": "(?i)(?<![\\w#$%&.-])(?:({{keywords:boolean}})|({{keywords:operator-logical}})|({{keywords:operator-comparison}})|({{keywords:operator-pattern}})|({{keywords:operator-arithmetic}})|({{keywords:control}})|({{keywords:type}})|({{keywords:modifier}})|({{keywords:handle}})|({{keywords:other}}))(?![\\w#$%&-]|\\.[A-Za-z_])",
+      "captures": {
+        "1": {
+          "name": "constant.language.boolean.abl"
         },
-        {
-          "name": "keyword.operator.expression.logical.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:operator-logical}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "2": {
+          "name": "keyword.operator.expression.logical.abl"
         },
-        {
-          "name": "keyword.operator.expression.comparison.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:operator-comparison}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "3": {
+          "name": "keyword.operator.expression.comparison.abl"
         },
-        {
-          "name": "keyword.operator.expression.pattern.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:operator-pattern}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "4": {
+          "name": "keyword.operator.expression.pattern.abl"
         },
-        {
-          "name": "keyword.operator.expression.arithmetic.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:operator-arithmetic}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "5": {
+          "name": "keyword.operator.expression.arithmetic.abl"
         },
-        {
-          "name": "keyword.control.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:control}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "6": {
+          "name": "keyword.control.abl"
         },
-        {
-          "name": "storage.type.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:type}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "7": {
+          "name": "storage.type.abl"
         },
-        {
-          "name": "storage.modifier.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:modifier}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "8": {
+          "name": "storage.modifier.abl"
         },
-        {
-          "name": "variable.language.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:handle}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "9": {
+          "name": "variable.language.abl"
         },
-        {
-          "name": "keyword.other.abl",
-          "match": "(?i)(?<![\\w#$%&.-])(?:{{keywords:other}})(?![\\w#$%&-]|\\.[A-Za-z_])"
+        "10": {
+          "name": "keyword.other.abl"
         }
-      ]
+      }
     },
     "function-call": {
       "name": "entity.name.function.abl",
