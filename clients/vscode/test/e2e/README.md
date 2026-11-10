@@ -27,6 +27,7 @@ into `.vscode-test/`.
 | `update-autoupdate-off` | Mode `auto` with `extensions.autoUpdate: false` shows the "is available" message and does not download the VSIX. |
 | `update-throttle` | A second launch of the same profile makes no tag listing. |
 | `update-installed-reload` | After an automatic install, `oxabl: Check for Updates` says the version is installed and asks for a reload. The VSIX is downloaded once. |
+| `update-two-profiles` | Two VS Code profiles (`--profile`) share one extensions folder. After the default profile updates to the newer version, the other profile still lists the old one. Its own automatic check installs the new version and shows "updated to v99.0.0", not silence. |
 | `update-manual-no-tags` | An empty tag list gives "no extension releases found" and not "up to date". |
 
 The highlight and markdown scenarios run with `oxabl.updates` set to `off` and

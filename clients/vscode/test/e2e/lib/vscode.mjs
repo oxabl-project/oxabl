@@ -111,11 +111,21 @@ export function makeProfile(name, { settings = {}, files = [] } = {}) {
   return profile;
 }
 
-function runCli(exe, profile, args) {
+/** Registers a named VS Code profile in the user data dir, where VS Code keeps its profile list. */
+export function addNamedProfile(profile, named) {
+  const dir = path.join(profile.userData, "User", "globalStorage");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "storage.json"), JSON.stringify({ userDataProfiles: [{ name: named, location: named }] }));
+}
+
+// `named` is a VS Code profile name; without it the default profile is used.
+const profileArgs = (named) => (named ? ["--profile", named] : []);
+
+function runCli(exe, profile, args, named) {
   const [cli, ...base] = resolveCliArgsFromVSCodeExecutablePath(exe);
   const res = cp.spawnSync(
     cli,
-    [...base, "--extensions-dir", profile.extensions, "--user-data-dir", profile.userData, ...args],
+    [...base, "--extensions-dir", profile.extensions, "--user-data-dir", profile.userData, ...profileArgs(named), ...args],
     { encoding: "utf8", env: cleanEnv(), timeout: 120_000 },
   );
   if (res.status !== 0) {
@@ -124,13 +134,13 @@ function runCli(exe, profile, args) {
   return res.stdout;
 }
 
-export function installVsix(exe, profile, vsix) {
-  return runCli(exe, profile, ["--install-extension", vsix]);
+export function installVsix(exe, profile, vsix, named) {
+  return runCli(exe, profile, ["--install-extension", vsix], named);
 }
 
-/** `publisher.name@version` lines of the profile's extensions dir. */
-export function listExtensions(exe, profile) {
-  return runCli(exe, profile, ["--list-extensions", "--show-versions"])
+/** `publisher.name@version` lines of the profile's extensions (of the named VS Code profile, when given). */
+export function listExtensions(exe, profile, named) {
+  return runCli(exe, profile, ["--list-extensions", "--show-versions"], named)
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
@@ -151,7 +161,7 @@ function requireLoopbackApi(url) {
 }
 
 /** Starts VS Code on the profile and returns { app, page, close }. `env.OXABL_UPDATE_API_URL` is required. */
-export async function launch(exe, profile, { open = [], env = {} } = {}) {
+export async function launch(exe, profile, { open = [], env = {}, named } = {}) {
   const launchEnv = cleanEnv(env);
   requireLoopbackApi(launchEnv.OXABL_UPDATE_API_URL);
   const app = await _electron.launch({
@@ -159,6 +169,7 @@ export async function launch(exe, profile, { open = [], env = {} } = {}) {
     args: [
       "--user-data-dir", profile.userData,
       "--extensions-dir", profile.extensions,
+      ...profileArgs(named),
       "--disable-workspace-trust",
       "--skip-welcome",
       "--skip-release-notes",

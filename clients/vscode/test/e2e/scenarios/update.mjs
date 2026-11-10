@@ -3,7 +3,7 @@ import { MISSING_SERVER, clickButton, neverShows, runCommand, screenshot, waitFo
 import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check, sleep, waitFor } from "../lib/report.mjs";
 import { extensionState } from "../lib/state.mjs";
-import { installVsix, launch, listExtensions, makeProfile } from "../lib/vscode.mjs";
+import { addNamedProfile, installVsix, launch, listExtensions, makeProfile } from "../lib/vscode.mjs";
 
 const NEW = "99.0.0";
 const ID = "oxabl-project.oxabl";
@@ -247,3 +247,52 @@ async function skipScenario(ctx, name, choose) {
 
 export const updateSkip = (ctx) =>
   skipScenario(ctx, "update-skip", (page) => clickButton(page, "Skip This Version"));
+
+// VS Code profiles share one extensions folder but keep their own installed versions and `globalState`.
+// An update in one profile must reach the others: the automatic check of a profile still on the old
+// version installs the new one there and says so.
+export async function updateTwoProfiles(ctx) {
+  const name = "update-two-profiles";
+  const other = "second";
+  const profile = makeProfile(name, { settings: { "oxabl.updates": "auto" }, files: ["update.p"] });
+  addNamedProfile(profile, other);
+  for (const named of [undefined, other]) {
+    installVsix(ctx.exe, profile, ctx.vsix, named);
+    const label = named ?? "default";
+    check(
+      `${name}: the ${label} profile starts with ${ID}@${ctx.installed}`,
+      listExtensions(ctx.exe, profile, named).includes(`${ID}@${ctx.installed}`),
+      listExtensions(ctx.exe, profile, named).join(", "),
+    );
+  }
+  const server = await startFakeGitHub({ installed: ctx.installed, newest: NEW, vsix: ctx.newerVsix });
+  const env = { OXABL_UPDATE_API_URL: server.url };
+  try {
+    let vs = await launch(ctx.exe, profile, { open: ["update.p"], env });
+    try {
+      await waitForText(vs.page, `oxabl extension updated to v${NEW}`);
+      check(`${name}: the default profile shows "updated to v${NEW}"`, true);
+    } finally {
+      await vs.close();
+    }
+    const first = listExtensions(ctx.exe, profile);
+    const second = listExtensions(ctx.exe, profile, other);
+    check(`${name}: the default profile lists ${ID}@${NEW}`, first.includes(`${ID}@${NEW}`), first.join(", "));
+    check(`${name}: the ${other} profile still lists ${ID}@${ctx.installed}`, second.includes(`${ID}@${ctx.installed}`) && !second.includes(`${ID}@${NEW}`), second.join(", "));
+
+    vs = await launch(ctx.exe, profile, { open: ["update.p"], env, named: other });
+    try {
+      await waitForText(vs.page, `oxabl extension updated to v${NEW}`);
+      check(`${name}: the ${other} profile shows "updated to v${NEW}" and not silence`, true);
+      const hit = await neverShows(vs.page, [`v${NEW} is installed`], 3_000);
+      check(`${name}: the ${other} profile does not say "installed. Reload" in place of installing`, hit === null, `saw "${hit}"`);
+      await screenshot(vs.page, name);
+    } finally {
+      await vs.close();
+    }
+    const after = listExtensions(ctx.exe, profile, other);
+    check(`${name}: the ${other} profile lists ${ID}@${NEW}`, after.includes(`${ID}@${NEW}`), after.join(", "));
+  } finally {
+    await server.close();
+  }
+}

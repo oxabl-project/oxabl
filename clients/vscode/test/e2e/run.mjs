@@ -19,6 +19,7 @@ import {
   updateNothingNewer,
   updateServerError,
   updateThrottle,
+  updateTwoProfiles,
 } from "./scenarios/update.mjs";
 
 const SCENARIOS = [
@@ -35,6 +36,7 @@ const SCENARIOS = [
   ["update-throttle", updateThrottle],
   ["update-installed-reload", updateInstalledReload],
   ["update-manual-no-tags", updateManualNoTags],
+  ["update-two-profiles", updateTwoProfiles],
 ];
 
 if (!process.env.DISPLAY) {
