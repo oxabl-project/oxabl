@@ -29,6 +29,7 @@
     "crates/oxabl_effects": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_nulls": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
     "crates/oxabl_build": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
-    "crates/oxabl_build_remote": { "release-type": "rust", "changelog-path": "CHANGELOG.md" }
+    "crates/oxabl_build_remote": { "release-type": "rust", "changelog-path": "CHANGELOG.md" },
+    "clients/vscode": { "release-type": "node", "component": "oxabl_vscode", "changelog-path": "CHANGELOG.md" }
   }
 }

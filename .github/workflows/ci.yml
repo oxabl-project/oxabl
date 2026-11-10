@@ -145,6 +145,22 @@ jobs:
       - name: Assert no drift
         run: git diff --exit-code -- clients/vscode/schemas/oxabl.schema.json
 
+  grammar-drift:
+    name: Grammar drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      # The extension's TextMate grammar is generated from
+      # resources/abl.tmLanguage.template.json and the keyword data. Regenerate
+      # it and fail if the committed copy has drifted.
+      - name: Regenerate grammar
+        run: cargo run -p oxabl_codegen -- grammar
+      - name: Assert no drift
+        run: git diff --exit-code -- clients/vscode/syntaxes/
+
   vscode-client:
     name: VS Code client
     runs-on: ubuntu-latest
@@ -167,5 +183,13 @@ jobs:
         run: pnpm run check
       - name: Test
         run: pnpm test
-      - name: Build
-        run: pnpm run build
+      - name: Grammar tests
+        run: pnpm run test:grammar
+      # The release workflow publishes the VSIX this script builds.
+      - name: Package
+        run: bash scripts/package-vsix.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxabl-vscode-vsix
+          path: clients/vscode/dist/
+          if-no-files-found: error

@@ -26,6 +26,9 @@ jobs:
       # gets the binary.
       oxabl_released: ${{ steps.release.outputs['crates/oxabl--release_created'] }}
       oxabl_tag: ${{ steps.release.outputs['crates/oxabl--tag_name'] }}
+      # The VS Code extension is its own component, with tags oxabl_vscode-vX.Y.Z.
+      vscode_released: ${{ steps.release.outputs['clients/vscode--release_created'] }}
+      vscode_tag: ${{ steps.release.outputs['clients/vscode--tag_name'] }}
     steps:
       # TODO: Upgrade to v5 when released (Node 24 support). Tracked: https://github.com/googleapis/release-please-action/pull/1188
       - uses: googleapis/release-please-action@v4
@@ -93,3 +96,39 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-please.outputs.oxabl_tag }}
+
+  vsix:
+    name: VS Code extension
+    needs: release-please
+    # Never on workflow_dispatch: it must not upload to a release. The
+    # extension updates itself from these two assets, so a release without
+    # them is never offered (see clients/vscode/README.md, "Updates").
+    if: ${{ github.event_name == 'push' && needs.release-please.outputs.vscode_released == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/vscode
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - name: The tag names the packaged version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [[ "oxabl_vscode-v$version" != "$TAG" ]]; then
+            echo "package.json is $version, but the release is $TAG" >&2
+            exit 1
+          fi
+        env:
+          TAG: ${{ needs.release-please.outputs.vscode_tag }}
+      - run: bash scripts/package-vsix.sh dist
+      - name: Upload to the release
+        run: gh release upload "$TAG" dist/*.vsix dist/*.vsix.sha256 --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.vscode_tag }}
