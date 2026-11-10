@@ -259,3 +259,55 @@ fn style_flag_skips_the_format_switch() {
     assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
     assert_ne!(fs::read_to_string(&file).unwrap(), BOTH);
 }
+
+#[test]
+fn watch_with_both_off_is_an_error_not_a_watch() {
+    let (_tmp, file) = project(BOTH, Some("diagnostics = false\nformat = false\n"));
+
+    let run = run(&["check", "--watch", path(&file)]);
+
+    assert_eq!(run.code, Some(2), "stdout:\n{}", run.stdout);
+    assert!(run.stderr.contains("nothing to check"), "{}", run.stderr);
+}
+
+/// The first pass of `check --watch`: everything it printed before it began
+/// to wait for changes.
+fn first_watch_pass(dir: &Path) -> String {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxabl"))
+        .args(["check", "--watch"])
+        .arg(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut pass = String::new();
+    for line in BufReader::new(child.stdout.take().unwrap())
+        .lines()
+        .map_while(Result::ok)
+    {
+        pass.push_str(&line);
+        pass.push('\n');
+        if line.contains("watching") {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    pass
+}
+
+#[test]
+fn watch_reports_only_the_channels_that_are_on() {
+    let (tmp, _) = project(BOTH, Some("diagnostics = false\n"));
+    let pass = first_watch_pass(tmp.path());
+    assert!(pass.contains("would be reformatted"), "{pass}");
+    assert!(!pass.contains("LINT0002"), "{pass}");
+
+    let (tmp, _) = project(BOTH, Some("format = false\n"));
+    let pass = first_watch_pass(tmp.path());
+    assert!(pass.contains("LINT0002"), "{pass}");
+    assert!(!pass.contains("reformatted"), "{pass}");
+}
