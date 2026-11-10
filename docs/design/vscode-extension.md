@@ -60,8 +60,9 @@ Marketplace. This note records how each part works and why.
 - The engine takes the match that starts first, and among those the rule
   listed first. A rule that starts with `^\s*` starts before the keyword it
   should lose to. So the label rule starts behind the indentation with
-  `(?<=^\s*)` (both vscode-oniguruma 1 and 2 accept it), and an indented
-  `DO:` stays a keyword.
+  `(?<=^[ \t]{0,200})` (both vscode-oniguruma 1 and 2 accept it), and an
+  indented `DO:` stays a keyword. An unbounded `(?<=^\s*)` costs time
+  quadratic in the indentation.
 - Definitions (`DEFINE`, `PROCEDURE`, `FUNCTION`, `METHOD`, `CLASS`, …) match
   at the start of a line only. This keeps `DELETE PROCEDURE h` and
   `AS CLASS x` from naming a declaration.
@@ -71,8 +72,11 @@ Marketplace. This note records how each part works and why.
 - A definition whose name is on the next line gets plain keyword and
   identifier scopes.
 - An unreserved keyword used as a name (a variable called `count`) shows as a
-  keyword. LSP semantic tokens are the planned correction: the parser and the
-  semantic model know what each name is.
+  keyword, and so does a label with a keyword's name (`total:`). LSP semantic
+  tokens are the planned correction: the parser and the semantic model know
+  what each name is.
+- The grammar scopes three integer literals joined by `/` with no spaces
+  (`10/2/3`) as a date, the same as `12/31/2026`.
 
 ### Tests
 
@@ -126,4 +130,14 @@ Marketplace needs a GitHub Enterprise plan. So the extension updates itself:
 `oxabl.updates` is `auto` (the default; `notify` when VS Code's
 `extensions.autoUpdate` is off), `notify` or `off`. `oxabl: Check for Updates`
 checks at once. Every failure installs nothing. `OXABL_UPDATE_API_URL`
-replaces `https://api.github.com` for the end-to-end tests.
+replaces `https://api.github.com` for the end-to-end tests, and only when it
+names a loopback host.
+
+The SHA-256 proves that the VSIX arrived intact. That it is ours rests on
+HTTPS to GitHub: the checksum comes from the same release. The version inside
+the VSIX is not compared with the tag; the release job checks that the tag
+names the packaged version before it uploads.
+
+If the `vsix` job fails, the release has no assets and no extension offers
+it. Re-run the failed job in the same workflow run: a `workflow_dispatch` run
+never uploads, and a new push does not create the release again.
