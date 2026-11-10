@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.6.0...oxabl_codegen-v0.7.0) (2026-11-10)
+
+
+### Features
+
+* **codegen:** generate the VS Code grammar from a template and the keyword data ([be52d78](https://github.com/oxabl-project/oxabl/commit/be52d780276709eb9064c55c0b04d737653661f6))
+* **vscode:** ABL syntax highlighting, extension releases and self-update ([8ee30f8](https://github.com/oxabl-project/oxabl/commit/8ee30f8be3d7075224c756447efbfd932059caf9))
+
 ## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.5.1...oxabl_codegen-v0.6.0) (2026-10-16)
 
 

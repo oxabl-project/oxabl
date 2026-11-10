@@ -2650,7 +2650,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_codegen"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "scraper",
  "serde",
