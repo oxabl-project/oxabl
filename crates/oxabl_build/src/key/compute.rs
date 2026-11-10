@@ -11,12 +11,12 @@ use super::compile_key::{
 use super::digest::{FileDigest, sha256_bytes, sha256_hex};
 use super::environment::Environment;
 use super::keyability::{ExternalPackage, Resolved, Rules, Verdict};
-use super::layout::{Layout, Placed, lay_out};
+use super::layout::{Layout, Placed, lay_out, search};
 use super::options::CompileSettings;
 use crate::config::BuildWorkspace;
 use crate::graph::Scratch;
 use crate::observe::class_listing;
-use crate::paths::propath::{OUT, Placement, Search, canonical_entry, is_class_unit, library_name};
+use crate::paths::propath::{OUT, Placement, is_class_unit, library_name};
 use crate::paths::{Declared, PathMap};
 use crate::refresh::{Content, Observed, Outcome, parallel};
 use crate::store::Components;
@@ -284,26 +284,15 @@ pub fn compute(
 ) -> Result<Keyed, PoolError> {
     let settings = &workspace.settings;
     let config = &workspace.config;
-    let sources = &config.workspace.sources;
     let build = &config.build;
     let paths = PathMap::new(&settings.root, settings.dlc.as_deref());
 
-    let include = sources
-        .include_paths
-        .iter()
-        .map(|entry| canonical_entry(&paths, &build.libraries, entry))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|message| config_error(format!("[workspace.sources].include_paths: {message}")))?;
     let defaults = environment
         .libraries
         .iter()
         .map(|l| l.entry.clone())
         .collect();
-    let search = Search::new(
-        sources.root_relative_include_paths.clone(),
-        include,
-        defaults,
-    );
+    let search = search(workspace, &paths, defaults).map_err(config_error)?;
     let layout = lay_out(outcome, &paths, &search);
 
     let active: Vec<usize> = (0..outcome.units.len())

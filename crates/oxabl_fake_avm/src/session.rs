@@ -151,6 +151,9 @@ impl Session {
                 continue;
             };
             self.log_request(&line);
+            if let Some(delay) = self.faults.request_delay {
+                std::thread::sleep(delay);
+            }
             match line.kind.as_str() {
                 "HELLO" => {
                     if self.faults.exit_in_handshake {
