@@ -453,7 +453,7 @@
           "name": "punctuation.separator.label.abl"
         }
       },
-      "match": "(?<=^\\s*)([A-Za-z_][\\w#$%&-]*)(:)(?=\\s|$)"
+      "match": "(?<=^[ \\t]{0,200})([A-Za-z_][\\w#$%&-]*)(:)(?=\\s|$)"
     },
     "line-continuation": {
       "match": "~[ \\t]*(?:\\n|$)",
