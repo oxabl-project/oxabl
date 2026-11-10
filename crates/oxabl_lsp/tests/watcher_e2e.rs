@@ -230,13 +230,13 @@ fn oxabl_toml_change_reresolves_lint_config() {
 }
 
 #[test]
-fn malformed_oxabl_toml_after_edit_degrades_safely() {
+fn malformed_oxabl_toml_after_edit_fails_closed() {
     // Regression guard (U2, scenario 2): a watched `oxabl.toml` edit that leaves
     // the file syntactically invalid must NOT crash the server loop. The shared
-    // resolution degrades every configured surface to its default and hands back
-    // the problem as a warning, so the diagnostics simply revert to defaults and
-    // the loop keeps serving. (That warning now also reaches the client's log;
-    // `config_e2e` pins it, since `recv_publish` here filters logs out.)
+    // resolution hands back the problem as a warning and counts diagnostics and
+    // formatting as off, so the diagnostics are cleared and the loop keeps
+    // serving. (That warning also reaches the client's log; `config_e2e` pins it,
+    // since `recv_publish` here filters logs out.)
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
     let toml = root.join("oxabl.toml");
@@ -268,13 +268,13 @@ fn malformed_oxabl_toml_after_edit_degrades_safely() {
     .unwrap();
     watched_change(&client, &toml);
 
-    // The malformed config degrades to the default lint table (unused-variable =
-    // warn), so LINT0002 reappears — and, crucially, a publish still arrives:
-    // the loop did not crash on the parse error.
+    // The server fails closed on the malformed config: diagnostics are off until
+    // the file is fixed, so LINT0002 does not come back — and, crucially, a
+    // publish still arrives: the loop did not crash on the parse error.
     let after = recv_publish(&client, Duration::from_secs(2)).unwrap();
     assert!(
-        has_lint(&after, "LINT0002"),
-        "malformed oxabl.toml must degrade to the default lint table (LINT0002 back on), not crash: {:?}",
+        after.diagnostics.is_empty(),
+        "malformed oxabl.toml must turn diagnostics off, not crash or fall back to defaults: {:?}",
         after.diagnostics
     );
 
