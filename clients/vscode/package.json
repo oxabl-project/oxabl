@@ -106,7 +106,7 @@
     "schema": "cargo run -p oxabl -- schema > schemas/oxabl.schema.json",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "test:grammar": "vscode-tmgrammar-test \"test/grammar/cases/**/*.p\" && vscode-tmgrammar-snap \"test/grammar/snapshots/**/*.p\"",
+    "test:grammar": "vscode-tmgrammar-test \"test/grammar/cases/**/*.p\" && vscode-tmgrammar-snap \"test/grammar/snapshots/**/*.{p,cls,i,w}\"",
     "test:e2e": "node test/e2e/run.mjs",
     "package": "vsce package --no-dependencies"
   },
