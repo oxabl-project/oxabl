@@ -41,8 +41,8 @@ use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    EncodedFileSystem, IncludeEntry, LintConfig, PreprocessorConfig, SourceDecoding,
-    WorkspaceConfig, default_root_extensions, default_run_extensions, dlc_sources,
+    EncodedFileSystem, FeaturesConfig, IncludeEntry, LintConfig, PreprocessorConfig,
+    SourceDecoding, WorkspaceConfig, default_root_extensions, default_run_extensions, dlc_sources,
     find_workspace_root, include_entry, normalize_root_extensions, normalize_run_extensions,
 };
 
@@ -57,7 +57,9 @@ pub enum ConfigWarning {
     /// unknown key in `[workspace.style]` or `[workspace.preprocessor]`, which
     /// use `deny_unknown_fields`, or a `[workspace.lint]` value that is not a
     /// severity). Every configured surface degrades to its
-    /// default; caller overrides still apply.
+    /// default; caller overrides still apply. The one exception is
+    /// [`PipelineConfig::features`], which counts as off: a project that turned
+    /// a feature off must not get it back from a typo.
     ///
     /// Exactly one of these is produced per resolution, however many surfaces
     /// the bad file would have fed.
@@ -202,6 +204,11 @@ pub struct PipelineConfig {
     /// Extensions that make a file in a walked directory an ABL root, without the
     /// dot (`[workspace.sources].root_extensions`). Default `p`, `w`, `cls`, `v`.
     pub root_extensions: Vec<String>,
+
+    /// Which features the project uses (`[workspace.features]`). Both on
+    /// without an `oxabl.toml`, both off with one that was rejected. Read by
+    /// every client: the CLI, the language server and the daemon.
+    pub features: FeaturesConfig,
 }
 
 impl Default for PipelineConfig {
@@ -228,6 +235,7 @@ impl Default for PipelineConfig {
             case_insensitive_lookup: false,
             decoding: SourceDecoding::default(),
             root_extensions: default_root_extensions(),
+            features: FeaturesConfig::default(),
         }
     }
 }
@@ -335,8 +343,9 @@ fn resolve_at(
         // configured surface to its default and report once — not once per
         // surface, which is what the three `resolved_*` helpers do today.
         Some((root, Err(message))) => {
-            let (config, mut warnings) =
+            let (mut config, mut warnings) =
                 derive(&WorkspaceConfig::defaults(), root, overrides, schema);
+            config.features = FeaturesConfig::OFF;
             warnings.insert(0, ConfigWarning::Config(message));
             (config, warnings)
         }
@@ -457,6 +466,7 @@ fn derive(
                     case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
                     decoding,
                     root_extensions,
+                    features: config.workspace.features,
                 },
                 warnings,
             );
@@ -489,6 +499,7 @@ fn derive(
             case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
             decoding,
             root_extensions,
+            features: config.workspace.features,
         },
         warnings,
     )

@@ -378,6 +378,23 @@
       ],
       "type": "string"
     },
+    "FeaturesConfig": {
+      "additionalProperties": false,
+      "description": "The `[workspace.features]` table: switches for what oxabl does in a project.\n\nBoth default to `true`. An unknown key is a hard error, so a misspelled switch does not leave a feature on.",
+      "properties": {
+        "diagnostics": {
+          "default": true,
+          "description": "Every diagnostic oxabl reports for a source file (parse, preprocessor, semantic and lint findings), and the code lenses of the effect rules. In `oxabl check` this turns the diagnostics channel off. Default `true`.",
+          "type": "boolean"
+        },
+        "format": {
+          "default": true,
+          "description": "Formatting, so also format on save. In `oxabl check` this turns the format-drift channel off, and `oxabl format` refuses to run. Default `true`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "FileNameCasing": {
       "enum": [
         "Unspecified",
@@ -1046,6 +1063,14 @@
       "additionalProperties": false,
       "description": "The `[workspace]` section of `oxabl.toml`.",
       "properties": {
+        "features": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FeaturesConfig"
+            }
+          ],
+          "description": "Which oxabl features the project uses (`[workspace.features]`)."
+        },
         "lint": {
           "allOf": [
             {

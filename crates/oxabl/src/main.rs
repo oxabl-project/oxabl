@@ -27,7 +27,7 @@ use oxabl_pipeline::{
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    EncodedFileSystem, FileSystem, SourceDecoding, discover_path, discover_path_in,
+    EncodedFileSystem, FeaturesConfig, FileSystem, SourceDecoding, discover_path, discover_path_in,
     walk_include_fragments,
 };
 use serde::Serialize;
@@ -64,6 +64,11 @@ enum Cli {
     /// Non-fatal problems (a schema file that would not load, a `--schema`
     /// directory that matched nothing) stay `warning:` lines and do not move the
     /// exit code.
+    ///
+    /// `[workspace.features]` in `oxabl.toml` turns a channel off: `diagnostics =
+    /// false` skips the lint channel, `format = false` skips the drift channel,
+    /// each with a note on stderr. With both off there is nothing to check (exit
+    /// 2).
     ///
     /// `oxabl format --check` remains the format pipeline's granular dry-run —
     /// the *same* pipeline this command calls, so the two cannot diverge.
@@ -294,7 +299,9 @@ enum Cli {
     /// stream) is left byte-for-byte unchanged and the reason is reported.
     ///
     /// An `oxabl.toml` this run cannot use is a config error (exit 2), as for
-    /// `check`; `--style` skips the file instead.
+    /// `check`; `--style` skips the file instead. `format = false` in
+    /// `[workspace.features]` also exits 2 and writes nothing; `--style` skips
+    /// that switch too.
     Format {
         /// Path to a single ABL file or a directory to format
         /// (`.p`/`.w`/`.cls`/`.v` under a directory).
@@ -846,6 +853,46 @@ fn config_error(warnings: &[ConfigWarning]) -> Option<&str> {
     })
 }
 
+/// The channels of a `check` run: what `[workspace.features]` and `--no-format`
+/// leave on.
+struct Channels {
+    diagnostics: bool,
+    format: bool,
+}
+
+/// Which channels `check` runs, or why it must not run at all.
+///
+/// A gate that checks nothing must never pass, so a run with no channel left is
+/// an error. `--no-lint` does not count as a channel off: it filters the
+/// reported set and the parse and semantic findings still gate.
+fn check_channels(features: FeaturesConfig, no_format: bool) -> Result<Channels, String> {
+    let channels = Channels {
+        diagnostics: features.diagnostics,
+        format: features.format && !no_format,
+    };
+    if channels.diagnostics || channels.format {
+        return Ok(channels);
+    }
+    let cause = if features.format {
+        "[workspace.features] turns diagnostics off in oxabl.toml and --no-format turns the \
+         format check off"
+    } else {
+        "[workspace.features] turns diagnostics and formatting off in oxabl.toml"
+    };
+    Err(format!("{cause}, so there is nothing to check"))
+}
+
+/// One stderr note for each feature `[workspace.features]` turns off, so a clean
+/// run is not read as a run that checked it.
+fn note_disabled_features(features: FeaturesConfig) {
+    if !features.diagnostics {
+        eprintln!("note: diagnostics are off in oxabl.toml ([workspace.features]); not checked");
+    }
+    if !features.format {
+        eprintln!("note: formatting is off in oxabl.toml ([workspace.features]); not checked");
+    }
+}
+
 /// `oxabl format`: resolve configuration once, then render the shared
 /// [`FormatPipeline`]'s decision for each discovered file per the selected mode.
 ///
@@ -926,6 +973,14 @@ fn run_format(
     };
     if let Some(msg) = config_error(&warnings) {
         eprintln!("error: {msg}");
+        return ExitCode::from(2);
+    }
+    // `--style` skips `oxabl.toml`, so the switch it holds does not apply.
+    if !config.features.format {
+        eprintln!(
+            "error: formatting is off in oxabl.toml ([workspace.features] format = false); \
+             nothing was formatted"
+        );
         return ExitCode::from(2);
     }
     for warning in &warnings {
@@ -1330,9 +1385,26 @@ fn run_check(
         eprintln!("error: {msg}");
         return ExitCode::from(2);
     }
+    let channels = match check_channels(config.features, no_format) {
+        Ok(channels) => channels,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::from(2);
+        }
+    };
+    // Recording findings of a channel that does not run would erase the entries
+    // the baseline holds for these files.
+    if !channels.diagnostics && baseline_file.is_some_and(|(_, update)| update) {
+        eprintln!(
+            "error: --update-baseline needs diagnostics, which [workspace.features] turns off \
+             in oxabl.toml"
+        );
+        return ExitCode::from(2);
+    }
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
+    note_disabled_features(config.features);
 
     // Discovery through the shared walker: a named file is checked regardless of
     // extension, a directory is walked under the configured root extensions
@@ -1374,7 +1446,12 @@ fn run_check(
     // The walk's own file list — no directory scan — scanned once, on every
     // core, which is what lets a `DEFINE SHARED` consumer find its producer even
     // when no `RUN` names the producing file.
-    let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, jobs);
+    // With diagnostics off the lint pipeline never runs, so nothing scans the walk.
+    let producers = if channels.diagnostics {
+        LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, jobs)
+    } else {
+        Default::default()
+    };
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(preprocess)
         .with_shared_producers(&producers);
@@ -1384,7 +1461,7 @@ fn run_check(
 
     // Include files in a walked directory. They count as ABL files here: a
     // directory of nothing else is checked, not a usage error.
-    let fragments: Vec<(PathBuf, PathBuf)> = if !no_lint && path.is_dir() {
+    let fragments: Vec<(PathBuf, PathBuf)> = if channels.diagnostics && !no_lint && path.is_dir() {
         walk_include_fragments(path)
             .into_iter()
             .map(|file| {
@@ -1403,8 +1480,9 @@ fn run_check(
 
     let pass = CheckPass {
         json_output,
+        diagnostics: channels.diagnostics,
         no_lint,
-        no_format,
+        no_format: !channels.format,
         include_findings,
         baseline: baseline.as_ref(),
         format: &format,
@@ -1429,9 +1507,10 @@ fn run_check(
 
     // TX004 asks for the summaries of its callees. Built once over the walk and
     // shared, as each thread's handle would otherwise build its own.
-    let summaries = (!no_lint && lint.callee_summaries_enabled()).then(|| {
-        std::sync::Arc::new(lint.build_workspace_effect_summaries_parallel(&indexed, jobs))
-    });
+    let summaries =
+        (channels.diagnostics && !no_lint && lint.callee_summaries_enabled()).then(|| {
+            std::sync::Arc::new(lint.build_workspace_effect_summaries_parallel(&indexed, jobs))
+        });
     let lint = match &summaries {
         Some(s) => lint.with_effect_summaries(std::sync::Arc::clone(s)),
         None => lint,
@@ -1466,7 +1545,7 @@ fn run_check(
         include_files_checked,
     } = totals;
 
-    let baseline = match baseline.map(|run| run.finish(!no_lint)) {
+    let baseline = match baseline.map(|run| run.finish(channels.diagnostics && !no_lint)) {
         None => None,
         Some(Ok(report)) => {
             surface_baseline(&report);
@@ -1490,9 +1569,9 @@ fn run_check(
             version: 3,
             files_checked: files.len(),
             include_files_checked,
-            lint_enabled: !no_lint,
+            lint_enabled: channels.diagnostics && !no_lint,
             diagnostics,
-            format_enabled: !no_format,
+            format_enabled: channels.format,
             format: CheckJsonFormat {
                 drifted_count: drifted.len(),
                 drifted,
@@ -1553,12 +1632,16 @@ fn run_check(
             1 => " and 1 include file".to_string(),
             n => format!(" and {n} include files"),
         };
-        let lint_channel = if no_lint {
+        let lint_channel = if !channels.diagnostics {
+            "diagnostics off"
+        } else if no_lint {
             "lint suppressed"
         } else {
             "no findings"
         };
-        let format_channel = if no_format {
+        let format_channel = if !config.features.format {
+            "format off"
+        } else if no_format {
             "format suppressed"
         } else {
             "no drift"
@@ -1726,6 +1809,8 @@ struct Task<'a> {
 /// The settings of one `check` run, read by every worker.
 struct CheckPass<'a> {
     json_output: bool,
+    /// Whether the diagnostics channel runs at all (`[workspace.features]`).
+    diagnostics: bool,
     no_lint: bool,
     no_format: bool,
     include_findings: bool,
@@ -1767,93 +1852,8 @@ impl CheckPass<'_> {
             }
         };
 
-        // The pipeline runs whatever `--no-lint` says (A1): it is the only source
-        // of parse and semantic diagnostics too, and those gate regardless.
-        //
-        // Identity, so this file is excluded from its own cross-file lookups:
-        // the bytes just read are what is being analysed, and resolving a name
-        // to the same file on disk would attribute it to itself as a foreign
-        // dependency.
-        let result = lint.with_file(indexed_path).run(&source);
-        if let Some(panic) = result.failure() {
-            unit.output
-                .err(format!("error: analysis failed on {display}: {panic}\n"));
-            unit.failures.push(CheckJsonFailure {
-                path: display.clone(),
-                reason: panic.to_string(),
-            });
-        } else {
-            // Preprocessor diagnostics keep their own channel — surfaced by the
-            // same helper `analyze` uses, so the two cannot drift. They are
-            // coverage warnings, not findings, and never move the exit code: an
-            // elided include still parses.
-            surface_collected_preproc(file, &source, result.diagnostics(), &mut unit.output);
-            // Machine-readable, through the *same* row builder the findings use
-            // (D1): an entry names its file, so two files losing coverage on
-            // different includes are two distinguishable entries.
-            //
-            // Only `--json` reads these rows, and most files have no preproc
-            // diagnostic at all — so the `SourceMap` (a scan of the whole file) is
-            // built behind both conditions, the way the findings rows below build
-            // theirs only once there is a finding.
-            if self.json_output {
-                let mut collected = result
-                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
-                    .peekable();
-                if collected.peek().is_some() {
-                    let map = SourceMap::new(&source);
-                    unit.preproc
-                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
-                }
-            }
-
-            // `--no-lint` is a **filter on the reported set**, exactly as it is
-            // for `analyze`: the lint-sourced entries go, the parse and semantic
-            // ones stay. Two chained calls to the one shared filter rather than a
-            // second hand-rolled predicate.
-            let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
-            let reported = if self.no_lint {
-                reported.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
-            } else {
-                reported
-            };
-            report_findings(
-                &display,
-                indexed_path,
-                &source,
-                reported,
-                self.baseline,
-                self.json_output,
-                &mut unit,
-            );
-
-            if self.include_findings {
-                let mut shown = result.include_origin().to_vec();
-                if self.no_lint {
-                    shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
-                }
-                report_include_findings(
-                    &display,
-                    &source,
-                    &shown,
-                    texts,
-                    self.json_output,
-                    &mut unit,
-                );
-            }
-
-            // The unjudged-symbol note is a statement about the *count-gated lint
-            // rules'* coverage, so it has nothing to qualify when those findings
-            // are suppressed.
-            if !self.no_lint
-                && let Some(sem) = result.semantic()
-            {
-                if surface_source_context(sem, &mut unit.output) {
-                    unit.fragment_root = Some(display.clone());
-                } else {
-                    unit.unjudged += surface_unjudged_symbols(sem, &mut unit.output);
-                }
-            }
+        if self.diagnostics {
+            self.diagnose(lint, texts, file, indexed_path, &source, &mut unit);
         }
 
         if !self.no_format {
@@ -1884,6 +1884,101 @@ impl CheckPass<'_> {
             }
         }
         unit
+    }
+
+    /// The diagnostics channel of one root: its parse, preprocessor, semantic and
+    /// lint findings.
+    fn diagnose(
+        &self,
+        lint: &LintPipeline<'_>,
+        texts: &mut IncludeTexts,
+        file: &Path,
+        indexed_path: &Path,
+        source: &str,
+        unit: &mut Unit,
+    ) {
+        let display = file.display().to_string();
+        // The pipeline runs whatever `--no-lint` says (A1): it is the only source
+        // of parse and semantic diagnostics too, and those gate regardless.
+        //
+        // Identity, so this file is excluded from its own cross-file lookups:
+        // the bytes just read are what is being analysed, and resolving a name
+        // to the same file on disk would attribute it to itself as a foreign
+        // dependency.
+        let result = lint.with_file(indexed_path).run(source);
+        if let Some(panic) = result.failure() {
+            unit.output
+                .err(format!("error: analysis failed on {display}: {panic}\n"));
+            unit.failures.push(CheckJsonFailure {
+                path: display.clone(),
+                reason: panic.to_string(),
+            });
+        } else {
+            // Preprocessor diagnostics keep their own channel — surfaced by the
+            // same helper `analyze` uses, so the two cannot drift. They are
+            // coverage warnings, not findings, and never move the exit code: an
+            // elided include still parses.
+            surface_collected_preproc(file, source, result.diagnostics(), &mut unit.output);
+            // Machine-readable, through the *same* row builder the findings use
+            // (D1): an entry names its file, so two files losing coverage on
+            // different includes are two distinguishable entries.
+            //
+            // Only `--json` reads these rows, and most files have no preproc
+            // diagnostic at all — so the `SourceMap` (a scan of the whole file) is
+            // built behind both conditions, the way the findings rows below build
+            // theirs only once there is a finding.
+            if self.json_output {
+                let mut collected = result
+                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                    .peekable();
+                if collected.peek().is_some() {
+                    let map = SourceMap::new(source);
+                    unit.preproc
+                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
+                }
+            }
+
+            // `--no-lint` is a **filter on the reported set**, exactly as it is
+            // for `analyze`: the lint-sourced entries go, the parse and semantic
+            // ones stay. Two chained calls to the one shared filter rather than a
+            // second hand-rolled predicate.
+            let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
+            let reported = if self.no_lint {
+                reported.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
+            } else {
+                reported
+            };
+            report_findings(
+                &display,
+                indexed_path,
+                source,
+                reported,
+                self.baseline,
+                self.json_output,
+                unit,
+            );
+
+            if self.include_findings {
+                let mut shown = result.include_origin().to_vec();
+                if self.no_lint {
+                    shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
+                }
+                report_include_findings(&display, source, &shown, texts, self.json_output, unit);
+            }
+
+            // The unjudged-symbol note is a statement about the *count-gated lint
+            // rules'* coverage, so it has nothing to qualify when those findings
+            // are suppressed.
+            if !self.no_lint
+                && let Some(sem) = result.semantic()
+            {
+                if surface_source_context(sem, &mut unit.output) {
+                    unit.fragment_root = Some(display.clone());
+                } else {
+                    unit.unjudged += surface_unjudged_symbols(sem, &mut unit.output);
+                }
+            }
+        }
     }
 
     /// An include file in a walked directory: only the context-free rules

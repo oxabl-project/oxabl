@@ -45,6 +45,7 @@ use lsp_types::{
     TextEdit, Uri,
 };
 use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
+use oxabl_workspace::FeaturesConfig;
 
 use crate::capabilities::{negotiate_position_encoding, server_capabilities};
 // The salsa substrate and the supersession disciplines live in `oxabl_daemon`
@@ -481,6 +482,10 @@ struct Server<'c> {
     /// The format pipeline, rebuilt whenever configuration is resolved so a
     /// formatting request costs no style resolution and no `StyleGuide` clone.
     formatter: FormatPipeline,
+    /// The `[workspace.features]` of the installed configuration, which counts
+    /// as both off while `oxabl.toml` cannot be read. Both on until a
+    /// configuration is resolved.
+    features: FeaturesConfig,
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
@@ -531,6 +536,7 @@ impl<'c> Server<'c> {
             workspace_anchor: None,
             workspace_root,
             formatter,
+            features: FeaturesConfig::default(),
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
@@ -624,6 +630,10 @@ impl<'c> Server<'c> {
                 continue;
             };
             let version = doc.version;
+            if !self.features.diagnostics {
+                self.publish(uri, Vec::new(), Some(version));
+                continue;
+            }
             let Some((buffer, snapshot, schema, config_generation)) = self.host.with(|sessions| {
                 let session = sessions.get(&self.session_root)?;
                 Some((
@@ -936,6 +946,7 @@ impl<'c> Server<'c> {
         // Every install moves the generation, so any worker still running against
         // the previous configuration is identifiable when its result lands.
         self.formatter = FormatPipeline::new(resolved.style.clone());
+        self.features = resolved.features;
         self.host.with(|sessions| {
             sessions
                 .for_root(&self.session_root)
@@ -949,10 +960,35 @@ impl<'c> Server<'c> {
     /// belong to `oxabl.toml` or a `.df`, not to the open buffer, so attaching
     /// them to a span in the ABL file the user happens to have focused would put
     /// a squiggle on innocent code.
+    ///
+    /// A rejected `oxabl.toml` also gets one `window/showMessage`: the features
+    /// count as off until it is fixed, and a log line alone would leave the user
+    /// to wonder why the editor went quiet.
     fn report_config_warnings(&self, warnings: &[ConfigWarning]) {
         for warning in warnings {
             self.log_warning(&format!("oxabl-lsp: {warning}"));
+            if matches!(warning, ConfigWarning::Config(_)) {
+                self.show_warning(&format!(
+                    "oxabl-lsp: {warning}. Diagnostics and formatting are off until \
+                     oxabl.toml is fixed."
+                ));
+            }
         }
+    }
+
+    /// Send a `window/showMessage` at warning level.
+    fn show_warning(&self, message: &str) {
+        let notification = lsp_server::Notification {
+            method: lsp_types::notification::ShowMessage::METHOD.to_string(),
+            params: serde_json::json!({
+                "type": lsp_types::MessageType::WARNING,
+                "message": message,
+            }),
+        };
+        let _ = self
+            .connection
+            .sender
+            .send(Message::Notification(notification));
     }
 
     /// Send a `window/logMessage` at warning level.
@@ -977,6 +1013,10 @@ impl<'c> Server<'c> {
         let Some(version) = self.documents.get(uri).map(|d| d.version) else {
             return;
         };
+        if !self.features.diagnostics {
+            self.publish(uri.clone(), Vec::new(), Some(version));
+            return;
+        }
         let Some((buffer, snapshot, schema)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
             Some((
@@ -1255,9 +1295,12 @@ impl<'c> Server<'c> {
     /// unopened URI both resolve to an empty edit list (`[]`) rather than a
     /// protocol error (R6). The tokenize→parse→format pipeline is panic-guarded
     /// inside the shared `FormatPipeline`.
+    ///
+    /// With `format` off in `[workspace.features]` the answer is `[]`.
     fn handle_formatting(&self, req: Request) -> Result<()> {
         let edits: Vec<TextEdit> = serde_json::from_value::<DocumentFormattingParams>(req.params)
             .ok()
+            .filter(|_| self.features.format)
             .and_then(|params| self.documents.get(&params.text_document.uri))
             .map(|doc| {
                 crate::formatting::compute_formatting_edits(doc, &self.formatter, &self.encoding)

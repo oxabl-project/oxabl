@@ -59,6 +59,46 @@ pub struct WorkspaceSection {
     /// names (`[workspace.preprocessor]`).
     #[serde(default)]
     pub preprocessor: PreprocessorConfig,
+
+    /// Which oxabl features the project uses (`[workspace.features]`).
+    #[serde(default)]
+    pub features: FeaturesConfig,
+}
+
+/// The `[workspace.features]` table: switches for what oxabl does in a project.
+///
+/// Both default to `true`. An unknown key is a hard error, so a misspelled
+/// switch does not leave a feature on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeaturesConfig {
+    /// Every diagnostic oxabl reports for a source file (parse, preprocessor,
+    /// semantic and lint findings), and the code lenses of the effect rules.
+    /// In `oxabl check` this turns the diagnostics channel off. Default `true`.
+    pub diagnostics: bool,
+
+    /// Formatting, so also format on save. In `oxabl check` this turns the
+    /// format-drift channel off, and `oxabl format` refuses to run. Default
+    /// `true`.
+    pub format: bool,
+}
+
+impl Default for FeaturesConfig {
+    fn default() -> Self {
+        FeaturesConfig {
+            diagnostics: true,
+            format: true,
+        }
+    }
+}
+
+impl FeaturesConfig {
+    /// Both features off: what a client that cannot read `oxabl.toml` uses, so
+    /// a project that turned a feature off never gets it back from a typo.
+    pub const OFF: FeaturesConfig = FeaturesConfig {
+        diagnostics: false,
+        format: false,
+    };
 }
 
 /// A user-facing severity level for a lint rule (`[workspace.lint]`).
@@ -609,6 +649,7 @@ impl WorkspaceConfig {
                 lint: LintConfig::default(),
                 style: StyleGuide::default_base(),
                 preprocessor: PreprocessorConfig::default(),
+                features: FeaturesConfig::default(),
             },
             build: BuildConfig::default(),
         }
