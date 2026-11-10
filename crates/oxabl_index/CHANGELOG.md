@@ -1,5 +1,23 @@
 # Changelog
 
+## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v4.0.0...oxabl_index-v5.0.0) (2026-11-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** an inherited buffer reads its table and statements resolve inherited records
+
+### Bug Fixes
+
+* **semantic:** an inherited buffer reads its table and statements resolve inherited records ([aeaa593](https://github.com/oxabl-project/oxabl/commit/aeaa59328fa762e0246b3df03787e961f0f74749))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_semantic bumped from 4.0.0 to 5.0.0
+
 ## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.1.0...oxabl_index-v4.0.0) (2026-11-06)
 
 

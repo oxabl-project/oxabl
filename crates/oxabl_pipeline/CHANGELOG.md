@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.3.0...oxabl_pipeline-v3.3.1) (2026-11-10)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.0 to 0.3.1
+    * oxabl_analyze bumped from 4.0.0 to 4.0.1
+    * oxabl_index bumped from 4.0.0 to 5.0.0
+    * oxabl_lint bumped from 4.0.0 to 5.0.0
+    * oxabl_semantic bumped from 4.0.0 to 5.0.0
+
 ## [3.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.2.0...oxabl_pipeline-v3.3.0) (2026-11-06)
 
 

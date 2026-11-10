@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.0...oxabl_effects-v0.3.1) (2026-11-10)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_index bumped from 4.0.0 to 5.0.0
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.2.2...oxabl_effects-v0.3.0) (2026-11-06)
 
 
