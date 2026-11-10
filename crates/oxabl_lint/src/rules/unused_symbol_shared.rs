@@ -26,9 +26,12 @@ use oxabl_semantic::{
 ///
 /// Deliberately narrow. Buffers, temp-tables and `Field` symbols are excluded,
 /// which is also what keeps schema-synthesized symbols (never credited with a
-/// read) and `DEFINE PARAMETER BUFFER` out of both rules.
+/// read) and `DEFINE PARAMETER BUFFER` out of both rules. A variable inherited
+/// from a superclass has no declaration in this file and other classes may read
+/// it, so it is out too.
 pub fn is_candidate(sym: &Symbol) -> bool {
     matches!(sym.kind, SymbolKind::Variable | SymbolKind::Parameter)
+        && !sym.flags.contains(SymbolFlags::INHERITED)
 }
 
 /// Exemptions that apply to both rules.

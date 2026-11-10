@@ -84,7 +84,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxabl_ast::{AccessModifier, DataType, Statement, StatementKind, TypeSource};
+use oxabl_ast::{AccessModifier, BufferTarget, DataType, Statement, StatementKind, TypeSource};
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
@@ -92,8 +92,8 @@ use oxabl_preprocessor::{PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, ImportContext, IndexName, IndexedFileId,
-    MemberDescriptor, MemberType, ProgramSignatures, ResolvedType, ScopeId, SymbolFlags,
-    SymbolKind, declare_pass,
+    MemberDescriptor, MemberRecord, MemberType, ProgramSignatures, ResolvedType, ScopeId,
+    SymbolFlags, SymbolKind, declare_pass,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
@@ -651,6 +651,7 @@ fn enum_members(tokens: &[Token], source: &str) -> (Option<Vec<MemberDescriptor>
                     ty: MemberType::Untyped,
                     access: AccessModifier::Public,
                     is_static: true,
+                    record: None,
                 });
                 i += 1;
                 if tokens.get(i).is_some_and(|t| t.kind == Kind::Equals) {
@@ -695,6 +696,7 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
         ty,
         access: access.unwrap_or(AccessModifier::Private),
         is_static,
+        record: None,
     };
     for stmt in body {
         match &stmt.kind {
@@ -717,6 +719,7 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                     .map_or(MemberType::Untyped, member_type),
                 access: *access,
                 is_static: *is_static,
+                record: None,
             }),
             StatementKind::Property {
                 access,
@@ -730,6 +733,7 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
                 ty: member_type(data_type),
                 access: *access,
                 is_static: *is_static,
+                record: None,
             }),
             StatementKind::VariableDeclaration {
                 name,
@@ -766,16 +770,29 @@ fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
             )),
             StatementKind::DefineBuffer {
                 name,
+                target,
                 access,
                 is_static,
                 ..
-            } => members.push(data(
-                name,
-                SymbolKind::Buffer,
-                MemberType::Untyped,
-                *access,
-                *is_static,
-            )),
+            } => {
+                let (table, temp_table) = match target {
+                    BufferTarget::Table(t) => (t, false),
+                    BufferTarget::TempTable(t) => (t, true),
+                };
+                members.push(MemberDescriptor {
+                    record: Some(MemberRecord {
+                        table: IndexName::new(&table.name),
+                        temp_table,
+                    }),
+                    ..data(
+                        name,
+                        SymbolKind::Buffer,
+                        MemberType::Untyped,
+                        *access,
+                        *is_static,
+                    )
+                });
+            }
             StatementKind::DefineDataset {
                 name,
                 access,

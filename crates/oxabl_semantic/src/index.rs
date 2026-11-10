@@ -608,6 +608,21 @@ pub struct MemberDescriptor {
     /// instance, so the consumer needs to tell them apart from instance
     /// members.
     pub is_static: bool,
+    /// The table a buffer member is `FOR`; `None` for every other member.
+    pub record: Option<MemberRecord>,
+}
+
+/// The table a buffer member reads, as the declaring file wrote it.
+///
+/// The consumer decides what the name means in its own scope: an inherited
+/// temp-table of that name wins over a schema table, as it does in the
+/// declaring file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberRecord {
+    /// The table name, with its database qualifier if written.
+    pub table: IndexName,
+    /// The declaration said `FOR TEMP-TABLE`: the name is never a schema table.
+    pub temp_table: bool,
 }
 
 impl MemberDescriptor {
@@ -916,6 +931,7 @@ mod tests {
             ty: MemberType::Untyped,
             access,
             is_static: false,
+            record: None,
         };
         assert!(member(AccessModifier::Public).inherited_by_subclass());
         assert!(member(AccessModifier::Protected).inherited_by_subclass());

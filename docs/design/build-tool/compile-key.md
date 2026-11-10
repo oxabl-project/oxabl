@@ -734,6 +734,14 @@ reference and gives no K3 reason. A name that no class in the chain declares, an
 not a class either, keeps its K3 reason. A superclass that oxabl cannot read keeps its own
 K3 reason, so the unit has no key.
 
+**An inherited buffer reads its table.** A buffer that a workspace superclass declares `FOR`
+a database table reads that table in the subclass. A field of the buffer resolves against
+the schema, and the subclass has a schema-table dependency edge on the table. A temp-table
+of the same name in the chain hides the schema table, also a `PRIVATE` one, as it does in
+the superclass. The key needs no table of its own: the schema identity is in every key
+([Schema identity](#schema-identity)). A change to the table changes the key of the
+subclass, and a change to any other table changes it too.
+
 **An include is judged in its includer's context.** K1 to K4 read the analyses of the
 unit and of the class sources in its closure only. A closure file reached only through
 include edges contributes nothing of its own standalone analysis, even when it is also a
