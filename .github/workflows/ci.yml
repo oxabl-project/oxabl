@@ -193,3 +193,34 @@ jobs:
           name: oxabl-vscode-vsix
           path: clients/vscode/dist/
           if-no-files-found: error
+
+  vscode-e2e:
+    name: VS Code end-to-end
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/vscode
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - run: pnpm install --frozen-lockfile
+      # The suite downloads the VS Code version pinned in test/e2e/lib/vscode.mjs.
+      - uses: actions/cache@v4
+        with:
+          path: clients/vscode/.vscode-test
+          key: vscode-test-${{ runner.os }}-${{ hashFiles('clients/vscode/test/e2e/lib/vscode.mjs') }}
+      # The packaged VSIX in a real VS Code: highlighting, the Markdown
+      # injection, the missing-binary warning and the self-update against a
+      # fake GitHub API.
+      - run: xvfb-run -a pnpm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vscode-e2e-screenshots
+          path: clients/vscode/test/e2e/screenshots/
+          if-no-files-found: ignore

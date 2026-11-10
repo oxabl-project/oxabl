@@ -55,12 +55,17 @@ cargo run -p oxabl_codegen -- kind     # Writes kind.rs (enum + match function)
 cargo run -p oxabl_codegen -- atoms    # Writes build.rs (complete file)
 cargo run -p oxabl_codegen -- callable # Writes callable.rs (is_callable_kind)
 cargo run -p oxabl_codegen -- builtins # Writes builtins.rs (built-in function registry)
+cargo run -p oxabl_codegen -- grammar  # Writes the VS Code extension's TextMate grammar
 
 # Show statistics without writing files
 cargo run -p oxabl_codegen -- summary
 ```
 
 Generated files are written directly to their target locations and include a "DO NOT EDIT" header.
+
+### The VS Code grammar
+
+`clients/vscode/syntaxes/abl.tmLanguage.json` is generated. Change its structure in `resources/abl.tmLanguage.template.json` (`{{word:NAME}}` and `{{keywords:CATEGORY}}` placeholders) or the keyword data, then run `cargo run -p oxabl_codegen -- grammar`. The CI job `Grammar drift` fails when the committed grammar is not the generated one. Test it from `clients/vscode`: `pnpm test` (corpus and regex compile), `pnpm run test:grammar` (assertion and snapshot tests), `xvfb-run -a pnpm run test:e2e` (the packaged VSIX in a real VS Code). The categories, the rules and the release and self-update design are in `docs/design/vscode-extension.md`.
 
 ### The OpenEdge metaschema catalog
 
@@ -153,6 +158,8 @@ Uses [Release Please](https://github.com/googleapis/release-please) for fully au
 - `.release-please-manifest.json` — tracks the current version
 
 While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor instead of major.
+
+The VS Code extension (`clients/vscode`) is its own Release Please component, `oxabl_vscode` (`release-type: node`, tags `oxabl_vscode-vX.Y.Z`). The `vsix` job packages it with `clients/vscode/scripts/package-vsix.sh` (the script the CI job `VS Code client` runs on every pull request) and uploads `oxabl-vscode-<version>.vsix` and its `.sha256` to that release. The extension updates itself from those two assets, so their names are a contract (`docs/design/vscode-extension.md`).
 
 The release workflow's `binary` job builds the static Linux binary with `--features remote-cache` (`scripts/build-musl.sh`, in a `rust:alpine` container) and uploads it with a `.sha256` file to the release of the `oxabl` crate. It never runs on `workflow_dispatch`. The CI job `musl-binary` builds the same binary on every pull request and starts it in `ubuntu:22.04` (`scripts/check-musl.sh`).
 
