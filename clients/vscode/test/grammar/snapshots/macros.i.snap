@@ -1,0 +1,247 @@
+>/* macros.i - original sample include for the grammar snapshot tests.
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>   Arguments: {1} table name, {2} field name, {&flags} option list. */
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                    ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>&IF DEFINED(MACROS-I) = 0 &THEN
+#^^^ source.abl keyword.control.directive.conditional.abl
+#   ^ source.abl
+#    ^^^^^^^ source.abl support.function.abl
+#           ^ source.abl punctuation.section.parens.begin.abl
+#            ^^^^^^^^ source.abl variable.other.abl
+#                    ^ source.abl punctuation.section.parens.end.abl
+#                     ^ source.abl
+#                      ^ source.abl keyword.operator.assignment.abl
+#                       ^ source.abl
+#                        ^ source.abl constant.numeric.integer.abl
+#                         ^ source.abl
+#                          ^^^^^ source.abl keyword.control.directive.conditional.abl
+>&GLOBAL-DEFINE MACROS-I YES
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                       ^ source.abl meta.preprocessor.define.abl
+#                        ^^^ source.abl meta.preprocessor.define.abl constant.language.boolean.abl
+>
+>&SCOPED-DEFINE SEP ", "
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                  ^ source.abl meta.preprocessor.define.abl
+#                   ^ source.abl meta.preprocessor.define.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                    ^^ source.abl meta.preprocessor.define.abl string.quoted.double.abl
+#                      ^ source.abl meta.preprocessor.define.abl string.quoted.double.abl punctuation.definition.string.end.abl
+>&SCOP LIMIT 10
+#^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#     ^ source.abl meta.preprocessor.define.abl
+#      ^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#           ^ source.abl meta.preprocessor.define.abl
+#            ^^ source.abl meta.preprocessor.define.abl constant.numeric.integer.abl
+>&GLOB LONG-VALUE first part ~
+#^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#     ^ source.abl meta.preprocessor.define.abl
+#      ^^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                ^ source.abl meta.preprocessor.define.abl
+#                 ^^^^^ source.abl meta.preprocessor.define.abl keyword.other.abl
+#                      ^ source.abl meta.preprocessor.define.abl
+#                       ^^^^ source.abl meta.preprocessor.define.abl variable.other.abl
+#                           ^ source.abl meta.preprocessor.define.abl
+#                            ^^ source.abl meta.preprocessor.define.abl constant.character.escape.line-continuation.abl
+>    second part ~
+#^^^^ source.abl meta.preprocessor.define.abl
+#    ^^^^^^ source.abl meta.preprocessor.define.abl variable.other.abl
+#          ^ source.abl meta.preprocessor.define.abl
+#           ^^^^ source.abl meta.preprocessor.define.abl variable.other.abl
+#               ^ source.abl meta.preprocessor.define.abl
+#                ^^ source.abl meta.preprocessor.define.abl constant.character.escape.line-continuation.abl
+>    third part
+#^^^^ source.abl meta.preprocessor.define.abl
+#    ^^^^^ source.abl meta.preprocessor.define.abl variable.other.abl
+#         ^ source.abl meta.preprocessor.define.abl
+#          ^^^^ source.abl meta.preprocessor.define.abl variable.other.abl
+>&UNDEFINE LIMIT
+#^^^^^^^^^ source.abl meta.preprocessor.undefine.abl keyword.control.directive.undefine.abl
+#         ^ source.abl meta.preprocessor.undefine.abl
+#          ^^^^^ source.abl meta.preprocessor.undefine.abl entity.name.function.preprocessor.abl
+>
+>&MESSAGE Building macros.i for {&opsys}
+#^^^^^^^^ source.abl meta.preprocessor.message.abl keyword.control.directive.message.abl
+#        ^^^^^^^^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.message.abl string.unquoted.preprocessor.message.abl
+#                               ^^ source.abl meta.preprocessor.message.abl string.unquoted.preprocessor.message.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                                 ^^^^^ source.abl meta.preprocessor.message.abl string.unquoted.preprocessor.message.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                      ^ source.abl meta.preprocessor.message.abl string.unquoted.preprocessor.message.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+>
+>&IF "{&flags}" = "debug" &THEN
+#^^^ source.abl keyword.control.directive.conditional.abl
+#   ^ source.abl
+#    ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#     ^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#       ^^^^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#            ^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#             ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#              ^ source.abl
+#               ^ source.abl keyword.operator.assignment.abl
+#                ^ source.abl
+#                 ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                  ^^^^^ source.abl string.quoted.double.abl
+#                       ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                        ^ source.abl
+#                         ^^^^^ source.abl keyword.control.directive.conditional.abl
+>    &SCOPED-DEFINE LOG-LEVEL 3
+#^^^^ source.abl
+#    ^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#                  ^ source.abl meta.preprocessor.define.abl
+#                   ^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                            ^ source.abl meta.preprocessor.define.abl
+#                             ^ source.abl meta.preprocessor.define.abl constant.numeric.integer.abl
+>&ELSEIF "{&flags}" = "quiet" &THEN
+#^^^^^^^ source.abl keyword.control.directive.conditional.abl
+#       ^ source.abl
+#        ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#         ^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#           ^^^^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                ^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                  ^ source.abl
+#                   ^ source.abl keyword.operator.assignment.abl
+#                    ^ source.abl
+#                     ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                      ^^^^^ source.abl string.quoted.double.abl
+#                           ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                            ^ source.abl
+#                             ^^^^^ source.abl keyword.control.directive.conditional.abl
+>    &SCOPED-DEFINE LOG-LEVEL 0
+#^^^^ source.abl
+#    ^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#                  ^ source.abl meta.preprocessor.define.abl
+#                   ^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                            ^ source.abl meta.preprocessor.define.abl
+#                             ^ source.abl meta.preprocessor.define.abl constant.numeric.integer.abl
+>&ELSE
+#^^^^^ source.abl keyword.control.directive.conditional.abl
+>    &SCOPED-DEFINE LOG-LEVEL 1
+#^^^^ source.abl
+#    ^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#                  ^ source.abl meta.preprocessor.define.abl
+#                   ^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                            ^ source.abl meta.preprocessor.define.abl
+#                             ^ source.abl meta.preprocessor.define.abl constant.numeric.integer.abl
+>&ENDIF
+#^^^^^^ source.abl keyword.control.directive.conditional.abl
+>
+>DEFINE VARIABLE cList AS CHARACTER NO-UNDO.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^ source.abl entity.name.variable.abl
+#                     ^ source.abl
+#                      ^^ source.abl keyword.other.abl
+#                        ^ source.abl
+#                         ^^^^^^^^^ source.abl storage.type.abl
+#                                  ^ source.abl
+#                                   ^^^^^^^ source.abl storage.modifier.abl
+#                                          ^ source.abl punctuation.terminator.statement.abl
+>
+>FOR EACH {1} NO-LOCK:
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl
+#    ^^^^ source.abl keyword.control.abl
+#        ^ source.abl
+#         ^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.begin.abl
+#          ^ source.abl meta.preprocessor.argument.abl variable.other.constant.preprocessor.abl
+#           ^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.end.abl
+#            ^ source.abl
+#             ^^^^^^^ source.abl keyword.other.abl
+#                    ^ source.abl punctuation.separator.colon.abl
+>    cList = cList + {&SEP} + STRING({1}.{2}).
+#^^^^ source.abl
+#    ^^^^^ source.abl variable.other.abl
+#         ^ source.abl
+#          ^ source.abl keyword.operator.assignment.abl
+#           ^ source.abl
+#            ^^^^^ source.abl variable.other.abl
+#                 ^ source.abl
+#                  ^ source.abl keyword.operator.arithmetic.abl
+#                   ^ source.abl
+#                    ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                      ^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                         ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                          ^ source.abl
+#                           ^ source.abl keyword.operator.arithmetic.abl
+#                            ^ source.abl
+#                             ^^^^^^ source.abl support.function.abl
+#                                   ^ source.abl punctuation.section.parens.begin.abl
+#                                    ^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.begin.abl
+#                                     ^ source.abl meta.preprocessor.argument.abl variable.other.constant.preprocessor.abl
+#                                      ^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.end.abl
+#                                       ^ source.abl
+#                                        ^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.begin.abl
+#                                         ^ source.abl meta.preprocessor.argument.abl variable.other.constant.preprocessor.abl
+#                                          ^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.end.abl
+#                                           ^ source.abl punctuation.section.parens.end.abl
+#                                            ^ source.abl punctuation.terminator.statement.abl
+>    IF LENGTH(cList) > {&LOG-LEVEL} THEN LEAVE.
+#^^^^ source.abl
+#    ^^ source.abl keyword.control.abl
+#      ^ source.abl
+#       ^^^^^^ source.abl support.function.abl
+#             ^ source.abl punctuation.section.parens.begin.abl
+#              ^^^^^ source.abl variable.other.abl
+#                   ^ source.abl punctuation.section.parens.end.abl
+#                    ^ source.abl
+#                     ^ source.abl keyword.operator.comparison.abl
+#                      ^ source.abl
+#                       ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                         ^^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                  ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                   ^ source.abl
+#                                    ^^^^ source.abl keyword.control.abl
+#                                        ^ source.abl
+#                                         ^^^^^ source.abl keyword.control.abl
+#                                              ^ source.abl punctuation.terminator.statement.abl
+>END.
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl punctuation.terminator.statement.abl
+>
+>{common/trace.i &level={&LOG-LEVEL} &text="loaded {1}" extra}
+#^ source.abl meta.preprocessor.include.abl punctuation.definition.include.begin.abl
+# ^^^^^^^^^^^^^^ source.abl meta.preprocessor.include.abl string.unquoted.include.abl
+#               ^ source.abl meta.preprocessor.include.abl
+#                ^^^^^^ source.abl meta.preprocessor.include.abl variable.parameter.preprocessor.abl
+#                      ^ source.abl meta.preprocessor.include.abl keyword.operator.assignment.abl
+#                       ^^ source.abl meta.preprocessor.include.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                         ^^^^^^^^^ source.abl meta.preprocessor.include.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                  ^ source.abl meta.preprocessor.include.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                   ^ source.abl meta.preprocessor.include.abl
+#                                    ^^^^^ source.abl meta.preprocessor.include.abl variable.parameter.preprocessor.abl
+#                                         ^ source.abl meta.preprocessor.include.abl keyword.operator.assignment.abl
+#                                          ^ source.abl meta.preprocessor.include.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                           ^^^^^^^ source.abl meta.preprocessor.include.abl string.quoted.double.abl
+#                                                  ^ source.abl meta.preprocessor.include.abl string.quoted.double.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.begin.abl
+#                                                   ^ source.abl meta.preprocessor.include.abl string.quoted.double.abl meta.preprocessor.argument.abl variable.other.constant.preprocessor.abl
+#                                                    ^ source.abl meta.preprocessor.include.abl string.quoted.double.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.end.abl
+#                                                     ^ source.abl meta.preprocessor.include.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                      ^ source.abl meta.preprocessor.include.abl
+#                                                       ^^^^^ source.abl meta.preprocessor.include.abl string.unquoted.argument.abl
+#                                                            ^ source.abl meta.preprocessor.include.abl punctuation.definition.include.end.abl
+>{ common/footer.i }
+#^ source.abl meta.preprocessor.include.abl punctuation.definition.include.begin.abl
+# ^ source.abl meta.preprocessor.include.abl
+#  ^^^^^^^^^^^^^^^ source.abl meta.preprocessor.include.abl string.unquoted.include.abl
+#                 ^ source.abl meta.preprocessor.include.abl
+#                  ^ source.abl meta.preprocessor.include.abl punctuation.definition.include.end.abl
+>{*}
+#^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.begin.abl
+# ^ source.abl meta.preprocessor.argument.abl variable.other.constant.preprocessor.abl
+#  ^ source.abl meta.preprocessor.argument.abl punctuation.definition.preprocessor.end.abl
+>{&*}
+#^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#  ^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#   ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+>
+>&ENDIF
+#^^^^^^ source.abl keyword.control.directive.conditional.abl
+>

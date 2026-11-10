@@ -1,0 +1,420 @@
+>&ANALYZE-SUSPEND _VERSION-NUMBER AB_v10r12 GUI
+#^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+#                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl comment.line.preprocessor.analyze.abl
+>&ANALYZE-RESUME
+#^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+>&Scoped-define WINDOW-NAME wMain
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                          ^ source.abl meta.preprocessor.define.abl
+#                           ^^^^^ source.abl meta.preprocessor.define.abl variable.other.abl
+>&Scoped-define FRAME-NAME fMain
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                         ^ source.abl meta.preprocessor.define.abl
+#                          ^^^^^ source.abl meta.preprocessor.define.abl variable.other.abl
+>
+>/* Original sample window for the grammar snapshot tests. */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                          ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>CREATE WIDGET-POOL.
+#^^^^^^ source.abl keyword.other.abl
+#      ^ source.abl
+#       ^^^^^^^^^^^ source.abl keyword.other.abl
+#                  ^ source.abl punctuation.terminator.statement.abl
+>
+>&ANALYZE-SUSPEND _UIB-CODE-BLOCK _CUSTOM _DEFINITIONS wMain
+#^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+#                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl comment.line.preprocessor.analyze.abl
+>/* Parameters Definitions ---                                           */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>DEFINE INPUT PARAMETER ipTitle AS CHARACTER NO-UNDO.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^ source.abl storage.modifier.abl
+#            ^ source.abl
+#             ^^^^^^^^^ source.abl keyword.other.abl
+#                      ^ source.abl
+#                       ^^^^^^^ source.abl variable.parameter.abl
+#                              ^ source.abl
+#                               ^^ source.abl keyword.other.abl
+#                                 ^ source.abl
+#                                  ^^^^^^^^^ source.abl storage.type.abl
+#                                           ^ source.abl
+#                                            ^^^^^^^ source.abl storage.modifier.abl
+#                                                   ^ source.abl punctuation.terminator.statement.abl
+>
+>/* Local Variable Definitions ---                                       */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>DEFINE VARIABLE cName AS CHARACTER NO-UNDO.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^ source.abl entity.name.variable.abl
+#                     ^ source.abl
+#                      ^^ source.abl keyword.other.abl
+#                        ^ source.abl
+#                         ^^^^^^^^^ source.abl storage.type.abl
+#                                  ^ source.abl
+#                                   ^^^^^^^ source.abl storage.modifier.abl
+#                                          ^ source.abl punctuation.terminator.statement.abl
+>&ANALYZE-RESUME
+#^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+>
+>&ANALYZE-SUSPEND _UIB-PREPROCESSOR-BLOCK
+#^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+#                ^^^^^^^^^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl comment.line.preprocessor.analyze.abl
+>
+>/* ********************  Preprocessor Definitions  ******************** */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>&Scoped-define PROCEDURE-TYPE Window
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                             ^ source.abl meta.preprocessor.define.abl
+#                              ^^^^^^ source.abl meta.preprocessor.define.abl keyword.other.abl
+>&Scoped-define DB-AWARE no
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                       ^ source.abl meta.preprocessor.define.abl
+#                        ^^ source.abl meta.preprocessor.define.abl constant.language.boolean.abl
+>
+>/* Definitions of the field level widgets                               */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>DEFINE VARIABLE fiName AS CHARACTER FORMAT "X(30)":U
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl entity.name.variable.abl
+#                      ^ source.abl
+#                       ^^ source.abl keyword.other.abl
+#                         ^ source.abl
+#                          ^^^^^^^^^ source.abl storage.type.abl
+#                                   ^ source.abl
+#                                    ^^^^^^ source.abl keyword.other.abl
+#                                          ^ source.abl
+#                                           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                            ^^^^^ source.abl string.quoted.double.abl
+#                                                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                  ^ source.abl string.quoted.double.abl punctuation.separator.string-attribute.abl
+#                                                   ^ source.abl string.quoted.double.abl storage.modifier.string-attribute.abl
+>     LABEL "Name"
+#^^^^^ source.abl
+#     ^^^^^ source.abl keyword.other.abl
+#          ^ source.abl
+#           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#            ^^^^ source.abl string.quoted.double.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+>     VIEW-AS FILL-IN
+#^^^^^ source.abl
+#     ^^^^^^^ source.abl keyword.other.abl
+#            ^ source.abl
+#             ^^^^^^^ source.abl keyword.other.abl
+>     SIZE 30 BY 1 NO-UNDO.
+#^^^^^ source.abl
+#     ^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^ source.abl constant.numeric.integer.abl
+#            ^ source.abl
+#             ^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^ source.abl constant.numeric.integer.abl
+#                 ^ source.abl
+#                  ^^^^^^^ source.abl storage.modifier.abl
+#                         ^ source.abl punctuation.terminator.statement.abl
+>
+>DEFINE BUTTON btnOk
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^ source.abl keyword.other.abl
+#             ^ source.abl
+#              ^^^^^ source.abl entity.name.variable.abl
+>     LABEL "OK"
+#^^^^^ source.abl
+#     ^^^^^ source.abl keyword.other.abl
+#          ^ source.abl
+#           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#            ^^ source.abl string.quoted.double.abl
+#              ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+>     SIZE 15 BY 1.14.
+#^^^^^ source.abl
+#     ^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^ source.abl constant.numeric.integer.abl
+#            ^ source.abl
+#             ^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^ source.abl constant.numeric.decimal.abl
+#                    ^ source.abl punctuation.terminator.statement.abl
+>
+>DEFINE FRAME fMain
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^ source.abl keyword.other.abl
+#            ^ source.abl
+#             ^^^^^ source.abl entity.name.variable.abl
+>     fiName AT ROW 2 COL 12 COLON-ALIGNED
+#^^^^^ source.abl
+#     ^^^^^^ source.abl variable.other.abl
+#           ^ source.abl
+#            ^^ source.abl keyword.other.abl
+#              ^ source.abl
+#               ^^^ source.abl keyword.other.abl
+#                  ^ source.abl
+#                   ^ source.abl constant.numeric.integer.abl
+#                    ^ source.abl
+#                     ^^^ source.abl keyword.other.abl
+#                        ^ source.abl
+#                         ^^ source.abl constant.numeric.integer.abl
+#                           ^ source.abl
+#                            ^^^^^^^^^^^^^ source.abl keyword.other.abl
+>     btnOk AT ROW 4 COL 20
+#^^^^^ source.abl
+#     ^^^^^ source.abl variable.other.abl
+#          ^ source.abl
+#           ^^ source.abl keyword.other.abl
+#             ^ source.abl
+#              ^^^ source.abl keyword.other.abl
+#                 ^ source.abl
+#                  ^ source.abl constant.numeric.integer.abl
+#                   ^ source.abl
+#                    ^^^ source.abl keyword.other.abl
+#                       ^ source.abl
+#                        ^^ source.abl constant.numeric.integer.abl
+>    WITH 1 DOWN NO-BOX KEEP-TAB-ORDER OVERLAY
+#^^^^ source.abl
+#    ^^^^ source.abl keyword.other.abl
+#        ^ source.abl
+#         ^ source.abl constant.numeric.integer.abl
+#          ^ source.abl
+#           ^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl keyword.other.abl
+#                      ^ source.abl
+#                       ^^^^^^^^^^^^^^ source.abl keyword.other.abl
+#                                     ^ source.abl
+#                                      ^^^^^^^ source.abl keyword.other.abl
+>         SIDE-LABELS NO-UNDERLINE THREE-D
+#^^^^^^^^^ source.abl
+#         ^^^^^^^^^^^ source.abl keyword.other.abl
+#                    ^ source.abl
+#                     ^^^^^^^^^^^^ source.abl keyword.other.abl
+#                                 ^ source.abl
+#                                  ^^^^^^^ source.abl keyword.other.abl
+>         AT COL 1 ROW 1
+#^^^^^^^^^ source.abl
+#         ^^ source.abl keyword.other.abl
+#           ^ source.abl
+#            ^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^ source.abl constant.numeric.integer.abl
+#                 ^ source.abl
+#                  ^^^ source.abl keyword.other.abl
+#                     ^ source.abl
+#                      ^ source.abl constant.numeric.integer.abl
+>         SIZE 80 BY 6 .
+#^^^^^^^^^ source.abl
+#         ^^^^ source.abl keyword.other.abl
+#             ^ source.abl
+#              ^^ source.abl constant.numeric.integer.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.other.abl
+#                   ^ source.abl
+#                    ^ source.abl constant.numeric.integer.abl
+#                     ^ source.abl
+#                      ^ source.abl punctuation.terminator.statement.abl
+>&ANALYZE-RESUME
+#^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+>
+>&ANALYZE-SUSPEND _CREATE-WINDOW
+#^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+#                ^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl comment.line.preprocessor.analyze.abl
+>IF SESSION:DISPLAY-TYPE = "GUI":U THEN
+#^^ source.abl keyword.control.abl
+#  ^ source.abl
+#   ^^^^^^^ source.abl variable.language.abl
+#          ^ source.abl punctuation.accessor.abl
+#           ^^^^^^^^^^^^ source.abl variable.other.property.abl
+#                       ^ source.abl
+#                        ^ source.abl keyword.operator.assignment.abl
+#                         ^ source.abl
+#                          ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                           ^^^ source.abl string.quoted.double.abl
+#                              ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                               ^ source.abl string.quoted.double.abl punctuation.separator.string-attribute.abl
+#                                ^ source.abl string.quoted.double.abl storage.modifier.string-attribute.abl
+#                                 ^ source.abl
+#                                  ^^^^ source.abl keyword.control.abl
+>  CREATE WINDOW wMain ASSIGN
+#^^ source.abl
+#  ^^^^^^ source.abl keyword.other.abl
+#        ^ source.abl
+#         ^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^ source.abl variable.other.abl
+#                     ^ source.abl
+#                      ^^^^^^ source.abl keyword.other.abl
+>         HIDDEN             = YES
+#^^^^^^^^^ source.abl
+#         ^^^^^^ source.abl keyword.other.abl
+#               ^^^^^^^^^^^^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^^^ source.abl constant.language.boolean.abl
+>         TITLE              = "Sample"
+#^^^^^^^^^ source.abl
+#         ^^^^^ source.abl keyword.other.abl
+#              ^^^^^^^^^^^^^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                               ^^^^^^ source.abl string.quoted.double.abl
+#                                     ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+>         HEIGHT             = 6
+#^^^^^^^^^ source.abl
+#         ^^^^^^ source.abl keyword.other.abl
+#               ^^^^^^^^^^^^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^ source.abl constant.numeric.integer.abl
+>         WIDTH              = 80
+#^^^^^^^^^ source.abl
+#         ^^^^^ source.abl keyword.other.abl
+#              ^^^^^^^^^^^^^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^^ source.abl constant.numeric.integer.abl
+>         VISIBLE            = NO.
+#^^^^^^^^^ source.abl
+#         ^^^^^^^ source.abl keyword.other.abl
+#                ^^^^^^^^^^^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^^ source.abl constant.language.boolean.abl
+#                                ^ source.abl punctuation.terminator.statement.abl
+>ELSE {&WINDOW-NAME} = CURRENT-WINDOW.
+#^^^^ source.abl keyword.control.abl
+#    ^ source.abl
+#     ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#       ^^^^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                  ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                   ^ source.abl
+#                    ^ source.abl keyword.operator.assignment.abl
+#                     ^ source.abl
+#                      ^^^^^^^^^^^^^^ source.abl variable.language.abl
+#                                    ^ source.abl punctuation.terminator.statement.abl
+>&ANALYZE-RESUME
+#^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+>
+>&ANALYZE-SUSPEND _UIB-CODE-BLOCK _CONTROL btnOk wMain
+#^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+#                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl comment.line.preprocessor.analyze.abl
+>ON CHOOSE OF btnOk IN FRAME fMain /* OK */
+#^^ source.abl keyword.other.abl
+#  ^ source.abl
+#   ^^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^ source.abl keyword.other.abl
+#            ^ source.abl
+#             ^^^^^ source.abl variable.other.abl
+#                  ^ source.abl
+#                   ^^ source.abl keyword.other.abl
+#                     ^ source.abl
+#                      ^^^^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^ source.abl variable.other.abl
+#                                 ^ source.abl
+#                                  ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                                    ^^^^ source.abl comment.block.abl
+#                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>DO:
+#^^ source.abl keyword.control.abl
+#  ^ source.abl punctuation.separator.colon.abl
+>  cName = fiName:SCREEN-VALUE.
+#^^ source.abl
+#  ^^^^^ source.abl variable.other.abl
+#       ^ source.abl
+#        ^ source.abl keyword.operator.assignment.abl
+#         ^ source.abl
+#          ^^^^^^ source.abl variable.other.abl
+#                ^ source.abl punctuation.accessor.abl
+#                 ^^^^^^^^^^^^ source.abl variable.other.property.abl
+#                             ^ source.abl punctuation.terminator.statement.abl
+>  APPLY "CLOSE":U TO THIS-PROCEDURE.
+#^^ source.abl
+#  ^^^^^ source.abl keyword.other.abl
+#       ^ source.abl
+#        ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#         ^^^^^ source.abl string.quoted.double.abl
+#              ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#               ^ source.abl string.quoted.double.abl punctuation.separator.string-attribute.abl
+#                ^ source.abl string.quoted.double.abl storage.modifier.string-attribute.abl
+#                 ^ source.abl
+#                  ^^ source.abl keyword.other.abl
+#                    ^ source.abl
+#                     ^^^^^^^^^^^^^^ source.abl variable.language.abl
+#                                   ^ source.abl punctuation.terminator.statement.abl
+>END.
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl punctuation.terminator.statement.abl
+>&ANALYZE-RESUME
+#^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+>
+>&ANALYZE-SUSPEND _UIB-CODE-BLOCK _PROCEDURE initializeObject wMain
+#^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+#                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl comment.line.preprocessor.analyze.abl
+>PROCEDURE initializeObject :
+#^^^^^^^^^ source.abl storage.type.procedure.abl
+#         ^ source.abl
+#          ^^^^^^^^^^^^^^^^ source.abl entity.name.function.procedure.abl
+#                          ^ source.abl
+#                           ^ source.abl punctuation.separator.colon.abl
+>/*------------------------------------------------------------------------------
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>  Purpose:     Sets the title.
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>------------------------------------------------------------------------------*/
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                              ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>  {&WINDOW-NAME}:TITLE = ipTitle.
+#^^ source.abl
+#  ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#    ^^^^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#               ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                ^ source.abl punctuation.accessor.abl
+#                 ^^^^^ source.abl variable.other.property.abl
+#                      ^ source.abl
+#                       ^ source.abl keyword.operator.assignment.abl
+#                        ^ source.abl
+#                         ^^^^^^^ source.abl variable.other.abl
+#                                ^ source.abl punctuation.terminator.statement.abl
+>  RUN SUPER.
+#^^ source.abl
+#  ^^^ source.abl keyword.other.abl
+#     ^ source.abl
+#      ^^^^^ source.abl variable.language.abl
+#           ^ source.abl punctuation.terminator.statement.abl
+>END PROCEDURE.
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl
+#    ^^^^^^^^^ source.abl keyword.other.abl
+#             ^ source.abl punctuation.terminator.statement.abl
+>&ANALYZE-RESUME
+#^^^^^^^^^^^^^^^ source.abl meta.preprocessor.analyze.abl keyword.control.directive.analyze.abl
+>
