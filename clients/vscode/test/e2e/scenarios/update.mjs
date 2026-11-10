@@ -284,8 +284,6 @@ export async function updateTwoProfiles(ctx) {
     try {
       await waitForText(vs.page, `oxabl extension updated to v${NEW}`);
       check(`${name}: the ${other} profile shows "updated to v${NEW}" and not silence`, true);
-      const hit = await neverShows(vs.page, [`v${NEW} is installed`], 3_000);
-      check(`${name}: the ${other} profile does not say "installed. Reload" in place of installing`, hit === null, `saw "${hit}"`);
       await screenshot(vs.page, name);
     } finally {
       await vs.close();

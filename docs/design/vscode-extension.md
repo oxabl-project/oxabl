@@ -143,8 +143,10 @@ decide this, and both must hold:
 - After an install, the extension stores
   `oxabl.updates.pendingReload = { version, dir }` in `globalState`. VS Code
   keeps that state per profile. `dir` is the extensions folder of this host
-  (`dirname(extensionUri.fsPath)`). A local and a remote window have different
-  folders, so one host never reads the record of the other.
+  (`dirname(extensionUri.fsPath)`). A local and a remote window of one
+  profile share the record but have different folders, so a record written by
+  the other host never counts here. Each host can replace or clear it, which
+  costs at most a repeated install, never a lost update.
 - The folder `oxabl-project.oxabl-X.Y.Z` of that version, or a higher one,
   exists in `dir` and is not in `.obsolete`. When `.obsolete` exists but
   cannot be read or parsed, no version counts as installed.
@@ -155,8 +157,10 @@ newer tag is `available`. This matters for profiles: all profiles share one
 extensions folder, so the folder alone is not enough. A profile without the
 record installs the version that is already on disk, which only adds it to
 that profile. The extension clears the record when the running version is not
-older than it. A release that is pulled never makes the check install an
-older version over a newer one.
+older than it. For an install that the extension made, a release that is
+pulled never makes the check install an older version over the newer one.
+After a person installs an older version by hand in a profile that the
+extension updated, that profile stays on it until a newer tag exists.
 
 `oxabl.updates` is `auto` (the default; `notify` when VS Code's
 `extensions.autoUpdate` is off), `notify` or `off`. `oxabl: Check for Updates`

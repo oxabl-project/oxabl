@@ -78,7 +78,7 @@ How the check works:
   version that is already on disk to that profile.
 - Any failure installs nothing. An automatic check stays silent and writes the
   reason to the **oxabl** output channel.
-- It never installs an older version.
+- It never installs a version older than the one that runs.
 - It talks to GitHub with Node's `http` and `https` modules, which VS Code's
   proxy support covers.
 

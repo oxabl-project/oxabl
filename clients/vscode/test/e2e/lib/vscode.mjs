@@ -111,7 +111,11 @@ export function makeProfile(name, { settings = {}, files = [] } = {}) {
   return profile;
 }
 
-/** Registers a named VS Code profile in the user data dir, where VS Code keeps its profile list. */
+/**
+ * Registers a named VS Code profile in the user data dir. `storage.json` and
+ * its `userDataProfiles` list are internal to VS Code: check them again when
+ * VSCODE_VERSION changes.
+ */
 export function addNamedProfile(profile, named) {
   const dir = path.join(profile.userData, "User", "globalStorage");
   fs.mkdirSync(dir, { recursive: true });
