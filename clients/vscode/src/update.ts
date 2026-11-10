@@ -27,6 +27,9 @@ const MAX_PAGES = 10;
 
 export class UpdateError extends Error {}
 
+/** A reason that leaves the update "not established" without a fault: the check was sound. */
+export class NotReadyError extends UpdateError {}
+
 /** Where and how to talk to the release API. */
 export interface UpdateEnv {
   /** API base URL without a trailing slash. */
@@ -75,6 +78,41 @@ export function compareVersions(a: Version, b: Version): number {
 export function installedVersion(text: string): Version | undefined {
   const m = /^(\d+\.\d+\.\d+)/.exec(text);
   return m ? parseVersion(m[1]) : undefined;
+}
+
+const EXTENSION_DIR = /^oxabl-project\.oxabl-(\d+\.\d+\.\d+)$/;
+
+/**
+ * The highest version of this extension installed in `dir` (VS Code's
+ * extensions folder) that is not marked obsolete, if any. The `.obsolete`
+ * file is a JSON object keyed by folder name; a missing or unreadable file
+ * marks nothing.
+ */
+export async function highestInstalledVersion(dir: string): Promise<string | undefined> {
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return undefined;
+  }
+  let obsolete: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(await fs.promises.readFile(path.join(dir, ".obsolete"), "utf8"));
+    if (parsed && typeof parsed === "object") {
+      obsolete = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Nothing is obsolete.
+  }
+  let best: Version | undefined;
+  for (const name of names) {
+    const m = EXTENSION_DIR.exec(name);
+    const v = m && !Object.hasOwn(obsolete, name) ? parseVersion(m[1]) : undefined;
+    if (v && (!best || compareVersions(v, best) > 0)) {
+      best = v;
+    }
+  }
+  return best?.join(".");
 }
 
 /** The highest `oxabl_vscode-vX.Y.Z` release version among Git refs, if any. */
@@ -220,15 +258,15 @@ export type UpdateCheck =
 
 /**
  * Look for a newer release than `installed`. `current` means the newest tag is
- * not newer. `pending-reload` means the newest tag is `waitingFor`, a version
- * that is already installed and waits for a reload. A missing tag or an
- * incomplete newest release throws: that is "not established", not "up to date".
+ * not newer. `pending-reload` means `onDisk`, an installed version that waits
+ * for a reload, is at least the newest tag. A missing tag or an incomplete
+ * newest release throws: that is "not established", not "up to date".
  */
 export async function findUpdate(
   installed: string,
   env: UpdateEnv,
   log: (message: string) => void,
-  waitingFor?: string,
+  onDisk?: string,
 ): Promise<UpdateCheck> {
   const current = installedVersion(installed);
   if (!current) {
@@ -251,19 +289,20 @@ export async function findUpdate(
 
   const newest = newestVersion(refs);
   if (!newest) {
-    throw new UpdateError("no extension releases found");
+    throw new NotReadyError("no extension releases found");
   }
   log(`installed v${installed}, newest tag v${newest}`);
   if (compareVersions(parseVersion(newest)!, current) <= 0) {
     return { kind: "current" };
   }
-  if (newest === waitingFor) {
-    log(`v${newest} is installed and waits for a reload`);
-    return { kind: "pending-reload", version: newest };
+  const waiting = onDisk === undefined ? undefined : parseVersion(onDisk);
+  if (waiting && compareVersions(waiting, parseVersion(newest)!) >= 0) {
+    log(`v${onDisk} is installed and waits for a reload`);
+    return { kind: "pending-reload", version: onDisk! };
   }
 
   const tag = `${TAG_PREFIX}${newest}`;
-  const notComplete = new UpdateError(`release v${newest} is not complete yet`);
+  const notComplete = new NotReadyError(`release v${newest} is not complete yet`);
   const { json: release } = await getJson(`${env.apiBase}${REPO_PATH}/releases/tags/${tag}`, env);
   const r = release as { draft?: unknown; prerelease?: unknown; assets?: unknown } | null;
   if (!r || typeof r !== "object" || !Array.isArray(r.assets)) {

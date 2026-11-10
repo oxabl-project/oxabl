@@ -9,20 +9,20 @@ import * as vscode from "vscode";
 
 import {
   DEFAULT_API_BASE,
+  NotReadyError,
   UpdateError,
-  compareVersions,
   downloadVerified,
   findUpdate,
-  installedVersion,
+  highestInstalledVersion,
   isLoopbackHost,
-  parseVersion,
   type AvailableUpdate,
   type UpdateEnv,
 } from "./update";
 
 const LAST_CHECK_KEY = "oxabl.updates.lastCheck";
 const SKIPPED_KEY = "oxabl.updates.skipped";
-const INSTALLED_KEY = "oxabl.updates.installed";
+const OLD_INSTALLED_KEY = "oxabl.updates.installed";
+const STALE_DOWNLOAD_MS = 60 * 60 * 1000;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RELEASE_URL = "https://github.com/oxabl-project/oxabl/releases/tag/oxabl_vscode-v";
 
@@ -111,8 +111,13 @@ async function checkForUpdates(
     const mode = currentMode();
     log.info(`update check (${trigger}, mode ${mode}), installed v${installed}`);
 
-    const waitingFor = await waitingVersion(context, installed);
-    const check = await findUpdate(installed, env, (m) => log.info(m), waitingFor);
+    // Dropped record of an earlier release; it lived in state that hosts share.
+    if (context.globalState.get(OLD_INSTALLED_KEY) !== undefined) {
+      await context.globalState.update(OLD_INSTALLED_KEY, undefined);
+    }
+    // What this extension host has on disk, not what another host installed.
+    const onDisk = await highestInstalledVersion(path.dirname(context.extensionUri.fsPath));
+    const check = await findUpdate(installed, env, (m) => log.info(m), onDisk);
     if (check.kind === "current") {
       log.info("decision: up to date");
       if (manual) {
@@ -144,34 +149,18 @@ async function checkForUpdates(
     }
   } catch (err) {
     const reason = failureReason(err);
-    log.error(`update check failed: ${reason}`);
+    const message = `update check failed: ${reason}`;
+    if (!manual && err instanceof NotReadyError) {
+      log.warn(message);
+    } else {
+      log.error(message);
+    }
     if (manual) {
       void vscode.window.showErrorMessage(`oxabl: could not check for updates: ${reason}`);
     }
   } finally {
     busy = false;
   }
-}
-
-/**
- * The version that an earlier install left waiting for a reload. Once the
- * running version has caught up, the record has done its job and is cleared.
- */
-async function waitingVersion(
-  context: vscode.ExtensionContext,
-  installed: string,
-): Promise<string | undefined> {
-  const stored = context.globalState.get<string>(INSTALLED_KEY);
-  if (stored === undefined) {
-    return undefined;
-  }
-  const storedVersion = parseVersion(stored);
-  const running = installedVersion(installed);
-  if (storedVersion && running && compareVersions(storedVersion, running) > 0) {
-    return stored;
-  }
-  await context.globalState.update(INSTALLED_KEY, undefined);
-  return undefined;
 }
 
 function offerReload(message: string, ...extra: string[]): Promise<string | undefined> {
@@ -237,6 +226,7 @@ async function installUpdate(
   // A fresh directory per attempt: another window may install at the same time.
   const root = vscode.Uri.joinPath(context.globalStorageUri, "updates").fsPath;
   await fs.promises.mkdir(root, { recursive: true });
+  await removeStaleDownloads(root, log);
   const dir = await fs.promises.mkdtemp(path.join(root, "dl-"));
   try {
     const file = await downloadVerified(update, env, dir);
@@ -249,7 +239,6 @@ async function installUpdate(
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
   log.info(`installed v${update.version}`);
-  await context.globalState.update(INSTALLED_KEY, update.version);
 
   void offerReload(
     `oxabl extension updated to v${update.version}. Reload the window to use it.`,
@@ -259,6 +248,27 @@ async function installUpdate(
       openReleaseNotes(update.version);
     }
   });
+}
+
+/** Remove `dl-*` folders that a killed window left behind. Best effort. */
+async function removeStaleDownloads(root: string, log: vscode.LogOutputChannel): Promise<void> {
+  try {
+    for (const entry of await fs.promises.readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith("dl-")) {
+        continue;
+      }
+      const dir = path.join(root, entry.name);
+      try {
+        if (Date.now() - (await fs.promises.stat(dir)).mtimeMs > STALE_DOWNLOAD_MS) {
+          await fs.promises.rm(dir, { recursive: true, force: true });
+        }
+      } catch (err) {
+        log.warn(`could not remove ${dir}: ${failureReason(err)}`);
+      }
+    }
+  } catch (err) {
+    log.warn(`could not list ${root}: ${failureReason(err)}`);
+  }
 }
 
 function openReleaseNotes(version: string): void {

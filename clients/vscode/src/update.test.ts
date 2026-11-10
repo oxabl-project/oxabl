@@ -9,6 +9,7 @@ import {
   UpdateError,
   downloadVerified,
   findUpdate,
+  highestInstalledVersion,
   newestVersion,
   parseChecksum,
   type AvailableUpdate,
@@ -158,13 +159,21 @@ describe("findUpdate", () => {
     expect(requests.filter((u) => u.includes("/releases/tags/"))).toEqual([]);
   });
 
-  it("reports pending-reload for the version that an install left waiting", async () => {
+  it("reports pending-reload for a version on disk that is at least the newest tag", async () => {
     fake.tags = ["oxabl_vscode-v0.2.0"];
     expect(await findUpdate("0.1.0", env(), log, "0.2.0")).toEqual({
       kind: "pending-reload",
       version: "0.2.0",
     });
     expect(requests.filter((u) => u.includes("/releases/tags/"))).toEqual([]);
+  });
+
+  it("reports pending-reload with the installed version when it is above the newest tag", async () => {
+    fake.tags = ["oxabl_vscode-v0.2.0"];
+    expect(await findUpdate("0.1.0", env(), log, "0.3.0")).toEqual({
+      kind: "pending-reload",
+      version: "0.3.0",
+    });
   });
 
   it("offers a version newer than the one that waits", async () => {
@@ -209,6 +218,59 @@ describe("findUpdate", () => {
     await expect(
       findUpdate("0.1.0", { ...env(), apiBase: "http://example.test" }, log),
     ).rejects.toThrow("refusing http: URL from example.test");
+  });
+});
+
+describe("highestInstalledVersion", () => {
+  const dirOf = (version: string) => `oxabl-project.oxabl-${version}`;
+
+  function install(...versions: string[]) {
+    for (const v of versions) {
+      fs.mkdirSync(path.join(tmp, dirOf(v)));
+    }
+  }
+
+  it("finds nothing in an empty or a missing folder", async () => {
+    expect(await highestInstalledVersion(tmp)).toBeUndefined();
+    expect(await highestInstalledVersion(path.join(tmp, "missing"))).toBeUndefined();
+  });
+
+  it("takes the highest version and ignores other folders", async () => {
+    install("0.2.0", "0.10.0", "0.9.0");
+    fs.mkdirSync(path.join(tmp, "someone.else-9.9.9"));
+    fs.mkdirSync(path.join(tmp, "oxabl-project.oxabl-1.0.0-beta"));
+    expect(await highestInstalledVersion(tmp)).toBe("0.10.0");
+  });
+
+  it("skips a version marked obsolete", async () => {
+    install("0.2.0", "0.3.0");
+    fs.writeFileSync(path.join(tmp, ".obsolete"), JSON.stringify({ [dirOf("0.3.0")]: true }));
+    expect(await highestInstalledVersion(tmp)).toBe("0.2.0");
+  });
+
+  it("marks nothing obsolete when the file is unreadable", async () => {
+    install("0.3.0");
+    fs.writeFileSync(path.join(tmp, ".obsolete"), "{ not json");
+    expect(await highestInstalledVersion(tmp)).toBe("0.3.0");
+  });
+
+  it("drives the verdict: installed newer or equal is pending, obsolete or absent is available", async () => {
+    const log = () => {};
+    fake.tags = ["oxabl_vscode-v0.2.0"];
+    fake.release = release("0.2.0");
+    const verdict = async () =>
+      (await findUpdate("0.1.0", env(), log, await highestInstalledVersion(tmp))).kind;
+
+    expect(await verdict()).toBe("available");
+    install("0.2.0");
+    expect(await verdict()).toBe("pending-reload");
+    install("0.3.0");
+    expect(await verdict()).toBe("pending-reload");
+    fs.writeFileSync(
+      path.join(tmp, ".obsolete"),
+      JSON.stringify({ [dirOf("0.2.0")]: true, [dirOf("0.3.0")]: true }),
+    );
+    expect(await verdict()).toBe("available");
   });
 });
 

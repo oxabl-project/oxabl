@@ -127,6 +127,14 @@ Marketplace needs a GitHub Enterprise plan. So the extension updates itself:
    the VSIX with `workbench.extensions.installExtension`. The new version
    runs after a window reload.
 
+The newest tag may be installed already and wait for a reload. The check reads
+the extensions folder beside the running extension to find out. A folder
+`oxabl-project.oxabl-X.Y.Z` that is not in `.obsolete`, with a version at or
+above the newest tag, ends the check before step 2. The disk is the source of
+truth, not `globalState`: a local and a remote window share `globalState` but
+not the folder. This also means that a pulled release never makes the check
+install an older version over a newer one.
+
 `oxabl.updates` is `auto` (the default; `notify` when VS Code's
 `extensions.autoUpdate` is off), `notify` or `off`. `oxabl: Check for Updates`
 checks at once. Every failure installs nothing. `OXABL_UPDATE_API_URL`

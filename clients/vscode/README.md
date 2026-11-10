@@ -69,8 +69,10 @@ How the check works:
   On a mismatch it installs nothing.
 - Each download goes to its own temporary folder, which is removed after the
   install. Two windows that check at the same time do not share a file.
-- After an install, the extension remembers the version. Until you reload the
-  window, it does not download that version again.
+- Before it downloads, it looks in the extensions folder of this window. When
+  a version that is not older than the newest release is already there (an
+  install that waits for a reload), it downloads nothing. It never installs
+  over a newer version.
 - Any failure installs nothing. An automatic check stays silent and writes the
   reason to the **oxabl** output channel.
 - It never installs an older version.
@@ -82,8 +84,8 @@ It always checks, in every mode, and tells you the result. A manual check also
 offers a version that you skipped, and it says so when it cannot find a
 complete release (no extension release, or the newest one is not finished
 yet). It says "up to date" only when the newest release is not newer than the
-version that runs. When the newest version is already installed, it asks you to
-reload the window.
+version that runs. When the newest version is already in the extensions folder,
+it asks you to reload the window.
 
 ## Settings
 

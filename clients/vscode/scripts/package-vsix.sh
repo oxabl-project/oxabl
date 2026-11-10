@@ -27,6 +27,13 @@ cd "$EXT_DIR"
 pnpm install --frozen-lockfile
 pnpm run build
 
+# VS Code's proxy support intercepts the modules `http` and `https` by those
+# names; a `node:` import of them bypasses the proxy in some versions.
+if grep -oE 'require\("node:https?"\)' out/extension.js >&2; then
+  echo "!! out/extension.js imports node:http or node:https (listed above); import http and https" >&2
+  exit 1
+fi
+
 version="$(node -p "require('./package.json').version")"
 vsix="oxabl-vscode-$version.vsix"
 pnpm exec vsce package --no-dependencies --out "$OUT_DIR/$vsix"
