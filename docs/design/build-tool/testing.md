@@ -100,11 +100,14 @@ starts with the worker program's header line.
 | `FAKE_AVM_SKIP_SHARE=1` | Answer its share with no table entries. |
 | `FAKE_AVM_COUNT_SKEW=1` | Report a `tables` count one higher than the database has. |
 | `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` | Emit a different schema image after `n` compiles. |
+| `FAKE_AVM_COMPILE_MS=<n>` | Sleep `n` ms in each compile, to measure what oxabl spends between compiles. |
 | `FAKE-RESOLVE-OTHER <name> <path>` in a source | Resolve include `<name>` to `<path>` instead of the first PROPATH match, as a divergent AVM would. |
 
 - **Log.** It appends one line per compiled unit to `FAKE_AVM_LOG` (`<worker pid> <compile
   name>`), so a test counts compiles and sees which worker compiled what. It also writes its
   pid there at start and `exit` at quit, so a test can check that no worker stays alive.
+  `FAKE_AVM_XREF_LOG` gets `<worker pid> <compile name> <XREF mode>` for each compiled
+  unit, so a test sees which units got the private `XREF-XML`.
 
 ## Scenarios per slice
 

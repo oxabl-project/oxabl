@@ -370,7 +370,9 @@ never compiled on its own.
      the message, and so after it has queued the dependents that the completion made ready.
      While the count is above 0, the queue hands out no job (schema-check tasks are not
      held). So a dependent that a finished job made ready competes with the jobs already
-     queued.
+     queued. The coordinator therefore does no slow work: the store batches (`syncfs` and
+     commit) are written on a thread of their own, and so are the sets the cache takes.
+     With them on the coordinator, every worker waited for each `syncfs` and each copy.
    - **Jobs that become ready together are queued at once**, under one lock, so a woken
      worker never takes a lower-priority job before a higher-priority one of the same step
      is in the queue. The coordinator also queues the first ready jobs before any worker

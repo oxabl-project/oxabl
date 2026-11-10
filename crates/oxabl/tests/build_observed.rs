@@ -552,3 +552,69 @@ fn a_file_of_an_observed_closure_that_turns_encrypted_takes_the_key_away() {
         "{plan}"
     );
 }
+
+/// The XREF mode of each compiled unit's request, from the fake's log.
+fn xref_modes(log: &Path) -> Vec<(String, String)> {
+    let mut modes: Vec<(String, String)> = std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            let mut parts = line.split(' ').skip(1);
+            let unit = parts.next().unwrap().to_string();
+            (unit, parts.next().unwrap_or_default().to_string())
+        })
+        .collect();
+    modes.sort();
+    modes
+}
+
+fn one_unreadable_unit(workspace: &Built) -> std::path::PathBuf {
+    workspace.write("src/inc/seen.i", "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n");
+    workspace.write("src/enc.p", &format!("{UNREADABLE}{{inc/seen.i}}\n"));
+    workspace.write("src/plain.p", "MESSAGE \"plain\".\n");
+    let log = workspace.path("xref.log");
+    workspace.env("FAKE_AVM_XREF_LOG", Some(&log.to_string_lossy()));
+    log
+}
+
+#[test]
+fn with_no_cache_that_stores_only_an_observed_unit_asks_for_the_private_xref_xml() {
+    let workspace = Built::new();
+    let log = one_unreadable_unit(&workspace);
+    settle();
+
+    workspace.build().succeeded();
+
+    assert_eq!(
+        xref_modes(&log),
+        [
+            ("enc.p".to_string(), "private".to_string()),
+            ("plain.p".to_string(), "none".to_string()),
+        ]
+    );
+    assert_eq!(
+        unit(&workspace.plan(), "src/enc.p")["closure"],
+        "observed",
+        "the observed unit still gets its closure"
+    );
+}
+
+#[test]
+fn with_a_cache_that_stores_every_unit_asks_for_the_private_xref_xml() {
+    let cache = TempDir::new().unwrap();
+    let workspace = Built::new();
+    workspace.cache_in(cache.path());
+    let log = one_unreadable_unit(&workspace);
+    settle();
+
+    workspace.build().succeeded();
+
+    assert_eq!(
+        xref_modes(&log),
+        [
+            ("enc.p".to_string(), "private".to_string()),
+            ("plain.p".to_string(), "private".to_string()),
+        ]
+    );
+    assert!(holds(cache.path(), "r/plain.r"), "the read check passed");
+}
