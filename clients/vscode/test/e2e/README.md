@@ -9,6 +9,8 @@ import the extension source.
 xvfb-run -a pnpm run test:e2e
 ```
 
+`update-skip` edits VS Code's state database with `node:sqlite` (Node 22.13 or newer, no flag) while VS Code is closed.
+
 The run needs a display and fails with a message when it has none. The first
 run downloads VS Code (the version is `VSCODE_VERSION` in `lib/vscode.mjs`)
 into `.vscode-test/`.
@@ -20,6 +22,7 @@ into `.vscode-test/`.
 | `update-auto` | The extension installs a newer release from the fake API and sends the right headers. |
 | `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |
 | `update-notify` | The `notify` mode shows a message and installs nothing. |
+| `update-skip` | In `notify` mode, `Skip This Version` stores the version. After the throttle stamp is removed from `state.vscdb`, the next launch checks again and does not offer that version. `oxabl: Check for Updates` offers it. |
 | `update-none`, `update-error` | No newer version and an HTTP 500 give no request for a release and no message. |
 | `update-autoupdate-off` | Mode `auto` with `extensions.autoUpdate: false` shows the "is available" message and does not download the VSIX. |
 | `update-throttle` | A second launch of the same profile makes no tag listing. |

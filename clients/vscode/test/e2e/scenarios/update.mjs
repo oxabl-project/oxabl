@@ -1,7 +1,8 @@
 import path from "node:path";
-import { MISSING_SERVER, neverShows, runCommand, screenshot, waitForText } from "../lib/editor.mjs";
+import { MISSING_SERVER, clickButton, neverShows, runCommand, screenshot, waitForText } from "../lib/editor.mjs";
 import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check, sleep, waitFor } from "../lib/report.mjs";
+import { extensionState } from "../lib/state.mjs";
 import { installVsix, launch, listExtensions, makeProfile } from "../lib/vscode.mjs";
 
 const NEW = "99.0.0";
@@ -191,3 +192,58 @@ export async function updateManualNoTags(ctx) {
   });
   check(`${name}: the tag listing was requested`, server.served(REFS));
 }
+
+const SKIPPED_KEY = "oxabl.updates.skipped";
+const LAST_CHECK_KEY = "oxabl.updates.lastCheck";
+const AVAILABLE = `oxabl extension v${NEW} is available (installed: v`;
+
+// "Skip This Version" stops the automatic check from offering that version again; a manual check still does.
+async function skipScenario(ctx, name, choose) {
+  const profile = makeProfile(name, { settings: { "oxabl.updates": "notify" }, files: ["update.p"] });
+  installVsix(ctx.exe, profile, ctx.vsix);
+  const server = await startFakeGitHub({ installed: ctx.installed, newest: NEW, vsix: ctx.newerVsix });
+  const env = { OXABL_UPDATE_API_URL: server.url };
+  try {
+    let vs = await launch(ctx.exe, profile, { open: ["update.p"], env });
+    try {
+      await waitForText(vs.page, `${AVAILABLE}${ctx.installed}).`);
+      check(`${name}: the prompt for v${NEW} appears with the three buttons`, true);
+      for (const label of ["Update", "Release Notes", "Skip This Version"]) {
+        const n = await vs.page.locator(".notification-toast .monaco-button", { hasText: label }).count();
+        check(`${name}: the prompt has a "${label}" button`, n > 0);
+      }
+      await choose(vs.page);
+    } finally {
+      await vs.close();
+    }
+    check(`${name}: the first launch listed the tags once`, server.count(REFS) === 1, `${server.count(REFS)} listings`);
+
+    const stored = await extensionState(profile, (state) => {
+      delete state[LAST_CHECK_KEY];
+      return state;
+    });
+    check(`${name}: the stored state holds ${SKIPPED_KEY} = ${NEW}`, stored[SKIPPED_KEY] === NEW, JSON.stringify(stored));
+    check(`${name}: the stored state holds a ${LAST_CHECK_KEY} stamp before it is removed`, LAST_CHECK_KEY in stored, JSON.stringify(stored));
+    const after = await extensionState(profile);
+    check(`${name}: the stamp is gone and the rest of the state is kept`, !(LAST_CHECK_KEY in after) && after[SKIPPED_KEY] === stored[SKIPPED_KEY], JSON.stringify(after));
+
+    vs = await launch(ctx.exe, profile, { open: ["update.p"], env });
+    try {
+      await waitForRequest("the second tag listing", server, () => server.count(REFS) >= 2);
+      const hit = await neverShows(vs.page, [AVAILABLE], 10_000);
+      check(`${name}: the automatic check does not offer the skipped v${NEW}`, hit === null, `saw "${hit}"`);
+      await runCommand(vs.page, CHECK_COMMAND);
+      await waitForText(vs.page, `${AVAILABLE}${ctx.installed}).`);
+      check(`${name}: the manual check offers v${NEW} again`, true);
+      await screenshot(vs.page, name);
+    } finally {
+      await vs.close();
+    }
+    check(`${name}: nothing was downloaded`, !server.servedVsix());
+  } finally {
+    await server.close();
+  }
+}
+
+export const updateSkip = (ctx) =>
+  skipScenario(ctx, "update-skip", (page) => clickButton(page, "Skip This Version"));

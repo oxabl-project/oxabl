@@ -114,6 +114,13 @@ export async function runCommand(page, title, timeout = 15_000) {
   await page.keyboard.press("Enter");
 }
 
+/** Clicks the button of a notification by its label. */
+export async function clickButton(page, label, timeout = 15_000) {
+  const button = page.locator(".notification-toast .monaco-button", { hasText: label }).first();
+  await button.waitFor({ state: "visible", timeout });
+  await button.click();
+}
+
 export async function screenshot(page, name) {
   fs.mkdirSync(SHOTS_DIR, { recursive: true });
   const file = path.join(SHOTS_DIR, `${name}.png`);
