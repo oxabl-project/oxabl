@@ -66,9 +66,9 @@ enum Cli {
     /// exit code.
     ///
     /// `[workspace.features]` in `oxabl.toml` turns a channel off: `diagnostics =
-    /// false` skips the lint channel, `format = false` skips the drift channel,
-    /// each with a note on stderr. With both off there is nothing to check (exit
-    /// 2).
+    /// false` skips the parse, semantic and lint findings, `format = false` skips
+    /// the drift channel, each with a note on stderr. With both off there is
+    /// nothing to check (exit 2).
     ///
     /// `oxabl format --check` remains the format pipeline's granular dry-run —
     /// the *same* pipeline this command calls, so the two cannot diverge.
