@@ -314,7 +314,10 @@ a compile in between. This needs two dictionary loads into the build's database 
 the build; CI builds use a database of their own, and the case is stated, not hidden.
 
 The private `XREF-XML` is on when any cache write is on (`[build.verify].reads`, default
-`true`). When the user requests `xref-xml`, that output serves as the private one. When the
+`true`). With no cache that stores (`read-only`, `--no-cache`, no cache configured), only a
+request that holds a unit keyed by its observed closure asks for it
+([compile-key.md](compile-key.md#the-observed-closure)): the other compiles skip the
+`XREF-XML` and the read check. When the user requests `xref-xml`, that output serves as the private one. When the
 user requests text XREF (`xref_format = "text"`), one compile cannot give both forms, so
 oxabl writes no cache entries for that configuration and says so at the start of each
 build. With `reads = false`, oxabl writes nothing to any cache. The `XREF-XML` reader is in
@@ -396,7 +399,7 @@ end <BLAKE3 hex of all the lines above, each with its LF>
 ### Write
 
 1. Create `tmp/<random>/` and put each file there by reflink, then hard link, then copy, in
-   that order of preference, from the promoted output at its final path, for a compiled
+   that order of preference (the entries of one batch on several threads), from the promoted output at its final path, for a compiled
    unit and for a remote hit alike (the stage file has been renamed away by then). Write the
    manifest last.
 2. Call `syncfs` on the cache filesystem once per batch of entries, then `rename` each

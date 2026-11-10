@@ -14,6 +14,7 @@ pub mod request;
 mod shared;
 mod slot;
 mod types;
+mod upload;
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -30,6 +31,7 @@ use self::record::Recorder;
 pub use self::report::{BuildReport, Setup, Summary, UnitReport, UnitStatus};
 pub use self::request::BuildRequest;
 use self::types::UnitInfo;
+use self::upload::Upload;
 use crate::cache::{ArtifactPath, CompileKey, FetchRequest, NotStoredReason, StoreOutcome};
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
@@ -192,10 +194,8 @@ pub fn build(
         infos,
         propaths,
         options,
-        xref: match (verifying || observer.is_some(), layout.xref.is_some()) {
-            (true, false) => "private",
-            _ => layout.xref_mode(),
-        },
+        xref: private_xref(verifying, &layout),
+        observed_xref: private_xref(verifying || observer.is_some(), &layout),
         debug_list: layout.debug_list.is_some(),
         listing: layout.listing.is_some(),
         limits: Limits {
@@ -218,7 +218,7 @@ pub fn build(
     let mut state = State {
         recorder,
         sink,
-        uploader: verifying.then(|| cache.uploader()),
+        upload: verifying.then(|| Upload::start(cache.uploader())),
         release: verifying.then(|| {
             let verify = &workspace.config.build.verify;
             Releaser::new(
@@ -229,8 +229,6 @@ pub fn build(
                 },
             )
         }),
-        pushed: 0,
-        uploader_broken: false,
         units: FxHashMap::default(),
         failed: FxHashSet::default(),
         notes,
@@ -268,23 +266,23 @@ pub fn build(
     let State {
         recorder,
         mut sink,
-        uploader,
+        upload,
         release,
-        pushed,
         units,
         mut notes,
         fatal,
         ..
     } = state;
-    let outcomes = uploader
-        .and_then(|uploader| catch_panic(|| uploader.finish()).ok())
-        .unwrap_or_default();
+    let uploaded = upload.map(Upload::finish).unwrap_or_default();
+    if uploaded.broken {
+        notes.push("the cache failed while taking a set; no more sets are offered".to_string());
+    }
     notes.extend(catch_panic(|| cache.notes()).unwrap_or_default());
     let cache_report = cache_report(
         cache.label(),
         verifying,
-        pushed,
-        &outcomes,
+        uploaded.pushed,
+        &uploaded.outcomes,
         release,
         &mut notes,
     );
@@ -407,6 +405,15 @@ fn verification(
         return false;
     }
     true
+}
+
+/// The XREF mode of a request: the user's, or the private `XREF-XML` when
+/// something reads it and the user asked for none.
+fn private_xref(read: bool, layout: &OutputLayout) -> &'static str {
+    match (read, layout.xref.is_some()) {
+        (true, false) => "private",
+        _ => layout.xref_mode(),
+    }
 }
 
 /// The closure that a unit's key holds: the one the compiler reported at the

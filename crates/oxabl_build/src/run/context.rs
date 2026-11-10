@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use super::record::Recorder;
 use super::types::UnitInfo;
-use crate::cache::{ArtifactCache, ArtifactUploader, CompileKey, FetchRequest, Origin};
+use super::upload::Upload;
+use crate::cache::{ArtifactCache, CompileKey, FetchRequest, Origin};
 use crate::events::{Event, Sink};
 use crate::graph::Scratch;
 use crate::observe::Observer;
@@ -50,7 +51,11 @@ pub struct Ctx<'a> {
     /// The worker-side PROPATH entries, by PROPATH id.
     pub propaths: Vec<Vec<String>>,
     pub options: Vec<(String, String)>,
+    /// The XREF mode of a request: the private `XREF-XML` when verification
+    /// reads it.
     pub xref: &'static str,
+    /// The XREF mode of a request that holds a unit whose closure is observed.
+    pub observed_xref: &'static str,
     pub debug_list: bool,
     pub listing: bool,
     pub limits: Limits,
@@ -89,14 +94,10 @@ pub struct UnitState {
 
 /// Changes while the build runs.
 pub struct State<'a> {
-    pub recorder: Recorder<'a>,
+    pub recorder: Recorder,
     pub sink: Option<Sink<'a>>,
-    pub uploader: Option<Box<dyn ArtifactUploader>>,
+    pub upload: Option<Upload>,
     pub release: Option<Releaser>,
-    /// The uploader panicked.
-    pub uploader_broken: bool,
-    /// Sets pushed to the uploader.
-    pub pushed: usize,
     pub units: FxHashMap<u32, UnitState>,
     pub failed: FxHashSet<u32>,
     pub notes: Vec<String>,

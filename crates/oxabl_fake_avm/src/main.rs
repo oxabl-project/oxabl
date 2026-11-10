@@ -29,7 +29,9 @@
 //! change the schema image after `n` compiles, or while the file exists;
 //! `FAKE_AVM_SCHEMA_DELAY_MS` delays each schema answer;
 //! `FAKE_AVM_SCHEMA_ERROR_AFTER=<n>` gives a wrong count after `n` compiles;
-//! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private `XREF-XML`.
+//! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private `XREF-XML`;
+//! `FAKE_AVM_XREF_LOG` receives the XREF mode of each compiled unit's request;
+//! `FAKE_AVM_COMPILE_MS=<n>` makes each compile take `n` milliseconds.
 
 mod compile;
 mod faults;

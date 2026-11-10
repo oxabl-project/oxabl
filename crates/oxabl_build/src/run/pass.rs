@@ -83,6 +83,7 @@ pub fn run(
         propaths: &ctx.propaths,
         options: &ctx.options,
         xref: ctx.xref,
+        observed_xref: ctx.observed_xref,
         debug_list: ctx.debug_list,
         listing: ctx.listing,
         limits: ctx.limits,

@@ -27,6 +27,7 @@ pub struct Shared<'a> {
     pub propaths: &'a [Vec<String>],
     pub options: &'a [(String, String)],
     pub xref: &'static str,
+    pub observed_xref: &'static str,
     pub debug_list: bool,
     pub listing: bool,
     pub limits: Limits,

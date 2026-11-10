@@ -14,7 +14,7 @@ use crate::cache::seam::{
 use crate::refresh::parallel;
 use crate::worker::random;
 
-/// Entries built and not yet renamed are installed in batches of this size.
+/// Sets are built, on several threads, and installed in batches of this size.
 const BATCH: usize = 500;
 
 /// An entry that is complete in `tmp/`.
@@ -123,7 +123,7 @@ fn install(layout: &Layout, built: Vec<Built>) -> Vec<(CompileKey, StoreOutcome,
 pub struct Uploader {
     layout: Layout,
     limit: u64,
-    pending: Vec<Built>,
+    pending: Vec<ArtifactSetRef>,
     done: Vec<(CompileKey, StoreOutcome)>,
 }
 
@@ -138,7 +138,20 @@ impl Uploader {
     }
 
     fn flush(&mut self) {
-        let built = std::mem::take(&mut self.pending);
+        let sets = std::mem::take(&mut self.pending);
+        let layout = &self.layout;
+        let mut built = Vec::with_capacity(sets.len());
+        for (set, result) in sets.iter().zip(parallel::map(&sets, |set| {
+            match layout.entry(&set.key).join(MANIFEST).is_file() {
+                true => Err(StoreOutcome::AlreadyPresent),
+                false => build(layout, set, None).map_err(StoreOutcome::NotStored),
+            }
+        })) {
+            match result {
+                Ok(entry) => built.push(entry),
+                Err(outcome) => self.done.push((set.key, outcome)),
+            }
+        }
         let mut added = 0;
         for (key, outcome, bytes) in install(&self.layout, built) {
             if outcome == StoreOutcome::Stored {
@@ -154,14 +167,7 @@ impl Uploader {
 
 impl ArtifactUploader for Uploader {
     fn push(&mut self, set: ArtifactSetRef) {
-        if self.layout.entry(&set.key).join(MANIFEST).is_file() {
-            self.done.push((set.key, StoreOutcome::AlreadyPresent));
-            return;
-        }
-        match build(&self.layout, &set, None) {
-            Ok(built) => self.pending.push(built),
-            Err(reason) => self.done.push((set.key, StoreOutcome::NotStored(reason))),
-        }
+        self.pending.push(set);
         if self.pending.len() >= BATCH {
             self.flush();
         }

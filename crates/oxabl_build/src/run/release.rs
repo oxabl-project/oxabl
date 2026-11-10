@@ -1,27 +1,17 @@
 //! Handing verified sets to the uploader, and the check that ends a build.
 
-use oxabl_common::catch_panic;
-
 use super::context::State;
 use super::pass::PassEnd;
 use crate::cache::ArtifactSetRef;
 use crate::worker::Pool;
 
-/// Pushes `sets` to the uploader, one at a time. An uploader that panics is
-/// dropped from then on: its sets are not stored.
+/// Hands `sets` to the uploader, in order.
 pub fn push(state: &mut State<'_>, sets: Vec<ArtifactSetRef>) {
-    let Some(uploader) = state.uploader.as_mut().filter(|_| !state.uploader_broken) else {
+    let Some(upload) = state.upload.as_ref() else {
         return;
     };
     for set in sets {
-        if catch_panic(|| uploader.push(set)).is_err() {
-            state.uploader_broken = true;
-            state
-                .notes
-                .push("the cache failed while taking a set; no more sets are offered".to_string());
-            return;
-        }
-        state.pushed += 1;
+        upload.push(set);
     }
 }
 
