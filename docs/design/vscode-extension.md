@@ -57,6 +57,11 @@ Marketplace. This note records how each part works and why.
 - The ten keyword categories are one regex with a capture per category: the
   engine scans each line once for them instead of ten times (about 40%
   faster on large files, with the same tokens).
+- The engine takes the match that starts first, and among those the rule
+  listed first. A rule that starts with `^\s*` starts before the keyword it
+  should lose to. So the label rule starts behind the indentation with
+  `(?<=^\s*)` (both vscode-oniguruma 1 and 2 accept it), and an indented
+  `DO:` stays a keyword.
 - Definitions (`DEFINE`, `PROCEDURE`, `FUNCTION`, `METHOD`, `CLASS`, …) match
   at the start of a line only. This keeps `DELETE PROCEDURE h` and
   `AS CLASS x` from naming a declaration.
@@ -81,7 +86,10 @@ From `clients/vscode`:
   uses.
 - `xvfb-run -a pnpm run test:e2e` — the packaged VSIX in a downloaded VS Code:
   activation, the colours that the editor renders, Markdown code blocks, the
-  self-update, and screenshots.
+  missing-binary warning, the self-update against a fake GitHub API, and
+  screenshots. It removes every `oxabl` from `PATH` and sets `VSCODE_CLI=1`
+  (otherwise VS Code reads the login shell's `PATH` and starts a real
+  language server), and fails when a scenario leaves a process running.
 
 ## Releases
 
