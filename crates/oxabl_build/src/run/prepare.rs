@@ -132,6 +132,7 @@ pub fn prepare(
         &paths,
         &[],
         Some(keyed),
+        None,
         Some(StoredInputs {
             results: &committed.results,
             layout: Some(&layout),

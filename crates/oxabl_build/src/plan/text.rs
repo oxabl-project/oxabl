@@ -35,15 +35,12 @@ pub fn render(plan: &Plan, committed: bool, all: bool) -> String {
             ("rebuild", entry.path.as_str(), reason)
         })
         .collect();
-    lines.extend(plan.skipped.iter().map(|path| {
-        let reason = plan
-            .keys
-            .as_ref()
-            .and_then(|keys| keys.get(path))
-            .and_then(|state| state.unkeyable.first().cloned())
-            .unwrap_or_default();
-        ("skip", path.as_str(), reason)
-    }));
+    lines.extend(
+        plan.skipped
+            .iter()
+            .zip(&plan.skip_reasons)
+            .map(|(path, reason)| ("skip", path.as_str(), reason.clone())),
+    );
     if all {
         lines.extend(
             plan.unchanged

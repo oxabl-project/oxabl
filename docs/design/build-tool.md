@@ -333,7 +333,12 @@ cannot compile under its name: `not-on-propath` (no PROPATH entry holds it) or
 name), `output-collision: <path>` (another unit compiles to the same `.r`),
 `package-mismatch` or `package-root-not-on-propath` (a class unit whose package root is not
 where its compile must start;
-[compile-key.md](build-tool/compile-key.md#the-unit-propath-and-the-compile-name)). The `format` number changes when the shape changes. The shape is unstable before
+[compile-key.md](build-tool/compile-key.md#the-unit-propath-and-the-compile-name)). These
+reasons come from the paths and the configuration only, so a plan without `--probe` reports
+them too once the store has a build: the worker's DLC default entries come after every
+workspace entry and cannot hold or shadow a unit under the root. Before the first build such
+a plan lists only what changed since the last refresh (see below), whatever the build would
+skip. The `format` number changes when the shape changes. The shape is unstable before
 1.0, like `analyze --json`.
 
 ### Parity with the downstream tool
