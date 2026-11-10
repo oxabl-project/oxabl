@@ -1,0 +1,43 @@
+# End-to-end tests
+
+These tests install the packaged VSIX in a real VS Code and check what a
+person sees. They are black-box tests: they read the editor DOM, the
+`--list-extensions` output and the requests of a fake GitHub API. They do not
+import the extension source.
+
+```bash
+xvfb-run -a pnpm run test:e2e
+```
+
+The run needs a display and fails with a message when it has none. The first
+run downloads VS Code (the version is `VSCODE_VERSION` in `lib/vscode.mjs`)
+into `.vscode-test/`.
+
+| Scenario | What it checks |
+| --- | --- |
+| `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that the missing-binary warning shows once and stays away after `Don't Show Again`. |
+| `markdown` | Keywords in a fenced `abl` block get colours. Prose around the block does not. |
+| `update-auto` | The extension installs a newer release from the fake API and sends the right headers. |
+| `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |
+| `update-notify` | The `notify` mode shows a message and installs nothing. |
+| `update-none`, `update-error` | No newer version and an HTTP 500 give no request for a release and no message. |
+
+Every VS Code starts with a `PATH` that holds no `oxabl` executable and with
+`VSCODE_CLI=1`, so it does not read the login shell's environment. The run
+behaves like a machine with no language server. After each scenario the run
+fails when a process with the scenario's profile directory in its command line
+is still running, and kills it.
+
+Settings through the environment:
+
+- `OXABL_E2E_SCENARIOS=highlight,markdown` runs the scenarios whose name starts
+  with one of the prefixes.
+- `OXABL_E2E_VSIX=<file>` tests that VSIX. Without it, the run packages the
+  tree with `scripts/package-vsix.sh`.
+
+Output goes to git-ignored folders: `screenshots/` (one PNG per scenario) and
+`.work/` (the VSIX files and one profile per scenario). The run prints the
+screenshot folder at the end.
+
+To change a colour constant, read the theme files of the pinned VS Code under
+`resources/app/extensions/theme-defaults/themes/`.
