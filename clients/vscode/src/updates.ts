@@ -15,15 +15,17 @@ import {
   findUpdate,
   highestInstalledVersion,
   isLoopbackHost,
+  isPendingReloadSpent,
   type AvailableUpdate,
   type UpdateEnv,
 } from "./update";
 
 const LAST_CHECK_KEY = "oxabl.updates.lastCheck";
 const SKIPPED_KEY = "oxabl.updates.skipped";
-const OLD_INSTALLED_KEY = "oxabl.updates.installed";
+const PENDING_KEY = "oxabl.updates.pendingReload";
 const STALE_DOWNLOAD_MS = 60 * 60 * 1000;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const TIMER_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const RELEASE_URL = "https://github.com/oxabl-project/oxabl/releases/tag/oxabl_vscode-v";
 
 type Mode = "auto" | "notify" | "off";
@@ -33,16 +35,19 @@ type Trigger = "automatic" | "manual";
 
 let busy = false;
 
-/** Register the check command and start the automatic check without awaiting it. */
+/**
+ * Register the check command and start the automatic check without awaiting
+ * it. A timer repeats the check; the 24-hour stamp keeps it to one a day.
+ */
 export function registerUpdates(context: vscode.ExtensionContext, log: vscode.LogOutputChannel): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("oxabl.checkForUpdates", () =>
       checkForUpdates(context, log, "manual"),
     ),
   );
-  if (context.extensionMode === vscode.ExtensionMode.Production && currentMode() !== "off") {
-    void checkForUpdates(context, log, "automatic");
-  }
+  void checkForUpdates(context, log, "automatic");
+  const timer = setInterval(() => void checkForUpdates(context, log, "automatic"), TIMER_INTERVAL_MS);
+  context.subscriptions.push({ dispose: () => clearInterval(timer) });
 }
 
 function currentMode(): Mode {
@@ -85,6 +90,10 @@ async function checkForUpdates(
   trigger: Trigger,
 ): Promise<void> {
   const manual = trigger === "manual";
+  // The mode and the extension mode are read at each automatic check.
+  if (!manual && (context.extensionMode !== vscode.ExtensionMode.Production || currentMode() === "off")) {
+    return;
+  }
   if (busy) {
     log.info("update check skipped: another one is running");
     if (manual) {
@@ -111,13 +120,14 @@ async function checkForUpdates(
     const mode = currentMode();
     log.info(`update check (${trigger}, mode ${mode}), installed v${installed}`);
 
-    // Dropped record of an earlier release; it lived in state that hosts share.
-    if (context.globalState.get(OLD_INSTALLED_KEY) !== undefined) {
-      await context.globalState.update(OLD_INSTALLED_KEY, undefined);
+    // The record is per profile and names the host that installed; the folder confirms the install is still there.
+    const dir = path.dirname(context.extensionUri.fsPath);
+    const record = context.globalState.get<unknown>(PENDING_KEY);
+    if (record !== undefined && isPendingReloadSpent(record, installed)) {
+      await context.globalState.update(PENDING_KEY, undefined);
     }
-    // What this extension host has on disk, not what another host installed.
-    const onDisk = await highestInstalledVersion(path.dirname(context.extensionUri.fsPath));
-    const check = await findUpdate(installed, env, (m) => log.info(m), onDisk);
+    const onDisk = await highestInstalledVersion(dir);
+    const check = await findUpdate(installed, env, (m) => log.info(m), { record, dir, onDisk });
     if (check.kind === "current") {
       log.info("decision: up to date");
       if (manual) {
@@ -239,6 +249,10 @@ async function installUpdate(
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
   log.info(`installed v${update.version}`);
+  await context.globalState.update(PENDING_KEY, {
+    version: update.version,
+    dir: path.dirname(context.extensionUri.fsPath),
+  });
 
   void offerReload(
     `oxabl extension updated to v${update.version}. Reload the window to use it.`,

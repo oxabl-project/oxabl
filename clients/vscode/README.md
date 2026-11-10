@@ -61,18 +61,21 @@ When VS Code's `extensions.autoUpdate` setting is `false`, `auto` acts as
 
 How the check works:
 
-- It asks `api.github.com` at most once in 24 hours. It starts after the
-  window opens and never delays the editor.
+- It asks `api.github.com` at most once a day, while VS Code runs. It checks
+  when the extension starts and again every 6 hours, and the 24-hour limit
+  applies to both. It never delays the editor. A check does nothing when
+  `oxabl.updates` is `off` at that moment.
 - It looks only at releases of the extension (tags `oxabl_vscode-v<major>.<minor>.<patch>`).
   It ignores drafts and pre-releases.
 - It checks the SHA-256 of the VSIX against the checksum file of the release.
   On a mismatch it installs nothing.
 - Each download goes to its own temporary folder, which is removed after the
   install. Two windows that check at the same time do not share a file.
-- Before it downloads, it looks in the extensions folder of this window. When
-  a version that is not older than the newest release is already there (an
-  install that waits for a reload), it downloads nothing. It never installs
-  over a newer version.
+- After an install, the extension keeps a note for the current VS Code
+  profile. While the note is valid and the installed folder still exists, it
+  reports the version that waits for a reload and downloads nothing. Another
+  profile does not see the note, so it gets the update too: VS Code adds the
+  version that is already on disk to that profile.
 - Any failure installs nothing. An automatic check stays silent and writes the
   reason to the **oxabl** output channel.
 - It never installs an older version.

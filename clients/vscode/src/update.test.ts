@@ -10,9 +10,13 @@ import {
   downloadVerified,
   findUpdate,
   highestInstalledVersion,
+  isPendingReloadSpent,
   newestVersion,
   parseChecksum,
+  parseVersion,
+  pendingReloadVersion,
   type AvailableUpdate,
+  type PendingState,
   type UpdateEnv,
 } from "./update";
 
@@ -127,8 +131,15 @@ describe("findUpdate", () => {
     server.on("request", (req) => requests.push(req.url ?? ""));
   });
 
-  async function updateOf(installed: string, waitingFor?: string) {
-    const check = await findUpdate(installed, env(), log, waitingFor);
+  const DIR = "/ext";
+  const pendingOf = (version: string, onDisk: string | undefined = version): PendingState => ({
+    record: { version, dir: DIR },
+    dir: DIR,
+    onDisk,
+  });
+
+  async function updateOf(installed: string, pending?: PendingState) {
+    const check = await findUpdate(installed, env(), log, pending);
     return check.kind === "available" ? check.update : undefined;
   }
 
@@ -161,7 +172,7 @@ describe("findUpdate", () => {
 
   it("reports pending-reload for a version on disk that is at least the newest tag", async () => {
     fake.tags = ["oxabl_vscode-v0.2.0"];
-    expect(await findUpdate("0.1.0", env(), log, "0.2.0")).toEqual({
+    expect(await findUpdate("0.1.0", env(), log, pendingOf("0.2.0"))).toEqual({
       kind: "pending-reload",
       version: "0.2.0",
     });
@@ -170,7 +181,7 @@ describe("findUpdate", () => {
 
   it("reports pending-reload with the installed version when it is above the newest tag", async () => {
     fake.tags = ["oxabl_vscode-v0.2.0"];
-    expect(await findUpdate("0.1.0", env(), log, "0.3.0")).toEqual({
+    expect(await findUpdate("0.1.0", env(), log, pendingOf("0.3.0"))).toEqual({
       kind: "pending-reload",
       version: "0.3.0",
     });
@@ -179,7 +190,14 @@ describe("findUpdate", () => {
   it("offers a version newer than the one that waits", async () => {
     fake.tags = ["oxabl_vscode-v0.2.0", "oxabl_vscode-v0.3.0"];
     fake.release = release("0.3.0");
-    expect((await updateOf("0.1.0", "0.2.0"))?.version).toBe("0.3.0");
+    expect((await updateOf("0.1.0", pendingOf("0.2.0")))?.version).toBe("0.3.0");
+  });
+
+  it("offers the update when the record is for another folder", async () => {
+    fake.tags = ["oxabl_vscode-v0.2.0"];
+    fake.release = release("0.2.0");
+    const pending = { ...pendingOf("0.2.0"), dir: "/other" };
+    expect((await updateOf("0.1.0", pending))?.version).toBe("0.2.0");
   });
 
   it("fails when no extension tag exists", async () => {
@@ -248,18 +266,29 @@ describe("highestInstalledVersion", () => {
     expect(await highestInstalledVersion(tmp)).toBe("0.2.0");
   });
 
-  it("marks nothing obsolete when the file is unreadable", async () => {
+  it("finds nothing when the obsolete file does not parse or is not an object", async () => {
     install("0.3.0");
-    fs.writeFileSync(path.join(tmp, ".obsolete"), "{ not json");
-    expect(await highestInstalledVersion(tmp)).toBe("0.3.0");
+    for (const text of ["{ not json", "", "null", "[]", "3"]) {
+      fs.writeFileSync(path.join(tmp, ".obsolete"), text);
+      expect(await highestInstalledVersion(tmp), text).toBeUndefined();
+    }
+  });
+
+  it("finds nothing when the obsolete file cannot be read", async () => {
+    install("0.3.0");
+    fs.mkdirSync(path.join(tmp, ".obsolete"));
+    expect(await highestInstalledVersion(tmp)).toBeUndefined();
   });
 
   it("drives the verdict: installed newer or equal is pending, obsolete or absent is available", async () => {
     const log = () => {};
     fake.tags = ["oxabl_vscode-v0.2.0"];
     fake.release = release("0.2.0");
-    const verdict = async () =>
-      (await findUpdate("0.1.0", env(), log, await highestInstalledVersion(tmp))).kind;
+    const verdict = async () => {
+      const onDisk = await highestInstalledVersion(tmp);
+      return (await findUpdate("0.1.0", env(), log, { record: { version: "0.2.0", dir: tmp }, dir: tmp, onDisk }))
+        .kind;
+    };
 
     expect(await verdict()).toBe("available");
     install("0.2.0");
@@ -271,6 +300,68 @@ describe("highestInstalledVersion", () => {
       JSON.stringify({ [dirOf("0.2.0")]: true, [dirOf("0.3.0")]: true }),
     );
     expect(await verdict()).toBe("available");
+  });
+
+  it("is available, not pending, when the obsolete file is broken", async () => {
+    fake.tags = ["oxabl_vscode-v0.2.0"];
+    fake.release = release("0.2.0");
+    install("0.2.0");
+    fs.writeFileSync(path.join(tmp, ".obsolete"), "{ not json");
+    const onDisk = await highestInstalledVersion(tmp);
+    const check = await findUpdate("0.1.0", env(), () => {}, { record: { version: "0.2.0", dir: tmp }, dir: tmp, onDisk });
+    expect(check.kind).toBe("available");
+  });
+});
+
+describe("pendingReloadVersion", () => {
+  const v = (text: string) => parseVersion(text)!;
+  const state = (over: Partial<PendingState> = {}): PendingState => ({
+    record: { version: "0.3.0", dir: "/ext" },
+    dir: "/ext",
+    onDisk: "0.3.0",
+    ...over,
+  });
+  const decide = (s: PendingState | undefined, running = "0.2.0", newest = "0.3.0") =>
+    pendingReloadVersion(s, v(running), v(newest));
+
+  it("waits when the record, the folder and the versions agree", () => {
+    expect(decide(state())).toBe("0.3.0");
+    expect(decide(state({ onDisk: "0.4.0" }))).toBe("0.3.0");
+    expect(decide(state(), "0.2.0", "0.2.5")).toBe("0.3.0");
+  });
+
+  it("does not wait without a record", () => {
+    expect(decide(state({ record: undefined }))).toBeUndefined();
+    expect(decide(state({ record: null }))).toBeUndefined();
+    expect(decide(state({ record: { version: "0.3.0" } }))).toBeUndefined();
+    expect(decide(state({ record: { version: "x", dir: "/ext" } }))).toBeUndefined();
+    expect(decide(undefined)).toBeUndefined();
+  });
+
+  it("does not wait when the record is for another folder", () => {
+    expect(decide(state({ record: { version: "0.3.0", dir: "/remote" } }))).toBeUndefined();
+  });
+
+  it("does not wait when the folder is missing or obsolete", () => {
+    expect(decide(state({ onDisk: undefined }))).toBeUndefined();
+    expect(decide(state({ onDisk: "0.2.0" }))).toBeUndefined();
+  });
+
+  it("does not wait when the record is below the newest tag or not above the running version", () => {
+    expect(decide(state(), "0.2.0", "0.4.0")).toBeUndefined();
+    expect(decide(state(), "0.3.0", "0.3.0")).toBeUndefined();
+    expect(decide(state(), "0.4.0", "0.3.0")).toBeUndefined();
+  });
+});
+
+describe("isPendingReloadSpent", () => {
+  it("is spent once the running version is not older than the record", () => {
+    const record = { version: "0.3.0", dir: "/ext" };
+    expect(isPendingReloadSpent(record, "0.2.0")).toBe(false);
+    expect(isPendingReloadSpent(record, "0.3.0")).toBe(true);
+    expect(isPendingReloadSpent(record, "0.3.0-dev")).toBe(true);
+    expect(isPendingReloadSpent(record, "0.4.0")).toBe(true);
+    expect(isPendingReloadSpent({ version: "x" }, "0.2.0")).toBe(true);
   });
 });
 

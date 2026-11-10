@@ -85,8 +85,8 @@ const EXTENSION_DIR = /^oxabl-project\.oxabl-(\d+\.\d+\.\d+)$/;
 /**
  * The highest version of this extension installed in `dir` (VS Code's
  * extensions folder) that is not marked obsolete, if any. The `.obsolete`
- * file is a JSON object keyed by folder name; a missing or unreadable file
- * marks nothing.
+ * file is a JSON object keyed by folder name. A missing file marks nothing;
+ * one that cannot be read or parsed leaves the answer open (`undefined`).
  */
 export async function highestInstalledVersion(dir: string): Promise<string | undefined> {
   let names: string[];
@@ -96,13 +96,24 @@ export async function highestInstalledVersion(dir: string): Promise<string | und
     return undefined;
   }
   let obsolete: Record<string, unknown> = {};
+  let text: string | undefined;
   try {
-    const parsed: unknown = JSON.parse(await fs.promises.readFile(path.join(dir, ".obsolete"), "utf8"));
-    if (parsed && typeof parsed === "object") {
-      obsolete = parsed as Record<string, unknown>;
+    text = await fs.promises.readFile(path.join(dir, ".obsolete"), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      return undefined;
     }
-  } catch {
-    // Nothing is obsolete.
+  }
+  if (text !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return undefined;
+      }
+      obsolete = parsed as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
   }
   let best: Version | undefined;
   for (const name of names) {
@@ -113,6 +124,66 @@ export async function highestInstalledVersion(dir: string): Promise<string | und
     }
   }
   return best?.join(".");
+}
+
+/** What a successful install leaves in `globalState`, which VS Code keeps per profile. */
+export interface PendingReload {
+  version: string;
+  /** The extensions folder of the host that installed it. */
+  dir: string;
+}
+
+/** The record as stored, or `undefined` when it is absent or malformed. */
+export function readPendingReload(record: unknown): PendingReload | undefined {
+  const r = record as { version?: unknown; dir?: unknown } | null | undefined;
+  if (typeof r?.version === "string" && typeof r.dir === "string" && parseVersion(r.version)) {
+    return { version: r.version, dir: r.dir };
+  }
+  return undefined;
+}
+
+/** A record is spent once the running version is not older than it; a malformed one is spent too. */
+export function isPendingReloadSpent(record: unknown, running: string): boolean {
+  const pending = readPendingReload(record);
+  const current = installedVersion(running);
+  return !pending || !current || compareVersions(parseVersion(pending.version)!, current) <= 0;
+}
+
+/** What this window knows about an install that waits for a reload. */
+export interface PendingState {
+  /** The stored record, whatever it holds. */
+  record: unknown;
+  /** The extensions folder of this host. */
+  dir: string;
+  /** `highestInstalledVersion(dir)`. */
+  onDisk: string | undefined;
+}
+
+/**
+ * The version that waits for a reload, if any: the profile's record names this
+ * host's folder, a version above the running one and at least the newest tag,
+ * and the folder holds that version or a higher one that is not obsolete.
+ */
+export function pendingReloadVersion(
+  state: PendingState | undefined,
+  running: Version,
+  newest: Version,
+): string | undefined {
+  const pending = readPendingReload(state?.record);
+  if (!state || !pending || pending.dir !== state.dir) {
+    return undefined;
+  }
+  const version = parseVersion(pending.version)!;
+  const onDisk = state.onDisk === undefined ? undefined : parseVersion(state.onDisk);
+  if (
+    compareVersions(version, running) > 0 &&
+    compareVersions(version, newest) >= 0 &&
+    onDisk &&
+    compareVersions(onDisk, version) >= 0
+  ) {
+    return pending.version;
+  }
+  return undefined;
 }
 
 /** The highest `oxabl_vscode-vX.Y.Z` release version among Git refs, if any. */
@@ -258,15 +329,15 @@ export type UpdateCheck =
 
 /**
  * Look for a newer release than `installed`. `current` means the newest tag is
- * not newer. `pending-reload` means `onDisk`, an installed version that waits
- * for a reload, is at least the newest tag. A missing tag or an incomplete
+ * not newer. `pending-reload` means this profile installed a version that waits
+ * for a reload (see `pendingReloadVersion`). A missing tag or an incomplete
  * newest release throws: that is "not established", not "up to date".
  */
 export async function findUpdate(
   installed: string,
   env: UpdateEnv,
   log: (message: string) => void,
-  onDisk?: string,
+  pending?: PendingState,
 ): Promise<UpdateCheck> {
   const current = installedVersion(installed);
   if (!current) {
@@ -295,10 +366,10 @@ export async function findUpdate(
   if (compareVersions(parseVersion(newest)!, current) <= 0) {
     return { kind: "current" };
   }
-  const waiting = onDisk === undefined ? undefined : parseVersion(onDisk);
-  if (waiting && compareVersions(waiting, parseVersion(newest)!) >= 0) {
-    log(`v${onDisk} is installed and waits for a reload`);
-    return { kind: "pending-reload", version: onDisk! };
+  const waiting = pendingReloadVersion(pending, current, parseVersion(newest)!);
+  if (waiting) {
+    log(`v${waiting} is installed and waits for a reload`);
+    return { kind: "pending-reload", version: waiting };
   }
 
   const tag = `${TAG_PREFIX}${newest}`;

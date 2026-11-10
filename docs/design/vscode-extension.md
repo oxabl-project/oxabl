@@ -122,7 +122,7 @@ VS Code updates only extensions from its gallery, and an extension installed
 from a VSIX never updates. Open VSX is not read by VS Code, and a private
 Marketplace needs a GitHub Enterprise plan. So the extension updates itself:
 
-1. At most once a day, after activation, it lists the tags
+1. At most once a day, while VS Code runs, it lists the tags
    `GET /repos/oxabl-project/oxabl/git/matching-refs/tags/oxabl_vscode-v`.
    (`/releases/latest` names the last crate released, not the extension.)
 2. For the highest `X.Y.Z` above its own version it reads
@@ -132,13 +132,31 @@ Marketplace needs a GitHub Enterprise plan. So the extension updates itself:
    the VSIX with `workbench.extensions.installExtension`. The new version
    runs after a window reload.
 
-The newest tag may be installed already and wait for a reload. The check reads
-the extensions folder beside the running extension to find out. A folder
-`oxabl-project.oxabl-X.Y.Z` that is not in `.obsolete`, with a version at or
-above the newest tag, ends the check before step 2. The disk is the source of
-truth, not `globalState`: a local and a remote window share `globalState` but
-not the folder. This also means that a pulled release never makes the check
-install an older version over a newer one.
+The check runs at activation and then every 6 hours. The 24-hour stamp in
+`globalState` keeps it to one check a day. Each automatic check reads the
+setting and the extension mode again, and does nothing when the mode is `off`
+or the extension is not in production mode.
+
+The newest tag may be installed already and wait for a reload. Two signals
+decide this, and both must hold:
+
+- After an install, the extension stores
+  `oxabl.updates.pendingReload = { version, dir }` in `globalState`. VS Code
+  keeps that state per profile. `dir` is the extensions folder of this host
+  (`dirname(extensionUri.fsPath)`). A local and a remote window have different
+  folders, so one host never reads the record of the other.
+- The folder `oxabl-project.oxabl-X.Y.Z` of that version, or a higher one,
+  exists in `dir` and is not in `.obsolete`. When `.obsolete` exists but
+  cannot be read or parsed, no version counts as installed.
+
+The check then reports `pending-reload`, and only if the record's version is
+above the running version and at least the newest tag. In every other case a
+newer tag is `available`. This matters for profiles: all profiles share one
+extensions folder, so the folder alone is not enough. A profile without the
+record installs the version that is already on disk, which only adds it to
+that profile. The extension clears the record when the running version is not
+older than it. A release that is pulled never makes the check install an
+older version over a newer one.
 
 `oxabl.updates` is `auto` (the default; `notify` when VS Code's
 `extensions.autoUpdate` is off), `notify` or `off`. `oxabl: Check for Updates`
