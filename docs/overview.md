@@ -303,6 +303,36 @@ cargo test -p oxabl --test build_openedge_scratch -- --ignored --nocapture --tes
 
 The compile tests build the fixture in `crates/oxabl/tests/fixtures/openedge/`. They compare r-code with a mask: r-code is not byte-deterministic, so two files are equivalent when they have the same size and differ only where repeated compiles of one unit in one root differ (and two bytes around each such byte). The tests print `EVIDENCE` lines for what the compiler lists in `XREF-XML` and which class a unit is compiled against.
 
+### Feature switches
+
+The `[workspace.features]` table in `oxabl.toml` turns oxabl features on or off for a project. `oxabl.toml` is the one place that decides. Both keys default to `true`.
+
+| Key | Covers in the editor | Covers in the CLI |
+|---|---|---|
+| `diagnostics` | Every diagnostic oxabl reports for a source file (parse, preprocessor, semantic and lint findings) and the code lenses of the effect rules. | `oxabl check` does not run or report the diagnostics channel. |
+| `format` | Formatting, and so format on save. | `oxabl check` does not run or report the format-drift channel. `oxabl format` refuses to run. |
+
+With `diagnostics = false`, the language server publishes an empty list for each open document. This clears what it published before. With `format = false`, `textDocument/formatting` returns no edits. The server keeps the formatting capability, because the file can change while the server runs. A change to `oxabl.toml` applies at once, with no reload.
+
+`oxabl check` writes one note on stderr for each feature that is off, for example `note: diagnostics are off in oxabl.toml ([workspace.features]); not checked`. If both features are off, `check` exits 2. A gate that checks nothing must not pass. `check --no-format` with `diagnostics = false` also checks nothing, so it also exits 2. `--update-baseline` exits 2 with `diagnostics = false`, because it would erase the recorded findings. `--json`, `--watch` and `--baseline` follow the same rules.
+
+`oxabl format` (also `--check` and `--stdout`) exits 2 with `format = false`. It writes nothing. `--style` skips `oxabl.toml`, so it also skips the switch. No command-line flag overrides `[workspace.features]`. `build`, `explain`, `analyze`, `lsp` and `daemon` do not read it.
+
+**An `oxabl.toml` that oxabl cannot read turns both features off.** The language server then publishes no diagnostics and returns no formatting edits until the file is fixed. It sends one `window/showMessage` warning that names the problem, and it keeps the `window/logMessage` lines. A project that turned a feature off does not get it back from a typo. With no `oxabl.toml` at all, both features stay on.
+
+A rollout that uses only the syntax highlighting of the VS Code extension turns both off:
+
+```toml
+[workspace]
+name = "my-project"
+
+[workspace.features]
+diagnostics = false
+format = false
+```
+
+Remove the table, or set a key to `true`, to turn the feature on.
+
 ### Lint configuration
 
 Lint rules are in groups. The `LINT` rules are in the `default` group, which is always on. The `strict.transactions`, `strict.locks`, `strict.access`, `strict.handles`, `strict.nulls` and `strict.calls` groups are off until you enable them. The plan for all strict rules is in `docs/design/strict-analysis-plan.md`. These strict rules are available now. They are in preview and report at `warn`:
