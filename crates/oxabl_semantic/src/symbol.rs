@@ -167,6 +167,10 @@ bitflags! {
         /// the handler only cares about the error's type, so never reading it
         /// is not a defect.
         const CATCH_VARIABLE = 1 << 22;
+        /// Synthesized from a member of another class: inherited, or reached
+        /// through the class. Other files may use it, so the unused-symbol rules
+        /// skip it.
+        const INHERITED = 1 << 23;
     }
 }
 
