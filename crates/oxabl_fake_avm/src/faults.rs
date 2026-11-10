@@ -41,6 +41,10 @@ pub struct Faults {
     pub request_log: Option<PathBuf>,
     /// Paths whose presence each `COMPILE` request logs (`FAKE_AVM_WATCH`, `:`-separated).
     pub watch: Vec<PathBuf>,
+    /// Receives `<unit> <XREF mode>` for each compiled unit (`FAKE_AVM_XREF_LOG`).
+    pub xref_log: Option<PathBuf>,
+    /// Time each compile takes (`FAKE_AVM_COMPILE_MS`).
+    pub compile_time: Option<Duration>,
 }
 
 impl Faults {
@@ -86,6 +90,11 @@ impl Faults {
             watch: std::env::var_os("FAKE_AVM_WATCH")
                 .map(|paths| std::env::split_paths(&paths).collect())
                 .unwrap_or_default(),
+            xref_log: std::env::var_os("FAKE_AVM_XREF_LOG").map(PathBuf::from),
+            compile_time: std::env::var("FAKE_AVM_COMPILE_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map(Duration::from_millis),
         }
     }
 }

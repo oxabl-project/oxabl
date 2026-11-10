@@ -195,3 +195,58 @@ fn a_cancel_releases_nothing_that_no_schema_check_released() {
     );
     assert_eq!(seen.finished(), 1);
 }
+
+#[test]
+fn a_slow_cache_does_not_hold_up_the_compiles() {
+    let workspace = Built::new();
+    let names = ["a", "b", "c", "d"];
+    for name in names {
+        workspace.write(&format!("src/{name}.p"), "MESSAGE \"x\".\n");
+    }
+    let config = BuildWorkspace::open(Some(workspace.root())).expect("a usable configuration");
+    let remote = Remote::new();
+    let waited = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let (log, waited) = (workspace.log(), waited.clone());
+        // The first push waits until every unit compiled, or ten seconds.
+        remote.on_push_read(move |_| {
+            let mut waited = waited.lock().unwrap();
+            if !waited.is_empty() {
+                return;
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let all = loop {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                let compiled = names
+                    .iter()
+                    .filter(|name| {
+                        text.lines()
+                            .any(|line| line.ends_with(&format!(" {name}.p")))
+                    })
+                    .count();
+                if compiled == names.len() || Instant::now() >= deadline {
+                    break compiled;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            waited.push(all);
+        });
+    }
+
+    let report = build(
+        &config,
+        BuildRequest {
+            cache: remote.cache(),
+            ..BuildRequest::default()
+        },
+    )
+    .expect("the build runs");
+
+    assert_eq!(report.exit, 0);
+    assert_eq!(
+        *waited.lock().unwrap(),
+        [names.len()],
+        "the compiles waited for the cache to take a set"
+    );
+    assert_eq!(remote.pushed_paths(), ["r/a.r", "r/b.r", "r/c.r", "r/d.r"]);
+}

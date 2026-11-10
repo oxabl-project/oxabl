@@ -176,7 +176,10 @@ fn compile_group(
             options: 1,
             pairs: shared.options,
         },
-        xref: shared.xref,
+        xref: match group.iter().any(|unit| shared.infos[unit].observable) {
+            true => shared.observed_xref,
+            false => shared.xref,
+        },
         debug_list: shared.debug_list,
         listing: shared.listing,
         units: &names,

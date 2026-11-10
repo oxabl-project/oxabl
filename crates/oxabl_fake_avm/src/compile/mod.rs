@@ -90,6 +90,10 @@ impl Compiler {
         for name in units {
             let started = Instant::now();
             log::append(faults.log.as_deref(), &name);
+            log::append(faults.xref_log.as_deref(), &format!("{name} {xref}"));
+            if let Some(time) = faults.compile_time {
+                std::thread::sleep(time);
+            }
             let result = self.compile_unit(&context, &name)?;
             self.compiled += 1;
             for message in &result.messages {

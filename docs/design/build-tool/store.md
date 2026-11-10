@@ -391,7 +391,8 @@ direction, because the store never records a fact before it is true on disk:
 | A result delete (after a failure) | Not possible: the old outputs are deleted before the result changes, and the planner checks outputs. |
 
 Output durability: the store records a result only after the outputs are at their final
-paths. Results are committed in batches (every 500 units or every 2 seconds). Before each
+paths. Results are committed in batches (every 500 units or every 2 seconds), on a thread
+of their own so that no worker waits for a commit. Before each
 batch commit, oxabl calls `syncfs(2)` on the output filesystem on Linux, or `fsync` on
 each new output file elsewhere. A committed result therefore never names an output whose
 bytes are not durable.
