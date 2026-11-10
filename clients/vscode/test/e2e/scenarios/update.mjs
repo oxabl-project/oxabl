@@ -1,5 +1,5 @@
 import path from "node:path";
-import { neverShows, screenshot, waitForText } from "../lib/editor.mjs";
+import { MISSING_SERVER, neverShows, runCommand, screenshot, waitForText } from "../lib/editor.mjs";
 import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check, sleep, waitFor } from "../lib/report.mjs";
 import { installVsix, launch, listExtensions, makeProfile } from "../lib/vscode.mjs";
@@ -11,8 +11,8 @@ const REFS = API("git/matching-refs/tags/oxabl_vscode-v");
 const RELEASE = (v) => API(`releases/tags/oxabl_vscode-v${v}`);
 const NO_MESSAGE = ["oxabl extension", "could not check for updates"];
 
-async function session(ctx, name, { mode, server: serverOpts }, body) {
-  const profile = makeProfile(name, { settings: { "oxabl.updates": mode }, files: ["update.p"] });
+async function session(ctx, name, { mode, settings = {}, server: serverOpts }, body) {
+  const profile = makeProfile(name, { settings: { "oxabl.updates": mode, ...settings }, files: ["update.p"] });
   installVsix(ctx.exe, profile, ctx.vsix);
   check(
     `${name}: starts with ${ID}@${ctx.installed} installed`,
@@ -108,4 +108,86 @@ export async function updateServerError(ctx) {
     check(`${name}: no error message on the automatic check`, hit === null, `saw "${hit}"`);
   });
   check(`${name}: nothing but the tag listing is requested`, server.requests.every((r) => r.path === REFS), server.requests.map((r) => r.path).join(" "));
+}
+
+const CHECK_COMMAND = "oxabl: Check for Updates";
+
+export async function updateAutoUpdateOff(ctx) {
+  const name = "update-autoupdate-off";
+  const { server, versions } = await session(
+    ctx,
+    name,
+    { mode: "auto", settings: { "extensions.autoUpdate": false } },
+    async ({ page }) => {
+      await waitForText(page, `oxabl extension v${NEW} is available`);
+      check(`${name}: the "v${NEW} is available" message appears`, true);
+      const hit = await neverShows(page, ["oxabl extension updated"], 4_000);
+      check(`${name}: nothing is installed while the message is open`, hit === null, `saw "${hit}"`);
+      await screenshot(page, name);
+    },
+  );
+  const now = versions();
+  check(`${name}: the installed version is unchanged`, now.includes(`${ID}@${ctx.installed}`) && !now.includes(`${ID}@${NEW}`), now.join(", "));
+  check(`${name}: the VSIX was not downloaded`, !server.servedVsix());
+}
+
+// A second launch of a profile within 24 hours makes no automatic check.
+export async function updateThrottle(ctx) {
+  const name = "update-throttle";
+  const profile = makeProfile(name, { settings: { "oxabl.updates": "auto" }, files: ["update.p"] });
+  installVsix(ctx.exe, profile, ctx.vsix);
+  const server = await startFakeGitHub({ installed: ctx.installed, newest: ctx.installed });
+  const env = { OXABL_UPDATE_API_URL: server.url };
+  try {
+    let vs = await launch(ctx.exe, profile, { open: ["update.p"], env });
+    try {
+      await waitForRequest("the tag listing", server, (r) => r.path === REFS);
+      const hit = await neverShows(vs.page, NO_MESSAGE, 3_000);
+      check(`${name}: no message is shown on the first launch`, hit === null, `saw "${hit}"`);
+    } finally {
+      await vs.close();
+    }
+    check(`${name}: the first launch listed the tags once`, server.count(REFS) === 1, `${server.count(REFS)} listings`);
+
+    vs = await launch(ctx.exe, profile, { open: ["update.p"], env });
+    try {
+      // The extension has started once its first warning shows; the check decision comes before that.
+      await waitForText(vs.page, MISSING_SERVER, 30_000);
+      await neverShows(vs.page, NO_MESSAGE, 6_000);
+    } finally {
+      await vs.close();
+    }
+    check(`${name}: the second launch made no tag listing`, server.count(REFS) === 1, `${server.count(REFS)} listings`);
+    check(`${name}: nothing else was requested`, server.requests.every((r) => r.path === REFS), server.requests.map((r) => r.path).join(" "));
+  } finally {
+    await server.close();
+  }
+}
+
+export async function updateInstalledReload(ctx) {
+  const name = "update-installed-reload";
+  const { server, versions } = await session(ctx, name, { mode: "auto" }, async ({ page, server }) => {
+    await waitForText(page, `oxabl extension updated to v${NEW}`);
+    check(`${name}: the "updated to v${NEW}" message appears`, true);
+    await runCommand(page, CHECK_COMMAND);
+    await waitForText(page, `oxabl extension v${NEW} is installed. Reload the window to use it.`);
+    check(`${name}: the manual check says v${NEW} is installed and asks for a reload`, true);
+    await screenshot(page, name);
+  });
+  const now = versions();
+  check(`${name}: ${ID}@${NEW} is installed`, now.includes(`${ID}@${NEW}`), now.join(", "));
+  check(`${name}: the VSIX was downloaded once`, server.vsixDownloads() === 1, `${server.vsixDownloads()} downloads`);
+}
+
+export async function updateManualNoTags(ctx) {
+  const name = "update-manual-no-tags";
+  const { server } = await session(ctx, name, { mode: "off", server: { noTags: true } }, async ({ page, server }) => {
+    await runCommand(page, CHECK_COMMAND);
+    await waitForText(page, "oxabl: could not check for updates: no extension releases found");
+    check(`${name}: the manual check reports that no releases were found`, true);
+    const hit = await neverShows(page, ["is up to date"], 3_000);
+    check(`${name}: it does not say "up to date"`, hit === null, `saw "${hit}"`);
+    await screenshot(page, name);
+  });
+  check(`${name}: the tag listing was requested`, server.served(REFS));
 }

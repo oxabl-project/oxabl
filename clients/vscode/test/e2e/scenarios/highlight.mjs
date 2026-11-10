@@ -1,5 +1,6 @@
 import { COLORS as C } from "../lib/colors.mjs";
-import { neverShows, screenshot, settledLines, waitForLanguage, waitForText } from "../lib/editor.mjs";
+import { MISSING_SERVER, neverShows, screenshot, settledLines, waitForLanguage, waitForText } from "../lib/editor.mjs";
+import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check } from "../lib/report.mjs";
 import { installVsix, launch, makeProfile } from "../lib/vscode.mjs";
 
@@ -75,11 +76,8 @@ const MD_CHECKS = [
   { line: "More prose after", token: "END", color: C.plain, what: "prose after the block" },
 ];
 
-const MISSING_SERVER =
-  "oxabl: syntax highlighting works, but format-on-save and diagnostics need the oxabl language server, which was not found on PATH.";
-
 // The warning shows once; after "Don't Show Again" a relaunch of the profile stays quiet.
-async function missingServerWarning(ctx, profile, file, vs) {
+async function missingServerWarning(ctx, profile, file, vs, env) {
   const name = `${file}: missing-binary warning`;
   await waitForText(vs.page, MISSING_SERVER, 30_000);
   // Count notification toasts: the text also sits in a screen-reader live region.
@@ -93,7 +91,7 @@ async function missingServerWarning(ctx, profile, file, vs) {
       (await vs.page.locator(".notifications-toasts .monaco-button", { hasText: "Open Settings" }).count()) === 1);
   await button.click();
   await vs.close();
-  const again = await launch(ctx.exe, profile, { open: [file] });
+  const again = await launch(ctx.exe, profile, { open: [file], env });
   try {
     await waitForLanguage(again.page, "ABL");
     await settledLines(again.page);
@@ -104,22 +102,39 @@ async function missingServerWarning(ctx, profile, file, vs) {
   }
 }
 
-async function run(ctx, { name, file, language, checks, warning = false }) {
-  const profile = makeProfile(name, { files: [file] });
+// The updater is off here and points at a fake API that counts requests: the
+// scenario must not depend on, or reach, the network.
+// `activate` is an ABL file opened first so the extension starts (it does not for a Markdown file alone).
+async function run(ctx, { name, file, language, checks, warning = false, activate = null }) {
+  const files = activate ? [activate, file] : [file];
+  const profile = makeProfile(name, { settings: { "oxabl.updates": "off" }, files });
   installVsix(ctx.exe, profile, ctx.vsix);
-  let vs = await launch(ctx.exe, profile, { open: [file] });
+  const server = await startFakeGitHub({ installed: ctx.installed, newest: "99.0.0" });
+  const env = { OXABL_UPDATE_API_URL: server.url };
   try {
-    const lang = await waitForLanguage(vs.page, language);
-    check(`${file}: status bar language is ${language}`, lang.ok, `status bar says ${lang.seen}`);
-    const lines = await settledLines(vs.page);
-    await screenshot(vs.page, name);
-    for (const c of checks) expectColor(lines, file, c);
-    if (warning) {
-      await missingServerWarning(ctx, profile, file, vs);
-      vs = null;
+    let vs = await launch(ctx.exe, profile, { open: files, env });
+    try {
+      // The warning comes after the updater's start-up decision, so it shows the extension ran.
+      if (activate) {
+        await waitForText(vs.page, MISSING_SERVER, 30_000);
+        await vs.page.locator(".tabs-container .tab", { hasText: file }).first().click();
+      }
+      const lang = await waitForLanguage(vs.page, language);
+      check(`${file}: status bar language is ${language}`, lang.ok, `status bar says ${lang.seen}`);
+      const lines = await settledLines(vs.page);
+      await screenshot(vs.page, name);
+      for (const c of checks) expectColor(lines, file, c);
+      if (warning) {
+        await missingServerWarning(ctx, profile, file, vs, env);
+        vs = null;
+      }
+    } finally {
+      if (vs) await vs.close();
     }
+    const paths = server.requests.map((r) => r.path);
+    check(`${name}: oxabl.updates is off, so no request reaches the update API`, paths.length === 0, paths.join(" "));
   } finally {
-    if (vs) await vs.close();
+    await server.close();
   }
 }
 
@@ -128,4 +143,4 @@ export const highlightP = (ctx) =>
 export const highlightCls = (ctx) =>
   run(ctx, { name: "highlight-cls", file: "Greeter.cls", language: "ABL", checks: CLS_CHECKS });
 export const markdown = (ctx) =>
-  run(ctx, { name: "markdown", file: "notes.md", language: "Markdown", checks: MD_CHECKS });
+  run(ctx, { name: "markdown", file: "notes.md", language: "Markdown", checks: MD_CHECKS, activate: "update.p" });

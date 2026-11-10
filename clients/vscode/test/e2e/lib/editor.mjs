@@ -8,6 +8,9 @@ const hex = (rgb) => {
   return m ? `#${[m[1], m[2], m[3]].map((n) => Number(n).toString(16).padStart(2, "0")).join("")}` : rgb;
 };
 
+export const MISSING_SERVER =
+  "oxabl: syntax highlighting works, but format-on-save and diagnostics need the oxabl language server, which was not found on PATH.";
+
 /** The rendered lines of the editor: [{ text, colors: [hex per character] }], top to bottom. */
 export async function readLines(page) {
   const raw = await page.evaluate(() => {
@@ -92,6 +95,23 @@ export async function neverShows(page, texts, ms) {
     await sleep(250);
   }
   return null;
+}
+
+/** Runs a command by its title from the Command Palette. */
+export async function runCommand(page, title, timeout = 15_000) {
+  await page.keyboard.press("F1");
+  await page.locator(".quick-input-widget input").first().waitFor({ state: "visible", timeout });
+  await page.keyboard.type(title);
+  // Enter runs the focused row, so wait until the filter has put the command there.
+  await waitFor(
+    `"${title}" focused in the Command Palette`,
+    async () => {
+      const rows = await page.locator(".quick-input-list .monaco-list-row.focused").allTextContents();
+      return rows.some((t) => t.includes(title));
+    },
+    { timeout, interval: 150 },
+  );
+  await page.keyboard.press("Enter");
 }
 
 export async function screenshot(page, name) {

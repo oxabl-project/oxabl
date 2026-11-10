@@ -6,6 +6,7 @@ import {
   resolveCliArgsFromVSCodeExecutablePath,
 } from "@vscode/test-electron";
 import { _electron } from "playwright-core";
+import { check } from "./report.mjs";
 import { VSCODE_CACHE, WORK_DIR, FIXTURES_DIR } from "./paths.mjs";
 
 // The one place the VS Code under test is pinned.
@@ -135,8 +136,24 @@ export function listExtensions(exe, profile) {
     .filter(Boolean);
 }
 
-/** Starts VS Code on the profile and returns { app, page, close }. */
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/** Fails the launch unless the update API points at a loopback fake, so no scenario reaches api.github.com. */
+function requireLoopbackApi(url) {
+  let host = null;
+  try {
+    const u = new URL(url);
+    if (u.protocol === "http:") host = u.hostname;
+  } catch {}
+  const ok = host !== null && LOOPBACK.has(host);
+  check(`launch: OXABL_UPDATE_API_URL is a loopback fake server`, ok, `got ${url}`);
+  if (!ok) throw new Error(`refusing to launch VS Code with OXABL_UPDATE_API_URL=${url}`);
+}
+
+/** Starts VS Code on the profile and returns { app, page, close }. `env.OXABL_UPDATE_API_URL` is required. */
 export async function launch(exe, profile, { open = [], env = {} } = {}) {
+  const launchEnv = cleanEnv(env);
+  requireLoopbackApi(launchEnv.OXABL_UPDATE_API_URL);
   const app = await _electron.launch({
     executablePath: exe,
     args: [
@@ -151,7 +168,7 @@ export async function launch(exe, profile, { open = [], env = {} } = {}) {
       profile.workspace,
       ...open.map((f) => path.join(profile.workspace, f)),
     ],
-    env: cleanEnv(env),
+    env: launchEnv,
     timeout: 90_000,
   });
   const proc = app.process();

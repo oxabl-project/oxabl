@@ -10,10 +10,14 @@ import { VSCODE_VERSION, downloadVSCode, leakedProcesses, takeProfiles } from ".
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import {
   updateAuto,
+  updateAutoUpdateOff,
   updateChecksum,
+  updateInstalledReload,
+  updateManualNoTags,
   updateNotify,
   updateNothingNewer,
   updateServerError,
+  updateThrottle,
 } from "./scenarios/update.mjs";
 
 const SCENARIOS = [
@@ -25,6 +29,10 @@ const SCENARIOS = [
   ["update-notify", updateNotify],
   ["update-none", updateNothingNewer],
   ["update-error", updateServerError],
+  ["update-autoupdate-off", updateAutoUpdateOff],
+  ["update-throttle", updateThrottle],
+  ["update-installed-reload", updateInstalledReload],
+  ["update-manual-no-tags", updateManualNoTags],
 ];
 
 if (!process.env.DISPLAY) {

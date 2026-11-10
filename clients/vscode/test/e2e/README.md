@@ -21,6 +21,15 @@ into `.vscode-test/`.
 | `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |
 | `update-notify` | The `notify` mode shows a message and installs nothing. |
 | `update-none`, `update-error` | No newer version and an HTTP 500 give no request for a release and no message. |
+| `update-autoupdate-off` | Mode `auto` with `extensions.autoUpdate: false` shows the "is available" message and does not download the VSIX. |
+| `update-throttle` | A second launch of the same profile makes no tag listing. |
+| `update-installed-reload` | After an automatic install, `oxabl: Check for Updates` says the version is installed and asks for a reload. The VSIX is downloaded once. |
+| `update-manual-no-tags` | An empty tag list gives "no extension releases found" and not "up to date". |
+
+The highlight and markdown scenarios run with `oxabl.updates` set to `off` and
+assert that the fake API received no request. Every launch needs
+`OXABL_UPDATE_API_URL` on a loopback fake server (`launch` refuses anything
+else), so no scenario reaches `api.github.com`.
 
 Every VS Code starts with a `PATH` that holds no `oxabl` executable and with
 `VSCODE_CLI=1`, so it does not read the login shell's environment. The run
