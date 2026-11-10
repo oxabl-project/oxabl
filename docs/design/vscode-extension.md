@@ -103,7 +103,12 @@ From `clients/vscode`:
   `oxabl-vscode-v1.0.0` starts with `oxabl-v`, and a tool that looks for the
   `oxabl` crate's tags would take it.
 - A commit that changes `clients/vscode` (including the generated grammar and
-  schema) gives a new extension version.
+  schema) gives a new extension version. Its changelog therefore also lists a
+  crate commit that only regenerated the schema. The first release had no
+  earlier tag, so its changelog lists every such commit since the start.
+- A release of the extension alone also runs the `build` and `publish` jobs of
+  the release workflow. `publish` skips crate versions that exist, so this
+  costs runner time only.
 - `clients/vscode/scripts/package-vsix.sh <out-dir>` writes
   `oxabl-vscode-<version>.vsix` and `oxabl-vscode-<version>.vsix.sha256`
   (`sha256sum` format), and fails when the VSIX misses a file the extension
