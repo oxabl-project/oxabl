@@ -1,6 +1,9 @@
 // Discovery, download and verification of extension updates from GitHub
 // Releases.
 //
+// `http` and `https` carry no `node:` prefix: VS Code's proxy support
+// intercepts the plain names in every version.
+//
 // Like `server.ts`, this module is free of any `vscode` import so the whole
 // flow runs under vitest against a local HTTP server. `updates.ts` drives it
 // from the extension. Every failure throws an `UpdateError` with a short
@@ -8,8 +11,8 @@
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import * as http from "node:http";
-import * as https from "node:https";
+import * as http from "http";
+import * as https from "https";
 import * as path from "node:path";
 
 export const DEFAULT_API_BASE = "https://api.github.com";
@@ -28,11 +31,16 @@ export class UpdateError extends Error {}
 export interface UpdateEnv {
   /** API base URL without a trailing slash. */
   apiBase: string;
-  /** Allow `http:` URLs. Set only when the base URL is a test hook. */
+  /** Allow `http:` URLs, and then only for a loopback host. Set only for the test hook. */
   allowHttp: boolean;
   /** Installed extension version, for the `User-Agent` header. */
   installedVersion: string;
   timeoutMs?: number;
+}
+
+/** Hosts that may use `http:` and may carry the API test hook. */
+export function isLoopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
 }
 
 /** A newer release whose assets are complete. */
@@ -60,8 +68,11 @@ export function compareVersions(a: Version, b: Version): number {
   return 0;
 }
 
-/** The leading `X.Y.Z` of an installed version, which may carry a suffix. */
-function installedVersion(text: string): Version | undefined {
+/**
+ * The leading `X.Y.Z` of an installed version, which may carry a suffix: a
+ * build such as `0.3.0-dev` counts as `0.3.0`.
+ */
+export function installedVersion(text: string): Version | undefined {
   const m = /^(\d+\.\d+\.\d+)/.exec(text);
   return m ? parseVersion(m[1]) : undefined;
 }
@@ -118,7 +129,8 @@ function request(
       return;
     }
     const secure = parsed.protocol === "https:";
-    if (!secure && !(parsed.protocol === "http:" && env.allowHttp)) {
+    const loopbackHttp = parsed.protocol === "http:" && env.allowHttp && isLoopbackHost(parsed.hostname);
+    if (!secure && !loopbackHttp) {
       reject(new UpdateError(`refusing ${parsed.protocol} URL from ${parsed.hostname}`));
       return;
     }
@@ -200,15 +212,24 @@ async function getJson(url: string, env: UpdateEnv): Promise<{ json: unknown; ne
   return { json, next };
 }
 
+/** The outcome of a check that reached a verdict. Anything else throws an `UpdateError`. */
+export type UpdateCheck =
+  | { kind: "current" }
+  | { kind: "pending-reload"; version: string }
+  | { kind: "available"; update: AvailableUpdate };
+
 /**
- * Look for a newer release than `installed`. Returns `undefined` when there is
- * none, or when the newest one has no complete assets yet.
+ * Look for a newer release than `installed`. `current` means the newest tag is
+ * not newer. `pending-reload` means the newest tag is `waitingFor`, a version
+ * that is already installed and waits for a reload. A missing tag or an
+ * incomplete newest release throws: that is "not established", not "up to date".
  */
 export async function findUpdate(
   installed: string,
   env: UpdateEnv,
   log: (message: string) => void,
-): Promise<AvailableUpdate | undefined> {
+  waitingFor?: string,
+): Promise<UpdateCheck> {
   const current = installedVersion(installed);
   if (!current) {
     throw new UpdateError(`cannot parse the installed version ${installed}`);
@@ -224,18 +245,25 @@ export async function findUpdate(
     refs = refs.concat(json);
     url = next;
   }
+  if (url) {
+    throw new UpdateError("tag list truncated");
+  }
 
   const newest = newestVersion(refs);
   if (!newest) {
-    log("no oxabl_vscode release tags found");
-    return undefined;
+    throw new UpdateError("no extension releases found");
   }
   log(`installed v${installed}, newest tag v${newest}`);
   if (compareVersions(parseVersion(newest)!, current) <= 0) {
-    return undefined;
+    return { kind: "current" };
+  }
+  if (newest === waitingFor) {
+    log(`v${newest} is installed and waits for a reload`);
+    return { kind: "pending-reload", version: newest };
   }
 
   const tag = `${TAG_PREFIX}${newest}`;
+  const notComplete = new UpdateError(`release v${newest} is not complete yet`);
   const { json: release } = await getJson(`${env.apiBase}${REPO_PATH}/releases/tags/${tag}`, env);
   const r = release as { draft?: unknown; prerelease?: unknown; assets?: unknown } | null;
   if (!r || typeof r !== "object" || !Array.isArray(r.assets)) {
@@ -243,7 +271,7 @@ export async function findUpdate(
   }
   if (r.draft !== false || r.prerelease !== false) {
     log(`release ${tag} is a draft or a pre-release`);
-    return undefined;
+    throw notComplete;
   }
 
   const vsixName = `oxabl-vscode-${newest}.vsix`;
@@ -257,9 +285,9 @@ export async function findUpdate(
   const sha256Url = urlOf(`${vsixName}.sha256`);
   if (!vsixUrl || !sha256Url) {
     log(`release ${tag} has no complete assets yet`);
-    return undefined;
+    throw notComplete;
   }
-  return { version: newest, vsixName, vsixUrl, sha256Url };
+  return { kind: "available", update: { version: newest, vsixName, vsixUrl, sha256Url } };
 }
 
 /**

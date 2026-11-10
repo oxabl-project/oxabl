@@ -11,6 +11,7 @@ import {
   findUpdate,
   newestVersion,
   parseChecksum,
+  type AvailableUpdate,
   type UpdateEnv,
 } from "./update";
 
@@ -22,6 +23,8 @@ interface Fake {
   release: Record<string, unknown> | undefined;
   sha256: string;
   status: Record<string, number>;
+  /** Answer every tag listing with a `next` link. */
+  endless: boolean;
 }
 
 let server: http.Server;
@@ -47,13 +50,16 @@ function release(version: string, extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(async () => {
-  fake = { tags: [], release: undefined, sha256: "", status: {} };
+  fake = { tags: [], release: undefined, sha256: "", status: {}, endless: false };
   server = http.createServer((req, res) => {
     const url = req.url ?? "";
     const forced = fake.status[url];
     if (forced) {
       res.writeHead(forced).end();
     } else if (url.includes("/git/matching-refs/tags/oxabl_vscode-v")) {
+      if (fake.endless) {
+        res.setHeader("Link", `<${base}${url}>; rel="next"`);
+      }
       res.end(JSON.stringify(fake.tags.map((t) => ({ ref: `refs/tags/${t}` }))));
     } else if (url.includes("/releases/tags/")) {
       if (fake.release) {
@@ -113,28 +119,79 @@ describe("parseChecksum", () => {
 
 describe("findUpdate", () => {
   const log = () => {};
+  const requests: string[] = [];
+
+  beforeEach(() => {
+    requests.length = 0;
+    server.on("request", (req) => requests.push(req.url ?? ""));
+  });
+
+  async function updateOf(installed: string, waitingFor?: string) {
+    const check = await findUpdate(installed, env(), log, waitingFor);
+    return check.kind === "available" ? check.update : undefined;
+  }
 
   it("finds a newer release with both assets", async () => {
     fake.tags = ["oxabl_vscode-v0.1.0", "oxabl_vscode-v0.2.0"];
     fake.release = release("0.2.0");
-    const update = await findUpdate("0.1.0", env(), log);
+    const update = await updateOf("0.1.0");
     expect(update?.version).toBe("0.2.0");
     expect(update?.vsixName).toBe("oxabl-vscode-0.2.0.vsix");
   });
 
-  it("reports nothing when the installed version is the newest", async () => {
+  it("reports current when the installed version is the newest", async () => {
     fake.tags = ["oxabl_vscode-v0.1.0"];
-    expect(await findUpdate("0.1.0", env(), log)).toBeUndefined();
+    expect(await findUpdate("0.1.0", env(), log)).toEqual({ kind: "current" });
   });
 
-  it("reports nothing for a draft, a pre-release or a missing asset", async () => {
+  it("never offers a downgrade", async () => {
+    fake.tags = ["oxabl_vscode-v0.1.0", "oxabl_vscode-v0.2.0"];
+    fake.release = release("0.2.0");
+    expect(await findUpdate("0.3.0", env(), log)).toEqual({ kind: "current" });
+    expect(requests.filter((u) => u.includes("/releases/tags/"))).toEqual([]);
+  });
+
+  it("counts a build with a suffix as its X.Y.Z", async () => {
+    fake.tags = ["oxabl_vscode-v0.3.0"];
+    fake.release = release("0.3.0");
+    expect(await findUpdate("0.3.0-dev", env(), log)).toEqual({ kind: "current" });
+    expect(requests.filter((u) => u.includes("/releases/tags/"))).toEqual([]);
+  });
+
+  it("reports pending-reload for the version that an install left waiting", async () => {
+    fake.tags = ["oxabl_vscode-v0.2.0"];
+    expect(await findUpdate("0.1.0", env(), log, "0.2.0")).toEqual({
+      kind: "pending-reload",
+      version: "0.2.0",
+    });
+    expect(requests.filter((u) => u.includes("/releases/tags/"))).toEqual([]);
+  });
+
+  it("offers a version newer than the one that waits", async () => {
+    fake.tags = ["oxabl_vscode-v0.2.0", "oxabl_vscode-v0.3.0"];
+    fake.release = release("0.3.0");
+    expect((await updateOf("0.1.0", "0.2.0"))?.version).toBe("0.3.0");
+  });
+
+  it("fails when no extension tag exists", async () => {
+    fake.tags = ["oxabl-v0.9.0"];
+    await expect(findUpdate("0.1.0", env(), log)).rejects.toThrow("no extension releases found");
+  });
+
+  it("fails for a draft, a pre-release or a missing asset", async () => {
+    const incomplete = "release v0.2.0 is not complete yet";
     fake.tags = ["oxabl_vscode-v0.2.0"];
     fake.release = release("0.2.0", { draft: true });
-    expect(await findUpdate("0.1.0", env(), log)).toBeUndefined();
+    await expect(findUpdate("0.1.0", env(), log)).rejects.toThrow(incomplete);
     fake.release = release("0.2.0", { prerelease: true });
-    expect(await findUpdate("0.1.0", env(), log)).toBeUndefined();
+    await expect(findUpdate("0.1.0", env(), log)).rejects.toThrow(incomplete);
     fake.release = { ...release("0.2.0"), assets: [] };
-    expect(await findUpdate("0.1.0", env(), log)).toBeUndefined();
+    await expect(findUpdate("0.1.0", env(), log)).rejects.toThrow(incomplete);
+  });
+
+  it("fails when the tag list is still paged after the page limit", async () => {
+    fake.endless = true;
+    await expect(findUpdate("0.1.0", env(), log)).rejects.toThrow("tag list truncated");
   });
 
   it("fails on an HTTP error with the status and host", async () => {
@@ -147,15 +204,21 @@ describe("findUpdate", () => {
       findUpdate("0.1.0", { ...env(), allowHttp: false }, log),
     ).rejects.toThrow("refusing http:");
   });
+
+  it("refuses http for a host that is not loopback, even with the hook set", async () => {
+    await expect(
+      findUpdate("0.1.0", { ...env(), apiBase: "http://example.test" }, log),
+    ).rejects.toThrow("refusing http: URL from example.test");
+  });
 });
 
 describe("downloadVerified", () => {
   async function update() {
     fake.tags = ["oxabl_vscode-v0.2.0"];
     fake.release = release("0.2.0");
-    const found = await findUpdate("0.1.0", env(), () => {});
-    expect(found).toBeDefined();
-    return found!;
+    const check = await findUpdate("0.1.0", env(), () => {});
+    expect(check.kind).toBe("available");
+    return (check as { update: AvailableUpdate }).update;
   }
 
   it("writes the VSIX when the digest matches, following a redirect", async () => {

@@ -67,13 +67,23 @@ How the check works:
   It ignores drafts and pre-releases.
 - It checks the SHA-256 of the VSIX against the checksum file of the release.
   On a mismatch it installs nothing.
+- Each download goes to its own temporary folder, which is removed after the
+  install. Two windows that check at the same time do not share a file.
+- After an install, the extension remembers the version. Until you reload the
+  window, it does not download that version again.
 - Any failure installs nothing. An automatic check stays silent and writes the
   reason to the **oxabl** output channel.
-- The requests use VS Code's proxy settings, also in a Remote window.
+- It never installs an older version.
+- It talks to GitHub with Node's `http` and `https` modules, which VS Code's
+  proxy support covers.
 
 To check by hand, run **oxabl: Check for Updates** from the Command Palette.
 It always checks, in every mode, and tells you the result. A manual check also
-offers a version that you skipped.
+offers a version that you skipped, and it says so when it cannot find a
+complete release (no extension release, or the newest one is not finished
+yet). It says "up to date" only when the newest release is not newer than the
+version that runs. When the newest version is already installed, it asks you to
+reload the window.
 
 ## Settings
 

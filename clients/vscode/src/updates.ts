@@ -4,19 +4,25 @@
 // install.
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
 
 import {
   DEFAULT_API_BASE,
   UpdateError,
+  compareVersions,
   downloadVerified,
   findUpdate,
+  installedVersion,
+  isLoopbackHost,
+  parseVersion,
   type AvailableUpdate,
   type UpdateEnv,
 } from "./update";
 
 const LAST_CHECK_KEY = "oxabl.updates.lastCheck";
 const SKIPPED_KEY = "oxabl.updates.skipped";
+const INSTALLED_KEY = "oxabl.updates.installed";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RELEASE_URL = "https://github.com/oxabl-project/oxabl/releases/tag/oxabl_vscode-v";
 
@@ -47,8 +53,25 @@ function currentMode(): Mode {
   return mode === "auto" && autoUpdate === false ? "notify" : mode;
 }
 
-function updateEnv(context: vscode.ExtensionContext): UpdateEnv {
+/** The test hook `OXABL_UPDATE_API_URL`, honoured only for a loopback host. */
+function apiOverride(log: vscode.LogOutputChannel): string | undefined {
   const override = process.env.OXABL_UPDATE_API_URL;
+  if (!override) {
+    return undefined;
+  }
+  try {
+    if (isLoopbackHost(new URL(override).hostname)) {
+      return override;
+    }
+  } catch {
+    // Reported below with the other rejected values.
+  }
+  log.warn("ignoring OXABL_UPDATE_API_URL: the host is not a loopback address");
+  return undefined;
+}
+
+function updateEnv(context: vscode.ExtensionContext, log: vscode.LogOutputChannel): UpdateEnv {
+  const override = apiOverride(log);
   return {
     apiBase: (override || DEFAULT_API_BASE).replace(/\/+$/, ""),
     allowHttp: Boolean(override),
@@ -83,19 +106,28 @@ async function checkForUpdates(
   try {
     // Written before the network call: a failing check is not retried at once.
     await context.globalState.update(LAST_CHECK_KEY, Date.now());
-    const env = updateEnv(context);
+    const env = updateEnv(context, log);
     const installed = env.installedVersion;
     const mode = currentMode();
     log.info(`update check (${trigger}, mode ${mode}), installed v${installed}`);
 
-    const update = await findUpdate(installed, env, (m) => log.info(m));
-    if (!update) {
+    const waitingFor = await waitingVersion(context, installed);
+    const check = await findUpdate(installed, env, (m) => log.info(m), waitingFor);
+    if (check.kind === "current") {
       log.info("decision: up to date");
       if (manual) {
         void vscode.window.showInformationMessage(`oxabl extension is up to date (v${installed}).`);
       }
       return;
     }
+    if (check.kind === "pending-reload") {
+      log.info(`decision: v${check.version} waits for a reload`);
+      if (manual) {
+        offerReload(`oxabl extension v${check.version} is installed. Reload the window to use it.`);
+      }
+      return;
+    }
+    const update = check.update;
 
     if (!manual && context.globalState.get<string>(SKIPPED_KEY) === update.version) {
       log.info(`decision: v${update.version} was skipped`);
@@ -119,6 +151,38 @@ async function checkForUpdates(
   } finally {
     busy = false;
   }
+}
+
+/**
+ * The version that an earlier install left waiting for a reload. Once the
+ * running version has caught up, the record has done its job and is cleared.
+ */
+async function waitingVersion(
+  context: vscode.ExtensionContext,
+  installed: string,
+): Promise<string | undefined> {
+  const stored = context.globalState.get<string>(INSTALLED_KEY);
+  if (stored === undefined) {
+    return undefined;
+  }
+  const storedVersion = parseVersion(stored);
+  const running = installedVersion(installed);
+  if (storedVersion && running && compareVersions(storedVersion, running) > 0) {
+    return stored;
+  }
+  await context.globalState.update(INSTALLED_KEY, undefined);
+  return undefined;
+}
+
+function offerReload(message: string, ...extra: string[]): Promise<string | undefined> {
+  return Promise.resolve(vscode.window.showInformationMessage(message, "Reload Window", ...extra)).then(
+    (choice) => {
+      if (choice === "Reload Window") {
+        void vscode.commands.executeCommand("workbench.action.reloadWindow");
+      }
+      return choice;
+    },
+  );
 }
 
 function failureReason(err: unknown): string {
@@ -163,39 +227,38 @@ function offerUpdate(
   })();
 }
 
-/** Download, verify and install. Throws on any failure; the VSIX is always removed. */
+/** Download, verify and install. Throws on any failure; the download directory is always removed. */
 async function installUpdate(
   context: vscode.ExtensionContext,
   log: vscode.LogOutputChannel,
   env: UpdateEnv,
   update: AvailableUpdate,
 ): Promise<void> {
-  const dir = vscode.Uri.joinPath(context.globalStorageUri, "updates").fsPath;
-  const file = await downloadVerified(update, env, dir);
-  log.info(`verified ${update.vsixName}`);
+  // A fresh directory per attempt: another window may install at the same time.
+  const root = vscode.Uri.joinPath(context.globalStorageUri, "updates").fsPath;
+  await fs.promises.mkdir(root, { recursive: true });
+  const dir = await fs.promises.mkdtemp(path.join(root, "dl-"));
   try {
+    const file = await downloadVerified(update, env, dir);
+    log.info(`verified ${update.vsixName}`);
     await vscode.commands.executeCommand(
       "workbench.extensions.installExtension",
       vscode.Uri.file(file),
     );
   } finally {
-    await fs.promises.rm(file, { force: true });
+    await fs.promises.rm(dir, { recursive: true, force: true });
   }
   log.info(`installed v${update.version}`);
+  await context.globalState.update(INSTALLED_KEY, update.version);
 
-  void vscode.window
-    .showInformationMessage(
-      `oxabl extension updated to v${update.version}. Reload the window to use it.`,
-      "Reload Window",
-      "Release Notes",
-    )
-    .then((choice) => {
-      if (choice === "Reload Window") {
-        void vscode.commands.executeCommand("workbench.action.reloadWindow");
-      } else if (choice === "Release Notes") {
-        openReleaseNotes(update.version);
-      }
-    });
+  void offerReload(
+    `oxabl extension updated to v${update.version}. Reload the window to use it.`,
+    "Release Notes",
+  ).then((choice) => {
+    if (choice === "Release Notes") {
+      openReleaseNotes(update.version);
+    }
+  });
 }
 
 function openReleaseNotes(version: string): void {
