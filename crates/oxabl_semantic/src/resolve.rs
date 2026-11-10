@@ -44,9 +44,9 @@ use crate::index::ImportCandidate;
 use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
-    LocateKind, Located, MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType,
-    ScopeId, ScopeKind, ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId,
-    SymbolKind, SymbolTable, UnlinkedRun, builtins, diagnostics, resolve_span,
+    LocateKind, Located, MemberDescriptor, MemberRecord, MemberType, NamespaceId, NodeIndexVec,
+    ResolvedType, ScopeId, ScopeKind, ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags,
+    SymbolId, SymbolKind, SymbolTable, UnlinkedRun, builtins, diagnostics, resolve_span,
 };
 
 fn method_signature(parameters: &[Statement]) -> Vec<String> {
@@ -1088,15 +1088,7 @@ impl<'a> Walker<'a> {
     /// as one dotted identifier. The database part is stripped and the bare
     /// table name is what resolves; see [`strip_db_qualifier`].
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
-        self.ctx
-            .schema
-            .resolve_table_with_metaschema(&fold_atom(&table.name))
-            .or_else(|| {
-                let bare = strip_db_qualifier(&table.name)?;
-                self.ctx
-                    .schema
-                    .resolve_table_with_metaschema(&fold_atom(bare))
-            })
+        schema_table_named(self.ctx.schema, &fold_atom(&table.name))
     }
 
     /// Core insertion routine. Returns the new `SymbolId` on success;
@@ -1743,6 +1735,8 @@ struct InheritedMember {
     /// an interface contract far more often than an overload.
     data_type: Option<ResolvedType>,
     flags: SymbolFlags,
+    /// The table a buffer member is `FOR`, resolved when the symbol is minted.
+    record: Option<MemberRecord>,
     /// `None` until the first reference names this member.
     symbol: Option<SymbolId>,
 }
@@ -2873,6 +2867,7 @@ impl<'a> ResolveWalker<'a> {
                     .unwrap_or(scope);
                 // The implicit FOR EACH buffer was declared by the declare
                 // pass in this block scope; resolve it so `read_count` bumps.
+                self.link_inherited_record(stmt.id, buffer, bs);
                 self.resolve_statement_ident(
                     buffer,
                     bs,
@@ -4937,12 +4932,54 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) -> Option<SymbolId> {
-        let sym = self.lookup_statement_ident(id, scope, namespaces)?;
+        let sym = match self.lookup_statement_ident(id, scope, namespaces) {
+            Some(sym) => sym,
+            None => self.lookup_inherited_ident(id, namespaces)?,
+        };
         self.bump_count(sym, mode);
         if self.track_block_vars {
             self.note_block_var_use(sym, scope, mode);
         }
         Some(sym)
+    }
+
+    /// The inherited member a statement-position name means, tried after the
+    /// scope chain like on the expression path. `None` for an inaccessible one.
+    fn lookup_inherited_ident(
+        &mut self,
+        id: &Identifier,
+        namespaces: &[NamespaceId],
+    ) -> Option<SymbolId> {
+        let class = self.current_class?;
+        match self.lookup_inherited(class, &fold_atom(&id.name), namespaces, id) {
+            InheritedLookup::Member(sym) => Some(sym),
+            InheritedLookup::Inaccessible | InheritedLookup::Absent => None,
+        }
+    }
+
+    /// Point the implicit buffer a `FOR EACH` declared in `block` at the table
+    /// of the inherited member of the same name, which hides a schema table.
+    ///
+    /// The declare pass cannot see a superclass, so it linked the buffer to a
+    /// schema table of that name, or to none.
+    fn link_inherited_record(&mut self, owner: NodeId, id: &Identifier, block: ScopeId) {
+        let atom = fold_atom(&id.name);
+        let Some(class) = self.current_class else {
+            return;
+        };
+        // A buffer an enclosing declaration bound here is not this statement's.
+        let Some(implicit) = self.tree.get(block).get_in(NamespaceId::Buffers, &atom) else {
+            return;
+        };
+        if self.symbols.get(implicit).declaration != owner {
+            return;
+        }
+        let namespaces = [NamespaceId::Buffers, NamespaceId::Tables];
+        if let InheritedLookup::Member(member) =
+            self.lookup_inherited(class, &atom, &namespaces, id)
+        {
+            self.symbols.get_mut(implicit).table_id = self.symbols.get(member).table_id;
+        }
     }
 
     /// Resolve a name the statement uses as a record: `FIND`, `CREATE`,
@@ -5294,6 +5331,40 @@ impl<'a> ResolveWalker<'a> {
                 self.references.insert(expr_id, resolution);
             }
             None => {
+                // An inherited buffer or temp-table, tried after the scope
+                // chain and before the schema, as on the bare-name path.
+                if let Some(class) = self.current_class {
+                    match self.lookup_inherited(
+                        class,
+                        &qatom,
+                        &[NamespaceId::Buffers, NamespaceId::Tables],
+                        qid,
+                    ) {
+                        InheritedLookup::Member(qsym) => {
+                            self.references
+                                .insert(qualifier.id, Resolution::Resolved(qsym));
+                            self.bump_count(qsym, AccessMode::Read);
+                            let resolution = self.field_resolution(qsym, field, mode);
+                            self.references.insert(expr_id, resolution);
+                            return;
+                        }
+                        InheritedLookup::Inaccessible => {
+                            for (id, name) in
+                                [(qualifier.id, qatom), (expr_id, fold_atom(&field.name))]
+                            {
+                                self.references.insert(
+                                    id,
+                                    Resolution::Unresolved {
+                                        name,
+                                        reason: UnresolvedReason::PresentButUnusable,
+                                    },
+                                );
+                            }
+                            return;
+                        }
+                        InheritedLookup::Absent => {}
+                    }
+                }
                 // Schema fallback for the bare `Customer.Name` case: the
                 // qualifier is no local buffer/table, but if it names a
                 // schema table it binds a synthesized default buffer and
@@ -5617,7 +5688,7 @@ impl<'a> ResolveWalker<'a> {
         // Copied out of the map rather than borrowed across the insert below,
         // which needs `&mut self.symbols`. Scoped in a block for the same reason:
         // the borrow of the cross-file state must end before that insert.
-        let (kind, namespace, data_type, flags) = {
+        let (kind, namespace, data_type, flags, record) = {
             let Some(member) = cf.inherited.get(&key) else {
                 // Probed only in the namespaces the reference site is looking in,
                 // so an inaccessible member cannot soften a reference that was
@@ -5648,8 +5719,10 @@ impl<'a> ResolveWalker<'a> {
                 // one that agrees keeps its type.
                 member.data_type.clone(),
                 member.flags,
+                member.record.clone(),
             )
         };
+        let table_id = record.and_then(|r| self.inherited_buffer_table(class, &r));
         // The declared type goes onto the symbol, exactly as a local
         // declaration's would.
         //
@@ -5665,7 +5738,8 @@ impl<'a> ResolveWalker<'a> {
         // one type channel instead of two.
         let sym = self.symbols.insert(Symbol {
             data_type,
-            flags,
+            flags: flags | SymbolFlags::INHERITED,
+            table_id,
             ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
         });
         // Re-acquired rather than held across the insert above. The entry is
@@ -5674,6 +5748,34 @@ impl<'a> ResolveWalker<'a> {
             member.symbol = Some(sym);
         }
         InheritedLookup::Member(sym)
+    }
+
+    /// The schema table an inherited buffer reads, so that its fields and its
+    /// database dependency resolve as a local buffer's do.
+    ///
+    /// `None` for a temp-table, and for a name the schema does not know. A
+    /// temp-table of that name in the chain wins over a schema table, as
+    /// [`Self::record_source_of`] has it in the declaring file; one the class
+    /// cannot reach still hides it.
+    fn inherited_buffer_table(&self, class: SymbolId, record: &MemberRecord) -> Option<TableId> {
+        if record.temp_table || !self.ctx.schema_loaded {
+            return None;
+        }
+        let atom = record.table.as_atom();
+        let cf = self.cross_file()?;
+        let names_record = |kind| {
+            cf.inherited
+                .get(&(class, atom.clone()))
+                .is_some_and(|m| m.kind == kind)
+        };
+        if names_record(SymbolKind::TempTable)
+            || cf
+                .inherited_inaccessible
+                .contains(&(class, NamespaceId::Buffers, atom.clone()))
+        {
+            return None;
+        }
+        schema_table_named(self.ctx.schema, atom)
     }
 
     /// Queue the class the supertype name `raw` means, for the walk of `class`.
@@ -5973,6 +6075,7 @@ impl<'a> ResolveWalker<'a> {
                                 data_type,
                                 flags: access_flag(member.access)
                                     | flag_if(member.is_static, SymbolFlags::STATIC),
+                                record: member.record.clone(),
                                 symbol: None,
                             });
                     }
@@ -6073,6 +6176,16 @@ impl<'a> ResolveWalker<'a> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Case-insensitive lookup of an already folded table name, or of its
+/// unique leading abbreviation, in the application schema and the built-in
+/// metaschema. A database qualifier is stripped as [`strip_db_qualifier`] says.
+fn schema_table_named(schema: &oxabl_schema::Schema, atom: &OxablAtom) -> Option<TableId> {
+    schema.resolve_table_with_metaschema(atom).or_else(|| {
+        let bare = strip_db_qualifier(atom)?;
+        schema.resolve_table_with_metaschema(&fold_atom(bare))
+    })
+}
 
 /// Strip a leading database qualifier from a dotted table name, returning the
 /// bare table name — `dictdb._file` → `_file`, `sports.Customer` → `Customer`.
