@@ -1,7 +1,7 @@
 {
   "name": "oxabl",
   "displayName": "oxabl — ABL tooling",
-  "description": "Thin VS Code client for the oxabl language server: format-on-save and live diagnostics for Progress ABL, driven from oxabl.toml.",
+  "description": "Progress ABL for VS Code: syntax highlighting, plus format-on-save and live diagnostics from the oxabl language server, driven from oxabl.toml.",
   "version": "0.1.0",
   "publisher": "oxabl-project",
   "license": "MIT",
@@ -21,13 +21,18 @@
   "activationEvents": [
     "onLanguage:abl",
     "workspaceContains:**/oxabl.toml",
-    "onCommand:oxabl.restartServer"
+    "onCommand:oxabl.restartServer",
+    "onCommand:oxabl.checkForUpdates"
   ],
   "contributes": {
     "commands": [
       {
         "command": "oxabl.restartServer",
         "title": "oxabl: Restart Server"
+      },
+      {
+        "command": "oxabl.checkForUpdates",
+        "title": "oxabl: Check for Updates"
       }
     ],
     "languages": [
@@ -48,6 +53,23 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      {
+        "language": "abl",
+        "scopeName": "source.abl",
+        "path": "./syntaxes/abl.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.abl.codeblock",
+        "path": "./syntaxes/abl.markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.abl": "abl"
+        }
+      }
+    ],
     "configuration": {
       "title": "oxabl",
       "properties": {
@@ -60,6 +82,22 @@
           "type": "string",
           "default": "",
           "description": "Absolute path to the `oxabl` executable. When empty, the extension uses `oxabl` from your PATH."
+        },
+        "oxabl.updates": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "notify",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Check GitHub Releases once a day, then download, verify and install a newer version. Acts as \"notify\" when VS Code's `extensions.autoUpdate` is false.",
+            "Check once a day and ask before installing a newer version.",
+            "Never check by itself. The `oxabl: Check for Updates` command still works."
+          ],
+          "default": "auto",
+          "scope": "application",
+          "description": "How the extension updates itself from GitHub Releases. It is not on the Marketplace, so VS Code does not update it."
         },
         "oxabl.trace.server": {
           "type": "string",
@@ -89,6 +127,8 @@
     "schema": "cargo run -p oxabl -- schema > schemas/oxabl.schema.json",
     "check": "tsc --noEmit",
     "test": "vitest run",
+    "test:grammar": "vscode-tmgrammar-test \"test/grammar/cases/**/*.p\" && vscode-tmgrammar-snap \"test/grammar/snapshots/**/*.{p,cls,i,w}\"",
+    "test:e2e": "node test/e2e/run.mjs",
     "package": "vsce package --no-dependencies"
   },
   "dependencies": {
@@ -97,9 +137,14 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.24.0",
+    "playwright-core": "^1.65.0",
     "typescript": "^5.5.0",
-    "vitest": "^2.1.0"
+    "vitest": "^2.1.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2",
+    "vscode-tmgrammar-test": "^0.1.3"
   }
 }

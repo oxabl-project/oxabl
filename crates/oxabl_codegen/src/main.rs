@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 mod builtin_class_table;
+mod grammar;
 mod progress_docs;
 
 // Target file paths relative to workspace root
@@ -14,6 +15,55 @@ const BUILD_RS_PATH: &str = "crates/oxabl_lexer/build.rs";
 const CALLABLE_RS_PATH: &str = "crates/oxabl_lexer/src/callable.rs";
 const BUILTINS_RS_PATH: &str = "crates/oxabl_lexer/src/builtins.rs";
 const FORMATTER_SPELLING_PATH: &str = "crates/oxabl_formatter/src/keyword_spelling.rs";
+const GRAMMAR_PATH: &str = "clients/vscode/syntaxes/abl.tmLanguage.json";
+
+/// Unreserved built-in functions with a documented minimum abbreviation from
+/// the Progress keyword index, as `(full name, minimum abbreviation)`.
+pub(crate) const UNRESERVED_FUNCTION_ABBREVS: &[(&str, &str)] = &[
+    ("absolute", "abs"),
+    ("maximum", "max"),
+    ("minimum", "min"),
+    ("substring", "substr"),
+    ("os-drives", "os-drive"),
+    ("return-value", "return-val"),
+    ("substitute", "subst"),
+    ("truncate", "trunc"),
+    ("widget-handle", "widget-h"),
+    ("userid", "user"),
+];
+
+/// Functions that real code calls but the function index does not list: the
+/// settable MEMPTR and codepage forms (`SET-SIZE(m) = 16`) and the case
+/// conversions. OS-DIR is the `INPUT FROM OS-DIR(path)` source; the byte-order
+/// names are the constants `SET-BYTE-ORDER(m) = BIG-ENDIAN` takes.
+pub(crate) const UNINDEXED_FUNCTIONS: &[&str] = &[
+    "big-endian",
+    "fix-codepage",
+    "host-byte-order",
+    "little-endian",
+    "lower",
+    "os-dir",
+    "overlay",
+    "put-bits",
+    "put-byte",
+    "put-bytes",
+    "put-double",
+    "put-float",
+    "put-int64",
+    "put-long",
+    "put-short",
+    "put-string",
+    "put-unsigned-long",
+    "put-unsigned-short",
+    "set-byte-order",
+    "set-pointer-value",
+    "set-size",
+    "upper",
+];
+
+/// Functions that are reserved phrases or statements in the index but are
+/// called like functions: `VALUE(expr)` and `DYNAMIC-NEW`.
+pub(crate) const PHRASE_FUNCTIONS: &[&str] = &["value", "dynamic-new"];
 
 // =============================================================================
 // TOML Override Structures
@@ -966,18 +1016,6 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
     // prefix from min..full (same algorithm as reserved abbrevs). Also covers
     // the former one-off `substr` entry (#58 E3 / second-pass MAX/MIN/ABS).
     // Only expand when the full name is already in the function set.
-    const UNRESERVED_FUNCTION_ABBREVS: &[(&str, &str)] = &[
-        ("absolute", "abs"),
-        ("maximum", "max"),
-        ("minimum", "min"),
-        ("substring", "substr"),
-        ("os-drives", "os-drive"),
-        ("return-value", "return-val"),
-        ("substitute", "subst"),
-        ("truncate", "trunc"),
-        ("widget-handle", "widget-h"),
-        ("userid", "user"),
-    ];
     for &(full, abbrev) in UNRESERVED_FUNCTION_ABBREVS {
         if !builtin_upper.contains(full.to_uppercase().as_str()) {
             continue;
@@ -991,41 +1029,11 @@ pub fn generate_builtins_rs(function_names: &[String], keywords: &[Keyword]) -> 
     // `RUN VALUE(...)`, etc.) but is not listed as a "function" in the JSON
     // index, so parse_builtin_functions never admits it. Register the full
     // name so expression-position VALUE(...) does not fire LINT0001 (#58).
-    names.push("value".to_string());
-
     // DYNAMIC-NEW is a function in expression position but is indexed as a
     // statement, so it is registered by hand like VALUE.
-    names.push("dynamic-new".to_string());
+    names.extend(PHRASE_FUNCTIONS.iter().map(|n| n.to_string()));
 
-    // Functions that real code calls but the function index does not list: the
-    // settable MEMPTR and codepage forms (`SET-SIZE(m) = 16`) and the case
-    // conversions. Registered by hand like VALUE.
-    // OS-DIR is the `INPUT FROM OS-DIR(path)` source; the byte-order names are
-    // the constants `SET-BYTE-ORDER(m) = BIG-ENDIAN` takes.
-    const UNINDEXED_FUNCTIONS: &[&str] = &[
-        "big-endian",
-        "fix-codepage",
-        "host-byte-order",
-        "little-endian",
-        "lower",
-        "os-dir",
-        "overlay",
-        "put-bits",
-        "put-byte",
-        "put-bytes",
-        "put-double",
-        "put-float",
-        "put-int64",
-        "put-long",
-        "put-short",
-        "put-string",
-        "put-unsigned-long",
-        "put-unsigned-short",
-        "set-byte-order",
-        "set-pointer-value",
-        "set-size",
-        "upper",
-    ];
+    // Functions that real code calls but the function index does not list.
     names.extend(UNINDEXED_FUNCTIONS.iter().map(|n| n.to_string()));
 
     names.sort();
@@ -1152,6 +1160,20 @@ fn write_builtin_class_table() {
         .expect("Failed to write builtin_classes.rs");
 }
 
+/// Fill the grammar template (default `resources/abl.tmLanguage.template.json`)
+/// and write the grammar.
+fn write_grammar(resources_dir: &Path, template: Option<&str>) {
+    let template = template.map_or_else(
+        || resources_dir.join("abl.tmLanguage.template.json"),
+        |path| path.into(),
+    );
+    let content = grammar::generate(resources_dir, &template).unwrap_or_else(|e| {
+        eprintln!("grammar: {e}");
+        std::process::exit(1);
+    });
+    write_generated_file(GRAMMAR_PATH, &content).expect("Failed to write abl.tmLanguage.json");
+}
+
 fn write_generated_file(relative_path: &str, content: &str) -> std::io::Result<()> {
     // Resolve path relative to workspace root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1271,6 +1293,7 @@ fn main() {
                 .expect("Failed to write keyword_spelling.rs");
         }
         "builtin-class-table" => write_builtin_class_table(),
+        "grammar" => write_grammar(&resources_dir, args.get(2).map(String::as_str)),
         "builtin-classes" => {
             let rest = args.iter().skip(2).cloned().collect::<Vec<_>>();
             if let Err(e) = progress_docs::run_builtin_classes(&rest) {
@@ -1297,6 +1320,8 @@ fn main() {
 
             write_builtin_class_table();
 
+            write_grammar(&resources_dir, None);
+
             eprintln!("\nAll files regenerated successfully.");
         }
         "match" => {
@@ -1314,6 +1339,10 @@ fn main() {
             eprintln!("  builtins - Write builtins.rs (built-in function registry)");
             eprintln!("  builtin-class-table - Write the semantic crate's built-in class table");
             eprintln!("      from resources/progress_builtin_classes.json");
+            eprintln!(
+                "  grammar  - Write the VS Code grammar from resources/abl.tmLanguage.template.json"
+            );
+            eprintln!("      (an optional second argument names another template)");
             eprintln!("  summary  - Show statistics without writing files");
             eprintln!("  builtin-classes - Crawl the Progress ABL reference docs and write");
             eprintln!("      resources/progress_builtin_classes.json (merged from the API");

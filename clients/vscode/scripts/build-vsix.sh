@@ -6,10 +6,10 @@
 #   1. Regenerate schemas/oxabl.schema.json from the Rust config structs.
 #      We call `cargo run -p oxabl -- schema` directly, NOT a PATH `oxabl`: a
 #      fresh clone / CI has no installed binary (U5).
-#   2. Install deps (frozen) and bundle with esbuild into out/extension.js.
-#   3. Package with `vsce package --no-dependencies` (KTD5 — vsce cannot walk
-#      pnpm's symlinked node_modules, so we ship the single esbuild bundle).
-#   4. With --install, sideload the built VSIX via `code --install-extension`.
+#   2. Package it with scripts/package-vsix.sh into dist/, the script CI and
+#      the release use (a single esbuild bundle, `vsce package
+#      --no-dependencies`: vsce cannot walk pnpm's symlinked node_modules).
+#   3. With --install, sideload the built VSIX via `code --install-extension`.
 #
 # Usage: bash clients/vscode/scripts/build-vsix.sh [--install]
 
@@ -33,16 +33,10 @@ echo "==> Regenerating oxabl.toml JSON schema (cargo run -p oxabl -- schema)"
 mkdir -p schemas
 ( cd "$REPO_ROOT" && cargo run --quiet -p oxabl -- schema ) > schemas/oxabl.schema.json
 
-echo "==> Installing dependencies (pnpm, frozen lockfile)"
-pnpm install --frozen-lockfile
+echo "==> Packaging VSIX (scripts/package-vsix.sh dist)"
+bash "$SCRIPT_DIR/package-vsix.sh" dist
 
-echo "==> Bundling extension (esbuild)"
-pnpm run build
-
-echo "==> Packaging VSIX (vsce package --no-dependencies)"
-pnpm run package
-
-VSIX="$(ls -t ./*.vsix | head -n1)"
+VSIX="$(ls -t dist/*.vsix | head -n1)"
 echo "==> Built: $VSIX"
 
 if [[ "$INSTALL" -eq 1 ]]; then
