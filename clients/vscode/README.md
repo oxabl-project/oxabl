@@ -24,13 +24,18 @@ you also get:
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
   applies at once, with no reload.
 
-The language server runs on Linux and macOS only. The daemon needs Unix
-sockets.
+The language server runs on Linux and macOS. The daemon needs Unix sockets.
+On Windows, open the folder in a WSL window (the WSL extension). Then the
+extension and the server run in WSL, which is Linux. Install the Linux
+`oxabl` binary in WSL.
 
 The extension does not bundle the `oxabl` binary. Put it on your `PATH`, or
 set `oxabl.server.path`. When the binary is missing, the extension shows one
 warning for each window. Choose **Don't Show Again** to stop it for good.
 Install the binary later, then run **oxabl: Restart Server**.
+
+To use only the highlighting, set `oxabl.enable` to `false`. Then the
+extension starts no server and shows no warning.
 
 ## Install
 
@@ -41,6 +46,10 @@ The extension is not on the Marketplace. Install it from a GitHub release:
 2. Download `oxabl-vscode-<version>.vsix`.
 3. Run `code --install-extension oxabl-vscode-<version>.vsix`. Or open the
    Extensions view, choose `…` and **Install from VSIX…**.
+
+In a WSL window, the extension runs in WSL, so install it there: run the
+`code` command in the WSL terminal, or use **Install from VSIX…** while the
+WSL window is open.
 
 After this, the extension updates itself.
 
