@@ -1,55 +1,110 @@
 # oxabl for VS Code
 
-A thin VS Code client for the [oxabl](https://github.com/oxabl-project/oxabl)
-language server. It launches `oxabl lsp` and surfaces two capabilities to the
-editor for Progress ABL files (`.p`, `.w`, `.cls`, `.i`, `.v`):
+ABL support for VS Code, from [oxabl](https://github.com/oxabl-project/oxabl).
+It covers Progress ABL files (`.p`, `.w`, `.cls`, `.i`, `.v`).
 
-- **Format on save** — whole-document formatting via `oxabl format`'s engine,
-  scoped to ABL files only. Faithful and no-movement: a file it cannot format
-  safely is left byte-for-byte unchanged.
-- **Live diagnostics** — lint and semantic diagnostics in the Problems panel,
-  with per-rule severity driven from your project's `oxabl.toml`.
+## What works without the oxabl binary
 
-Editing a rule in `oxabl.toml` updates diagnostics live — no reload needed.
+Install the extension and open an ABL file. These features need nothing else:
 
-## Requirements
+- **Syntax highlighting.** A TextMate grammar colours ABL code. It also
+  colours `abl` code blocks in Markdown files.
+- **Editing.** Word selection knows ABL names such as `my-var-name` and
+  `&SCOPED-DEFINE`. Lines indent after `DO:` and similar blocks, and fold on
+  `&ANALYZE-SUSPEND` sections and `// #region` comments.
 
-The extension does **not** bundle the `oxabl` binary. Install it and make sure
-it is on your `PATH`, or point the extension at it with `oxabl.server.path`.
+## What needs the oxabl language server
 
-### Recommended companion extensions
+The extension starts `oxabl lsp` when it finds the `oxabl` executable. Then
+you also get:
 
-These are optional — the extension works without them, with a plainer
-experience:
+- **Format on save.** The formatter changes ABL files only. It leaves a file
+  that it cannot format safely byte for byte unchanged.
+- **Live diagnostics.** Lint and semantic diagnostics show in the Problems
+  panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
+  applies at once, with no reload.
 
-- **An OpenEdge ABL syntax-highlighting extension.** oxabl reuses the `abl`
-  language id and ships no grammar of its own, so syntax highlighting comes
-  from an installed ABL extension.
-- **[Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml).**
-  Enables autocomplete and validation inside `oxabl.toml` from the schema this
-  extension ships — every style and lint rule becomes discoverable and checked
-  as you type.
+The language server runs on Linux and macOS only. The daemon needs Unix
+sockets.
+
+The extension does not bundle the `oxabl` binary. Put it on your `PATH`, or
+set `oxabl.server.path`. When the binary is missing, the extension shows one
+warning for each window. Choose **Don't Show Again** to stop it for good.
+Install the binary later, then run **oxabl: Restart Server**.
+
+## Install
+
+The extension is not on the Marketplace. Install it from a GitHub release:
+
+1. Open the newest release whose tag starts with `oxabl_vscode-v` on the
+   [releases page](https://github.com/oxabl-project/oxabl/releases).
+2. Download `oxabl-vscode-<version>.vsix`.
+3. Run `code --install-extension oxabl-vscode-<version>.vsix`. Or open the
+   Extensions view, choose `…` and **Install from VSIX…**.
+
+After this, the extension updates itself.
+
+## Updates
+
+VS Code does not update an extension that you installed from a VSIX. So this
+extension reads GitHub Releases itself. The `oxabl.updates` setting controls
+what it does:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | Checks, then downloads, verifies and installs a newer version. A message asks you to reload the window. |
+| `notify` | Checks, then asks before it installs. You can update, read the release notes, or skip that version. |
+| `off` | Never checks by itself. |
+
+When VS Code's `extensions.autoUpdate` setting is `false`, `auto` acts as
+`notify`.
+
+How the check works:
+
+- It asks `api.github.com` at most once in 24 hours. It starts after the
+  window opens and never delays the editor.
+- It looks only at releases of the extension (tags `oxabl_vscode-v<major>.<minor>.<patch>`).
+  It ignores drafts and pre-releases.
+- It checks the SHA-256 of the VSIX against the checksum file of the release.
+  On a mismatch it installs nothing.
+- Any failure installs nothing. An automatic check stays silent and writes the
+  reason to the **oxabl** output channel.
+- The requests use VS Code's proxy settings, also in a Remote window.
+
+To check by hand, run **oxabl: Check for Updates** from the Command Palette.
+It always checks, in every mode, and tells you the result. A manual check also
+offers a version that you skipped.
 
 ## Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `oxabl.enable` | `true` | Enable the language server (reload to apply). |
-| `oxabl.server.path` | `""` | Absolute path to `oxabl`. Empty = use `PATH`. |
-| `oxabl.trace.server` | `off` | Trace JSON-RPC traffic for debugging. |
+| `oxabl.enable` | `true` | Enable the language server. A change applies at once. |
+| `oxabl.server.path` | `""` | Absolute path to `oxabl`. Empty means use `PATH`. |
+| `oxabl.updates` | `auto` | `auto`, `notify` or `off`. See [Updates](#updates). |
+| `oxabl.trace.server` | `off` | Trace the JSON-RPC traffic with the server, for debugging. |
 
-Lint and style rules are **not** mirrored as VS Code settings — they live in
-`oxabl.toml`, which is the single source of truth (and gets schema-backed
-autocomplete via Even Better TOML).
+Lint and style rules are not VS Code settings. They live in `oxabl.toml`.
 
-## Building / installing from source
+## Other ABL extensions
 
-This extension is distributed as a sideloadable VSIX (not yet on the
-Marketplace). From the repository root:
+Another ABL extension can contribute its own grammar for the `abl` language.
+Then two grammars compete for the same files, and VS Code picks one. If the
+colours look wrong, disable the other extension.
+
+## Companion extension
+
+[Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml)
+is optional. With it, `oxabl.toml` gets completion and validation from the
+schema that this extension ships.
+
+## Building from source
+
+From the repository root:
 
 ```bash
 bash clients/vscode/scripts/build-vsix.sh --install
 ```
 
-That regenerates the `oxabl.toml` schema, bundles the extension with esbuild,
-packages a `.vsix` with `vsce`, and (with `--install`) installs it into VS Code.
+This script regenerates the `oxabl.toml` schema, bundles the extension with
+esbuild, packages a `.vsix` with `vsce`, and installs it into VS Code.

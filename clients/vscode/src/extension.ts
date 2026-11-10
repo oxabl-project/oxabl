@@ -7,13 +7,20 @@ import {
 
 import { shouldRestartForConfigChange } from "./config";
 import { resolveServerBinary, splitPath } from "./server";
+import { registerUpdates } from "./updates";
 
 let client: LanguageClient | undefined;
+let context: vscode.ExtensionContext;
+let log: vscode.LogOutputChannel;
+let missingServerShown = false;
 
-const OUTPUT_CHANNEL = "oxabl";
+const MISSING_SERVER_DISMISSED = "oxabl.missingServer.dismissed";
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export async function activate(extensionContext: vscode.ExtensionContext): Promise<void> {
+  context = extensionContext;
+  log = vscode.window.createOutputChannel("oxabl", { log: true });
   context.subscriptions.push(
+    log,
     vscode.commands.registerCommand("oxabl.restartServer", restartServer),
     vscode.workspace.onDidChangeConfiguration((event) => {
       // A repath/toggle of the relevant settings applies without a window
@@ -24,7 +31,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
+  // Not awaited: an update check never delays the language client.
+  registerUpdates(context, log);
+
   await startClient();
+}
+
+/** Warn once per window that the server is missing, until the person dismisses it for good. */
+function warnMissingServer(): void {
+  if (missingServerShown || context.globalState.get<boolean>(MISSING_SERVER_DISMISSED)) {
+    return;
+  }
+  missingServerShown = true;
+  void vscode.window
+    .showWarningMessage(
+      "oxabl: syntax highlighting works, but format-on-save and diagnostics need the oxabl " +
+        "language server, which was not found on PATH.",
+      "Open Settings",
+      "Don't Show Again",
+    )
+    .then((choice) => {
+      if (choice === "Open Settings") {
+        void vscode.commands.executeCommand("workbench.action.openSettings", "oxabl.server.path");
+      } else if (choice === "Don't Show Again") {
+        void context.globalState.update(MISSING_SERVER_DISMISSED, true);
+      }
+    });
 }
 
 /** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
@@ -40,21 +72,8 @@ async function startClient(): Promise<void> {
   });
 
   if (discovery.kind === "not-found") {
-    // R8: no crash loop — one clear, actionable message and stop.
-    void vscode.window
-      .showErrorMessage(
-        "oxabl: could not find the `oxabl` executable on your PATH. " +
-          "Install it, or set `oxabl.server.path` to its location.",
-        "Open Settings",
-      )
-      .then((choice) => {
-        if (choice === "Open Settings") {
-          void vscode.commands.executeCommand(
-            "workbench.action.openSettings",
-            "oxabl.server.path",
-          );
-        }
-      });
+    log.info("oxabl executable not found; running without the language server");
+    warnMissingServer();
     return;
   }
 
@@ -69,7 +88,7 @@ async function startClient(): Promise<void> {
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "abl" }],
-    outputChannelName: OUTPUT_CHANNEL,
+    outputChannel: log,
     synchronize: {
       // The server watches these itself, but forwarding the events lets live
       // reload work even when the client owns the file watcher (#90 / U2).
