@@ -1,5 +1,44 @@
 # Changelog
 
+## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v4.0.0...oxabl-v5.0.0) (2026-11-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** an inherited buffer reads its table and statements resolve inherited records
+
+### Bug Fixes
+
+* **build:** show the skips that need no environment in a plan without --probe ([dcb376c](https://github.com/oxabl-project/oxabl/commit/dcb376c09dc449529303c8d9a28defd4839c8ba8))
+* **semantic:** an inherited buffer reads its table and statements resolve inherited records ([aeaa593](https://github.com/oxabl-project/oxabl/commit/aeaa59328fa762e0246b3df03787e961f0f74749))
+
+
+### Performance Improvements
+
+* **build:** keep store writes and cache copies off the dispatch thread ([dd1a048](https://github.com/oxabl-project/oxabl/commit/dd1a0484d181ffcd0b696b92f684b67e00626edf))
+* **build:** share the $DLC hash phase across the workers and time the setup phases ([8863457](https://github.com/oxabl-project/oxabl/commit/88634579a50f54dd0256ff876f47b998c86bd678))
+* **build:** share the $DLC hash phase across the workers; the plan without --probe shows path-only skips ([020b852](https://github.com/oxabl-project/oxabl/commit/020b8522af5b166c116bb4b5a330c67f93db2d6a))
+* **build:** store writes and cache uploads leave the coordinator thread ([b2717a2](https://github.com/oxabl-project/oxabl/commit/b2717a2f68d5a45276a178bdc01a1a57526cdee9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_semantic bumped from 4.0.0 to 5.0.0
+    * oxabl_analyze bumped from 4.0.0 to 4.0.1
+    * oxabl_pipeline bumped from 3.3.0 to 3.3.1
+    * oxabl_lint bumped from 4.0.0 to 5.0.0
+    * oxabl_lsp bumped from 3.0.3 to 3.0.4
+    * oxabl_daemon bumped from 0.5.3 to 0.5.4
+    * oxabl_build bumped from 0.2.0 to 0.2.1
+    * oxabl_build_remote bumped from 0.2.0 to 0.2.1
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.0.0 to 4.0.1
+    * oxabl_pipeline bumped from 3.3.0 to 3.3.1
+    * oxabl_effects bumped from 0.3.0 to 0.3.1
+    * oxabl_index bumped from 4.0.0 to 5.0.0
+
 ## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v3.0.2...oxabl-v4.0.0) (2026-11-06)
 
 
