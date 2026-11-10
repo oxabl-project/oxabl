@@ -125,11 +125,18 @@ pub fn plan(workspace: &BuildWorkspace, request: &PlanRequest) -> Result<PlanRep
     let environment = keyed
         .as_ref()
         .and_then(|keyed| keyed.environment_record.clone());
+    // After a build the plan judges every unit by its result, and a skipped
+    // unit has none; before one it lists only what changed.
+    let skips = match (&keyed, results.built) {
+        (None, true) => crate::key::layout::skips(workspace, &outcome),
+        _ => None,
+    };
     let mut plan = decide(
         &outcome,
         &paths,
         named,
         keyed,
+        skips,
         Some(StoredInputs {
             results: &results,
             layout: layout.as_ref(),

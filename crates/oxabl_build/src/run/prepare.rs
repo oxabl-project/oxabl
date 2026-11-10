@@ -4,7 +4,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::BuildRequest;
+use super::{BuildRequest, Setup, ms};
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::compute::compute;
@@ -24,6 +24,7 @@ pub struct Prepared {
     pub started: Started,
     pub plan: Plan,
     pub notes: Vec<String>,
+    pub setup: Setup,
     /// The workspace lock and the output lock, held to the end.
     pub _locks: (WorkspaceLock, WorkspaceLock),
 }
@@ -94,9 +95,12 @@ pub fn prepare(
         need_keys: true,
     };
     let cancel = &request.cancel;
+    let mut setup = Setup::default();
     let (committed, started) = thread::scope(|scope| {
         let starting = scope.spawn(|| Pool::start(&spec, cancel));
+        let refreshing = Instant::now();
         let committed = refresh_and_commit(workspace, refresh_request);
+        setup.refresh_ms = ms(refreshing);
         (committed, starting.join().expect("the pool start panicked"))
     });
     let committed = match committed {
@@ -109,6 +113,9 @@ pub fn prepare(
         }
     };
     let mut started = started?;
+    setup.workers_ms = started.timing.workers_ms;
+    setup.imaging_ms = started.timing.imaging_ms;
+    let keying = Instant::now();
     let keyed = match compute(
         workspace,
         &committed.outcome,
@@ -121,6 +128,9 @@ pub fn prepare(
             return Err(error.into());
         }
     };
+    setup.keys_ms = ms(keying);
+    setup.dlc_hash_ms = started.pool.dlc_hash_ms();
+    let planning = Instant::now();
     let mut notes = committed.notes.clone();
     notes.extend(started.warnings.iter().cloned());
     notes.extend(keyed.warnings.iter().cloned());
@@ -132,6 +142,7 @@ pub fn prepare(
         &paths,
         &[],
         Some(keyed),
+        None,
         Some(StoredInputs {
             results: &committed.results,
             layout: Some(&layout),
@@ -139,6 +150,7 @@ pub fn prepare(
             judge_all: true,
         }),
     );
+    setup.plan_ms = ms(planning);
     Ok(Prepared {
         spec,
         layout,
@@ -146,6 +158,7 @@ pub fn prepare(
         started,
         plan,
         notes,
+        setup,
         _locks: (workspace_lock, output_lock),
     })
 }

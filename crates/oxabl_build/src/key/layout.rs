@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
 
-use crate::paths::propath::{Placement, Search, base_directory, derive_base, is_class_unit, place};
+use crate::config::BuildWorkspace;
+use crate::paths::propath::{
+    Placement, Search, base_directory, canonical_entry, derive_base, is_class_unit, place,
+};
 use crate::paths::{Declared, PathMap, declared_name};
 use crate::refresh::{Outcome, parallel};
 
@@ -152,4 +155,49 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
         .collect();
     skip_collisions(outcome, &mut units);
     Layout { propaths, units }
+}
+
+/// The PROPATH search of the workspace, with the worker's DLC default entries
+/// `defaults` last. Fails on an include path with no portable form.
+pub fn search(
+    workspace: &BuildWorkspace,
+    paths: &PathMap,
+    defaults: Vec<String>,
+) -> Result<Search, String> {
+    let sources = &workspace.config.workspace.sources;
+    let include = sources
+        .include_paths
+        .iter()
+        .map(|entry| canonical_entry(paths, &workspace.config.build.libraries, entry))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|message| format!("[workspace.sources].include_paths: {message}"))?;
+    Ok(Search::new(
+        sources.root_relative_include_paths.clone(),
+        include,
+        defaults,
+    ))
+}
+
+/// Why each unit of `outcome` cannot compile where it is, by position in
+/// `Outcome::units`, from the paths and the configuration alone. The DLC
+/// default entries come after every workspace entry, so they cannot hold or
+/// shadow a unit under the root; a unit outside the root is never judged.
+/// `None` when the include paths are unusable.
+pub fn skips(workspace: &BuildWorkspace, outcome: &Outcome) -> Option<Vec<Option<String>>> {
+    let settings = &workspace.settings;
+    let paths = PathMap::new(&settings.root, settings.dlc.as_deref());
+    let search = search(workspace, &paths, Vec::new()).ok()?;
+    let layout = lay_out(outcome, &paths, &search);
+    let skips = layout
+        .units
+        .into_iter()
+        .zip(&outcome.units)
+        .map(|(placed, id)| match placed.placement {
+            Placement::Skipped(reason) if !outcome.name(*id).starts_with(['$', '/']) => {
+                Some(reason)
+            }
+            _ => None,
+        })
+        .collect();
+    Some(skips)
 }

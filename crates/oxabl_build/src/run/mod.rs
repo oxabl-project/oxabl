@@ -27,7 +27,7 @@ use self::context::{Ctx, FetchPlan, Imaging, State, Verify};
 use self::pass::PassEnd;
 use self::prepare::{Prepared, prepare};
 use self::record::Recorder;
-pub use self::report::{BuildReport, Summary, UnitReport, UnitStatus};
+pub use self::report::{BuildReport, Setup, Summary, UnitReport, UnitStatus};
 pub use self::request::BuildRequest;
 use self::types::UnitInfo;
 use crate::cache::{ArtifactPath, CompileKey, FetchRequest, NotStoredReason, StoreOutcome};
@@ -72,6 +72,7 @@ pub fn build(
         started,
         plan,
         mut notes,
+        mut setup,
         _locks,
     } = prepared;
     let crate::plan::run::Committed {
@@ -90,6 +91,7 @@ pub fn build(
     let paths = PathMap::new(root, settings.dlc.as_deref());
     let keys = plan.keys.as_ref().expect("a build computes keys");
 
+    let pruning = Instant::now();
     let mut recorder = Recorder::new(store, root);
     let identity = environment.identity();
     let environment_record = keys.keyed.environment_record.clone().unwrap_or_default();
@@ -127,6 +129,7 @@ pub fn build(
         pool.shutdown();
         return Err(error);
     }
+    setup.prune_ms = ms(pruning);
 
     let mut infos: FxHashMap<u32, UnitInfo> = FxHashMap::default();
     for entry in &plan.rebuild {
@@ -302,6 +305,7 @@ pub fn build(
             build: spec.build_id.clone(),
             environment: identity.to_hex().to_string(),
             setup_ms,
+            setup,
             elapsed_ms: started_at.elapsed().as_millis() as u64,
         },
     );
@@ -317,6 +321,10 @@ pub fn build(
         });
     }
     Ok(report)
+}
+
+pub(crate) fn ms(since: Instant) -> u64 {
+    since.elapsed().as_millis() as u64
 }
 
 /// The `[build.compile]` pairs for the worker. The worker writes `languages`

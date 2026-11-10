@@ -76,6 +76,24 @@ pub struct CacheReport {
     pub schema_dropped: usize,
 }
 
+/// Where the setup time went, each phase in milliseconds. The refresh runs at
+/// the same time as the worker start and the imaging.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Setup {
+    pub refresh_ms: u64,
+    /// Starting the workers and their handshakes.
+    pub workers_ms: u64,
+    /// Imaging every database.
+    pub imaging_ms: u64,
+    /// The keys, the `$DLC` hash phase included.
+    pub keys_ms: u64,
+    /// The `$DLC` hash phase alone.
+    pub dlc_hash_ms: u64,
+    pub plan_ms: u64,
+    /// Pruning the output directories and recording the environment.
+    pub prune_ms: u64,
+}
+
 /// The outcome of `oxabl build`.
 #[derive(Debug)]
 pub struct BuildReport {
@@ -90,6 +108,7 @@ pub struct BuildReport {
     pub cache: CacheReport,
     /// How long the refresh, the probe and the keys took before any compile.
     pub setup_ms: u64,
+    pub setup: Setup,
     pub elapsed_ms: u64,
 }
 
@@ -195,7 +214,19 @@ impl BuildReport {
                 "changed_inputs": self.cache.changed_inputs,
                 "schema_dropped": self.cache.schema_dropped,
             },
-            "timing": { "setup_ms": self.setup_ms, "elapsed_ms": self.elapsed_ms },
+            "timing": {
+                "setup_ms": self.setup_ms,
+                "elapsed_ms": self.elapsed_ms,
+                "setup": {
+                    "refresh_ms": self.setup.refresh_ms,
+                    "workers_ms": self.setup.workers_ms,
+                    "imaging_ms": self.setup.imaging_ms,
+                    "keys_ms": self.setup.keys_ms,
+                    "dlc_hash_ms": self.setup.dlc_hash_ms,
+                    "plan_ms": self.setup.plan_ms,
+                    "prune_ms": self.setup.prune_ms,
+                },
+            },
             "notes": self.notes,
             "units": units,
         })

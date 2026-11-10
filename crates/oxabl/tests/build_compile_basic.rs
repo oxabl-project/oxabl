@@ -411,3 +411,43 @@ fn a_build_after_a_plan_compiles_every_unit_that_has_no_result() {
         assert!(workspace.exists(&format!("build/r/{output}.r")), "{output}");
     }
 }
+
+#[test]
+fn the_report_says_where_the_setup_time_went() {
+    let workspace = Built::with("include_paths = [\"src\", \"$DLC/src\"]\ndlc = \"dlc\"", "");
+    workspace.write("dlc/src/adm/x.i", "/* x */\n");
+    workspace.write("src/a.p", "{adm/x.i}\nMESSAGE \"a\".\n");
+    workspace.databases(&["ledger"]);
+    workspace.set_environment(&json!({
+        "dlc_dir": workspace.path("dlc"),
+        "databases": [{ "ldb": "ledger", "schema": [["db", "_db-type=PROGRESS"], ["table", "t1"]] }],
+    }));
+    workspace.worker_env("FAKE_AVM_START_DELAY", "300");
+    workspace.worker_env("FAKE_AVM_SCHEMA_DELAY_MS", "300");
+    workspace.build().succeeded();
+    workspace.worker_env("FAKE_AVM_REQUEST_DELAY_MS", "200");
+
+    let run = workspace.build_with(&["--report", "report.json"]);
+
+    run.succeeded();
+    let report: serde_json::Value = serde_json::from_str(&workspace.read("report.json")).unwrap();
+    assert_eq!(report["summary"]["compiled"], 0, "{report}");
+    let timing = &report["timing"];
+    let ms = |field: &str| {
+        timing["setup"][field]
+            .as_u64()
+            .unwrap_or_else(|| panic!("no {field}: {timing}"))
+    };
+    assert!(ms("workers_ms") >= 300, "{timing}");
+    assert!(ms("imaging_ms") >= 300, "{timing}");
+    assert!(ms("dlc_hash_ms") >= 200, "{timing}");
+    assert!(ms("keys_ms") >= ms("dlc_hash_ms"), "{timing}");
+    for field in ["refresh_ms", "plan_ms", "prune_ms"] {
+        ms(field);
+    }
+    let setup = timing["setup_ms"].as_u64().unwrap();
+    assert!(
+        setup >= ms("workers_ms") + ms("imaging_ms") + ms("keys_ms"),
+        "{timing}"
+    );
+}

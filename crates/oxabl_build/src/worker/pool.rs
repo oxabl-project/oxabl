@@ -117,6 +117,8 @@ pub struct Pool {
     workers: Vec<Worker>,
     unit_timeout: Duration,
     restart: Arc<Restart>,
+    /// The time spent in the `$DLC` hash phase so far.
+    dlc_hashing: Duration,
 }
 
 /// A started pool with what the workers reported.
@@ -125,6 +127,16 @@ pub struct Started {
     /// The environment all workers agree on.
     pub environment: Environment,
     pub warnings: Vec<String>,
+    pub timing: StartTiming,
+}
+
+/// How long the start took, in milliseconds.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StartTiming {
+    /// Starting the workers and their handshakes.
+    pub workers_ms: u64,
+    /// Imaging every database.
+    pub imaging_ms: u64,
 }
 
 fn describe_differences(a: &Worker, b: &Worker, left: &Profile, right: &Profile) -> String {
@@ -141,11 +153,36 @@ fn describe_differences(a: &Worker, b: &Worker, left: &Profile, right: &Profile)
     )
 }
 
+/// Which workers see which `$DLC` files: the workers grouped by the digest
+/// of their `HASHSET`, the group that matches the shared answers first.
+fn disagreement(sets: &[(usize, String)], expected: &str) -> String {
+    let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
+    for (number, set) in sets {
+        match groups
+            .iter_mut()
+            .find(|(digest, _)| *digest == set.as_str())
+        {
+            Some((_, numbers)) => numbers.push(number.to_string()),
+            None => groups.push((set.as_str(), vec![number.to_string()])),
+        }
+    }
+    groups.sort_by_key(|(digest, _)| *digest != expected);
+    let named: Vec<String> = groups
+        .iter()
+        .map(|(_, numbers)| format!("worker {}", numbers.join(", ")))
+        .collect();
+    match named.len() {
+        1 => format!("{} hashed the files differently in two passes", named[0]),
+        _ => format!("{} differs from {}", named[1..].join(" and "), named[0]),
+    }
+}
+
 impl Pool {
     /// Starts `spec.count` workers at the same time and checks that they
     /// agree. A configuration error, a cancel or an environment mismatch
     /// stops every worker again.
     pub fn start(spec: &PoolSpec, cancel: &Cancel) -> Result<Started, PoolError> {
+        let starting = Instant::now();
         let program = program::materialize(&spec.state_dir, &spec.host_root, &spec.worker_root)
             .map_err(|error| {
                 PoolError::Infra(format!("cannot write the worker program: {error}"))
@@ -233,6 +270,8 @@ impl Pool {
             .iter()
             .map(|d| d.ldb.clone())
             .collect();
+        let workers_ms = starting.elapsed().as_millis() as u64;
+        let imaging = Instant::now();
         let imaged = {
             let mut sessions: Vec<&mut Session> = started
                 .iter_mut()
@@ -249,6 +288,7 @@ impl Pool {
                 )));
             }
         };
+        let imaging_ms = imaging.elapsed().as_millis() as u64;
         let environment = Environment::assemble(profile.clone(), schemas);
         let workers = started.into_iter().map(|(worker, _, _)| worker).collect();
         let restart = Arc::new(Restart {
@@ -263,9 +303,14 @@ impl Pool {
                 workers,
                 unit_timeout: spec.unit_timeout,
                 restart,
+                dlc_hashing: Duration::ZERO,
             },
             environment,
             warnings,
+            timing: StartTiming {
+                workers_ms,
+                imaging_ms,
+            },
         })
     }
 
@@ -288,6 +333,11 @@ impl Pool {
         &self.restart.spec
     }
 
+    /// The time spent in the `$DLC` hash phase so far, in milliseconds.
+    pub fn dlc_hash_ms(&self) -> u64 {
+        self.dlc_hashing.as_millis() as u64
+    }
+
     pub fn is_empty(&self) -> bool {
         self.workers.is_empty()
     }
@@ -300,42 +350,57 @@ impl Pool {
             .collect()
     }
 
-    /// The `$DLC` hash phase: one worker hashes every path, then every other
-    /// worker answers one `HASHSET` over the same sorted list. A difference
-    /// is a configuration error. Returns the digests in path order.
+    /// The `$DLC` hash phase: each worker hashes a share of the paths, then
+    /// every worker answers one `HASHSET` over the whole sorted list, which
+    /// must equal the digest of the shares. A difference is a configuration
+    /// error. Returns the digests in path order.
     pub fn hash_dlc_files(
         &mut self,
         paths: &[String],
     ) -> Result<Vec<(String, FileDigest)>, PoolError> {
+        let started = Instant::now();
+        let hashed = self.hash_shares(paths);
+        self.dlc_hashing += started.elapsed();
+        hashed
+    }
+
+    fn hash_shares(&mut self, paths: &[String]) -> Result<Vec<(String, FileDigest)>, PoolError> {
         let mut sorted: Vec<String> = paths.to_vec();
         sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         sorted.dedup();
+        if self.workers.is_empty() {
+            return Err(PoolError::Infra("the pool has no worker".into()));
+        }
         let timeout = self.unit_timeout;
         let infra = |error: WorkerError| match error {
             WorkerError::Cancelled => PoolError::Cancelled,
             other => PoolError::Infra(other.to_string()),
         };
-        let (first, rest) = self
-            .workers
-            .split_first_mut()
-            .ok_or_else(|| PoolError::Infra("the pool has no worker".into()))?;
-        let mut digests = Vec::with_capacity(sorted.len());
-        for path in &sorted {
-            let digest = first
-                .session
-                .hash(path, Instant::now() + timeout)
-                .map_err(infra)?;
-            digests.push((path.clone(), digest));
-        }
-        let expected = hash_set_digest(&digests);
-        let answers: Vec<(usize, Result<String, WorkerError>)> = thread::scope(|scope| {
+        let shares = self.workers.len();
+        type Answer = Result<(Vec<(usize, FileDigest)>, Option<String>), WorkerError>;
+        let answers: Vec<(usize, Answer)> = thread::scope(|scope| {
             let sorted = &sorted;
-            let handles: Vec<_> = rest
+            let handles: Vec<_> = self
+                .workers
                 .iter_mut()
-                .map(|worker| {
+                .enumerate()
+                .map(|(share, worker)| {
                     scope.spawn(move || {
-                        let deadline = Instant::now() + timeout;
-                        (worker.number, worker.session.hash_set(sorted, deadline))
+                        let mut run = || -> Answer {
+                            let mut digests = Vec::new();
+                            for at in (share..sorted.len()).step_by(shares) {
+                                let deadline = Instant::now() + timeout;
+                                digests.push((at, worker.session.hash(&sorted[at], deadline)?));
+                            }
+                            let set = match shares {
+                                1 => None,
+                                _ => Some(
+                                    worker.session.hash_set(sorted, Instant::now() + timeout)?,
+                                ),
+                            };
+                            Ok((digests, set))
+                        };
+                        (worker.number, run())
                     })
                 })
                 .collect();
@@ -344,21 +409,28 @@ impl Pool {
                 .map(|handle| handle.join().expect("a hash thread panicked"))
                 .collect()
         });
-        let mut differing = Vec::new();
+        let mut slots: Vec<Option<FileDigest>> = vec![None; sorted.len()];
+        let mut sets: Vec<(usize, String)> = Vec::new();
         for (number, answer) in answers {
-            if answer.map_err(infra)? != expected {
-                differing.push(number.to_string());
+            let (digests, set) = answer.map_err(infra)?;
+            for (at, digest) in digests {
+                slots[at] = Some(digest);
             }
+            sets.extend(set.map(|set| (number, set)));
         }
-        if differing.is_empty() {
-            Ok(digests)
-        } else {
-            Err(PoolError::Config(format!(
-                "workers see different $DLC files: worker {} differs from worker {}",
-                differing.join(", "),
-                first.number
-            )))
+        let digests: Vec<(String, FileDigest)> = sorted
+            .into_iter()
+            .zip(slots)
+            .map(|(path, digest)| (path, digest.expect("every path is in one share")))
+            .collect();
+        let expected = hash_set_digest(&digests);
+        if sets.iter().all(|(_, set)| *set == expected) {
+            return Ok(digests);
         }
+        Err(PoolError::Config(format!(
+            "workers see different $DLC files: {}",
+            disagreement(&sets, &expected)
+        )))
     }
 
     /// Images every database across the live workers, as the probe does.

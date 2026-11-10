@@ -22,7 +22,10 @@ fn pool(workspace: &Workspace) -> Pool {
 }
 
 fn workspace(second_copy_of_b: &str) -> Workspace {
-    let workspace = Workspace::new("count = 2\n", &["--env", "{root}/env-{worker}.json"]);
+    let workspace = Workspace::new(
+        "count = 2\nenv = { FAKE_AVM_REQUEST_LOG = \"requests.log\" }\n",
+        &["--env", "{root}/env-{worker}.json"],
+    );
     for worker in [1, 2] {
         workspace.write(&format!("dlc-{worker}/src/a.i"), SHARED);
         let b = if worker == 1 {
@@ -65,6 +68,31 @@ fn workers_that_see_the_same_dlc_files_agree_and_the_digests_come_back_sorted() 
 }
 
 #[test]
+fn the_workers_share_the_hashing_and_each_checks_the_whole_list() {
+    let workspace = workspace(SHARED);
+    let mut pool = pool(&workspace);
+    let _ = std::fs::remove_file(workspace.path("requests.log"));
+
+    pool.hash_dlc_files(&paths()).expect("the workers agree");
+    pool.shutdown();
+
+    let log = std::fs::read_to_string(workspace.path("requests.log")).unwrap();
+    let mut by_worker: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for line in log.lines() {
+        let mut words = line.split(' ').skip(1);
+        let (pid, what) = (words.next().unwrap(), words.next().unwrap());
+        let counts = by_worker.entry(pid).or_default();
+        match what {
+            "HASH" => counts.0 += 1,
+            "HASHSET" => counts.1 += 1,
+            _ => {}
+        }
+    }
+    let counts: Vec<(usize, usize)> = by_worker.into_values().collect();
+    assert_eq!(counts, [(2, 1), (2, 1)], "{log}");
+}
+
+#[test]
 fn workers_that_see_different_dlc_files_disagree() {
     let workspace = workspace("DEFINE VARIABLE y AS INTEGER NO-UNDO.\n");
     let mut pool = pool(&workspace);
@@ -80,6 +108,32 @@ fn workers_that_see_different_dlc_files_disagree() {
                 "{message}"
             );
             assert!(message.contains("worker 2"), "{message}");
+        }
+        other => panic!("expected a configuration error, got {other:?}"),
+    }
+    pool.shutdown();
+}
+
+#[test]
+fn a_different_copy_in_the_share_of_the_second_worker_is_found_too() {
+    let workspace = workspace(SHARED);
+    workspace.write("dlc-2/src/a.i", "DEFINE VARIABLE y AS INTEGER NO-UNDO.\n");
+    let mut pool = pool(&workspace);
+
+    let error = pool
+        .hash_dlc_files(&paths())
+        .expect_err("the copies differ");
+
+    match error {
+        PoolError::Config(message) => {
+            assert!(
+                message.contains("workers see different $DLC files"),
+                "{message}"
+            );
+            assert!(
+                message.contains("worker 1") && message.contains("worker 2"),
+                "{message}"
+            );
         }
         other => panic!("expected a configuration error, got {other:?}"),
     }

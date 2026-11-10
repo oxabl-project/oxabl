@@ -21,5 +21,5 @@ mod start;
 
 pub use cancel::Cancel;
 pub use error::{PoolError, WorkerError};
-pub use pool::{Pool, PoolSpec, Started};
+pub use pool::{Pool, PoolSpec, StartTiming, Started};
 pub use slot::{Definitions, Job, Restart, Worker};

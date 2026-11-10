@@ -132,7 +132,12 @@ pub fn render_json(plan: &Plan, committed: bool, all: bool) -> String {
     units.extend(
         plan.skipped
             .iter()
-            .map(|path| (path.as_str(), unit(plan, path, "skip", Vec::new()))),
+            .zip(&plan.skip_reasons)
+            .map(|(path, why)| {
+                let mut unit = unit(plan, path, "skip", Vec::new());
+                unit["unkeyable"] = json!([why]);
+                (path.as_str(), unit)
+            }),
     );
     if all {
         units.extend(

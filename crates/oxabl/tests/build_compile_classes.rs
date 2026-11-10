@@ -4,6 +4,7 @@
 mod common;
 
 use common::built::{Built, unit};
+use serde_json::json;
 
 const USER: &str = "DEFINE VARIABLE o AS pkg.Foo NO-UNDO.\no = NEW pkg.Foo().\n";
 const FOO: &str = "CLASS pkg.Foo:\nEND CLASS.\n";
@@ -190,6 +191,43 @@ fn a_class_whose_package_root_is_not_on_the_propath_is_skipped() {
     assert_eq!(skipped["status"], "skipped");
     assert_eq!(skipped["skipped"], "package-root-not-on-propath: a");
     assert!(workspace.compiled().is_empty());
+}
+
+#[test]
+fn the_plan_without_a_probe_shows_the_skips_that_need_no_environment() {
+    let workspace = Built::with("directories = [\"a\"]\ninclude_paths = [\"lib\"]", "");
+    workspace.write("a/pkg/Foo.cls", FOO);
+    workspace.write("a/x/Bar.cls", "CLASS pkg.Bar:\nEND CLASS.\n");
+    workspace.write("lib/other.p", "MESSAGE \"o\".\n");
+    workspace.write("a/b.p", "MESSAGE \"b\".\n");
+    workspace.build().succeeded();
+
+    for _ in 0..2 {
+        let run = workspace.build_with(&["--plan", "--json"]);
+        run.succeeded();
+        let plan: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+        let foo = unit(&plan, "a/pkg/Foo.cls");
+        assert_eq!(foo["action"], "skip", "{foo}");
+        assert_eq!(foo["unkeyable"], json!(["package-root-not-on-propath: a"]));
+        let bar = unit(&plan, "a/x/Bar.cls");
+        assert_eq!(bar["action"], "skip", "{bar}");
+        assert_eq!(bar["unkeyable"], json!(["package-mismatch: pkg.Bar"]));
+        let b = unit(&plan, "a/b.p");
+        assert_eq!(b["action"], "skip", "{b}");
+        assert_eq!(b["unkeyable"], json!(["not-on-propath"]));
+        assert_eq!(plan["summary"]["rebuild"], 0, "{plan}");
+        assert_eq!(plan["summary"]["skipped"], 3, "{plan}");
+    }
+
+    let text = workspace.build_with(&["--plan"]);
+    text.succeeded();
+    assert!(
+        text.stdout.lines().any(|line| line.starts_with("skip")
+            && line.contains("a/pkg/Foo.cls")
+            && line.ends_with("package-root-not-on-propath: a")),
+        "{}",
+        text.stdout
+    );
 }
 
 #[test]

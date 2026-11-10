@@ -28,6 +28,8 @@ pub struct Plan {
     pub unchanged: Vec<String>,
     /// The units that cannot compile where they are, sorted by path.
     pub skipped: Vec<String>,
+    /// Why each unit of `skipped` cannot compile, in the same order.
+    pub skip_reasons: Vec<String>,
     /// The units of the store that are no longer in the working tree.
     pub removed: Vec<String>,
     /// The files `--files` named that are not in the graph.
@@ -110,12 +112,14 @@ fn path_to(outcome: &Outcome, via: &HashMap<u32, u32>, unit: u32, target: u32) -
 /// Decide the rebuild set from what the refresh found different, from the
 /// files `named` as changed, and from the keys: a unit without a key
 /// compiles on every build, and a unit that cannot compile where it is is
-/// skipped.
+/// skipped. Without keys, `skips` gives the skip reason of each unit, by
+/// position, as far as the paths alone tell it.
 pub fn decide(
     outcome: &Outcome,
     paths: &PathMap,
     named: &[std::path::PathBuf],
     keyed: Option<Keyed>,
+    skips: Option<Vec<Option<String>>>,
     stored: Option<StoredInputs<'_>>,
 ) -> Plan {
     let after = &outcome.after;
@@ -166,11 +170,19 @@ pub fn decide(
     let mut rebuild = Vec::new();
     let mut unchanged = Vec::new();
     let mut skipped = Vec::new();
+    let mut skip_reasons = Vec::new();
     for (position, &unit) in outcome.units.iter().enumerate() {
         let name = outcome.name(unit).to_string();
         let key = keyed.as_ref().map(|keyed| &keyed.units[position]);
-        if key.is_some_and(|key| key.skipped) {
+        let skip = match key {
+            Some(key) => key
+                .skipped
+                .then(|| key.unkeyable.first().cloned().unwrap_or_default()),
+            None => skips.as_ref().and_then(|skips| skips[position].clone()),
+        };
+        if let Some(reason) = skip {
             skipped.push(name);
+            skip_reasons.push(reason);
             continue;
         }
         let touched = touched_after.contains_key(&unit) || touched_before.contains_key(&unit);
@@ -235,6 +247,7 @@ pub fn decide(
         rebuild,
         unchanged,
         skipped,
+        skip_reasons,
         keys,
         removed: names(outcome, delta.removed_units.iter().copied()),
         unknown,
