@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 
 use super::context::UnitState;
 use super::pass::PassEnd;
-use super::report::{BuildReport, Summary, UnitReport, UnitStatus};
+use super::report::{BuildReport, Setup, Summary, UnitReport, UnitStatus};
 use crate::plan::Plan;
 
 /// What the report holds besides the units.
@@ -12,6 +12,7 @@ pub struct Facts {
     pub build: String,
     pub environment: String,
     pub setup_ms: u64,
+    pub setup: Setup,
     pub elapsed_ms: u64,
 }
 
@@ -109,6 +110,7 @@ pub fn report(
         notes,
         cache: Default::default(),
         setup_ms: facts.setup_ms,
+        setup: facts.setup,
         elapsed_ms: facts.elapsed_ms,
     }
 }

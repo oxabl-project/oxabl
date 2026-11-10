@@ -93,6 +93,7 @@ starts with the worker program's header line.
 | `FAKE-SLOW` in a source | Sleep 2 s after reading the source and before writing outputs. |
 | `FAKE_AVM_NOISE=1` | Print noise lines before and between protocol lines. |
 | `FAKE_AVM_START_DELAY=<ms>` | Sleep before the handshake. |
+| `FAKE_AVM_REQUEST_DELAY_MS=<ms>` | Sleep before each request, as a slow transport (for example `docker exec`) adds to every round trip; to measure the setup phases. |
 | `FAKE_AVM_BAD_TOKEN=1` | Echo a wrong token. |
 | `FAKE_AVM_EXIT_IN_HANDSHAKE=1` | Exit after `HELLO`. |
 | `FAKE_AVM_EXIT_IN_HANDSHAKE_ONCE=1` | Exit after `HELLO` the first time only (marker in `FAKE_AVM_STATE`), to test a start retry that succeeds. |

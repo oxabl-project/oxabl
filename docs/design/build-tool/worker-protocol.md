@@ -327,23 +327,29 @@ answers are part of the environment check: all workers must agree.
 plan ([build-tool.md](../build-tool.md#the-build-flow), step 4) and before the keys are
 computed. **Nothing compiles before step 7**: every worker is idle during the phase.
 
-1. One worker that finished its handshake hashes every distinct `$DLC/...` path in any
-   closure of the whole graph, once, with `HASH`, outside `start_timeout`; each answer has
-   `unit_timeout`. These digests go into the keys.
-2. Every other worker then checks that it sees the same copies, in one round trip: oxabl
-   sends `HASHSET <id> <count>` followed by `count` lines `PATH <id> <path>`, with the paths
-   sorted by bytes. The worker hashes each path as for `HASH` and answers
+1. The workers share the distinct `$DLC/...` paths of every closure of the whole graph,
+   sorted by bytes: worker *i* of *n* takes every *n*-th path from position *i*. Each worker
+   hashes its share with `HASH`, at the same time as the others, outside `start_timeout`;
+   each answer has `unit_timeout`. These digests go into the keys.
+2. Then each worker checks that it sees the same copies, in one round trip: oxabl
+   sends `HASHSET <id> <count>` followed by `count` lines `PATH <id> <path>`, with all the
+   paths sorted by bytes. The worker hashes each path as for `HASH` and answers
    `HASHSET-DONE <id> <sha256>`, the SHA-256 of the lines `<path> TAB <digest> LF` in that
    order, where `<digest>` is the lower-case hex SHA-256, or `dir` or `none`. Oxabl computes
-   the same value from the first worker's answers. Any difference stops the build with exit
-   code 2: `workers see different $DLC files`, like the other environment checks. A pool is
+   the same value from the answers of all shares. Every worker hashed every path once, so
+   any difference between two workers shows here. Any difference stops the build with exit
+   code 2: `workers see different $DLC files`, with the workers grouped by what they see,
+   like the other environment checks. A pool with one worker sends no `HASHSET`. A pool is
    one environment; a command that reaches different containers per slot (for example a
    `kubectl exec` through a service) must reach identical installations.
 3. A worker lost during the phase hands its remaining work to another worker; when no
    worker is left, every unit with a `$DLC` file in its closure is unkeyable (K6).
 
-The phase costs one round trip per distinct `$DLC` path on one worker, plus one round trip
-on each other worker, in parallel.
+The phase costs one round trip per distinct `$DLC` path divided by the number of workers,
+plus one round trip on each worker, in parallel. Each round trip through a slow transport
+(for example `docker exec`) adds its latency: with 2,000 paths, 8 workers and 5 ms a round
+trip, a no-op build of 10,300 units on the fake AVM takes 1.6 s (1.3 s of it the phase),
+against 10.7 s when one worker hashed every path.
 
 ## Pool lifecycle
 

@@ -34,6 +34,9 @@ pub struct Faults {
     /// Time a worker waits after it read the schema and before it answers
     /// (`FAKE_AVM_SCHEMA_DELAY_MS`).
     pub schema_delay: Option<Duration>,
+    /// Time a worker waits before it handles each request, as a slow
+    /// transport adds to every round trip (`FAKE_AVM_REQUEST_DELAY_MS`).
+    pub request_delay: Option<Duration>,
     /// Receives one line with the time for each request (`FAKE_AVM_REQUEST_LOG`).
     pub request_log: Option<PathBuf>,
     /// Paths whose presence each `COMPILE` request logs (`FAKE_AVM_WATCH`, `:`-separated).
@@ -72,6 +75,10 @@ impl Faults {
             no_private_xref: flag("FAKE_AVM_NO_PRIVATE_XREF"),
             schema_change_file: std::env::var_os("FAKE_AVM_SCHEMA_CHANGE_FILE").map(PathBuf::from),
             schema_delay: std::env::var("FAKE_AVM_SCHEMA_DELAY_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map(Duration::from_millis),
+            request_delay: std::env::var("FAKE_AVM_REQUEST_DELAY_MS")
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map(Duration::from_millis),

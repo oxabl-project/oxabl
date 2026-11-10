@@ -180,9 +180,9 @@ It then calls `oxabl_build` and reads the same store. It does not keep a second 
    predefined names against `[workspace.preprocessor]`. A difference stops the build with
    exit code 2 and names the value on both sides.
 4. **Key and plan.** Compute the closure and keyability of every unit, including the class
-   conflicts over the whole graph. Then one worker hashes the `$DLC/...` files of all
-   closures (the DLC hash phase, outside `start_timeout`). Then compute the compile keys
-   and decide the rebuild set ([Planner](#planner)).
+   conflicts over the whole graph. Then the workers hash the `$DLC/...` files of all
+   closures, each a share (the DLC hash phase, outside `start_timeout`). Then compute the
+   compile keys and decide the rebuild set ([Planner](#planner)).
 5. **Prune.** Delete outputs that the store owns whose unit no longer exists, and every
    other file in the output directories that the store does not own (see
    [Output ownership](#output-ownership)).
