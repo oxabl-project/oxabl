@@ -30,9 +30,10 @@ extension and the server run in WSL, which is Linux. Install the Linux
 `oxabl` binary in WSL.
 
 The extension does not bundle the `oxabl` binary. Put it on your `PATH`, or
-set `oxabl.server.path`. When the binary is missing, the extension shows one
-warning for each window. Choose **Don't Show Again** to stop it for good.
-Install the binary later, then run **oxabl: Restart Server**.
+set `oxabl.server.path`. When the binary is missing, the extension shows no
+message, because the highlighting works without it. The `oxabl` output
+channel (**Output** panel) says that the binary was not found. Install the
+binary later, then run **oxabl: Restart Server**.
 
 These features follow `[workspace.features]` in `oxabl.toml`. A project
 turns them off there: `diagnostics = false` stops the diagnostics and the
@@ -40,8 +41,8 @@ code lenses, and `format = false` stops formatting, so format on save does
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
 it. To use only the highlighting, turn both off in `oxabl.toml`.
 
-`oxabl.enable: false` stops the server on one machine. Then the extension
-starts no server and shows no warning about a missing binary.
+`oxabl.enable: false` stops the server on one machine, also when the binary
+is installed.
 
 ## Install
 

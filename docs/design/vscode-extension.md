@@ -100,11 +100,12 @@ From `clients/vscode`:
   factor. `OXABL_FUZZ_SECONDS` makes a longer run, `OXABL_FUZZ_SEED` replays
   one.
 - `xvfb-run -a pnpm run test:e2e` — the packaged VSIX in a downloaded VS Code:
-  activation, the colours that the editor renders, Markdown code blocks, the
-  missing-binary warning, the self-update against a fake GitHub API, and
-  screenshots. It removes every `oxabl` from `PATH` and sets `VSCODE_CLI=1`
-  (otherwise VS Code reads the login shell's `PATH` and starts a real
-  language server), and fails when a scenario leaves a process running.
+  activation, the colours that the editor renders, Markdown code blocks, a
+  missing binary (a line in the output channel, no message), the self-update
+  against a fake GitHub API, and screenshots. It removes every `oxabl` from
+  `PATH` and sets `VSCODE_CLI=1` (otherwise VS Code reads the login shell's
+  `PATH` and starts a real language server), and fails when a scenario leaves
+  a process running.
 
 ## Releases
 

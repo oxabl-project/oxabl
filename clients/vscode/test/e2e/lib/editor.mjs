@@ -8,9 +8,6 @@ const hex = (rgb) => {
   return m ? `#${[m[1], m[2], m[3]].map((n) => Number(n).toString(16).padStart(2, "0")).join("")}` : rgb;
 };
 
-export const MISSING_SERVER =
-  "oxabl: syntax highlighting works, but format-on-save and diagnostics need the oxabl language server, which was not found on PATH.";
-
 /** The rendered lines of the editor: [{ text, colors: [hex per character] }], top to bottom. */
 export async function readLines(page) {
   const raw = await page.evaluate(() => {
