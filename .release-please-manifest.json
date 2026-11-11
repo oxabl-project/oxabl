@@ -4,7 +4,7 @@
   "crates/oxabl_parser": "4.0.1",
   "crates/oxabl_ast": "4.0.0",
   "crates/oxabl_common": "1.2.2",
-  "crates/oxabl_codegen": "0.7.0",
+  "crates/oxabl_codegen": "0.7.1",
   "crates/oxabl_style": "0.2.1",
   "crates/oxabl_workspace": "3.4.0",
   "crates/oxabl_preprocessor": "0.7.4",
@@ -26,5 +26,5 @@
   "crates/oxabl_nulls": "0.2.4",
   "crates/oxabl_build": "0.2.2",
   "crates/oxabl_build_remote": "0.2.2",
-  "clients/vscode": "0.3.1"
+  "clients/vscode": "0.3.2"
 }

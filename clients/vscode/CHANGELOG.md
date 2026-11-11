@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.1...oxabl_vscode-v0.3.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* **vscode:** a table named like an unreserved keyword is a name ([7b18ad9](https://github.com/oxabl-project/oxabl/commit/7b18ad931c08e3261c615a590c27e61a93328609))
+* **vscode:** a table named like an unreserved keyword is a name ([b6e211a](https://github.com/oxabl-project/oxabl/commit/b6e211a649e50d7ed7a6fb431e5ca09146ca3888))
+
 ## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.0...oxabl_vscode-v0.3.1) (2026-11-11)
 
 
