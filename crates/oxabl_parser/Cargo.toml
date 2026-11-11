@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_parser"
-version = "4.0.0"
+version = "4.0.1"
 edition = "2024"
 license = "MIT"
 description = "Parser for Progress ABL source code"
@@ -21,8 +21,8 @@ serde = ["dep:serde", "oxabl_ast/serde"]
 
 [dev-dependencies]
 criterion = { version = "4.3.0", package = "codspeed-criterion-compat" }
-oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.7.3" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "3.3.0" }
+oxabl_preprocessor = { path = "../oxabl_preprocessor", version = "0.7.4" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "3.4.0" }
 serde_json = "1"
 
 [[bench]]

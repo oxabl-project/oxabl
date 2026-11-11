@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.2.0...oxabl_vscode-v0.3.0) (2026-11-11)
+
+
+### Features
+
+* **config:** turn diagnostics and formatting on or off in [workspace.features] ([5f9d715](https://github.com/oxabl-project/oxabl/commit/5f9d715a394471319298f6895077ba9179d408c1))
+* **config:** turn diagnostics and formatting on or off in [workspace.features] ([55e57ec](https://github.com/oxabl-project/oxabl/commit/55e57ecef9141909908b7416593d21b983f70932))
+
 ## [0.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.1.0...oxabl_vscode-v0.2.0) (2026-11-10)
 
 

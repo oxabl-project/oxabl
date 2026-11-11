@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.4](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.4.3...oxabl_schema-v0.4.4) (2026-11-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.3.0 to 3.4.0
+
 ## [0.4.3](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.4.2...oxabl_schema-v0.4.3) (2026-11-06)
 
 

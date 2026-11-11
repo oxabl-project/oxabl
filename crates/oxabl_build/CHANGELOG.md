@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.2.1...oxabl_build-v0.2.2) (2026-11-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.1 to 0.3.2
+    * oxabl_index bumped from 5.0.0 to 5.0.1
+    * oxabl_pipeline bumped from 3.3.1 to 3.4.0
+    * oxabl_semantic bumped from 5.0.0 to 5.0.1
+    * oxabl_workspace bumped from 3.3.0 to 3.4.0
+
 ## [0.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.2.0...oxabl_build-v0.2.1) (2026-11-10)
 
 

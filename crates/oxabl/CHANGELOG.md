@@ -1,5 +1,43 @@
 # Changelog
 
+## [5.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.0.0...oxabl-v5.1.0) (2026-11-11)
+
+
+### Features
+
+* **config:** turn diagnostics and formatting on or off in [workspace.features] ([5f9d715](https://github.com/oxabl-project/oxabl/commit/5f9d715a394471319298f6895077ba9179d408c1))
+* **config:** turn diagnostics and formatting on or off in [workspace.features] ([55e57ec](https://github.com/oxabl-project/oxabl/commit/55e57ecef9141909908b7416593d21b983f70932))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.0 to 4.0.1
+    * oxabl_workspace bumped from 3.3.0 to 3.4.0
+    * oxabl_preprocessor bumped from 0.7.3 to 0.7.4
+    * oxabl_semantic bumped from 5.0.0 to 5.0.1
+    * oxabl_schema bumped from 0.4.3 to 0.4.4
+    * oxabl_analyze bumped from 4.0.1 to 4.0.2
+    * oxabl_pipeline bumped from 3.3.1 to 3.4.0
+    * oxabl_lint bumped from 5.0.0 to 5.0.1
+    * oxabl_lsp bumped from 3.0.4 to 3.1.0
+    * oxabl_daemon bumped from 0.5.4 to 0.5.5
+    * oxabl_build bumped from 0.2.1 to 0.2.2
+    * oxabl_build_remote bumped from 0.2.1 to 0.2.2
+    * oxabl_formatter bumped from 2.0.3 to 2.0.4
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.0.1 to 4.0.2
+    * oxabl_schema bumped from 0.4.3 to 0.4.4
+    * oxabl_workspace bumped from 3.3.0 to 3.4.0
+    * oxabl_pipeline bumped from 3.3.1 to 3.4.0
+    * oxabl_flow bumped from 0.3.3 to 0.3.4
+    * oxabl_handles bumped from 0.2.3 to 0.2.4
+    * oxabl_scope bumped from 0.2.3 to 0.2.4
+    * oxabl_effects bumped from 0.3.1 to 0.3.2
+    * oxabl_nulls bumped from 0.2.3 to 0.2.4
+    * oxabl_index bumped from 5.0.0 to 5.0.1
+
 ## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v4.0.0...oxabl-v5.0.0) (2026-11-10)
 
 
