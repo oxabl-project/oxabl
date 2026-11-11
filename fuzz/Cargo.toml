@@ -1,0 +1,60 @@
+[package]
+name = "oxabl-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Outside the workspace: `cargo build --workspace` needs no nightly toolchain.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxabl_common = { path = "../crates/oxabl_common" }
+oxabl_lexer = { path = "../crates/oxabl_lexer" }
+oxabl_parser = { path = "../crates/oxabl_parser" }
+oxabl_preprocessor = { path = "../crates/oxabl_preprocessor" }
+oxabl_workspace = { path = "../crates/oxabl_workspace" }
+oxabl_pipeline = { path = "../crates/oxabl_pipeline" }
+oxabl_formatter = { path = "../crates/oxabl_formatter" }
+oxabl_style = { path = "../crates/oxabl_style" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "lex"
+path = "fuzz_targets/lex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "preprocess_parse"
+path = "fuzz_targets/preprocess_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lint"
+path = "fuzz_targets/lint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format"
+path = "fuzz_targets/format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slowest"
+path = "src/slowest.rs"
+test = false
+doc = false
+bench = false

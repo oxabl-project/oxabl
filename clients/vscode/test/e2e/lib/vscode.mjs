@@ -40,6 +40,11 @@ function pathWithoutOxabl() {
 function cleanEnv(extra = {}) {
   const env = { ...process.env, PATH: pathWithoutOxabl(), VSCODE_CLI: "1" };
   delete env.ELECTRON_RUN_AS_NODE;
+  // The run is under xvfb-run: a Wayland session of the person must not take the window.
+  delete env.WAYLAND_DISPLAY;
+  env.OZONE_PLATFORM = "x11";
+  env.ELECTRON_OZONE_PLATFORM_HINT = "x11";
+  env.XDG_SESSION_TYPE = "x11";
   delete env.OXABL_UPDATE_API_URL;
   return { ...env, ...extra };
 }

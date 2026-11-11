@@ -93,7 +93,12 @@ From `clients/vscode`:
 - `pnpm test` — includes `test/grammar/corpus.test.ts`: every regex
   compiles, and every ABL file in the repository tokenizes within a time
   budget, on vscode-textmate 9 and vscode-oniguruma 2, the engine VS Code
-  uses.
+  uses. It also includes `test/grammar/fuzz.test.ts`: pathological shapes,
+  random token runs and mutated corpus files must stay inside a time budget
+  per line and per file and a rule-stack depth. The time budgets grow on a
+  slow machine: a calibration scan that does not use the grammar sets the
+  factor. `OXABL_FUZZ_SECONDS` makes a longer run, `OXABL_FUZZ_SEED` replays
+  one.
 - `xvfb-run -a pnpm run test:e2e` — the packaged VSIX in a downloaded VS Code:
   activation, the colours that the editor renders, Markdown code blocks, the
   missing-binary warning, the self-update against a fake GitHub API, and
