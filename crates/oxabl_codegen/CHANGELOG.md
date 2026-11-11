@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.7.0...oxabl_codegen-v0.7.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **vscode:** a table named like an unreserved keyword is a name ([7b18ad9](https://github.com/oxabl-project/oxabl/commit/7b18ad931c08e3261c615a590c27e61a93328609))
+
 ## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.6.0...oxabl_codegen-v0.7.0) (2026-11-10)
 
 
