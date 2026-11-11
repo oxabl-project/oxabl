@@ -34,8 +34,14 @@ set `oxabl.server.path`. When the binary is missing, the extension shows one
 warning for each window. Choose **Don't Show Again** to stop it for good.
 Install the binary later, then run **oxabl: Restart Server**.
 
-To use only the highlighting, set `oxabl.enable` to `false`. Then the
-extension starts no server and shows no warning.
+These features follow `[workspace.features]` in `oxabl.toml`. A project
+turns them off there: `diagnostics = false` stops the diagnostics and the
+code lenses, and `format = false` stops formatting, so format on save does
+nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
+it. To use only the highlighting, turn both off in `oxabl.toml`.
+
+`oxabl.enable: false` stops the server on one machine. Then the extension
+starts no server and shows no warning about a missing binary.
 
 ## Install
 

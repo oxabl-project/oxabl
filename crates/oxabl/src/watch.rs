@@ -180,16 +180,34 @@ fn cycle(
     }) {
         return Err(msg.clone());
     }
+    let channels = crate::check_channels(config.features, opts.no_format)?;
+
+    // A configuration change can alter every result.
+    let everything = changed.is_none_or(|paths| {
+        paths.iter().any(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("toml") || e.eq_ignore_ascii_case("df"))
+        })
+    });
     if changed.is_none() {
         for warning in &warnings {
             eprintln!("warning: {warning}");
         }
     }
+    if everything {
+        crate::note_disabled_features(config.features);
+    }
 
     let files = discover_path_in(opts.path, &config.root_extensions)?;
     let fs = config.file_system();
     let indexed: Vec<PathBuf> = files.iter().map(|f| canonical(f)).collect();
-    let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, opts.jobs);
+    // With diagnostics off the lint pipeline never runs, so nothing scans the walk.
+    let producers = if channels.diagnostics {
+        LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, opts.jobs)
+    } else {
+        Default::default()
+    };
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(opts.preprocess)
         .with_shared_producers(&producers);
@@ -197,7 +215,8 @@ fn cycle(
     // whole walk and share them, as each handle would otherwise build its own
     // from the one file it happens to see first. Rebuilt every pass, so the
     // next pass sees the edit.
-    let summaries = (!opts.no_lint && lint.callee_summaries_enabled()).then(|| {
+    let lint_runs = channels.diagnostics && !opts.no_lint;
+    let summaries = (lint_runs && lint.callee_summaries_enabled()).then(|| {
         std::sync::Arc::new(lint.build_workspace_effect_summaries_parallel(&indexed, opts.jobs))
     });
     let lint = match &summaries {
@@ -205,7 +224,7 @@ fn cycle(
         None => lint,
     };
 
-    let fragments: Vec<(PathBuf, PathBuf)> = if !opts.no_lint && opts.path.is_dir() {
+    let fragments: Vec<(PathBuf, PathBuf)> = if lint_runs && opts.path.is_dir() {
         walk_include_fragments(opts.path)
             .into_iter()
             .map(|file| {
@@ -218,16 +237,11 @@ fn cycle(
         Vec::new()
     };
 
-    // A configuration change can alter every result.
-    let everything = changed.is_none_or(|paths| {
-        paths.iter().any(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("toml") || e.eq_ignore_ascii_case("df"))
-        })
-    });
     let affected: Option<HashSet<PathBuf>> = if everything {
         None
+    } else if !channels.diagnostics {
+        // Format drift reads the file alone, so no includer is affected.
+        Some(changed.unwrap_or_default().iter().cloned().collect())
     } else {
         let (graph, _) = ReverseGraph::build_with(
             &indexed,
@@ -255,8 +269,9 @@ fn cycle(
     let format = FormatPipeline::new(config.style.clone());
     let pass = CheckPass {
         json_output: false,
+        diagnostics: channels.diagnostics,
         no_lint: opts.no_lint,
-        no_format: opts.no_format,
+        no_format: !channels.format,
         include_findings: opts.include_findings,
         baseline: None,
         format: &format,

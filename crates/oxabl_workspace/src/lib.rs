@@ -15,7 +15,7 @@ pub use build_config::{
 };
 pub use cached::CachedFileSystem;
 pub use config::{
-    LintConfig, LintOverride, LintRuleSettings, LintSeverity, PreprocessorConfig,
+    FeaturesConfig, LintConfig, LintOverride, LintRuleSettings, LintSeverity, PreprocessorConfig,
     RejectedLintPattern, RunExtensions, WorkspaceConfig, default_root_extensions,
     default_run_extensions, normalize_root_extensions, normalize_run_extension,
     normalize_run_extensions,

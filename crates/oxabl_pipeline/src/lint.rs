@@ -946,8 +946,12 @@ impl<'a> LintPipeline<'a> {
         self
     }
 
-    /// Whether a strict rule that reads database effects is enabled for this file.
+    /// Whether a strict rule that reads database effects is enabled for this file
+    /// and diagnostics are on in `[workspace.features]`.
     pub fn effect_lenses_enabled(&self) -> bool {
+        if !self.config.features.diagnostics {
+            return false;
+        }
         let severities = self
             .file()
             .map(|p| self.config.lint_severities.for_path(p))
