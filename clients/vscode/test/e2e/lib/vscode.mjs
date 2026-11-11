@@ -6,8 +6,38 @@ import {
   resolveCliArgsFromVSCodeExecutablePath,
 } from "@vscode/test-electron";
 import { _electron } from "playwright-core";
-import { check } from "./report.mjs";
+import { check, waitFor } from "./report.mjs";
 import { VSCODE_CACHE, WORK_DIR, FIXTURES_DIR } from "./paths.mjs";
+
+/** The line the extension logs when it starts without a server: it has run. */
+export const NO_SERVER_LOG = "oxabl executable not found on PATH or in oxabl.server.path";
+
+/** The log folders of a profile's VS Code sessions, oldest first (VS Code names them by start time). */
+export function logSessions(profile) {
+  const dir = path.join(profile.userData, "logs");
+  return fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [];
+}
+
+/** The `oxabl` output channel of one session, as VS Code writes it to disk ("" before it exists). */
+function channelLog(profile, session) {
+  const dir = path.join(profile.userData, "logs", session);
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.startsWith("window"))
+    .map((name) => path.join(dir, name, "exthost", "oxabl-project.oxabl", "oxabl.log"))
+    .filter((file) => fs.existsSync(file))
+    .map((file) => fs.readFileSync(file, "utf8"))
+    .join("");
+}
+
+/** Waits until a session that is not in `before` logs `text` to the `oxabl` output channel. */
+export async function waitForLog(profile, text, before = [], timeout = 30_000) {
+  await waitFor(
+    `"${text}" in the oxabl output channel`,
+    () => logSessions(profile).some((s) => !before.includes(s) && channelLog(profile, s).includes(text)),
+    { timeout, interval: 300 },
+  );
+}
 
 // The one place the VS Code under test is pinned.
 export const VSCODE_VERSION = "1.145.2";

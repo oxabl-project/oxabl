@@ -17,7 +17,7 @@ into `.vscode-test/`.
 
 | Scenario | What it checks |
 | --- | --- |
-| `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that the missing-binary warning shows once and stays away after `Don't Show Again`. |
+| `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that a missing binary shows no message and is logged to the `oxabl` output channel. |
 | `markdown` | Keywords in a fenced `abl` block get colours. Prose around the block does not. |
 | `update-auto` | The extension installs a newer release from the fake API and sends the right headers. |
 | `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |

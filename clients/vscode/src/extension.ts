@@ -12,9 +12,6 @@ import { registerUpdates } from "./updates";
 let client: LanguageClient | undefined;
 let context: vscode.ExtensionContext;
 let log: vscode.LogOutputChannel;
-let missingServerShown = false;
-
-const MISSING_SERVER_DISMISSED = "oxabl.missingServer.dismissed";
 
 export async function activate(extensionContext: vscode.ExtensionContext): Promise<void> {
   context = extensionContext;
@@ -37,28 +34,6 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
   await startClient();
 }
 
-/** Warn once per window that the server is missing, until the person dismisses it for good. */
-function warnMissingServer(): void {
-  if (missingServerShown || context.globalState.get<boolean>(MISSING_SERVER_DISMISSED)) {
-    return;
-  }
-  missingServerShown = true;
-  void vscode.window
-    .showWarningMessage(
-      "oxabl: syntax highlighting works, but format-on-save and diagnostics need the oxabl " +
-        "language server, which was not found on PATH.",
-      "Open Settings",
-      "Don't Show Again",
-    )
-    .then((choice) => {
-      if (choice === "Open Settings") {
-        void vscode.commands.executeCommand("workbench.action.openSettings", "oxabl.server.path");
-      } else if (choice === "Don't Show Again") {
-        void context.globalState.update(MISSING_SERVER_DISMISSED, true);
-      }
-    });
-}
-
 /** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
 async function startClient(): Promise<void> {
   const config = vscode.workspace.getConfiguration("oxabl");
@@ -71,9 +46,12 @@ async function startClient(): Promise<void> {
     pathDirs: splitPath(process.env.PATH),
   });
 
+  // Highlighting needs no server, so a missing binary is not an error: no message, a log line.
   if (discovery.kind === "not-found") {
-    log.info("oxabl executable not found; running without the language server");
-    warnMissingServer();
+    log.info(
+      "oxabl executable not found on PATH or in oxabl.server.path; running without the " +
+        "language server (syntax highlighting still works)",
+    );
     return;
   }
 

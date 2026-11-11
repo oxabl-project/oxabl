@@ -1,9 +1,18 @@
 import path from "node:path";
-import { MISSING_SERVER, clickButton, neverShows, runCommand, screenshot, waitForText } from "../lib/editor.mjs";
+import { clickButton, neverShows, runCommand, screenshot, waitForText } from "../lib/editor.mjs";
 import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check, sleep, waitFor } from "../lib/report.mjs";
 import { extensionState } from "../lib/state.mjs";
-import { addNamedProfile, installVsix, launch, listExtensions, makeProfile } from "../lib/vscode.mjs";
+import {
+  NO_SERVER_LOG,
+  addNamedProfile,
+  installVsix,
+  launch,
+  listExtensions,
+  logSessions,
+  makeProfile,
+  waitForLog,
+} from "../lib/vscode.mjs";
 
 const NEW = "99.0.0";
 const ID = "oxabl-project.oxabl";
@@ -150,10 +159,11 @@ export async function updateThrottle(ctx) {
     }
     check(`${name}: the first launch listed the tags once`, server.count(REFS) === 1, `${server.count(REFS)} listings`);
 
+    const before = logSessions(profile);
     vs = await launch(ctx.exe, profile, { open: ["update.p"], env });
     try {
-      // The extension has started once its first warning shows; the check decision comes before that.
-      await waitForText(vs.page, MISSING_SERVER, 30_000);
+      // The extension has started once it logs that there is no server; the check decision comes before that.
+      await waitForLog(profile, NO_SERVER_LOG, before);
       await neverShows(vs.page, NO_MESSAGE, 6_000);
     } finally {
       await vs.close();
