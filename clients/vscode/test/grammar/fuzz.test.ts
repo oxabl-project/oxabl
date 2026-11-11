@@ -30,9 +30,16 @@ const OUT = process.env.OXABL_FUZZ_OUT;
 const DEEP = process.env.OXABL_FUZZ_DEEP === "1";
 const LINE_CAP = Number(process.env.OXABL_FUZZ_LINE_CAP ?? 20000);
 
+// The time budgets hold on a machine that runs the calibration in CALIBRATION_MS or less; a
+// slower machine (a CI runner) gets budgets larger by the same factor. The calibration does not
+// use the grammar, so a slow grammar cannot raise its own budget. A grammar that is slow on
+// every line is the corpus test's to catch: its budget is absolute.
+const CALIBRATION_MS = 2.5;
+let speed = 1;
+
 // A line of n characters may take this long. The corpus test holds 50 ms for real lines.
-const lineBudgetMs = (chars: number) => 50 + chars * 0.02;
-const FILE_BUDGET_MS = 2000;
+const lineBudgetMs = (chars: number) => (50 + chars * 0.02) * speed;
+const fileBudgetMs = () => 2000 * speed;
 // Deepest rule stack any input may leave behind. Real files stay far below it.
 const DEPTH_BUDGET = 2000;
 
@@ -59,6 +66,25 @@ function corpusFiles(): string[] {
     if (statSync(path).isDirectory()) walk(path, false);
   }
   return found.sort();
+}
+
+// The best of 20 rounds of a fixed scan: the engine's speed on this machine, not its load.
+function calibrationMs(): number {
+  const text = 'ASSIGN cName = "abc":U + STRING(iCount, ">>9") cNote = SUBSTITUTE("&1", x). '.repeat(250);
+  const scanner = new onig.OnigScanner(["[A-Za-z_][A-Za-z0-9_-]*", '"(?:[^"~]|~.)*"', "\\s+", "\\d+(?:\\.\\d+)?", "."]);
+  const str = new onig.OnigString(text);
+  let best = Infinity;
+  for (let round = 0; round < 20; round++) {
+    const start = performance.now();
+    for (let at = 0; at < text.length; ) {
+      const match = scanner.findNextMatchSync(str, at);
+      at = match ? Math.max(match.captureIndices[0].end, at + 1) : text.length;
+    }
+    best = Math.min(best, performance.now() - start);
+  }
+  str.dispose();
+  scanner.dispose();
+  return best;
 }
 
 // Small, fast, seedable generator.
@@ -94,6 +120,9 @@ beforeAll(async () => {
   const loaded = await registry.loadGrammar("source.abl");
   if (!loaded) throw new Error(`cannot load ${grammarPath}`);
   grammar = loaded;
+  const calibration = calibrationMs();
+  speed = Math.max(1, calibration / CALIBRATION_MS);
+  console.log(`calibration ${calibration.toFixed(2)} ms: budgets x${speed.toFixed(2)}`);
   // The engine compiles its scanners on first use; time the steady state.
   let warm = vsctm.INITIAL;
   for (const line of ["/* c */ DEFINE VARIABLE a AS INTEGER NO-UNDO.", "&SCOPED-DEFINE x 1", 'x = "s":U + {&x}.']) {
@@ -161,7 +190,9 @@ function check(name: string, input: string, runs?: Run[]): string[] {
       `${name}: line ${run.worstLine} (${run.worstLineChars} chars) took ${run.worstLineMs.toFixed(1)} ms, budget ${budget.toFixed(0)} ms`,
     );
   }
-  if (run.totalMs > FILE_BUDGET_MS) failures.push(`${name}: input took ${run.totalMs.toFixed(0)} ms, budget ${FILE_BUDGET_MS} ms`);
+  if (run.totalMs > fileBudgetMs()) {
+    failures.push(`${name}: input took ${run.totalMs.toFixed(0)} ms, budget ${fileBudgetMs().toFixed(0)} ms`);
+  }
   if (run.maxDepth > DEPTH_BUDGET) failures.push(`${name}: rule stack reached depth ${run.maxDepth}, budget ${DEPTH_BUDGET}`);
   if (failures.length) findings.push(finding);
   return failures;
