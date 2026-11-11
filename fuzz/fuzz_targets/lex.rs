@@ -12,7 +12,10 @@ fuzz_target!(|data: &[u8]| {
     let mut at = 0;
     for token in &tokens {
         assert!(token.start <= token.end && token.end <= source.len());
-        assert!(token.start >= at, "token starts before the previous one ends");
+        assert!(
+            token.start >= at,
+            "token starts before the previous one ends"
+        );
         assert!(source.is_char_boundary(token.start) && source.is_char_boundary(token.end));
         at = token.end;
     }

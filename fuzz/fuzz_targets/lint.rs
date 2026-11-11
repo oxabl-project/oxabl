@@ -11,8 +11,15 @@ fuzz_target!(|data: &[u8]| {
     let source = String::from_utf8_lossy(data);
     let config = PipelineConfig::default();
     let mut fs = InMemoryFileSystem::new();
-    fs.insert(PathBuf::from("/inc/a.i"), "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n");
+    fs.insert(
+        PathBuf::from("/inc/a.i"),
+        "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n",
+    );
     let run = LintPipeline::new(&config, &fs);
     let result = run.with_file("/work/fuzz.p").run(&source);
-    assert!(!result.failed_run(), "the pipeline contained a panic: {:?}", result.failure());
+    assert!(
+        !result.failed_run(),
+        "the pipeline contained a panic: {:?}",
+        result.failure()
+    );
 });

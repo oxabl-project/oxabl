@@ -17,7 +17,10 @@ fuzz_target!(|data: &[u8]| {
     let _ = Parser::new(&tokens, &source).parse_program();
 
     let mut fs = InMemoryFileSystem::new();
-    fs.insert(PathBuf::from("/inc/a.i"), "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n&SCOPED-DEFINE X 1\n");
+    fs.insert(
+        PathBuf::from("/inc/a.i"),
+        "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n&SCOPED-DEFINE X 1\n",
+    );
     fs.insert(PathBuf::from("/inc/b.i"), "{a.i}\n{1} {2} {*} {&X}\n");
     fs.insert(PathBuf::from("/inc/loop.i"), "{loop.i}\n");
     let include_paths = vec![PathBuf::from("/inc")];

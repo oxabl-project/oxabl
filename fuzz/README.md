@@ -2,7 +2,9 @@
 
 `cargo-fuzz` targets for the lexer, the preprocessor and parser, the lint
 pipeline and the formatter. The crate is outside the workspace, so
-`cargo build --workspace` needs no nightly toolchain.
+`cargo build --workspace` needs no nightly toolchain. The CI job `Fuzz targets`
+formats and lints the crate on stable, so the targets keep compiling; it does
+not run them.
 
 | Target | What it checks |
 | --- | --- |

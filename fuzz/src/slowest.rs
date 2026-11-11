@@ -23,7 +23,10 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "-n" {
-            top = args.next().and_then(|n| n.parse().ok()).expect("-n takes a number");
+            top = args
+                .next()
+                .and_then(|n| n.parse().ok())
+                .expect("-n takes a number");
         } else {
             files.push(arg);
         }
@@ -34,13 +37,21 @@ fn main() {
     let include_paths = vec![PathBuf::from("/inc")];
     let mut rows: Vec<(&str, f64, usize, String)> = Vec::new();
     for file in &files {
-        let Ok(bytes) = std::fs::read(file) else { continue };
-        let source = String::from_utf8_lossy(&bytes).into_owned();
-        let time = |stage: &'static str, rows: &mut Vec<(&str, f64, usize, String)>, run: &dyn Fn()| {
-            let start = Instant::now();
-            run();
-            rows.push((stage, start.elapsed().as_secs_f64() * 1000.0, source.len(), file.clone()));
+        let Ok(bytes) = std::fs::read(file) else {
+            continue;
         };
+        let source = String::from_utf8_lossy(&bytes).into_owned();
+        let time =
+            |stage: &'static str, rows: &mut Vec<(&str, f64, usize, String)>, run: &dyn Fn()| {
+                let start = Instant::now();
+                run();
+                rows.push((
+                    stage,
+                    start.elapsed().as_secs_f64() * 1000.0,
+                    source.len(),
+                    file.clone(),
+                ));
+            };
         time("lex", &mut rows, &|| {
             tokenize(&source);
         });
