@@ -4,7 +4,7 @@
               the shapes that often confuse a highlighter: /* nested
               comments /* in nested comments */ */, "quotes" and
               'apostrophes' inside comments, and blocks inside blocks.
-    Notes   : It's a sample. It touches no database: only a temp-table.
+    Notes   : It's a sample. It touches no database: only temp-tables.
   ----------------------------------------------------------------------*/
 
 USING Progress.Lang.*.
@@ -24,6 +24,13 @@ DEFINE TEMP-TABLE ttLine NO-UNDO
     FIELD qty      AS DECIMAL   DECIMALS 2 INITIAL 0
     FIELD shipped  AS LOGICAL   INITIAL FALSE
     INDEX pkLine IS PRIMARY UNIQUE lineNo.
+
+/* ITEM is an unreserved keyword, so it can name a table */
+DEFINE TEMP-TABLE Item NO-UNDO
+    FIELD itemNum AS INTEGER
+    INDEX pkItem IS PRIMARY UNIQUE itemNum.
+DEFINE BUFFER bItem FOR Item.
+DEFINE TEMP-TABLE ttItemCopy NO-UNDO LIKE Item.
 
 DEFINE VARIABLE cTitle   AS CHARACTER NO-UNDO INITIAL {&APP-NAME}.
 DEFINE VARIABLE cNote    AS CHARACTER NO-UNDO.
@@ -72,6 +79,23 @@ cNote = cNote + "version {&VERSION}":U.
 cNote = cNote + SUBSTITUTE("&1 of &2", 1, {&MAX-LINES}).
 cTitle = "Total:":R20 + STRING(dTotal, "->>,>>9.99").
 end-date = dtStart + 30.
+
+/* ******************************  Records  *************************** */
+
+/* after a record word, Item is a name, not the keyword */
+DO FOR Item TRANSACTION:
+    CREATE Item.
+    Item.itemNum = 1.
+    RELEASE Item.
+    FIND FIRST Item NO-LOCK NO-ERROR.
+    IF AVAILABLE Item AND CAN-FIND(FIRST bItem WHERE bItem.itemNum = 1) THEN DO:
+        CREATE ttItemCopy.
+        BUFFER-COPY Item TO ttItemCopy.
+    END.
+    FOR EACH Item NO-LOCK, EACH bItem OF Item NO-LOCK:
+        hBuffer = BUFFER Item:HANDLE.
+    END.
+END.
 
 /* ****************************  Main Block  ************************** */
 

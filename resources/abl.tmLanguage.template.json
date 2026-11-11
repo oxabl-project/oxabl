@@ -41,6 +41,9 @@
           "include": "#run-target"
         },
         {
+          "include": "#record-names"
+        },
+        {
           "include": "#member-access"
         },
         {
@@ -686,6 +689,65 @@
         },
         "2": {
           "name": "entity.name.function.abl"
+        }
+      }
+    },
+    "record-names": {
+      "match": "(?i)\\b(?<![#$%&.-])(?:((?:(?:{{word:FIND}})(?![\\w#$%&-])(?:\\s+(?:{{word:FIRST}}|{{word:LAST}}|{{word:NEXT}}|{{word:PREV}}|{{word:CURRENT}})(?![\\w#$%&-]))?\\s+|(?:{{word:EACH}}|{{word:FIRST}}|{{word:LAST}}|{{word:BUFFER}}|{{word:BUFFER-COPY}}|{{word:BUFFER-COMPARE}}|{{word:LIKE}})(?![\\w#$%&-])\\s+|(?:{{word:AVAILABLE}}|{{word:AMBIGUOUS}}|{{word:LOCKED}})(?![\\w#$%&-])(?:\\s*\\(\\s*|\\s+)|(?:{{word:CAN-FIND}}|{{word:ROWID}}|{{word:RECID}})\\s*\\(\\s*))(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:PREV}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])|((?:{{word:FOR}})(?![\\w#$%&-])\\s+)((?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:TEMP-TABLE}})(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_])(?:\\s*,\\s*(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))[A-Za-z_][\\w#$%&-]*(?![\\w#$%&-]|\\.[A-Za-z_]))*)(?!\\s+(?:{{word:OF}})(?![\\w#$%&-]))|((?:{{word:OF}})(?![\\w#$%&-])\\s+)(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:$|[,.:)]|/[*/]|(?:{{keywords:reserved}})(?![\\w#$%&-])|(?:{{word:EXCLUSIVE-LOCK}}|{{word:OVERRIDE}})(?![\\w#$%&-])|(?:outer-join|left|table-scan|tenant-where|skip-group-duplicates)(?![\\w#$%&-])))|((?:{{word:CREATE}}|{{word:DELETE}}|{{word:RELEASE}}|{{word:VALIDATE}})(?![\\w#$%&-])\\s+)(?!(?:{{keywords:reserved}}|{{keywords:handle}})(?![\\w#$%&-]))(?!(?:{{word:WIDGET-POOL}})(?![\\w#$%&-]))([A-Za-z_][\\w#$%&-]*)(?![\\w#$%&-]|\\.[A-Za-z_])(?=\\s*(?:\\.(?:\\s|$)|(?:{{word:NO-ERROR}}|{{word:USING}}|{{word:VALIDATE}})(?![\\w#$%&-])|(?:{{word:FOR}})\\s+tenant(?![\\w#$%&-]))))",
+      "captures": {
+        "1": {
+          "patterns": [
+            {
+              "include": "#builtin-function-call"
+            },
+            {
+              "include": "#keywords"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        "2": {
+          "name": "variable.other.abl"
+        },
+        "3": {
+          "patterns": [
+            {
+              "include": "#keywords"
+            }
+          ]
+        },
+        "4": {
+          "patterns": [
+            {
+              "name": "variable.other.abl",
+              "match": "[A-Za-z_][\\w#$%&-]*"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        "5": {
+          "patterns": [
+            {
+              "include": "#keywords"
+            }
+          ]
+        },
+        "6": {
+          "name": "variable.other.abl"
+        },
+        "7": {
+          "patterns": [
+            {
+              "include": "#keywords"
+            }
+          ]
+        },
+        "8": {
+          "name": "variable.other.abl"
         }
       }
     },
