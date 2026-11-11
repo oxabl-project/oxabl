@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.0...oxabl_vscode-v0.3.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **vscode:** show no message when the oxabl program is missing ([f092338](https://github.com/oxabl-project/oxabl/commit/f092338e93674f888f8e9aa4a0c3f27139cc5b46))
+* **vscode:** show no message when the oxabl program is missing ([a429991](https://github.com/oxabl-project/oxabl/commit/a429991be14994eee105586ffa68773e251c080d))
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.2.0...oxabl_vscode-v0.3.0) (2026-11-11)
 
 
