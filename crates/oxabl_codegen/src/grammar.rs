@@ -16,7 +16,9 @@
 //! attribute, method, property or event is *member-only*: it is left out of
 //! `other` when it is a single word that is not a widget option, and the
 //! grammar highlights it only after `:`. Built-in functions form a separate
-//! set, `function`, that the grammar applies only before `(`.
+//! set, `function`, that the grammar applies only before `(`. Reserved
+//! keywords form another, `reserved`: a word in it can never name a table, so
+//! the grammar uses it to tell a table name from a keyword.
 
 use scraper::{Html, Selector};
 use serde_json::Value;
@@ -319,7 +321,8 @@ fn trie_regex(words: &[String]) -> String {
 struct Keywords {
     /// Uppercase keyword name to the length of its shortest legal spelling.
     min_len: HashMap<String, usize>,
-    /// Category name to its sorted spellings, `function` included.
+    /// Category name to its sorted spellings, `function` and `reserved`
+    /// included.
     by_category: BTreeMap<&'static str, Vec<String>>,
 }
 
@@ -464,6 +467,12 @@ impl Keywords {
             spellings.sort();
         }
         by_category.insert("function", function_spellings.into_iter().collect());
+        let reserved_spellings: BTreeSet<String> = reserved
+            .iter()
+            .filter(|n| !n.starts_with('&') && is_word(n))
+            .flat_map(|n| spellings(n))
+            .collect();
+        by_category.insert("reserved", reserved_spellings.into_iter().collect());
 
         Ok(Self {
             min_len,

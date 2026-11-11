@@ -19,7 +19,8 @@ Marketplace. This note records how each part works and why.
 - Two placeholders, only inside JSON strings:
   - `{{word:NAME}}` — a regex for the keyword `NAME` and each legal
     abbreviation. Codegen fails when `NAME` is not a keyword.
-  - `{{keywords:CATEGORY}}` — a regex for each spelling in a category.
+  - `{{keywords:CATEGORY}}` — a regex for each spelling in a category, or
+    in the `function` or `reserved` set.
   Both are tries in lower case, used inside `(?i)` patterns. Codegen fails on
   an unknown placeholder.
 
@@ -45,6 +46,9 @@ Marketplace. This note records how each part works and why.
   `operator-arithmetic`, `control`, `type`, `modifier`, `handle`, `other`. The
   `function` set (the built-in functions of `builtins.rs` with their
   abbreviations, plus `DEFINED`) applies only before `(`.
+- The `reserved` set holds every spelling of a reserved keyword (marked in
+  the index or in `abl_reserved_keywords.txt`). Like `function`, it owns no
+  spellings: the grammar uses it only to tell a table name from a keyword.
 
 ### Rules that are easy to get wrong
 
@@ -66,6 +70,29 @@ Marketplace. This note records how each part works and why.
 - Definitions (`DEFINE`, `PROCEDURE`, `FUNCTION`, `METHOD`, `CLASS`, …) match
   at the start of a line only. This keeps `DELETE PROCEDURE h` and
   `AS CLASS x` from naming a declaration.
+- ABL lets an unreserved keyword name a table (`ITEM`, `MENU`, `RULE`). The
+  `record-names` rule scopes the word after a record word as a name when it
+  is not reserved and not a system handle:
+  - always after `FIND` (and `FIRST`, `LAST`, `NEXT`, `PREV`, `CURRENT`),
+    `EACH`, `FIRST`, `LAST`, `BUFFER`, `BUFFER-COPY`, `BUFFER-COMPARE`,
+    `LIKE`, `AVAILABLE`, `AMBIGUOUS`, `LOCKED`, `CAN-FIND(`, `ROWID(` and
+    `RECID(`. `FIND PREV` at the end of a line keeps `PREV` a keyword: it is
+    the one unreserved `FIND` option;
+  - after `FOR`, a list of names, but not `TEMP-TABLE` and not a word before
+    `OF` (`FOR LOAD OF t`);
+  - after `OF`, only before a reserved word, a lock or join option,
+    punctuation, a comment or the end of the line. So `OF menu NO-LOCK` is a
+    table and `OF MENU-ITEM m-exit` a widget;
+  - after `CREATE`, `DELETE`, `RELEASE` and `VALIDATE`, only before `.`,
+    `NO-ERROR`, `USING`, `VALIDATE` or `FOR TENANT`, and never
+    `WIDGET-POOL`. So `DELETE OBJECT h` and `DELETE PROCEDURE THIS-PROCEDURE`
+    keep their keywords.
+  The keywords before the name keep their scopes: the rule hands them to
+  `#keywords`.
+- The `record-names` rule starts with `\b(?<![#$%&.-])`, not
+  `(?<![\w#$%&.-])`. Before a letter the two match the same, but Oniguruma
+  tries a pattern that starts with a look-behind at every position: the rule
+  cost about 20% more time that way, and 3% with `\b`.
 
 ### Known limits
 
@@ -73,10 +100,12 @@ Marketplace. This note records how each part works and why.
   identifier scopes. So does a definition with a comment between its
   keywords (`DEFINE /* x */ VARIABLE n`): a regex cannot skip a comment that
   can nest.
-- An unreserved keyword used as a name (a variable called `count`) shows as a
-  keyword, and so does a label with a keyword's name (`total:`). LSP semantic
-  tokens are the planned correction: the parser and the semantic model know
-  what each name is.
+- An unreserved keyword used as a name outside a record position (a
+  variable called `count`, a field without its table such as `WHERE date =`)
+  shows as a keyword, and so does a label with a keyword's name (`total:`).
+  So does a table name on the line after its record word, and a table after
+  `TO` in `BUFFER-COPY a TO item`. LSP semantic tokens are the planned
+  correction: the parser and the semantic model know what each name is.
 - The grammar scopes three integer literals joined by `/` with no spaces
   (`10/2/3`) as a date, the same as `12/31/2026`.
 

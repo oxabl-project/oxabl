@@ -19,8 +19,8 @@
 #                                                  ^^^^^^^^^^^^^^^ source.abl comment.block.abl
 >              'apostrophes' inside comments, and blocks inside blocks.
 #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
->    Notes   : It's a sample. It touches no database: only a temp-table.
-#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>    Notes   : It's a sample. It touches no database: only temp-tables.
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
 >  ----------------------------------------------------------------------*/
 #^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
 #                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
@@ -162,6 +162,66 @@
 #                                  ^ source.abl
 #                                   ^^^^^^ source.abl variable.other.abl
 #                                         ^ source.abl punctuation.terminator.statement.abl
+>
+>/* ITEM is an unreserved keyword, so it can name a table */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                         ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>DEFINE TEMP-TABLE Item NO-UNDO
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^^^ source.abl keyword.other.abl
+#                 ^ source.abl
+#                  ^^^^ source.abl entity.name.variable.abl
+#                      ^ source.abl
+#                       ^^^^^^^ source.abl storage.modifier.abl
+>    FIELD itemNum AS INTEGER
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^^^^^^ source.abl entity.name.variable.field.abl
+#                 ^ source.abl
+#                  ^^ source.abl keyword.other.abl
+#                    ^ source.abl
+#                     ^^^^^^^ source.abl storage.type.abl
+>    INDEX pkItem IS PRIMARY UNIQUE itemNum.
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^^^^^ source.abl entity.name.variable.field.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.other.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^ source.abl keyword.other.abl
+#                                  ^ source.abl
+#                                   ^^^^^^^ source.abl variable.other.abl
+#                                          ^ source.abl punctuation.terminator.statement.abl
+>DEFINE BUFFER bItem FOR Item.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^ source.abl keyword.other.abl
+#             ^ source.abl
+#              ^^^^^ source.abl entity.name.variable.abl
+#                   ^ source.abl
+#                    ^^^ source.abl keyword.control.abl
+#                       ^ source.abl
+#                        ^^^^ source.abl variable.other.abl
+#                            ^ source.abl punctuation.terminator.statement.abl
+>DEFINE TEMP-TABLE ttItemCopy NO-UNDO LIKE Item.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^^^ source.abl keyword.other.abl
+#                 ^ source.abl
+#                  ^^^^^^^^^^ source.abl entity.name.variable.abl
+#                            ^ source.abl
+#                             ^^^^^^^ source.abl storage.modifier.abl
+#                                    ^ source.abl
+#                                     ^^^^ source.abl keyword.other.abl
+#                                         ^ source.abl
+#                                          ^^^^ source.abl variable.other.abl
+#                                              ^ source.abl punctuation.terminator.statement.abl
 >
 >DEFINE VARIABLE cTitle   AS CHARACTER NO-UNDO INITIAL {&APP-NAME}.
 #^^^^^^ source.abl keyword.other.define.abl
@@ -688,6 +748,150 @@
 #                    ^ source.abl
 #                     ^^ source.abl constant.numeric.integer.abl
 #                       ^ source.abl punctuation.terminator.statement.abl
+>
+>/* ******************************  Records  *************************** */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>/* after a record word, Item is a name, not the keyword */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>DO FOR Item TRANSACTION:
+#^^ source.abl keyword.control.abl
+#  ^ source.abl
+#   ^^^ source.abl keyword.control.abl
+#      ^ source.abl
+#       ^^^^ source.abl variable.other.abl
+#           ^ source.abl
+#            ^^^^^^^^^^^ source.abl keyword.other.abl
+#                       ^ source.abl punctuation.separator.colon.abl
+>    CREATE Item.
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.abl
+#          ^ source.abl
+#           ^^^^ source.abl variable.other.abl
+#               ^ source.abl punctuation.terminator.statement.abl
+>    Item.itemNum = 1.
+#^^^^ source.abl
+#    ^^^^ source.abl variable.other.abl
+#        ^ source.abl punctuation.accessor.abl
+#         ^^^^^^^ source.abl variable.other.abl
+#                ^ source.abl
+#                 ^ source.abl keyword.operator.assignment.abl
+#                  ^ source.abl
+#                   ^ source.abl constant.numeric.integer.abl
+#                    ^ source.abl punctuation.terminator.statement.abl
+>    RELEASE Item.
+#^^^^ source.abl
+#    ^^^^^^^ source.abl keyword.other.abl
+#           ^ source.abl
+#            ^^^^ source.abl variable.other.abl
+#                ^ source.abl punctuation.terminator.statement.abl
+>    FIND FIRST Item NO-LOCK NO-ERROR.
+#^^^^ source.abl
+#    ^^^^ source.abl keyword.other.abl
+#        ^ source.abl
+#         ^^^^^ source.abl keyword.other.abl
+#              ^ source.abl
+#               ^^^^ source.abl variable.other.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^ source.abl keyword.other.abl
+#                                    ^ source.abl punctuation.terminator.statement.abl
+>    IF AVAILABLE Item AND CAN-FIND(FIRST bItem WHERE bItem.itemNum = 1) THEN DO:
+#^^^^ source.abl
+#    ^^ source.abl keyword.control.abl
+#      ^ source.abl
+#       ^^^^^^^^^ source.abl keyword.other.abl
+#                ^ source.abl
+#                 ^^^^ source.abl variable.other.abl
+#                     ^ source.abl
+#                      ^^^ source.abl keyword.operator.expression.logical.abl
+#                         ^ source.abl
+#                          ^^^^^^^^ source.abl support.function.abl
+#                                  ^ source.abl punctuation.section.parens.begin.abl
+#                                   ^^^^^ source.abl keyword.other.abl
+#                                        ^ source.abl
+#                                         ^^^^^ source.abl variable.other.abl
+#                                              ^ source.abl
+#                                               ^^^^^ source.abl keyword.other.abl
+#                                                    ^ source.abl
+#                                                     ^^^^^ source.abl variable.other.abl
+#                                                          ^ source.abl punctuation.accessor.abl
+#                                                           ^^^^^^^ source.abl variable.other.abl
+#                                                                  ^ source.abl
+#                                                                   ^ source.abl keyword.operator.assignment.abl
+#                                                                    ^ source.abl
+#                                                                     ^ source.abl constant.numeric.integer.abl
+#                                                                      ^ source.abl punctuation.section.parens.end.abl
+#                                                                       ^ source.abl
+#                                                                        ^^^^ source.abl keyword.control.abl
+#                                                                            ^ source.abl
+#                                                                             ^^ source.abl keyword.control.abl
+#                                                                               ^ source.abl punctuation.separator.colon.abl
+>        CREATE ttItemCopy.
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl keyword.other.abl
+#              ^ source.abl
+#               ^^^^^^^^^^ source.abl variable.other.abl
+#                         ^ source.abl punctuation.terminator.statement.abl
+>        BUFFER-COPY Item TO ttItemCopy.
+#^^^^^^^^ source.abl
+#        ^^^^^^^^^^^ source.abl keyword.other.abl
+#                   ^ source.abl
+#                    ^^^^ source.abl variable.other.abl
+#                        ^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^^^ source.abl variable.other.abl
+#                                      ^ source.abl punctuation.terminator.statement.abl
+>    END.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl punctuation.terminator.statement.abl
+>    FOR EACH Item NO-LOCK, EACH bItem OF Item NO-LOCK:
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^ source.abl keyword.control.abl
+#            ^ source.abl
+#             ^^^^ source.abl variable.other.abl
+#                 ^ source.abl
+#                  ^^^^^^^ source.abl keyword.other.abl
+#                         ^ source.abl punctuation.separator.comma.abl
+#                          ^ source.abl
+#                           ^^^^ source.abl keyword.control.abl
+#                               ^ source.abl
+#                                ^^^^^ source.abl variable.other.abl
+#                                     ^ source.abl
+#                                      ^^ source.abl keyword.other.abl
+#                                        ^ source.abl
+#                                         ^^^^ source.abl variable.other.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl keyword.other.abl
+#                                                     ^ source.abl punctuation.separator.colon.abl
+>        hBuffer = BUFFER Item:HANDLE.
+#^^^^^^^^ source.abl
+#        ^^^^^^^ source.abl variable.other.abl
+#               ^ source.abl
+#                ^ source.abl keyword.operator.assignment.abl
+#                 ^ source.abl
+#                  ^^^^^^ source.abl keyword.other.abl
+#                        ^ source.abl
+#                         ^^^^ source.abl variable.other.abl
+#                             ^ source.abl punctuation.accessor.abl
+#                              ^^^^^^ source.abl variable.other.property.abl
+#                                    ^ source.abl punctuation.terminator.statement.abl
+>    END.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl punctuation.terminator.statement.abl
+>END.
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl punctuation.terminator.statement.abl
 >
 >/* ****************************  Main Block  ************************** */
 #^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
