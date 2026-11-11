@@ -56,3 +56,20 @@
 //                           ^^^ - keyword.control.abl keyword.other.abl keyword.other.define.abl keyword.operator.expression.logical.abl keyword.operator.expression.comparison.abl keyword.operator.expression.pattern.abl keyword.operator.expression.arithmetic.abl storage.type.abl storage.modifier.abl variable.language.abl constant.language.boolean.abl support.function.abl
 //                                       ^ variable.other.abl
 
+
+    x = "an end marker */ is only text".
+//      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ string.quoted.double.abl
+//                     ^^ - comment.block.abl comment.line.double-slash.abl
+
+    x = "http://example.com". // a real comment
+//      ^^^^^^^^^^^^^^^^^^^^ string.quoted.double.abl
+//            ^^ - comment.line.double-slash.abl
+//                            ^^^^^^^^^^^^^^^^^ comment.line.double-slash.abl
+
+    x = "ends in a tilde~~" + y.
+//                      ^^ string.quoted.double.abl constant.character.escape.abl
+//                            ^ variable.other.abl
+
+    x = SUBSTITUTE("&1 of &2", y).
+//                  ^^ string.quoted.double.abl
+//                  ^^ - keyword.control.directive.conditional.abl keyword.control.directive.define.abl variable.other.constant.preprocessor.abl

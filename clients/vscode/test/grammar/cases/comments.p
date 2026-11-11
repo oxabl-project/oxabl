@@ -35,3 +35,36 @@
 //        ^ - comment.block.abl comment.line.double-slash.abl
 //        ^ keyword.operator.arithmetic.abl
 
+
+    // holds /* but stays a line comment
+//  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ comment.line.double-slash.abl
+    x = 3.
+//  ^ variable.other.abl
+//  ^ - comment.block.abl comment.line.double-slash.abl
+
+    /* holds // and stays a block comment */ y = 4.
+//  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ comment.block.abl
+//           ^^ - comment.line.double-slash.abl
+//                                           ^ variable.other.abl
+
+    /**/ /***/ /* ends in stars **/ z = 5.
+//  ^^^^ comment.block.abl
+//       ^^^^^ comment.block.abl
+//             ^^^^^^^^^^^^^^^^^^^^ comment.block.abl
+//                                  ^ variable.other.abl
+
+    /* 1 /* 2 /* 3 */ 2 */ 1 */ w = 6.
+//  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ comment.block.abl
+//                              ^ variable.other.abl
+
+    /* an apostrophe: don't stop
+//                    ^^^^^ comment.block.abl
+//                       ^ - string.quoted.single.abl
+    nor at a lone " quote */ v = 7.
+//  ^^^^^^^^^^^^^^^^^^^^^^^^ comment.block.abl
+//                ^ - string.quoted.double.abl
+//                           ^ variable.other.abl
+
+    /* a {&name} reference stays comment text */
+//       ^^^^^^^ comment.block.abl
+//       ^^^^^^^ - variable.other.constant.preprocessor.abl

@@ -70,7 +70,9 @@ Marketplace. This note records how each part works and why.
 ### Known limits
 
 - A definition whose name is on the next line gets plain keyword and
-  identifier scopes.
+  identifier scopes. So does a definition with a comment between its
+  keywords (`DEFINE /* x */ VARIABLE n`): a regex cannot skip a comment that
+  can nest.
 - An unreserved keyword used as a name (a variable called `count`) shows as a
   keyword, and so does a label with a keyword's name (`total:`). LSP semantic
   tokens are the planned correction: the parser and the semantic model know
@@ -84,6 +86,10 @@ From `clients/vscode`:
 
 - `pnpm run test:grammar` — assertion tests (`test/grammar/cases`) and
   snapshot tests (`test/grammar/snapshots`), with `vscode-tmgrammar-test`.
+  `snapshots/grammar-tour.p` is a tour of the grammar in one program that
+  compiles: nested comments, comment markers in strings, escapes, numbers,
+  preprocessor names and blocks nested six deep. Open it to see the
+  highlighting.
 - `pnpm test` — includes `test/grammar/corpus.test.ts`: every regex
   compiles, and every ABL file in the repository tokenizes within a time
   budget, on vscode-textmate 9 and vscode-oniguruma 2, the engine VS Code

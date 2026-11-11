@@ -1,0 +1,1485 @@
+>/*------------------------------------------------------------------------
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>    File    : grammar-tour.p
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>    Purpose : One program that shows how the grammar colours ABL. It mixes
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>              the shapes that often confuse a highlighter: /* nested
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                           ^^ source.abl comment.block.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                                                             ^^^^^^^^ source.abl comment.block.abl comment.block.abl
+>              comments /* in nested comments */ */, "quotes" and
+#^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl comment.block.abl
+#                       ^^ source.abl comment.block.abl comment.block.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                         ^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl comment.block.abl comment.block.abl
+#                                             ^^ source.abl comment.block.abl comment.block.abl comment.block.abl punctuation.definition.comment.end.abl
+#                                               ^ source.abl comment.block.abl comment.block.abl
+#                                                ^^ source.abl comment.block.abl comment.block.abl punctuation.definition.comment.end.abl
+#                                                  ^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>              'apostrophes' inside comments, and blocks inside blocks.
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>    Notes   : It's a sample. It touches no database: only a temp-table.
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>  ----------------------------------------------------------------------*/
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>USING Progress.Lang.*.
+#^^^^^ source.abl keyword.other.using.abl
+#     ^ source.abl
+#      ^^^^^^^^^^^^^^^ source.abl entity.name.namespace.abl
+#                     ^ source.abl punctuation.terminator.statement.abl
+>
+>BLOCK-LEVEL ON ERROR UNDO, THROW.
+#^^^^^^^^^^^ source.abl keyword.other.abl
+#           ^ source.abl
+#            ^^ source.abl keyword.other.abl
+#              ^ source.abl
+#               ^^^^^ source.abl keyword.other.abl
+#                    ^ source.abl
+#                     ^^^^ source.abl keyword.control.abl
+#                         ^ source.abl punctuation.separator.comma.abl
+#                          ^ source.abl
+#                           ^^^^^ source.abl keyword.control.abl
+#                                ^ source.abl punctuation.terminator.statement.abl
+>
+>/* ***************************  Definitions  ************************** */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>&SCOPED-DEFINE APP-NAME  "Grammar tour"  /* a comment after a value */
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                       ^^ source.abl meta.preprocessor.define.abl
+#                         ^ source.abl meta.preprocessor.define.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                          ^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl string.quoted.double.abl
+#                                      ^ source.abl meta.preprocessor.define.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                       ^^ source.abl meta.preprocessor.define.abl
+#                                         ^^ source.abl meta.preprocessor.define.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                                           ^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl comment.block.abl
+#                                                                    ^^ source.abl meta.preprocessor.define.abl comment.block.abl punctuation.definition.comment.end.abl
+>&SCOPED-DEFINE VERSION   1.2
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                      ^^^ source.abl meta.preprocessor.define.abl
+#                         ^^^ source.abl meta.preprocessor.define.abl constant.numeric.decimal.abl
+>&GLOBAL-DEFINE MAX-LINES 3
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                        ^ source.abl meta.preprocessor.define.abl
+#                         ^ source.abl meta.preprocessor.define.abl constant.numeric.integer.abl
+>&SCOPED-DEFINE DEBUG     no
+#^^^^^^^^^^^^^^ source.abl meta.preprocessor.define.abl keyword.control.directive.define.abl
+#              ^ source.abl meta.preprocessor.define.abl
+#               ^^^^^ source.abl meta.preprocessor.define.abl entity.name.function.preprocessor.abl
+#                    ^^^^^ source.abl meta.preprocessor.define.abl
+#                         ^^ source.abl meta.preprocessor.define.abl constant.language.boolean.abl
+>
+>DEFINE TEMP-TABLE ttLine NO-UNDO
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^^^ source.abl keyword.other.abl
+#                 ^ source.abl
+#                  ^^^^^^ source.abl entity.name.variable.abl
+#                        ^ source.abl
+#                         ^^^^^^^ source.abl storage.modifier.abl
+>    FIELD lineNo   AS INTEGER   LABEL "Line"
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^^^^^ source.abl entity.name.variable.field.abl
+#                ^^^ source.abl
+#                   ^^ source.abl keyword.other.abl
+#                     ^ source.abl
+#                      ^^^^^^^ source.abl storage.type.abl
+#                             ^^^ source.abl
+#                                ^^^^^ source.abl keyword.other.abl
+#                                     ^ source.abl
+#                                      ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                       ^^^^ source.abl string.quoted.double.abl
+#                                           ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+>    FIELD itemCode AS CHARACTER FORMAT "x(12)"
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^^^^^^^ source.abl entity.name.variable.field.abl
+#                  ^ source.abl
+#                   ^^ source.abl keyword.other.abl
+#                     ^ source.abl
+#                      ^^^^^^^^^ source.abl storage.type.abl
+#                               ^ source.abl
+#                                ^^^^^^ source.abl keyword.other.abl
+#                                      ^ source.abl
+#                                       ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                        ^^^^^ source.abl string.quoted.double.abl
+#                                             ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+>    FIELD qty      AS DECIMAL   DECIMALS 2 INITIAL 0
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^^ source.abl entity.name.variable.field.abl
+#             ^^^^^^ source.abl
+#                   ^^ source.abl keyword.other.abl
+#                     ^ source.abl
+#                      ^^^^^^^ source.abl storage.type.abl
+#                             ^^^ source.abl
+#                                ^^^^^^^^ source.abl keyword.other.abl
+#                                        ^ source.abl
+#                                         ^ source.abl constant.numeric.integer.abl
+#                                          ^ source.abl
+#                                           ^^^^^^^ source.abl keyword.other.abl
+#                                                  ^ source.abl
+#                                                   ^ source.abl constant.numeric.integer.abl
+>    FIELD shipped  AS LOGICAL   INITIAL FALSE
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^^^^^^ source.abl entity.name.variable.field.abl
+#                 ^^ source.abl
+#                   ^^ source.abl keyword.other.abl
+#                     ^ source.abl
+#                      ^^^^^^^ source.abl storage.type.abl
+#                             ^^^ source.abl
+#                                ^^^^^^^ source.abl keyword.other.abl
+#                                       ^ source.abl
+#                                        ^^^^^ source.abl constant.language.boolean.abl
+>    INDEX pkLine IS PRIMARY UNIQUE lineNo.
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl
+#          ^^^^^^ source.abl entity.name.variable.field.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.other.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^ source.abl keyword.other.abl
+#                                  ^ source.abl
+#                                   ^^^^^^ source.abl variable.other.abl
+#                                         ^ source.abl punctuation.terminator.statement.abl
+>
+>DEFINE VARIABLE cTitle   AS CHARACTER NO-UNDO INITIAL {&APP-NAME}.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl entity.name.variable.abl
+#                      ^^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^^ source.abl storage.type.abl
+#                                     ^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                                                        ^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                                                ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                                                 ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE cNote    AS CHARACTER NO-UNDO.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^ source.abl entity.name.variable.abl
+#                     ^^^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^^ source.abl storage.type.abl
+#                                     ^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE cWords   AS CHARACTER NO-UNDO EXTENT 3
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl entity.name.variable.abl
+#                      ^^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^^ source.abl storage.type.abl
+#                                     ^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl
+#                                              ^^^^^^ source.abl keyword.other.abl
+#                                                    ^ source.abl
+#                                                     ^ source.abl constant.numeric.integer.abl
+>    INITIAL ["one", "two", "three"].
+#^^^^ source.abl
+#    ^^^^^^^ source.abl keyword.other.abl
+#           ^ source.abl
+#            ^ source.abl punctuation.section.brackets.begin.abl
+#             ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#              ^^^ source.abl string.quoted.double.abl
+#                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                  ^ source.abl punctuation.separator.comma.abl
+#                   ^ source.abl
+#                    ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                     ^^^ source.abl string.quoted.double.abl
+#                        ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                         ^ source.abl punctuation.separator.comma.abl
+#                          ^ source.abl
+#                           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                            ^^^^^ source.abl string.quoted.double.abl
+#                                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                  ^ source.abl punctuation.section.brackets.end.abl
+#                                   ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE iCount   AS INTEGER   NO-UNDO.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl entity.name.variable.abl
+#                      ^^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^ source.abl storage.type.abl
+#                                   ^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE iAttempt AS INTEGER   NO-UNDO.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^^^ source.abl entity.name.variable.abl
+#                        ^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^ source.abl storage.type.abl
+#                                   ^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE iBig     AS INT64     NO-UNDO INITIAL 9000000000.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^ source.abl entity.name.variable.abl
+#                    ^^^^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^ source.abl storage.type.abl
+#                                 ^^^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^^^^^^^^^^ source.abl constant.numeric.integer.abl
+#                                                                ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE dTotal   AS DECIMAL   NO-UNDO INITIAL -12.5.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl entity.name.variable.abl
+#                      ^^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^ source.abl storage.type.abl
+#                                   ^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^ source.abl keyword.operator.arithmetic.abl
+#                                                       ^^^^ source.abl constant.numeric.decimal.abl
+#                                                           ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE dRate    AS DECIMAL   NO-UNDO INITIAL .075.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^ source.abl entity.name.variable.abl
+#                     ^^^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^ source.abl storage.type.abl
+#                                   ^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^^^^ source.abl constant.numeric.decimal.abl
+#                                                          ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE dtStart  AS DATE      NO-UNDO INITIAL 12/31/2025.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^^ source.abl entity.name.variable.abl
+#                       ^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^ source.abl storage.type.abl
+#                                ^^^^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^^^^^^^^^^ source.abl constant.numeric.date.abl
+#                                                                ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE end-date AS DATE      NO-UNDO. /* "end" inside a name */
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^^^ source.abl entity.name.variable.abl
+#                        ^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^ source.abl storage.type.abl
+#                                ^^^^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl punctuation.terminator.statement.abl
+#                                              ^ source.abl
+#                                               ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                                                 ^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                      ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>DEFINE VARIABLE do-again AS LOGICAL   NO-UNDO INITIAL YES.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^^^ source.abl entity.name.variable.abl
+#                        ^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^ source.abl storage.type.abl
+#                                   ^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^^^ source.abl constant.language.boolean.abl
+#                                                         ^ source.abl punctuation.terminator.statement.abl
+>DEFINE VARIABLE hBuffer  AS HANDLE    NO-UNDO.
+#^^^^^^ source.abl keyword.other.define.abl
+#      ^ source.abl
+#       ^^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^^ source.abl entity.name.variable.abl
+#                       ^^ source.abl
+#                         ^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^ source.abl storage.type.abl
+#                                  ^^^^ source.abl
+#                                      ^^^^^^^ source.abl storage.modifier.abl
+#                                             ^ source.abl punctuation.terminator.statement.abl
+>DEF VAR cShort AS CHAR NO-UNDO. // DEF, VAR and CHAR are abbreviations
+#^^^ source.abl keyword.other.define.abl
+#   ^ source.abl
+#    ^^^ source.abl keyword.other.abl
+#       ^ source.abl
+#        ^^^^^^ source.abl entity.name.variable.abl
+#              ^ source.abl
+#               ^^ source.abl keyword.other.abl
+#                 ^ source.abl
+#                  ^^^^ source.abl storage.type.abl
+#                      ^ source.abl
+#                       ^^^^^^^ source.abl storage.modifier.abl
+#                              ^ source.abl punctuation.terminator.statement.abl
+#                               ^ source.abl
+#                                ^^ source.abl comment.line.double-slash.abl punctuation.definition.comment.abl
+#                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.line.double-slash.abl
+>
+>DEFINE /* a comment between keywords */ VARIABLE iInline /* and another */
+#^^^^^^ source.abl keyword.other.abl
+#      ^ source.abl
+#       ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                     ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+#                                       ^ source.abl
+#                                        ^^^^^^^^ source.abl keyword.other.abl
+#                                                ^ source.abl
+#                                                 ^^^^^^^ source.abl variable.other.abl
+#                                                        ^ source.abl
+#                                                         ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                                                           ^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>    AS INTEGER NO-UNDO.
+#^^^^ source.abl
+#    ^^ source.abl keyword.other.abl
+#      ^ source.abl
+#       ^^^^^^^ source.abl storage.type.abl
+#              ^ source.abl
+#               ^^^^^^^ source.abl storage.modifier.abl
+#                      ^ source.abl punctuation.terminator.statement.abl
+>
+>FUNCTION lineLabel RETURNS CHARACTER (INPUT ipLine AS INTEGER) FORWARD.
+#^^^^^^^^ source.abl storage.type.function.abl
+#        ^ source.abl
+#         ^^^^^^^^^ source.abl entity.name.function.abl
+#                  ^ source.abl
+#                   ^^^^^^^ source.abl keyword.other.abl
+#                          ^ source.abl
+#                           ^^^^^^^^^ source.abl storage.type.abl
+#                                    ^ source.abl
+#                                     ^ source.abl punctuation.section.parens.begin.abl
+#                                      ^^^^^ source.abl storage.modifier.abl
+#                                           ^ source.abl
+#                                            ^^^^^^ source.abl variable.parameter.abl
+#                                                  ^ source.abl
+#                                                   ^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^^^^^^^ source.abl storage.type.abl
+#                                                             ^ source.abl punctuation.section.parens.end.abl
+#                                                              ^ source.abl
+#                                                               ^^^^^^^ source.abl keyword.other.abl
+#                                                                      ^ source.abl punctuation.terminator.statement.abl
+>
+>/* *****************************  Comments  *************************** */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>/**/
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>/***/
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^ source.abl comment.block.abl
+#   ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>/* a comment that ends in stars **/
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                 ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>/* level 1 /* level 2 /* level 3 */ back in 2 */ back in 1 */ iCount = 1.
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^ source.abl comment.block.abl
+#           ^^ source.abl comment.block.abl comment.block.abl punctuation.definition.comment.begin.abl
+#             ^^^^^^^^^ source.abl comment.block.abl comment.block.abl
+#                      ^^ source.abl comment.block.abl comment.block.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                        ^^^^^^^^^ source.abl comment.block.abl comment.block.abl comment.block.abl
+#                                 ^^ source.abl comment.block.abl comment.block.abl comment.block.abl punctuation.definition.comment.end.abl
+#                                   ^^^^^^^^^^^ source.abl comment.block.abl comment.block.abl
+#                                              ^^ source.abl comment.block.abl comment.block.abl punctuation.definition.comment.end.abl
+#                                                ^^^^^^^^^^^ source.abl comment.block.abl
+#                                                           ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+#                                                             ^ source.abl
+#                                                              ^^^^^^ source.abl variable.other.abl
+#                                                                    ^ source.abl
+#                                                                     ^ source.abl keyword.operator.assignment.abl
+#                                                                      ^ source.abl
+#                                                                       ^ source.abl constant.numeric.integer.abl
+#                                                                        ^ source.abl punctuation.terminator.statement.abl
+>/* a block comment that holds // and is still one block comment */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>// a line comment that holds /* and is still one line comment
+#^^ source.abl comment.line.double-slash.abl punctuation.definition.comment.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.line.double-slash.abl
+>/* a comment with an apostrophe: don't stop here,
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>   and a lone " quote over
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>   three lines */ cShort = "after the comment".
+#^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#               ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+#                 ^ source.abl
+#                  ^^^^^^ source.abl variable.other.abl
+#                        ^ source.abl
+#                         ^ source.abl keyword.operator.assignment.abl
+#                          ^ source.abl
+#                           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                            ^^^^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                             ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                              ^ source.abl punctuation.terminator.statement.abl
+>/* a tilde ~ in a comment escapes nothing */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                          ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>/* ******************************  Strings  *************************** */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>cNote = "It's ~"quoted~" twice: ""like this""".
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#         ^^^^^ source.abl string.quoted.double.abl
+#              ^^ source.abl string.quoted.double.abl constant.character.escape.abl
+#                ^^^^^^ source.abl string.quoted.double.abl
+#                      ^^ source.abl string.quoted.double.abl constant.character.escape.abl
+#                        ^^^^^^^^ source.abl string.quoted.double.abl
+#                                ^^ source.abl string.quoted.double.abl constant.character.escape.abl
+#                                  ^^^^^^^^^ source.abl string.quoted.double.abl
+#                                           ^^ source.abl string.quoted.double.abl constant.character.escape.abl
+#                                             ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                              ^ source.abl punctuation.terminator.statement.abl
+>cNote = cNote + ' and ''single'' too'.
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^ source.abl string.quoted.single.abl punctuation.definition.string.begin.abl
+#                 ^^^^^ source.abl string.quoted.single.abl
+#                      ^^ source.abl string.quoted.single.abl constant.character.escape.abl
+#                        ^^^^^^ source.abl string.quoted.single.abl
+#                              ^^ source.abl string.quoted.single.abl constant.character.escape.abl
+#                                ^^^^ source.abl string.quoted.single.abl
+#                                    ^ source.abl string.quoted.single.abl punctuation.definition.string.end.abl
+#                                     ^ source.abl punctuation.terminator.statement.abl
+>cNote = cNote + "/* not a comment */ // not a line comment".
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                                          ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                           ^ source.abl punctuation.terminator.statement.abl
+>cNote = cNote + "an end marker */ is only text".
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                              ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                               ^ source.abl punctuation.terminator.statement.abl
+>cNote = cNote + "http://example.com/path". // a real comment after a URL
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                 ^^^^^^^^^^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                        ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                         ^ source.abl punctuation.terminator.statement.abl
+#                                          ^ source.abl
+#                                           ^^ source.abl comment.line.double-slash.abl punctuation.definition.comment.abl
+#                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.line.double-slash.abl
+>cNote = cNote + "tab~tnewline~nends in a tilde~~".
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                 ^^^ source.abl string.quoted.double.abl
+#                    ^^ source.abl string.quoted.double.abl constant.character.escape.abl
+#                      ^^^^^^^ source.abl string.quoted.double.abl
+#                             ^^ source.abl string.quoted.double.abl constant.character.escape.abl
+#                               ^^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                              ^^ source.abl string.quoted.double.abl constant.character.escape.abl
+#                                                ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                 ^ source.abl punctuation.terminator.statement.abl
+>cNote = cNote + "one string
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                 ^^^^^^^^^^^ source.abl string.quoted.double.abl
+>over two lines".
+#^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#              ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#               ^ source.abl punctuation.terminator.statement.abl
+>cNote = cNote + "version {&VERSION}":U.
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                 ^^^^^^^^ source.abl string.quoted.double.abl
+#                         ^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                           ^^^^^^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                  ^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                   ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                    ^ source.abl string.quoted.double.abl punctuation.separator.string-attribute.abl
+#                                     ^ source.abl string.quoted.double.abl storage.modifier.string-attribute.abl
+#                                      ^ source.abl punctuation.terminator.statement.abl
+>cNote = cNote + SUBSTITUTE("&1 of &2", 1, {&MAX-LINES}).
+#^^^^^ source.abl variable.other.abl
+#     ^ source.abl
+#      ^ source.abl keyword.operator.assignment.abl
+#       ^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.arithmetic.abl
+#               ^ source.abl
+#                ^^^^^^^^^^ source.abl support.function.abl
+#                          ^ source.abl punctuation.section.parens.begin.abl
+#                           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                            ^^^^^^^^ source.abl string.quoted.double.abl
+#                                    ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                     ^ source.abl punctuation.separator.comma.abl
+#                                      ^ source.abl
+#                                       ^ source.abl constant.numeric.integer.abl
+#                                        ^ source.abl punctuation.separator.comma.abl
+#                                         ^ source.abl
+#                                          ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                                            ^^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                                     ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                                      ^ source.abl punctuation.section.parens.end.abl
+#                                                       ^ source.abl punctuation.terminator.statement.abl
+>cTitle = "Total:":R20 + STRING(dTotal, "->>,>>9.99").
+#^^^^^^ source.abl variable.other.abl
+#      ^ source.abl
+#       ^ source.abl keyword.operator.assignment.abl
+#        ^ source.abl
+#         ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#          ^^^^^^ source.abl string.quoted.double.abl
+#                ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                 ^ source.abl string.quoted.double.abl punctuation.separator.string-attribute.abl
+#                  ^^^ source.abl string.quoted.double.abl storage.modifier.string-attribute.abl
+#                     ^ source.abl
+#                      ^ source.abl keyword.operator.arithmetic.abl
+#                       ^ source.abl
+#                        ^^^^^^ source.abl support.function.abl
+#                              ^ source.abl punctuation.section.parens.begin.abl
+#                               ^^^^^^ source.abl variable.other.abl
+#                                     ^ source.abl punctuation.separator.comma.abl
+#                                      ^ source.abl
+#                                       ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                        ^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                                  ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                   ^ source.abl punctuation.section.parens.end.abl
+#                                                    ^ source.abl punctuation.terminator.statement.abl
+>end-date = dtStart + 30.
+#^^^^^^^^ source.abl variable.other.abl
+#        ^ source.abl
+#         ^ source.abl keyword.operator.assignment.abl
+#          ^ source.abl
+#           ^^^^^^^ source.abl variable.other.abl
+#                  ^ source.abl
+#                   ^ source.abl keyword.operator.arithmetic.abl
+#                    ^ source.abl
+#                     ^^ source.abl constant.numeric.integer.abl
+#                       ^ source.abl punctuation.terminator.statement.abl
+>
+>/* ****************************  Main Block  ************************** */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>main-block:
+#^^^^^^^^^^ source.abl entity.name.label.abl
+#          ^ source.abl punctuation.separator.label.abl
+>DO ON ERROR UNDO, LEAVE:
+#^^ source.abl keyword.control.abl
+#  ^ source.abl
+#   ^^ source.abl keyword.other.abl
+#     ^ source.abl
+#      ^^^^^ source.abl keyword.other.abl
+#           ^ source.abl
+#            ^^^^ source.abl keyword.control.abl
+#                ^ source.abl punctuation.separator.comma.abl
+#                 ^ source.abl
+#                  ^^^^^ source.abl keyword.control.abl
+#                       ^ source.abl punctuation.separator.colon.abl
+>    RUN fillLines (INPUT {&MAX-LINES}).
+#^^^^ source.abl
+#    ^^^ source.abl keyword.other.abl
+#       ^ source.abl
+#        ^^^^^^^^^ source.abl entity.name.function.abl
+#                 ^ source.abl
+#                  ^ source.abl punctuation.section.parens.begin.abl
+#                   ^^^^^ source.abl storage.modifier.abl
+#                        ^ source.abl
+#                         ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                           ^^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                    ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                     ^ source.abl punctuation.section.parens.end.abl
+#                                      ^ source.abl punctuation.terminator.statement.abl
+>
+>    line-loop:
+#^^^^ source.abl
+#    ^^^^^^^^^ source.abl entity.name.label.abl
+#             ^ source.abl punctuation.separator.label.abl
+>    FOR EACH ttLine NO-LOCK
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^ source.abl keyword.control.abl
+#            ^ source.abl
+#             ^^^^^^ source.abl variable.other.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl keyword.other.abl
+>        WHERE ttLine.qty >= 0
+#^^^^^^^^ source.abl
+#        ^^^^^ source.abl keyword.other.abl
+#             ^ source.abl
+#              ^^^^^^ source.abl variable.other.abl
+#                    ^ source.abl punctuation.accessor.abl
+#                     ^^^ source.abl variable.other.abl
+#                        ^ source.abl
+#                         ^^ source.abl keyword.operator.comparison.abl
+#                           ^ source.abl
+#                            ^ source.abl constant.numeric.integer.abl
+>        BY ttLine.lineNo DESCENDING:
+#^^^^^^^^ source.abl
+#        ^^ source.abl keyword.other.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl variable.other.abl
+#                 ^ source.abl punctuation.accessor.abl
+#                  ^^^^^^ source.abl variable.other.abl
+#                        ^ source.abl
+#                         ^^^^^^^^^^ source.abl keyword.other.abl
+#                                   ^ source.abl punctuation.separator.colon.abl
+>
+>        IF ttLine.qty > 1000 THEN
+#^^^^^^^^ source.abl
+#        ^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl variable.other.abl
+#                 ^ source.abl punctuation.accessor.abl
+#                  ^^^ source.abl variable.other.abl
+#                     ^ source.abl
+#                      ^ source.abl keyword.operator.comparison.abl
+#                       ^ source.abl
+#                        ^^^^ source.abl constant.numeric.integer.abl
+#                            ^ source.abl
+#                             ^^^^ source.abl keyword.control.abl
+>            UNDO, THROW NEW AppError("Too many items", 42).
+#^^^^^^^^^^^^ source.abl
+#            ^^^^ source.abl keyword.control.abl
+#                ^ source.abl punctuation.separator.comma.abl
+#                 ^ source.abl
+#                  ^^^^^ source.abl keyword.control.abl
+#                       ^ source.abl
+#                        ^^^ source.abl keyword.operator.new.abl
+#                           ^ source.abl
+#                            ^^^^^^^^ source.abl entity.name.type.abl
+#                                    ^ source.abl punctuation.section.parens.begin.abl
+#                                     ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                      ^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                                    ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                     ^ source.abl punctuation.separator.comma.abl
+#                                                      ^ source.abl
+#                                                       ^^ source.abl constant.numeric.integer.abl
+#                                                         ^ source.abl punctuation.section.parens.end.abl
+#                                                          ^ source.abl punctuation.terminator.statement.abl
+>
+>        IF ttLine.shipped THEN DO:
+#^^^^^^^^ source.abl
+#        ^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl variable.other.abl
+#                 ^ source.abl punctuation.accessor.abl
+#                  ^^^^^^^ source.abl variable.other.abl
+#                         ^ source.abl
+#                          ^^^^ source.abl keyword.control.abl
+#                              ^ source.abl
+#                               ^^ source.abl keyword.control.abl
+#                                 ^ source.abl punctuation.separator.colon.abl
+>            /* a DO in an IF in a FOR EACH in a labelled DO */
+#^^^^^^^^^^^^ source.abl
+#            ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                            ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>            IF ttLine.qty > 100 THEN
+#^^^^^^^^^^^^ source.abl
+#            ^^ source.abl keyword.control.abl
+#              ^ source.abl
+#               ^^^^^^ source.abl variable.other.abl
+#                     ^ source.abl punctuation.accessor.abl
+#                      ^^^ source.abl variable.other.abl
+#                         ^ source.abl
+#                          ^ source.abl keyword.operator.comparison.abl
+#                           ^ source.abl
+#                            ^^^ source.abl constant.numeric.integer.abl
+#                               ^ source.abl
+#                                ^^^^ source.abl keyword.control.abl
+>                LEAVE line-loop.
+#^^^^^^^^^^^^^^^^ source.abl
+#                ^^^^^ source.abl keyword.control.abl
+#                     ^ source.abl
+#                      ^^^^^^^^^ source.abl variable.other.abl
+#                               ^ source.abl punctuation.terminator.statement.abl
+>            ELSE IF ttLine.qty = 0 THEN DO:
+#^^^^^^^^^^^^ source.abl
+#            ^^^^ source.abl keyword.control.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.control.abl
+#                   ^ source.abl
+#                    ^^^^^^ source.abl variable.other.abl
+#                          ^ source.abl punctuation.accessor.abl
+#                           ^^^ source.abl variable.other.abl
+#                              ^ source.abl
+#                               ^ source.abl keyword.operator.assignment.abl
+#                                ^ source.abl
+#                                 ^ source.abl constant.numeric.integer.abl
+#                                  ^ source.abl
+#                                   ^^^^ source.abl keyword.control.abl
+#                                       ^ source.abl
+#                                        ^^ source.abl keyword.control.abl
+#                                          ^ source.abl punctuation.separator.colon.abl
+>                NEXT line-loop.
+#^^^^^^^^^^^^^^^^ source.abl
+#                ^^^^ source.abl keyword.control.abl
+#                    ^ source.abl
+#                     ^^^^^^^^^ source.abl variable.other.abl
+#                              ^ source.abl punctuation.terminator.statement.abl
+>            END.
+#^^^^^^^^^^^^ source.abl
+#            ^^^ source.abl keyword.control.abl
+#               ^ source.abl punctuation.terminator.statement.abl
+>        END.
+#^^^^^^^^ source.abl
+#        ^^^ source.abl keyword.control.abl
+#           ^ source.abl punctuation.terminator.statement.abl
+>        ELSE DO:
+#^^^^^^^^ source.abl
+#        ^^^^ source.abl keyword.control.abl
+#            ^ source.abl
+#             ^^ source.abl keyword.control.abl
+#               ^ source.abl punctuation.separator.colon.abl
+>            CASE ttLine.lineNo MODULO 3:
+#^^^^^^^^^^^^ source.abl
+#            ^^^^ source.abl keyword.control.abl
+#                ^ source.abl
+#                 ^^^^^^ source.abl variable.other.abl
+#                       ^ source.abl punctuation.accessor.abl
+#                        ^^^^^^ source.abl variable.other.abl
+#                              ^ source.abl
+#                               ^^^^^^ source.abl keyword.operator.expression.arithmetic.abl
+#                                     ^ source.abl
+#                                      ^ source.abl constant.numeric.integer.abl
+#                                       ^ source.abl punctuation.separator.colon.abl
+>                WHEN 0 THEN
+#^^^^^^^^^^^^^^^^ source.abl
+#                ^^^^ source.abl keyword.control.abl
+#                    ^ source.abl
+#                     ^ source.abl constant.numeric.integer.abl
+#                      ^ source.abl
+#                       ^^^^ source.abl keyword.control.abl
+>                    cNote = "fizz".
+#^^^^^^^^^^^^^^^^^^^^ source.abl
+#                    ^^^^^ source.abl variable.other.abl
+#                         ^ source.abl
+#                          ^ source.abl keyword.operator.assignment.abl
+#                           ^ source.abl
+#                            ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                             ^^^^ source.abl string.quoted.double.abl
+#                                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                  ^ source.abl punctuation.terminator.statement.abl
+>                WHEN 1 OR WHEN 2 THEN DO:
+#^^^^^^^^^^^^^^^^ source.abl
+#                ^^^^ source.abl keyword.control.abl
+#                    ^ source.abl
+#                     ^ source.abl constant.numeric.integer.abl
+#                      ^ source.abl
+#                       ^^ source.abl keyword.operator.expression.logical.abl
+#                         ^ source.abl
+#                          ^^^^ source.abl keyword.control.abl
+#                              ^ source.abl
+#                               ^ source.abl constant.numeric.integer.abl
+#                                ^ source.abl
+#                                 ^^^^ source.abl keyword.control.abl
+#                                     ^ source.abl
+#                                      ^^ source.abl keyword.control.abl
+#                                        ^ source.abl punctuation.separator.colon.abl
+>                    retry-loop:
+#^^^^^^^^^^^^^^^^^^^^ source.abl
+#                    ^^^^^^^^^^ source.abl entity.name.label.abl
+#                              ^ source.abl punctuation.separator.label.abl
+>                    REPEAT iAttempt = 1 TO 3:
+#^^^^^^^^^^^^^^^^^^^^ source.abl
+#                    ^^^^^^ source.abl keyword.control.abl
+#                          ^ source.abl
+#                           ^^^^^^^^ source.abl variable.other.abl
+#                                   ^ source.abl
+#                                    ^ source.abl keyword.operator.assignment.abl
+#                                     ^ source.abl
+#                                      ^ source.abl constant.numeric.integer.abl
+#                                       ^ source.abl
+#                                        ^^ source.abl keyword.other.abl
+#                                          ^ source.abl
+#                                           ^ source.abl constant.numeric.integer.abl
+#                                            ^ source.abl punctuation.separator.colon.abl
+>                        IF iAttempt >= 2 AND NOT do-again THEN
+#^^^^^^^^^^^^^^^^^^^^^^^^ source.abl
+#                        ^^ source.abl keyword.control.abl
+#                          ^ source.abl
+#                           ^^^^^^^^ source.abl variable.other.abl
+#                                   ^ source.abl
+#                                    ^^ source.abl keyword.operator.comparison.abl
+#                                      ^ source.abl
+#                                       ^ source.abl constant.numeric.integer.abl
+#                                        ^ source.abl
+#                                         ^^^ source.abl keyword.operator.expression.logical.abl
+#                                            ^ source.abl
+#                                             ^^^ source.abl keyword.operator.expression.logical.abl
+#                                                ^ source.abl
+#                                                 ^^^^^^^^ source.abl variable.other.abl
+#                                                         ^ source.abl
+#                                                          ^^^^ source.abl keyword.control.abl
+>                            LEAVE retry-loop.
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl
+#                            ^^^^^ source.abl keyword.control.abl
+#                                 ^ source.abl
+#                                  ^^^^^^^^^^ source.abl variable.other.abl
+#                                            ^ source.abl punctuation.terminator.statement.abl
+>                        iInline = iInline + iAttempt.
+#^^^^^^^^^^^^^^^^^^^^^^^^ source.abl
+#                        ^^^^^^^ source.abl variable.other.abl
+#                               ^ source.abl
+#                                ^ source.abl keyword.operator.assignment.abl
+#                                 ^ source.abl
+#                                  ^^^^^^^ source.abl variable.other.abl
+#                                         ^ source.abl
+#                                          ^ source.abl keyword.operator.arithmetic.abl
+#                                           ^ source.abl
+#                                            ^^^^^^^^ source.abl variable.other.abl
+#                                                    ^ source.abl punctuation.terminator.statement.abl
+>                    END. /* REPEAT */
+#^^^^^^^^^^^^^^^^^^^^ source.abl
+#                    ^^^ source.abl keyword.control.abl
+#                       ^ source.abl punctuation.terminator.statement.abl
+#                        ^ source.abl
+#                         ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                           ^^^^^^^^ source.abl comment.block.abl
+#                                   ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>                END.
+#^^^^^^^^^^^^^^^^ source.abl
+#                ^^^ source.abl keyword.control.abl
+#                   ^ source.abl punctuation.terminator.statement.abl
+>                OTHERWISE
+#^^^^^^^^^^^^^^^^ source.abl
+#                ^^^^^^^^^ source.abl keyword.control.abl
+>                    cNote = ?.
+#^^^^^^^^^^^^^^^^^^^^ source.abl
+#                    ^^^^^ source.abl variable.other.abl
+#                         ^ source.abl
+#                          ^ source.abl keyword.operator.assignment.abl
+#                           ^ source.abl
+#                            ^ source.abl constant.language.unknown.abl
+#                             ^ source.abl punctuation.terminator.statement.abl
+>            END CASE.
+#^^^^^^^^^^^^ source.abl
+#            ^^^ source.abl keyword.control.abl
+#               ^ source.abl
+#                ^^^^ source.abl keyword.control.abl
+#                    ^ source.abl punctuation.terminator.statement.abl
+>        END.
+#^^^^^^^^ source.abl
+#        ^^^ source.abl keyword.control.abl
+#           ^ source.abl punctuation.terminator.statement.abl
+>
+>        dTotal = dTotal + ttLine.qty * (1 + dRate).
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl variable.other.abl
+#              ^ source.abl
+#               ^ source.abl keyword.operator.assignment.abl
+#                ^ source.abl
+#                 ^^^^^^ source.abl variable.other.abl
+#                       ^ source.abl
+#                        ^ source.abl keyword.operator.arithmetic.abl
+#                         ^ source.abl
+#                          ^^^^^^ source.abl variable.other.abl
+#                                ^ source.abl punctuation.accessor.abl
+#                                 ^^^ source.abl variable.other.abl
+#                                    ^ source.abl
+#                                     ^ source.abl keyword.operator.arithmetic.abl
+#                                      ^ source.abl
+#                                       ^ source.abl punctuation.section.parens.begin.abl
+#                                        ^ source.abl constant.numeric.integer.abl
+#                                         ^ source.abl
+#                                          ^ source.abl keyword.operator.arithmetic.abl
+#                                           ^ source.abl
+#                                            ^^^^^ source.abl variable.other.abl
+#                                                 ^ source.abl punctuation.section.parens.end.abl
+#                                                  ^ source.abl punctuation.terminator.statement.abl
+>    END. // FOR EACH
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl punctuation.terminator.statement.abl
+#        ^ source.abl
+#         ^^ source.abl comment.line.double-slash.abl punctuation.definition.comment.abl
+#           ^^^^^^^^^ source.abl comment.line.double-slash.abl
+>
+>    DO iCount = 1 TO EXTENT(cWords) WHILE do-again:
+#^^^^ source.abl
+#    ^^ source.abl keyword.control.abl
+#      ^ source.abl
+#       ^^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.assignment.abl
+#               ^ source.abl
+#                ^ source.abl constant.numeric.integer.abl
+#                 ^ source.abl
+#                  ^^ source.abl keyword.other.abl
+#                    ^ source.abl
+#                     ^^^^^^ source.abl support.function.abl
+#                           ^ source.abl punctuation.section.parens.begin.abl
+#                            ^^^^^^ source.abl variable.other.abl
+#                                  ^ source.abl punctuation.section.parens.end.abl
+#                                   ^ source.abl
+#                                    ^^^^^ source.abl keyword.control.abl
+#                                         ^ source.abl
+#                                          ^^^^^^^^ source.abl variable.other.abl
+#                                                  ^ source.abl punctuation.separator.colon.abl
+>        IF cWords[iCount] BEGINS "t" OR cWords[iCount] MATCHES "*e" THEN
+#^^^^^^^^ source.abl
+#        ^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl variable.other.abl
+#                 ^ source.abl punctuation.section.brackets.begin.abl
+#                  ^^^^^^ source.abl variable.other.abl
+#                        ^ source.abl punctuation.section.brackets.end.abl
+#                         ^ source.abl
+#                          ^^^^^^ source.abl keyword.operator.expression.pattern.abl
+#                                ^ source.abl
+#                                 ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                  ^ source.abl string.quoted.double.abl
+#                                   ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                    ^ source.abl
+#                                     ^^ source.abl keyword.operator.expression.logical.abl
+#                                       ^ source.abl
+#                                        ^^^^^^ source.abl variable.other.abl
+#                                              ^ source.abl punctuation.section.brackets.begin.abl
+#                                               ^^^^^^ source.abl variable.other.abl
+#                                                     ^ source.abl punctuation.section.brackets.end.abl
+#                                                      ^ source.abl
+#                                                       ^^^^^^^ source.abl keyword.operator.expression.pattern.abl
+#                                                              ^ source.abl
+#                                                               ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                                                ^^ source.abl string.quoted.double.abl
+#                                                                  ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                                   ^ source.abl
+#                                                                    ^^^^ source.abl keyword.control.abl
+>            cNote = cWords[iCount].
+#^^^^^^^^^^^^ source.abl
+#            ^^^^^ source.abl variable.other.abl
+#                 ^ source.abl
+#                  ^ source.abl keyword.operator.assignment.abl
+#                   ^ source.abl
+#                    ^^^^^^ source.abl variable.other.abl
+#                          ^ source.abl punctuation.section.brackets.begin.abl
+#                           ^^^^^^ source.abl variable.other.abl
+#                                 ^ source.abl punctuation.section.brackets.end.abl
+#                                  ^ source.abl punctuation.terminator.statement.abl
+>    END.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl punctuation.terminator.statement.abl
+>
+>    CATCH eError AS Error:
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.control.abl
+#         ^ source.abl
+#          ^^^^^^ source.abl variable.other.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.other.abl
+#                   ^ source.abl
+#                    ^^^^^ source.abl entity.name.type.abl
+#                         ^ source.abl punctuation.separator.colon.abl
+>        MESSAGE eError:GetMessage(1) VIEW-AS ALERT-BOX ERROR.
+#^^^^^^^^ source.abl
+#        ^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl variable.other.abl
+#                      ^ source.abl punctuation.accessor.abl
+#                       ^^^^^^^^^^ source.abl entity.name.function.member.abl
+#                                 ^ source.abl punctuation.section.parens.begin.abl
+#                                  ^ source.abl constant.numeric.integer.abl
+#                                   ^ source.abl punctuation.section.parens.end.abl
+#                                    ^ source.abl
+#                                     ^^^^^^^ source.abl keyword.other.abl
+#                                            ^ source.abl
+#                                             ^^^^^^^^^ source.abl keyword.other.abl
+#                                                      ^ source.abl
+#                                                       ^^^^^ source.abl keyword.other.abl
+#                                                            ^ source.abl punctuation.terminator.statement.abl
+>    END CATCH.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^ source.abl keyword.control.abl
+#             ^ source.abl punctuation.terminator.statement.abl
+>
+>    FINALLY:
+#^^^^ source.abl
+#    ^^^^^^^ source.abl keyword.control.abl
+#           ^ source.abl punctuation.separator.colon.abl
+>        hBuffer = BUFFER ttLine:HANDLE.
+#^^^^^^^^ source.abl
+#        ^^^^^^^ source.abl variable.other.abl
+#               ^ source.abl
+#                ^ source.abl keyword.operator.assignment.abl
+#                 ^ source.abl
+#                  ^^^^^^ source.abl keyword.other.abl
+#                        ^ source.abl
+#                         ^^^^^^ source.abl variable.other.abl
+#                               ^ source.abl punctuation.accessor.abl
+#                                ^^^^^^ source.abl variable.other.property.abl
+#                                      ^ source.abl punctuation.terminator.statement.abl
+>        MESSAGE cTitle SKIP lineLabel(iCount) SKIP hBuffer:NAME
+#^^^^^^^^ source.abl
+#        ^^^^^^^ source.abl keyword.other.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl variable.other.abl
+#                      ^ source.abl
+#                       ^^^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^^ source.abl entity.name.function.abl
+#                                     ^ source.abl punctuation.section.parens.begin.abl
+#                                      ^^^^^^ source.abl variable.other.abl
+#                                            ^ source.abl punctuation.section.parens.end.abl
+#                                             ^ source.abl
+#                                              ^^^^ source.abl keyword.other.abl
+#                                                  ^ source.abl
+#                                                   ^^^^^^^ source.abl variable.other.abl
+#                                                          ^ source.abl punctuation.accessor.abl
+#                                                           ^^^^ source.abl variable.other.property.abl
+>            SKIP SESSION:DATE-FORMAT SKIP end-date SKIP cShort SKIP iBig.
+#^^^^^^^^^^^^ source.abl
+#            ^^^^ source.abl keyword.other.abl
+#                ^ source.abl
+#                 ^^^^^^^ source.abl variable.language.abl
+#                        ^ source.abl punctuation.accessor.abl
+#                         ^^^^^^^^^^^ source.abl variable.other.property.abl
+#                                    ^ source.abl
+#                                     ^^^^ source.abl keyword.other.abl
+#                                         ^ source.abl
+#                                          ^^^^^^^^ source.abl variable.other.abl
+#                                                  ^ source.abl
+#                                                   ^^^^ source.abl keyword.other.abl
+#                                                       ^ source.abl
+#                                                        ^^^^^^ source.abl variable.other.abl
+#                                                              ^ source.abl
+#                                                               ^^^^ source.abl keyword.other.abl
+#                                                                   ^ source.abl
+#                                                                    ^^^^ source.abl variable.other.abl
+#                                                                        ^ source.abl punctuation.terminator.statement.abl
+>    END FINALLY.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^^^ source.abl keyword.control.abl
+#               ^ source.abl punctuation.terminator.statement.abl
+>END. /* main-block */
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl punctuation.terminator.statement.abl
+#    ^ source.abl
+#     ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#       ^^^^^^^^^^^^ source.abl comment.block.abl
+#                   ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>/* ************************  Procedures and functions  **************** */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                        ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>
+>PROCEDURE fillLines PRIVATE:
+#^^^^^^^^^ source.abl storage.type.procedure.abl
+#         ^ source.abl
+#          ^^^^^^^^^ source.abl entity.name.function.procedure.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl storage.modifier.abl
+#                           ^ source.abl punctuation.separator.colon.abl
+>    /*------------------------------------------------------------------
+#^^^^ source.abl
+#    ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>      Purpose: Creates ipCount lines. Every second line is shipped.
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+>    ------------------------------------------------------------------*/
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                      ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>    DEFINE INPUT PARAMETER ipCount AS INTEGER NO-UNDO.
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.define.abl
+#          ^ source.abl
+#           ^^^^^ source.abl storage.modifier.abl
+#                ^ source.abl
+#                 ^^^^^^^^^ source.abl keyword.other.abl
+#                          ^ source.abl
+#                           ^^^^^^^ source.abl variable.parameter.abl
+#                                  ^ source.abl
+#                                   ^^ source.abl keyword.other.abl
+#                                     ^ source.abl
+#                                      ^^^^^^^ source.abl storage.type.abl
+#                                             ^ source.abl
+#                                              ^^^^^^^ source.abl storage.modifier.abl
+#                                                     ^ source.abl punctuation.terminator.statement.abl
+>
+>    DEFINE VARIABLE iLine AS INTEGER NO-UNDO.
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.define.abl
+#          ^ source.abl
+#           ^^^^^^^^ source.abl keyword.other.abl
+#                   ^ source.abl
+#                    ^^^^^ source.abl entity.name.variable.abl
+#                         ^ source.abl
+#                          ^^ source.abl keyword.other.abl
+#                            ^ source.abl
+#                             ^^^^^^^ source.abl storage.type.abl
+#                                    ^ source.abl
+#                                     ^^^^^^^ source.abl storage.modifier.abl
+#                                            ^ source.abl punctuation.terminator.statement.abl
+>
+>    DO iLine = 1 TO ipCount TRANSACTION:
+#^^^^ source.abl
+#    ^^ source.abl keyword.control.abl
+#      ^ source.abl
+#       ^^^^^ source.abl variable.other.abl
+#            ^ source.abl
+#             ^ source.abl keyword.operator.assignment.abl
+#              ^ source.abl
+#               ^ source.abl constant.numeric.integer.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.other.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl variable.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^^^^ source.abl keyword.other.abl
+#                                       ^ source.abl punctuation.separator.colon.abl
+>        CREATE ttLine.
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl keyword.other.abl
+#              ^ source.abl
+#               ^^^^^^ source.abl variable.other.abl
+#                     ^ source.abl punctuation.terminator.statement.abl
+>        ASSIGN
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl keyword.other.abl
+>            ttLine.lineNo   = iLine
+#^^^^^^^^^^^^ source.abl
+#            ^^^^^^ source.abl variable.other.abl
+#                  ^ source.abl punctuation.accessor.abl
+#                   ^^^^^^ source.abl variable.other.abl
+#                         ^^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^^^^^ source.abl variable.other.abl
+>            ttLine.itemCode = SUBSTITUTE("ITEM-&1", STRING(iLine, "999"))
+#^^^^^^^^^^^^ source.abl
+#            ^^^^^^ source.abl variable.other.abl
+#                  ^ source.abl punctuation.accessor.abl
+#                   ^^^^^^^^ source.abl variable.other.abl
+#                           ^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^^^^^^^^^^ source.abl support.function.abl
+#                                        ^ source.abl punctuation.section.parens.begin.abl
+#                                         ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                          ^^^^^^^ source.abl string.quoted.double.abl
+#                                                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                  ^ source.abl punctuation.separator.comma.abl
+#                                                   ^ source.abl
+#                                                    ^^^^^^ source.abl support.function.abl
+#                                                          ^ source.abl punctuation.section.parens.begin.abl
+#                                                           ^^^^^ source.abl variable.other.abl
+#                                                                ^ source.abl punctuation.separator.comma.abl
+#                                                                 ^ source.abl
+#                                                                  ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                                                   ^^^ source.abl string.quoted.double.abl
+#                                                                      ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                                       ^ source.abl punctuation.section.parens.end.abl
+#                                                                        ^ source.abl punctuation.section.parens.end.abl
+>            ttLine.qty      = iLine * 2.5
+#^^^^^^^^^^^^ source.abl
+#            ^^^^^^ source.abl variable.other.abl
+#                  ^ source.abl punctuation.accessor.abl
+#                   ^^^ source.abl variable.other.abl
+#                      ^^^^^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^^^^^ source.abl variable.other.abl
+#                                   ^ source.abl
+#                                    ^ source.abl keyword.operator.arithmetic.abl
+#                                     ^ source.abl
+#                                      ^^^ source.abl constant.numeric.decimal.abl
+>            ttLine.shipped  = (iLine MODULO 2 = 0).
+#^^^^^^^^^^^^ source.abl
+#            ^^^^^^ source.abl variable.other.abl
+#                  ^ source.abl punctuation.accessor.abl
+#                   ^^^^^^^ source.abl variable.other.abl
+#                          ^^ source.abl
+#                            ^ source.abl keyword.operator.assignment.abl
+#                             ^ source.abl
+#                              ^ source.abl punctuation.section.parens.begin.abl
+#                               ^^^^^ source.abl variable.other.abl
+#                                    ^ source.abl
+#                                     ^^^^^^ source.abl keyword.operator.expression.arithmetic.abl
+#                                           ^ source.abl
+#                                            ^ source.abl constant.numeric.integer.abl
+#                                             ^ source.abl
+#                                              ^ source.abl keyword.operator.assignment.abl
+#                                               ^ source.abl
+#                                                ^ source.abl constant.numeric.integer.abl
+#                                                 ^ source.abl punctuation.section.parens.end.abl
+#                                                  ^ source.abl punctuation.terminator.statement.abl
+>    END.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl punctuation.terminator.statement.abl
+>END PROCEDURE.
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl
+#    ^^^^^^^^^ source.abl keyword.other.abl
+#             ^ source.abl punctuation.terminator.statement.abl
+>
+>FUNCTION lineLabel RETURNS CHARACTER (INPUT ipLine AS INTEGER):
+#^^^^^^^^ source.abl storage.type.function.abl
+#        ^ source.abl
+#         ^^^^^^^^^ source.abl entity.name.function.abl
+#                  ^ source.abl
+#                   ^^^^^^^ source.abl keyword.other.abl
+#                          ^ source.abl
+#                           ^^^^^^^^^ source.abl storage.type.abl
+#                                    ^ source.abl
+#                                     ^ source.abl punctuation.section.parens.begin.abl
+#                                      ^^^^^ source.abl storage.modifier.abl
+#                                           ^ source.abl
+#                                            ^^^^^^ source.abl variable.parameter.abl
+#                                                  ^ source.abl
+#                                                   ^^ source.abl keyword.other.abl
+#                                                     ^ source.abl
+#                                                      ^^^^^^^ source.abl storage.type.abl
+#                                                             ^ source.abl punctuation.section.parens.end.abl
+#                                                              ^ source.abl punctuation.separator.colon.abl
+>    &IF DEFINED(DEBUG) > 0 AND "{&DEBUG}" = "yes" &THEN
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.directive.conditional.abl
+#       ^ source.abl
+#        ^^^^^^^ source.abl support.function.abl
+#               ^ source.abl punctuation.section.parens.begin.abl
+#                ^^^^^ source.abl variable.other.abl
+#                     ^ source.abl punctuation.section.parens.end.abl
+#                      ^ source.abl
+#                       ^ source.abl keyword.operator.comparison.abl
+#                        ^ source.abl
+#                         ^ source.abl constant.numeric.integer.abl
+#                          ^ source.abl
+#                           ^^^ source.abl keyword.operator.expression.logical.abl
+#                              ^ source.abl
+#                               ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                ^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                                  ^^^^^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                       ^ source.abl string.quoted.double.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                        ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                         ^ source.abl
+#                                          ^ source.abl keyword.operator.assignment.abl
+#                                           ^ source.abl
+#                                            ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                             ^^^ source.abl string.quoted.double.abl
+#                                                ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                 ^ source.abl
+#                                                  ^^^^^ source.abl keyword.control.directive.conditional.abl
+>    RETURN SUBSTITUTE("line &1 of &2", ipLine, {&MAX-LINES}).
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^^^^^^^^^^ source.abl support.function.abl
+#                     ^ source.abl punctuation.section.parens.begin.abl
+#                      ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                       ^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                    ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                     ^ source.abl punctuation.separator.comma.abl
+#                                      ^ source.abl
+#                                       ^^^^^^ source.abl variable.other.abl
+#                                             ^ source.abl punctuation.separator.comma.abl
+#                                              ^ source.abl
+#                                               ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#                                                 ^^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                                                          ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                                                           ^ source.abl punctuation.section.parens.end.abl
+#                                                            ^ source.abl punctuation.terminator.statement.abl
+>    &ELSEIF {&MAX-LINES} > 10 &THEN
+#^^^^ source.abl
+#    ^^^^^^^ source.abl keyword.control.directive.conditional.abl
+#           ^ source.abl
+#            ^^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.begin.abl
+#              ^^^^^^^^^ source.abl meta.preprocessor.reference.abl variable.other.constant.preprocessor.abl
+#                       ^ source.abl meta.preprocessor.reference.abl punctuation.definition.preprocessor.end.abl
+#                        ^ source.abl
+#                         ^ source.abl keyword.operator.comparison.abl
+#                          ^ source.abl
+#                           ^^ source.abl constant.numeric.integer.abl
+#                             ^ source.abl
+#                              ^^^^^ source.abl keyword.control.directive.conditional.abl
+>    RETURN "line " + STRING(ipLine, ">>9").
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#            ^^^^^ source.abl string.quoted.double.abl
+#                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                  ^ source.abl
+#                   ^ source.abl keyword.operator.arithmetic.abl
+#                    ^ source.abl
+#                     ^^^^^^ source.abl support.function.abl
+#                           ^ source.abl punctuation.section.parens.begin.abl
+#                            ^^^^^^ source.abl variable.other.abl
+#                                  ^ source.abl punctuation.separator.comma.abl
+#                                   ^ source.abl
+#                                    ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                     ^^^ source.abl string.quoted.double.abl
+#                                        ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                         ^ source.abl punctuation.section.parens.end.abl
+#                                          ^ source.abl punctuation.terminator.statement.abl
+>    &ELSE
+#^^^^ source.abl
+#    ^^^^^ source.abl keyword.control.directive.conditional.abl
+>    RETURN "line " + STRING(ipLine). /* {&DEBUG} is no */
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#            ^^^^^ source.abl string.quoted.double.abl
+#                 ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                  ^ source.abl
+#                   ^ source.abl keyword.operator.arithmetic.abl
+#                    ^ source.abl
+#                     ^^^^^^ source.abl support.function.abl
+#                           ^ source.abl punctuation.section.parens.begin.abl
+#                            ^^^^^^ source.abl variable.other.abl
+#                                  ^ source.abl punctuation.section.parens.end.abl
+#                                   ^ source.abl punctuation.terminator.statement.abl
+#                                    ^ source.abl
+#                                     ^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#                                       ^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                       ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>    &ENDIF
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.control.directive.conditional.abl
+>END FUNCTION.
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl
+#    ^^^^^^^^ source.abl keyword.other.abl
+#            ^ source.abl punctuation.terminator.statement.abl
+>
