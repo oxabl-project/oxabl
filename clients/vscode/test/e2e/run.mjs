@@ -8,6 +8,7 @@ import { check, failures, total } from "./lib/report.mjs";
 import { manifestVersion, newerVsix, packagedVsix } from "./lib/vsix.mjs";
 import { VSCODE_VERSION, downloadVSCode, leakedProcesses, takeProfiles } from "./lib/vscode.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
+import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
   updateAuto,
   updateAutoUpdateOff,
@@ -39,13 +40,22 @@ const SCENARIOS = [
   ["update-two-profiles", updateTwoProfiles],
 ];
 
+// Measurements, not checks of the product's output: they run only when named in
+// OXABL_E2E_SCENARIOS (see scenarios/server.mjs for their settings).
+const OPT_IN = [
+  ["server-crash-loop", serverCrashLoop],
+  ["server-soak", serverSoak],
+];
+
 if (!process.env.DISPLAY) {
   console.error("test:e2e needs a display. Run it as: xvfb-run -a pnpm run test:e2e");
   process.exit(2);
 }
 
 const wanted = (process.env.OXABL_E2E_SCENARIOS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-const selected = SCENARIOS.filter(([n]) => wanted.length === 0 || wanted.some((w) => n.startsWith(w)));
+const selected = [...SCENARIOS, ...(wanted.length ? OPT_IN : [])].filter(
+  ([n]) => wanted.length === 0 || wanted.some((w) => n.startsWith(w)),
+);
 if (selected.length === 0) {
   console.error(`no scenario matches OXABL_E2E_SCENARIOS=${process.env.OXABL_E2E_SCENARIOS}`);
   process.exit(2);

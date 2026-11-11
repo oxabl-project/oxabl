@@ -41,6 +41,15 @@ behaves like a machine with no language server. After each scenario the run
 fails when a process with the scenario's profile directory in its command line
 is still running, and kills it.
 
+Two more scenarios measure what the extension costs the machine. They run only
+when `OXABL_E2E_SCENARIOS` names them, and their settings are in
+`scenarios/server.mjs`:
+
+| Scenario | What it measures |
+| --- | --- |
+| `server-crash-loop` | A server that exits at once: how often the client starts it again. |
+| `server-soak` | A real `oxabl` (`OXABL_E2E_OXABL`) on a large fuzzed file that is edited for a while, then five window reloads: memory, threads and CPU of the extension host and the server, and the number of `oxabl` processes. |
+
 Settings through the environment:
 
 - `OXABL_E2E_SCENARIOS=highlight,markdown` runs the scenarios whose name starts
