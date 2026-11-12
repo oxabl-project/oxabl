@@ -15,6 +15,8 @@ const TAG = (v) => `oxabl_vscode-v${v}`;
  * opts.digest      "good" | "bad": the digest in the .sha256 file
  * opts.refsStatus  when set, matching-refs answers with this HTTP status
  * opts.noTags      matching-refs answers with an empty list
+ * opts.cli          { version, binary, digest } the oxabl CLI release: `binary` is the asset (a
+ *                   Buffer), `digest` "good" | "bad" the digest in its .sha256 file
  *
  * `requests` holds every request seen: { method, path, headers }.
  */
@@ -25,6 +27,13 @@ export async function startFakeGitHub(opts) {
   const digest = opts.digest === "bad" ? "0".repeat(64) : goodDigest;
   const vsixName = `oxabl-vscode-${opts.newest}.vsix`;
   let base = "";
+  const cli = opts.cli;
+  const CLI_ASSET = "oxabl-x86_64-unknown-linux-musl";
+  const cliDigest = cli
+    ? cli.digest === "bad"
+      ? "0".repeat(64)
+      : crypto.createHash("sha256").update(cli.binary).digest("hex")
+    : "";
 
   const json = (res, status, body) => {
     res.writeHead(status, { "content-type": "application/json" });
@@ -35,6 +44,26 @@ export async function startFakeGitHub(opts) {
     const url = new URL(req.url, "http://127.0.0.1");
     requests.push({ method: req.method, path: url.pathname, headers: req.headers });
 
+    if (cli && url.pathname === `${REPO}/git/matching-refs/tags/oxabl-v`) {
+      return json(res, 200, [{ ref: `refs/tags/oxabl-v0.0.1` }, { ref: `refs/tags/oxabl-v${cli.version}` }]);
+    }
+    if (cli && url.pathname === `${REPO}/releases/tags/oxabl-v${cli.version}`) {
+      const asset = (name) => ({ name, browser_download_url: `${base}/cli/${name}` });
+      return json(res, 200, {
+        tag_name: `oxabl-v${cli.version}`,
+        draft: false,
+        prerelease: false,
+        assets: [asset(CLI_ASSET), asset(`${CLI_ASSET}.sha256`)],
+      });
+    }
+    if (cli && url.pathname === `/cli/${CLI_ASSET}`) {
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": cli.binary.length });
+      return res.end(cli.binary);
+    }
+    if (cli && url.pathname === `/cli/${CLI_ASSET}.sha256`) {
+      res.writeHead(200, { "content-type": "text/plain" });
+      return res.end(`${cliDigest}  ${CLI_ASSET}\n`);
+    }
     if (url.pathname === REFS) {
       if (opts.refsStatus) return json(res, opts.refsStatus, { message: "boom" });
       if (opts.noTags) return json(res, 200, []);

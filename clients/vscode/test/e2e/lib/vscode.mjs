@@ -146,6 +146,12 @@ export function makeProfile(name, { settings = {}, files = [] } = {}) {
   return profile;
 }
 
+/** Adds settings to the profile's user settings. */
+export function addSettings(profile, extra) {
+  const file = path.join(profile.userData, "User", "settings.json");
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), ...extra }, null, 2));
+}
+
 /**
  * Registers a named VS Code profile in the user data dir. `storage.json` and
  * its `userDataProfiles` list are internal to VS Code: check them again when
@@ -199,9 +205,18 @@ function requireLoopbackApi(url) {
   if (!ok) throw new Error(`refusing to launch VS Code with OXABL_UPDATE_API_URL=${url}`);
 }
 
-/** Starts VS Code on the profile and returns { app, page, close }. `env.OXABL_UPDATE_API_URL` is required. */
-export async function launch(exe, profile, { open = [], env = {}, named } = {}) {
-  const launchEnv = cleanEnv(env);
+/**
+ * Starts VS Code on the profile and returns { app, page, close }. `env.OXABL_UPDATE_API_URL` is required.
+ * The install directory and the data directory of oxabl are inside the profile, so no scenario
+ * meets the `oxabl` of the machine or writes its install record. `untrusted` leaves the workspace
+ * untrusted (the settings of the profile must then turn workspace trust on).
+ */
+export async function launch(exe, profile, { open = [], env = {}, named, untrusted = false } = {}) {
+  const launchEnv = cleanEnv({
+    OXABL_INSTALL_DIR: path.join(profile.root, "bin"),
+    XDG_DATA_HOME: path.join(profile.root, "data"),
+    ...env,
+  });
   requireLoopbackApi(launchEnv.OXABL_UPDATE_API_URL);
   const app = await _electron.launch({
     executablePath: exe,
@@ -209,7 +224,7 @@ export async function launch(exe, profile, { open = [], env = {}, named } = {}) 
       "--user-data-dir", profile.userData,
       "--extensions-dir", profile.extensions,
       ...profileArgs(named),
-      "--disable-workspace-trust",
+      ...(untrusted ? [] : ["--disable-workspace-trust"]),
       "--skip-welcome",
       "--skip-release-notes",
       "--disable-gpu",

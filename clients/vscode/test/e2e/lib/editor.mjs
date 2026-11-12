@@ -124,3 +124,34 @@ export async function screenshot(page, name) {
   await page.screenshot({ path: file });
   return file;
 }
+
+/** The text of every status bar item that mentions oxabl. */
+export const statusTexts = (page) =>
+  page.evaluate(() =>
+    [...document.querySelectorAll(".statusbar-item")]
+      .map((e) => e.textContent.replace(/\s+/g, " ").trim())
+      .filter((t) => t.includes("oxabl")),
+  );
+
+/** Samples the oxabl status bar items until `stop()`; `seen` holds every distinct text, in order. */
+export function watchStatus(page, interval = 80) {
+  const seen = [];
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      for (const t of await statusTexts(page).catch(() => [])) if (!seen.includes(t)) seen.push(t);
+      await sleep(interval);
+    }
+  })();
+  return {
+    seen,
+    stop: async () => {
+      running = false;
+      await loop;
+    },
+  };
+}
+
+/** The oxabl notification toasts that are showing. */
+export const toasts = (page) =>
+  page.locator(".notifications-toasts .notification-list-item-message", { hasText: "oxabl" }).allTextContents();
