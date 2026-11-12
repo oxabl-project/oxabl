@@ -154,17 +154,24 @@ export async function buildBurstSave(ctx) {
   });
 }
 
-/** The watcher event of a save arrives while the build of that save runs: it must not cancel it. */
+/**
+ * The watcher event of a save follows the save. It must neither cancel the build of
+ * that save nor push the build back by its own wait.
+ */
 export async function buildSaveKeepsItsBuild(ctx) {
   const name = "build-save-keeps-its-build";
   const slow = { script: [{ event: { ...started, rebuild: 1, units: 1 } }, { wait: 3_000 }] };
-  await session(ctx, name, { config: { builds: [QUICK_BUILD, slow] } }, async ({ page, log }) => {
+  const settings = { "oxabl.build.debounce": 100 };
+  await session(ctx, name, { config: { builds: [QUICK_BUILD, slow] }, settings }, async ({ page, log }) => {
     await waitForExits(`${name}: the build at open`, log, 1);
     await sleep(1_000);
     await focusEditor(page);
+    const saved = Date.now();
     await editAndSave(page);
     await waitForExits(`${name}: the build of the save to end`, log, 2, 30_000);
     await sleep(2_000);
+    const lag = buildStarts(log())[1].t - saved;
+    check(`${name}: the build starts within 600 ms of a save with a debounce of 100 ms`, lag < 600, `${lag} ms`);
     const exits = buildExits(log());
     check(`${name}: the build of the save ran to its end`, exits[1]?.code === 0, JSON.stringify(exits));
     check(`${name}: no signal was sent and no second build started`, signals(log()).length === 0 && buildStarts(log()).length === 2, `${signals(log()).length} signals, ${buildStarts(log()).length} builds`);
@@ -283,6 +290,41 @@ export async function buildExternalPreemption(ctx) {
     );
     check(`${name}: the extension sent no signal`, signals(log()).length === 0);
     check(`${name}: exactly one more build was started`, buildStarts(log()).length === 2, `${buildStarts(log()).length}`);
+  });
+}
+
+/** A binary that has no --yield is not used, and not touched when nothing manages it. */
+export async function buildTooOld(ctx) {
+  const name = "build-too-old";
+  await session(ctx, name, { config: { noYield: true } }, async ({ page, log }) => {
+    await waitForText(page, "is too old to build here", 60_000);
+    check(`${name}: one message says that the binary is too old`, true);
+    await screenshot(page, name);
+    await sleep(2_000);
+    check(`${name}: no build ran`, buildStarts(log()).length === 0);
+    check(`${name}: no self-update was tried on a binary that the installer did not record`, !log().some((l) => l.args?.[0] === "self-update"));
+  });
+}
+
+/** Another oxabl replaces the binary (as self-update does): the next build restarts the language server. */
+export async function buildBinaryChanged(ctx) {
+  const name = "build-binary-changed";
+  const config = { builds: [QUICK_BUILD] };
+  await session(ctx, name, { config }, async ({ page, profile, log }) => {
+    const lsp = () => log().filter((l) => l.args?.[0] === "lsp").length;
+    await waitFor(`${name}: the language server`, () => lsp() === 1, { timeout: 60_000, interval: 200 });
+    await waitForExits(`${name}: the build at open`, log, 1);
+    const target = path.join(profile.root, "fake", "oxabl");
+    fs.writeFileSync(`${target}.new`, fakeOxablSource("9.9.10"), { mode: 0o755 });
+    fs.renameSync(`${target}.new`, target);
+    await sleep(1_000);
+    await focusEditor(page);
+    await editAndSave(page);
+    await waitForExits(`${name}: the build after the update`, log, 2);
+    await waitFor(`${name}: the language server restarted`, () => lsp() === 2, { timeout: 30_000, interval: 200 });
+    check(`${name}: a new version restarts the language server once`, true);
+    await sleep(1_500);
+    check(`${name}: and only once`, lsp() === 2, `${lsp()} starts`);
   });
 }
 

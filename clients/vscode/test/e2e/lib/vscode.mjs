@@ -163,6 +163,11 @@ export function addNamedProfile(profile, named) {
   fs.writeFileSync(path.join(dir, "storage.json"), JSON.stringify({ userDataProfiles: [{ name: named, location: named }] }));
 }
 
+// VS Code keeps the trust of folders and the list of recent folders in a shared data directory
+// (`~/.vscode-shared` by default), outside the user data directory. A scenario that grants trust
+// must not leave it in the machine's.
+const sharedArgs = (profile) => ["--shared-data-dir", path.join(profile.root, "shared-data")];
+
 // `named` is a VS Code profile name; without it the default profile is used.
 const profileArgs = (named) => (named ? ["--profile", named] : []);
 
@@ -170,7 +175,7 @@ function runCli(exe, profile, args, named) {
   const [cli, ...base] = resolveCliArgsFromVSCodeExecutablePath(exe);
   const res = cp.spawnSync(
     cli,
-    [...base, "--extensions-dir", profile.extensions, "--user-data-dir", profile.userData, ...profileArgs(named), ...args],
+    [...base, "--extensions-dir", profile.extensions, "--user-data-dir", profile.userData, ...sharedArgs(profile), ...profileArgs(named), ...args],
     { encoding: "utf8", env: cleanEnv(), timeout: 120_000 },
   );
   if (res.status !== 0) {
@@ -223,6 +228,7 @@ export async function launch(exe, profile, { open = [], env = {}, named, untrust
     args: [
       "--user-data-dir", profile.userData,
       "--extensions-dir", profile.extensions,
+      ...sharedArgs(profile),
       ...profileArgs(named),
       ...(untrusted ? [] : ["--disable-workspace-trust"]),
       "--skip-welcome",

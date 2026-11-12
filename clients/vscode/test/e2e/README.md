@@ -30,12 +30,34 @@ into `.vscode-test/`.
 | `update-two-profiles` | Two VS Code profiles (`--profile`) share one extensions folder. After the default profile updates to the newer version, the other profile still lists the old one. Its own automatic check installs the new version and shows "updated to v99.0.0", not silence. |
 | `update-manual-no-tags` | An empty tag list gives "no extension releases found" and not "up to date". |
 
+The build scenarios run the extension against a fake `oxabl` (`lib/fake-oxabl.mjs`: a
+Node script that answers `--version`, `build --help`, `build --print-config --json`
+and `lsp`, plays the event stream that the scenario scripts for `build --events`,
+and logs each call and each signal to `FAKE_OXABL_LOG`). The fake is the binary
+only; the extension is the program under test.
+
+| Scenario | What it checks |
+| --- | --- |
+| `build-open` | The build at open: the status bar shows `preparing`, then `done/total · N% cached`, then the check mark and hides. One notification names the units and the cache share. The build runs with `--events --yield --wait-lock 3600` in the root, after `--print-config --json`. A save builds again and shows no notification. |
+| `build-save-keeps-its-build` | The watcher event that follows a save neither cancels the build of that save nor delays it. |
+| `build-burst-save` | Ten saves while a build runs: one `SIGINT` to that build, one new build that completes. |
+| `build-burst-disk` | Two hundred files written on disk while a build runs: the same. Files in the output and state directories start no build. |
+| `build-diagnostic` | A compiler message shows in the Problems panel. A failed first build gives an error notification, and `oxabl: 1 failed` stays in the status bar. |
+| `build-untrusted` | An untrusted workspace runs no `oxabl build`, not even `--print-config`. Granting trust starts the build. |
+| `build-external-preemption` | A build that exits 130 without a signal from the extension: the status bar says `running elsewhere` and one more build starts. |
+| `build-too-old` | A binary without `--yield` is not used and not updated when it is not managed. |
+| `build-binary-changed` | A binary that reports a new version restarts the language server once. |
+| `build-install` | With no binary, the install prompt shows. `Install` puts the release asset into `OXABL_INSTALL_DIR`, writes the install record (`installer: "vscode"`), leaves no staged file, and the build runs with it. |
+| `build-install-bad-checksum` | A wrong checksum installs nothing and writes no record. |
+
 The highlight and markdown scenarios run with `oxabl.updates` set to `off` and
 assert that the fake API received no request. Every launch needs
 `OXABL_UPDATE_API_URL` on a loopback fake server (`launch` refuses anything
 else), so no scenario reaches `api.github.com`.
 
-Every VS Code starts with a `PATH` that holds no `oxabl` executable and with
+Every VS Code starts with `OXABL_INSTALL_DIR` and `XDG_DATA_HOME` inside its profile, so
+the default install path and the install record are never those of the machine. It also
+starts with a `PATH` that holds no `oxabl` executable and with
 `VSCODE_CLI=1`, so it does not read the login shell's environment. The run
 behaves like a machine with no language server. After each scenario the run
 fails when a process with the scenario's profile directory in its command line

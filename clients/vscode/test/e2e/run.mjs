@@ -8,6 +8,7 @@ import { check, failures, total } from "./lib/report.mjs";
 import { manifestVersion, newerVsix, packagedVsix } from "./lib/vsix.mjs";
 import { VSCODE_VERSION, downloadVSCode, leakedProcesses, takeProfiles } from "./lib/vscode.mjs";
 import {
+  buildBinaryChanged,
   buildBurstDisk,
   buildBurstSave,
   buildDiagnostic,
@@ -15,6 +16,7 @@ import {
   buildInstall,
   buildInstallBadChecksum,
   buildOpen,
+  buildTooOld,
   buildSaveKeepsItsBuild,
   buildUntrusted,
 } from "./scenarios/build.mjs";
@@ -56,6 +58,8 @@ const SCENARIOS = [
   ["build-diagnostic", buildDiagnostic],
   ["build-untrusted", buildUntrusted],
   ["build-external-preemption", buildExternalPreemption],
+  ["build-too-old", buildTooOld],
+  ["build-binary-changed", buildBinaryChanged],
   ["build-install", buildInstall],
   ["build-install-bad-checksum", buildInstallBadChecksum],
 ];
