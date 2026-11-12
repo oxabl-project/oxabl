@@ -6,9 +6,7 @@ use oxabl_style::StyleGuide;
 
 // Formatting never panics, and formatting its own output changes nothing.
 fuzz_target!(|data: &[u8]| {
-    // On the analysis stack, as in the CLI and the daemon: libFuzzer's own
-    // thread is too small for the deepest tree the parser accepts.
-    oxabl_common::stack::run(|| check(data));
+    oxabl_fuzz::on_analysis_stack(data, check);
 });
 
 fn check(data: &[u8]) {
