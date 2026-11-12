@@ -6,6 +6,10 @@ use oxabl_style::StyleGuide;
 
 // Formatting never panics, and formatting its own output changes nothing.
 fuzz_target!(|data: &[u8]| {
+    oxabl_fuzz::on_analysis_stack(data, check);
+});
+
+fn check(data: &[u8]) {
     let source = String::from_utf8_lossy(data);
     let style = StyleGuide::default_base();
     let once = match try_format_source(&source, &style) {
@@ -18,4 +22,4 @@ fuzz_target!(|data: &[u8]| {
         Ok(twice) => assert_eq!(once, twice, "formatting is not stable"),
         Err(e) => panic!("the formatted output no longer formats: {e:?}"),
     }
-});
+}

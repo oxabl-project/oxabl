@@ -646,20 +646,22 @@ impl<'c> Server<'c> {
                 continue;
             };
             let tx = result_tx.clone();
-            std::thread::spawn(move || {
-                // The guard is inside `analyze_guarded`, so the send below is
-                // reached on every path — a panic must not leave this buffer
-                // waiting forever on a result that never arrives (R8).
-                let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
-                let _ = tx.send(ComputeResult {
-                    uri,
-                    version,
-                    diagnostics: analysis.diagnostics,
-                    dependencies: analysis.dependencies,
-                    panicked: analysis.panicked,
-                    config_generation,
-                });
-            });
+            oxabl_common::stack::builder()
+                .spawn(move || {
+                    // The guard is inside `analyze_guarded`, so the send below is
+                    // reached on every path — a panic must not leave this buffer
+                    // waiting forever on a result that never arrives (R8).
+                    let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
+                    let _ = tx.send(ComputeResult {
+                        uri,
+                        version,
+                        diagnostics: analysis.diagnostics,
+                        dependencies: analysis.dependencies,
+                        panicked: analysis.panicked,
+                        config_generation,
+                    });
+                })
+                .expect("failed to spawn an analysis thread");
         }
     }
 

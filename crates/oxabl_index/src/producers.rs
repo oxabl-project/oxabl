@@ -97,13 +97,15 @@ impl SharedProducers {
         let definitions = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..threads)
                 .map(|_| {
-                    scope.spawn(|| {
-                        let mut mine = Vec::new();
-                        while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
-                            mine.push((path.clone(), definitions_in(path, includes)));
-                        }
-                        mine
-                    })
+                    oxabl_common::stack::builder()
+                        .spawn_scoped(scope, || {
+                            let mut mine = Vec::new();
+                            while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                                mine.push((path.clone(), definitions_in(path, includes)));
+                            }
+                            mine
+                        })
+                        .expect("failed to spawn an analysis thread")
                 })
                 .collect();
             workers
@@ -227,7 +229,13 @@ pub fn scan_procedures(
         scan()
     } else {
         std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..threads).map(|_| scope.spawn(scan)).collect();
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    oxabl_common::stack::builder()
+                        .spawn_scoped(scope, scan)
+                        .expect("failed to spawn an analysis thread")
+                })
+                .collect();
             let mut all = Scanned::default();
             for worker in workers {
                 match worker.join() {

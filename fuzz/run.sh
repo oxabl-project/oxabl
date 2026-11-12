@@ -6,6 +6,9 @@ set -euo pipefail
 target=${1:?target: lex | preprocess_parse | lint | format}
 seconds=${2:-600}
 cd "$(dirname "$0")"
+# A main thread of the analysis stack size (64 MiB): the targets then run each
+# input directly, without a hop to a worker thread (src/lib.rs).
+ulimit -s 65536 2>/dev/null || true
 exec nice -n 10 cargo +nightly fuzz run "$target" -O -- \
   -max_total_time="$seconds" -rss_limit_mb=2048 -timeout=10 -max_len=65536 \
   -fork=2 -ignore_crashes=1 -ignore_timeouts=1 -ignore_ooms=1
