@@ -71,6 +71,7 @@ pub struct Options<'a> {
     pub no_cache: bool,
     pub no_remote_cache: bool,
     pub wait_lock: Option<u64>,
+    pub yield_to_newer: bool,
 }
 
 pub fn run(options: Options<'_>) -> ExitCode {
@@ -91,6 +92,7 @@ pub fn run(options: Options<'_>) -> ExitCode {
         no_cache,
         no_remote_cache,
         wait_lock,
+        yield_to_newer,
     } = options;
     let overlay = overlay_file(config_overlay);
     let workspace = match BuildWorkspace::open_with(root, overlay.as_ref()) {
@@ -132,6 +134,7 @@ pub fn run(options: Options<'_>) -> ExitCode {
                 no_cache,
                 no_remote_cache,
                 wait_lock,
+                yield_to_newer,
             },
         );
     }

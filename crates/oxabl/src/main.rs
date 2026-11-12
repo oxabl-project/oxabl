@@ -405,7 +405,7 @@ enum Cli {
         /// and stop. With `--json`, print it as a JSON document.
         #[arg(
             long,
-            conflicts_with_all = ["plan", "probe", "all", "files", "since", "events", "report", "fail_fast", "wait_lock"]
+            conflicts_with_all = ["plan", "probe", "all", "files", "since", "events", "report", "fail_fast", "wait_lock", "yield_to_newer"]
         )]
         print_config: bool,
 
@@ -438,6 +438,13 @@ enum Cli {
         /// stopping when another build holds it.
         #[arg(long, value_name = "SECONDS", conflicts_with_all = ["plan", "probe"])]
         wait_lock: Option<u64>,
+
+        /// Step aside for any newer build: mark the workspace lock so another
+        /// `oxabl build` stops this one (exit 130) instead of failing on the
+        /// lock. For an editor or a wrapper; a terminal or agent build
+        /// preempts it.
+        #[arg(long = "yield", conflicts_with_all = ["plan", "probe"])]
+        yield_to_newer: bool,
     },
 }
 
@@ -699,6 +706,7 @@ fn main() -> ExitCode {
             no_cache,
             no_remote_cache,
             wait_lock,
+            yield_to_newer,
         } => build_cmd::run(build_cmd::Options {
             plan,
             probe,
@@ -716,6 +724,7 @@ fn main() -> ExitCode {
             no_cache,
             no_remote_cache,
             wait_lock,
+            yield_to_newer,
         }),
     }
 }

@@ -20,6 +20,8 @@ pub struct BuildRequest<'a> {
     /// How long to wait for the workspace lock; none stops at once when
     /// another build holds it.
     pub wait_lock: Option<Duration>,
+    /// Mark the workspace lock so a newer build may stop this one.
+    pub yield_to_newer: bool,
 }
 
 impl Default for BuildRequest<'_> {
@@ -31,6 +33,7 @@ impl Default for BuildRequest<'_> {
             sink: None,
             cache: Box::new(NoCache),
             wait_lock: None,
+            yield_to_newer: false,
         }
     }
 }
