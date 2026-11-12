@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.2...oxabl_vscode-v0.4.0) (2026-11-12)
+
+
+### Features
+
+* **vscode:** document the build loop and test it against a fake oxabl ([c36e010](https://github.com/oxabl-project/oxabl/commit/c36e01056a28b45a436e96ccd5e2b3d5b0f2505a))
+* **vscode:** install the CLI and build on open and on save ([4064da5](https://github.com/oxabl-project/oxabl/commit/4064da5d45f75c72ba39ac9b5d55b197bc9fdec3))
+* **vscode:** install the CLI and build on open and on save ([26c998a](https://github.com/oxabl-project/oxabl/commit/26c998a0cc1e4b67f803c29f9a3a9aab165cade3))
+
+
+### Bug Fixes
+
+* **vscode:** install the newest release over a managed binary that has no self-update ([122f0cb](https://github.com/oxabl-project/oxabl/commit/122f0cb900914dcc253626235e2e0ce606b679c5))
+
 ## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.1...oxabl_vscode-v0.3.2) (2026-11-11)
 
 

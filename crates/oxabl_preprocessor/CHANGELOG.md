@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.5](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.4...oxabl_preprocessor-v0.7.5) (2026-11-12)
+
+
+### Bug Fixes
+
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([958fe45](https://github.com/oxabl-project/oxabl/commit/958fe45edf0555ea774c125e949af5c34b30263a))
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([fbbe2ec](https://github.com/oxabl-project/oxabl/commit/fbbe2ec08e8e7b1e89c145052acea0edc25f186f)), closes [#337](https://github.com/oxabl-project/oxabl/issues/337)
+
 ## [0.7.4](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.3...oxabl_preprocessor-v0.7.4) (2026-11-11)
 
 

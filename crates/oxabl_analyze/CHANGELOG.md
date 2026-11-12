@@ -1,5 +1,25 @@
 # Changelog
 
+## [4.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.2...oxabl_analyze-v4.0.3) (2026-11-12)
+
+
+### Bug Fixes
+
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([958fe45](https://github.com/oxabl-project/oxabl/commit/958fe45edf0555ea774c125e949af5c34b30263a))
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([fbbe2ec](https://github.com/oxabl-project/oxabl/commit/fbbe2ec08e8e7b1e89c145052acea0edc25f186f)), closes [#337](https://github.com/oxabl-project/oxabl/issues/337)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 5.0.1 to 5.0.2
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+    * oxabl_preprocessor bumped from 0.7.4 to 0.7.5
+    * oxabl_semantic bumped from 5.0.1 to 5.0.2
+  * dev-dependencies
+    * oxabl_index bumped from 5.0.1 to 5.0.2
+
 ## [4.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.1...oxabl_analyze-v4.0.2) (2026-11-11)
 
 

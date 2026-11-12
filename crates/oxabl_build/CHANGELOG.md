@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.2.2...oxabl_build-v0.3.0) (2026-11-12)
+
+
+### Features
+
+* **build:** add --yield so a newer build can stop an editor's build ([863d5a7](https://github.com/oxabl-project/oxabl/commit/863d5a71bf8342647b3220ced38a4d987ca3bc99))
+* **cli:** install script, self-update and build --yield ([d3dbc2e](https://github.com/oxabl-project/oxabl/commit/d3dbc2e667c41f09020c606a90253f618afdb07a))
+
+
+### Bug Fixes
+
+* **build:** iterate the jobs instead of indexing them (clippy needless_range_loop) ([1a68b5d](https://github.com/oxabl-project/oxabl/commit/1a68b5d3b7d0d19982bf8c30e93e3ab2e56f9f1a))
+* **build:** satisfy clippy needless_range_loop on the newest stable ([af34987](https://github.com/oxabl-project/oxabl/commit/af3498764a948d5f159eb31f181b858ada3dbae9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.2 to 0.3.3
+    * oxabl_index bumped from 5.0.1 to 5.0.2
+    * oxabl_pipeline bumped from 3.4.0 to 3.4.1
+    * oxabl_semantic bumped from 5.0.1 to 5.0.2
+
 ## [0.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.2.1...oxabl_build-v0.2.2) (2026-11-11)
 
 
