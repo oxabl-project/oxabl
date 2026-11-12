@@ -106,6 +106,10 @@ pub const MAX_EXPANSION_BYTES: usize = 32 * 1024 * 1024;
 /// expansions repeated without end also reach the limit.
 const NODE_COST: usize = 256;
 
+/// Most unterminated include references one run reports. A damaged file can
+/// hold a run of thousands of `{`, each one a warning.
+const MAX_UNTERMINATED_REPORTS: usize = 100;
+
 impl<'fs> Preprocessor<'fs> {
     pub fn new(fs: &'fs dyn FileSystem, include_paths: &'fs [PathBuf]) -> Self {
         Preprocessor {
@@ -179,6 +183,7 @@ impl<'fs> Preprocessor<'fs> {
             file_id_counter: file.raw() + 1,
             expanded_bytes: 0,
             over_limit: false,
+            unterminated_reported: 0,
         };
 
         let tree = ctx.process_source(file, source, 0, &[]);
@@ -297,6 +302,9 @@ struct ProcessContext<'a> {
     expanded_bytes: usize,
     /// Whether an expansion was refused; nothing more is expanded after that.
     over_limit: bool,
+    /// Unterminated include references reported, against
+    /// [`MAX_UNTERMINATED_REPORTS`].
+    unterminated_reported: usize,
 }
 
 impl ProcessContext<'_> {
@@ -1265,9 +1273,20 @@ impl ProcessContext<'_> {
                 children: Vec::new(),
             });
         }
+        // Past the cap the reference is still looked up above, so the
+        // dependencies stay complete; only the report is dropped.
+        if self.unterminated_reported == MAX_UNTERMINATED_REPORTS {
+            return;
+        }
+        self.unterminated_reported += 1;
+        let more = if self.unterminated_reported == MAX_UNTERMINATED_REPORTS {
+            "; any more in this file are not reported"
+        } else {
+            ""
+        };
         self.diagnostics.push(Diagnostic::warning(
             "PREPROC008",
-            format!("unterminated include reference '{{{name}'"),
+            format!("unterminated include reference '{{{name}'{more}"),
             site,
         ));
         self.unresolved_includes.push(UnresolvedInclude {

@@ -74,7 +74,18 @@ fn a_run_of_unclosed_braces() {
         "braces.p",
         &format!("{}\n", "{".repeat(200_000)),
     );
-    check_capped(&path);
+    let output = check_capped(&path);
+    // One warning per `{` would be 200,000 lines; the report stops at 100.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reported = stderr.matches("PREPROC008").count();
+    assert_eq!(
+        reported, 100,
+        "expected 100 PREPROC008 warnings, got {reported}"
+    );
+    assert!(
+        stderr.contains("any more in this file are not reported"),
+        "the last warning must say that the rest are not reported"
+    );
 }
 
 #[test]
