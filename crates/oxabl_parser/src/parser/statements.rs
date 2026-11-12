@@ -122,7 +122,7 @@ impl Parser<'_> {
         // No statement is inside an expression, so no chain is open here; a
         // chain left open by an error is closed.
         self.chain = 0;
-        let mut stmt = self.nested(Self::parse_statement_inner)?;
+        let mut stmt = self.parse_statement_inner()?;
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
         Ok(stmt)
@@ -239,7 +239,7 @@ impl Parser<'_> {
             let token = self.advance().clone(); // consume label name
             let name = self.source[token.start..token.end].to_string();
             self.advance(); // consume ':'
-            let body = self.parse_statement()?;
+            let body = self.nested(Self::parse_statement)?;
             return Ok(self.stmt(StatementKind::Label {
                 name,
                 body: Box::new(body),
@@ -268,7 +268,7 @@ impl Parser<'_> {
                 &self.source[ident_tok.start..ident_tok.end]
             );
             self.advance(); // consume ':'
-            let body = self.parse_statement()?;
+            let body = self.nested(Self::parse_statement)?;
             return Ok(self.stmt(StatementKind::Label {
                 name,
                 body: Box::new(body),
@@ -2844,7 +2844,7 @@ impl Parser<'_> {
             // Empty THEN branch: END belongs to the enclosing block, as for ELSE below.
             self.stmt(StatementKind::Empty)
         } else {
-            let stmt = self.parse_statement()?;
+            let stmt = self.nested(Self::parse_statement)?;
             // A stray comma may stand between the branch and ELSE.
             self.skip_stray_comma();
             stmt
@@ -2901,7 +2901,7 @@ impl Parser<'_> {
                 // Don't consume it — the outer block parser handles it.
                 self.stmt(StatementKind::Empty)
             } else {
-                self.parse_statement()?
+                self.nested(Self::parse_statement)?
             };
             else_stmt.span = Span {
                 start: else_lo,
@@ -7757,7 +7757,7 @@ impl Parser<'_> {
             && !self.check(Kind::PreprocElse)
             && !self.check(Kind::PreprocEndif)
         {
-            stmts.push(self.parse_statement()?);
+            stmts.push(self.nested(Self::parse_statement)?);
             self.skip_stray_comma();
         }
         crate::parser::debug_assert_stmt_sibling_order(&stmts);
@@ -8042,7 +8042,7 @@ impl Parser<'_> {
         }
 
         // Single statement (terminates with its own period)
-        let stmt = self.parse_statement()?;
+        let stmt = self.nested(Self::parse_statement)?;
         Ok(OnAction::Block(Box::new(stmt)))
     }
 

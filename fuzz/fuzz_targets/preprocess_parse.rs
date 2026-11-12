@@ -11,6 +11,12 @@ use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
 // The raw parse and the expanded parse (preprocess, then lex and parse) never panic.
 fuzz_target!(|data: &[u8]| {
+    // On the analysis stack, as in the CLI and the daemon: libFuzzer's own
+    // thread is too small for the deepest tree the parser accepts.
+    oxabl_common::stack::run(|| check(data));
+});
+
+fn check(data: &[u8]) {
     let source = String::from_utf8_lossy(data);
 
     let tokens = tokenize(&source);
@@ -30,4 +36,4 @@ fuzz_target!(|data: &[u8]| {
         let tokens = tokenize(&text);
         let _ = Parser::new(&tokens, &text).parse_program();
     }
-});
+}

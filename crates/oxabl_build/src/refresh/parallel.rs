@@ -31,21 +31,21 @@ pub fn map_with<T: Sync, S, R: Send>(
         let workers: Vec<_> = (0..threads)
             .map(|_| {
                 oxabl_common::stack::builder()
-.spawn_scoped(scope, || {
-                    let mut state = init();
-                    let mut mine = Vec::new();
-                    loop {
-                        let start = next.fetch_add(CHUNK, Ordering::Relaxed);
-                        if start >= items.len() {
-                            break;
+                    .spawn_scoped(scope, || {
+                        let mut state = init();
+                        let mut mine = Vec::new();
+                        loop {
+                            let start = next.fetch_add(CHUNK, Ordering::Relaxed);
+                            if start >= items.len() {
+                                break;
+                            }
+                            let end = (start + CHUNK).min(items.len());
+                            let chunk = items[start..end].iter().map(|item| work(&mut state, item));
+                            mine.push((start, chunk.collect()));
                         }
-                        let end = (start + CHUNK).min(items.len());
-                        let chunk = items[start..end].iter().map(|item| work(&mut state, item));
-                        mine.push((start, chunk.collect()));
-                    }
-                    mine
-                })
-.expect("failed to spawn an analysis thread")
+                        mine
+                    })
+                    .expect("failed to spawn an analysis thread")
             })
             .collect();
         workers

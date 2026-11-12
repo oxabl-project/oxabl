@@ -11,8 +11,10 @@ use super::{ParseError, ParseResult, Parser, debug_assert_expr_sibling_order};
 use crate::literal::token_to_literal;
 
 impl Parser<'_> {
+    /// Every expression the grammar nests goes through here or through one of
+    /// the few `nested` calls that bypass it, so each is one nesting level.
     pub fn parse_expression(&mut self) -> ParseResult<Expression> {
-        self.parse_ternary()
+        self.nested(Self::parse_ternary)
     }
 
     pub fn parse_ternary(&mut self) -> ParseResult<Expression> {
@@ -53,32 +55,32 @@ impl Parser<'_> {
     }
 
     pub fn parse_or(&mut self) -> ParseResult<Expression> {
-        let chain = self.chain;
+        let mut links = 0;
         let mut expr = self.parse_and()?;
         while self.check(Kind::Or) {
-            self.link()?;
+            self.link(&mut links)?;
             let lo = expr.span.start;
             self.advance();
             let right = self.parse_and()?;
             let hi = self.prev_end();
             expr = self.spanned_expr(lo, hi, ExpressionKind::Or(Box::new(expr), Box::new(right)));
         }
-        self.chain = chain;
+        self.unlink(links);
         Ok(expr)
     }
 
     pub fn parse_and(&mut self) -> ParseResult<Expression> {
-        let chain = self.chain;
+        let mut links = 0;
         let mut expr = self.parse_comparison()?;
         while self.check(Kind::And) {
-            self.link()?;
+            self.link(&mut links)?;
             let lo = expr.span.start;
             self.advance();
             let right = self.parse_comparison()?;
             let hi = self.prev_end();
             expr = self.spanned_expr(lo, hi, ExpressionKind::And(Box::new(expr), Box::new(right)));
         }
-        self.chain = chain;
+        self.unlink(links);
         Ok(expr)
     }
 
@@ -155,11 +157,11 @@ impl Parser<'_> {
     }
 
     pub fn parse_additive(&mut self) -> ParseResult<Expression> {
-        let chain = self.chain;
+        let mut links = 0;
         let mut expr = self.parse_multiplicative()?;
         loop {
             if self.check(Kind::Add) || self.check(Kind::Minus) {
-                self.link()?;
+                self.link(&mut links)?;
                 let lo = expr.span.start;
                 let op_kind = self.peek().kind;
                 self.advance();
@@ -187,7 +189,7 @@ impl Parser<'_> {
                 // Only fires when the LHS is already string-like (literal, preprop ref, or
                 // a prior implicit concat). This prevents consuming display items or other
                 // adjacent tokens as accidental concatenation.
-                self.link()?;
+                self.link(&mut links)?;
                 let lo = expr.span.start;
                 let right_exp = self.parse_multiplicative()?;
                 let hi = self.prev_end();
@@ -200,15 +202,15 @@ impl Parser<'_> {
                 break;
             }
         }
-        self.chain = chain;
+        self.unlink(links);
         Ok(expr)
     }
 
     pub fn parse_multiplicative(&mut self) -> ParseResult<Expression> {
-        let chain = self.chain;
+        let mut links = 0;
         let mut expr = self.parse_unary()?;
         while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Modulo) {
-            self.link()?;
+            self.link(&mut links)?;
             let lo = expr.span.start;
             let op_kind = self.peek().kind;
             self.advance();
@@ -243,7 +245,7 @@ impl Parser<'_> {
                 _ => unreachable!(),
             }
         }
-        self.chain = chain;
+        self.unlink(links);
         Ok(expr)
     }
 
@@ -273,7 +275,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_postfix(&mut self) -> ParseResult<Expression> {
-        let chain = self.chain;
+        let mut links = 0;
         let mut expr = self.parse_primary()?;
 
         // Literals can't have postfix operations (member access, method calls, etc.)
@@ -314,23 +316,23 @@ impl Parser<'_> {
                 if !next_is_member {
                     break;
                 }
-                self.link()?;
+                self.link(&mut links)?;
                 expr = self.parse_member_or_method(expr)?;
             } else if self.check(Kind::LeftBracket) {
-                self.link()?;
+                self.link(&mut links)?;
                 expr = self.parse_array_access(expr)?;
             } else if self.check(Kind::Period)
                 && Self::can_have_field_access(&expr)
                 && self.is_field_access_ahead()
             {
-                self.link()?;
+                self.link(&mut links)?;
                 expr = self.parse_field_access(expr)?;
             } else {
                 break;
             }
         }
 
-        self.chain = chain;
+        self.unlink(links);
         Ok(expr)
     }
 
@@ -597,7 +599,7 @@ impl Parser<'_> {
     /// of which branch produced it.
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
         let lo = self.peek().start as u32;
-        let mut expr = self.nested(Self::parse_primary_inner)?;
+        let mut expr = self.parse_primary_inner()?;
         expr.span = Span {
             start: lo,
             end: self.prev_end().max(lo),
@@ -608,7 +610,7 @@ impl Parser<'_> {
     fn parse_primary_inner(&mut self) -> ParseResult<Expression> {
         // Inline ternary: IF expr THEN expr ELSE expr — valid in any expression position
         if self.check(Kind::KwIf) {
-            return self.parse_ternary();
+            return self.nested(Self::parse_ternary);
         }
 
         // Implicit widget attribute/method: :attribute or :method(args)
@@ -924,7 +926,7 @@ impl Parser<'_> {
                     let id = self.parse_identifier()?;
                     self.expr(ExpressionKind::Identifier(id))
                 } else {
-                    self.parse_primary()?
+                    self.nested(Self::parse_primary)?
                 };
             let mut arguments = vec![class];
             // Parse optional argument list
@@ -1033,10 +1035,10 @@ impl Parser<'_> {
                     // USING field [AND field]...
                     Kind::Using => {
                         self.advance();
-                        self.parse_postfix()?;
+                        self.nested(Self::parse_postfix)?;
                         while self.check(Kind::And) {
                             self.advance();
-                            self.parse_postfix()?;
+                            self.nested(Self::parse_postfix)?;
                         }
                     }
                     Kind::NoWait => {
@@ -1129,7 +1131,7 @@ impl Parser<'_> {
                     arguments: vec![],
                 }));
             }
-            let arg = self.parse_postfix()?;
+            let arg = self.nested(Self::parse_postfix)?;
             return Ok(self.expr(ExpressionKind::FunctionCall {
                 name,
                 arguments: vec![arg],
@@ -1231,7 +1233,7 @@ impl Parser<'_> {
             {
                 self.advance();
             } else if Self::can_be_identifier(self.peek().kind)
-                && let Ok(first_expr) = self.parse_postfix()
+                && let Ok(first_expr) = self.nested(Self::parse_postfix)
             {
                 arguments.push(first_expr);
             }
@@ -1260,7 +1262,7 @@ impl Parser<'_> {
             if self.check(Kind::By) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
-                    self.parse_postfix().ok();
+                    self.nested(Self::parse_postfix).ok();
                 }
                 // Optional label (integer or string) identifying the break level
                 if matches!(self.peek().kind, Kind::IntegerLiteral | Kind::StringLiteral) {
@@ -1270,7 +1272,7 @@ impl Parser<'_> {
             // field name — may be an identifier, qualified field, indexed access, or
             // parenthesized expression like (expr1 - expr2)
             if (Self::can_be_identifier(self.peek().kind) || self.check(Kind::LeftParen))
-                && let Ok(field_expr) = self.parse_postfix()
+                && let Ok(field_expr) = self.nested(Self::parse_postfix)
             {
                 arguments.push(field_expr);
             }
@@ -1285,7 +1287,7 @@ impl Parser<'_> {
             Kind::Input | Kind::Output | Kind::InputOutput
         ) {
             self.advance(); // consume the direction qualifier
-            return self.parse_primary();
+            return self.nested(Self::parse_primary);
         }
 
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)

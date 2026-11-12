@@ -195,33 +195,35 @@ impl Server<'_> {
             let encoding = self.encoding.clone();
             let tx = tx.clone();
             self.lenses.ready.insert(uri.clone(), None);
-            oxabl_common::stack::builder().spawn(move || {
-                let lenses = oxabl_common::catch_panic(|| {
-                    oxabl_daemon::db::compute_effect_lenses(&snapshot, buffer, schema).map(
-                        |lenses| {
-                            lenses
-                                .into_iter()
-                                .map(|(at, title)| {
-                                    let position = byte_to_position(&rope, at as usize, &encoding);
-                                    CodeLens {
-                                        range: Range::new(position, position),
-                                        command: Some(Command {
-                                            title,
-                                            command: String::new(),
-                                            arguments: None,
-                                        }),
-                                        data: None,
-                                    }
-                                })
-                                .collect()
-                        },
-                    )
+            oxabl_common::stack::builder()
+                .spawn(move || {
+                    let lenses = oxabl_common::catch_panic(|| {
+                        oxabl_daemon::db::compute_effect_lenses(&snapshot, buffer, schema).map(
+                            |lenses| {
+                                lenses
+                                    .into_iter()
+                                    .map(|(at, title)| {
+                                        let position =
+                                            byte_to_position(&rope, at as usize, &encoding);
+                                        CodeLens {
+                                            range: Range::new(position, position),
+                                            command: Some(Command {
+                                                title,
+                                                command: String::new(),
+                                                arguments: None,
+                                            }),
+                                            data: None,
+                                        }
+                                    })
+                                    .collect()
+                            },
+                        )
+                    })
+                    .ok()
+                    .flatten();
+                    let _ = tx.send(LensResult { epoch, uri, lenses });
                 })
-                .ok()
-                .flatten();
-                let _ = tx.send(LensResult { epoch, uri, lenses });
-            })
-            .expect("failed to spawn an analysis thread");
+                .expect("failed to spawn an analysis thread");
         }
         self.respond(Response::new_ok(req.id, Vec::<CodeLens>::new()))
     }

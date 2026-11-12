@@ -267,15 +267,26 @@ impl<'a> Parser<'a> {
     pub const MAX_CHAIN: u32 = 4096;
 
     /// Count one more operator of a left-deep chain, or fail when that passes
-    /// [`MAX_CHAIN`](Self::MAX_CHAIN). The chain's parser restores the count
-    /// when it returns.
+    /// [`MAX_CHAIN`](Self::MAX_CHAIN). `links` counts the chain's own
+    /// operators for [`unlink`](Self::unlink); a chain that an error abandons
+    /// stays counted until the next statement resets the count.
     #[inline(always)]
-    pub(crate) fn link(&mut self) -> ParseResult<()> {
+    pub(crate) fn link(&mut self, links: &mut u32) -> ParseResult<()> {
         if self.chain >= Self::MAX_CHAIN {
             return Err(self.too_long());
         }
         self.chain += 1;
+        *links += 1;
         Ok(())
+    }
+
+    /// Close a chain counted with [`link`](Self::link). A chain with no
+    /// operator touches no memory here.
+    #[inline(always)]
+    pub(crate) fn unlink(&mut self, links: u32) {
+        if links != 0 {
+            self.chain -= links;
+        }
     }
 
     #[cold]
@@ -531,7 +542,17 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_block_statement(&mut self, out: &mut Vec<Statement>) -> bool {
         let pos_before = self.current;
-        match self.parse_statement() {
+        // One nesting level, counted here and not in `parse_statement`: code
+        // after the call there costs a copy of every statement.
+        let parsed = if self.nesting >= Self::MAX_NESTING {
+            Err(self.too_deep())
+        } else {
+            self.nesting += 1;
+            let parsed = self.parse_statement();
+            self.nesting -= 1;
+            parsed
+        };
+        match parsed {
             Ok(stmt) => {
                 out.push(stmt);
                 // Incremental R1.3 check: the just-pushed statement must not

@@ -28,20 +28,26 @@ const CHAIN_ERROR: &str = "An operator chain is longer than";
 /// Shapes that nest about `n` levels, each a file of its own.
 fn deep_shapes(n: usize) -> Vec<(&'static str, String)> {
     vec![
-        ("parens.p", format!("x = {}1{}.\n", "(".repeat(n), ")".repeat(n))),
-        ("do.p", format!("{}{}", "DO:\n".repeat(n), "END.\n".repeat(n))),
+        (
+            "parens.p",
+            format!("x = {}1{}.\n", "(".repeat(n), ")".repeat(n)),
+        ),
+        (
+            "do.p",
+            format!("{}{}", "DO:\n".repeat(n), "END.\n".repeat(n)),
+        ),
         ("if.p", format!("{}MESSAGE 1.\n", "IF TRUE THEN ".repeat(n))),
         (
             "if-do.p",
             format!("{}{}", "IF TRUE THEN DO:\n".repeat(n), "END.\n".repeat(n)),
         ),
-        ("call.p", format!("x = {}1{}.\n", "f(".repeat(n), ")".repeat(n))),
+        (
+            "call.p",
+            format!("x = {}1{}.\n", "f(".repeat(n), ")".repeat(n)),
+        ),
         (
             "else-if.p",
-            format!(
-                "IF a THEN x = 1.\n{}",
-                "ELSE IF a THEN x = 1.\n".repeat(n)
-            ),
+            format!("IF a THEN x = 1.\n{}", "ELSE IF a THEN x = 1.\n".repeat(n)),
         ),
         ("minus.p", format!("x = {}1.\n", "-".repeat(n))),
         ("not.p", format!("x = {}a.\n", "NOT ".repeat(n))),
@@ -180,7 +186,11 @@ fn check_survives_a_deep_preprocessor_nest() {
     let path = dir.path().join("preprocessor-if.p");
     std::fs::write(
         &path,
-        format!("{}x = 1.\n{}", "&IF 1 &THEN\n".repeat(5000), "&ENDIF\n".repeat(5000)),
+        format!(
+            "{}x = 1.\n{}",
+            "&IF 1 &THEN\n".repeat(5000),
+            "&ENDIF\n".repeat(5000)
+        ),
     )
     .unwrap();
     for args in [&[][..], &["--no-preprocess"][..]] {
@@ -203,7 +213,11 @@ fn check_analyses_a_nest_just_under_the_limits() {
             json!(files.len()),
             "--jobs {jobs}: not every file was checked"
         );
-        assert_eq!(report["failures"], json!([]), "--jobs {jobs}: a file failed");
+        assert_eq!(
+            report["failures"],
+            json!([]),
+            "--jobs {jobs}: a file failed"
+        );
         assert_eq!(
             count(&report, DEPTH_ERROR) + count(&report, CHAIN_ERROR),
             0,

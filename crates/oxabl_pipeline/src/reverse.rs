@@ -438,18 +438,18 @@ impl ReverseGraph {
                 .map(|_| {
                     let (next, run, inspect) = (&next, &run, &inspect);
                     oxabl_common::stack::builder()
-.spawn_scoped(scope, move || {
-                        let pipeline = run();
-                        let mut mine = Vec::new();
-                        loop {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(path) = files.get(i) else { break };
-                            let (part, output) = Self::analyse(&pipeline, path, inspect);
-                            mine.push((i, part, output));
-                        }
-                        mine
-                    })
-.expect("failed to spawn an analysis thread")
+                        .spawn_scoped(scope, move || {
+                            let pipeline = run();
+                            let mut mine = Vec::new();
+                            loop {
+                                let i = next.fetch_add(1, Ordering::Relaxed);
+                                let Some(path) = files.get(i) else { break };
+                                let (part, output) = Self::analyse(&pipeline, path, inspect);
+                                mine.push((i, part, output));
+                            }
+                            mine
+                        })
+                        .expect("failed to spawn an analysis thread")
                 })
                 .collect();
             workers
