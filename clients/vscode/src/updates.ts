@@ -7,17 +7,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { apiBaseFrom, type UpdateEnv } from "./net";
 import {
-  DEFAULT_API_BASE,
   NotReadyError,
   UpdateError,
   downloadVerified,
   findUpdate,
   highestInstalledVersion,
-  isLoopbackHost,
   isPendingReloadSpent,
   type AvailableUpdate,
-  type UpdateEnv,
 } from "./update";
 
 const LAST_CHECK_KEY = "oxabl.updates.lastCheck";
@@ -58,28 +56,9 @@ function currentMode(): Mode {
   return mode === "auto" && autoUpdate === false ? "notify" : mode;
 }
 
-/** The test hook `OXABL_UPDATE_API_URL`, honoured only for a loopback host. */
-function apiOverride(log: vscode.LogOutputChannel): string | undefined {
-  const override = process.env.OXABL_UPDATE_API_URL;
-  if (!override) {
-    return undefined;
-  }
-  try {
-    if (isLoopbackHost(new URL(override).hostname)) {
-      return override;
-    }
-  } catch {
-    // Reported below with the other rejected values.
-  }
-  log.warn("ignoring OXABL_UPDATE_API_URL: the host is not a loopback address");
-  return undefined;
-}
-
 function updateEnv(context: vscode.ExtensionContext, log: vscode.LogOutputChannel): UpdateEnv {
-  const override = apiOverride(log);
   return {
-    apiBase: (override || DEFAULT_API_BASE).replace(/\/+$/, ""),
-    allowHttp: Boolean(override),
+    ...apiBaseFrom(process.env.OXABL_UPDATE_API_URL, (m) => log.warn(m)),
     installedVersion: context.extension.packageJSON.version as string,
   };
 }

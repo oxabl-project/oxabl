@@ -1,10 +1,12 @@
 # The VS Code extension: grammar, releases and self-update
 
-The extension (`clients/vscode`) has three parts. A TextMate grammar
+The extension (`clients/vscode`) has five parts. A TextMate grammar
 highlights ABL with no other extension and no `oxabl` binary. A language
 client starts `oxabl lsp` for format-on-save and diagnostics when the binary
 is there. A self-update keeps the extension current, because it is not on the
-Marketplace. This note records how each part works and why.
+Marketplace. An installer puts the `oxabl` CLI on the machine. A build loop
+runs `oxabl build` at open, on save and on changes on disk. This note records
+how each part works and why.
 
 ## The grammar
 
@@ -131,7 +133,8 @@ From `clients/vscode`:
 - `xvfb-run -a pnpm run test:e2e` — the packaged VSIX in a downloaded VS Code:
   activation, the colours that the editor renders, Markdown code blocks, a
   missing binary (a line in the output channel, no message), the self-update
-  against a fake GitHub API, and screenshots. It removes every `oxabl` from
+  against a fake GitHub API, the install of the CLI and the build loop against
+  a fake `oxabl` (see [The build loop](#the-build-loop)), and screenshots. It removes every `oxabl` from
   `PATH` and sets `VSCODE_CLI=1` (otherwise VS Code reads the login shell's
   `PATH` and starts a real language server), and fails when a scenario leaves
   a process running.
@@ -217,3 +220,138 @@ names the packaged version before it uploads.
 If the `vsix` job fails, the release has no assets and no extension offers
 it. Re-run the failed job in the same workflow run: a `workflow_dispatch` run
 never uploads, and a new push does not create the release again.
+
+## The CLI and the build loop
+
+The modules follow one rule: a module with logic has no `vscode` import, and a
+thin layer holds the editor calls. Pure: `host.ts` (which hosts get a binary),
+`server.ts` (where the binary is), `net.ts` (HTTP to GitHub, shared with the
+self-update), `install.ts` (download, verify, install), `cli.ts` (calls to the
+binary), `scheduler.ts` (coalescing), `progress.ts` (events and status text),
+`roots.ts` (which root owns a path). Editor layer: `binary.ts` (prompts and
+progress of the install), `builds.ts` (processes, watchers, status bar,
+diagnostics) and `extension.ts`.
+
+### Where it runs
+
+`extensionKind` is `["workspace"]`, so in a WSL, SSH or container window the
+extension runs on the remote host, where the files and the binary are.
+`host.ts` classifies the host from `process.platform`, `process.arch` and
+`vscode.env.remoteName`: Linux x86_64 (local or remote) is supported; a local
+Windows window gets the offer to reopen the folder in WSL (the WSL extension's
+`remote-wsl.reopenInWSL`, else a link to the README); any other platform or
+CPU gets a message to run `cargo install oxabl`. The extension never
+downloads a Windows binary: the language server needs Unix sockets.
+
+`capabilities.untrustedWorkspaces` is `limited`. A build runs the worker
+command of `oxabl.toml`, which is code from the folder. So the build loop
+starts only in a trusted workspace (and when trust is granted,
+`onDidGrantWorkspaceTrust`), and not even `--print-config` runs before that.
+`oxabl.server.path` and `oxabl.build.args` are restricted settings: a folder
+cannot name the program or its arguments before it is trusted.
+
+### Finding and installing the binary
+
+The order is `oxabl.server.path`, `${OXABL_INSTALL_DIR:-~/.local/bin}/oxabl`,
+then `PATH`. The install path comes before `PATH` because it is where the
+installer and `oxabl self-update` write.
+
+With no binary and an `oxabl.toml` in the workspace, one prompt offers the
+install (`Don't Ask Again` is kept in `globalState`). Without an `oxabl.toml`
+there is no prompt: the highlighting needs no binary. The install follows the
+contract that `install.sh` and `oxabl self-update` share: newest plain
+`oxabl-vX.Y.Z` tag (`/git/matching-refs/tags/oxabl-v`; the extension's own tags
+start with `oxabl_vscode-v`, so they never match), a release that is not a
+draft or pre-release and has both assets, then download into a staged file in
+the target directory, SHA-256, `chmod`, `--version` must say the expected
+version, and one `rename`. The install record
+`${XDG_DATA_HOME:-~/.local/share}/oxabl/install.json` is written the same way,
+with `installer: "vscode"`. Only a binary named by the record (compared after
+`realpath`) is *managed* and updated; the extension never touches another.
+The HTTP code (redirects, size limits, loopback-only `http:` for the test
+hook `OXABL_UPDATE_API_URL`) is the code of the extension's own update. A
+timeout counts idle time, so a slow download of the binary does not fail.
+
+Before each build the extension runs `oxabl --version` and compares it with
+the version the language client started with. `oxabl self-update` replaces the
+file under a running server, which keeps its old inode; the extension
+restarts the client when the version differs. It also checks once per binary
+version that `oxabl build --help` mentions `--yield`. A binary without it is
+updated when it is managed, and otherwise one message asks for a newer oxabl.
+
+### The build loop
+
+A *root* is a folder with an `oxabl.toml` in the workspace. It builds when
+`oxabl build --root R --print-config --json` exits 0 and has values for
+`build.output` and `build.workers.command` (`oxabl.build.args` go to this call
+too: an overlay can supply the worker command). The same output gives the
+directories whose changes are ignored: `build.output`, `build.outputs.*`,
+`build.state` and `build.store`. Any other change under `.git` is ignored too.
+
+Triggers are the build at open, saves, and a file watcher on
+`**/*.{p,w,cls,i,v,df}`, `**/oxabl.toml` and `**/.oxabl/cache.toml`. The
+watcher is there because agents, `git` and other tools edit files without a
+save. A save is also seen by the watcher. The extension keeps the modification
+time and size of each file at its last event, so the second event of one save
+is dropped: without that, the watcher event of a save arrives while the build
+of that save runs and cancels it.
+
+#### Coalescing
+
+`scheduler.ts` follows what rust-analyzer's flycheck and watch-mode compilers
+do. A request starts a trailing debounce (`oxabl.build.debounce`, default
+500 ms) with a maximum wait of 5 s from the first request, so a constant
+stream of writes cannot starve the build. At most one build runs per root, and
+at most one request is pending. A request while a build runs sends that build
+one `SIGINT`; when it has exited and the debounce has settled, the one pending
+build starts. Ten saves in a row, or an agent that writes 200 files, give at
+most one cancelled build and one new build. The newest change always wins,
+because the pending build starts after the last change.
+
+Events from the watcher get 600 ms more. VS Code gives file events to an
+extension in batches about half a second apart; the e2e scenario with 200
+files written on disk showed three batches between 0.5 s and 1 s apart, which
+a debounce of 500 ms or less splits into several builds.
+
+`SIGINT` goes to the `oxabl` process, never to workers: `oxabl build` lets busy
+workers finish their unit and stops them (`docs/build-wrapper.md`).
+
+#### Yield
+
+The extension runs `oxabl build --events --yield --wait-lock 3600`. `--yield`
+marks the lock so that any newer `oxabl build` (a terminal, an agent, another
+VS Code window) may stop this build with one `SIGINT` instead of waiting for
+it or failing with exit code 3. The editor's build is always the one to give
+way: it is a background job and the person or the agent that started another
+build wants that result. The build never stops a build that did not ask for
+it. The preempted build exits 130, and nothing tells it from a cancel, so the
+extension knows whether it sent the signal. An exit 130 that it did not cause
+means another process took over: the status bar says so and one more build is
+scheduled. That build waits for the lock (`--wait-lock`) and finds little to
+do. When two windows keep stopping each other, the pause before the next
+attempt doubles from 1 s to 30 s.
+
+#### What it shows
+
+One status bar item (`preparing`, then `done/total · N% cached`, then a check
+mark for 3 s, an error count that stays until the next success, a warning
+with the first line of stderr, or "running elsewhere"). A unit counts once,
+also when the retry pass compiles it again, and the hit rate is the units from
+a cache divided by the units done. Compiler messages go to a diagnostic
+collection `oxabl build`: each unit's set is replaced at its `unit-finished`
+and cleared at its `unit-fetched` (a cache gives no messages), and a cancelled
+build keeps the sets of the units it did not reach. One notification shows when
+the first build of the window ends; later builds show the status bar only. On
+deactivate every running build gets `SIGINT`, and `SIGKILL` after 5 s.
+
+### Tests
+
+The scenarios in `test/e2e/scenarios/build.mjs` run the real extension against
+a *fake* `oxabl` (`lib/fake-oxabl.mjs`): a script that answers `--version`,
+`build --help`, `--print-config` and a minimal `lsp`, plays a scripted event
+stream for `build --events`, and logs each call and each signal it gets. They
+check what a person sees (status bar, notifications, the Problems view) and
+what the binary was asked to do. The install scenarios use the fake GitHub
+API with the fake binary as the release asset. Every VS Code of the suite
+gets an install directory and a data directory inside its profile, so no
+scenario meets the `oxabl` of the machine.

@@ -146,6 +146,12 @@ export function makeProfile(name, { settings = {}, files = [] } = {}) {
   return profile;
 }
 
+/** Adds settings to the profile's user settings. */
+export function addSettings(profile, extra) {
+  const file = path.join(profile.userData, "User", "settings.json");
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), ...extra }, null, 2));
+}
+
 /**
  * Registers a named VS Code profile in the user data dir. `storage.json` and
  * its `userDataProfiles` list are internal to VS Code: check them again when
@@ -157,6 +163,11 @@ export function addNamedProfile(profile, named) {
   fs.writeFileSync(path.join(dir, "storage.json"), JSON.stringify({ userDataProfiles: [{ name: named, location: named }] }));
 }
 
+// VS Code keeps the trust of folders and the list of recent folders in a shared data directory
+// (`~/.vscode-shared` by default), outside the user data directory. A scenario that grants trust
+// must not leave it in the machine's.
+const sharedArgs = (profile) => ["--shared-data-dir", path.join(profile.root, "shared-data")];
+
 // `named` is a VS Code profile name; without it the default profile is used.
 const profileArgs = (named) => (named ? ["--profile", named] : []);
 
@@ -164,7 +175,7 @@ function runCli(exe, profile, args, named) {
   const [cli, ...base] = resolveCliArgsFromVSCodeExecutablePath(exe);
   const res = cp.spawnSync(
     cli,
-    [...base, "--extensions-dir", profile.extensions, "--user-data-dir", profile.userData, ...profileArgs(named), ...args],
+    [...base, "--extensions-dir", profile.extensions, "--user-data-dir", profile.userData, ...sharedArgs(profile), ...profileArgs(named), ...args],
     { encoding: "utf8", env: cleanEnv(), timeout: 120_000 },
   );
   if (res.status !== 0) {
@@ -199,17 +210,27 @@ function requireLoopbackApi(url) {
   if (!ok) throw new Error(`refusing to launch VS Code with OXABL_UPDATE_API_URL=${url}`);
 }
 
-/** Starts VS Code on the profile and returns { app, page, close }. `env.OXABL_UPDATE_API_URL` is required. */
-export async function launch(exe, profile, { open = [], env = {}, named } = {}) {
-  const launchEnv = cleanEnv(env);
+/**
+ * Starts VS Code on the profile and returns { app, page, close }. `env.OXABL_UPDATE_API_URL` is required.
+ * The install directory and the data directory of oxabl are inside the profile, so no scenario
+ * meets the `oxabl` of the machine or writes its install record. `untrusted` leaves the workspace
+ * untrusted (the settings of the profile must then turn workspace trust on).
+ */
+export async function launch(exe, profile, { open = [], env = {}, named, untrusted = false } = {}) {
+  const launchEnv = cleanEnv({
+    OXABL_INSTALL_DIR: path.join(profile.root, "bin"),
+    XDG_DATA_HOME: path.join(profile.root, "data"),
+    ...env,
+  });
   requireLoopbackApi(launchEnv.OXABL_UPDATE_API_URL);
   const app = await _electron.launch({
     executablePath: exe,
     args: [
       "--user-data-dir", profile.userData,
       "--extensions-dir", profile.extensions,
+      ...sharedArgs(profile),
       ...profileArgs(named),
-      "--disable-workspace-trust",
+      ...(untrusted ? [] : ["--disable-workspace-trust"]),
       "--skip-welcome",
       "--skip-release-notes",
       "--disable-gpu",

@@ -7,6 +7,20 @@ import fs from "node:fs";
 import { check, failures, total } from "./lib/report.mjs";
 import { manifestVersion, newerVsix, packagedVsix } from "./lib/vsix.mjs";
 import { VSCODE_VERSION, downloadVSCode, leakedProcesses, takeProfiles } from "./lib/vscode.mjs";
+import {
+  buildBinaryChanged,
+  buildBurstDisk,
+  buildBurstSave,
+  buildDiagnostic,
+  buildExternalPreemption,
+  buildInstall,
+  buildInstallBadChecksum,
+  buildOpen,
+  buildTooOld,
+  buildTooOldManaged,
+  buildSaveKeepsItsBuild,
+  buildUntrusted,
+} from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
@@ -38,6 +52,18 @@ const SCENARIOS = [
   ["update-installed-reload", updateInstalledReload],
   ["update-manual-no-tags", updateManualNoTags],
   ["update-two-profiles", updateTwoProfiles],
+  ["build-open", buildOpen],
+  ["build-save-keeps-its-build", buildSaveKeepsItsBuild],
+  ["build-burst-save", buildBurstSave],
+  ["build-burst-disk", buildBurstDisk],
+  ["build-diagnostic", buildDiagnostic],
+  ["build-untrusted", buildUntrusted],
+  ["build-external-preemption", buildExternalPreemption],
+  ["build-too-old", buildTooOld],
+  ["build-too-old-managed", buildTooOldManaged],
+  ["build-binary-changed", buildBinaryChanged],
+  ["build-install", buildInstall],
+  ["build-install-bad-checksum", buildInstallBadChecksum],
 ];
 
 // Measurements, not checks of the product's output: they run only when named in
