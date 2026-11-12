@@ -106,6 +106,10 @@ pub const MAX_EXPANSION_BYTES: usize = 32 * 1024 * 1024;
 /// expansions repeated without end also reach the limit.
 const NODE_COST: usize = 256;
 
+/// Most unterminated include references one run reports. A damaged file can
+/// hold a run of thousands of `{`, each one a warning.
+const MAX_UNTERMINATED_REPORTS: usize = 100;
+
 impl<'fs> Preprocessor<'fs> {
     pub fn new(fs: &'fs dyn FileSystem, include_paths: &'fs [PathBuf]) -> Self {
         Preprocessor {
@@ -179,6 +183,7 @@ impl<'fs> Preprocessor<'fs> {
             file_id_counter: file.raw() + 1,
             expanded_bytes: 0,
             over_limit: false,
+            unterminated_reported: 0,
         };
 
         let tree = ctx.process_source(file, source, 0, &[]);
@@ -297,6 +302,9 @@ struct ProcessContext<'a> {
     expanded_bytes: usize,
     /// Whether an expansion was refused; nothing more is expanded after that.
     over_limit: bool,
+    /// Unterminated include references reported, against
+    /// [`MAX_UNTERMINATED_REPORTS`].
+    unterminated_reported: usize,
 }
 
 impl ProcessContext<'_> {
@@ -413,6 +421,9 @@ impl ProcessContext<'_> {
         // expand them. Track depth so we can skip comment bodies when scanning
         // for `&` and `{` markers.
         let mut comment_depth: u32 = 0;
+
+        // Where each `{` of this source closes, found once.
+        let mut braces = BraceMatches::default();
 
         // Whether every enclosing &IF branch is emitting; only a conditional
         // directive changes it.
@@ -704,7 +715,8 @@ impl ProcessContext<'_> {
                 }
                 b'{' if !emitting => {
                     if i >= skipped_until
-                        && let Some(close) = self.note_skipped_include(file, source, i, &if_stack)
+                        && let Some(close) =
+                            self.note_skipped_include(file, source, i, &if_stack, &mut braces)
                     {
                         // A reference inside this one's arguments is not an include.
                         skipped_until = close;
@@ -739,7 +751,7 @@ impl ProcessContext<'_> {
                             // to the actual include name). Substitute all
                             // `{&var}` references inside the span so the
                             // resulting text parses as a normal include ref.
-                            if let Some(close) = find_matching_brace(source, i) {
+                            if let Some(close) = braces.find(source, i) {
                                 let ref_end = close + 1;
                                 let raw_inner = source[i + 1..close].trim();
                                 let include_site = FileSpan {
@@ -996,12 +1008,13 @@ impl ProcessContext<'_> {
         source: &str,
         open: usize,
         if_stack: &[IfState],
+        braces: &mut BraceMatches,
     ) -> Option<usize> {
         let bytes = source.as_bytes();
         if bytes.get(open + 1) == Some(&b'&') || !include_ref_start(bytes, open) {
             return None;
         }
-        let close = find_matching_brace(source, open)?;
+        let close = braces.find(source, open)?;
         let inner = source[open + 1..close].trim();
         let name = written_include_name(inner);
         let computed_name = name.contains('{');
@@ -1225,7 +1238,11 @@ impl ProcessContext<'_> {
         nodes: &mut Vec<SpanNode>,
     ) {
         let rest = &source[i + 1..];
-        let name = parse_include_name(rest.lines().next().unwrap_or(rest));
+        // The name ends at the line's end, or at a brace: no file name holds
+        // one. Without the cut, a run of unclosed `{` named each reference by
+        // the whole rest of the line, and memory and time grew with the square
+        // of the run.
+        let name = parse_include_name(&rest[..rest.find(['{', '}', '\n']).unwrap_or(rest.len())]);
         let site = FileSpan {
             file,
             span: Span {
@@ -1236,7 +1253,10 @@ impl ProcessContext<'_> {
         // The file the reference names is still a dependency when it can be
         // located; only where the reference ends, and so what it passes, is lost.
         // The node is empty: the text stays as written.
-        if let Some(path) = self.fs.resolve_include(self.include_paths, &name) {
+        // An empty name would resolve to an include directory itself.
+        if !name.is_empty()
+            && let Some(path) = self.fs.resolve_include(self.include_paths, &name)
+        {
             // A read, so a watcher learns of the path.
             let _ = self.fs.read(&path);
             if i as u32 > *chunk_start {
@@ -1253,9 +1273,20 @@ impl ProcessContext<'_> {
                 children: Vec::new(),
             });
         }
+        // Past the cap the reference is still looked up above, so the
+        // dependencies stay complete; only the report is dropped.
+        if self.unterminated_reported == MAX_UNTERMINATED_REPORTS {
+            return;
+        }
+        self.unterminated_reported += 1;
+        let more = if self.unterminated_reported == MAX_UNTERMINATED_REPORTS {
+            "; any more in this file are not reported"
+        } else {
+            ""
+        };
         self.diagnostics.push(Diagnostic::warning(
             "PREPROC008",
-            format!("unterminated include reference '{{{name}'"),
+            format!("unterminated include reference '{{{name}'{more}"),
             site,
         ));
         self.unresolved_includes.push(UnresolvedInclude {
@@ -2308,48 +2339,72 @@ fn holds_include_ref(text: &str) -> bool {
         .any(|i| bytes[i] == b'{' && bytes[i + 1] != b'&' && include_ref_start(bytes, i))
 }
 
-/// Find the matching `}` for a `{` at position `open`, handling nested braces.
-///
-/// A brace inside a quoted argument does not count, and `~` escapes the next
-/// byte in one. A quote that never closes would hide the real close, so when the
-/// quote-aware scan finds nothing the plain brace count answers instead.
-fn find_matching_brace(source: &str, open: usize) -> Option<usize> {
-    scan_matching_brace(source, open, true).or_else(|| scan_matching_brace(source, open, false))
+/// Where the `{` of one source close. A scan from a
+/// `{` also settles every `{` it counts on the way: from such a `{` on, a scan
+/// of its own reads the same bytes in the same quote state. So each `{` is
+/// scanned once, where a scan per `{` read to the end of the source for each
+/// unclosed one, and time grew with the square of a run of `{`.
+#[derive(Default)]
+struct BraceMatches {
+    quote_aware: rustc_hash::FxHashMap<usize, Option<usize>>,
+    plain: rustc_hash::FxHashMap<usize, Option<usize>>,
 }
 
-fn scan_matching_brace(source: &str, open: usize, quote_aware: bool) -> Option<usize> {
-    let bytes = source.as_bytes();
-    let mut depth = 1usize;
-    let mut i = open + 1;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' | b'\'' if quote_aware => {
-                let quote = bytes[i];
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == quote {
-                        // A doubled quote is an escaped quote, not the end.
-                        if bytes.get(i + 1) != Some(&quote) {
-                            break;
+impl BraceMatches {
+    /// The `}` that closes the `{` at `open`, handling nested braces.
+    ///
+    /// A brace inside a quoted argument does not count, and `~` escapes the next
+    /// byte in one. A quote that never closes would hide the real close, so when
+    /// the quote-aware scan finds nothing the plain brace count answers instead.
+    fn find(&mut self, source: &str, open: usize) -> Option<usize> {
+        self.scan(source, open, true)
+            .or_else(|| self.scan(source, open, false))
+    }
+
+    fn scan(&mut self, source: &str, open: usize, quote_aware: bool) -> Option<usize> {
+        let found = if quote_aware {
+            &mut self.quote_aware
+        } else {
+            &mut self.plain
+        };
+        if let Some(&close) = found.get(&open) {
+            return close;
+        }
+        let bytes = source.as_bytes();
+        let mut opens = vec![open];
+        let mut i = open + 1;
+        while i < bytes.len() && !opens.is_empty() {
+            match bytes[i] {
+                b'"' | b'\'' if quote_aware => {
+                    let quote = bytes[i];
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == quote {
+                            // A doubled quote is an escaped quote, not the end.
+                            if bytes.get(i + 1) != Some(&quote) {
+                                break;
+                            }
+                            i += 2;
+                        } else {
+                            i += if bytes[i] == b'~' { 2 } else { 1 };
                         }
-                        i += 2;
-                    } else {
-                        i += if bytes[i] == b'~' { 2 } else { 1 };
                     }
                 }
-            }
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
+                b'{' => opens.push(i),
+                b'}' => {
+                    if let Some(at) = opens.pop() {
+                        found.insert(at, Some(i));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
+            i += 1;
         }
-        i += 1;
+        for at in opens {
+            found.insert(at, None);
+        }
+        found[&open]
     }
-    None
 }
 
 /// Parse the include file name from the content between `{` and `}`.
@@ -4078,13 +4133,13 @@ mod tests {
     #[test]
     fn find_matching_brace_nested() {
         let s = "{outer {inner} rest}";
-        assert_eq!(find_matching_brace(s, 0), Some(19));
+        assert_eq!(BraceMatches::default().find(s, 0), Some(19));
     }
 
     #[test]
     fn find_matching_brace_simple() {
         let s = "{simple}";
-        assert_eq!(find_matching_brace(s, 0), Some(7));
+        assert_eq!(BraceMatches::default().find(s, 0), Some(7));
     }
 
     #[test]
