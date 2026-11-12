@@ -301,7 +301,12 @@ impl Session {
             match self.messages.recv_timeout(left) {
                 Ok(message) if wanted(&message) => return message,
                 Ok(_) => {}
-                Err(_) => panic!("no awaited message from `oxabl lsp` in 60 s"),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("no awaited message from `oxabl lsp` in 60 s")
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("`oxabl lsp` closed its output: the session or its daemon died")
+                }
             }
         }
     }
