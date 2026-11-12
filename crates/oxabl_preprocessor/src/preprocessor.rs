@@ -95,6 +95,17 @@ impl ComputedName {
 /// non-cyclic) include chains.
 pub const MAX_INCLUDE_DEPTH: usize = 64;
 
+/// Most bytes of expanded text one run may produce: include contents, values
+/// of `{&name}` and `{N}` references, and values built at define time. A
+/// define that names the previous one twice doubles at each level, so a few
+/// lines can ask for gigabytes. Past the limit the preprocessor reports
+/// `PREPROC011` and expands nothing more; the file's own text is kept.
+pub const MAX_EXPANSION_BYTES: usize = 32 * 1024 * 1024;
+
+/// What one spliced include or reference costs beyond its text, so that empty
+/// expansions repeated without end also reach the limit.
+const NODE_COST: usize = 256;
+
 impl<'fs> Preprocessor<'fs> {
     pub fn new(fs: &'fs dyn FileSystem, include_paths: &'fs [PathBuf]) -> Self {
         Preprocessor {
@@ -166,6 +177,8 @@ impl<'fs> Preprocessor<'fs> {
             include_stack: HashSet::new(),
             site_stack: Vec::new(),
             file_id_counter: file.raw() + 1,
+            expanded_bytes: 0,
+            over_limit: false,
         };
 
         let tree = ctx.process_source(file, source, 0, &[]);
@@ -280,6 +293,10 @@ struct ProcessContext<'a> {
     site_stack: Vec<FileSpan>,
     /// Counter for assigning FileIds to newly discovered include files.
     file_id_counter: u32,
+    /// Bytes of expanded text admitted so far, against [`MAX_EXPANSION_BYTES`].
+    expanded_bytes: usize,
+    /// Whether an expansion was refused; nothing more is expanded after that.
+    over_limit: bool,
 }
 
 impl ProcessContext<'_> {
@@ -287,6 +304,76 @@ impl ProcessContext<'_> {
         let id = FileId::new(self.file_id_counter);
         self.file_id_counter += 1;
         id
+    }
+
+    /// Admit `cost` more bytes of expanded text at `site`. The first refusal
+    /// reports `PREPROC011` at the site in the root file that led there; every
+    /// refusal is a text loss at its own site.
+    fn admit(&mut self, cost: usize, site: FileSpan) -> bool {
+        if cost == 0 {
+            return true;
+        }
+        let total = self.expanded_bytes.saturating_add(cost);
+        if !self.over_limit && total <= MAX_EXPANSION_BYTES {
+            self.expanded_bytes = total;
+            return true;
+        }
+        if !self.over_limit {
+            self.over_limit = true;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "PREPROC011",
+                    format!(
+                        "preprocessor expansion limit ({} MiB) exceeded; nothing more is expanded",
+                        MAX_EXPANSION_BYTES / (1024 * 1024)
+                    ),
+                    self.site_stack.first().copied().unwrap_or(site),
+                )
+                .with_help(
+                    "a define or include that expands its predecessor more than once grows exponentially"
+                        .to_string(),
+                ),
+            );
+        }
+        self.text_losses.push(TextLoss {
+            kind: TextLossKind::ExpansionLimit,
+            site,
+        });
+        false
+    }
+
+    /// The value of a `&SCOPED-DEFINE` or `&GLOBAL-DEFINE` written at
+    /// `[at, end)` of `source`, with its `{N}` and defined `{&name}`
+    /// references expanded within the expansion limit.
+    fn define_value(
+        &mut self,
+        value: String,
+        positional_args: &[String],
+        file: FileId,
+        source: &str,
+        at: usize,
+        end: usize,
+    ) -> String {
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: at as u32,
+                end: end as u32,
+            },
+        };
+        // Expand positional `{N}` inside the value at define time (ADM2
+        // `set`/`get` store `&SCOPED-DEFINE ADMHdl {3}`). Only inside an
+        // include: top level keeps literal `{N}` for the lexer, matching the
+        // body-scan rules.
+        let value = if positional_args.is_empty() {
+            value
+        } else if self.admit(positional_expansion_len(&value, positional_args), site) {
+            expand_positional_refs(&value, positional_args).into_owned()
+        } else {
+            expand_positional_refs(&value, &[]).into_owned()
+        };
+        self.expand_defined_preproc_vars(&value, source, at, site)
+            .unwrap_or(value)
     }
 
     /// Process a source string, returning its span tree nodes.
@@ -387,20 +474,14 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if emitting {
-                                    // Expand positional `{N}` inside the value at
-                                    // define time (ADM2 `set`/`get` store
-                                    // `&SCOPED-DEFINE ADMHdl {3}`). Only inside
-                                    // an include — top-level keeps literal `{N}`
-                                    // for the lexer, matching body-scan rules.
-                                    // #65 round 4.
-                                    let expanded = if !positional_args.is_empty() {
-                                        expand_positional_refs(&value, positional_args).into_owned()
-                                    } else {
-                                        value
-                                    };
-                                    let expanded = self
-                                        .expand_defined_preproc_vars(&expanded, source, i)
-                                        .unwrap_or(expanded);
+                                    let expanded = self.define_value(
+                                        value,
+                                        positional_args,
+                                        file,
+                                        source,
+                                        i,
+                                        directive.end,
+                                    );
                                     self.vars.define(&name, &expanded);
                                 }
                                 i = directive.end;
@@ -416,14 +497,14 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if emitting {
-                                    let expanded = if !positional_args.is_empty() {
-                                        expand_positional_refs(&value, positional_args).into_owned()
-                                    } else {
-                                        value
-                                    };
-                                    let expanded = self
-                                        .expand_defined_preproc_vars(&expanded, source, i)
-                                        .unwrap_or(expanded);
+                                    let expanded = self.define_value(
+                                        value,
+                                        positional_args,
+                                        file,
+                                        source,
+                                        i,
+                                        directive.end,
+                                    );
                                     self.vars.define_global(&name, &expanded);
                                 }
                                 i = directive.end;
@@ -661,10 +742,18 @@ impl ProcessContext<'_> {
                             if let Some(close) = find_matching_brace(source, i) {
                                 let ref_end = close + 1;
                                 let raw_inner = source[i + 1..close].trim();
+                                let include_site = FileSpan {
+                                    file,
+                                    span: Span {
+                                        start: i as u32,
+                                        end: ref_end as u32,
+                                    },
+                                };
 
                                 // Pre-expand any `{&var}` references inside the
                                 // inner content to support dynamic include names.
-                                let expanded_inner = self.expand_preproc_vars(raw_inner, source, i);
+                                let expanded_inner =
+                                    self.expand_preproc_vars(raw_inner, source, i, include_site);
                                 let inner_ref: &str =
                                     expanded_inner.as_deref().unwrap_or(raw_inner);
 
@@ -679,14 +768,6 @@ impl ProcessContext<'_> {
                                         end: i as u32,
                                     });
                                 }
-
-                                let include_site = FileSpan {
-                                    file,
-                                    span: Span {
-                                        start: i as u32,
-                                        end: ref_end as u32,
-                                    },
-                                };
 
                                 if depth >= MAX_INCLUDE_DEPTH {
                                     self.diagnostics.push(Diagnostic::error(
@@ -1000,7 +1081,12 @@ impl ProcessContext<'_> {
         at: usize,
         site: FileSpan,
     ) -> bool {
-        let condition = expand_positional_refs(condition, positional_args);
+        let args = if self.admit(positional_expansion_len(condition, positional_args), site) {
+            positional_args
+        } else {
+            &[]
+        };
+        let condition = expand_positional_refs(condition, args);
         let condition = self.substitute_computed_names(&condition, source, at, site);
         let evaluation = evaluate(
             &condition,
@@ -1213,7 +1299,16 @@ impl ProcessContext<'_> {
             });
         }
 
-        if let Some(val) = self.lookup_ref(var_name, source, i) {
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: i as u32,
+                end: ref_end as u32,
+            },
+        };
+        if let Some(val) = self.lookup_ref(var_name, source, i)
+            && (val.is_empty() || self.admit(val.len() + NODE_COST, site))
+        {
             // Create a synthetic chunk for the expanded value.
             // We store it as a new source entry.
             let expanded_id = self.next_file_id();
@@ -1233,13 +1328,6 @@ impl ProcessContext<'_> {
             self.sources.push((expanded_id, val));
 
             if val_len > 0 {
-                let site = FileSpan {
-                    file,
-                    span: Span {
-                        start: i as u32,
-                        end: ref_end as u32,
-                    },
-                };
                 let children = if let Some(text) = rescan_text {
                     self.expanding_vars.push(var_name.to_string());
                     self.site_stack.push(site);
@@ -1264,13 +1352,6 @@ impl ProcessContext<'_> {
                 return Some(ref_end);
             }
         }
-        let site = FileSpan {
-            file,
-            span: Span {
-                start: i as u32,
-                end: ref_end as u32,
-            },
-        };
         self.elide(ElidedKind::Name, site);
 
         *chunk_start = ref_end as u32;
@@ -1319,15 +1400,21 @@ impl ProcessContext<'_> {
         let index: usize = source[i + 1..j].parse().unwrap_or(usize::MAX);
 
         let in_include = !positional_args.is_empty();
-        let arg_val = positional_args.get(index).map(|s| s.as_str());
+        let site = FileSpan {
+            file,
+            span: Span {
+                start: i as u32,
+                end: ref_end as u32,
+            },
+        };
+        let mut arg_val = positional_args.get(index).map(|s| s.as_str());
+        if let Some(val) = arg_val
+            && !val.is_empty()
+            && !self.admit(val.len() + NODE_COST, site)
+        {
+            arg_val = Some("");
+        }
         if in_include && arg_val.is_none_or(str::is_empty) {
-            let site = FileSpan {
-                file,
-                span: Span {
-                    start: i as u32,
-                    end: ref_end as u32,
-                },
-            };
             self.elide(ElidedKind::Argument, site);
         }
 
@@ -1346,13 +1433,7 @@ impl ProcessContext<'_> {
                     let val_len = val.len() as u32;
                     self.sources.push((expanded_id, val));
                     nodes.push(SpanNode::Include {
-                        site: FileSpan {
-                            file,
-                            span: Span {
-                                start: i as u32,
-                                end: ref_end as u32,
-                            },
-                        },
+                        site,
                         // A positional argument, not a file include.
                         path: None,
                         children: vec![SpanNode::Chunk {
@@ -1500,7 +1581,13 @@ impl ProcessContext<'_> {
     ///
     /// Used to resolve dynamic include references like `{{&frame}.f …}` where
     /// the include file name is built from a preprocessor variable.
-    fn expand_preproc_vars(&mut self, text: &str, source: &str, at: usize) -> Option<String> {
+    fn expand_preproc_vars(
+        &mut self,
+        text: &str,
+        source: &str,
+        at: usize,
+        site: FileSpan,
+    ) -> Option<String> {
         if !text.contains("{&") {
             return None;
         }
@@ -1517,7 +1604,10 @@ impl ProcessContext<'_> {
                 let end = i + close_rel;
                 let name = &text[i + 2..end];
                 // ABL expands undefined {&name} to empty; do not preserve (#64).
-                if let Some(val) = self.lookup_ref(name, source, at) {
+                if let Some(val) = self.lookup_ref(name, source, at)
+                    && !self.over_limit
+                    && self.admit(val.len(), site)
+                {
                     out.push_str(&val);
                 }
                 i = end + 1;
@@ -1551,6 +1641,7 @@ impl ProcessContext<'_> {
         text: &str,
         source: &str,
         at: usize,
+        site: FileSpan,
     ) -> Option<String> {
         if !text.contains("{&") {
             return None;
@@ -1574,7 +1665,10 @@ impl ProcessContext<'_> {
                         .and_then(|computed| self.computed_value(computed, source, at))
                 });
                 if let Some(val) = val {
-                    out.push_str(&val);
+                    // Past the limit the reference expands to nothing.
+                    if !self.over_limit && self.admit(val.len(), site) {
+                        out.push_str(&val);
+                    }
                     changed = true;
                 } else {
                     // Undefined: preserve verbatim for lazy resolution at
@@ -1662,6 +1756,10 @@ impl ProcessContext<'_> {
                 return None;
             }
         };
+
+        if !self.admit(content.len() + NODE_COST, site) {
+            return None;
+        }
 
         // Cycle detection — track by resolved path, not FileId
         if !self.include_stack.insert(path.clone()) {
@@ -2034,6 +2132,32 @@ fn expand_positional_refs<'t>(text: &'t str, positional_args: &[String]) -> Cow<
         i += 1;
     }
     Cow::Owned(out)
+}
+
+/// How many bytes [`expand_positional_refs`] adds to `text` for `args`.
+fn positional_expansion_len(text: &str, args: &[String]) -> usize {
+    if args.is_empty() || !has_positional_ref(text) {
+        return 0;
+    }
+    let bytes = text.as_bytes();
+    let mut total = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'}' {
+                let index: usize = text[i + 1..j].parse().unwrap_or(usize::MAX);
+                total = total.saturating_add(args.get(index).map_or(0, String::len));
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    total
 }
 
 /// Whether `text` holds a `{` followed by a digit.

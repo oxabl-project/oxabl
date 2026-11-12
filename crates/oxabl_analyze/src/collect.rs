@@ -877,7 +877,11 @@ pub fn expand_source_with(
                 &mut include_origins,
             );
             let mut file_paths = Vec::new();
-            collect_file_paths(&pf.tree, &mut file_paths);
+            collect_file_paths(
+                &pf.tree,
+                &mut std::collections::HashSet::new(),
+                &mut file_paths,
+            );
             let mut substitutions = Vec::new();
             collect_substitution_sites(&pf.tree, &mut substitutions);
             // An include that failed to resolve deeper down is that file's gap to
@@ -1137,7 +1141,11 @@ fn flatten_tree(
 }
 
 /// The file id and path of every resolved include in the tree, at any depth.
-fn collect_file_paths(nodes: &[SpanNode], out: &mut Vec<(u32, PathBuf)>) {
+fn collect_file_paths(
+    nodes: &[SpanNode],
+    seen: &mut std::collections::HashSet<u32>,
+    out: &mut Vec<(u32, PathBuf)>,
+) {
     for node in nodes {
         let SpanNode::Include { path, children, .. } = node else {
             continue;
@@ -1147,11 +1155,11 @@ fn collect_file_paths(nodes: &[SpanNode], out: &mut Vec<(u32, PathBuf)>) {
             SpanNode::Include { .. } => None,
         });
         if let (Some(path), Some(file)) = (path, file)
-            && !out.iter().any(|(known, _)| *known == file)
+            && seen.insert(file)
         {
             out.push((file, path.clone()));
         }
-        collect_file_paths(children, out);
+        collect_file_paths(children, seen, out);
     }
 }
 
@@ -2501,7 +2509,8 @@ mod tests {
         fn is_depth_limit(kind: TextLossKind) -> bool {
             match kind {
                 TextLossKind::IncludeDepthLimit => true,
-                TextLossKind::UnclosedConditional
+                TextLossKind::ExpansionLimit
+                | TextLossKind::UnclosedConditional
                 | TextLossKind::UnknownPredefinedName
                 | TextLossKind::UnmodelledCondition => false,
                 _ => false,
