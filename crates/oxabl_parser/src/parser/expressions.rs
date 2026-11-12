@@ -34,11 +34,11 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::Then, "Expected 'THEN' after IF condition")?;
 
-        let then_expr = self.parse_ternary()?; // recursive for nested ternary in then branch
+        let then_expr = self.nested(Self::parse_ternary)?;
 
         self.expect_kind(Kind::KwElse, "Expected 'ELSE' in IF expression")?;
 
-        let else_expr = self.parse_ternary()?; // recursive for nested ternary in else branch
+        let else_expr = self.nested(Self::parse_ternary)?;
 
         let hi = self.prev_end();
         Ok(self.spanned_expr(
@@ -53,26 +53,32 @@ impl Parser<'_> {
     }
 
     pub fn parse_or(&mut self) -> ParseResult<Expression> {
+        let chain = self.chain;
         let mut expr = self.parse_and()?;
         while self.check(Kind::Or) {
+            self.link()?;
             let lo = expr.span.start;
             self.advance();
             let right = self.parse_and()?;
             let hi = self.prev_end();
             expr = self.spanned_expr(lo, hi, ExpressionKind::Or(Box::new(expr), Box::new(right)));
         }
+        self.chain = chain;
         Ok(expr)
     }
 
     pub fn parse_and(&mut self) -> ParseResult<Expression> {
+        let chain = self.chain;
         let mut expr = self.parse_comparison()?;
         while self.check(Kind::And) {
+            self.link()?;
             let lo = expr.span.start;
             self.advance();
             let right = self.parse_comparison()?;
             let hi = self.prev_end();
             expr = self.spanned_expr(lo, hi, ExpressionKind::And(Box::new(expr), Box::new(right)));
         }
+        self.chain = chain;
         Ok(expr)
     }
 
@@ -149,9 +155,11 @@ impl Parser<'_> {
     }
 
     pub fn parse_additive(&mut self) -> ParseResult<Expression> {
+        let chain = self.chain;
         let mut expr = self.parse_multiplicative()?;
         loop {
             if self.check(Kind::Add) || self.check(Kind::Minus) {
+                self.link()?;
                 let lo = expr.span.start;
                 let op_kind = self.peek().kind;
                 self.advance();
@@ -179,6 +187,7 @@ impl Parser<'_> {
                 // Only fires when the LHS is already string-like (literal, preprop ref, or
                 // a prior implicit concat). This prevents consuming display items or other
                 // adjacent tokens as accidental concatenation.
+                self.link()?;
                 let lo = expr.span.start;
                 let right_exp = self.parse_multiplicative()?;
                 let hi = self.prev_end();
@@ -191,12 +200,15 @@ impl Parser<'_> {
                 break;
             }
         }
+        self.chain = chain;
         Ok(expr)
     }
 
     pub fn parse_multiplicative(&mut self) -> ParseResult<Expression> {
+        let chain = self.chain;
         let mut expr = self.parse_unary()?;
         while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Modulo) {
+            self.link()?;
             let lo = expr.span.start;
             let op_kind = self.peek().kind;
             self.advance();
@@ -231,6 +243,7 @@ impl Parser<'_> {
                 _ => unreachable!(),
             }
         }
+        self.chain = chain;
         Ok(expr)
     }
 
@@ -239,20 +252,20 @@ impl Parser<'_> {
             // Prefix form: `lo` is the `-` token, captured before advancing.
             let lo = self.peek().start as u32;
             self.advance();
-            let expr = self.parse_unary()?;
+            let expr = self.nested(Self::parse_unary)?;
             let hi = self.prev_end();
             return Ok(self.spanned_expr(lo, hi, ExpressionKind::Negate(Box::new(expr))));
         }
         if self.check(Kind::Add) {
             // Unary plus — identity operation (e.g. "- + value" means subtract unary+value)
             self.advance();
-            return self.parse_unary();
+            return self.nested(Self::parse_unary);
         }
         if self.check(Kind::Not) {
             // Prefix form: `lo` is the `NOT` token, captured before advancing.
             let lo = self.peek().start as u32;
             self.advance();
-            let expr = self.parse_unary()?;
+            let expr = self.nested(Self::parse_unary)?;
             let hi = self.prev_end();
             return Ok(self.spanned_expr(lo, hi, ExpressionKind::Not(Box::new(expr))));
         }
@@ -260,6 +273,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_postfix(&mut self) -> ParseResult<Expression> {
+        let chain = self.chain;
         let mut expr = self.parse_primary()?;
 
         // Literals can't have postfix operations (member access, method calls, etc.)
@@ -300,19 +314,23 @@ impl Parser<'_> {
                 if !next_is_member {
                     break;
                 }
+                self.link()?;
                 expr = self.parse_member_or_method(expr)?;
             } else if self.check(Kind::LeftBracket) {
+                self.link()?;
                 expr = self.parse_array_access(expr)?;
             } else if self.check(Kind::Period)
                 && Self::can_have_field_access(&expr)
                 && self.is_field_access_ahead()
             {
+                self.link()?;
                 expr = self.parse_field_access(expr)?;
             } else {
                 break;
             }
         }
 
+        self.chain = chain;
         Ok(expr)
     }
 
@@ -579,7 +597,7 @@ impl Parser<'_> {
     /// of which branch produced it.
     pub fn parse_primary(&mut self) -> ParseResult<Expression> {
         let lo = self.peek().start as u32;
-        let mut expr = self.parse_primary_inner()?;
+        let mut expr = self.nested(Self::parse_primary_inner)?;
         expr.span = Span {
             start: lo,
             end: self.prev_end().max(lo),

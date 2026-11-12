@@ -854,7 +854,8 @@ fn map_parallel<T: Sync, R: Send>(
     let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads)
             .map(|_| {
-                scope.spawn(|| {
+                oxabl_common::stack::builder()
+.spawn_scoped(scope, || {
                     let mut mine = Vec::new();
                     loop {
                         let at = next.fetch_add(1, Ordering::Relaxed);
@@ -864,6 +865,7 @@ fn map_parallel<T: Sync, R: Send>(
                         mine.push((at, f(item)));
                     }
                 })
+.expect("failed to spawn an analysis thread")
             })
             .collect();
         workers

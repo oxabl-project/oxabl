@@ -30,7 +30,8 @@ pub fn map_with<T: Sync, S, R: Send>(
     let mut parts: Vec<(usize, Vec<R>)> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads)
             .map(|_| {
-                scope.spawn(|| {
+                oxabl_common::stack::builder()
+.spawn_scoped(scope, || {
                     let mut state = init();
                     let mut mine = Vec::new();
                     loop {
@@ -44,6 +45,7 @@ pub fn map_with<T: Sync, S, R: Send>(
                     }
                     mine
                 })
+.expect("failed to spawn an analysis thread")
             })
             .collect();
         workers

@@ -387,7 +387,7 @@ fn freshness(
     if let Some(progress) = claimed {
         let host = host.clone();
         let root = root.to_path_buf();
-        std::thread::Builder::new()
+        oxabl_common::stack::builder()
             .name("oxabl-workspace-pass".to_string())
             .spawn(move || {
                 if let Err(error) = run_claimed_workspace_pass(&host, &root, progress) {

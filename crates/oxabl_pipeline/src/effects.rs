@@ -515,7 +515,8 @@ fn map_in_order<T: Sync, R: Send>(
         let workers: Vec<_> = (0..threads)
             .map(|_| {
                 let next = &next;
-                scope.spawn(move || {
+                oxabl_common::stack::builder()
+.spawn_scoped(scope, move || {
                     let mut out = Vec::new();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -524,6 +525,7 @@ fn map_in_order<T: Sync, R: Send>(
                     }
                     out
                 })
+.expect("failed to spawn an analysis thread")
             })
             .collect();
         workers

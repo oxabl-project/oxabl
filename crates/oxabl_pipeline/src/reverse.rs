@@ -437,7 +437,8 @@ impl ReverseGraph {
             let workers: Vec<_> = (0..jobs)
                 .map(|_| {
                     let (next, run, inspect) = (&next, &run, &inspect);
-                    scope.spawn(move || {
+                    oxabl_common::stack::builder()
+.spawn_scoped(scope, move || {
                         let pipeline = run();
                         let mut mine = Vec::new();
                         loop {
@@ -448,6 +449,7 @@ impl ReverseGraph {
                         }
                         mine
                     })
+.expect("failed to spawn an analysis thread")
                 })
                 .collect();
             workers

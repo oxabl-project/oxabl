@@ -119,7 +119,10 @@ impl Parser<'_> {
         // `parse_statement` is the `EDITING:` body, which saves and restores the
         // anchor itself (`skip_to_statement_end_editing_aware`).
         self.stmt_start_token = self.current;
-        let mut stmt = self.parse_statement_inner()?;
+        // No statement is inside an expression, so no chain is open here; a
+        // chain left open by an error is closed.
+        self.chain = 0;
+        let mut stmt = self.nested(Self::parse_statement_inner)?;
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
         Ok(stmt)
@@ -2892,7 +2895,7 @@ impl Parser<'_> {
             let mut else_stmt = if self.check(Kind::Do) {
                 self.parse_do_statement()?
             } else if self.check(Kind::KwIf) {
-                self.parse_if_statement()?
+                self.nested(Self::parse_if_statement)?
             } else if self.check(Kind::End) {
                 // Empty ELSE branch: END belongs to the enclosing DO/FOR/REPEAT block.
                 // Don't consume it — the outer block parser handles it.

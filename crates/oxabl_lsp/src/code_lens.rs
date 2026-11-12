@@ -195,7 +195,7 @@ impl Server<'_> {
             let encoding = self.encoding.clone();
             let tx = tx.clone();
             self.lenses.ready.insert(uri.clone(), None);
-            std::thread::spawn(move || {
+            oxabl_common::stack::builder().spawn(move || {
                 let lenses = oxabl_common::catch_panic(|| {
                     oxabl_daemon::db::compute_effect_lenses(&snapshot, buffer, schema).map(
                         |lenses| {
@@ -220,7 +220,8 @@ impl Server<'_> {
                 .ok()
                 .flatten();
                 let _ = tx.send(LensResult { epoch, uri, lenses });
-            });
+            })
+            .expect("failed to spawn an analysis thread");
         }
         self.respond(Response::new_ok(req.id, Vec::<CodeLens>::new()))
     }
