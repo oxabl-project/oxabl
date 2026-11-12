@@ -25,8 +25,10 @@ pub fn now() -> u64 {
 }
 
 impl State {
+    /// Due when the time has come, or when the stamp lies more than a day
+    /// ahead: no back-off is longer, so the clock must have gone back.
     pub fn due(&self, now: u64) -> bool {
-        now >= self.next_due
+        now >= self.next_due || self.next_due > now.saturating_add(DAY)
     }
 
     pub fn succeeded(now: u64) -> State {
@@ -93,5 +95,15 @@ mod tests {
         assert!(!state.due(1_000 + DAY - 1));
         assert!(state.due(1_000 + DAY));
         assert!(State::default().due(0));
+    }
+
+    #[test]
+    fn a_stamp_more_than_a_day_ahead_is_due() {
+        let state = State {
+            failures: 0,
+            next_due: 1_000 + DAY,
+        };
+        assert!(!state.due(1_000));
+        assert!(state.due(1_000 - 1));
     }
 }

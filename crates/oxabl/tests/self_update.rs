@@ -457,6 +457,13 @@ fn ci_and_the_opt_out_and_an_unmanaged_binary_schedule_nothing() {
     quiet_for_a_moment(&fixture);
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 #[test]
 fn a_check_that_is_not_due_is_not_made() {
     let fixture = Fixture::new();
@@ -465,7 +472,7 @@ fn a_check_that_is_not_due_is_not_made() {
     std::fs::create_dir_all(fixture.state()).unwrap();
     std::fs::write(
         fixture.state().join("update-state.json"),
-        "{\"failures\":0,\"next_due\":99999999999}",
+        format!("{{\"failures\":0,\"next_due\":{}}}", unix_now() + 3600),
     )
     .unwrap();
     let file = source(fixture.dir.path());
