@@ -49,8 +49,8 @@ impl<'a, 'b> Coordinator<'a, 'b> {
     ) -> Self {
         let count = schedule.len();
         let mut job_of = FxHashMap::default();
-        for job in 0..count {
-            for unit in &shared.jobs[job] {
+        for (job, units) in shared.jobs.iter().enumerate().take(count) {
+            for unit in units {
                 job_of.insert(*unit, job);
             }
         }
