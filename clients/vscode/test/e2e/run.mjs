@@ -17,6 +17,7 @@ import {
   buildInstallBadChecksum,
   buildOpen,
   buildTooOld,
+  buildTooOldManaged,
   buildSaveKeepsItsBuild,
   buildUntrusted,
 } from "./scenarios/build.mjs";
@@ -59,6 +60,7 @@ const SCENARIOS = [
   ["build-untrusted", buildUntrusted],
   ["build-external-preemption", buildExternalPreemption],
   ["build-too-old", buildTooOld],
+  ["build-too-old-managed", buildTooOldManaged],
   ["build-binary-changed", buildBinaryChanged],
   ["build-install", buildInstall],
   ["build-install-bad-checksum", buildInstallBadChecksum],

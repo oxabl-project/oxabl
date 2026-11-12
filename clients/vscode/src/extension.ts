@@ -99,7 +99,7 @@ async function prepareBinary(): Promise<string | undefined> {
   let version = await binaryVersion(command);
   if (!capable.has(`${command}@${version}`)) {
     if (!(await supportsYield(command))) {
-      if (!(await isManaged(command, installRecordPath())) || !(await cli.selfUpdate(command, false))) {
+      if (!(await isManaged(command, installRecordPath())) || !(await cli.updateManaged(command, false))) {
         const key = `${command}@${version}`;
         if (!tooOld.has(key)) {
           tooOld.add(key);

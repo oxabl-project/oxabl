@@ -46,6 +46,7 @@ only; the extension is the program under test.
 | `build-untrusted` | An untrusted workspace runs no `oxabl build`, not even `--print-config`. Granting trust starts the build. |
 | `build-external-preemption` | A build that exits 130 without a signal from the extension: the status bar says `running elsewhere` and one more build starts. |
 | `build-too-old` | A binary without `--yield` is not used and not updated when it is not managed. |
+| `build-too-old-managed` | A managed binary without `--yield` and without `self-update` is replaced by the newest release, then builds. |
 | `build-binary-changed` | A binary that reports a new version restarts the language server once. |
 | `build-install` | With no binary, the install prompt shows. `Install` puts the release asset into `OXABL_INSTALL_DIR`, writes the install record (`installer: "vscode"`), leaves no staged file, and the build runs with it. |
 | `build-install-bad-checksum` | A wrong checksum installs nothing and writes no record. |

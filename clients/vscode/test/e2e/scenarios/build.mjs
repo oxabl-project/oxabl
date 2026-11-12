@@ -25,7 +25,7 @@ const QUICK_BUILD = { script: [{ event: { ...started, rebuild: 0, units: 5 } }] 
  * GitHub API, and VS Code started on it. `body` gets { page, profile, logFile, server }.
  */
 async function session(ctx, name, opts, body) {
-  const { config = {}, settings = {}, files = ["sample.p", "oxabl.toml"], fake = true, launchOptions = {}, cli } = opts;
+  const { config = {}, settings = {}, files = ["sample.p", "oxabl.toml"], fake = true, launchOptions = {}, cli, before } = opts;
   const profile = makeProfile(name, { files });
   const logFile = path.join(profile.root, "fake-oxabl.log");
   const configFile = path.join(profile.root, "fake-oxabl.json");
@@ -39,6 +39,7 @@ async function session(ctx, name, opts, body) {
     ...settings,
   });
   installVsix(ctx.exe, profile, ctx.vsix);
+  before?.(profile);
   const server = await startFakeGitHub({ installed: ctx.installed, newest: "99.0.0", cli });
   let vs;
   try {
@@ -363,6 +364,29 @@ export async function buildInstall(ctx) {
       check(`${name}: the build ran with the installed binary`, built?.script === fs.realpathSync(target), built?.script);
     },
   );
+}
+
+/** A managed binary from before self-update and --yield: the extension installs the newest release over it. */
+export async function buildTooOldManaged(ctx) {
+  const name = "build-too-old-managed";
+  const before = (profile) => {
+    const target = writeFakeOxabl(path.join(profile.root, "bin"), "1.0.0");
+    const data = path.join(profile.root, "data", "oxabl");
+    fs.mkdirSync(data, { recursive: true });
+    const record = { format: 1, installer: "install.sh", path: fs.realpathSync(target), version: "1.0.0" };
+    fs.writeFileSync(path.join(data, "install.json"), JSON.stringify(record));
+  };
+  const config = { noYield: "1.0.0", builds: [QUICK_BUILD] };
+  await session(ctx, name, { fake: false, cli: cliRelease("good"), config, before }, async ({ profile, log }) => {
+    await waitForBuilds(`${name}: the build with the replaced binary`, log, 1, 60_000);
+    const target = fs.realpathSync(path.join(profile.root, "bin", "oxabl"));
+    check(`${name}: the old binary was asked for self-update first`, log().some((l) => l.args?.[0] === "self-update"));
+    const record = JSON.parse(fs.readFileSync(path.join(profile.root, "data", "oxabl", "install.json"), "utf8"));
+    check(`${name}: the record names the new version and the vscode installer`, record.version === CLI_VERSION && record.installer === "vscode", JSON.stringify(record));
+    const built = buildStarts(log())[0];
+    check(`${name}: the build ran with the new binary`, built?.script === target, built?.script);
+    check(`${name}: the install path holds the new release`, fs.readFileSync(target, "utf8").includes(JSON.stringify(CLI_VERSION)));
+  });
 }
 
 export async function buildInstallBadChecksum(ctx) {

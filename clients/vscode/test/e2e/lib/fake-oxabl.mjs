@@ -11,7 +11,7 @@ import path from "node:path";
 //     builds[n]   what the n-th `build --events` run does (the last one repeats):
 //                 { script: [{ wait: ms } | { event: {...} } | { stderr: "text" }], exit: 0, summary: {...} }
 //                 A run that gets SIGINT writes a summary with exit 130 and exits 130.
-//     noYield     `build --help` does not mention --yield
+//     noYield     `build --help` does not mention --yield (true, or only for this version)
 //     printConfig { exit, stderr, settings } replaces the answer of `build --print-config`
 //
 // Without a config, a build reports one unit up to date and exits 0.
@@ -31,7 +31,7 @@ if (args[0] === "--version") {
   console.log("oxabl " + VERSION);
 } else if (args[0] === "build" && args.includes("--help")) {
   log({ event: "invoke", args });
-  console.log("Usage: oxabl build [OPTIONS]\\n" + (config.noYield ? "" : "      --yield   step aside for a newer build\\n"));
+  console.log("Usage: oxabl build [OPTIONS]\\n" + (config.noYield === true || config.noYield === VERSION ? "" : "      --yield   step aside for a newer build\\n"));
 } else if (args[0] === "build" && args.includes("--print-config")) {
   log({ event: "invoke", args });
   const pc = config.printConfig || {};

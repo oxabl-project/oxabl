@@ -48,6 +48,16 @@ export async function supportsYield(binary: string): Promise<boolean> {
   }
 }
 
+/** Whether `binary` has `oxabl self-update` (a binary from before it has not). */
+export async function supportsSelfUpdate(binary: string): Promise<boolean> {
+  try {
+    await runCli(binary, ["self-update", "--help"], 15_000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** What the extension needs to know about a root. */
 export interface RootConfig {
   /** Absolute directories whose changes never trigger a build. */

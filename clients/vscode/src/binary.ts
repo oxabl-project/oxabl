@@ -5,7 +5,7 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { runCli } from "./cli";
+import { runCli, supportsSelfUpdate } from "./cli";
 import { WSL_DOCS_URL, classifyHost, hostMessage, type HostClass } from "./host";
 import { installCli, findCliRelease, installRecordPath, isManaged } from "./install";
 import { apiBaseFrom } from "./net";
@@ -89,7 +89,7 @@ export class CliManager {
     const found = resolveBinary();
     if (found.kind === "found") {
       if (await isManaged(found.command, installRecordPath())) {
-        await this.selfUpdate(found.command, true);
+        await this.updateManaged(found.command, true);
       } else {
         void vscode.window.showInformationMessage(
           `oxabl: ${found.command} was not installed by the oxabl installer, so the extension does not update it. ` +
@@ -106,12 +106,23 @@ export class CliManager {
     await this.install();
   }
 
-  private async install(): Promise<void> {
+  /**
+   * Bring a managed binary up to date: `oxabl self-update` when it has the
+   * command, else a fresh install over it. True when that succeeded.
+   */
+  async updateManaged(binary: string, announce: boolean): Promise<boolean> {
+    if (await supportsSelfUpdate(binary)) {
+      return this.selfUpdate(binary, announce);
+    }
+    this.log.info(`${binary} has no self-update; installing the newest release over it`);
+    return this.install(binary, announce);
+  }
+
+  private async install(target = defaultInstallPath(), announce = true): Promise<boolean> {
     const env = {
       ...apiBaseFrom(process.env.OXABL_UPDATE_API_URL, (m) => this.log.warn(m)),
       installedVersion: this.context.extension.packageJSON.version as string,
     };
-    const target = defaultInstallPath();
     try {
       const release = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "Installing the oxabl CLI" },
@@ -122,12 +133,16 @@ export class CliManager {
         },
       );
       this.log.info(`installed oxabl ${release.version} to ${target}`);
-      void vscode.window.showInformationMessage(`oxabl ${release.version} is installed in ${path.dirname(target)}.`);
-      await this.onChanged();
+      if (announce) {
+        void vscode.window.showInformationMessage(`oxabl ${release.version} is installed in ${path.dirname(target)}.`);
+        await this.onChanged();
+      }
+      return true;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.log.error(`install failed: ${reason}`);
       void vscode.window.showErrorMessage(`oxabl: could not install the CLI: ${reason}`);
+      return false;
     }
   }
 
