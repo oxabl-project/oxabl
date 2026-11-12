@@ -19,6 +19,7 @@ use oxabl_ast::{
     TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
+use std::collections::HashSet;
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -197,6 +198,11 @@ pub struct Parser<'a> {
     /// The token kinds of the method names declared in this token stream, built
     /// on first use by [`declares_method_named`](Self::declares_method_named).
     method_name_kinds: Option<Vec<Kind>>,
+    /// Token indexes after a `CREATE` whose parse failed and was skipped. A
+    /// failed CREATE is parsed again when a block around it rewinds, and its
+    /// trigger blocks hold the CREATEs after it, so without this the work
+    /// doubled with each nested CREATE.
+    failed_creates: HashSet<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -220,6 +226,7 @@ impl<'a> Parser<'a> {
             stmt_start_token: current,
             imported_classes: Vec::new(),
             method_name_kinds: None,
+            failed_creates: HashSet::new(),
         }
     }
 
@@ -584,11 +591,10 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume EDITING
                 self.advance(); // consume ':'
                 // The editing body recurses through `parse_statement`, which
-                // overwrites the enclosing statement's harvest anchor. This is
-                // the only path between a `parse_statement` anchor store and the
-                // matching `skipped_stmt` read that recurses, so the save and
-                // restore live here — on a cold path — rather than in the
-                // funnel, which every statement pays for.
+                // overwrites the enclosing statement's harvest anchor. The save
+                // and restore live here — on a cold path, as for a failed CREATE
+                // `TRIGGERS:` block — rather than in the funnel, which every
+                // statement pays for.
                 let outer_anchor = self.stmt_start_token;
                 let _ = self.parse_block_body();
                 self.stmt_start_token = outer_anchor;

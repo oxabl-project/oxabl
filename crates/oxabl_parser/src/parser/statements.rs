@@ -115,9 +115,10 @@ impl Parser<'_> {
         // token. A bare store, deliberately: this is the parser's hottest
         // funnel, and save/restore around the call measured ~1.5% on the
         // existing fixtures. Correctness does not need it — between this store
-        // and the matching `skipped_stmt` read, the only path that recurses into
-        // `parse_statement` is the `EDITING:` body, which saves and restores the
-        // anchor itself (`skip_to_statement_end_editing_aware`).
+        // and the matching `skipped_stmt` read, the paths that recurse into
+        // `parse_statement` put the anchor back themselves: the `EDITING:` body
+        // (`skip_to_statement_end_editing_aware`) and a failed CREATE
+        // `TRIGGERS:` block (`recover_create_as_skipped`).
         self.stmt_start_token = self.current;
         let mut stmt = self.parse_statement_inner()?;
         let hi = self.prev_end().max(lo);
@@ -6596,7 +6597,11 @@ impl Parser<'_> {
     // CREATE WIDGET-POOL [pool] [PERSISTENT] [NO-ERROR].
     fn parse_create_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CREATE
-        let resume = (self.current, self.errors.len());
+        let resume = (self.current, self.errors.len(), self.stmt_start_token);
+        // The same tokens fail the same way again.
+        if self.failed_creates.contains(&resume.0) {
+            return Ok(self.recover_create_as_skipped(resume));
+        }
 
         if self.check(Kind::WidgetPool) {
             return Ok(self
@@ -6650,8 +6655,16 @@ impl Parser<'_> {
 
     /// Skip the rest of a CREATE whose tail did not parse, so the statement
     /// after it is not swallowed. The names in it are still harvested.
-    fn recover_create_as_skipped(&mut self, (resume, error_count): (usize, usize)) -> Statement {
+    ///
+    /// A failed `TRIGGERS:` block has parsed statements of its own, which moved
+    /// the harvest anchor, so the CREATE's own anchor is put back first.
+    fn recover_create_as_skipped(
+        &mut self,
+        (resume, error_count, anchor): (usize, usize, usize),
+    ) -> Statement {
         self.errors.truncate(error_count);
+        self.failed_creates.insert(resume);
+        self.stmt_start_token = anchor;
         self.current = resume;
         let (_, hi) = self.skip_to_statement_end_triggers_aware();
         self.skipped_stmt(hi)
