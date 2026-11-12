@@ -117,12 +117,12 @@ fn write_all(dir: &Path, files: &[(&str, String)]) -> Vec<PathBuf> {
 }
 
 /// `oxabl check --json <path>` under a 1 MiB `ulimit -s`, far below what the
-/// deepest accepted tree needs. Fails the test when the process does not end
-/// normally.
+/// deepest accepted tree needs, and with no core dump. Fails the test when the
+/// process does not end normally.
 fn check_small_stack(args: &[&str], path: &Path) -> Value {
     let output = Command::new("sh")
         .arg("-c")
-        .arg(r#"ulimit -s 1024 && exec "$@""#)
+        .arg(r#"ulimit -c 0 && ulimit -s 1024 && exec "$@""#)
         .arg("sh")
         .arg(OXABL_BIN)
         .args(["check", "--json"])
@@ -243,7 +243,12 @@ impl Session {
             &base.path().join("oxabl").join("daemon"),
             &canonical_root(root).unwrap(),
         );
-        let mut child = Command::new(OXABL_BIN)
+        // No core dump from a daemon that crashes: it inherits the limit.
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(r#"ulimit -c 0 && exec "$@""#)
+            .arg("sh")
+            .arg(OXABL_BIN)
             .arg("lsp")
             .env("XDG_RUNTIME_DIR", base.path())
             .env("XDG_CACHE_HOME", base.path())
