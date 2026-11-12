@@ -31,5 +31,6 @@ inputs of the findings in the table below.
 | `findings/parser/stack-overflow-nested-parens-6kb` | `lint`, `format`, `preprocess_parse` | Stack overflow in the expression parser. |
 | `findings/parser/stack-overflow-18kb` | same | Stack overflow in the statement parser. |
 | `findings/format/bare-cr-not-stable.abl` | `format` | The first format gives `"\r\n"`, the second `""`. |
+| `findings/format/string-newline-not-stable.abl` | `format` | A string with a line break, then `.F` and a lone `.`: the first format puts one space before the last `.`, the second removes it. |
 | `findings/daemon/stack-overflow-from-edits.cls` | `oxabl lsp` (see `scripts/soak`) | 416 `(` in a document kill the daemon. |
 | `findings/daemon/macro-doubling-1gb.p` | `oxabl check` | 28 `&SCOPED-DEFINE` lines that double each other: 1.3 GB, and 3 GB at 30 lines. |
