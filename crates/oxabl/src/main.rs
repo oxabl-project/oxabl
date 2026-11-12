@@ -14,6 +14,7 @@ mod build_probe;
 mod build_run;
 mod display_path;
 mod explain;
+mod self_update;
 mod watch;
 
 use clap::Parser as ClapParser;
@@ -332,6 +333,31 @@ enum Cli {
     },
     /// Run the language server over stdio (LSP), publishing live diagnostics.
     Lsp,
+
+    /// Check for a newer oxabl release and install it.
+    // Hidden: the advertised surface stays at the commands every build has,
+    // and a binary without the `self-update` feature only explains itself.
+    #[command(hide = true)]
+    ///
+    /// Only a binary that the installer script or the VS Code extension put in
+    /// place updates itself (exit 2 otherwise). Exit 3 when the check could not
+    /// be established: network, API, an incomplete release or a failed
+    /// verification. A binary built without the `self-update` feature exits 2.
+    /// A managed binary also checks in the background, at most once a day;
+    /// `CI` or `OXABL_NO_SELF_UPDATE` turn that off.
+    SelfUpdate {
+        /// Install nothing; print whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+
+        /// With `--check`, print the verdict as JSON.
+        #[arg(long, requires = "check")]
+        json: bool,
+
+        /// The detached worker of the automatic check.
+        #[arg(long, hide = true, conflicts_with_all = ["check", "json"])]
+        background: bool,
+    },
     /// Serve one workspace through the shared oxabl daemon.
     #[command(hide = true)]
     Daemon {
@@ -596,7 +622,23 @@ fn surface_source_context(sem: &oxabl_semantic::Semantic, output: &mut Output) -
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // The server runs for hours: its check starts first. A command that ends
+    // soon schedules its check after it has done its work.
+    let after = matches!(
+        cli,
+        Cli::Check { .. } | Cli::Format { .. } | Cli::Build { .. }
+    );
+    if matches!(cli, Cli::Lsp) {
+        self_update::schedule_if_due();
+    }
+    let code = dispatch(cli);
+    if after {
+        self_update::schedule_if_due();
+    }
+    code
+}
 
+fn dispatch(cli: Cli) -> ExitCode {
     match cli {
         Cli::Check {
             path,
@@ -687,6 +729,15 @@ fn main() -> ExitCode {
             jobs,
         } => run_format(&path, check, stdout, style.as_deref(), job_count(jobs)),
         Cli::Lsp => run_lsp(),
+        Cli::SelfUpdate {
+            check,
+            json,
+            background,
+        } => self_update::run(&self_update::Options {
+            check,
+            json,
+            background,
+        }),
         Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
         Cli::Schema => run_schema(),
         Cli::Build {
