@@ -955,7 +955,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
 /// Phase one, memoized: the shared pipeline's expansion of a buffer. Carries the
 /// loud root-origin preprocessor errors on its fatal-failure arm rather than
 /// making the caller handle an `Err` before it can ask a question.
-#[salsa::tracked(returns(clone))]
+#[salsa::tracked(returns(clone), lru = 16)]
 fn expanded_text(db: &dyn AblDatabase, buffer: Buffer) -> Expansion {
     // The file's name is part of the expansion: `{&FILE-NAME}` expands to it, and
     // the edge set reads the same name.
@@ -992,7 +992,7 @@ impl FileSystem for SummaryFs {
 
 /// Cache the reachable graph per buffer revision. Solve cycles in the shared
 /// pipeline, rather than making recursive incremental queries.
-#[salsa::tracked(returns(clone), no_eq)]
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
 fn effect_summaries(
     db: &dyn AblDatabase,
     buffer: Buffer,
@@ -1020,7 +1020,7 @@ fn effect_summaries(
 /// Phase two: the shared pipeline's collection over the memoized expansion,
 /// yielding the full root-resolved diagnostic set. Depends on the expansion and
 /// on the schema handle's revision (so schema hot-reload invalidates, R16).
-#[salsa::tracked(returns(clone))]
+#[salsa::tracked(returns(clone), lru = 16)]
 fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> CollectedDiagnostics {
     // Establish the dependency edge on the schema revision (R16 hot-reload).
     let _revision = schema.revision(db);
@@ -1071,6 +1071,19 @@ pub fn compute_effect_lenses(
     }))
     .ok()
     .flatten()
+}
+
+/// Keep the results of at most `buffers` buffers in each query keyed by a buffer
+/// (the `lru` of [`expanded_text`], [`effect_summaries`] and [`diagnostics`]).
+///
+/// Salsa cannot remove an input, so without a bound the results of a closed
+/// buffer stay in memory for good. The least recently used go first, and a
+/// closed buffer is never read again. A write: call it on the owning thread.
+pub fn set_buffer_capacity(db: &mut AnalysisDatabase, buffers: usize) {
+    let buffers = buffers.max(1);
+    expanded_text::set_lru_capacity(db, buffers);
+    effect_summaries::set_lru_capacity(db, buffers);
+    diagnostics::set_lru_capacity(db, buffers);
 }
 
 /// Compute diagnostics on a snapshot, swallowing a [`salsa::Cancelled`] unwind
