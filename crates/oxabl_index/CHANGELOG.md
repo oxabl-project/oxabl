@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.0.1...oxabl_index-v5.0.2) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+    * oxabl_preprocessor bumped from 0.7.4 to 0.7.5
+    * oxabl_semantic bumped from 5.0.1 to 5.0.2
+
 ## [5.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.0.0...oxabl_index-v5.0.1) (2026-11-11)
 
 

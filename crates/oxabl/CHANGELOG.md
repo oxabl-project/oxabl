@@ -1,5 +1,48 @@
 # Changelog
 
+## [5.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.1.0...oxabl-v5.2.0) (2026-11-12)
+
+
+### Features
+
+* **build:** add --yield so a newer build can stop an editor's build ([863d5a7](https://github.com/oxabl-project/oxabl/commit/863d5a71bf8342647b3220ced38a4d987ca3bc99))
+* **cli:** add oxabl self-update behind the self-update feature ([2e8ec18](https://github.com/oxabl-project/oxabl/commit/2e8ec180c759ca26d3cd3440af341a63316259e5))
+* **cli:** add scripts/install.sh for the static Linux binary ([26d9732](https://github.com/oxabl-project/oxabl/commit/26d973264168e2c77e0444b9c8170f212144cc66))
+* **cli:** install script, self-update and build --yield ([d3dbc2e](https://github.com/oxabl-project/oxabl/commit/d3dbc2e667c41f09020c606a90253f618afdb07a))
+
+
+### Bug Fixes
+
+* **cli:** treat a next-check stamp more than a day ahead as due ([cce7346](https://github.com/oxabl-project/oxabl/commit/cce734606476e1c7107557b8203d3aa4f2324bf1))
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([958fe45](https://github.com/oxabl-project/oxabl/commit/958fe45edf0555ea774c125e949af5c34b30263a))
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([fbbe2ec](https://github.com/oxabl-project/oxabl/commit/fbbe2ec08e8e7b1e89c145052acea0edc25f186f)), closes [#337](https://github.com/oxabl-project/oxabl/issues/337)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+    * oxabl_preprocessor bumped from 0.7.4 to 0.7.5
+    * oxabl_semantic bumped from 5.0.1 to 5.0.2
+    * oxabl_analyze bumped from 4.0.2 to 4.0.3
+    * oxabl_pipeline bumped from 3.4.0 to 3.4.1
+    * oxabl_lint bumped from 5.0.1 to 5.0.2
+    * oxabl_lsp bumped from 3.1.0 to 3.1.1
+    * oxabl_daemon bumped from 0.5.5 to 0.5.6
+    * oxabl_build bumped from 0.2.2 to 0.3.0
+    * oxabl_build_remote bumped from 0.2.2 to 0.2.3
+    * oxabl_formatter bumped from 2.0.4 to 2.0.5
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.0.2 to 4.0.3
+    * oxabl_pipeline bumped from 3.4.0 to 3.4.1
+    * oxabl_flow bumped from 0.3.4 to 0.3.5
+    * oxabl_handles bumped from 0.2.4 to 0.2.5
+    * oxabl_scope bumped from 0.2.4 to 0.2.5
+    * oxabl_effects bumped from 0.3.2 to 0.3.3
+    * oxabl_nulls bumped from 0.2.4 to 0.2.5
+    * oxabl_index bumped from 5.0.1 to 5.0.2
+
 ## [5.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.0.0...oxabl-v5.1.0) (2026-11-11)
 
 

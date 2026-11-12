@@ -1,13 +1,13 @@
 [package]
 name = "oxabl_build_remote"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
 description = "The remote cache of oxabl build: an ArtifactCache over the oxabl-cache client"
 repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_build_remote"
 
 [dependencies]
-oxabl_build = { path = "../oxabl_build", version = "0.2.2" }
+oxabl_build = { path = "../oxabl_build", version = "0.3.0" }
 base64 = "0.22"
 oxabl-cache-client.workspace = true
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
