@@ -155,6 +155,9 @@ pub struct SkippedText {
 pub enum TextLossKind {
     /// An include was dropped because the chain reached the depth limit.
     IncludeDepthLimit,
+    /// An include or a reference was dropped because the run reached the
+    /// expansion limit (`PREPROC011`).
+    ExpansionLimit,
     /// An `&IF` was never closed, so the rest of its file was dropped or kept
     /// on the strength of a branch that has no end.
     UnclosedConditional,
