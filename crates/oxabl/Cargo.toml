@@ -40,6 +40,16 @@ lsp-server = { version = "0.7", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 schemars = { version = "0.8", optional = true }
+# `self-update` only. Both are already in the lock through the remote cache's
+# client, so the feature adds no new crate to a release binary.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
+tokio = { version = "1", features = ["rt", "net", "time"], optional = true }
+sha2 = { version = "0.10", optional = true }
+rustix = { version = "1", features = ["process"], optional = true }
+
+[[test]]
+name = "self_update"
+required-features = ["self-update"]
 
 [[test]]
 name = "build_remote_cache"
@@ -91,6 +101,17 @@ cli = [
 # crypto stack, which the library, the wasm build and a plain
 # `cargo install oxabl` do not need.
 remote-cache = ["cli", "dep:oxabl_build_remote"]
+
+# `oxabl self-update` and the background check of a managed binary. Off by
+# default for the same reason as `remote-cache`: it links the network and TLS
+# stack, which a plain `cargo install oxabl` does not need.
+self-update = [
+    "cli",
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:sha2",
+    "dep:rustix",
+]
 
 # The CLI's allocator. Its workers allocate heavily on every core, where
 # jemalloc is markedly faster than the system allocator. MSVC and wasm keep

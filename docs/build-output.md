@@ -248,7 +248,15 @@ The `cache` object:
 | 0 | Every unit compiled or came from a cache. A skipped unit is not a failure. |
 | 1 | At least one unit failed to compile after the retry pass. |
 | 2 | A usage or configuration error. For example: no worker command, no `[build].output`, an unknown key in `oxabl.toml` or in the overlay, an output directory that oxabl does not own, or workers that disagree about the environment. Nothing compiled. |
-| 3 | Oxabl could not use something it needs: the store, a lock (another build runs in the workspace), or the workers (none started, or none was left). |
-| 130 | A `SIGINT` or `SIGTERM` cancelled the build. The store is consistent. The next build compiles what was not recorded. |
+| 3 | Oxabl could not use something it needs: the store, a lock (another build runs in the workspace, and it does not yield), or the workers (none started, or none was left). |
+| 130 | A `SIGINT` or `SIGTERM` cancelled the build. The store is consistent. The next build compiles what was not recorded. A build that runs with `--yield` also exits with 130 when a newer build stops it (see [The lock and `--yield`](#the-lock-and---yield)). |
 
 `oxabl build --plan` and `oxabl build --print-config` exit with 0 when they printed their answer, with 2 for a usage or configuration error and with 3 when the store cannot be read.
+
+## The lock and `--yield`
+
+A build holds the workspace lock `<state>/build.lock` to the end. The file holds the pid of the holder. A build that runs with `--yield` writes `<pid> yield` instead (one line). A tool that reads the pid must read the first token only.
+
+- A build that finds the lock busy, and the holder marked `yield`, stops the holder with one `SIGINT` after it checks that the pid is an `oxabl build --yield` process, and then waits for the lock. The holder exits with 130, and its `summary` event has `"exit": 130`. Nothing else tells it from another cancel: a tool that sent no signal itself knows that a newer build took over.
+- A holder that is not marked is not stopped. The newcomer exits with 3, or waits with `--wait-lock <seconds>`.
+- A build that stops a holder waits for the lock for `[build.workers].cancel_grace` plus 30 s, or `--wait-lock`, whichever is longer.

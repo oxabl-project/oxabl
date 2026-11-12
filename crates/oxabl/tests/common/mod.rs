@@ -5,6 +5,7 @@
 
 pub mod built;
 pub mod cache;
+pub mod fake_github;
 pub mod key_spec;
 pub mod keyed;
 pub mod openedge;
