@@ -87,11 +87,12 @@ Requirements:
   - Postfix operations, and
   - Has error recovery via synchronization on period boundaries
   - Still getting new features, bug fixes, and improvements.
-- CLI entry points in `crates/oxabl`. The advertised surface is six commands — `check`, `explain`, `format`, `lsp`, `schema`, and `build` (experimental) — plus three **hidden** ones described below. `oxabl --version` (and `-V`) prints the crate version.
+- CLI entry points in `crates/oxabl`. The advertised surface is six commands — `check`, `explain`, `format`, `lsp`, `schema`, and `build` (experimental) — plus four **hidden** ones described below. `oxabl --version` (and `-V`) prints the crate version.
   - `check` walks a directory (or single file) for ABL files and reports lint findings plus formatting drift in two channels. This is the pre-commit gate: exit 1 when either channel has something to say.
   - `format` fixes layout in place, or reports/prints without writing (`--check`, `--stdout`). Like `check`, it exits 2 on an `oxabl.toml` it cannot use; `--style` skips the file.
   - `explain <file>[:line]` — show each unit's direct database effects and transitive summary. Add `--json` for the version 1 explain document. Use `-I` and `--schema` to override project paths and schema. Preprocessing is on. A line selects the innermost unit at that root line; printed lines refer to expanded text. Partial summaries list their reasons. Index choices remain estimates until the XREF gate passes. Exit codes: 0 for a report, 2 for a bad line or unreadable file, 3 for fatal preprocessing failure, 4 for an internal panic, 6 for serialization failure.
-  - `build [--plan [--probe] [--all] [--files <path>... | --since <rev>]] [--json] [--events] [--report <file>] [--fail-fast] [--no-cache] [--no-remote-cache] [--wait-lock <seconds>] [--workers <n>] [--root <dir>] [--config-overlay <file>] [--print-config]` — which compile units must rebuild and why (`--plan`), or compile them. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build). Exit codes: 0 when everything compiled or a plan was printed, 1 when a unit failed to compile, 2 for a usage or configuration error, 3 when the store or the workspace cannot be used or no worker can start, 130 when a signal stops the command.
+  - `build [--plan [--probe] [--all] [--files <path>... | --since <rev>]] [--json] [--events] [--report <file>] [--fail-fast] [--no-cache] [--no-remote-cache] [--wait-lock <seconds>] [--yield] [--workers <n>] [--root <dir>] [--config-overlay <file>] [--print-config]` — which compile units must rebuild and why (`--plan`), or compile them. See [`oxabl build --plan`](#oxabl-build---plan) and [`oxabl build`](#oxabl-build). Exit codes: 0 when everything compiled or a plan was printed, 1 when a unit failed to compile, 2 for a usage or configuration error, 3 when the store or the workspace cannot be used or no worker can start, 130 when a signal stops the command.
+  - `self-update [--check [--json]]` (hidden from `--help`, like the other tool commands) — check for a newer release and install it (see [Install for developers](#install-for-developers)). Exit codes: 0 when it updated or found nothing newer, 2 when the binary is not managed by an installer or was built without the `self-update` feature, 3 when the check could not be established.
   - Usage: `cargo run -p oxabl -- check <path> --preprocess -I <include-path>`
   - Their `--json` shapes are not yet a stable contract.
 - Hidden commands. They are real and reachable — `oxabl <command> --help` works — but they do not appear in `oxabl --help`: `conformance` and `analyze` answer a question about *oxabl* rather than about your source, and `daemon` is started by editor clients, not by hand.
@@ -221,7 +222,7 @@ The closure of a unit is every file the compiler can read for it: its includes a
 
 `oxabl build` compiles the units that the plan lists. It needs `[build.workers].command` (the command that starts one AVM worker, see `docs/design/build-tool/worker-protocol.md`) and `[build].output` (the directory for the r-code). Oxabl ships no Progress code but its own small worker program. The build runs in this order:
 
-1. It takes the workspace lock (`<state>/build.lock`) and, in the r-code directory, `.oxabl-build.lock`. A second build stops with exit code 3 and the process id of the first.
+1. It takes the workspace lock (`<state>/build.lock`) and, in the r-code directory, `.oxabl-build.lock`. A second build stops with exit code 3 and the process id of the first, unless the first build runs with `--yield` (see below).
 2. It refreshes the graph and, at the same time, starts the workers, probes the environment and hashes the worker-side files. It computes the compile key of every unit and the plan.
 3. It deletes the outputs that no result owns, then looks up the keyable units of the rebuild set in the cache and compiles. Nothing compiles before this.
 4. The lookup and the compiles overlap: a unit that waits for a lookup is **pending**, and its users wait for it as they wait for a compile. A hit is installed at the final paths and recorded; a miss becomes a compile. Each worker takes the ready job of highest priority: the longest chain of units that waits for it, by last compile time. A job is a set of units that cannot be ordered, a cycle of classes, and goes to one worker in one request, with `MULTI-COMPILE` on. A unit compiles after every unit that it reads at compile time: classes before their users. A failed unit does not hold its users back; they compile and are marked **tainted** in the report. A tainted unit is recorded but never offered to a cache.
@@ -234,6 +235,8 @@ The closure of a unit is every file the compiler can read for it: its includes a
 **Workers that fail.** A worker is lost when its output ends, its process exits, a unit takes longer than `[build.workers].unit_timeout`, or it breaks the protocol. Oxabl stops its process group, starts another worker in the slot and puts the unit that was running, and the units of the same request that had not started, back in the queue. A unit that loses its worker twice in one build fails with `worker lost twice while compiling this unit`. When no replacement can start the build goes on with the other workers; with none left it stops with exit code 3.
 
 **Cancel.** The first `SIGINT` or `SIGTERM` stops dispatch. Busy workers have `[build.workers].cancel_grace` (30 s) to finish their unit; what they finish is installed and recorded. Then the workers get `QUIT`, and any that is still busy is stopped. A second signal stops every worker at once. The exit code is 130 and the store is consistent: the next build compiles what was not recorded. If oxabl is killed, the workers read the end of their input and quit after their current unit.
+
+**`--yield`** makes a build step aside for any newer build. It writes `<pid> yield` (one line) into the workspace lock instead of the pid alone. A later `oxabl build`, with or without `--yield`, that finds the lock busy and the holder marked this way checks that the pid is an `oxabl build --yield` process (so a reused pid is safe), sends it one `SIGINT`, prints `stopping the build (pid N) that yields to a newer one` to stderr, and waits for the lock for `[build.workers].cancel_grace` plus 30 s (or `--wait-lock`, if that is longer). The stopped build exits with 130 like any cancel. A holder that is not marked keeps the old behaviour: exit code 3, or wait with `--wait-lock`. An editor or a wrapper uses `--yield`, so a build from a terminal or an agent does not wait for it.
 
 **`--fail-fast`** stops dispatch at the first failed unit; the units not started are `not-run` in the report, and there is no retry pass.
 
@@ -267,9 +270,28 @@ With `[build.verify].reads = false`, or `[build.outputs].xref_format = "text"`, 
 
 **The worker program.** `PROPATH`, `OPTIONS` and `COMPILE` requests are answered by `OK`, `MSG`, `DONE` and `END`. The worker writes one small procedure for each shape of `COMPILE` statement into its stage, because the phrases (`XREF-XML`, `MIN-SIZE`, `GENERATE-MD5`, ...) are keywords; `languages` and `options` hold only letters, digits and `-_:,.`. The stage path that oxabl sends starts with `./`, because the compiler removes a leading `.` from a relative XREF file name. A failed unit always has a reason: the compiler messages, the error that stopped the compile, or a note that the worker gave none. The PROPATH entries that oxabl sends are relative to the worker's working directory (the output directory first), `$DLC` entries (the worker expands them) or the paths of `[build.libraries]`.
 
+#### Install for developers
+
+On Linux x86_64, one command installs the static release binary (the one CI uses, see below) in `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/oxabl-project/oxabl/master/scripts/install.sh | sh
+```
+
+The script checks the SHA-256 of the download, starts the new binary once with `--version`, and then replaces the old one in one step. If a check fails, the old binary stays. It also writes the install record `${XDG_DATA_HOME:-~/.local/share}/oxabl/install.json`. Set `OXABL_INSTALL_DIR` to install somewhere else and `OXABL_VERSION=X.Y.Z` to pin a version. On Windows, run the script in WSL. On macOS, use `cargo install oxabl`. The script warns you when the install directory is not on `PATH`.
+
+**Self-update.** A binary that the script (or the VS Code extension) installed is *managed*: the install record names its path. A managed binary built with the `self-update` feature (the release binary has it) updates itself:
+
+- `oxabl self-update` checks and installs now. It prints `oxabl was updated from 5.1.0 to 5.2.0` or `oxabl is up to date (5.1.0)`. Exit code 2 means the binary is not managed. Exit code 3 means oxabl could not establish the newest release (network, API, an incomplete release or a failed check). That is never "up to date".
+- `oxabl self-update --check [--json]` installs nothing. The JSON is `{"installed":"5.1.0","latest":"5.2.0","update":true,"managed":true}`.
+- At the start of `oxabl lsp`, and after `build`, `check` and `format`, a managed binary starts a detached `oxabl self-update --background` when a check is due: at most one success a day, and after a failure a back-off of 15 minutes that doubles up to a day. The command never waits for the network. The state, the lock and the log are in `${XDG_STATE_HOME:-~/.local/state}/oxabl/` (`update-state.json`, `update.lock`, `update.log`).
+- It is off when `CI` or `OXABL_NO_SELF_UPDATE` is set, when the binary is not managed, and when the binary has no `self-update` feature. The feature is off by default, so a plain `cargo install oxabl` carries no network or crypto code; `cargo install oxabl --features self-update` adds it.
+
+Oxabl finds the newest release from the tags `oxabl-vX.Y.Z` (the highest plain version) and reads that release: it must not be a draft or a pre-release, and it must have both assets. It trusts HTTPS to GitHub and the SHA-256 of the release; there are no signatures. A running `oxabl lsp` or build keeps its old file; nothing restarts it. For tests, `OXABL_UPDATE_API_URL` replaces `https://api.github.com`. Oxabl uses it only for a loopback host (`127.0.0.1`, `localhost`, `[::1]`).
+
 #### Install the binary in CI
 
-Each release of the `oxabl` crate attaches `oxabl-x86_64-unknown-linux-musl` and `oxabl-x86_64-unknown-linux-musl.sha256` to its GitHub release (the tag is `oxabl-v<version>`). The binary has the `remote-cache` feature. It is static, so it does not need glibc and it starts in any Linux image, such as the usual OpenEdge images (Ubuntu 22.04). It uses the jemalloc allocator.
+Each release of the `oxabl` crate attaches `oxabl-x86_64-unknown-linux-musl` and `oxabl-x86_64-unknown-linux-musl.sha256` to its GitHub release (the tag is `oxabl-v<version>`). The binary has the `remote-cache` and `self-update` features (set `CI` or `OXABL_NO_SELF_UPDATE` and it does not update itself). It is static, so it does not need glibc and it starts in any Linux image, such as the usual OpenEdge images (Ubuntu 22.04). It uses the jemalloc allocator.
 
 Download the binary, check the SHA-256, and run it. This is an example for a GitHub Actions or Gitea Actions job:
 
@@ -559,6 +581,8 @@ Every push and PR to `master` runs the following checks (all must pass):
 - `cargo test` — full test suite
 - `cargo fmt --check` — formatting
 - `cargo clippy -D warnings` — lints
+- `Self-update` — the self-update tests, and clippy with the `remote-cache` and `self-update` features
+- `Install script` — `scripts/install.sh` under `shellcheck`, dash and bash, against a fake release server
 
 ### Commit Messages
 

@@ -190,6 +190,7 @@ oxabl build --root <root> --config-overlay <file> --events --report <file>
 ```
 
 - Run one build for each workspace at a time. A second build stops with exit code 3 and the process id of the first. `--wait-lock <seconds>` waits for the lock instead.
+- An editor or a wrapper that builds in the background runs `oxabl build --events --yield --wait-lock 3600`. A build from a terminal or an agent then does not wait for it: it stops the `--yield` build with one `SIGINT`, and that build exits with 130. A `--yield` build never stops a build that has no `--yield`. See [The lock and `--yield`](build-output.md#the-lock-and---yield).
 - Read **stdout** for the events and keep **stderr** for the human text. Read stdout until it closes.
 - Keep the report file. It has the result of each unit.
 - Use the exit code of the process to decide what to do (see [Exit codes](build-output.md#exit-codes)). The `summary` event has the same code.
