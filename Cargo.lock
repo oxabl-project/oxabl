@@ -2528,13 +2528,16 @@ dependencies = [
  "oxabl_semantic",
  "oxabl_style",
  "oxabl_workspace",
+ "reqwest",
  "rusqlite",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "tikv-jemallocator",
+ "tokio",
  "walkdir",
 ]
 

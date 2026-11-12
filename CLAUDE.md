@@ -95,7 +95,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 
 ### Workspace Structure
 
-- `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary
+- `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary. Its `self-update` cargo feature (off by default, like `remote-cache`; the release binary has both) adds `oxabl self-update` and the background check of a managed binary (`src/self_update/`: the GitHub reader, the install procedure, the install record, the schedule). It reuses the `reqwest` and `rustls` stack that `remote-cache` links, so no second HTTP stack. `scripts/install.sh` is the installer and shares the install record (`install.json`) with the updater and the VS Code extension
 - `crates/oxabl_pipeline` - The shared lint and format run every client drives; sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
 - `crates/oxabl_index` - Cross-file fact extraction, the in-run batch index and the static call graph; sits *beneath* `oxabl_pipeline`
 - `crates/oxabl_daemon` - The session core: one salsa instance per workspace root, serving several clients; the **only** crate that may know about salsa
@@ -167,7 +167,7 @@ While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor 
 
 The VS Code extension (`clients/vscode`) is its own Release Please component, `oxabl_vscode` (`release-type: node`, tags `oxabl_vscode-vX.Y.Z`). The `vsix` job packages it with `clients/vscode/scripts/package-vsix.sh` (the script the CI job `VS Code client` runs on every pull request) and uploads `oxabl-vscode-<version>.vsix` and its `.sha256` to that release. The extension updates itself from those two assets, so their names are a contract (`docs/design/vscode-extension.md`).
 
-The release workflow's `binary` job builds the static Linux binary with `--features remote-cache` (`scripts/build-musl.sh`, in a `rust:alpine` container) and uploads it with a `.sha256` file to the release of the `oxabl` crate. It never runs on `workflow_dispatch`. The CI job `musl-binary` builds the same binary on every pull request and starts it in `ubuntu:22.04` (`scripts/check-musl.sh`).
+The release workflow's `binary` job builds the static Linux binary with `--features remote-cache,self-update` (`scripts/build-musl.sh`, in a `rust:alpine` container) and uploads it with a `.sha256` file to the release of the `oxabl` crate. It never runs on `workflow_dispatch`. The CI job `musl-binary` builds the same binary on every pull request and starts it in `ubuntu:22.04` (`scripts/check-musl.sh`, which also runs `oxabl self-update --check` against a closed loopback port and wants exit 3). The CI job `Self-update` runs `cargo test -p oxabl --features self-update --test self_update`, and the job `Install script` runs `scripts/install.sh` under shellcheck, dash and bash against a fake release server (`crates/oxabl/tests/install_script.rs`). The `check` job fails when a default `oxabl` or `oxabl_build` build names a `reqwest`, `rustls` or `tokio` crate.
 
 ## Benchmarks
 

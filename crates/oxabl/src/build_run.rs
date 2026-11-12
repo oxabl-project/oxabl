@@ -24,6 +24,7 @@ pub struct Options<'a> {
     pub no_cache: bool,
     pub no_remote_cache: bool,
     pub wait_lock: Option<u64>,
+    pub yield_to_newer: bool,
 }
 
 fn fail(error: &BuildError) -> ExitCode {
@@ -84,6 +85,7 @@ pub fn run(workspace: &BuildWorkspace, options: Options<'_>) -> ExitCode {
         sink: options.events.then(|| Box::new(print_event) as _),
         cache: selection.cache,
         wait_lock: options.wait_lock.map(Duration::from_secs),
+        yield_to_newer: options.yield_to_newer,
     };
     let report = match build(workspace, request) {
         Ok(report) => report,
