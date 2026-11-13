@@ -28,7 +28,7 @@ use self::context::{Ctx, FetchPlan, Imaging, State, Verify};
 use self::pass::PassEnd;
 use self::prepare::{Prepared, prepare};
 use self::record::Recorder;
-pub use self::report::{BuildReport, Setup, Summary, UnitReport, UnitStatus};
+pub use self::report::{BuildReport, SchemaImages, Setup, Summary, UnitReport, UnitStatus};
 pub use self::request::BuildRequest;
 use self::types::UnitInfo;
 use self::upload::Upload;
@@ -88,6 +88,7 @@ pub fn build(
     let crate::worker::Started {
         mut pool,
         environment,
+        origin,
         ..
     } = started;
     let settings = &workspace.settings;
@@ -174,9 +175,11 @@ pub fn build(
         .iter()
         .map(|database| (database.info.ldb.clone(), database.schema.identity()))
         .collect();
+    let raw_baseline: Option<Vec<String>> = origin.raw.iter().cloned().collect();
     let imaging = (verifying && !baseline.is_empty()).then(|| Imaging {
         databases: baseline.iter().map(|(ldb, _)| ldb.clone()).collect(),
         timeout: spec.unit_timeout,
+        raw: raw_baseline.is_some(),
     });
     let verify = verifying.then(|| Verify {
         rehasher: Rehasher::new(root, &outcome, &keys.keyed.dlc, spec.unit_timeout),
@@ -233,13 +236,21 @@ pub fn build(
         sink,
         upload: verifying.then(|| Upload::start(cache.uploader())),
         release: verifying.then(|| {
-            Releaser::new(
+            let check_ms = match raw_baseline {
+                Some(_) => setup.raw_digest_ms,
+                None => setup.imaging_ms,
+            };
+            let releaser = Releaser::new(
                 baseline,
                 Settings {
                     budget: policy.imaging_budget,
-                    imaging: Duration::from_millis(setup.imaging_ms.max(1)),
+                    imaging: Duration::from_millis(check_ms.max(1)),
                 },
-            )
+            );
+            match raw_baseline {
+                Some(raw) => releaser.with_raw(raw),
+                None => releaser,
+            }
         }),
         units: FxHashMap::default(),
         failed: FxHashSet::default(),
@@ -321,6 +332,10 @@ pub fn build(
         },
     );
     report.cache = cache_report;
+    report.schema_images = SchemaImages {
+        reused: origin.reused,
+        imaged: origin.imaged,
+    };
     if let Some(sink) = &mut sink {
         let summary = &report.summary;
         sink(&Event::Summary {

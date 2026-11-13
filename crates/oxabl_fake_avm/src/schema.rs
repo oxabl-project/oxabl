@@ -161,3 +161,147 @@ pub fn emit_image(
         ],
     )
 }
+
+/// What a raw digest share sees of the database besides its records.
+pub struct RawState<'a> {
+    /// The schema image differs, as with `changed` of [`emit_image`].
+    pub changed: bool,
+    /// Text that changes the raw digest and not the image: a field that the
+    /// image leaves out, or a record id.
+    pub salt: &'a str,
+    /// The answer has a wrong count.
+    pub broken: bool,
+}
+
+/// Emits the `RAW` lines of share `part` of `parts` of the raw digest in
+/// `buckets` pieces, then `RAW-END`. Share 0 also makes the head. The pieces
+/// hash the canonical text of the records, so the digest follows every change
+/// of the image; a change only shows in the piece that holds the record. Returns `true` when the worker must quit, after an
+/// `ERROR`.
+pub fn emit_raw(
+    out: &mut impl Write,
+    database: &Database,
+    (part, parts, buckets): (usize, usize, usize),
+    faults: &Faults,
+    state: RawState<'_>,
+) -> io::Result<bool> {
+    let ldb = database.ldb.as_bytes();
+    let mut tables: Vec<String> = database
+        .schema
+        .iter()
+        .map(|record| entry_of(record))
+        .filter(|(kind, _)| *kind == "table")
+        .map(|(_, name)| name)
+        .collect();
+    tables.sort();
+    tables.dedup();
+    // Like the worker: a table's records go into the piece of its place, the
+    // other records into the head.
+    let mut texts: Vec<String> = vec![String::new(); buckets + 1];
+    let mut head_rows = 0;
+    for record in &database.schema {
+        let (kind, name) = entry_of(record);
+        let at = match kind {
+            "table" => tables.binary_search(&name).unwrap_or_default() % buckets.max(1),
+            _ => {
+                head_rows += 1;
+                buckets
+            }
+        };
+        texts[at].push_str(&canonical_line(record));
+    }
+    if state.changed {
+        for text in texts.iter_mut().filter(|text| !text.is_empty()) {
+            text.push_str("changed\n");
+        }
+    }
+    texts[buckets].push_str(state.salt);
+    let mut pieces: Vec<[String; 5]> = Vec::new();
+    if part == 0 {
+        let sha = sha256_hex(&format!("head\n{}", texts[buckets]));
+        pieces.push([
+            "head".into(),
+            "-".into(),
+            "-".into(),
+            head_rows.to_string(),
+            sha,
+        ]);
+    }
+    for at in (part..buckets).step_by(parts.max(1)) {
+        let low = if at == 0 {
+            "-".into()
+        } else {
+            (at * 10).to_string()
+        };
+        let high = if at + 1 == buckets {
+            "-".into()
+        } else {
+            ((at + 1) * 10).to_string()
+        };
+        let rows = texts[at].lines().count().to_string();
+        let sha = sha256_hex(&format!("{at}\n{}", texts[at]));
+        pieces.push([at.to_string(), low, high, rows, sha]);
+    }
+    let mut count = pieces.len();
+    let faulty = faults.raw_fault_share.unwrap_or(0) == part;
+    let fault = match state.broken {
+        true => Some("bad-count"),
+        false => faults.raw_fault.as_deref().filter(|_| faulty),
+    };
+    match fault {
+        Some("bad-count") => count += 1,
+        Some("missing-piece") => {
+            pieces.pop();
+            count = pieces.len();
+        }
+        Some("extra-piece") => {
+            let sha = sha256_hex(&texts[buckets]);
+            pieces.push([buckets.to_string(), "-".into(), "-".into(), "0".into(), sha]);
+            count = pieces.len();
+        }
+        Some("bounds") => {
+            if let Some(piece) = pieces.iter_mut().find(|piece| piece[0] != "head") {
+                piece[1] = "999999".into();
+            }
+        }
+        Some("bad-hash") if !pieces.is_empty() => pieces[0][4] = "not-a-hash".into(),
+        Some("error") => {
+            emit(out, "ERROR", &[b"raw digest failed"])?;
+            return Ok(true);
+        }
+        Some("exit") => std::process::exit(1),
+        _ => {}
+    }
+    if let Some(delay) = faults.schema_delay {
+        std::thread::sleep(delay);
+    }
+    for [piece, low, high, rows, sha] in &pieces {
+        emit(
+            out,
+            "RAW",
+            &[
+                ldb,
+                piece.as_bytes(),
+                low.as_bytes(),
+                high.as_bytes(),
+                rows.as_bytes(),
+                sha.as_bytes(),
+            ],
+        )?;
+    }
+    let physical = database
+        .physical
+        .clone()
+        .unwrap_or(format!("/db/{}", database.ldb));
+    emit(
+        out,
+        "RAW-END",
+        &[
+            ldb,
+            count.to_string().as_bytes(),
+            database.schema.len().to_string().as_bytes(),
+            physical.as_bytes(),
+        ],
+    )?;
+    Ok(false)
+}

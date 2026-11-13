@@ -53,6 +53,10 @@ starts with the worker program's header line.
 - **Schema image.** It follows the spec on its own: it hashes each entry text with SHA-256,
   answers `SCHEMA <ldb> <part> <parts>` with its share of `SENT` entries and a
   `SCHEMA-END` with the counts, answers `FINGERPRINT`, and logs `schema <ldb>` per share.
+- **Raw digest.** It answers `RAWDIGEST <ldb> <part> <parts> <buckets>` with its pieces, as
+  the worker splits them: the records of a table go into the piece of its place, the others
+  into `head`; each piece hashes the canonical text of its records. It logs `raw <ldb>` per
+  share.
 - **Compile.** It resolves the compile name on the request PROPATH (the first entry that
   has the file; `$OUT`-mapped entries first). It reads the source and follows its includes:
   every `{name}` and `{name args}` is resolved on the PROPATH and read, recursively. For each
@@ -100,7 +104,9 @@ starts with the worker program's header line.
 | `FAKE_AVM_SCHEMA_FAULT=<fault>` | `duplicate-entry`, `bad-hash` (a hash that is not 64 lower-case hex digits) or `bad-count` (a wrong `SCHEMA-END` count). |
 | `FAKE_AVM_SKIP_SHARE=1` | Answer its share with no table entries. |
 | `FAKE_AVM_COUNT_SKEW=1` | Report a `tables` count one higher than the database has. |
-| `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` | Emit a different schema image after `n` compiles. |
+| `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` | Emit a different schema image (and raw digest) after `n` compiles. |
+| `FAKE_AVM_RAW_SALT=<text>`, `FAKE_AVM_RAW_CHANGE_FILE=<path>`, `FAKE_AVM_RAW_CHANGE_FROM=<n>` | Change the raw digest and not the image: always, while the file exists, or from the `n`-th raw request of the process on. |
+| `FAKE_AVM_RAW_FAULT=<fault>`, `FAKE_AVM_RAW_FAULT_SHARE=<p>` | Break the raw digest answer of share `p` (default 0): `missing-piece`, `extra-piece`, `bounds`, `bad-hash`, `bad-count`, `error` or `exit`. |
 | `FAKE_AVM_COMPILE_MS=<n>` | Sleep `n` ms in each compile, to measure what oxabl spends between compiles. |
 | `FAKE-RESOLVE-OTHER <name> <path>` in a source | Resolve include `<name>` to `<path>` instead of the first PROPATH match, as a divergent AVM would. |
 
@@ -292,6 +298,13 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - `FAKE-READ` of a file outside the closure: no cache entry, the result has no key, and the
   summary names the file.
 - `FAKE_AVM_SCHEMA_CHANGE_AFTER`: no cache entry for the units released after the change.
+- The raw digest (`build_schema_reuse.rs`): an equal digest reuses the stored image and
+  images nothing; a changed digest, a broken answer of either share (each `FAKE_AVM_RAW_FAULT`)
+  and a lost worker image again; a stored image of another binding (each field) or with
+  entries that do not give its identity is void; the digest is the same for 1 to 9 workers
+  and a pass uses at most 8; the probe always images; a change between the two raw passes
+  of the start stores nothing; the V2 checks are raw passes that image nothing, and a
+  changed digest during the build stores nothing from that point.
 - Two workers whose `$DLC` copies differ in one closure file (two fake environment
   directories): exit code 2, `workers see different $DLC files`, before any compile.
 - No compile starts before step 7: with a fake that logs the time of each request,
@@ -476,6 +489,9 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `schema_edit_table` (scratch) | Each `.df` edit of the [fingerprint table](compile-key.md#database-fingerprints) changes the schema identity; the test records whether the cache stamp moved. |
 | `schema_long_field` (scratch) | A field description of 30,600 bytes hashes without error and changes the identity. A longer value cannot be made: the `.df` load (error 63), an ABL assignment (9324) and the dictionary (12370) refuse more than about 32,000 bytes. The worker reads every character value through a `LONGCHAR`, so this exercises the only path. |
 | `a_system_table_edit_changes_the_key_of_a_unit_that_reads_it` (scratch) | An edit of the metaschema table `_User` (a field order) on one of two databases loaded from one `.df` changes the schema identity and the key of a unit that reads `_User`: the `system` entry of the [schema image](compile-key.md#schema-identity) holds its CRC. |
+| `the_raw_digest_follows_every_schema_edit_and_no_row_change` (scratch) | Each `.df` edit of `schema_edit_table`, an initial value, mandatory, `CAN-READ`, a table and a field trigger, a sequence change and a direct ABL assignment to `_Field` change the raw digest and image again; a created row and `NEXT-VALUE` do not, and the stored image is reused. |
+| `the_raw_digest_is_the_same_under_utf8_and_iso8859_1` (scratch) | One database gives one raw digest under `-cpinternal UTF-8` and `ISO8859-1` (`LENGTH(raw)` without `"RAW"` fails it). |
+| `the_raw_digest_on_a_served_database` (scratch) | `proutil idxactivate` changes the digest; on a served database the digest equals the single-user one and is the same for 1, 2 and 8 workers; the second build reuses the image; an SQL `CREATE TABLE` (`sqlexp` over TCP) changes the digest. |
 | `startup_pf` | A parameter set only in a `.pf` is in the probe, and its canonical form equals the same parameter on the command line. |
 | `param_file_hash` | Changing the bytes of a `-compileroptionsfile` file changes the environment identity. The AVM reads that file at its start and refuses a line that is not an option (error 18408), so the test changes a `#` comment line. |
 | `library_hash` | `HASH` gives the SHA-256 of a `.pl`; a changed `.pl` changes the keys of its users. |

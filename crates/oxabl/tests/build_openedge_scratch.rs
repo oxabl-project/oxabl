@@ -4,7 +4,9 @@
 //! Each test creates databases from the empty database of the installation
 //! (`prodb`), loads `.df` files into them and removes them again. It never
 //! touches another database. The worker runs single-user (`-1`) on the scratch
-//! database, so a probe uses one worker.
+//! database, so a probe uses one worker; a test that needs more workers or SQL
+//! starts a server for its database (`_mprosrv`, on a TCP port for `sqlexp`)
+//! and stops it again.
 //!
 //! | Variable | Meaning |
 //! | --- | --- |
@@ -34,10 +36,14 @@ struct Scratch {
     worker_root: String,
     proversion: String,
     made: Vec<String>,
+    served: Vec<String>,
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        for db in self.served.clone() {
+            self.stop(&db);
+        }
         for db in &self.made {
             let _ = self.run(&format!("rm -rf {}", self.db_dir(db)));
         }
@@ -66,6 +72,7 @@ impl Scratch {
             proversion: std::env::var("OXABL_OPENEDGE_PROVERSION")
                 .unwrap_or_else(|_| "12.8".into()),
             made: Vec::new(),
+            served: Vec::new(),
         }
     }
 
@@ -147,6 +154,11 @@ impl Scratch {
 
     /// A single-user worker on the database, connected as `ldb`.
     fn target(&self, db: &str, ldb: &str) -> Target {
+        self.target_with(db, ldb, &["-1"])
+    }
+
+    /// A worker on the database, connected as `ldb` with `connection`.
+    fn target_with(&self, db: &str, ldb: &str, connection: &[&str]) -> Target {
         let dir = self.db_dir(db);
         let mut command: Vec<String> = self.exec.clone();
         command.extend(
@@ -158,12 +170,11 @@ impl Scratch {
                 &format!("{dir}/{db}"),
                 "-ld",
                 ldb,
-                "-1",
-                "-p",
-                "{program}",
             ]
             .map(String::from),
         );
+        command.extend(connection.iter().map(|arg| arg.to_string()));
+        command.extend(["-p", "{program}"].map(String::from));
         Target {
             command,
             workspace: self.workspace.clone(),
@@ -171,6 +182,32 @@ impl Scratch {
             proversion: self.proversion.clone(),
             databases: vec![ldb.to_string()],
         }
+    }
+
+    /// Runs a shell command in the directory of the database; returns its
+    /// output, whatever its exit.
+    fn shell(&self, db: &str, command: &str) -> String {
+        let dir = self.db_dir(db);
+        self.run(&format!(
+            "cd {dir}\nexport PATH={}/bin:$PATH\n{command} 2>&1 || true",
+            self.dlc
+        ))
+    }
+
+    /// Starts a server for the database, on TCP `port` when given.
+    fn serve(&mut self, db: &str, port: Option<u16>) {
+        let tcp = port.map(|port| format!(" -S {port}")).unwrap_or_default();
+        let output = self.shell(db, &format!("_mprosrv {db}{tcp} -n 20; sleep 1"));
+        assert!(
+            !output.contains("**"),
+            "the server did not start:\n{output}"
+        );
+        self.served.push(db.to_string());
+    }
+
+    fn stop(&mut self, db: &str) {
+        self.shell(db, &format!("proshut {db} -by; sleep 1"));
+        self.served.retain(|served| served != db);
     }
 
     /// Probes the database with one single-user worker.
@@ -421,4 +458,204 @@ fn a_system_table_edit_changes_the_key_of_a_unit_that_reads_it() {
 
     assert_ne!(plain_identity, edited_identity);
     assert_ne!(plain_key, edited_key);
+}
+
+/// One build of `workspace`; whether it reused the stored image of the
+/// database, and the raw digest it stored.
+fn raw_build(workspace: &common::openedge::compile::Compile) -> (bool, String) {
+    let report = workspace.build_report();
+    let reused = !report["schema_images"]["reused"]
+        .as_array()
+        .unwrap()
+        .is_empty();
+    let imaged = !report["schema_images"]["imaged"]
+        .as_array()
+        .unwrap()
+        .is_empty();
+    assert!(reused != imaged, "one database, reused or imaged: {report}");
+    let stored: Value = serde_json::from_str(&workspace.read(".oxabl/build/schema-images.json"))
+        .expect("the build stored its image");
+    let raw = stored["databases"][0]["raw"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no stored raw digest: {stored}"))
+        .to_string();
+    (reused, raw)
+}
+
+fn raw_workspace(target: &Target, workers: usize) -> common::openedge::compile::Compile {
+    let workspace = compile_workspace_with(
+        target,
+        Options {
+            workers,
+            ..Options::default()
+        },
+    );
+    workspace.write("src/a.p", "MESSAGE \"a\".\n");
+    workspace
+}
+
+/// Edits beyond `EDITS`, each through the dictionary: an initial value,
+/// mandatory, compile-time security, triggers and a sequence change.
+const MORE_EDITS: &[(&str, &str)] = &[
+    (
+        "initial value",
+        "UPDATE FIELD \"f1\" OF \"t1\"\n  INITIAL \"x\"\n\n",
+    ),
+    (
+        "mandatory",
+        "UPDATE FIELD \"f2\" OF \"t1\"\n  MANDATORY\n\n",
+    ),
+    (
+        "can-read",
+        "UPDATE FIELD \"f1\" OF \"t1\"\n  CAN-READ \"admin\"\n\n",
+    ),
+    (
+        "table trigger",
+        "UPDATE TABLE \"t1\"\n  TABLE-TRIGGER \"CREATE\" NO-OVERRIDE PROCEDURE \"t1c.p\" CRC \"?\"\n\n",
+    ),
+    (
+        "field trigger",
+        "UPDATE FIELD \"f1\" OF \"t1\"\n  FIELD-TRIGGER \"ASSIGN\" NO-OVERRIDE PROCEDURE \"f1a.p\" CRC \"?\"\n\n",
+    ),
+    (
+        "sequence increment",
+        "UPDATE SEQUENCE \"s1\"\n  INCREMENT 5\n\n",
+    ),
+];
+
+/// The raw digest changes for every edit of the schema, through the
+/// dictionary or by a direct assignment to a metaschema record, and stays the
+/// same when only rows change; an equal digest reuses the stored image.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn the_raw_digest_follows_every_schema_edit_and_no_row_change() {
+    let mut scratch = Scratch::new();
+    let db = format!("oxrd{}", std::process::id());
+    scratch.create(&db);
+    scratch.load(&db, BASE);
+    let workspace = raw_workspace(&scratch.target(&db, &db), 1);
+    let (_, mut last) = raw_build(&workspace);
+    assert_eq!(
+        raw_build(&workspace),
+        (true, last.clone()),
+        "nothing changed"
+    );
+
+    let edits = EDITS
+        .iter()
+        .map(|(name, body, _)| (*name, *body))
+        .chain(MORE_EDITS.iter().copied());
+    for (name, body) in edits {
+        scratch.load(&db, body);
+        let (reused, raw) = raw_build(&workspace);
+        assert!(
+            !reused && raw != last,
+            "the raw digest did not change for `{name}`"
+        );
+        last = raw;
+    }
+    scratch.abl(
+        &db,
+        "FIND _File WHERE _File._File-Name = \"t1\".\n\
+         FIND _Field OF _File WHERE _Field._Field-Name = \"f2\".\n\
+         _Field._Col-label = \"Direct\".",
+    );
+    let (reused, raw) = raw_build(&workspace);
+    assert!(!reused && raw != last, "a direct assignment to _Field");
+    last = raw;
+
+    for (name, statements) in [
+        ("rows", "CREATE t2.\nASSIGN t2.g1 = \"row\"."),
+        (
+            "next-value",
+            "DEFINE VARIABLE i AS INT64 NO-UNDO.\ni = NEXT-VALUE(s1).",
+        ),
+    ] {
+        scratch.abl(&db, statements);
+        assert_eq!(
+            raw_build(&workspace),
+            (true, last.clone()),
+            "`{name}` changed the digest"
+        );
+    }
+}
+
+/// `LENGTH(raw)` counts characters in a UTF-8 session; the digest must count
+/// bytes, so it is the same under both code pages.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn the_raw_digest_is_the_same_under_utf8_and_iso8859_1() {
+    let mut scratch = Scratch::new();
+    let db = format!("oxrc{}", std::process::id());
+    scratch.create(&db);
+    scratch.load(&db, BASE);
+    let digest = |page: &str| {
+        let target = scratch.target_with(&db, &db, &["-1", "-cpinternal", page, "-cpstream", page]);
+        raw_build(&raw_workspace(&target, 1)).1
+    };
+
+    assert_eq!(digest("UTF-8"), digest("ISO8859-1"));
+}
+
+/// On a served database: the digest is the same for 1, 2 and 8 workers, an
+/// SQL statement changes it, and so does `proutil idxactivate`.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn the_raw_digest_on_a_served_database() {
+    let mut scratch = Scratch::new();
+    let db = format!("oxrs{}", std::process::id());
+    let port = 20_000 + (std::process::id() % 10_000) as u16;
+    scratch.create(&db);
+    scratch.load(
+        &db,
+        &format!("{BASE}ADD INDEX \"i9\" ON \"t1\"\n  AREA \"Schema Area\"\n  INACTIVE\n  INDEX-FIELD \"f2\" ASCENDING\n\n"),
+    );
+    let single = raw_workspace(&scratch.target(&db, &db), 1);
+    let (_, inactive) = raw_build(&single);
+    let output = scratch.shell(&db, &format!("echo y | proutil {db} -C idxactivate t1.i9"));
+    assert!(
+        output.contains("(15878)"),
+        "the index was not activated:\n{output}"
+    );
+    let (reused, active) = raw_build(&single);
+    assert!(!reused && active != inactive, "proutil idxactivate");
+
+    scratch.serve(&db, Some(port));
+    let served = scratch.target_with(&db, &db, &[]);
+    let mut digests = Vec::new();
+    for workers in [1, 2, 8] {
+        let workspace = raw_workspace(&served, workers);
+        digests.push(raw_build(&workspace).1);
+        if workers == 8 {
+            assert_eq!(
+                raw_build(&workspace).0,
+                true,
+                "the second build of eight workers"
+            );
+            let output = scratch.shell(
+                &db,
+                &format!(
+                    "printf 'CREATE TABLE pub.sq1 (a INTEGER, b VARCHAR(20));\\nCOMMIT;\\n' > a.sql\n\
+                     sqlexp -db {db} -S {port} -H localhost -user $(whoami) -infile a.sql"
+                ),
+            );
+            // sqlexp ends every input file with "Error in reading input".
+            assert!(
+                !output
+                    .lines()
+                    .any(|line| line.contains("rror") && !line.contains("Error in reading input")),
+                "the SQL statement failed:\n{output}"
+            );
+            let (reused, raw) = raw_build(&workspace);
+            assert!(!reused && raw != digests[2], "SQL CREATE TABLE");
+        }
+    }
+    assert_eq!(
+        digests[0], active,
+        "the same database, single-user and served"
+    );
+    assert!(
+        digests.iter().all(|digest| *digest == digests[0]),
+        "{digests:?}"
+    );
 }

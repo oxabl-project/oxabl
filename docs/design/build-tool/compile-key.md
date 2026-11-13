@@ -608,8 +608,10 @@ databases that two databases loaded from one `.df` give one identity, and that e
 validation expression and message, field help, add field, add table, add sequence, drop
 index, drop field.
 
-**Every build images every database.** No cheaper test is trusted to skip imaging; see
-[Database fingerprints](#database-fingerprints).
+**A build images a database unless the raw digest shows that its records did not change**
+since the image that the last build stored ([The raw digest](#the-raw-digest)). The
+fingerprint is never trusted to skip imaging; see [Database fingerprints](#database-fingerprints).
+`oxabl build --probe` always images.
 
 Rejected: the table CRCs alone (they do not cover labels, formats and validation); the
 `.df` files of `[workspace.schema]` (they can differ from the database that the AVM
@@ -644,9 +646,68 @@ change r-code:
 | drop field | yes | **no** |
 
 The stamp also has one-second resolution, and the GUID stayed the same for databases
-created from one empty database, so neither identifies a database or its schema. A cheaper
-change test that can be trusted to skip imaging is an open follow-up
-([build-tool.md](../build-tool.md#follow-ups)).
+created from one empty database, so neither identifies a database or its schema. Measured
+on more edits, the stamp missed 37 of 94 dictionary edits, an SQL `ALTER SEQUENCE` and
+`proutil convchar`. The change test that skips imaging is the raw digest.
+
+### The raw digest
+
+The **raw digest** of a database is a hash of every record of the eight metaschema tables
+that the image reads (`_File`, `_Field`, `_Index`, `_Index-Field`, `_File-Trig`,
+`_Field-Trig`, `_Sequence`, `_Db`), all rows and not only the user tables, as the database
+stores them. The worker reads each record with `RAW-TRANSFER` into a `RAW` field and hashes
+it with SHA-256 ([worker-protocol.md](worker-protocol.md#raw-digest)). The image is a
+function of these records, so equal records give an equal image: an equal raw digest proves
+that the stored image still holds. No edit table must stay complete, no stamp and no clock
+take part, and the test covers SQL DDL, `proutil`, a restore and a copy the same way.
+
+**What is hashed.** For each record, in this order: the table kind (1 byte, 1 to 8 as in
+the list above), the record id (8 bytes), the length of the record (4 bytes) and the record
+bytes, big-endian. The worker puts these into a 1 MB buffer; the SHA-256 of a full buffer
+starts the next one. The lengths are `LENGTH(x, "RAW")`: `LENGTH(x)` counts characters in a
+`-cpinternal UTF-8` session, which cuts records and makes the digest depend on the code page.
+
+**Pieces.** The rows of `_File`, `_Sequence` and `_Db` are the piece `head`. The other rows
+go into 16 pieces by the record id of the `_File` row (for `_Index-Field`, the `_Index` row)
+they belong to; the bounds are record ids of `_File` rows, so a piece does not depend on
+the number of workers. A row that names no record is in piece 0. Oxabl checks that it has
+`head` and all 16 pieces once, that `head` comes from share 0, that the bounds join with
+open ends, and that every worker saw the same number of `_File` rows and the same physical
+name. The digest is the SHA-256 of the 17 piece digests, `head` first. At most 8 workers
+make one pass; more give nothing (measured).
+
+**What is stored.** After it images a database, the build makes a second raw pass. When the
+two passes agree, it keeps the image in `<state>/schema-images.json` with the raw digest and
+this binding: the logical name, the physical name, `_Db._Db-guid`, the hash of the worker
+program, the context string of the schema identity, the form of the digest (piece count and
+framing version) and the first line of `$DLC/version`. A stored image whose binding differs
+in any field is void. A change between the two passes stores nothing, so the next build
+images again. The file holds the entries of each image, and oxabl hashes them again on load:
+an entry that does not give the stored identity voids the image.
+
+**At the start.** A raw pass over every database. A database whose digest and binding equal
+the stored ones takes the stored image and identity. Every other database is imaged: no
+stored image, another digest or binding, a missing or extra piece, bounds that do not join,
+a worker error or a lost worker. An error is never "unchanged". A worker that fails the pass
+is out of step; oxabl starts another in its place.
+
+**In V2.** When every database has a stored digest, each schema check of the build is a raw
+pass, not an imaging ([cache.md](cache.md#verification)). A changed digest means a changed
+schema: the held sets and every later set of the build are not written, as for a changed
+identity. The build does not image again; the next build does, because its raw pass differs.
+
+**The digest is never a key.** It holds record ids, so it names "this database since the
+last imaging", not a schema. A dump and load into a new database gives another digest (and
+another identity).
+
+**Measured on OpenEdge 12.8.9** (5 databases, 59,947 metaschema rows, client-server,
+`-cpinternal UTF-8`): no edit of 367 on scratch databases changed the identity and left the
+digest equal. The edits were every `.df` edit of the dictionary, a direct ABL assignment to
+every field of the 8 tables, `proutil` (`idxactivate`, `idxbuild`, `convchar`, `updatevst`),
+`dbtool` and SQL DDL. Some edits change the digest and not the identity (`proutil updatevst`,
+SQL `PRO_CASE_SENSITIVE`, some `_Db` fields); each costs one imaging. A worker that stays
+connected sees the committed changes of other sessions at once. One pass took 152 ms with
+8 workers and 372 ms with 1, against 3.6 s for the imaging.
 
 ## Compile options
 

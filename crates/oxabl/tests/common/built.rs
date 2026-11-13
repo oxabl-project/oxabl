@@ -317,7 +317,12 @@ impl Built {
         self.log_lines()
             .into_iter()
             .map(|(_, what)| what)
-            .filter(|what| what != "start" && what != "exit" && !what.starts_with("schema "))
+            .filter(|what| {
+                what != "start"
+                    && what != "exit"
+                    && !what.starts_with("schema ")
+                    && !what.starts_with("raw ")
+            })
             .collect()
     }
 

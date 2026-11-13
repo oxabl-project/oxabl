@@ -424,7 +424,14 @@ fn the_report_says_where_the_setup_time_went() {
     }));
     workspace.worker_env("FAKE_AVM_START_DELAY", "300");
     workspace.worker_env("FAKE_AVM_SCHEMA_DELAY_MS", "300");
-    workspace.build().succeeded();
+    workspace
+        .build_with(&["--report", "first.json"])
+        .succeeded();
+    let first: serde_json::Value = serde_json::from_str(&workspace.read("first.json")).unwrap();
+    assert!(
+        first["timing"]["setup"]["imaging_ms"].as_u64().unwrap() >= 300,
+        "the first build images the database: {first}"
+    );
     workspace.worker_env("FAKE_AVM_REQUEST_DELAY_MS", "200");
 
     let run = workspace.build_with(&["--report", "report.json"]);
@@ -439,7 +446,12 @@ fn the_report_says_where_the_setup_time_went() {
             .unwrap_or_else(|| panic!("no {field}: {timing}"))
     };
     assert!(ms("workers_ms") >= 300, "{timing}");
-    assert!(ms("imaging_ms") >= 300, "{timing}");
+    assert_eq!(
+        ms("imaging_ms"),
+        0,
+        "the second build reuses the image: {timing}"
+    );
+    assert!(ms("raw_digest_ms") >= 300, "{timing}");
     assert!(ms("dlc_hash_ms") >= 200, "{timing}");
     assert!(ms("keys_ms") >= ms("dlc_hash_ms"), "{timing}");
     for field in ["refresh_ms", "plan_ms", "prune_ms"] {
@@ -447,7 +459,7 @@ fn the_report_says_where_the_setup_time_went() {
     }
     let setup = timing["setup_ms"].as_u64().unwrap();
     assert!(
-        setup >= ms("workers_ms") + ms("imaging_ms") + ms("keys_ms"),
+        setup >= ms("workers_ms") + ms("raw_digest_ms") + ms("keys_ms"),
         "{timing}"
     );
 }

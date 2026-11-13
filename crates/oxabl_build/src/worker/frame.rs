@@ -81,6 +81,12 @@ pub enum Request<'a> {
         part: usize,
         parts: usize,
     },
+    RawDigest {
+        ldb: &'a str,
+        part: usize,
+        parts: usize,
+        buckets: usize,
+    },
     Fingerprint {
         ldb: &'a str,
     },
@@ -147,6 +153,20 @@ impl Request<'_> {
             Request::Schema { ldb, part, parts } => Ok(vec![line(
                 "SCHEMA",
                 &[text(ldb)?, number(*part as u64), number(*parts as u64)],
+            )?]),
+            Request::RawDigest {
+                ldb,
+                part,
+                parts,
+                buckets,
+            } => Ok(vec![line(
+                "RAWDIGEST",
+                &[
+                    text(ldb)?,
+                    number(*part as u64),
+                    number(*parts as u64),
+                    number(*buckets as u64),
+                ],
             )?]),
             Request::Fingerprint { ldb } => Ok(vec![line("FINGERPRINT", &[text(ldb)?])?]),
             Request::Hash { id, path } => Ok(vec![line("HASH", &[number(*id), text(path)?])?]),
@@ -233,6 +253,20 @@ pub enum Reply {
         ldb: Vec<u8>,
         entries: String,
         tables: String,
+    },
+    Raw {
+        ldb: Vec<u8>,
+        piece: String,
+        low: String,
+        high: String,
+        rows: String,
+        sha256: String,
+    },
+    RawEnd {
+        ldb: Vec<u8>,
+        pieces: String,
+        files: String,
+        physical: Vec<u8>,
     },
     Hashed {
         id: String,
@@ -356,6 +390,26 @@ impl Reply {
                     ldb: take(&mut fields),
                     entries: ascii(&take(&mut fields))?,
                     tables: ascii(&take(&mut fields))?,
+                })
+            }
+            "RAW" => {
+                expect(6, &fields)?;
+                Ok(Reply::Raw {
+                    ldb: take(&mut fields),
+                    piece: ascii(&take(&mut fields))?,
+                    low: ascii(&take(&mut fields))?,
+                    high: ascii(&take(&mut fields))?,
+                    rows: ascii(&take(&mut fields))?,
+                    sha256: ascii(&take(&mut fields))?,
+                })
+            }
+            "RAW-END" => {
+                expect(4, &fields)?;
+                Ok(Reply::RawEnd {
+                    ldb: take(&mut fields),
+                    pieces: ascii(&take(&mut fields))?,
+                    files: ascii(&take(&mut fields))?,
+                    physical: take(&mut fields),
                 })
             }
             "HASHED" => {

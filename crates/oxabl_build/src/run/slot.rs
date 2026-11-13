@@ -10,6 +10,7 @@ use crate::graph::Scratch;
 use crate::observe::xref;
 use crate::output::{Stage, promote};
 use crate::schedule::{Take, Task};
+use crate::verify::release::Share;
 use crate::worker::compile::CompiledUnit;
 use crate::worker::{Definitions, Job, Worker, WorkerError};
 
@@ -64,7 +65,14 @@ fn run_task(worker: &mut Worker, shared: &Shared<'_>, tx: &Sender<Msg>, task: Ta
     let Some(imaging) = shared.imaging else {
         return Flow::Continue;
     };
-    let result = worker.image_share(&imaging.databases, task.part, task.parts, imaging.timeout);
+    let result = match imaging.raw {
+        true => worker
+            .raw_share(&imaging.databases, task.part, task.parts, imaging.timeout)
+            .map(Share::Raw),
+        false => worker
+            .image_share(&imaging.databases, task.part, task.parts, imaging.timeout)
+            .map(Share::Image),
+    };
     let failed = result
         .as_ref()
         .err()

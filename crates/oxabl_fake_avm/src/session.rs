@@ -15,6 +15,8 @@ pub struct Session {
     pub model: Model,
     pub faults: Faults,
     pub compiler: Compiler,
+    /// The `RAWDIGEST` requests this process answered.
+    pub raw_requests: usize,
 }
 
 const ENV_FIELDS: &[&str] = &[
@@ -218,6 +220,64 @@ impl Session {
                                 changed,
                                 broken,
                             )?
+                        }
+                        None => emit(out, "ERROR", &[format!("no database {ldb}").as_bytes()])?,
+                    }
+                }
+                "RAWDIGEST" if handshook => {
+                    let ldb = Self::text(&line, 0);
+                    self.raw_requests += 1;
+                    let number = |at: usize, default: usize| -> usize {
+                        Self::text(&line, at).parse().unwrap_or(default)
+                    };
+                    let (part, parts, buckets) = (number(1, 0), number(2, 1).max(1), number(3, 1));
+                    match self.database(&ldb) {
+                        Some(database) => {
+                            log::append(
+                                self.faults.log.as_deref(),
+                                &format!("raw {ldb} {part}/{parts}"),
+                            );
+                            let changed = self
+                                .faults
+                                .schema_change_after
+                                .is_some_and(|after| self.compiler.compiled >= after)
+                                || self
+                                    .faults
+                                    .schema_change_file
+                                    .as_ref()
+                                    .is_some_and(|file| file.exists());
+                            let late = self
+                                .faults
+                                .raw_change_from
+                                .is_some_and(|from| self.raw_requests >= from)
+                                || self
+                                    .faults
+                                    .raw_change_file
+                                    .as_ref()
+                                    .is_some_and(|file| file.exists());
+                            let salt = format!(
+                                "{}{}",
+                                self.faults.raw_salt.as_deref().unwrap_or_default(),
+                                if late { "late" } else { "" }
+                            );
+                            let broken = self
+                                .faults
+                                .schema_error_after
+                                .is_some_and(|after| self.compiler.compiled >= after);
+                            let quit = schema::emit_raw(
+                                out,
+                                database,
+                                (part, parts, buckets),
+                                &self.faults,
+                                schema::RawState {
+                                    changed,
+                                    salt: &salt,
+                                    broken,
+                                },
+                            )?;
+                            if quit {
+                                return Ok(());
+                            }
                         }
                         None => emit(out, "ERROR", &[format!("no database {ldb}").as_bytes()])?,
                     }

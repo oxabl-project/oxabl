@@ -3,10 +3,10 @@
 use std::time::Instant;
 
 use crate::cache::Origin;
-use crate::key::SchemaPart;
 use crate::observe::xref::Xref;
 use crate::output::Expected;
 use crate::store::{Components, OutputRow};
+use crate::verify::release::Share;
 use crate::worker::compile::CompilerMessage;
 
 /// One unit of the build with what a compile and its record need.
@@ -71,7 +71,7 @@ pub enum Msg {
     Image {
         round: u64,
         part: usize,
-        result: Result<Vec<SchemaPart>, String>,
+        result: Result<Share, String>,
     },
     WorkerLost {
         worker: usize,
