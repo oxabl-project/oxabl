@@ -9,7 +9,8 @@ import path from "node:path";
 //   FAKE_OXABL_LOG     a file that gets one JSON line per invocation, signal and exit
 //   FAKE_OXABL_CONFIG  a JSON file read at each invocation:
 //     builds[n]   what the n-th `build --events` run does (the last one repeats):
-//                 { script: [{ wait: ms } | { event: {...} } | { stderr: "text" }], exit: 0, summary: {...} }
+//                 { script: [{ wait: ms } | { event: {...} } | { stderr: "text" }], exit: 0, summary: {...},
+//                   report: { units, notes } }   written to the file of --report at the exit
 //                 A run that gets SIGINT writes a summary with exit 130 and exits 130.
 //     noYield     `build --help` does not mention --yield (true, or only for this version)
 //     printConfig { exit, stderr, settings } replaces the answer of `build --print-config`
@@ -50,7 +51,12 @@ if (args[0] === "--version") {
   const builds = config.builds || [{ script: [{ event: { event: "build-started", rebuild: 0, units: 1, workers: 1, format: 1 } }] }];
   const run = builds[Math.min(starts, builds.length - 1)];
   log({ event: "build-start", args, cwd: process.cwd(), n: starts });
+  const reportAt = args.indexOf("--report");
   const finish = (code) => {
+    if (reportAt >= 0) {
+      const report = { format: 1, exit: code, units: [], notes: [], ...run.report };
+      fs.writeFileSync(args[reportAt + 1], JSON.stringify(report));
+    }
     log({ event: "build-exit", code });
     process.exit(code);
   };

@@ -45,6 +45,7 @@ only; the extension is the program under test.
 | `build-diagnostic` | A compiler message shows in the Problems panel. A failed first build gives an error notification, and `oxabl: 1 failed` stays in the status bar. |
 | `build-untrusted` | An untrusted workspace runs no `oxabl build`, not even `--print-config`. Granting trust starts the build. |
 | `build-external-preemption` | A build that exits 130 without a signal from the extension: the status bar says `running elsewhere` and one more build starts. |
+| `build-unkeyed` | A report with units without a compile key gives one warning with the count, the reason and how to finish the setup; a later build with the same reason gives none. |
 | `build-too-old` | A binary without `--yield` is not used and not updated when it is not managed. |
 | `build-too-old-managed` | A managed binary without `--yield` and without `self-update` is replaced by the newest release, then builds. |
 | `build-binary-changed` | A binary that reports a new version restarts the language server once. |

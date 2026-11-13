@@ -102,6 +102,11 @@ export class BuildProgress {
   }
 
   /** Percent of the finished units that a cache gave; undefined before the first one. */
+  /** Units that needed no work: built before in this workspace and unchanged. */
+  get upToDate(): number {
+    return this.total === undefined ? 0 : Math.max(0, this.units - this.total);
+  }
+
   get cachedPercent(): number | undefined {
     return this.done === 0 ? undefined : Math.round((100 * this.fetched.size) / this.done);
   }
@@ -141,7 +146,7 @@ export class MessageStore {
 /** Where a root's build stands, for the status bar. */
 export type RootStatus =
   | { phase: "preparing" }
-  | { phase: "building"; progress: BuildProgress }
+  | { phase: "building"; progress: BuildProgress; unkeyed?: number }
   | { phase: "elsewhere" }
   | { phase: "idle"; last: "none" | "ok" | { failed: number } | { warning: string } };
 
@@ -154,8 +159,34 @@ export interface StatusView {
   action: "problems" | "log" | "none";
 }
 
+/** A count with thousands separators. */
+export function count(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
+ * The two views of a build: the units it rebuilds, where the cache share comes
+ * from, and the workspace, most of which is usually up to date.
+ */
+function buildingTooltip(p: BuildProgress, unkeyed: number | undefined): string {
+  const lines = [
+    `This build: ${count(p.total ?? 0)} units to rebuild, ${count(p.done)} done`,
+    `  from the local cache: ${count(p.fetchedFrom("local"))}`,
+    `  from the remote cache: ${count(p.fetchedFrom("remote"))}`,
+    `  compiled: ${count(p.compiledNow)}, failed: ${count(p.failedNow)}`,
+  ];
+  if (p.units > 0) {
+    const share = Math.round((100 * p.upToDate) / p.units);
+    lines.push(`Workspace: ${count(p.units)} units, ${count(p.upToDate)} up to date (${share}%), not rebuilt`);
+  }
+  if (unkeyed) {
+    lines.push(unkeyedTooltip(unkeyed));
+  }
+  return lines.join("\n");
+}
+
 export function buildingText(p: BuildProgress): string {
-  const base = `oxabl ${p.done}/${p.total ?? 0}`;
+  const base = `oxabl ${count(p.done)}/${count(p.total ?? 0)}`;
   return p.cachedPercent === undefined ? base : `${base} · ${p.cachedPercent}% cached`;
 }
 
@@ -167,9 +198,7 @@ export function renderStatus(roots: RootStatus[]): StatusView | undefined {
     return {
       text: p.total === undefined ? "oxabl: preparing" : buildingText(p),
       busy: true,
-      tooltip:
-        `${p.fetchedFrom("local")} fetched from the local cache, ${p.fetchedFrom("remote")} from the remote cache, ` +
-        `${p.compiledNow} compiled, ${p.failedNow} failed`,
+      tooltip: buildingTooltip(p, building.unkeyed),
       action: "log",
     };
   }
@@ -219,8 +248,83 @@ export function finishedText(p: BuildProgress, elapsedMs: number): string {
   const remote = p.fetchedFrom("remote");
   const pct = Math.round((100 * s.fetched) / total);
   const compiled = s.compiled + s.failed;
+  const units = Math.max(p.units, total);
   return (
-    `oxabl build finished: ${total} units, ${pct}% from cache (${local} local, ${remote} remote), ` +
-    `${compiled} compiled in ${formatDuration(elapsedMs)}`
+    `oxabl build finished in ${formatDuration(elapsedMs)}: ${count(total)} of ${count(units)} units rebuilt, ` +
+    `${pct}% from cache (${count(local)} local, ${count(remote)} remote), ${count(compiled)} compiled`
+  );
+}
+
+/** Units without a compile key, from the report of `oxabl build --report`. */
+export interface Unkeyed {
+  count: number;
+  /** The most common reason, and how many units have it. */
+  reason: string;
+  reasonCount: number;
+}
+
+const NO_KEY_NOTE = /^(.+?): no key from what the compiler read: (.+?); the unit compiles at each build$/;
+
+/**
+ * The units of a report that have no compile key, so they compile at every
+ * build: a plan reason `unkeyable` or `unverified`, or a note that the compile
+ * gave no key. `undefined` when there is none or the report cannot be read.
+ */
+export function unkeyedFromReport(text: string): Unkeyed | undefined {
+  let report: { units?: unknown; notes?: unknown };
+  try {
+    report = JSON.parse(text) as typeof report;
+  } catch {
+    return undefined;
+  }
+  const why = new Map<string, string>();
+  for (const u of Array.isArray(report.units) ? report.units : []) {
+    const { path, reason } = (u ?? {}) as { path?: unknown; reason?: unknown };
+    const m = typeof reason === "string" ? /^(?:unkeyable|unverified): (.+)$/.exec(reason) : null;
+    if (typeof path === "string" && m) {
+      why.set(path, m[1]);
+    }
+  }
+  for (const note of Array.isArray(report.notes) ? report.notes : []) {
+    const m = typeof note === "string" ? NO_KEY_NOTE.exec(note) : null;
+    if (m) {
+      why.set(m[1], m[2]);
+    }
+  }
+  if (why.size === 0) {
+    return undefined;
+  }
+  const byReason = new Map<string, number>();
+  for (const r of why.values()) {
+    byReason.set(r, (byReason.get(r) ?? 0) + 1);
+  }
+  const [reason, reasonCount] = [...byReason].sort((a, b) => b[1] - a[1])[0];
+  return { count: why.size, reason, reasonCount };
+}
+
+function unkeyedTooltip(n: number): string {
+  return `${count(n)} ${n === 1 ? "unit has" : "units have"} no compile key and compile at every build.`;
+}
+
+/**
+ * Whether units without a key deserve a warning: the reason names a setting
+ * that is missing, or a tenth of the workspace or more has no key. A few units
+ * of encrypted source only show in the tooltip and the build log.
+ */
+export function shouldWarnUnkeyed(u: Unkeyed, units: number): boolean {
+  return /needs \[/.test(u.reason) || (units > 0 && u.count * 10 >= units);
+}
+
+/** The warning for units without a compile key. */
+export function unkeyedText(u: Unkeyed): string {
+  const units = u.count === 1 ? "1 unit has" : `${count(u.count)} units have`;
+  const share = u.reasonCount === u.count ? "" : ` (${count(u.reasonCount)} of them)`;
+  const dlc = u.reason.includes("[workspace.sources].dlc")
+    ? " Set it in oxabl.toml, or set OXABL_DLC_SOURCES and start VS Code again from a session that has it."
+    : "";
+  return (
+    `oxabl: ${units} no compile key, so ${u.count === 1 ? "it compiles" : "they compile"} at every build and no cache can hold ` +
+    `${u.count === 1 ? "it" : "them"}. ${/needs \[/.test(u.reason) ? "The setup of the project is not complete" : "The most common reason"}: ` +
+    `${u.reason}${share}.${dlc}`
   );
 }
