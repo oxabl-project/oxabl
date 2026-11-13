@@ -6011,6 +6011,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::Colon, "Expected ':' after INTERFACE header")?;
 
         // Parse body until END INTERFACE
+        let outer_in_interface = std::mem::replace(&mut self.in_interface, true);
         let mut body = Vec::new();
         while !self.at_end() {
             if self.check(Kind::End) {
@@ -6025,6 +6026,7 @@ impl Parser<'_> {
             }
             self.parse_block_statement_recovering(&mut body);
         }
+        self.in_interface = outer_in_interface;
 
         Ok(self.stmt(StatementKind::Interface {
             name,
@@ -6145,25 +6147,9 @@ impl Parser<'_> {
             }));
         }
 
-        // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
-        // Track whether we opened with '.' — in interface declarations, '.' is the
-        // statement terminator (no body) rather than a body opener. We detect this
-        // below by checking if the first meaningful token is END followed by a
-        // non-METHOD keyword (e.g. END INTERFACE, END CLASS).
-        let opened_with_period = self.check(Kind::Period);
-        if self.check(Kind::Colon) || self.check(Kind::Period) {
+        // In an interface a signature ends at its period and has no body.
+        if self.in_interface && self.check(Kind::Period) {
             self.advance();
-        } else {
-            return Err(ParseError {
-                message: "Expected ':' after METHOD header".to_string(),
-                span: self.current_span(),
-            });
-        }
-
-        // Interface method signatures end with '.' and have no body. Detect this by
-        // looking for END (not METHOD) immediately after the '.' opener. In that case,
-        // return an empty body so the enclosing INTERFACE parser handles END INTERFACE.
-        if opened_with_period && self.check(Kind::End) && !self.check_at(1, Kind::Method) {
             return Ok(self.stmt(StatementKind::Method {
                 access,
                 is_static,
@@ -6174,6 +6160,16 @@ impl Parser<'_> {
                 parameters,
                 body: Vec::new(),
             }));
+        }
+
+        // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
+        if self.check(Kind::Colon) || self.check(Kind::Period) {
+            self.advance();
+        } else {
+            return Err(ParseError {
+                message: "Expected ':' after METHOD header".to_string(),
+                span: self.current_span(),
+            });
         }
 
         let mut body = Vec::new();

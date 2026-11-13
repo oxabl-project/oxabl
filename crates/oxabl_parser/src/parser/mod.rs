@@ -207,6 +207,9 @@ pub struct Parser<'a> {
     /// enough, and the rest of a deep nest would fill
     /// [`MAX_ERRORS`](Self::MAX_ERRORS).
     too_deep_recorded: bool,
+    /// Whether the cursor is in the body of an INTERFACE, where a METHOD
+    /// signature ends at its period and has no body.
+    in_interface: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -233,6 +236,7 @@ impl<'a> Parser<'a> {
             nesting: 0,
             chain: 0,
             too_deep_recorded: false,
+            in_interface: false,
         }
     }
 

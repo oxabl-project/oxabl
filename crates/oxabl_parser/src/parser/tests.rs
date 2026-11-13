@@ -14910,3 +14910,84 @@ fn block_headers_cut_at_the_end_of_the_file_do_not_panic() {
         assert!(!program.errors.is_empty(), "{source}");
     }
 }
+
+// ── INTERFACE members never have bodies ──
+
+fn interface_body(source: &str) -> Vec<Statement> {
+    let program = parse_with_errors(source);
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 1);
+    match program.statements.into_iter().next().unwrap().kind {
+        StatementKind::Interface { body, .. } => body,
+        other => panic!("Expected Interface statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn interface_members_are_flat_siblings_with_empty_bodies() {
+    let source = "INTERFACE I:\n\
+        METHOD PUBLIC VOID A().\n\
+        METHOD PUBLIC VOID B().\n\
+        DEFINE PUBLIC PROPERTY P AS INTEGER GET. SET.\n\
+        DEFINE PUBLIC EVENT E SIGNATURE VOID ().\n\
+        METHOD PUBLIC CHARACTER C(INPUT x AS INTEGER).\n\
+        END INTERFACE.";
+    let body = interface_body(source);
+    assert_eq!(body.len(), 5);
+    for stmt in &body {
+        if let StatementKind::Method { body, .. } = &stmt.kind {
+            assert!(body.is_empty());
+            let text = &source[stmt.span.start as usize..stmt.span.end as usize];
+            assert!(text.starts_with("METHOD") && text.ends_with("."), "{text}");
+            assert_eq!(text.matches('.').count(), 1, "{text}");
+        }
+    }
+    assert!(matches!(body[0].kind, StatementKind::Method { .. }));
+    assert!(matches!(body[1].kind, StatementKind::Method { .. }));
+    assert!(matches!(body[2].kind, StatementKind::Property { .. }));
+    assert!(matches!(body[3].kind, StatementKind::DefineEvent { .. }));
+    assert!(matches!(body[4].kind, StatementKind::Method { .. }));
+}
+
+#[test]
+fn interface_that_inherits_keeps_its_methods_flat() {
+    let body = interface_body(
+        "INTERFACE I INHERITS J, K:\n\
+         METHOD PUBLIC VOID A().\n\
+         METHOD PUBLIC VOID B().\n\
+         END INTERFACE.",
+    );
+    assert_eq!(body.len(), 2);
+    for stmt in &body {
+        match &stmt.kind {
+            StatementKind::Method { body, .. } => assert!(body.is_empty()),
+            other => panic!("Expected Method, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn abstract_class_method_does_not_swallow_the_next_method() {
+    let program = parse_with_errors(
+        "CLASS C:\n\
+         METHOD PUBLIC ABSTRACT VOID X().\n\
+         METHOD PUBLIC VOID Y():\n\
+         MESSAGE \"y\".\n\
+         END METHOD.\n\
+         END CLASS.",
+    );
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    match &program.statements[0].kind {
+        StatementKind::Class { body, .. } => {
+            assert_eq!(body.len(), 2);
+            match (&body[0].kind, &body[1].kind) {
+                (StatementKind::Method { body: x, .. }, StatementKind::Method { body: y, .. }) => {
+                    assert!(x.is_empty());
+                    assert_eq!(y.len(), 1);
+                }
+                other => panic!("Expected two methods, got {other:?}"),
+            }
+        }
+        other => panic!("Expected Class statement, got {other:?}"),
+    }
+}
