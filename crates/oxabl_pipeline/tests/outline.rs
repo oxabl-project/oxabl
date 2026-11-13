@@ -1362,3 +1362,133 @@ fn a_marker_for_another_site_does_not_panic() {
     let src = "/* OXABL-TEST-PANIC:analyze */\nPROCEDURE p:\nEND PROCEDURE.\n";
     assert!(outline(src).is_ok());
 }
+
+#[test]
+fn an_enum_has_its_members_as_children() {
+    let src = "ENUM acme.Color:\n  DEFINE ENUM Red = 1 Green Blue.\nEND ENUM.\n";
+    assert_tree(
+        src,
+        r#"
+Enum acme.Color @"acme.Color"
+  EnumMember Red @"Red"
+  EnumMember Green @"Green"
+  EnumMember Blue @"Blue"
+"#,
+    );
+    assert_spans(
+        src,
+        r#"
+Enum acme.Color => "ENUM acme.Color: DEFINE ENUM Red = 1 Green Blue. END ENUM."
+  EnumMember Red => "Red = 1"
+  EnumMember Green => "Green"
+  EnumMember Blue => "Blue"
+"#,
+    );
+}
+
+#[test]
+fn a_flags_enum_reads_combined_values() {
+    let src = "ENUM acme.Access FLAGS:\n  DEFINE ENUM Read = 1\n    Write = 2\n    RW = Read,Write\n    None.\nEND ENUM.\n";
+    assert_tree(
+        src,
+        r#"
+Enum acme.Access [FLAGS] @"acme.Access"
+  EnumMember Read @"Read"
+  EnumMember Write @"Write"
+  EnumMember RW @"RW"
+  EnumMember None @"None"
+"#,
+    );
+    assert_spans(
+        src,
+        r#"
+Enum acme.Access => "ENUM acme.Access FLAGS: DEFINE ENUM Read = 1 Write = 2 RW = Read,Write None. END ENUM."
+  EnumMember Read => "Read = 1"
+  EnumMember Write => "Write = 2"
+  EnumMember RW => "RW = Read,Write"
+  EnumMember None => "None"
+"#,
+    );
+}
+
+#[test]
+fn an_enum_member_list_may_span_several_define_statements() {
+    let src = "ENUM Level:\n  DEFINE ENUM Low = 1.\n  DEFINE ENUM Mid.\n  DEFINE ENUM High = 9 Top.\nEND ENUM.\nDEFINE VARIABLE after AS INTEGER NO-UNDO.\n";
+    assert_tree(
+        src,
+        r#"
+Enum Level @"Level"
+  EnumMember Low @"Low"
+  EnumMember Mid @"Mid"
+  EnumMember High @"High"
+  EnumMember Top @"Top"
+Variable after [INTEGER] @"after"
+"#,
+    );
+}
+
+#[test]
+fn a_broken_enum_gives_no_panic_and_obeys_the_rules() {
+    for src in [
+        "ENUM acme.Color:\n  DEFINE ENUM Red = Green Blue.\n",
+        "ENUM :\n  DEFINE ENUM = = , .\nEND ENUM.\n",
+        "ENUM acme.Color FLAGS\n  DEFINE ENUM\nEND ENUM.\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\n",
+        "ENUM\n",
+        "ENUM x: DEFINE ENUM A = 1, , B. END ENUM.",
+    ] {
+        run(src);
+    }
+}
+
+#[test]
+fn a_temp_table_without_fields_at_the_depth_limit_stays() {
+    stack::run(|| {
+        let mut src = String::new();
+        for i in 1..=MAX_DEPTH {
+            src.push_str(&format!("l{i}: DO:\n"));
+        }
+        src.push_str("DEFINE TEMP-TABLE ttEmpty LIKE Customer.\n");
+        for _ in 0..MAX_DEPTH {
+            src.push_str("END.\n");
+        }
+        let symbols = run(&src);
+        let mut level = &symbols;
+        for _ in 1..=MAX_DEPTH {
+            level = &level[0].children;
+        }
+        assert_eq!(names(level), ["ttEmpty"]);
+        assert_eq!(level[0].kind, OutlineKind::TempTable);
+    });
+}
+
+#[test]
+fn a_temp_table_with_fields_at_the_depth_limit_lifts_its_fields() {
+    stack::run(|| {
+        let mut src = String::new();
+        for i in 1..=MAX_DEPTH {
+            src.push_str(&format!("l{i}: DO:\n"));
+        }
+        src.push_str("DEFINE TEMP-TABLE tt FIELD a AS INTEGER FIELD b AS CHARACTER.\n");
+        for _ in 0..MAX_DEPTH {
+            src.push_str("END.\n");
+        }
+        let symbols = run(&src);
+        let mut level = &symbols;
+        for _ in 1..=MAX_DEPTH {
+            level = &level[0].children;
+        }
+        assert_eq!(names(level), ["a", "b"]);
+        assert!(level.iter().all(|s| s.kind == OutlineKind::Field));
+    });
+}
+
+#[test]
+fn an_enum_span_ends_at_its_end_enum() {
+    let src =
+        "ENUM Level:\n  DEFINE ENUM Low.\nEND ENUM.\n\nDEFINE VARIABLE after AS INTEGER NO-UNDO.\n";
+    let symbols = run(src);
+    assert_eq!(
+        collapse(slice(src, symbols[0].span)),
+        "ENUM Level: DEFINE ENUM Low. END ENUM."
+    );
+}

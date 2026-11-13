@@ -34,6 +34,8 @@ fn symbol_kind(kind: OutlineKind) -> SymbolKind {
         OutlineKind::Include => SymbolKind::FILE,
         OutlineKind::PreprocessorDefine => SymbolKind::CONSTANT,
         OutlineKind::Label => SymbolKind::NAMESPACE,
+        OutlineKind::Enum => SymbolKind::ENUM,
+        OutlineKind::EnumMember => SymbolKind::ENUM_MEMBER,
     }
 }
 

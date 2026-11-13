@@ -22,12 +22,18 @@ a client maps it with no source map. This has three results:
   recovered. A syntax error in one procedure does not remove the other
   procedures.
 
+A trigger phrase outside `CREATE` (`DEFINE BUTTON`, `DEFINE FRAME`,
+`UPDATE ... TRIGGERS:`) is not read by the parser; its block ends the
+enclosing block early.
+
 ## Symbols
 
 | Construct | Kind | Name | Detail |
 | --- | --- | --- | --- |
 | `CLASS` | `Class` | The name as written, `A.B.C` | `ABSTRACT` or `FINAL` when written |
 | `INTERFACE` | `Interface` | The name as written | none |
+| `ENUM` | `Enum` | The name as written | `FLAGS` when written |
+| `DEFINE ENUM` member of an `ENUM` | `EnumMember`, a child of its enum | The member name | none |
 | `PROCEDURE` | `Procedure` | The name | `EXTERNAL` for an `EXTERNAL` procedure, `PROTOTYPE` for an `IN` prototype |
 | `FUNCTION` | `Function` | The name | The return type, for example `CHARACTER` |
 | `METHOD` | `Method` | The name | Access, then `STATIC`, `ABSTRACT`, `OVERRIDE` when written, then the return type or `VOID`: `PUBLIC STATIC CHARACTER` |
@@ -52,6 +58,10 @@ a client maps it with no source map. This has three results:
 | A statement-level `{file.i}`. `~{file.i}` has an escaped brace and gives no symbol | `Include` | The file name as written | none |
 | `&SCOPED-DEFINE`, `&GLOBAL-DEFINE` | `PreprocessorDefine` | The macro name | `SCOPED` or `GLOBAL` |
 | A labelled block, `main-loop: DO:` | `Label` | The label | none |
+
+A member spans `name [= value]`. The value is a number or a member name, or
+a list of member names with commas, as in a `FLAGS` enum. The parser skips an
+`ENUM` block, so the outline reads it from the tokens, up to `END ENUM.`.
 
 A constructor or a destructor that no class contains (a broken file) has the
 name `CONSTRUCTOR` or `DESTRUCTOR`.
@@ -80,7 +90,7 @@ with its parameters as children.
 These symbols contain other symbols: `Class`, `Interface`, `Procedure`,
 `Function`, `Method`, `Constructor`, `Destructor`, `Trigger` (an `ON` block),
 `Property` with a computed accessor (the `SET` parameters and the declarations
-of its `GET` and `SET` bodies), `Label`, `TempTable` (its fields), `Event`
+of its `GET` and `SET` bodies), `Label`, `TempTable` (its fields), `Enum` (its members), `Event`
 (its parameters) and a function prototype (its parameters). A property with
 only `GET.` or `SET.` has no children.
 
@@ -90,9 +100,10 @@ every `&IF` branch, and `ON` blocks. It moves the declarations that it finds
 up to the nearest symbol that contains symbols, or to the top level. Children
 are in source order.
 
-A symbol has at most 32 symbols above it. A symbol that holds symbols and has
+A symbol has at most 32 symbols above it. A symbol that can hold symbols and has
 32 above it gives no symbol of its own, and what it holds goes to the 32nd
-symbol. The tree gets no deeper, and no symbol that it holds is lost.
+symbol. The tree gets no deeper, and no symbol that it holds is lost. A
+temp-table with no fields stays, because it holds nothing.
 
 The parameters of a function, method, constructor or event come first, then
 the declarations of the body. A `DEFINE PARAMETER` statement inside a
@@ -152,3 +163,5 @@ VS Code asks for the outline, the breadcrumbs and sticky scroll separately.
 | `Include` | `FILE` |
 | `PreprocessorDefine` | `CONSTANT` |
 | `Label` | `NAMESPACE` |
+| `Enum` | `ENUM` |
+| `EnumMember` | `ENUM_MEMBER` |

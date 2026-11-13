@@ -46,6 +46,10 @@ pub enum OutlineKind {
     PreprocessorDefine,
     /// A labelled block (`main-loop: DO: … END.`).
     Label,
+    /// An `ENUM … END ENUM.` type.
+    Enum,
+    /// A member of an `ENUM`.
+    EnumMember,
 }
 
 /// One declaration and the declarations nested in it.
@@ -341,7 +345,7 @@ impl<'a> Walker<'a> {
                     .as_ref()
                     .map(|table| format!("LIKE {}", table.name));
                 let mut symbol = self.named(OutlineKind::TempTable, name, detail, span);
-                if self.open.len() >= MAX_DEPTH {
+                if self.open.len() >= MAX_DEPTH && !fields.is_empty() {
                     symbol = None;
                     for field in fields {
                         let field = self.field(field, span);
@@ -383,6 +387,20 @@ impl<'a> Walker<'a> {
             } => {
                 let symbol = self.query(span);
                 self.emit(symbol);
+            }
+            StatementKind::Empty => {
+                if let Some((mut symbol, members)) = self.enumeration(span) {
+                    if self.open.len() >= MAX_DEPTH {
+                        for member in members {
+                            self.emit(Some(member));
+                        }
+                    } else {
+                        for member in members {
+                            push_child(&mut symbol, member);
+                        }
+                        self.emit(Some(symbol));
+                    }
+                }
             }
             StatementKind::DefineStream { name } => {
                 let symbol = self.named(OutlineKind::Stream, name, None, span);
@@ -688,6 +706,73 @@ impl<'a> Walker<'a> {
             span,
             Some(selection),
         )
+    }
+
+    /// `ENUM name [FLAGS]: DEFINE ENUM member [= value] ... END ENUM.` The
+    /// parser skips the block, so it is read from the tokens of its span.
+    fn enumeration(&self, span: Span) -> Option<(OutlineSymbol, Vec<OutlineSymbol>)> {
+        let mut tokens = self.significant(span).peekable();
+        if tokens.next()?.kind != Kind::KwEnum {
+            return None;
+        }
+        let first = tokens.next_if(|t| !matches!(t.kind, Kind::Period | Kind::Colon))?;
+        let mut name = self.source[first.start..first.end].to_string();
+        let mut end = first.end;
+        while let Some(token) = tokens.next_if(|t| t.start == end && t.kind != Kind::Colon) {
+            name.push_str(&self.source[token.start..token.end]);
+            end = token.end;
+        }
+        let flags = tokens
+            .next_if(|t| self.source[t.start..t.end].eq_ignore_ascii_case("flags"))
+            .map(|_| "FLAGS".to_string());
+        let selection = Span {
+            start: first.start as u32,
+            end: end as u32,
+        };
+        let symbol = self.make(OutlineKind::Enum, &name, flags, span, Some(selection))?;
+
+        let mut members = Vec::new();
+        while let Some(token) = tokens.next() {
+            if token.kind != Kind::Define || tokens.next_if(|t| t.kind == Kind::KwEnum).is_none() {
+                continue;
+            }
+            while let Some(name) = tokens.next_if(|t| !matches!(t.kind, Kind::Period | Kind::End)) {
+                if matches!(name.kind, Kind::Comma | Kind::Equals | Kind::Eq) {
+                    continue;
+                }
+                let mut last = name;
+                if tokens
+                    .next_if(|t| matches!(t.kind, Kind::Equals | Kind::Eq))
+                    .is_some()
+                {
+                    // A value is a number or a member name; `A,B` combines two.
+                    let mut want_value = true;
+                    while let Some(t) = tokens.next_if(|t| {
+                        if want_value {
+                            !matches!(t.kind, Kind::Period | Kind::End | Kind::Comma)
+                        } else {
+                            t.kind == Kind::Comma
+                        }
+                    }) {
+                        want_value = t.kind == Kind::Comma;
+                        last = t;
+                    }
+                }
+                let member_span = Span {
+                    start: name.start as u32,
+                    end: last.end as u32,
+                };
+                let member = self.make(
+                    OutlineKind::EnumMember,
+                    &self.source[name.start..name.end],
+                    None,
+                    member_span,
+                    Some(token_span(name)),
+                );
+                members.extend(member.filter(|m| contains(span, m.span)));
+            }
+        }
+        Some((symbol, members))
     }
 
     /// A function with no body is a prototype unless it is a definition: the

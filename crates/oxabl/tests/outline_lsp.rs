@@ -243,10 +243,8 @@ fn a_deep_outline_is_answered_and_the_session_goes_on() {
     let answer = session.outline(&interface);
     let symbols = symbols_of(&answer);
     assert_eq!(symbols.len(), 1, "one interface");
-    assert!(
-        shape(symbols).0 <= 33,
-        "the interface tree is deeper than the limit"
-    );
+    // The interface, its 70 methods and the parameter of each.
+    assert_eq!(shape(symbols), (3, 141));
 
     let small = root.path().join("small.p");
     session.open(&small, "PROCEDURE p:\nEND PROCEDURE.\n");
