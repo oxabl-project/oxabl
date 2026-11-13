@@ -29,6 +29,9 @@ pub struct Scan {
     pub faults: Vec<(Fault, usize)>,
     /// `FAKE-RESOLVE-OTHER <name> <path>`: the include `name` resolves to `path`.
     pub resolve_other: Vec<(String, String)>,
+    /// `FAKE-XREF-RAW <text>`: text for the end of a text XREF, with `\n` for
+    /// a line break.
+    pub xref_raw: Vec<String>,
 }
 
 const FAULTS: [(&str, Fault); 9] = [
@@ -108,6 +111,11 @@ pub fn scan(text: &str) -> Scan {
                     .resolve_other
                     .push((name.to_string(), path.to_string()));
             }
+            continue;
+        }
+        if let Some((_, raw)) = line.split_once("FAKE-XREF-RAW") {
+            let raw = raw.trim().trim_end_matches("*/").trim();
+            found.xref_raw.push(raw.replace("\\n", "\n"));
             continue;
         }
         if let Some((_, path)) = line.split_once("FAKE-READ") {

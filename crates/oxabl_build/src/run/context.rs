@@ -16,6 +16,7 @@ use crate::cache::{ArtifactCache, CompileKey, FetchRequest, Origin};
 use crate::events::{Event, Sink};
 use crate::graph::Scratch;
 use crate::observe::Observer;
+use crate::observe::xref::Format;
 use crate::refresh::Outcome;
 use crate::verify::reads::Reads;
 use crate::verify::rehash::Rehasher;
@@ -53,7 +54,7 @@ pub struct Ctx<'a> {
     /// The worker-side PROPATH entries, by PROPATH id.
     pub propaths: Vec<Vec<String>>,
     pub options: Vec<(String, String)>,
-    /// The XREF mode of a request: the private `XREF-XML` when verification
+    /// The XREF mode of a request: the private text `XREF` when verification
     /// reads it.
     pub xref: &'static str,
     /// The XREF mode of a request that holds a unit whose closure is observed.
@@ -67,8 +68,9 @@ pub struct Ctx<'a> {
     pub verify: Option<Verify<'a>>,
     /// Observes what the compiler reads for units oxabl cannot read.
     pub observer: Option<Observer<'a>>,
-    /// The user asked for `XREF-XML`: it serves as the private one.
-    pub user_xref: bool,
+    /// The form of the cross-reference the user asked for: it serves as the
+    /// private one.
+    pub user_xref: Option<Format>,
     pub imaging: Option<Imaging>,
     pub fail_fast: bool,
     pub generation: u64,

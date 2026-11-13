@@ -27,7 +27,7 @@ pub struct Faults {
     /// Compiles after which a schema answer has a wrong count
     /// (`FAKE_AVM_SCHEMA_ERROR_AFTER`).
     pub schema_error_after: Option<usize>,
-    /// The private `XREF-XML` is not written (`FAKE_AVM_NO_PRIVATE_XREF`).
+    /// The private XREF is not written (`FAKE_AVM_NO_PRIVATE_XREF`).
     pub no_private_xref: bool,
     /// While this file exists the schema image differs (`FAKE_AVM_SCHEMA_CHANGE_FILE`).
     pub schema_change_file: Option<PathBuf>,

@@ -1208,8 +1208,8 @@ PROCEDURE writeCompiler:
 
     cStatement = "COMPILE VALUE(pcName)" + pcHead + " SAVE INTO VALUE(pcInto)".
     IF plList THEN cStatement = cStatement + " LISTING VALUE(pcLst)".
-    IF pcXref = "xref-xml" OR pcXref = "private" THEN cStatement = cStatement + " XREF-XML VALUE(pcXref)".
-    IF pcXref = "xref" THEN cStatement = cStatement + " XREF VALUE(pcXref)".
+    IF pcXref = "xref-xml" THEN cStatement = cStatement + " XREF-XML VALUE(pcXref)".
+    IF pcXref = "xref" OR pcXref = "private" THEN cStatement = cStatement + " XREF VALUE(pcXref)".
     IF plDebug THEN cStatement = cStatement + " DEBUG-LIST VALUE(pcDbg)".
     cStatement = cStatement + pcTail + " NO-ERROR.".
 
@@ -1271,7 +1271,7 @@ PROCEDURE compileUnit:
 
     RUN ensureDir(pcStage + "/r/" + dirOf(cStem)).
     IF pcXref = "xref-xml" THEN cXrefFile = pcStage + "/xref/" + pcName + ".xref.xml".
-    IF pcXref = "private" THEN cXrefFile = pcStage + "/verify/" + pcName + ".xref.xml".
+    IF pcXref = "private" THEN cXrefFile = pcStage + "/verify/" + pcName + ".xref".
     IF pcXref = "xref" THEN cXrefFile = pcStage + "/xref/" + pcName + ".xref".
     IF cXrefFile <> "" THEN RUN ensureDir(dirOf(cXrefFile)).
     IF plDebug THEN DO:

@@ -1,4 +1,4 @@
-//! The observed closure of one compile, from its `XREF-XML`.
+//! The observed closure of one compile, from its cross-reference.
 
 use super::xref::Xref;
 use crate::paths::PathMap;
@@ -75,7 +75,7 @@ impl Places<'_> {
     }
 }
 
-/// The closure that one compile of `unit` read, by its `XREF-XML`, with the
+/// The closure that one compile of `unit` read, by its cross-reference, with the
 /// class sources `classes` that it could read. Each include is resolved on the
 /// unit PROPATH on the host, and each file the compiler names must be where an
 /// include resolves to or a listed class: else the host and the compiler

@@ -1,29 +1,42 @@
-//! What a compile's `XREF-XML` says it read: the `Source` files and the
-//! include references.
+//! What a compile's cross-reference says it read: the files that hold a
+//! reference and the include references. The private output is the text
+//! `XREF`; a requested `XREF-XML` or text `XREF` serves as well.
 //!
-//! The document says nothing reliable about classes: a class used only as a
+//! Neither form says anything reliable about classes: a class used only as a
 //! type gives no reference at all (measured on OpenEdge 12.8), so nothing here
 //! looks for one.
 
 use std::path::Path;
 
-/// The parts of one `XREF-XML` document that the build uses.
+pub use oxabl_workspace::XrefFormat as Format;
+
+/// The parts of one cross-reference that the build uses.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Xref {
-    /// The `File-name` of each `Source` element, as the compiler resolved it.
+    /// The file of each `Source` element (`File-name`) of an `XREF-XML`, or
+    /// each file in the second column of a text `XREF` row, as the compiler
+    /// resolved it.
     pub sources: Vec<String>,
     /// The include file name of each `INCLUDE` reference, as written.
     pub includes: Vec<String>,
 }
 
-/// Reads the `XREF-XML` file at `path`.
-pub fn read(path: &Path) -> Result<Xref, String> {
+/// Reads the cross-reference file at `path`, in `format`.
+pub fn read(path: &Path, format: Format) -> Result<Xref, String> {
+    let name = match format {
+        Format::Xml => "XREF-XML",
+        Format::Text => "XREF",
+    };
     let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("cannot read the XREF-XML of the compile: {error}"))?;
-    parse(&text).map_err(|error| format!("the XREF-XML of the compile is unusable: {error}"))
+        .map_err(|error| format!("cannot read the {name} of the compile: {error}"))?;
+    let parsed = match format {
+        Format::Xml => parse(&text),
+        Format::Text => parse_text(&text),
+    };
+    parsed.map_err(|error| format!("the {name} of the compile is unusable: {error}"))
 }
 
-/// Parses one document. A `Reference` element with no `Reference-type`, or an
+/// Parses one `XREF-XML` document. A `Reference` element with no `Reference-type`, or an
 /// `INCLUDE` with no name, is an error: nothing is guessed.
 pub fn parse(xml: &str) -> Result<Xref, String> {
     let sources = oxabl_effects::xref_xml::source_files(xml).map_err(|error| error.to_string())?;
@@ -53,6 +66,104 @@ pub fn parse(xml: &str) -> Result<Xref, String> {
         xref.includes.push(name);
     }
     Ok(xref)
+}
+
+/// Parses a text `XREF`: one row for each reference, `<including file>
+/// <file of the reference> <line> <TYPE> <details>`. A name with a space is
+/// in double quotes and a quote inside a field is doubled. The line is a
+/// number or `IMPLICIT` (the call of a constructor that the source does not
+/// write). A `STRING` row, whose value can hold a line break, can span lines
+/// and holds the length of the value after it. Nothing is skipped: a row of
+/// another shape, a field that is not closed, an empty file or a file that
+/// does not end with a line break is an error. The compiler writes no
+/// `COMPILE` row for encrypted source, so the first row is not checked.
+pub fn parse_text(text: &str) -> Result<Xref, String> {
+    let mut xref = Xref::default();
+    let mut rest = text;
+    let mut empty = true;
+    while !rest.is_empty() {
+        let (_, after) = field(rest)?;
+        let (file, after) = field(after)?;
+        let (line, after) = field(after)?;
+        if line != "IMPLICIT" && !line.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(format!("a row has the line {line:?}, which is not a number"));
+        }
+        let (kind, after) = field(after)?;
+        empty = false;
+        let end = row_end(after)?;
+        let details = &after[..end];
+        if details.contains('\n') && kind != "STRING" {
+            return Err(format!("a {kind} row spans lines"));
+        }
+        match kind.as_str() {
+            "INCLUDE" => {
+                let (identifier, _) = field(details)?;
+                let name = include_name(&identifier)
+                    .ok_or_else(|| format!("an INCLUDE row names no file: {identifier:?}"))?;
+                xref.includes.push(name);
+            }
+            "STRING" => {
+                let (_, after) = field(details)?;
+                let (length, _) = field(after)?;
+                if !length.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(format!("a STRING row has the length {length:?}"));
+                }
+            }
+            _ => {}
+        }
+        if !xref.sources.contains(&file) {
+            xref.sources.push(file);
+        }
+        rest = &after[end + 1..];
+    }
+    if empty {
+        return Err("the file is empty".to_string());
+    }
+    Ok(xref)
+}
+
+/// The next field of a row and what follows it: a word, or a quoted string
+/// with `""` for a quote. A word ends at a space or a line break, and the
+/// space before a field is skipped. An empty field is an error.
+fn field(text: &str) -> Result<(String, &str), String> {
+    let text = text.trim_start_matches(' ');
+    let mut value = String::new();
+    let end = if text.starts_with('"') {
+        let mut chars = text.char_indices().skip(1);
+        loop {
+            match chars.next() {
+                None => return Err("a quoted field is not closed".to_string()),
+                Some((at, '"')) if text[at + 1..].starts_with('"') => {
+                    value.push('"');
+                    chars.next();
+                }
+                Some((at, '"')) => break at + 1,
+                Some((_, c)) => value.push(c),
+            }
+        }
+    } else {
+        let end = text.find([' ', '\n']).unwrap_or(text.len());
+        value.push_str(&text[..end]);
+        end
+    };
+    if value.is_empty() {
+        return Err("a row has an empty field".to_string());
+    }
+    Ok((value, &text[end..]))
+}
+
+/// The offset of the line break that ends the row whose details start at the
+/// beginning of `text`: the first one outside quotes.
+fn row_end(text: &str) -> Result<usize, String> {
+    let mut quoted = false;
+    for (at, c) in text.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '\n' if !quoted => return Ok(at),
+            _ => {}
+        }
+    }
+    Err("the last row has no line break, or a quote is not closed".to_string())
 }
 
 /// The file name of an include reference as the compiler writes it: the first

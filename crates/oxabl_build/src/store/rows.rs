@@ -101,7 +101,7 @@ pub mod tracked {
     pub const OBSERVED: u8 = 8;
 }
 
-/// The files a compile of a unit read, as its `XREF-XML` named them, the
+/// The files a compile of a unit read, as its cross-reference named them, the
 /// paths that must stay absent so that each include resolves to the same
 /// file, and the class sources the compile could read. Canonical paths,
 /// sorted, without the unit itself.

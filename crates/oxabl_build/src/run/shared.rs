@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 
 use super::context::{Imaging, Verify};
 use super::types::{Msg, UnitDone, UnitInfo};
+use crate::observe::xref::Format;
 use crate::refresh::Outcome;
 use crate::schedule::Queue;
 use crate::worker::compile::Limits;
@@ -33,11 +34,12 @@ pub struct Shared<'a> {
     pub limits: Limits,
     pub cancel: &'a Cancel,
     pub verify: Option<&'a Verify<'a>>,
-    /// The compiler writes an `XREF-XML` for the units whose closure is
+    /// The compiler writes a cross-reference for the units whose closure is
     /// observed.
     pub observing: bool,
-    /// The user asked for `XREF-XML`: it serves as the private one.
-    pub user_xref: bool,
+    /// The form of the cross-reference the user asked for: it serves as the
+    /// private one.
+    pub user_xref: Option<Format>,
     pub imaging: Option<&'a Imaging>,
     /// Stop handing out jobs at the first failed unit.
     pub fail_fast: bool,

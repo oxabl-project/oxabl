@@ -42,9 +42,9 @@ fn check_reads(
             state.notes.push(format!(
                 "{path}: {why}; the unit is not cached and compiles at each build"
             ));
-            Err(format!("unreadable XREF-XML: {why}"))
+            Err(format!("unreadable XREF: {why}"))
         }
-        None => Err("no XREF-XML".to_string()),
+        None => Err("no XREF".to_string()),
     }
 }
 
@@ -82,7 +82,7 @@ fn observe_compile(ctx: &Ctx<'_>, state: &mut State<'_>, done: &UnitDone) -> Opt
     let observed = match done.reads.as_ref() {
         Some(Ok(xref)) => observe(xref, &info.path, &entries, classes, &observer.places),
         Some(Err(why)) => Err(why.clone()),
-        None => Err("no XREF-XML".to_string()),
+        None => Err("no XREF".to_string()),
     };
     let closure = match observed {
         Ok(closure) => closure,

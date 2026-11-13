@@ -42,7 +42,7 @@ pub struct UnitDone {
     pub lost: bool,
     /// When the worker reported the end of the unit.
     pub finished: Instant,
-    /// What the compiler read, from its `XREF-XML`, when verification or
+    /// What the compiler read, from its cross-reference, when verification or
     /// the observed closure asks for it.
     pub reads: Option<Result<Xref, String>>,
 }

@@ -7,7 +7,7 @@ use std::time::Instant;
 use super::shared::Shared;
 use super::types::{Msg, UnitDone};
 use crate::graph::Scratch;
-use crate::observe::xref;
+use crate::observe::xref::{self, Format};
 use crate::output::{Stage, promote};
 use crate::schedule::{Take, Task};
 use crate::verify::release::Share;
@@ -265,11 +265,12 @@ fn finish_unit(
     };
     let verified = info.key.is_some() && shared.verify.is_some();
     if compiled.ok && (verified || (info.observable && shared.observing)) {
-        let file = match shared.user_xref {
-            true => format!("xref/{}.xref.xml", info.name),
-            false => format!("verify/{}.xref.xml", info.name),
+        let (file, format) = match shared.user_xref {
+            Some(Format::Xml) => (format!("xref/{}.xref.xml", info.name), Format::Xml),
+            Some(Format::Text) => (format!("xref/{}.xref", info.name), Format::Text),
+            None => (format!("verify/{}.xref", info.name), Format::Text),
         };
-        done.reads = Some(xref::read(&stage.host().join(file)));
+        done.reads = Some(xref::read(&stage.host().join(file), format));
     }
     if compiled.ok {
         match promote::promote(shared.root, stage.host(), &info.expected) {

@@ -16,10 +16,13 @@
 //! `FAKE-RESOLVE-OTHER <name> <path>` (the include resolves to that path).
 //! Like the real compiler, it opens an XREF or XREF-XML file whose relative
 //! name starts with `.` with that dot removed. A request with the XREF mode
-//! `private` writes an XREF-XML under `verify/`. An XREF-XML names each file
+//! `private` writes a text XREF under `verify/`. An XREF-XML names each file
 //! read as a `Source`, each include as an `INCLUDE` reference with the text
 //! between its braces (its name and arguments), and each class as a `NEW`
-//! reference.
+//! reference. A text XREF has a `COMPILE` row, the same references as rows,
+//! and a row in each other file read, which puts the file in the second
+//! column; names with a space are quoted. `FAKE-XREF-RAW <text>` in a source
+//! ends the text XREF with that text, where `\n` is a line break.
 //!
 //! Environment variables: `FAKE_AVM_STATE` is a directory for the markers of
 //! the `-ONCE` faults; `FAKE_AVM_LOG` receives one line for each compiled
@@ -29,7 +32,7 @@
 //! change the schema image after `n` compiles, or while the file exists;
 //! `FAKE_AVM_SCHEMA_DELAY_MS` delays each schema answer;
 //! `FAKE_AVM_SCHEMA_ERROR_AFTER=<n>` gives a wrong count after `n` compiles;
-//! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private `XREF-XML`;
+//! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private XREF;
 //! `FAKE_AVM_XREF_LOG` receives the XREF mode of each compiled unit's request;
 //! `FAKE_AVM_COMPILE_MS=<n>` makes each compile take `n` milliseconds.
 //!
