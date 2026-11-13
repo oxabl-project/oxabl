@@ -6812,6 +6812,109 @@ fn parse_abstract_class() {
 }
 
 #[test]
+fn parse_class_header_modifier_orders() {
+    // (source, abstract, final, use_widget_pool, inherits, implements)
+    let cases = [
+        (
+            "CLASS a.b.Cls INHERITS Base FINAL: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS a.b.Cls INHERITS Base ABSTRACT: END CLASS.",
+            true,
+            false,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS Cls IMPLEMENTS I1 FINAL SERIALIZABLE: END CLASS.",
+            false,
+            true,
+            false,
+            false,
+            1,
+        ),
+        (
+            "CLASS Cls IMPLEMENTS I1, I2 ABSTRACT: END CLASS.",
+            true,
+            false,
+            false,
+            false,
+            2,
+        ),
+        (
+            "CLASS Cls INHERITS B IMPLEMENTS I1 USE-WIDGET-POOL FINAL SERIALIZABLE: END CLASS.",
+            false,
+            true,
+            true,
+            true,
+            1,
+        ),
+        (
+            "CLASS Cls USE-WIDGET-POOL ABSTRACT: END CLASS.",
+            true,
+            false,
+            true,
+            false,
+            0,
+        ),
+        (
+            "CLASS Cls INHERITS B FINAL USE-WIDGET-POOL: END CLASS.",
+            false,
+            true,
+            true,
+            true,
+            0,
+        ),
+        (
+            "CLASS FINAL Cls INHERITS B: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS Cls FINAL INHERITS B: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+    ];
+    for (source, abs, fin, uwp, inh, imp) in cases {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
+        match stmt.kind {
+            StatementKind::Class {
+                inherits,
+                implements,
+                is_abstract,
+                is_final,
+                use_widget_pool,
+                ..
+            } => {
+                assert_eq!(is_abstract, abs, "{source}: abstract");
+                assert_eq!(is_final, fin, "{source}: final");
+                assert_eq!(use_widget_pool, uwp, "{source}: use-widget-pool");
+                assert_eq!(inherits.is_some(), inh, "{source}: inherits");
+                assert_eq!(implements.len(), imp, "{source}: implements");
+            }
+            _ => panic!("Expected Class statement"),
+        }
+    }
+}
+
+#[test]
 fn parse_final_class() {
     let source = "CLASS FINAL MyClass: END CLASS.";
     let tokens = tokenize(source);

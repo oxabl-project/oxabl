@@ -5896,7 +5896,8 @@ impl Parser<'_> {
     /// Parse a CLASS definition.
     ///
     /// ```text
-    /// `CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]:`
+    /// `CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]`
+    /// `    [USE-WIDGET-POOL] [ABSTRACT] [FINAL] [SERIALIZABLE]:`
     ///     body
     /// END CLASS.
     /// ```
@@ -5926,37 +5927,30 @@ impl Parser<'_> {
         // keywords used as namespace prefixes (e.g. `do.widgetobj`) are accepted.
         let name = self.parse_class_qualified_name()?;
 
-        // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
-        self.parse_class_modifiers(&mut is_abstract, &mut is_final);
-
-        // Parse optional INHERITS
-        let inherits = if self.check(Kind::Inherits) {
-            self.advance();
-            Some(self.parse_class_qualified_name()?)
-        } else {
-            None
-        };
-
-        // Parse optional IMPLEMENTS (comma-separated)
+        // The options may follow any clause; ABL documents them after INHERITS/IMPLEMENTS
+        let mut use_widget_pool = false;
+        let mut inherits = None;
         let mut implements = Vec::new();
-        if self.check(Kind::Implements) {
-            self.advance();
-            implements.push(self.parse_class_qualified_name()?);
-            while self.check(Kind::Comma) {
+        loop {
+            self.parse_class_modifiers(&mut is_abstract, &mut is_final);
+            if self.check(Kind::Inherits) && inherits.is_none() {
+                self.advance();
+                inherits = Some(self.parse_class_qualified_name()?);
+            } else if self.check(Kind::Implements) && implements.is_empty() {
                 self.advance();
                 implements.push(self.parse_class_qualified_name()?);
-            }
-        }
-
-        // Trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
-        let mut use_widget_pool = false;
-        loop {
-            if self.check(Kind::UseWidgetPool) {
+                while self.check(Kind::Comma) {
+                    self.advance();
+                    implements.push(self.parse_class_qualified_name()?);
+                }
+            } else if self.check(Kind::UseWidgetPool) {
                 use_widget_pool = true;
-            } else if !self.check(Kind::Serializable) {
+                self.advance();
+            } else if self.check(Kind::Serializable) {
+                self.advance(); // not modelled on the AST
+            } else {
                 break;
             }
-            self.advance();
         }
 
         // Expect colon to start body
