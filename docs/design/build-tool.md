@@ -94,7 +94,7 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
 | D7 | The worker protocol is line-based text over the worker's stdin and stdout. | It works through any command (`docker exec -i`, `kubectl exec -i`, a local `_progres`) with no ports and no network setup. End of stdin stops the worker, so a dead oxabl leaves no orphan workers. | TCP: port races, bind addresses, a firewall and an orphan registry. |
 | D8 | Workers live for one build. Classes are keyed only when the build has one PROPATH id; with per-unit PROPATHs, every unit that reaches a class is unkeyable (K9) and still compiles as the AVM resolves it. | No daemon is needed. The shared `$OUT` tree, `MULTI-COMPILE` sessions and in-memory class compiles all resolve classes in ways that per-unit PROPATHs make unsound, and real codebases checked use one global PROPATH. | A persistent pool: it needs a daemon (follow-up). Keying classes under per-unit PROPATHs: each design attempt found a new hole (follow-up with its proof list). An output tree per PROPATH id: one class name with two `.r` files is ambiguous at run time anyway. |
 | D9 | A fake AVM (`oxabl_fake_avm`, a test-only binary) implements the protocol from the document, with no oxabl dependency. | It stands in for Progress, not for oxabl. A shared codec would hide a codec bug on both sides. | A mock inside the tests: it fakes the program under test. |
-| D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema image gives the same identities, and the compiler opened no file outside the closure (from the compiler-resolved `XREF-XML`). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
+| D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema image gives the same identities, and the compiler opened no file outside the closure (from the compiler-resolved cross-reference). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
 | D13 | The remote cache's configuration and root of trust (`tenant`, `owner_keys`, `min_roster_version`) live only in the client's committed `.oxabl/cache.toml`. `oxabl.toml` has build-side switches only. | Whoever controls the environment of a build must not be able to replace the pinned owner keys. | Remote settings in `oxabl.toml`: the overlay could replace the root of trust. |
 | D14 | The local cache trusts every process of the OS user, so the shared one is on only in `developer` mode; `ci` and `read-only` use a marked per-job directory or none. | On a shared CI runner, an untrusted job could plant an entry that a trusted job installs without a signature check. | A local cache with signatures: it needs the remote keys on every machine and duplicates the client. |
 | D11 | Store format changes rebuild the store. There are no migrations. | The store is a derived cache. Migrations were the largest source of complexity in the downstream store. | Versioned migrations. |
@@ -486,7 +486,7 @@ oxabl build [--plan [--all] [--probe]] [--files <path>... | --since <rev>]
   going, because the full error list is more useful for a large tree.
 
 `oxabl build` leaves hidden `--help` with slice 10: the OpenEdge suite passed on a real AVM,
-so the worker program's `COMPILE` path, class order and cycles, the private `XREF-XML` and
+so the worker program's `COMPILE` path, class order and cycles, the private text `XREF` and
 check V3 on real file names, cache sharing between two roots and the signal handling are
 proven. Unhiding adds `build` to the advertised commands in `docs/overview.md` and needs a
 `feat` commit for release-please. The documentation states the known limits at the same
@@ -611,7 +611,7 @@ These are out of scope. Each needs its own design note before code.
 
 - **A fresh worker session per PROPATH id.** So that per-unit PROPATH layouts compile
   class users correctly, not only without a key (`per_unit_propath_class_binding`).
-- **A V3 source for classes and definitions-only includes.** `XREF-XML` lists neither
+- **A V3 source for classes and definitions-only includes.** the cross-reference lists neither
   ([cache.md](build-tool/cache.md#what-v3-covers)); until another source exists, the plan's
   closure rules are the only guard for those reads.
 - **Parser recoveries in real code.** 225 of 7,678 units of the real-code trial have no key

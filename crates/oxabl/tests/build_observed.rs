@@ -367,7 +367,11 @@ fn with_a_requested_text_xref_the_unit_is_observed_from_it() {
     assert_eq!(enc["action"], "up-to-date", "{plan}");
     workspace.clear_log();
     workspace.build().succeeded();
-    assert!(workspace.compiled().is_empty(), "{:?}", workspace.compiled());
+    assert!(
+        workspace.compiled().is_empty(),
+        "{:?}",
+        workspace.compiled()
+    );
 }
 
 #[test]

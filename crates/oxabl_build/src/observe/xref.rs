@@ -86,7 +86,9 @@ pub fn parse_text(text: &str) -> Result<Xref, String> {
         let (file, after) = field(after)?;
         let (line, after) = field(after)?;
         if line != "IMPLICIT" && !line.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(format!("a row has the line {line:?}, which is not a number"));
+            return Err(format!(
+                "a row has the line {line:?}, which is not a number"
+            ));
         }
         let (kind, after) = field(after)?;
         empty = false;

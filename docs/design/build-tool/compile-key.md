@@ -274,7 +274,7 @@ Some units have no key only because oxabl cannot read their closure from their s
 construct that the analysis does not model, or an include name that it cannot compute. The
 analysis of such a unit is degraded (K1), or finds include names that do not resolve (K2) or
 that it cannot compute (K4). The compiler reads these files without a problem, and its
-`XREF-XML` names the includes it read. Such a unit gets a key from its **observed closure**:
+the cross-reference names the includes it read. Such a unit gets a key from its **observed closure**:
 the files that the compiler read at the last successful compile of the unit, and every class
 source that the compile could read.
 
@@ -348,8 +348,8 @@ that a parsed closure gives them, and no more: the digests of the PROPATH entrie
 ### What a compile records
 
 After a successful compile of a unit that qualifies, the build reads the unit's
-`XREF-XML`: the private one, or the one the user asked for. With `xref_format = "text"` no
-compile is observed, and such a unit compiles at each build. The build records nothing,
+cross-reference: the private text `XREF`, or the `xref` output the user asked for, in either
+format. The build records nothing,
 and the unit keeps no key, when one of these steps fails:
 
 1. **Each include, resolved on the host.** Each `INCLUDE` reference gives an include name.
@@ -422,7 +422,7 @@ and the unit compiles once more under that key.
 
 ### Verification and the cache
 
-When a unit compiles under an observed-closure key, the build reads its `XREF-XML` again.
+When a unit compiles under an observed-closure key, the build reads its cross-reference again.
 
 - **The same closure** (the same files, absent set and listing): the key stands. V1, V2 and
   V3 apply as for any keyed unit, with the observed files and the class part as the closure,
@@ -441,9 +441,10 @@ A compile with no key before it is never written to a cache.
   unit again, and one workspace class without a key leaves such units without a key.
 - With more than one PROPATH id, each class unit is unkeyable under K9, so a unit that
   qualifies gets no key when the workspace has a class unit.
-- The rules trust the compiler's `XREF-XML` to give an `INCLUDE` reference for each include
-  made in unencrypted source, the definitions-only ones too. The opt-in OpenEdge test `xref_xml_observed_closure`
-  ([testing.md](testing.md#tests)) pins it.
+- The rules trust the compiler's cross-reference to give an `INCLUDE` reference for each
+  include made in unencrypted source, the definitions-only ones too. The opt-in OpenEdge
+  tests `xref_xml_observed_closure` and `xref_text_observed_closure`
+  ([testing.md](testing.md#tests)) pin it.
 
 ## Environment identity
 
@@ -730,7 +731,7 @@ Material: `list(pair, pairs)` with `pair = str(name) str(value)`.
 The requested output kinds, sorted by bytes. `rcode` is always present. The others are
 `debug-list`, `listing`, and one of `xref` or `xref-xml`.
 
-The private `XREF-XML` that verification uses ([cache.md](cache.md#verification)) is not a
+The private text `XREF` that verification uses ([cache.md](cache.md#verification)) is not a
 requested output and is not in the key. The OpenEdge suite proves that XREF does not change
 the r-code (`xref_does_not_change_rcode`). If that test fails, verification compiles into
 a separate private compile instead.

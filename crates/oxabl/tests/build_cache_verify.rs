@@ -654,8 +654,7 @@ fn a_text_xref_that_is_not_made_of_rows_blocks_the_write_and_says_so() {
 
 #[test]
 fn a_text_xref_that_stops_inside_a_quote_blocks_the_write() {
-    let (cache, _workspace, run) =
-        with_raw_xref("src/raw.p src/raw.p 3 STRING \"cut off\\n");
+    let (cache, _workspace, run) = with_raw_xref("src/raw.p src/raw.p 3 STRING \"cut off\\n");
 
     assert!(!holds(&cache, "r/raw.r"));
     assert!(run.stderr.contains("unusable"), "{}", run.stderr);
@@ -695,9 +694,8 @@ fn the_row_after_a_string_row_that_spans_lines_is_read() {
 
 #[test]
 fn a_file_name_with_a_space_that_is_not_quoted_blocks_the_write() {
-    let (cache, _workspace, run) = with_raw_xref(
-        "src/raw.p src/in side.i 1 STRING \"x\" 1 NONE UNTRANSLATABLE\\n",
-    );
+    let (cache, _workspace, run) =
+        with_raw_xref("src/raw.p src/in side.i 1 STRING \"x\" 1 NONE UNTRANSLATABLE\\n");
 
     assert!(!holds(&cache, "r/raw.r"));
     assert!(run.stderr.contains("unusable"), "{}", run.stderr);

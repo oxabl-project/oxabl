@@ -77,7 +77,11 @@ starts with the worker program's header line.
   each file read, and `compiled-at <nanoseconds>`. The last line makes outputs of one
   source differ between compiles, like real r-code. A test can read a `.r` and check that it
   matches the current files: that is the wrong-hit oracle. It writes the text XREF or the
-  `XREF-XML` as requested; the `XREF-XML` has a `Source` element for each file it opened, with
+  `XREF-XML` as requested, and the text XREF for the `private` mode; the text XREF has a
+  `COMPILE` row, an `INCLUDE` or `NEW` row for each reference, and a row in each other file
+  read, which puts that file in the second column (names with a space are quoted;
+  `FAKE-XREF-RAW <text>` in a source ends the file with `<text>`, where `\n` is a line break,
+  for a malformed or multi-line row); the `XREF-XML` has a `Source` element for each file it opened, with
   the name as it resolved it, an `INCLUDE` reference for each include with the text between
   its braces (name and arguments, as OpenEdge writes it), and a `NEW` reference for each
   class. A quoted include name (`{"x.i" &a = 1}`) is read without its quotes. Debug lists and listings hold the
@@ -114,7 +118,7 @@ starts with the worker program's header line.
   name>`), so a test counts compiles and sees which worker compiled what. It also writes its
   pid there at start and `exit` at quit, so a test can check that no worker stays alive.
   `FAKE_AVM_XREF_LOG` gets `<worker pid> <compile name> <XREF mode>` for each compiled
-  unit, so a test sees which units got the private `XREF-XML`.
+  unit, so a test sees which units got the private XREF.
 
 ## Scenarios per slice
 
@@ -311,7 +315,7 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   every `COMPILE` comes after the last `HASH`/`HASHSET` of the DLC hash phase and after the
   prune.
 - `FAKE-RESOLVE-OTHER` for an include that holds only preprocessor definitions: the
-  `XREF-XML` names the other file, so check V3 fails and nothing is written.
+  cross-reference names the other file, so check V3 fails and nothing is written.
 - With `CI=1` and no `OXABL_CACHE_MODE`, and with `OXABL_CACHE_MODE=read-only` or `ci`: a
   planted entry in the shared local cache is never read. With `OXABL_CACHE_MODE=developer`
   it is (the documented trust).
@@ -356,8 +360,7 @@ cannot parse (as an encrypted source looks to it) and that the fake compiles:
 - A compile that reads a file where the host resolves another (`FAKE-RESOLVE-OTHER`) gives
   no observed key and a note.
 - `observe::xref` has a unit test for the `INCLUDE` shapes that OpenEdge 12.8 writes.
-- With `xref_format = "text"` an observed key does not stand: the unit compiles at each
-  build.
+- With `xref_format = "text"` the unit is observed from that file, as from the private one.
 - A compile that reads another closure than its key holds is not cached, and its closure
   keys the unit.
 - A file that the refresh did not hash and that changed just before the build gives no key
@@ -509,6 +512,10 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |
 | `xref_xml_resolution` | The `XREF-XML` `Source` elements name each include that holds a reference, as the compiler resolved it (`src/defs.i`, `src/ttrows.i`); an include with only `&GLOBAL-DEFINE`s (`consts.i`) is **not** listed; every fixture unit passes V3 and is stored. Goes red if a later OpenEdge lists the definitions-only include. |
 | `xref_xml_observed_closure` | The `XREF-XML` of `main.p` has an `INCLUDE` reference for `defs.i`, `ttrows.i` and the definitions-only `consts.i`. The [observed closure](compile-key.md#the-observed-closure) is sound only while this holds. Its class part does not rely on the `XREF-XML`: a class used only as a type gives no reference (measured on 12.8). |
+| `xref_text_classes` | The same three class cases with `xref_format = "text"`: the second column names only the unit. |
+| `xref_text_resolution` | `main.p` with a requested text `XREF`: the second column names `src/main.p`, `src/defs.i`, `src/ttrows.i` and equals the `XREF-XML` `Source` list; every fixture unit passes V3 and is stored, with a requested and with the private text `XREF`. |
+| `xref_text_observed_closure` | The text `XREF` of `main.p` has an `INCLUDE` row for `defs.i`, `ttrows.i` and the definitions-only `consts.i`. |
+| `xref_text_unusual_names` | A skipped `&IF` include, a unit with a space in its name and an include path of 300 characters: the text `XREF` reads back and the units are stored. |
 | `xref_readers` | The text reader finds every include of the fixture (its `INCLUDE` rows give the name as written, not as resolved); the XML reader finds the includes that hold a reference. |
 | `orphans` | After `SIGKILL` of oxabl during a 3,000-unit build, no `_progres` of that build is alive within 120 s. |
 | `cancel_leaves_no_worker` | `SIGINT` during a build gives exit code 130, and no worker of the build stays alive. |

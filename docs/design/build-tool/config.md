@@ -95,9 +95,9 @@ listing = ""
 ```
 
 Each directory is optional (`""` or absent means off) and must be under the root.
-`xref_format` is `"xml"` (`XREF-XML`) or `"text"` (`XREF`), default `"xml"`. With `"text"`, oxabl
-writes no cache entries, because verification needs the compiler-resolved file names that
-only `XREF-XML` has and one compile gives only one form ([cache.md](cache.md#verification)).
+`xref_format` is `"xml"` (`XREF-XML`) or `"text"` (`XREF`), default `"xml"`. Either file serves
+as the private cross-reference that verification reads, so one compile gives both
+([cache.md](cache.md#verification)). The text form is much cheaper for the compiler to write.
 
 ### `[build.compile]`
 

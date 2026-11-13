@@ -117,7 +117,7 @@ Oxabl to the worker:
 | `PATH` | `id` `path` | One path of a `HASHSET`, in sorted order. |
 | `PROPATH` | `id` `entry`... | Define a PROPATH. Entries are worker-side paths; a `$DLC/...` entry is sent as written and the worker expands it with `OS-GETENV("DLC")`. |
 | `OPTIONS` | `id` `name=value`... | Define a set of compile options. |
-| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref` or `xref-xml` (slice 7 adds `private`, a private `XREF-XML` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. `stage` is relative to the worker root and starts with `./` (see [Compiling](#compiling)). |
+| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref` or `xref-xml` (slice 7 adds `private`, a private text `XREF` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. `stage` is relative to the worker root and starts with `./` (see [Compiling](#compiling)). |
 | `UNIT` | `req` `compile-name` | One unit of the request, in compile order. |
 | `PING` | `n` | Liveness. |
 | `QUIT` | | End the session. |
@@ -228,7 +228,7 @@ For each `UNIT` of a request, the worker:
 2. Computes the output paths under the stage directory of the request:
    - r-code: `COMPILE ... SAVE INTO <stage>/r`, so the `.r` is at `<stage>/r/<compile stem>.r`;
    - XREF: `<stage>/xref/<compile name>.xref` (or `.xref.xml`);
-   - private XREF (slice 7): `<stage>/verify/<compile name>.xref.xml` (always `XREF-XML`);
+   - private XREF (slice 7): `<stage>/verify/<compile name>.xref` (always the text `XREF`);
    - debug list: `<stage>/dbg/<compile name>.dbg`;
    - listing: `<stage>/lst/<compile name>.lst`.
 3. Creates each directory those paths need, with `OS-CREATE-DIR`. `SAVE INTO` creates package
