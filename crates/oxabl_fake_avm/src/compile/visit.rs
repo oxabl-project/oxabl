@@ -79,6 +79,8 @@ impl Compiler {
             out.source = text.clone();
         }
         let found_in_text = scan(&text);
+        out.xref_raw
+            .extend(found_in_text.xref_raw.iter().map(String::as_str));
         for (fault, row) in &found_in_text.faults {
             apply(*fault, *row, &found.shown, unit, ctx.faults, out);
         }

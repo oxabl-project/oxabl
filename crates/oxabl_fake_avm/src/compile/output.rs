@@ -64,11 +64,33 @@ fn escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn xref_text(out: &Outcome) -> String {
-    out.reads
-        .iter()
-        .map(|read| format!("{}\n", read.shown))
-        .collect()
+/// A field of a text XREF row: in quotes, with doubled quotes, when it holds a
+/// space or a quote.
+fn field(text: &str) -> String {
+    match text.contains([' ', '"']) {
+        true => format!("\"{}\"", text.replace('"', "\"\"")),
+        false => text.to_string(),
+    }
+}
+
+/// A text XREF like the real one: a `COMPILE` row, an `INCLUDE` or `NEW` row
+/// for each reference, and a row in each other file that was read, which makes
+/// the second column list the files the compiler opened.
+fn xref_text(name: &str, out: &Outcome) -> String {
+    let unit = out.reads.first().map_or(name, |read| read.shown.as_str());
+    let unit = field(unit);
+    let mut text = format!("{unit} {unit} 1 COMPILE {}\n", field(name));
+    for (kind, identifier) in &out.references {
+        text.push_str(&format!("{unit} {unit} 1 {kind} {}\n", field(identifier)));
+    }
+    for read in out.reads.iter().skip(1) {
+        text.push_str(&format!(
+            "{unit} {} 1 STRING \"x\" 1 NONE UNTRANSLATABLE\n",
+            field(&read.shown)
+        ));
+    }
+    text.push_str(&out.xref_raw);
+    text
 }
 
 /// Where the compiler opens an XREF file: like the real one, it removes a
@@ -95,12 +117,12 @@ pub fn write(ctx: &Context<'_>, name: &str, out: &Outcome) -> io::Result<()> {
         )?,
         "xref" => put(
             &xref_path(ctx.stage.join("xref").join(format!("{name}.xref"))),
-            &xref_text(out),
+            &xref_text(name, out),
         )?,
         "private" if ctx.faults.no_private_xref => {}
         "private" => put(
-            &xref_path(ctx.stage.join("verify").join(format!("{name}.xref.xml"))),
-            &xref_xml(out),
+            &xref_path(ctx.stage.join("verify").join(format!("{name}.xref"))),
+            &xref_text(name, out),
         )?,
         _ => {}
     }

@@ -197,7 +197,7 @@ fn a_unit_whose_include_argument_holds_a_greater_than_sign_is_cached() {
     run.succeeded();
     assert!(
         holds(&cache, "r/user.r"),
-        "the XREF-XML of the compile is read whole: {}",
+        "the XREF of the compile is read whole: {}",
         run.stderr
     );
 }
@@ -407,7 +407,7 @@ fn with_the_read_check_off_nothing_is_written_and_the_summary_says_so() {
 }
 
 #[test]
-fn with_text_xref_nothing_is_written_and_the_build_says_so() {
+fn a_requested_text_xref_serves_as_the_private_one() {
     let cache = TempDir::new().unwrap();
     let workspace = Built::with(
         "include_paths = [\"src\"]",
@@ -419,9 +419,14 @@ fn with_text_xref_nothing_is_written_and_the_build_says_so() {
     let run = workspace.build();
 
     run.succeeded();
-    assert!(entries(cache.path()).is_empty());
-    assert!(run.stderr.contains("xref_format"), "{}", run.stderr);
+    let entry = entry_with(cache.path(), "r/a.r");
+    assert!(entry.join("files/xref/a.p.xref").is_file());
+    assert!(!run.stderr.contains("xref_format"), "{}", run.stderr);
     assert!(workspace.exists("build/xref/a.p.xref"));
+    assert!(
+        !workspace.exists("build/verify"),
+        "the private XREF is not an output"
+    );
 }
 
 #[test]
@@ -460,7 +465,9 @@ fn the_private_xref_is_not_left_in_the_workspace() {
     );
     let files = common::cache::tree(&workspace.path(".oxabl"));
     assert!(
-        files.keys().all(|path| !path.ends_with(".xref.xml")),
+        files
+            .keys()
+            .all(|path| !path.ends_with(".xref.xml") && !path.ends_with(".xref")),
         "{:?}",
         files.keys().collect::<Vec<_>>()
     );
@@ -592,7 +599,7 @@ fn without_a_cache_the_databases_are_not_imaged_again() {
 }
 
 #[test]
-fn a_compile_with_no_readable_xref_xml_is_not_cached_and_has_no_key() {
+fn a_compile_with_no_readable_xref_is_not_cached_and_has_no_key() {
     let cache = TempDir::new().unwrap();
     let workspace = Built::new();
     workspace.cache_in(cache.path());
@@ -603,9 +610,108 @@ fn a_compile_with_no_readable_xref_xml_is_not_cached_and_has_no_key() {
 
     run.succeeded();
     assert!(entries(cache.path()).is_empty());
-    assert!(run.stderr.contains("XREF-XML"), "{}", run.stderr);
+    assert!(
+        run.stderr.contains("cannot read the XREF of the compile"),
+        "{}",
+        run.stderr
+    );
     let plan = workspace.plan();
     assert_eq!(Built::reasons(&plan, "src/a.p"), ["unverified"]);
+}
+
+/// A unit that holds one `FAKE-XREF-RAW` line, which ends the text XREF of
+/// its compile with `raw`. `\n` in `raw` is a line break.
+fn with_raw_xref(raw: &str) -> (TempDir, Built, common::built::Run) {
+    let cache = TempDir::new().unwrap();
+    let workspace = Built::new();
+    workspace.cache_in(cache.path());
+    workspace.write("src/plain.p", "MESSAGE \"p\".\n");
+    workspace.write(
+        "src/raw.p",
+        &format!("/* FAKE-XREF-RAW {raw} */\nMESSAGE \"r\".\n"),
+    );
+    let run = workspace.build();
+    run.succeeded();
+    assert!(holds(&cache, "r/plain.r"));
+    (cache, workspace, run)
+}
+
+#[test]
+fn a_text_xref_that_is_not_made_of_rows_blocks_the_write_and_says_so() {
+    let (cache, workspace, run) = with_raw_xref("this is not a row\\n");
+
+    assert!(!holds(&cache, "r/raw.r"));
+    assert!(
+        run.stderr.contains("the XREF of the compile is unusable"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(
+        Built::reasons(&workspace.plan(), "src/raw.p"),
+        ["unverified"]
+    );
+}
+
+#[test]
+fn a_text_xref_that_stops_inside_a_quote_blocks_the_write() {
+    let (cache, _workspace, run) = with_raw_xref("src/raw.p src/raw.p 3 STRING \"cut off\\n");
+
+    assert!(!holds(&cache, "r/raw.r"));
+    assert!(run.stderr.contains("unusable"), "{}", run.stderr);
+}
+
+#[test]
+fn a_text_xref_whose_last_row_has_no_line_break_blocks_the_write() {
+    let (cache, _workspace, run) =
+        with_raw_xref("src/raw.p src/raw.p 3 STRING \"x\" 1 NONE UNTRANSLATABLE");
+
+    assert!(!holds(&cache, "r/raw.r"));
+    assert!(run.stderr.contains("unusable"), "{}", run.stderr);
+}
+
+#[test]
+fn a_string_row_that_spans_lines_is_one_row_and_the_unit_is_cached() {
+    let (cache, _workspace, run) = with_raw_xref(
+        "src/raw.p src/raw.p 3 STRING \"one\\ntwo \"\"quoted\"\" x\\nsrc/raw.p src/inc/fake.i 1 NONE\" 12 NONE TRANSLATABLE\\n",
+    );
+
+    assert!(
+        holds(&cache, "r/raw.r"),
+        "the file name inside the string is no row: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn the_row_after_a_string_row_that_spans_lines_is_read() {
+    let (cache, _workspace, run) = with_raw_xref(
+        "src/raw.p src/raw.p 3 STRING \"one\\ntwo\" 7 NONE TRANSLATABLE\\nsrc/raw.p other/after.i 1 STRING \"x\" 1 NONE UNTRANSLATABLE\\n",
+    );
+
+    assert!(!holds(&cache, "r/raw.r"));
+    assert!(run.stderr.contains("other/after.i"), "{}", run.stderr);
+}
+
+#[test]
+fn a_file_name_with_a_space_that_is_not_quoted_blocks_the_write() {
+    let (cache, _workspace, run) =
+        with_raw_xref("src/raw.p src/in side.i 1 STRING \"x\" 1 NONE UNTRANSLATABLE\\n");
+
+    assert!(!holds(&cache, "r/raw.r"));
+    assert!(run.stderr.contains("unusable"), "{}", run.stderr);
+}
+
+#[test]
+fn a_unit_with_a_space_in_its_path_is_cached() {
+    let cache = TempDir::new().unwrap();
+    let workspace = Built::new();
+    workspace.cache_in(cache.path());
+    workspace.write("src/two words.p", "MESSAGE \"w\".\n");
+
+    let run = workspace.build();
+
+    run.succeeded();
+    assert!(holds(&cache, "r/two words.r"), "{}", run.stderr);
 }
 
 #[test]

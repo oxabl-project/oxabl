@@ -165,11 +165,7 @@ pub fn build(
                 .to_string(),
         );
     }
-    let verifying = policy.verifies(
-        cache.writes(),
-        matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))),
-        &mut notes,
-    );
+    let verifying = policy.verifies(cache.writes(), &mut notes);
     let baseline: Vec<(String, blake3::Hash)> = environment
         .databases
         .iter()
@@ -201,7 +197,6 @@ pub fn build(
             worker_root: &spec.worker_root,
             started_ns,
         },
-        &mut notes,
     );
     let fetch = fetch_plan(&infos, &settings.state_dir, &spec.build_id);
     let ctx = Ctx {
@@ -223,7 +218,7 @@ pub fn build(
         fetch,
         verify,
         observer,
-        user_xref: layout.xref.is_some(),
+        user_xref: layout.xref.as_ref().map(|(_, format)| *format),
         imaging,
         fail_fast,
         generation: plan.generation,
@@ -407,7 +402,7 @@ fn worker_entry(
     }
 }
 
-/// The XREF mode of a request: the user's, or the private `XREF-XML` when
+/// The XREF mode of a request: the user's, or the private text `XREF` when
 /// something reads it and the user asked for none.
 fn private_xref(read: bool, layout: &OutputLayout) -> &'static str {
     match (read, layout.xref.is_some()) {
@@ -438,7 +433,7 @@ struct Facts<'a> {
 }
 
 /// What observes the closure of the units that oxabl cannot read, when the
-/// plan compiles one. A text XREF gives no file names the compiler resolved.
+/// plan compiles one.
 fn observer<'a>(
     plan: &Plan,
     outcome: &'a Outcome,
@@ -446,7 +441,6 @@ fn observer<'a>(
     paths: &'a PathMap,
     keyed: &'a Keyed,
     facts: Facts<'a>,
-    notes: &mut Vec<String>,
 ) -> Option<Observer<'a>> {
     let keys = plan.keys.as_ref()?;
     let observable = plan
@@ -455,12 +449,6 @@ fn observer<'a>(
         .filter(|entry| keys.get(&entry.path).is_some_and(|key| key.observable))
         .count();
     if observable == 0 {
-        return None;
-    }
-    if matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))) {
-        notes.push(format!(
-            "{observable} units that oxabl cannot read compile at each build: [build.outputs].xref_format = \"text\" gives no file names that the compiler resolved"
-        ));
         return None;
     }
     Some(Observer {

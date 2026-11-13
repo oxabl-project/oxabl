@@ -279,7 +279,7 @@ with compiling.
 | --- | --- | --- |
 | V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. A `$DLC/...` file is hashed again by an idle worker (`HASH`), from the copy the AVM compiles with, not from the host mirror. Every hash must equal the hash the key used. | The unit is not written. |
 | V2 schema | The databases are imaged again before held sets are released, split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). An imaging starts when a set waits and `[build.verify].imaging_budget` times the duration of the last imaging has passed since it ended ([pace](#the-pace-of-v2)), and once at the end. A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. When the raw digest pins the image of every database ([compile-key.md](compile-key.md#the-raw-digest)), each check is a raw pass in place of the imaging, in every cache mode: an equal digest means equal metaschema records, so the identities of the probe. A changed digest is a changed schema; the build does not image again. | Every held and later unit of this build is not written. |
-| V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
+| V3 reads | Read the unit's cross-reference: the private text `XREF`, or the `XREF-XML` or text `XREF` that the user asked for. Take the file in the second column of every row (text) or the file name of every `Source` element (XML): these are the files that hold a reference, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
 
 For a unit keyed by its [observed closure](compile-key.md#the-observed-closure), the closure
 of V1 and V3 is the observed one, with its class part. Before them, the build observes the compile again: when it
@@ -304,8 +304,8 @@ wrong entry can cost, and the policy follows:
 | `developer` | The same checks as `ci` today. A cheaper form of a check (a sample, a reused pass) belongs here only, as a new field of the policy. |
 | `read-only` | Nothing is written, so nothing is verified. |
 
-`reads = false` and `xref_format = "text"` lower no check: they turn the cache write off, in
-every mode, and the build says so in a note. Only a check that runs while a cache is still
+`reads = false` lowers no check: it turns the cache write off, in every mode, and the build
+says so in a note. Only a check that runs while a cache is still
 written must be refused in `ci`.
 
 ### The pace of V2
@@ -330,16 +330,18 @@ the last sets, and a build that is cancelled keeps the sets that no imaging has 
 
 ### What V3 covers
 
-Measured on OpenEdge 12.8.9 (`xref_xml_classes`, `xref_xml_resolution`):
+Measured on OpenEdge 12.8.9 (`xref_xml_classes`, `xref_xml_resolution` and their text
+forms `xref_text_classes`, `xref_text_resolution`; the text `XREF` and the `XREF-XML` name the
+same files for all 545 units of a real code base):
 
 - **Classes: not covered.** For a unit that uses a class from source (not a unit), from
-  `$OUT` r-code or from a `.pl`, the `XREF-XML` lists only the unit itself as a `Source`. It
-  names no class file at all (the reference appears as `Reference-type="NEW"` with the class
+  `$OUT` r-code or from a `.pl`, the cross-reference lists only the unit itself (as a
+  `Source`, or in the second column). It names no class file at all (the reference appears as `Reference-type="NEW"` with the class
   name, never with a file).
 - **Includes with only preprocessor definitions: not covered.** The compiler lists a
-  `Source` only for a file that holds a reference. An include that holds only
-  `&GLOBAL-DEFINE`s is not listed, and neither the listing, the debug list nor the text XREF
-  gives its resolved path (they give the name as written).
+  file that holds a reference (a `Source`, or a row in the second column). An include that
+  holds only `&GLOBAL-DEFINE`s is not listed. Its `INCLUDE` row gives the name as written,
+  and neither the listing, the debug list nor `STRING-XREF` gives its resolved path.
 - **Other includes: covered.** Every include that holds a reference is a `Source`, with its
   name as the compiler resolved it.
 
@@ -355,15 +357,27 @@ V2 has one residual case: a schema that changes and changes back between two ima
 a compile in between. This needs two dictionary loads into the build's database during
 the build; CI builds use a database of their own, and the case is stated, not hidden.
 
-The private `XREF-XML` is on when any cache write is on (`[build.verify].reads`, default
+The private cross-reference is the text `XREF`: the compiler writes it in about a seventh of
+the time and a sixth of the bytes of the `XREF-XML` (545 units, 16 workers: +1 s against +9 s
+on a 14 s compile). It is on when any cache write is on (`[build.verify].reads`, default
 `true`). With no cache that stores (`read-only`, `--no-cache`, no cache configured), only a
 request that holds a unit keyed by its observed closure asks for it
 ([compile-key.md](compile-key.md#the-observed-closure)): the other compiles skip the
-`XREF-XML` and the read check. When the user requests `xref-xml`, that output serves as the private one. When the
-user requests text XREF (`xref_format = "text"`), one compile cannot give both forms, so
-oxabl writes no cache entries for that configuration and says so at the start of each
-build. With `reads = false`, oxabl writes nothing to any cache. The `XREF-XML` reader is in
-`oxabl_effects`; slice 10 checks it against real compiler output.
+cross-reference and the read check. When the user requests an `xref` output, in either
+`xref_format`, that file serves as the private one, so one compile gives both and the
+directory of the output makes no difference. With `reads = false`, oxabl writes nothing to any
+cache. The reader is `observe::xref` in `oxabl_build`; the opt-in OpenEdge tests check it
+against real compiler output.
+
+The text reader is strict, because a row of the text form is not a line. A name with a space
+is in double quotes with `""` for a quote, a `STRING` row holds the value of a string, which
+can hold line breaks, and the line of a row is a number or `IMPLICIT`. The reader follows
+quotes across lines, takes the type of a row only from its fourth field, and fails on a row
+of another shape, a quote that is not closed, an empty file, or a file that does not end with
+a line break. A failure is a failed V3, as for an absent file: the unit is not cached and
+has no key. A name that holds a space and is not quoted cannot be told from two fields, so
+it fails too. The compiler writes no `COMPILE` row for encrypted source, so the first row is
+not checked.
 
 Verification costs one hash of each closure file per unit completion window (BLAKE3 on all
 cores, about 1 s for 500 MB of source), one schema imaging per `imaging_budget` (about 6 s with 8 workers on the measured databases),

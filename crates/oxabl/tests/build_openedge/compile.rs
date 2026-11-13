@@ -113,7 +113,7 @@ fn compile_a_class_and_its_user() {
 }
 
 /// The same project built in two workspaces that share a local cache. With
-/// no XREF output requested, the build writes a private `XREF-XML` and reads
+/// no XREF output requested, the build writes a private text `XREF` and reads
 /// it back: this is the first time that the read check meets the file names
 /// of a real compiler. The second workspace must compile nothing, and its
 /// r-code must load.

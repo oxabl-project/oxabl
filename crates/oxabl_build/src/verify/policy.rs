@@ -16,7 +16,7 @@ use crate::error::BuildError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
     pub mode: Mode,
-    /// The private `XREF-XML` is read (V3). Without it no set is written.
+    /// The cross-reference is read (V3). Without it no set is written.
     pub reads: bool,
     /// The pace of the schema checks (V2): `[build.verify].imaging_budget`.
     pub imaging_budget: u32,
@@ -34,17 +34,10 @@ impl Policy {
     }
 
     /// Whether this build verifies its units: a cache stores sets, the read
-    /// check is on and the compiler writes the `XREF-XML` that it reads.
+    /// check is on and the compiler writes the cross-reference that it reads.
     /// `notes` gets the reason when sets are withheld.
-    pub fn verifies(&self, writes: bool, text_xref: bool, notes: &mut Vec<String>) -> bool {
+    pub fn verifies(&self, writes: bool, notes: &mut Vec<String>) -> bool {
         if !writes {
-            return false;
-        }
-        if text_xref {
-            notes.push(
-                "no cache entries are written: [build.outputs].xref_format = \"text\" gives no compiler-resolved file names to check"
-                    .to_string(),
-            );
             return false;
         }
         if !self.reads {

@@ -84,7 +84,7 @@ impl Compile {
     }
 
     /// Takes the XREF output out of the configuration, so that the build
-    /// writes a private `XREF-XML` for its own checks.
+    /// writes a private text `XREF` for its own checks.
     pub fn without_xref_output(&mut self) {
         assert!(
             !self.options.outputs.is_empty(),
