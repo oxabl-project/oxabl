@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.2...oxabl_semantic-v5.0.3) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+
 ## [5.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.1...oxabl_semantic-v5.0.2) (2026-11-12)
 
 

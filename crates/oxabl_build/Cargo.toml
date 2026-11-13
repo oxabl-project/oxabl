@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_build"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "The oxabl build tool: graph store, incremental refresh, planner, AVM worker pool and worker protocol"
@@ -8,12 +8,12 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_build"
 
 [dependencies]
 oxabl_common = { path = "../oxabl_common", version = "1.2.2" }
-oxabl_effects = { path = "../oxabl_effects", version = "0.3.3" }
-oxabl_index = { path = "../oxabl_index", version = "5.0.2" }
+oxabl_effects = { path = "../oxabl_effects", version = "0.3.4" }
+oxabl_index = { path = "../oxabl_index", version = "5.0.3" }
 oxabl_lexer = { path = "../oxabl_lexer", version = "2.0.1" }
-oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.4.1" }
-oxabl_semantic = { path = "../oxabl_semantic", version = "5.0.2" }
-oxabl_workspace = { path = "../oxabl_workspace", version = "3.4.0" }
+oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.4.2" }
+oxabl_semantic = { path = "../oxabl_semantic", version = "5.0.3" }
+oxabl_workspace = { path = "../oxabl_workspace", version = "3.5.0" }
 blake3 = "1"
 encoding_rs = "0.8"
 glob = "0.3"
