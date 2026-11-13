@@ -700,10 +700,18 @@ PROCEDURE imageDb:
     RUN finishEntry("db", "").
 END PROCEDURE.
 
+/* One line of the `system` entry: the name and CRC of a table that is not a
+   user table. R-code that reads such a table records its CRC. */
+PROCEDURE imageSystemTable:
+    RUN putRecord("system-table", bv(ghBuf[1], "_File-Name") + CHR(1)
+                  + "_crc=" + bv(ghBuf[1], "_CRC"), 0).
+END PROCEDURE.
+
 /* The share of the schema image of one connected database that worker piPart
    of piParts images: one SENT line for each of its entries, then SCHEMA-END
    with the number of entries and the number of user tables in the whole
-   database. Part 0 images the database record and the sequences. */
+   database. Part 0 images the database record, the system tables (virtual
+   system tables, the metaschema and the SQL catalog) and the sequences. */
 PROCEDURE schemaImage:
     DEFINE INPUT PARAMETER pcLdb   AS CHARACTER NO-UNDO.
     DEFINE INPUT PARAMETER piPart  AS INTEGER   NO-UNDO.
@@ -730,7 +738,12 @@ PROCEDURE schemaImage:
     RUN openKinds.
     RUN scanKind(8, "", "", "imageDb").
     RUN scanKind(1, "WHERE bK1._Tbl-Type = 'T'", "BY bK1._File-Name", "imageTable").
-    IF piPart = 0 THEN RUN scanKind(7, "", "BY bK7._Seq-Name", "imageSequence").
+    IF piPart = 0 THEN DO:
+        RUN scanKind(1, "WHERE bK1._Tbl-Type <> 'T'", "BY bK1._File-Name BY bK1._Owner",
+                     "imageSystemTable").
+        IF NOT glQuit THEN RUN finishEntry("system", "").
+        RUN scanKind(7, "", "BY bK7._Seq-Name", "imageSequence").
+    END.
     RUN closeKinds.
     IF NOT glQuit THEN
         RUN sendLine("SCHEMA-END" + gcTab + toWire(pcLdb) + gcTab + intText(giEntries)

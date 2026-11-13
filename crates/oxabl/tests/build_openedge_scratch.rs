@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use common::openedge::compile::{Options, compile_workspace_with};
 use common::openedge::{Target, probe};
 use serde_json::Value;
 
@@ -133,8 +134,19 @@ impl Scratch {
         );
     }
 
-    /// Probes the database with one single-user worker.
-    fn probe(&self, db: &str) -> Value {
+    /// Runs ABL statements single-user on the database, in one transaction.
+    fn abl(&self, db: &str, statements: &str) {
+        let dir = self.db_dir(db);
+        let output = self.run(&format!(
+            "cd {dir}\ncat > change.p <<'ABL'\nDO TRANSACTION ON ERROR UNDO, LEAVE:\n{statements}\nEND.\nQUIT.\nABL\n\
+             {dlc}/bin/_progres -b -q -db {db} -1 -p {dir}/change.p 2>&1 || true",
+            dlc = self.dlc
+        ));
+        assert!(!output.contains("**"), "the change failed:\n{output}");
+    }
+
+    /// A single-user worker on the database, connected as `ldb`.
+    fn target(&self, db: &str, ldb: &str) -> Target {
         let dir = self.db_dir(db);
         let mut command: Vec<String> = self.exec.clone();
         command.extend(
@@ -144,20 +156,26 @@ impl Scratch {
                 "-q",
                 "-db",
                 &format!("{dir}/{db}"),
+                "-ld",
+                ldb,
                 "-1",
                 "-p",
                 "{program}",
             ]
             .map(String::from),
         );
-        let target = Target {
+        Target {
             command,
             workspace: self.workspace.clone(),
             worker_root: self.worker_root.clone(),
             proversion: self.proversion.clone(),
-            databases: vec![db.to_string()],
-        };
-        probe(&target, 1).0
+            databases: vec![ldb.to_string()],
+        }
+    }
+
+    /// Probes the database with one single-user worker.
+    fn probe(&self, db: &str) -> Value {
+        probe(&self.target(db, db), 1).0
     }
 }
 
@@ -349,4 +367,58 @@ fn schema_long_field() {
 
     assert_ne!(schema_identity(&before), schema_identity(&after));
     assert_eq!(schema_identity(&after), schema_identity(&again));
+}
+
+/// R-code records the CRC of a metaschema table that a unit reads. An edit of
+/// such a table leaves every user table as it was, and must still change the
+/// schema identity and the key of a unit that reads the table.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn a_system_table_edit_changes_the_key_of_a_unit_that_reads_it() {
+    let mut scratch = Scratch::new();
+    let suffix = std::process::id();
+    let (plain, edited) = (format!("oxya{suffix}"), format!("oxyb{suffix}"));
+    for db in [&plain, &edited] {
+        scratch.create(db);
+        scratch.load(db, BASE);
+    }
+    scratch.abl(
+        &edited,
+        "FIND _File WHERE _File._File-Name = \"_User\".\n_File._Frozen = FALSE.\n\
+         FIND _Field OF _File WHERE _Field._Field-Name = \"_User-Name\".\n\
+         _Field._Order = _Field._Order + 5000.\n_File._Frozen = TRUE.",
+    );
+    let keyed = |db: &str| {
+        let target = scratch.target(db, "oxmeta");
+        let identity = schema_identity(&probe(&target, 1).0);
+        let workspace = compile_workspace_with(
+            &target,
+            Options {
+                workers: 1,
+                ..Options::default()
+            },
+        );
+        workspace.write(
+            "src/users.p",
+            "FOR EACH _User NO-LOCK:\n    DISPLAY _User._Userid _User._User-Name.\nEND.\n",
+        );
+        let plan = workspace.plan();
+        let unit = plan["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|unit| unit["path"] == "src/users.p")
+            .unwrap_or_else(|| panic!("no unit src/users.p in {plan}"));
+        let key = unit["key"]
+            .as_str()
+            .unwrap_or_else(|| panic!("src/users.p has no key: {unit}"))
+            .to_string();
+        (identity, key)
+    };
+
+    let (plain_identity, plain_key) = keyed(&plain);
+    let (edited_identity, edited_key) = keyed(&edited);
+
+    assert_ne!(plain_identity, edited_identity);
+    assert_ne!(plain_key, edited_key);
 }

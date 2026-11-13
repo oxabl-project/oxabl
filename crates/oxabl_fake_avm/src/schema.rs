@@ -16,12 +16,14 @@ struct Entry {
     text: String,
 }
 
-/// The entry that a record belongs to: `db`, the table of a table, field,
-/// index, index field or trigger, or the sequence.
+/// The entry that a record belongs to: `db`, `system` for a system table,
+/// the table of a table, field, index, index field or trigger, or the
+/// sequence.
 fn entry_of(record: &[String]) -> (&'static str, String) {
     let second = record.get(1).cloned().unwrap_or_default();
     match record.first().map(String::as_str) {
         Some("db") => ("db", String::new()),
+        Some("system-table") => ("system", String::new()),
         Some("sequence") => ("sequence", second),
         _ => ("table", second),
     }
@@ -36,8 +38,15 @@ fn canonical_line(record: &[String]) -> String {
     format!("{}\n", fields.join("\t"))
 }
 
+/// Every database has system tables, so the `system` entry is always there,
+/// with no records when the test gives none.
 fn entries(database: &Database) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = Vec::new();
+    let mut entries: Vec<Entry> = vec![Entry {
+        kind: "system",
+        name: String::new(),
+        records: 0,
+        text: String::new(),
+    }];
     for record in &database.schema {
         let (kind, name) = entry_of(record);
         let at = match entries
@@ -71,7 +80,7 @@ fn sha256_hex(text: &str) -> String {
 /// Emits the `SENT` lines of share `part` of `parts`, then `SCHEMA-END`. With
 /// `changed` every entry hashes as if the schema had been edited. The
 /// tables sorted by name are dealt out round robin; share 0 also holds the
-/// database record and the sequences.
+/// database record, the system tables and the sequences.
 pub fn emit_image(
     out: &mut impl Write,
     database: &Database,
@@ -127,6 +136,10 @@ pub fn emit_image(
             count += 1;
         }
         Some("bad-hash") if !lines.is_empty() => lines[0][3] = b"not-a-hash".to_vec(),
+        Some("no-system-entry") => {
+            lines.retain(|line| line[0] != b"system");
+            count = lines.len();
+        }
         _ => {}
     }
     if let Some(delay) = faults.schema_delay {

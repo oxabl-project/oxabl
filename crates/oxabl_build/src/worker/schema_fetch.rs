@@ -45,7 +45,7 @@ pub fn fetch(
                 }
                 let name = codec.decode(&name).map_err(protocol)?;
                 let named = match kind.as_str() {
-                    "db" => name.is_empty(),
+                    "db" | "system" => name.is_empty(),
                     "table" | "sequence" => !name.is_empty(),
                     _ => false,
                 };
