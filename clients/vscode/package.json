@@ -2,7 +2,7 @@
   "name": "oxabl",
   "displayName": "oxabl — ABL tooling",
   "description": "Progress ABL for VS Code: syntax highlighting, plus format-on-save and live diagnostics from the oxabl language server, driven from oxabl.toml.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "oxabl-project",
   "license": "MIT",
   "repository": {

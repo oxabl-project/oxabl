@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.4.0...oxabl_vscode-v0.4.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **vscode:** keep the build spinner turning while units finish ([95d6b5d](https://github.com/oxabl-project/oxabl/commit/95d6b5da9f8d8c883e380a4622d358d8ba93f5dc))
+* **vscode:** keep the build spinner turning while units finish ([75d4a4c](https://github.com/oxabl-project/oxabl/commit/75d4a4cab979bb7a9a8c799f49531e416f22b753))
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.2...oxabl_vscode-v0.4.0) (2026-11-12)
 
 
