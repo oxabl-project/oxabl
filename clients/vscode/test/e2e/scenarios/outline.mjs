@@ -197,14 +197,26 @@ export async function outline(ctx) {
   } finally {
     await vs.close();
     await sleep(1500);
+    // The daemon outlives the editor; stop it and see that it is gone.
     const dir = path.join(runtimeDir, "oxabl", "daemon");
-    if (fs.existsSync(dir)) {
-      for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".json"))) {
-        try {
-          process.kill(JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")).pid, "SIGTERM");
-        } catch {}
+    const pids = fs.existsSync(dir)
+      ? fs
+          .readdirSync(dir)
+          .filter((x) => x.endsWith(".json"))
+          .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")).pid)
+      : [];
+    check(`${name}: the daemon registered itself`, pids.length > 0, `no registration under ${dir}`);
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
       }
-    }
+    };
+    for (const pid of pids.filter(alive)) process.kill(pid, "SIGTERM");
+    await waitFor("the daemon to exit", async () => !pids.some(alive), { timeout: 10_000, interval: 200 }).catch(() => {});
+    check(`${name}: the daemon exits on SIGTERM`, !pids.some(alive), `still running: ${pids.filter(alive).join(", ")}`);
     await server.close();
   }
 }
