@@ -210,11 +210,11 @@ fn schema_environment() -> Value {
 }
 
 /// Four classes, each inheriting the one before: they compile one after the
-/// other on one worker, and each is checked on its own (`batch_units = 1`).
+/// other on one worker, and each is checked on its own (`imaging_budget = 0`).
 fn class_chain(cache: &TempDir) -> Built {
     let workspace = Built::with(
         "include_paths = [\"src\"]",
-        "[build.verify]\nbatch_units = 1",
+        "[build.verify]\nimaging_budget = 0",
     );
     workspace.cache_in(cache.path());
     workspace.set_environment(&schema_environment());
@@ -285,7 +285,10 @@ fn a_schema_that_does_not_change_is_imaged_again_and_every_unit_is_cached() {
 #[test]
 fn a_schema_that_changes_between_the_last_check_and_the_end_is_caught_by_the_final_check() {
     let cache = TempDir::new().unwrap();
-    let workspace = Built::with("include_paths = [\"src\"]", "");
+    let workspace = Built::with(
+        "include_paths = [\"src\"]",
+        "[build.verify]\nimaging_budget = 100000",
+    );
     workspace.cache_in(cache.path());
     workspace.set_environment(&schema_environment());
     workspace.databases(&["ledger"]);
@@ -300,7 +303,7 @@ fn a_schema_that_changes_between_the_last_check_and_the_end_is_caught_by_the_fin
     assert_eq!(
         entries(cache.path()).len(),
         0,
-        "the default batch holds every unit until the end, and the end shows the change"
+        "a budget that is never reached holds every unit until the end, and the end shows the change"
     );
     assert!(run.stderr.contains("schema of ledger"), "{}", run.stderr);
 }
@@ -482,7 +485,7 @@ fn a_unit_that_finished_during_a_schema_check_waits_for_the_next_one() {
     let cache = TempDir::new().unwrap();
     let workspace = Built::with(
         "include_paths = [\"src\"]",
-        "[build.verify]\nbatch_units = 1",
+        "[build.verify]\nimaging_budget = 0",
     );
     workspace.cache_in(cache.path());
     workspace.workers("count = 2");
@@ -612,4 +615,182 @@ fn a_schema_check_that_fails_releases_nothing_and_stops_the_writes() {
         assert!(!holds(&cache, &format!("r/pkg/{later}.r")), "{later}");
     }
     assert!(run.stderr.contains("not cached"), "{}", run.stderr);
+}
+
+const SCHEMA_DELAY_MS: u128 = 100;
+
+/// A build of `units` small units on one worker, so that the schema checks
+/// come one after the other. Each image takes `SCHEMA_DELAY_MS`.
+fn long_build(cache: &TempDir, budget: u32, units: usize) -> Built {
+    let workspace = Built::with(
+        "include_paths = [\"src\"]",
+        &format!("[build.verify]\nimaging_budget = {budget}"),
+    );
+    workspace.cache_in(cache.path());
+    workspace.workers("count = 1");
+    workspace.databases(&["ledger"]);
+    workspace.set_environment(&schema_environment());
+    workspace.env("FAKE_AVM_COMPILE_MS", Some("50"));
+    workspace.env(
+        "FAKE_AVM_SCHEMA_DELAY_MS",
+        Some(&SCHEMA_DELAY_MS.to_string()),
+    );
+    workspace.env(
+        "FAKE_AVM_REQUEST_LOG",
+        Some(&workspace.path("requests.log").to_string_lossy()),
+    );
+    for n in 0..units {
+        workspace.write(&format!("src/u{n}.p"), "MESSAGE \"x\".\n");
+    }
+    workspace
+}
+
+/// When the fake got each `SCHEMA` request, in nanoseconds.
+fn schema_requests(workspace: &Built) -> Vec<u128> {
+    std::fs::read_to_string(workspace.path("requests.log"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, ' ');
+            let at = parts.next()?.parse().ok()?;
+            (parts.nth(1)? == "SCHEMA").then_some(at)
+        })
+        .collect()
+}
+
+fn report_of(workspace: &Built) -> Value {
+    let path = workspace.path("report.json");
+    let run = workspace.build_with(&["--report", &path.to_string_lossy()]);
+    run.succeeded();
+    serde_json::from_str(&workspace.read("report.json")).unwrap()
+}
+
+#[test]
+fn the_schema_checks_follow_the_budget_and_not_the_number_of_units() {
+    let cache = TempDir::new().unwrap();
+    let budget = 4;
+    let workspace = long_build(&cache, budget, 40);
+
+    let report = report_of(&workspace);
+
+    let rounds = report["cache"]["imaging_rounds"].as_u64().unwrap();
+    assert!(
+        rounds >= 2,
+        "40 units are far below the old trigger of 500, yet the budget allows several checks: {rounds}"
+    );
+    assert_eq!(entries(cache.path()).len(), 40);
+    let requests = schema_requests(&workspace);
+    assert!(
+        [rounds + 1, rounds + 2].contains(&(requests.len() as u64)),
+        "the probe, the checks and the final one, which a last check can make unnecessary: {requests:?}"
+    );
+    let image_ns = SCHEMA_DELAY_MS * 1_000_000;
+    for pair in requests[..requests.len() - 1].windows(2) {
+        assert!(
+            pair[1] - pair[0] >= (budget as u128 + 1) * image_ns * 9 / 10,
+            "two checks came closer than the budget allows: {requests:?}"
+        );
+    }
+}
+
+#[test]
+fn a_budget_that_the_build_never_reaches_leaves_only_the_final_check_and_it_releases_every_unit() {
+    let cache = TempDir::new().unwrap();
+    let workspace = long_build(&cache, 100_000, 40);
+
+    let report = report_of(&workspace);
+
+    assert_eq!(report["cache"]["imaging_rounds"], 0);
+    assert_eq!(
+        schema_requests(&workspace).len(),
+        2,
+        "the probe and the final check"
+    );
+    assert_eq!(entries(cache.path()).len(), 40);
+    assert_eq!(report["cache"]["offered"], 40);
+}
+
+#[test]
+fn a_schema_that_changes_during_a_long_build_drops_every_set_held_after_it() {
+    let cache = TempDir::new().unwrap();
+    let workspace = long_build(&cache, 4, 40);
+    workspace.env("FAKE_AVM_SCHEMA_CHANGE_AFTER", Some("20"));
+
+    let report = report_of(&workspace);
+
+    let stored = entries(cache.path()).len();
+    assert!(
+        stored > 0 && stored < 20,
+        "only sets released by a check before the change are stored: {stored}"
+    );
+    assert_eq!(
+        report["cache"]["schema_dropped"].as_u64().unwrap(),
+        40 - stored as u64
+    );
+}
+
+#[test]
+fn the_report_and_print_config_say_which_verification_runs() {
+    let cache = TempDir::new().unwrap();
+    let workspace = long_build(&cache, 7, 2);
+
+    let report = report_of(&workspace);
+
+    assert_eq!(
+        report["cache"]["verification"],
+        json!({ "mode": "developer", "reads": true, "imaging_budget": 7 })
+    );
+    let config = workspace.build_with(&["--print-config"]);
+    config.succeeded();
+    assert_eq!(
+        config_line(&config, "verification.mode"),
+        (
+            "\"developer\"".to_string(),
+            "environment OXABL_CACHE_MODE".to_string()
+        )
+    );
+    assert_eq!(config_line(&config, "build.verify.imaging_budget").0, "7");
+    workspace.env("OXABL_CACHE_MODE", Some("ci"));
+    let config = workspace.build_with(&["--print-config"]);
+    assert_eq!(config_line(&config, "verification.mode").0, "\"ci\"");
+    workspace.env("OXABL_CACHE_MODE", None);
+    workspace.env("CI", Some("1"));
+    let config = workspace.build_with(&["--print-config"]);
+    assert_eq!(
+        config_line(&config, "verification.mode"),
+        ("\"read-only\"".to_string(), "environment CI".to_string())
+    );
+}
+
+/// The value and the source of `key` in the output of `--print-config`.
+fn config_line(run: &common::built::Run, key: &str) -> (String, String) {
+    run.succeeded();
+    let prefix = format!("{key} = ");
+    let line = run
+        .stdout
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no {key} in\n{}", run.stdout));
+    let (setting, source) = line.rsplit_once("  # ").expect("a source comment");
+    (
+        setting[prefix.len()..].trim_end().to_string(),
+        source.to_string(),
+    )
+}
+
+#[test]
+fn the_old_batch_keys_still_load_and_the_build_says_they_are_ignored() {
+    let cache = TempDir::new().unwrap();
+    let workspace = Built::with(
+        "include_paths = [\"src\"]",
+        "[build.verify]\nbatch_units = 1\nbatch_interval = \"5s\"",
+    );
+    workspace.cache_in(cache.path());
+    workspace.write("src/a.p", "MESSAGE \"a\".\n");
+
+    let run = workspace.build();
+
+    run.succeeded();
+    assert!(run.stderr.contains("batch_units"), "{}", run.stderr);
+    assert!(holds(&cache, "r/a.r"));
 }

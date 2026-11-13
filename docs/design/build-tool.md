@@ -145,7 +145,7 @@ Each file holds one responsibility. Target: no file over about 400 lines.
 | `schedule` | `ready.rs`, `priority.rs`, `retry.rs` | Ready queue over the condensation, critical-path priority, retry pass. |
 | `worker` | `program.rs`, `command.rs`, `frame.rs`, `handshake.rs`, `session.rs`, `pool.rs`, `kill.rs` | Worker program, spawn, protocol, crash and cancel. |
 | `output` | `stage.rs`, `promote.rs`, `prune.rs` | Staging, atomic promotion, removal of orphan outputs. |
-| `verify` | `rehash.rs`, `reads.rs` | Verification before a cache write. |
+| `verify` | `policy.rs`, `rehash.rs`, `reads.rs`, `release.rs` | Verification before a cache write, and the policy that the cache mode sets for it. |
 | `cache` | `seam.rs`, `local.rs`, `layered.rs` | The `ArtifactCache` trait, the local cache, the local-then-remote chain. |
 | `lock.rs`, `events.rs`, `run.rs` | | The workspace lock, the event stream, the build orchestration. |
 

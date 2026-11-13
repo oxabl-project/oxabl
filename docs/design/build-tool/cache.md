@@ -278,13 +278,53 @@ with compiling.
 | Check | How | On failure |
 | --- | --- | --- |
 | V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. A `$DLC/...` file is hashed again by an idle worker (`HASH`), from the copy the AVM compiles with, not from the host mirror. Every hash must equal the hash the key used. | The unit is not written. |
-| V2 schema | The databases are imaged again before each upload batch is released (`[build.verify] batch_interval` and `batch_units`, default every 60 s or 500 units, and at the end), split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. | Every held and later unit of this build is not written. |
+| V2 schema | The databases are imaged again before held sets are released, split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). An imaging starts when a set waits and `[build.verify].imaging_budget` times the duration of the last imaging has passed since it ended ([pace](#the-pace-of-v2)), and once at the end. A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. | Every held and later unit of this build is not written. |
 | V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
 
 For a unit keyed by its [observed closure](compile-key.md#the-observed-closure), the closure
 of V1 and V3 is the observed one, with its class part. Before them, the build observes the compile again: when it
 read another closure than the key holds, the key does not describe the outputs, so the build
 stores the new closure and writes nothing.
+
+### The verification policy
+
+`verify::policy::Policy` is the one value that every check reads. A build makes it once, at
+the start, from the cache mode ([Trust](#trust)) and `[build.verify]`. `--print-config`
+shows the mode as `verification.mode`, next to the `[build.verify]` settings it reads, and
+the report holds the policy and the number of V2 imagings (`cache.verification`,
+`cache.imaging_rounds`).
+
+A cache that other people read is written only by a `ci` build: a `developer` build writes
+its own namespace, and only that developer reads it. So the modes differ in how much a
+wrong entry can cost, and the policy follows:
+
+| Mode | Policy |
+| --- | --- |
+| `ci` | Every check, always, at full strength. No setting lowers one: a setting that would, while the build still writes a cache, is refused with exit code 2, in `Policy::resolve` and nowhere else. No such setting exists yet. |
+| `developer` | The same checks as `ci` today. A cheaper form of a check (a sample, a reused pass) belongs here only, as a new field of the policy. |
+| `read-only` | Nothing is written, so nothing is verified. |
+
+`reads = false` and `xref_format = "text"` lower no check: they turn the cache write off, in
+every mode, and the build says so in a note. Only a check that runs while a cache is still
+written must be refused in `ci`.
+
+### The pace of V2
+
+An imaging costs every worker for its whole duration (3.6 s on 16 workers is about the work
+of 100 compiles on the measured databases), so the number of units is the wrong trigger:
+more workers make the same unit count a larger share of the build. A check starts when a
+set waits and `imaging_budget` times the duration of the last imaging has passed since that
+imaging ended. The imaging of the probe is the first one. With the default of 30 the checks
+cost at most about 1 / 31 of a build, for any database size and worker count. `0` starts a
+check whenever a set waits. The check at the end stays, and the rule that a unit is released
+only after an imaging that started after it finished does not change.
+
+`batch_units` and `batch_interval` are still read, so that old files load, and ignored; the
+build says so in a note. A longest wait (`batch_interval`) would force a check whatever it
+costs, and so break the bound. Waiting costs no memory worth a bound: a held set is a key and
+the paths of its files, never their bytes. The price is time and cancel. The uploads of held
+sets start at the release instead of streaming, so a `ci` build ends later by the upload of
+the last sets, and a build that is cancelled keeps the sets that no imaging has released.
 
 ### What V3 covers
 
@@ -324,8 +364,8 @@ build. With `reads = false`, oxabl writes nothing to any cache. The `XREF-XML` r
 `oxabl_effects`; slice 10 checks it against real compiler output.
 
 Verification costs one hash of each closure file per unit completion window (BLAKE3 on all
-cores, about 1 s for 500 MB of source), one schema imaging per upload batch (about 6 s with 8 workers on the measured databases), and one XREF read
-per unit.
+cores, about 1 s for 500 MB of source), one schema imaging per `imaging_budget` (about 6 s with 8 workers on the measured databases),
+and one XREF read per unit.
 
 ## Local cache
 

@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 
 use crate::cache::{NotStoredReason, Origin};
+use crate::verify::policy::Policy;
 use crate::worker::compile::CompilerMessage;
 
 /// The `format` number of the report document.
@@ -74,6 +75,11 @@ pub struct CacheReport {
     pub changed_inputs: usize,
     /// Units whose set was not offered: the schema check failed.
     pub schema_dropped: usize,
+    /// The verification of the build.
+    pub policy: Option<Policy>,
+    /// Schema checks that ended while the build compiled, the final one not
+    /// counted.
+    pub imaging_rounds: usize,
 }
 
 /// Where the setup time went, each phase in milliseconds. The refresh runs at
@@ -213,6 +219,16 @@ impl BuildReport {
                 }).collect::<Vec<_>>(),
                 "changed_inputs": self.cache.changed_inputs,
                 "schema_dropped": self.cache.schema_dropped,
+                "verification": self.cache.policy.map(|policy| {
+                    Value::Object(
+                        policy
+                            .entries()
+                            .into_iter()
+                            .map(|(name, value)| (name.to_string(), value))
+                            .collect(),
+                    )
+                }),
+                "imaging_rounds": self.cache.imaging_rounds,
             },
             "timing": {
                 "setup_ms": self.setup_ms,
