@@ -8,6 +8,7 @@ use super::{BuildRequest, Setup, ms};
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::compute::compute;
+use crate::key::image_store;
 use crate::lock::{LockOutcome, WorkspaceLock, holder, try_acquire_file, try_acquire_marked};
 use crate::output::{OutputLayout, ownership, stage};
 use crate::paths::PathMap;
@@ -129,7 +130,8 @@ pub fn prepare(
     request: &BuildRequest<'_>,
 ) -> Result<Prepared, BuildError> {
     let settings = &workspace.settings;
-    let spec = PoolSpec::from_config(workspace, request.workers, random::build_id())?;
+    let mut spec = PoolSpec::from_config(workspace, request.workers, random::build_id())?;
+    spec.images = Some(settings.state_dir.join(image_store::FILE));
     let layout = OutputLayout::lower(&workspace.config, &settings.root)?;
     let grace = workspace.config.build.workers.cancel_grace.0;
     let mut stopped = false;
@@ -185,6 +187,7 @@ pub fn prepare(
     let mut started = started?;
     setup.workers_ms = started.timing.workers_ms;
     setup.imaging_ms = started.timing.imaging_ms;
+    setup.raw_digest_ms = started.timing.raw_ms;
     let keying = Instant::now();
     let keyed = match compute(
         workspace,

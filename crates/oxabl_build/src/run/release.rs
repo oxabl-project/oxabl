@@ -15,8 +15,9 @@ pub fn push(state: &mut State<'_>, sets: Vec<ArtifactSetRef>) {
     }
 }
 
-/// The last schema check: the databases are imaged once more, and the sets
-/// still held go to the uploader when the schema is the one of the probe. A
+/// The last schema check: the databases are imaged once more (or a raw pass
+/// runs), and the sets still held go to the uploader when the schema is the
+/// one of the probe. A
 /// cancel, a store error or an empty pool releases nothing.
 pub fn finish(state: &mut State<'_>, pool: &mut Pool, end: PassEnd) {
     let Some(release) = state.release.as_mut() else {
@@ -28,7 +29,15 @@ pub fn finish(state: &mut State<'_>, pool: &mut Pool, end: PassEnd) {
         return;
     }
     let databases = release.databases();
-    let images = pool.image(&databases).map_err(|error| error.to_string());
-    let sets = release.conclude_with(images);
+    let sets = match release.is_raw() {
+        true => {
+            let digests = pool.raw_digests(&databases);
+            release.conclude_with_raw(digests)
+        }
+        false => {
+            let images = pool.image(&databases).map_err(|error| error.to_string());
+            release.conclude_with(images)
+        }
+    };
     push(state, sets);
 }

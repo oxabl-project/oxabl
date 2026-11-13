@@ -45,6 +45,17 @@ pub struct Faults {
     pub xref_log: Option<PathBuf>,
     /// Time each compile takes (`FAKE_AVM_COMPILE_MS`).
     pub compile_time: Option<Duration>,
+    /// Text that changes the raw digest and not the image (`FAKE_AVM_RAW_SALT`).
+    pub raw_salt: Option<String>,
+    /// While this file exists the raw digest differs (`FAKE_AVM_RAW_CHANGE_FILE`).
+    pub raw_change_file: Option<PathBuf>,
+    /// From this raw request of the process on, the raw digest differs
+    /// (`FAKE_AVM_RAW_CHANGE_FROM`).
+    pub raw_change_from: Option<usize>,
+    /// A broken raw digest answer (`FAKE_AVM_RAW_FAULT`).
+    pub raw_fault: Option<String>,
+    /// The share that `raw_fault` breaks (`FAKE_AVM_RAW_FAULT_SHARE`).
+    pub raw_fault_share: Option<usize>,
 }
 
 impl Faults {
@@ -95,6 +106,15 @@ impl Faults {
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map(Duration::from_millis),
+            raw_salt: std::env::var("FAKE_AVM_RAW_SALT").ok(),
+            raw_change_file: std::env::var_os("FAKE_AVM_RAW_CHANGE_FILE").map(PathBuf::from),
+            raw_change_from: std::env::var("FAKE_AVM_RAW_CHANGE_FROM")
+                .ok()
+                .and_then(|n| n.parse().ok()),
+            raw_fault: std::env::var("FAKE_AVM_RAW_FAULT").ok(),
+            raw_fault_share: std::env::var("FAKE_AVM_RAW_FAULT_SHARE")
+                .ok()
+                .and_then(|n| n.parse().ok()),
         }
     }
 }

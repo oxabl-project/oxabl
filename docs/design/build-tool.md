@@ -176,7 +176,10 @@ It then calls `oxabl_build` and reads the same store. It does not keep a second 
    ([worker-protocol.md](build-tool/worker-protocol.md#handshake)). Then the workers image
    every database together, each a share of the tables, and oxabl combines the shares into
    the schema identities ([worker-protocol.md](build-tool/worker-protocol.md#schema-image)).
-   Every build images every database. Check the
+   First a raw pass hashes the metaschema records of each database; a database whose raw
+   digest equals the one the last build stored with its image takes that image, and only the
+   others are imaged ([compile-key.md](build-tool/compile-key.md#the-raw-digest)).
+   `--probe` always images. Check the
    predefined names against `[workspace.preprocessor]`. A difference stops the build with
    exit code 2 and names the value on both sides.
 4. **Key and plan.** Compute the closure and keyability of every unit, including the class
@@ -630,10 +633,3 @@ These are out of scope. Each needs its own design note before code.
   and a proof that the reset clears the session cache.
 - **Windows workers.** Needs a check that the worker program reads stdin in batch mode on
   Windows.
-- **Cheaper trustworthy schema change test.** Every build images every database (6.2 s with
-  8 workers for 5 real databases, the largest with 1,229 entries). A test that could skip
-  imaging must change for every edit that changes the image. The database's cache stamp
-  does not: it missed a primary-index change, an added sequence and a dropped field
-  ([compile-key.md](build-tool/compile-key.md#database-fingerprints)). Per-table checks
-  (`_File._CRC` plus counts) miss labels and formats. A candidate must pass the same
-  scratch-database edit table, plus every excluded-field case, before it may skip imaging.

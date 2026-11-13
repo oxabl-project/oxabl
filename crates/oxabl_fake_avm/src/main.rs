@@ -32,6 +32,15 @@
 //! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private `XREF-XML`;
 //! `FAKE_AVM_XREF_LOG` receives the XREF mode of each compiled unit's request;
 //! `FAKE_AVM_COMPILE_MS=<n>` makes each compile take `n` milliseconds.
+//!
+//! The raw digest (`RAWDIGEST`) hashes the schema records, so it changes with
+//! the image. `FAKE_AVM_RAW_SALT=<text>` changes it and not the image, as an
+//! edit of a field that the image leaves out does; so does
+//! `FAKE_AVM_RAW_CHANGE_FILE=<path>` while the file exists, and
+//! `FAKE_AVM_RAW_CHANGE_FROM=<n>` from the `n`-th raw request of the process
+//! on. `FAKE_AVM_RAW_FAULT` breaks the answer of share
+//! `FAKE_AVM_RAW_FAULT_SHARE` (default 0): `missing-piece`, `extra-piece`,
+//! `bounds`, `bad-hash`, `bad-count`, `error` (an `ERROR` line) or `exit`.
 
 mod compile;
 mod faults;
@@ -108,6 +117,7 @@ fn main() {
         model,
         faults,
         compiler: compile::Compiler::default(),
+        raw_requests: 0,
     };
     let stdin = io::stdin();
     let mut input = BufReader::new(stdin.lock());

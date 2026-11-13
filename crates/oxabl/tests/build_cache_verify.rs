@@ -267,19 +267,26 @@ fn a_schema_that_changes_later_leaves_the_units_before_it_cached() {
 }
 
 #[test]
-fn a_schema_that_does_not_change_is_imaged_again_and_every_unit_is_cached() {
+fn a_schema_that_does_not_change_is_checked_again_and_every_unit_is_cached() {
     let cache = TempDir::new().unwrap();
     let workspace = class_chain(&cache);
 
     workspace.build().succeeded();
 
     assert_eq!(entries(cache.path()).len(), 4);
-    let images = workspace
-        .log_lines()
-        .into_iter()
-        .filter(|(_, what)| what.starts_with("schema ledger"))
-        .count();
-    assert!(images >= 2, "the probe and at least one check: {images}");
+    let count = |prefix: &str| {
+        workspace
+            .log_lines()
+            .into_iter()
+            .filter(|(_, what)| what.starts_with(prefix))
+            .count()
+    };
+    assert_eq!(count("schema ledger"), 1, "the start images the database");
+    let raw = count("raw ledger");
+    assert!(
+        raw >= 3,
+        "the raw passes before and after the start imaging, and at least one check: {raw}"
+    );
 }
 
 #[test]
@@ -645,7 +652,9 @@ fn long_build(cache: &TempDir, budget: u32, units: usize) -> Built {
     workspace
 }
 
-/// When the fake got each `SCHEMA` request, in nanoseconds.
+/// The requests that start a build or check the schema, `SCHEMA` and
+/// `RAWDIGEST`, by when the fake got each, in nanoseconds. The start of a
+/// first build makes three: a raw pass, the imaging and a raw pass.
 fn schema_requests(workspace: &Built) -> Vec<u128> {
     std::fs::read_to_string(workspace.path("requests.log"))
         .unwrap()
@@ -653,10 +662,13 @@ fn schema_requests(workspace: &Built) -> Vec<u128> {
         .filter_map(|line| {
             let mut parts = line.splitn(3, ' ');
             let at = parts.next()?.parse().ok()?;
-            (parts.nth(1)? == "SCHEMA").then_some(at)
+            matches!(parts.nth(1)?, "SCHEMA" | "RAWDIGEST").then_some(at)
         })
         .collect()
 }
+
+/// The requests that the start of a first build makes.
+const START_REQUESTS: usize = 3;
 
 fn report_of(workspace: &Built) -> Value {
     let path = workspace.path("report.json");
@@ -680,12 +692,13 @@ fn the_schema_checks_follow_the_budget_and_not_the_number_of_units() {
     );
     assert_eq!(entries(cache.path()).len(), 40);
     let requests = schema_requests(&workspace);
+    let start = START_REQUESTS as u64;
     assert!(
-        [rounds + 1, rounds + 2].contains(&(requests.len() as u64)),
-        "the probe, the checks and the final one, which a last check can make unnecessary: {requests:?}"
+        [rounds + start, rounds + start + 1].contains(&(requests.len() as u64)),
+        "the start, the checks and the final one, which a last check can make unnecessary: {requests:?}"
     );
     let image_ns = SCHEMA_DELAY_MS * 1_000_000;
-    for pair in requests[..requests.len() - 1].windows(2) {
+    for pair in requests[START_REQUESTS - 1..requests.len() - 1].windows(2) {
         assert!(
             pair[1] - pair[0] >= (budget as u128 + 1) * image_ns * 9 / 10,
             "two checks came closer than the budget allows: {requests:?}"
@@ -703,8 +716,8 @@ fn a_budget_that_the_build_never_reaches_leaves_only_the_final_check_and_it_rele
     assert_eq!(report["cache"]["imaging_rounds"], 0);
     assert_eq!(
         schema_requests(&workspace).len(),
-        2,
-        "the probe and the final check"
+        START_REQUESTS + 1,
+        "the start and the final check"
     );
     assert_eq!(entries(cache.path()).len(), 40);
     assert_eq!(report["cache"]["offered"], 40);

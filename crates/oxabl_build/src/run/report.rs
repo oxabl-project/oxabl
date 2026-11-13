@@ -82,6 +82,13 @@ pub struct CacheReport {
     pub imaging_rounds: usize,
 }
 
+/// How the schema images of a build came about, by logical database name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SchemaImages {
+    pub reused: Vec<String>,
+    pub imaged: Vec<String>,
+}
+
 /// Where the setup time went, each phase in milliseconds. The refresh runs at
 /// the same time as the worker start and the imaging.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -89,8 +96,10 @@ pub struct Setup {
     pub refresh_ms: u64,
     /// Starting the workers and their handshakes.
     pub workers_ms: u64,
-    /// Imaging every database.
+    /// Imaging the databases whose stored image could not be reused.
     pub imaging_ms: u64,
+    /// The raw digest passes that tell whether a stored image holds.
+    pub raw_digest_ms: u64,
     /// The keys, the `$DLC` hash phase included.
     pub keys_ms: u64,
     /// The `$DLC` hash phase alone.
@@ -116,6 +125,9 @@ pub struct BuildReport {
     pub setup_ms: u64,
     pub setup: Setup,
     pub elapsed_ms: u64,
+    /// The databases whose schema image the build reused, and the ones it
+    /// imaged.
+    pub schema_images: SchemaImages,
 }
 
 impl CacheReport {
@@ -237,11 +249,16 @@ impl BuildReport {
                     "refresh_ms": self.setup.refresh_ms,
                     "workers_ms": self.setup.workers_ms,
                     "imaging_ms": self.setup.imaging_ms,
+                    "raw_digest_ms": self.setup.raw_digest_ms,
                     "keys_ms": self.setup.keys_ms,
                     "dlc_hash_ms": self.setup.dlc_hash_ms,
                     "plan_ms": self.setup.plan_ms,
                     "prune_ms": self.setup.prune_ms,
                 },
+            },
+            "schema_images": {
+                "reused": self.schema_images.reused,
+                "imaged": self.schema_images.imaged,
             },
             "notes": self.notes,
             "units": units,

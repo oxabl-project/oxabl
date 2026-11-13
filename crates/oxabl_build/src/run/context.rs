@@ -33,6 +33,8 @@ pub struct Verify<'a> {
 pub struct Imaging {
     pub databases: Vec<String>,
     pub timeout: Duration,
+    /// A check is a raw pass, not an imaging.
+    pub raw: bool,
 }
 
 /// The keys to look up before anything compiles.

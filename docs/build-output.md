@@ -164,6 +164,7 @@ The report has more counts (`not_run`, `tainted`, `up_to_date`).
   "exit": 1,
   "format": 1,
   "notes": [],
+  "schema_images": { "imaged": ["ledger"], "reused": [] },
   "store": { "generation": 1 },
   "summary": {
     "compiled": 3,
@@ -176,7 +177,7 @@ The report has more counts (`not_run`, `tainted`, `up_to_date`).
   },
   "timing": {
     "elapsed_ms": 275,
-    "setup": { "dlc_hash_ms": 12, "imaging_ms": 40, "keys_ms": 30, "plan_ms": 5, "prune_ms": 4, "refresh_ms": 120, "workers_ms": 150 },
+    "setup": { "dlc_hash_ms": 12, "imaging_ms": 40, "keys_ms": 30, "plan_ms": 5, "prune_ms": 4, "raw_digest_ms": 9, "refresh_ms": 120, "workers_ms": 150 },
     "setup_ms": 249
   },
   "units": [
@@ -206,7 +207,8 @@ The report has more counts (`not_run`, `tainted`, `up_to_date`).
 | `environment` | The identity of the compile environment (64 hex characters). |
 | `store.generation` | The generation of the graph store after the build. |
 | `summary` | The counts: `compiled`, `fetched`, `failed`, `skipped`, `not_run` (units that did not run because of `--fail-fast` or a cancel), `tainted` (units that compiled after a unit in their closure failed), `up_to_date` (units that needed no work). |
-| `timing` | `setup_ms` is the time before the first compile (refresh, probe, keys). `elapsed_ms` is the total. `setup` splits `setup_ms` into phases, in milliseconds: `refresh_ms` (the refresh of the graph), `workers_ms` (the start and the handshake of the workers) and `imaging_ms` (the schema image of every database), `keys_ms` (the keys, with the `$DLC` hash phase, which `dlc_hash_ms` gives alone), `plan_ms`, and `prune_ms` (the pruning of the output directories). The refresh runs at the same time as the worker start and the imaging, so the phases do not add up to `setup_ms`. |
+| `timing` | `setup_ms` is the time before the first compile (refresh, probe, keys). `elapsed_ms` is the total. `setup` splits `setup_ms` into phases, in milliseconds: `refresh_ms` (the refresh of the graph), `workers_ms` (the start and the handshake of the workers), `raw_digest_ms` (the raw digest passes that tell whether the schema image of the last build still holds) and `imaging_ms` (the schema image of the databases whose stored image did not hold; `0` when every image was reused), `keys_ms` (the keys, with the `$DLC` hash phase, which `dlc_hash_ms` gives alone), `plan_ms`, and `prune_ms` (the pruning of the output directories). The refresh runs at the same time as the worker start and the imaging, so the phases do not add up to `setup_ms`. |
+| `schema_images` | The logical names of the databases whose schema image the build `reused` from the last build (the raw digest was equal) and the ones it `imaged`. |
 | `notes` | Warnings of the build, as text. Oxabl prints the same warnings on stderr. |
 | `cache` | What the caches did (see below). |
 | `units` | One entry for each unit that compiled, was fetched, failed, was skipped or did not run. Units that were up to date are not listed. |

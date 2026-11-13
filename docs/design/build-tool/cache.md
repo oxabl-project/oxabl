@@ -278,7 +278,7 @@ with compiling.
 | Check | How | On failure |
 | --- | --- | --- |
 | V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. A `$DLC/...` file is hashed again by an idle worker (`HASH`), from the copy the AVM compiles with, not from the host mirror. Every hash must equal the hash the key used. | The unit is not written. |
-| V2 schema | The databases are imaged again before held sets are released, split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). An imaging starts when a set waits and `[build.verify].imaging_budget` times the duration of the last imaging has passed since it ended ([pace](#the-pace-of-v2)), and once at the end. A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. | Every held and later unit of this build is not written. |
+| V2 schema | The databases are imaged again before held sets are released, split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). An imaging starts when a set waits and `[build.verify].imaging_budget` times the duration of the last imaging has passed since it ended ([pace](#the-pace-of-v2)), and once at the end. A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. When the raw digest pins the image of every database ([compile-key.md](compile-key.md#the-raw-digest)), each check is a raw pass in place of the imaging, in every cache mode: an equal digest means equal metaschema records, so the identities of the probe. A changed digest is a changed schema; the build does not image again. | Every held and later unit of this build is not written. |
 | V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
 
 For a unit keyed by its [observed closure](compile-key.md#the-observed-closure), the closure
@@ -314,7 +314,9 @@ An imaging costs every worker for its whole duration (3.6 s on 16 workers is abo
 of 100 compiles on the measured databases), so the number of units is the wrong trigger:
 more workers make the same unit count a larger share of the build. A check starts when a
 set waits and `imaging_budget` times the duration of the last imaging has passed since that
-imaging ended. The imaging of the probe is the first one. With the default of 30 the checks
+imaging ended. The imaging of the probe is the first one. When the checks are raw passes,
+the duration of a raw pass takes the place of the imaging (the raw passes of the start are
+the first one), so the checks come more often at the same share of the build. With the default of 30 the checks
 cost at most about 1 / 31 of a build, for any database size and worker count. `0` starts a
 check whenever a set waits. The check at the end stays, and the rule that a unit is released
 only after an imaging that started after it finished does not change.

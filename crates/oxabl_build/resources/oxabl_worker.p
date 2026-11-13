@@ -43,6 +43,21 @@ DEFINE TEMP-TABLE ttMeta NO-UNDO
 DEFINE VARIABLE gcDbRKey   AS CHARACTER NO-UNDO.
 DEFINE VARIABLE gcDbWKey   AS CHARACTER NO-UNDO.
 
+/* The raw digest: records go into gmChunk as they are stored, and the SHA-256
+   of a full chunk starts the next one. ttCut holds the record ids of the
+   _File rows, which give the bounds of the pieces. */
+DEFINE VARIABLE gmChunk    AS MEMPTR    NO-UNDO.
+DEFINE VARIABLE giChunk    AS INTEGER   NO-UNDO INITIAL 1048576.
+DEFINE VARIABLE giUsed     AS INTEGER   NO-UNDO.
+DEFINE VARIABLE grSum      AS RAW       NO-UNDO.
+DEFINE VARIABLE giRawRows  AS INTEGER   NO-UNDO.
+DEFINE VARIABLE ghRawFld   AS HANDLE    NO-UNDO.
+DEFINE TEMP-TABLE ttRaw NO-UNDO
+    FIELD rRec AS RAW.
+DEFINE TEMP-TABLE ttCut NO-UNDO
+    FIELD iRecid AS INT64
+    INDEX ixRecid IS UNIQUE PRIMARY iRecid.
+
 DEFINE STREAM sIn.
 DEFINE STREAM sFile.
 
@@ -750,6 +765,184 @@ PROCEDURE schemaImage:
                      + gcTab + intText(giTables)).
 END PROCEDURE.
 
+/* Ends a chunk of the raw digest: the SHA-256 of its used bytes becomes the
+   first bytes of the next chunk. */
+PROCEDURE rawFlush:
+    DEFINE VARIABLE mPart AS MEMPTR NO-UNDO.
+
+    IF giUsed = giChunk THEN grSum = MESSAGE-DIGEST("SHA-256", gmChunk).
+    ELSE DO:
+        SET-SIZE(mPart) = MAX(giUsed, 1).
+        IF giUsed > 0 THEN COPY-LOB FROM OBJECT gmChunk FOR giUsed TO OBJECT mPart.
+        ELSE PUT-BYTE(mPart, 1) = 0.
+        grSum = MESSAGE-DIGEST("SHA-256", mPart).
+        SET-SIZE(mPart) = 0.
+    END.
+    PUT-BYTES(gmChunk, 1) = grSum.
+    giUsed = LENGTH(grSum, "RAW").
+END PROCEDURE.
+
+/* Adds every row of the metaschema table of kind piKind that matches pcWhere
+   to the raw digest: the kind (1 byte), the record id (8 bytes), the length
+   (4 bytes) and the bytes of the record as the database stores it, big-endian.
+   With plCut it also notes the record id in ttCut; with plRaw false it only
+   does that. LENGTH(x, "RAW") counts bytes; LENGTH(x) counts characters in a
+   UTF-8 session and would cut records. */
+PROCEDURE rawScan:
+    DEFINE INPUT PARAMETER piKind  AS INTEGER   NO-UNDO.
+    DEFINE INPUT PARAMETER pcWhere AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER plRaw   AS LOGICAL   NO-UNDO.
+    DEFINE INPUT PARAMETER plCut   AS LOGICAL   NO-UNDO.
+
+    DEFINE VARIABLE hBuf AS HANDLE  NO-UNDO.
+    DEFINE VARIABLE rRec AS RAW     NO-UNDO.
+    DEFINE VARIABLE iLen AS INTEGER NO-UNDO.
+    DEFINE VARIABLE lOk  AS LOGICAL NO-UNDO.
+
+    hBuf = ghBuf[piKind].
+    ghQuery[piKind]:QUERY-PREPARE("FOR EACH bK" + STRING(piKind) + " " + pcWhere + " NO-LOCK").
+    ghQuery[piKind]:QUERY-OPEN().
+    REPEAT:
+        ghQuery[piKind]:GET-NEXT(NO-LOCK).
+        IF ghQuery[piKind]:QUERY-OFF-END THEN LEAVE.
+        IF plCut THEN DO:
+            CREATE ttCut.
+            ttCut.iRecid = INT64(hBuf:RECID).
+        END.
+        IF NOT plRaw THEN NEXT.
+        lOk = hBuf:RAW-TRANSFER(TRUE, ghRawFld) NO-ERROR.
+        IF ERROR-STATUS:ERROR OR lOk <> TRUE THEN DO:
+            RUN failWith("cannot read a record of " + hBuf:TABLE + " as raw bytes").
+            LEAVE.
+        END.
+        rRec = ttRaw.rRec.
+        iLen = LENGTH(rRec, "RAW").
+        IF giUsed + iLen + 13 > giChunk THEN RUN rawFlush.
+        PUT-BYTE(gmChunk, giUsed + 1) = piKind.
+        PUT-INT64(gmChunk, giUsed + 2) = INT64(hBuf:RECID).
+        PUT-LONG(gmChunk, giUsed + 10) = iLen.
+        PUT-BYTES(gmChunk, giUsed + 14) = rRec.
+        giUsed = giUsed + 13 + iLen.
+        giRawRows = giRawRows + 1.
+    END.
+    ghQuery[piKind]:QUERY-CLOSE().
+END PROCEDURE.
+
+/* Ends one piece of the raw digest with a RAW line. */
+PROCEDURE rawSend:
+    DEFINE INPUT PARAMETER pcPiece AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcLow   AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcHigh  AS CHARACTER NO-UNDO.
+
+    DEFINE VARIABLE cSha AS CHARACTER NO-UNDO.
+
+    RUN rawFlush.
+    cSha = LOWER(HEX-ENCODE(grSum)).
+    RUN sendLine("RAW" + gcTab + toWire(gcLdb) + gcTab + pcPiece + gcTab + pcLow + gcTab + pcHigh
+                 + gcTab + intText(giRawRows) + gcTab + cSha).
+    giEntries = giEntries + 1.
+    giUsed = 0.
+    giRawRows = 0.
+END PROCEDURE.
+
+/* The share of the raw digest of one connected database that worker piPart of
+   piParts makes. The digest covers every row of the eight metaschema tables
+   of the image, user tables or not, as raw bytes. The rows of _File, _Sequence
+   and _Db are the piece `head`, which part 0 makes. The other rows are split
+   into piBuckets pieces by the record id of the _File or _Index row they
+   belong to; the bounds are record ids of _File rows, so every worker finds
+   the same ones, and a piece does not depend on the number of workers. Worker
+   piPart makes the pieces whose number is piPart modulo piParts. One RAW line
+   for each piece, with its bounds, then RAW-END with the number of pieces,
+   the number of _File rows and the physical name of the database. */
+PROCEDURE rawDigest:
+    DEFINE INPUT PARAMETER pcLdb     AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER piPart    AS INTEGER   NO-UNDO.
+    DEFINE INPUT PARAMETER piParts   AS INTEGER   NO-UNDO.
+    DEFINE INPUT PARAMETER piBuckets AS INTEGER   NO-UNDO.
+
+    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE k      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE iFiles AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE iNext  AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE cCuts  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cLow   AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cHigh  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cName  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cWhere AS CHARACTER NO-UNDO.
+
+    IF NOT CONNECTED(pcLdb) THEN DO:
+        RUN failWith("database " + pcLdb + " is not connected").
+        RETURN.
+    END.
+    IF piParts < 1 OR piPart < 0 OR piPart >= piParts OR piBuckets < 1 THEN DO:
+        RUN failWith("bad share " + intText(piPart) + " of " + intText(piParts)
+                     + " in " + intText(piBuckets) + " pieces").
+        RETURN.
+    END.
+    gcLdb = pcLdb.
+    giEntries = 0.
+    giUsed = 0.
+    giRawRows = 0.
+    IF GET-SIZE(gmChunk) = 0 THEN DO:
+        SET-SIZE(gmChunk) = giChunk.
+        SET-BYTE-ORDER(gmChunk) = BIG-ENDIAN.
+        CREATE ttRaw.
+        ghRawFld = BUFFER ttRaw:BUFFER-FIELD("rRec").
+    END.
+    EMPTY TEMP-TABLE ttCut.
+    RUN openKinds.
+    RUN rawScan(1, "", piPart = 0, TRUE).
+    IF piPart = 0 AND NOT glQuit THEN DO:
+        RUN rawScan(7, "", TRUE, FALSE).
+        IF NOT glQuit THEN RUN rawScan(8, "", TRUE, FALSE).
+        IF NOT glQuit THEN RUN rawSend("head", "-", "-").
+    END.
+    /* Bound i, for i from 1 to piBuckets - 1, is the record id at place
+       i * files / buckets of the sorted record ids; 0 when there are fewer
+       files than buckets. */
+    FOR EACH ttCut:
+        iFiles = iFiles + 1.
+    END.
+    i = 0.
+    iNext = 1.
+    FOR EACH ttCut BY ttCut.iRecid:
+        DO WHILE iNext < piBuckets AND INTEGER(TRUNCATE(iNext * iFiles / piBuckets, 0)) = i:
+            cCuts = cCuts + (IF cCuts = "" THEN "" ELSE ",") + STRING(ttCut.iRecid).
+            iNext = iNext + 1.
+        END.
+        i = i + 1.
+    END.
+    DO WHILE iNext < piBuckets:
+        cCuts = cCuts + (IF cCuts = "" THEN "" ELSE ",") + "0".
+        iNext = iNext + 1.
+    END.
+    DO i = 0 TO piBuckets - 1:
+        IF glQuit THEN LEAVE.
+        IF i MODULO piParts <> piPart THEN NEXT.
+        cLow = (IF i = 0 THEN "-" ELSE ENTRY(i, cCuts)).
+        cHigh = (IF i = piBuckets - 1 THEN "-" ELSE ENTRY(i + 1, cCuts)).
+        DO k = 2 TO 6:
+            IF glQuit THEN LEAVE.
+            cName = "bK" + STRING(k) + (IF k = 4 THEN "._Index-recid" ELSE "._File-recid").
+            IF cLow = "-" AND cHigh = "-" THEN cWhere = "".
+            ELSE cWhere = "WHERE " + (IF cLow = "-" THEN "" ELSE cName + " >= " + cLow)
+                        + (IF cLow <> "-" AND cHigh <> "-" THEN " AND " ELSE "")
+                        + (IF cHigh = "-" THEN " AND " + cName + " <> ?" ELSE cName + " < " + cHigh).
+            RUN rawScan(k, cWhere, TRUE, FALSE).
+            /* A row that names no record is in the first piece. */
+            IF i = 0 AND cWhere <> "" AND NOT glQuit THEN
+                RUN rawScan(k, "WHERE " + cName + " = ?", TRUE, FALSE).
+        END.
+        IF NOT glQuit THEN RUN rawSend(intText(i), cLow, cHigh).
+    END.
+    RUN closeKinds.
+    EMPTY TEMP-TABLE ttCut.
+    IF NOT glQuit THEN
+        RUN sendLine("RAW-END" + gcTab + toWire(pcLdb) + gcTab + intText(giEntries)
+                     + gcTab + intText(iFiles) + gcTab + toWire(PDBNAME(pcLdb))).
+END PROCEDURE.
+
 /* A cheap description of a connected database: its GUID and the stamp of its
    last schema change. The stamp has a resolution of one second and not every
    schema change moves it, so it only tells workers apart. */
@@ -1195,6 +1388,11 @@ PROCEDURE dispatch:
             RUN schemaImage(fromWire(ENTRY(3, pcLine, gcTab)),
                             INTEGER(fromWire(ENTRY(4, pcLine, gcTab))),
                             INTEGER(fromWire(ENTRY(5, pcLine, gcTab)))).
+        WHEN "RAWDIGEST" THEN
+            RUN rawDigest(fromWire(ENTRY(3, pcLine, gcTab)),
+                          INTEGER(fromWire(ENTRY(4, pcLine, gcTab))),
+                          INTEGER(fromWire(ENTRY(5, pcLine, gcTab))),
+                          INTEGER(fromWire(ENTRY(6, pcLine, gcTab)))).
         WHEN "FINGERPRINT" THEN RUN fingerprint(fromWire(ENTRY(3, pcLine, gcTab))).
         WHEN "HASH" THEN RUN hashOne(fromWire(ENTRY(3, pcLine, gcTab)), fromWire(ENTRY(4, pcLine, gcTab))).
         WHEN "HASHSET" THEN RUN hashSet(fromWire(ENTRY(3, pcLine, gcTab)), INTEGER(fromWire(ENTRY(4, pcLine, gcTab)))).

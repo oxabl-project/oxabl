@@ -110,6 +110,7 @@ Oxabl to the worker:
 | --- | --- | --- |
 | `HELLO` | `version` `token` | Start of the session. `version` is `1`. `token` is 32 random hex digits. |
 | `SCHEMA` | `ldb` `part` `parts` | Image the share `part` (from 0) of `parts` of one database ([Schema image](#schema-image)). |
+| `RAWDIGEST` | `ldb` `part` `parts` `buckets` | Make the share `part` (from 0) of `parts` of the raw digest of one database, in `buckets` pieces ([Raw digest](#raw-digest)). |
 | `FINGERPRINT` | `ldb` | Report the fingerprint of one database. |
 | `HASH` | `id` `path` | Hash one worker-side file ([Hashing worker-side files](#hashing-worker-side-files)). |
 | `HASHSET` | `id` `count` | Hash a set of worker-side files and answer with one digest of the list. `count` `PATH` lines follow. |
@@ -131,6 +132,8 @@ The worker to oxabl:
 | `ENV-END` | `count` | End of the environment; `count` is the number of `ENV` and `DB` lines. |
 | `SENT` | `ldb` `kind` `name` `records` `sha256` | One schema image entry: its kind (`db`, `system`, `table`, `sequence`), its name (empty for `db` and `system`), its record count and the lower-case hex SHA-256 of its canonical text ([compile-key.md](compile-key.md#schema-identity)). |
 | `SCHEMA-END` | `ldb` `entries` `tables` | End of a share: the number of `SENT` lines of this share, and the number of user tables of the whole database as this worker counted them. |
+| `RAW` | `ldb` `piece` `low` `high` `rows` `sha256` | One piece of a raw digest: `head` or its number, the record ids that bound it (`-` for an open end), its row count and the lower-case hex SHA-256 of its records. |
+| `RAW-END` | `ldb` `pieces` `files` `physical` | End of a raw digest share: the number of `RAW` lines, the number of `_File` rows and `PDBNAME` of the database. |
 | `FPRINT` | `ldb` `guid` `stamp` | `_Db._Db-guid` and `_DbStatus._DbStatus-CacheStamp`, each `?` when unavailable. |
 | `HASHED` | `id` `kind` `size` `sha256` | `kind` is `file`, `dir` or `none`; `size` and `sha256` (lower-case hex) are `-` unless `kind` is `file`. |
 | `HASHSET-DONE` | `id` `sha256` | The digest of a `HASHSET` list. |
@@ -264,7 +267,8 @@ own, so a worker that oxabl gave up on can never write into a stage that oxabl s
 
 ## Schema image
 
-After the handshake, the pool images every database, **split across all workers**. The
+After the handshake, the pool images every database whose stored image the raw digest
+does not confirm ([Raw digest](#raw-digest)), **split across all workers**. The
 entry texts, their order and the excluded fields are defined in
 [compile-key.md](compile-key.md#schema-identity).
 
@@ -292,8 +296,9 @@ entry texts, their order and the excluded fields are defined in
   A broken line (a bad hash, an entry of another database, a wrong count) is a protocol
   error, and the worker is lost. Shares that do not add up stop the build with exit code 3:
   `cannot image the databases`. The identity does not depend on the split.
-- **Every build images every database.** The fingerprint is never trusted to skip it
-  ([compile-key.md](compile-key.md#database-fingerprints)).
+- **A build images a database only when the raw digest differs** from the one stored with
+  its last image ([Raw digest](#raw-digest)). The fingerprint is never trusted to skip it
+  ([compile-key.md](compile-key.md#database-fingerprints)). The probe always images.
 - **Cost, measured on OpenEdge 12.8.9** with 5 databases, the largest with 1,229 entries
   (starting the workers, the handshake and the imaging together):
 
@@ -306,6 +311,29 @@ entry texts, their order and the excluded fields are defined in
   About 3 s of that is starting the AVM, compiling the worker program and connecting the
   databases; the rest is the largest table's share. More than 8 workers helps little. The
   identity is equal for 1, 4 and 8 workers.
+
+## Raw digest
+
+The raw digest tells whether the image that the last build stored still holds; what it
+hashes and how oxabl uses it are in [compile-key.md](compile-key.md#the-raw-digest).
+
+- **Shares.** Oxabl sends `RAWDIGEST <ldb> <p> <N> 16` to each worker `p` of
+  `N = min(ready workers, 8)`, for every database. The worker reads every row of the eight
+  metaschema tables with `NO-LOCK` through dynamic buffers. Share 0 makes the piece `head`
+  (every `_File`, `_Sequence` and `_Db` row). Each worker makes the numbered pieces `i` with
+  `i mod N = p`; every worker first scans `_File` for the bounds, so it needs no word from
+  the others.
+- **Answer.** One `RAW` line per piece, then `RAW-END <ldb> <pieces> <files> <physical>`.
+  Only digests cross the pipe; the records stay in the worker.
+- **Combine.** Oxabl fails the pass unless `head` and every piece from 0 to 15 are there
+  exactly once, `head` comes from share 0, piece 0 starts and piece 15 ends open and the
+  bounds of neighbours are equal, and every share reports the same `files` and `physical`.
+  A broken line (a bad hash or bound, a piece of another database, a count that differs from
+  `RAW-END`) is a protocol error: the worker is out of step and oxabl starts another in its
+  place. A failed pass is never "unchanged": the databases are imaged.
+- **Cost, measured on OpenEdge 12.8.9** with 5 databases and 59,947 metaschema rows: 372 ms
+  with 1 worker, 245 ms with 2, 152 ms with 8 and 188 ms with 16, against 3.6 s for the
+  imaging with 16 workers. 16 pieces cost less than 32 or 64.
 
 ## Hashing worker-side files
 

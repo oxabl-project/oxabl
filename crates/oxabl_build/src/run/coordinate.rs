@@ -193,13 +193,10 @@ impl<'a, 'b> Coordinator<'a, 'b> {
             return;
         }
         if release.wants_round(Instant::now()) {
-            let round = release.begin(self.workers);
-            for part in 0..self.workers {
-                self.shared.queue.push_task(Task {
-                    round,
-                    part,
-                    parts: self.workers,
-                });
+            let parts = release.parts(self.workers);
+            let round = release.begin(parts);
+            for part in 0..parts {
+                self.shared.queue.push_task(Task { round, part, parts });
             }
         }
     }

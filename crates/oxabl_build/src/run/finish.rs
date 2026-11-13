@@ -112,5 +112,6 @@ pub fn report(
         setup_ms: facts.setup_ms,
         setup: facts.setup,
         elapsed_ms: facts.elapsed_ms,
+        schema_images: Default::default(),
     }
 }
