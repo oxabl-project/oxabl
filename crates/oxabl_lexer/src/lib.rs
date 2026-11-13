@@ -161,6 +161,9 @@ impl<'a> Lexer<'a> {
                         // character. Before whitespace it contributes no token;
                         // the whitespace remains a separator.
                         self.advance();
+                    } else if c == '~' {
+                        // A stray tilde is skipped like whitespace, so no token starts on it.
+                        self.advance();
                     } else {
                         break; // not followed by newline — stop, let read_next_kind handle it
                     }
@@ -1813,6 +1816,22 @@ end."#;
         // var, int, x, =, ?, ., eof
         assert_eq!(tokens.len(), 7);
         assert_token(&tokens[4], Kind::Question, 12, 13, TokenValue::None, source);
+    }
+
+    #[test]
+    fn stray_tilde_starts_no_token() {
+        for (source, kind) in [
+            ("~&x", Kind::Comment),
+            ("~x", Kind::Identifier),
+            ("a ~ b", Kind::Identifier),
+        ] {
+            let tokens = collect_tokens(source);
+            let token = tokens.iter().find(|t| t.kind == kind).unwrap();
+            assert!(
+                !source[token.start..].starts_with('~'),
+                "{source}: a token starts on the tilde"
+            );
+        }
     }
 
     #[test]
