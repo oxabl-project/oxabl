@@ -4,7 +4,7 @@ use libfuzzer_sys::fuzz_target;
 use oxabl_pipeline::{OutlineSymbol, outline};
 
 // The rules of docs/design/document-outline.md, "Rules that every outline obeys".
-fn check(source: &str, symbols: &[OutlineSymbol], parent: Option<(u32, u32)>) {
+fn check_symbols(source: &str, symbols: &[OutlineSymbol], parent: Option<(u32, u32)>) {
     let len = source.len();
     let mut previous_end = None;
     for s in symbols {
@@ -37,20 +37,24 @@ fn check(source: &str, symbols: &[OutlineSymbol], parent: Option<(u32, u32)>) {
             "rule 4: bad name {:?}: {s:?}",
             s.name
         );
-        check(source, &s.children, Some((a, b)));
+        check_symbols(source, &s.children, Some((a, b)));
     }
 }
 
 // The outline never panics, obeys the rules and is the same on a second run.
 fuzz_target!(|data: &[u8]| {
+    oxabl_fuzz::on_analysis_stack(data, check);
+});
+
+fn check(data: &[u8]) {
     let source = String::from_utf8_lossy(data);
     let first = match outline(&source) {
         Ok(symbols) => symbols,
         Err(p) => panic!("rule 1: outline panicked: {p:?}"),
     };
-    check(&source, &first, None);
+    check_symbols(&source, &first, None);
     match outline(&source) {
         Ok(second) => assert_eq!(first, second, "rule 5: the outline is not deterministic"),
         Err(p) => panic!("rule 1: outline panicked on the second run: {p:?}"),
     }
-});
+}
