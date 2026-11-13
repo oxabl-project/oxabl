@@ -407,7 +407,10 @@ fn document_symbol_fails_the_request_when_the_outline_panics() {
         assert!(now < deadline, "no documentSymbol response arrived");
         match client.receiver.recv_timeout(deadline - now) {
             Ok(Message::Response(resp)) if resp.id == RequestId::from(7) => {
-                let error = resp.error.as_ref().expect("an outline panic must be an error");
+                let error = resp
+                    .error
+                    .as_ref()
+                    .expect("an outline panic must be an error");
                 assert_eq!(error.code, lsp_server::ErrorCode::RequestFailed as i32);
                 assert!(resp.result.is_none(), "no result with the error: {resp:?}");
                 break;
