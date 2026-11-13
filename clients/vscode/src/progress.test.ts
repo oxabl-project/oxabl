@@ -27,14 +27,25 @@ describe("BuildProgress", () => {
     );
     expect(p.done).toBe(2);
     expect(p.failedNow).toBe(0);
-    expect(p.cachedPercent).toBe(50);
+    expect(p.cachedPercent).toBe(60);
   });
 
-  it("shows no percent before the first unit", () => {
+  it("shows the workspace share that needs no compile from the start", () => {
     const p = new BuildProgress();
     apply(p, { event: "build-started", rebuild: 3, units: 5 });
+    expect(p.cachedPercent).toBe(40);
+    expect(renderStatus([{ phase: "building", progress: p }])?.text).toBe("oxabl 0/3 · 40% cached");
+  });
+
+  it("shows 99%, not 100%, while one unit of a large workspace compiles", () => {
+    const p = new BuildProgress();
+    apply(p, { event: "build-started", rebuild: 1, units: 10_300 }, { event: "unit-started", path: "a.p" });
+    expect(renderStatus([{ phase: "building", progress: p }])?.text).toBe("oxabl 0/1 · 99% cached");
+  });
+
+  it("shows no percent before build-started", () => {
+    const p = new BuildProgress();
     expect(p.cachedPercent).toBeUndefined();
-    expect(renderStatus([{ phase: "building", progress: p }])?.text).toBe("oxabl 0/3");
   });
 
   it("shows progress and the cache hit rate", () => {
@@ -180,7 +191,7 @@ describe("the building tooltip", () => {
     const tooltip = renderStatus([{ phase: "building", progress: p, unkeyed: 3 }])?.tooltip ?? "";
     expect(tooltip).toContain("This build: 2,578 units to rebuild, 1 done");
     expect(tooltip).toContain("from the remote cache: 1");
-    expect(tooltip).toContain("Workspace: 10,300 units, 7,722 up to date (75%), not rebuilt");
+    expect(tooltip).toContain("Workspace: 10,300 units, 7,722 up to date, 1 from a cache (74% need no compile)");
     expect(tooltip).toContain("3 units have no compile key");
   });
 });

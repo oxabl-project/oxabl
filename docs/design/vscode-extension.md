@@ -341,13 +341,14 @@ scenario `build-open` checks that it stays one element with one animation).
 The other item has the text (`preparing`, then `done/total · N% cached`, then a check
 mark for 3 s, an error count that stays until the next success, a warning
 with the first line of stderr, or "running elsewhere"). A unit counts once,
-also when the retry pass compiles it again, and the hit rate is the units from
-a cache divided by the units done. The hit rate leaves out the units that are
-up to date (`units - rebuild` of `build-started`): in one workspace most units
-are, and a cache hit needs a key that this workspace has not built (another
-branch or checkout, or the remote cache). So the tooltip shows this build and
-the workspace on separate lines, and the notification says "N of M units
-rebuilt".
+also when the retry pass compiles it again. The percent is the share of the
+workspace that needs no compile: the units up to date (`units - rebuild` of
+`build-started`) plus the units a cache gave, over `units`, rounded down so
+that 100% means nothing compiles. It is not the hit rate of this build: after
+a save the build rebuilds only the edited units, which no cache can hold, so
+that rate is 0% at almost every build. The tooltip shows this build (local and
+remote cache, compiled, failed) and the workspace on separate lines, and the
+notification says "N of M units rebuilt" with the hit rate of the build.
 
 Each build passes `--report <global storage>/reports/<hash of root>.json`
 (or uses the `--report` of `oxabl.build.args`). After exit 0 or 1 the
