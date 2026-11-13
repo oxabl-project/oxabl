@@ -17,9 +17,9 @@ use serde_json::{Value, json};
 /// (`docs/design/build-tool/compile-key.md`), taken from the document and not
 /// from this code. `example_environment` holds the document's inputs.
 const EXAMPLE_ENVIRONMENT_IDENTITY: &str =
-    "88379412ea5b9c91d75b53fed5c30c3ed18048293664ed0ec0deff2ec441a079";
+    "34547a66f9075660bd5e6e6985e9299a0bd03a1902e386fb2d63957cd8bbf6ad";
 const EXAMPLE_SCHEMA_IDENTITY: &str =
-    "8a495ef6b5c1d99915758a8773441ab7adf1b6abe407bf19c1a4f097ac62a199";
+    "2bfdee56efffdb1bf4d2a592a2e875372e1c2f2373993480cc16030af2c0d05c";
 
 fn example_schema_identity() -> String {
     EXAMPLE_SCHEMA_IDENTITY.to_string()
@@ -34,6 +34,7 @@ fn example_environment() -> Value {
             "aliases": ["dictdb"],
             "schema": [
                 ["db", "_db-coll-name=ICU-UCA", "_db-type=PROGRESS", "_db-xl-name=UTF-8"],
+                ["system-table", "_Connect", "_crc=28084"],
                 ["table", "customer", "_can-read=*", "_crc=12345", "_dump-name=customer",
                  "_prime-index=index/customer/custnum"],
                 ["field", "customer", "custnum", "_data-type=integer", "_decimals=?",
@@ -498,7 +499,56 @@ fn a_schema_field_of_20_kb_with_non_ascii_characters_is_hashed_whole() {
         schema_identity(&records).as_str()
     );
     assert_eq!(database["records"], 4);
-    assert_eq!(database["entries"], 3);
+    assert_eq!(database["entries"], 4);
+}
+
+#[test]
+fn a_system_table_crc_alone_changes_the_schema_identity() {
+    let records = |crc: &str| -> Vec<Vec<String>> {
+        [
+            vec!["db", "_db-type=PROGRESS"],
+            vec!["system-table", "_Connect", crc],
+            vec!["system-table", "_File", "_crc=9318"],
+            vec!["table", "customer", "_crc=12345"],
+        ]
+        .iter()
+        .map(|record| record.iter().map(|field| field.to_string()).collect())
+        .collect()
+    };
+    let older = records("_crc=29759");
+    let newer = records("_crc=28084");
+    let identity_of = |records: &Vec<Vec<String>>| {
+        let workspace = workspace_with(&env_with_schema(records.clone()), "count = 2\n");
+        let report = probe_json(&workspace, &[]);
+        let database = &report["environment"]["databases"][0];
+        assert_eq!(database["entries"], 3);
+        assert_eq!(database["records"], 4);
+        database["schema_identity"].as_str().unwrap().to_string()
+    };
+
+    let first = identity_of(&older);
+    let second = identity_of(&newer);
+
+    assert_eq!(first, schema_identity(&older));
+    assert_eq!(second, schema_identity(&newer));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn a_share_without_the_system_entry_fails_the_build() {
+    let records = vec![vec!["db".to_string(), "_db-type=PROGRESS".to_string()]];
+    let workspace = workspace_with(&env_with_schema(records), "count = 2\n");
+
+    let mut command = workspace.probe(&[]);
+    command.env("FAKE_AVM_SCHEMA_FAULT", "no-system-entry");
+    let output = run(command);
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("ledger lacks its system-table entry"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -653,8 +703,10 @@ fn build_is_listed_in_the_help() {
 fn the_order_of_the_schema_entries_does_not_change_the_identity() {
     let records = example_environment()["databases"][0]["schema"].clone();
     let records = records.as_array().unwrap();
-    // The entries are the database record, the table block and the sequence.
-    let reordered: Vec<Value> = [&records[6..], &records[1..6], &records[..1]].concat();
+    // The entries are the database record, the system tables, the table block
+    // and the sequence.
+    let reordered: Vec<Value> =
+        [&records[7..], &records[2..7], &records[1..2], &records[..1]].concat();
     let mut env = example_environment();
     env["databases"][0]["schema"] = json!(reordered);
     let workspace = workspace_with(&env, "count = 1\n");
@@ -720,7 +772,7 @@ fn every_worker_images_a_share_of_every_database_and_the_identity_ignores_the_sp
             expected.as_str(),
             "{workers} workers"
         );
-        assert_eq!(database["entries"], 9);
+        assert_eq!(database["entries"], 10);
         let text = fs::read_to_string(&log).unwrap();
         for part in 0..workers {
             let wanted = format!(" schema ledger {part}/{workers}");

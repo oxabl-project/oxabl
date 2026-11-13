@@ -129,7 +129,7 @@ The worker to oxabl:
 | `ENV` | `name` `value` | One environment field. |
 | `DB` | `number` `ldb` `dbtype` `aliases` | One connected database, in connection order. `aliases` is comma-separated. |
 | `ENV-END` | `count` | End of the environment; `count` is the number of `ENV` and `DB` lines. |
-| `SENT` | `ldb` `kind` `name` `records` `sha256` | One schema image entry: its kind (`db`, `table`, `sequence`), its name (empty for `db`), its record count and the lower-case hex SHA-256 of its canonical text ([compile-key.md](compile-key.md#schema-identity)). |
+| `SENT` | `ldb` `kind` `name` `records` `sha256` | One schema image entry: its kind (`db`, `system`, `table`, `sequence`), its name (empty for `db` and `system`), its record count and the lower-case hex SHA-256 of its canonical text ([compile-key.md](compile-key.md#schema-identity)). |
 | `SCHEMA-END` | `ldb` `entries` `tables` | End of a share: the number of `SENT` lines of this share, and the number of user tables of the whole database as this worker counted them. |
 | `FPRINT` | `ldb` `guid` `stamp` | `_Db._Db-guid` and `_DbStatus._DbStatus-CacheStamp`, each `?` when unavailable. |
 | `HASHED` | `id` `kind` `size` `sha256` | `kind` is `file`, `dir` or `none`; `size` and `sha256` (lower-case hex) are `-` unless `kind` is `file`. |
@@ -271,8 +271,8 @@ entry texts, their order and the excluded fields are defined in
 - **Shares.** Oxabl sends each worker `p` (from 0) of `N` ready workers
   `SCHEMA <ldb> <p> <N>` for every database. Worker `p` images the user tables whose place
   `i` (from 0) in the list of user tables sorted by `_File-Name` has `i mod N = p`. Share 0
-  also sends the `db` entry and every `sequence` entry. Each worker handles the databases one
-  after the other; the workers run in parallel.
+  also sends the `db` entry, the `system` entry and every `sequence` entry. Each worker
+  handles the databases one after the other; the workers run in parallel.
 - **Answer.** One `SENT` line per entry, then `SCHEMA-END <ldb> <entries> <tables>`. The
   worker builds each entry's canonical text in a `LONGCHAR` and hashes it with
   `MESSAGE-DIGEST("SHA-256", ...)`; it reads the records with dynamic buffers
@@ -282,7 +282,8 @@ entry texts, their order and the excluded fields are defined in
 - **Combine.** Oxabl joins the shares of a database and fails unless all of these hold:
   - every worker reports the same `tables`;
   - no entry occurs in two shares, and no entry repeats in one share;
-  - `db` and `sequence` entries occur only in share 0, and there is exactly one `db` entry;
+  - `db`, `system` and `sequence` entries occur only in share 0, and there is exactly one
+    `db` entry and exactly one `system` entry;
   - the number of `table` entries equals `tables`;
   - each `SCHEMA-END` count equals the `SENT` lines of its share;
   - every `SENT` names the database of the request and carries a 64-digit lower-case hex

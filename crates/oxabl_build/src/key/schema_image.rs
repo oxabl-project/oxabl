@@ -2,13 +2,13 @@
 
 use super::encode::{Encoder, SCHEMA_CONTEXT, derive};
 
-/// One hashed part of a schema: the database record, one table with
-/// everything that belongs to it, or one sequence.
+/// One hashed part of a schema: the database record, the system tables, one
+/// table with everything that belongs to it, or one sequence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaEntry {
-    /// `db`, `table` or `sequence`.
+    /// `db`, `system`, `table` or `sequence`.
     pub kind: String,
-    /// The table or sequence name; empty for `db`.
+    /// The table or sequence name; empty for `db` and `system`.
     pub name: String,
     /// The number of records in the entry's text.
     pub records: u64,
@@ -65,8 +65,8 @@ impl SchemaImage {
 
     /// Joins the shares of all workers into one image. Fails unless the
     /// shares together are complete: every worker saw the same number of
-    /// tables, each table is in exactly one share, the database record is in
-    /// the first share only, and sequences are too.
+    /// tables, each table is in exactly one share, the database record and
+    /// the system tables are in the first share only, and sequences are too.
     pub fn combine(ldb: String, mut parts: Vec<SchemaPart>) -> Result<SchemaImage, String> {
         parts.sort_by_key(|part| part.part);
         let tables = parts.first().map(|part| part.tables).unwrap_or_default();
@@ -105,6 +105,9 @@ impl SchemaImage {
         }
         if entries.iter().filter(|e| e.kind == "db").count() != 1 {
             return Err(format!("{ldb} lacks its database entry"));
+        }
+        if entries.iter().filter(|e| e.kind == "system").count() != 1 {
+            return Err(format!("{ldb} lacks its system-table entry"));
         }
         Ok(SchemaImage::new(ldb, entries))
     }

@@ -194,8 +194,9 @@ pub fn env_with_schema(records: Vec<Vec<String>>) -> Value {
 }
 
 /// The schema identity as the spec derives it. Each record belongs to an
-/// entry: the database record, a table (with its fields, indexes and
-/// triggers) or a sequence. An entry's text is its records, each field
+/// entry: the database record, the system tables (an entry that is always
+/// there, with no records when none are given), a table (with its fields,
+/// indexes and triggers) or a sequence. An entry's text is its records, each field
 /// percent-encoded and joined with TAB, each record ended by LF. The identity
 /// is BLAKE3 derive-key over the sorted encoded entries
 /// (kind, name, record count, SHA-256 of the text).
@@ -221,11 +222,13 @@ pub fn schema_identity(records: &[Vec<String>]) -> String {
             })
             .collect()
     }
-    let mut entries: Vec<(String, String, usize, String)> = Vec::new();
+    let mut entries: Vec<(String, String, usize, String)> =
+        vec![("system".to_string(), String::new(), 0, String::new())];
     for record in records {
         let name = record.get(1).cloned().unwrap_or_default();
         let (kind, name) = match record[0].as_str() {
             "db" => ("db", String::new()),
+            "system-table" => ("system", String::new()),
             "sequence" => ("sequence", name),
             _ => ("table", name),
         };
@@ -261,7 +264,7 @@ pub fn schema_identity(records: &[Vec<String>]) -> String {
     for entry in encoded {
         material.extend_from_slice(&entry);
     }
-    let mut hasher = blake3::Hasher::new_derive_key("oxabl 2026-11 schema image v2");
+    let mut hasher = blake3::Hasher::new_derive_key("oxabl 2026-11 schema image v3");
     hasher.update(&material);
     hasher.finalize().to_hex().to_string()
 }

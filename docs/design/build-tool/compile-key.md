@@ -55,7 +55,7 @@ comes from who wrote it (the oxabl-cache design), not from a comparison.
 | --- | --- |
 | Compile key | `oxabl 2026-11 compile key v1` |
 | Environment identity | `oxabl 2026-11 compile environment v1` |
-| Schema identity | `oxabl 2026-11 schema image v2` |
+| Schema identity | `oxabl 2026-11 schema image v3` |
 
 A change to this specification that changes any encoded byte uses new context strings
 (`v2`). Old and new keys can then never be equal.
@@ -531,19 +531,32 @@ side ([worker-protocol.md](worker-protocol.md#schema-image)). The image is a lis
 | Entry kind | Name | Records in the entry, in this order |
 | --- | --- | --- |
 | `db` | `""` | the one `_Db` record of the database |
+| `system` | `""` | one `system-table` record for each table that is not a user table (`_File._Tbl-Type <> "T"`: virtual system tables, the metaschema, the SQL catalog), by `_File-Name`, then `_Owner` |
 | `table` | the table name | the `_File` record of the table; its `_Field` records by field name; its `_Index` records by index name, each followed by its `_Index-Field` records by `_Index-Seq`; its `_File-Trig` records by `_Event`; its `_Field-Trig` records by `_Field-Recid`, then `_Event` |
 | `sequence` | the sequence name | the `_Sequence` record |
 
-There is one `db` entry, one `table` entry per user table (`_File._Tbl-Type = "T"`), and one
-`sequence` entry per sequence.
+There is one `db` entry, one `system` entry, one `table` entry per user table
+(`_File._Tbl-Type = "T"`), and one `sequence` entry per sequence.
+
+**System tables.** R-code records the name and CRC of every table it reads, a virtual system
+table or a metaschema table too (`RCODE-INFO:TABLE-CRC-LIST`). Their definitions differ
+between databases: on OpenEdge 12.8.9, a database created new has 56 virtual system tables
+and `_Connect` with CRC 28084, while databases that an older release created have 55 and
+CRC 29759, and a unit that reads `_Connect` compiles to r-code with the CRC of the database
+it compiled against. An edit of a metaschema table (`_User`) changes its CRC,
+and r-code of the old CRC then fails with error 1896. So the `system` entry holds, for each
+of these tables, a `system-table` record with two fields after the type: the table name and
+`_crc=<_CRC>` (`_crc=?` for the SQL catalog tables, which have no CRC). Two databases with
+the same user tables but other system tables have two identities.
 
 **Canonical entry text.** Each record is one line: its fields, each percent-encoded as in
 the protocol framing ([worker-protocol.md](worker-protocol.md#framing)), joined by `TAB`,
 ended by `LF`. The fields of a record are:
 
-1. the record type (`db`, `table`, `field`, `index`, `index-field`, `table-trigger`,
-   `field-trigger`, `sequence`);
-2. its name fields: none for `db`; the table name for `table`; table and field for
+1. the record type (`db`, `system-table`, `table`, `field`, `index`, `index-field`,
+   `table-trigger`, `field-trigger`, `sequence`);
+2. its name fields: none for `db`; the table name and `_crc=<_CRC>` for `system-table`
+   (it has no other fields); the table name for `table`; table and field for
    `field`; table and index for `index`; table, index, `_Index-Seq` and field name for
    `index-field`; table and event for `table-trigger`; table, field and event for
    `field-trigger`; the name for `sequence`;
@@ -577,12 +590,15 @@ name, the number of records and the lower-case hex SHA-256.
 
 ```text
 encode(entry)   = str(kind) str(name) u64(records) str(sha256 hex)
-schema_identity = derive_key("oxabl 2026-11 schema image v2",
+schema_identity = derive_key("oxabl 2026-11 schema image v3",
                              u64(number of entries) || encoded entries in sorted order)
 ```
 
 The identity does not depend on the order in which entries arrive, nor on how the imaging is
 split between workers ([worker-protocol.md](worker-protocol.md#schema-image)).
+
+Version 3 of the context string added the `system` entry. It changed every schema identity,
+and so every compile key, once: no key made before it is reused.
 
 The image covers the CRC of each table and also what the CRC does not cover and the
 compiler puts into r-code: labels, formats, initial values, validation expressions, help,
@@ -785,10 +801,11 @@ oxabl's analysis. A degraded unit is never made incremental by a guess.
 
 These inputs are illustrative. They are not real OpenEdge output.
 
-Schema image of database `ledger`, three entries. Entry texts (`\t` is `TAB`, `\n` is `LF`):
+Schema image of database `ledger`, four entries. Entry texts (`\t` is `TAB`, `\n` is `LF`):
 
 ```text
 db         ""          1 record    db\t_db-coll-name=ICU-UCA\t_db-type=PROGRESS\t_db-xl-name=UTF-8\n
+system     ""          1 record    system-table\t_Connect\t_crc=28084\n
 table      customer    5 records   table\tcustomer\t_can-read=*\t_crc=12345\t_dump-name=customer\t_prime-index=index/customer/custnum\n
                                    field\tcustomer\tcustnum\t_data-type=integer\t_decimals=?\t_format=>>>>9\t_label=Cust Num\t_view-as=?\n
                                    field\tcustomer\tname\t_data-type=character\t_decimals=?\t_format=x(30)\t_label=Name\t_view-as=?\n
@@ -800,6 +817,7 @@ sequence   next-cust   1 record    sequence\tnext-cust\t_cycle-ok=no\t_seq-incr=
 | Entry | SHA-256 of the entry text |
 | --- | --- |
 | `db` | `481e13c6d939c677a3c1490550c757a7c14e2f239df9870a19d3ac2251ff3678` |
+| `system` | `a476ad6419566e97a5b710f1f2e90d5ac5a866210007f9c16b83949584b3915d` |
 | `table customer` | `38c22afa820d544f4ffa4550cf322aee17d2e7a7539f96bf253d494f20216aaa` |
 | `sequence next-cust` | `563c917df85ba47de60ec29c499935236d5d2cc3e440c4fc9f6e348357302295` |
 
@@ -830,12 +848,12 @@ options. Outputs: `rcode`. Worker program bytes: `/* oxabl worker */\n`.
 
 | Value | Hex |
 | --- | --- |
-| schema identity | `8a495ef6b5c1d99915758a8773441ab7adf1b6abe407bf19c1a4f097ac62a199` |
-| environment identity | `88379412ea5b9c91d75b53fed5c30c3ed18048293664ed0ec0deff2ec441a079` |
+| schema identity | `2bfdee56efffdb1bf4d2a592a2e875372e1c2f2373993480cc16030af2c0d05c` |
+| environment identity | `34547a66f9075660bd5e6e6985e9299a0bd03a1902e386fb2d63957cd8bbf6ad` |
 | content of the unit | `46fc37de67aabc0750c364e9958c080394046a163ac10ffa9f2f482e811d3b9a` |
 | content of the worker program | `c90f59b20862aa76cdd3a16915d2662583c01e49f381d7db0810e5d9bc397fb8` |
 | key material length | 817 bytes |
-| compile key | `1e7e5c8c6213fb125ce83de8bf24bd702a339b554d7a39794204687c8aba304a` |
+| compile key | `651bcd1456028b791da95fbe6dec163e10126c459bfe6955427eadad24bb7bf2` |
 
 Slice 5 adds `crates/oxabl_build/tests/key_vectors.json` with this example and one vector
 per rule of the encoding (an empty closure, two databases, a parameter that appears twice,
