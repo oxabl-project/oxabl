@@ -165,20 +165,26 @@ pub struct BuildVerify {
     /// cache write happens.
     pub reads: bool,
 
-    /// Units held for the schema check that release them to a cache. Default
-    /// 500.
-    pub batch_units: u32,
+    /// The next schema check starts no sooner than this many times the
+    /// duration of the last imaging of the databases, so that the checks cost
+    /// about `1 / (budget + 1)` of the build. `0` starts one whenever a set
+    /// waits. Default 30.
+    pub imaging_budget: u32,
 
-    /// Longest time a unit waits for the schema check. Default `60s`.
-    pub batch_interval: TimeSpan,
+    /// Ignored since `imaging_budget`; kept so that old files still load.
+    pub batch_units: Option<u32>,
+
+    /// Ignored since `imaging_budget`; kept so that old files still load.
+    pub batch_interval: Option<TimeSpan>,
 }
 
 impl Default for BuildVerify {
     fn default() -> Self {
         BuildVerify {
             reads: true,
-            batch_units: 500,
-            batch_interval: TimeSpan(Duration::from_secs(60)),
+            imaging_budget: 30,
+            batch_units: None,
+            batch_interval: None,
         }
     }
 }

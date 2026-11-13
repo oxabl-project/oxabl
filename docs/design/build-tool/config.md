@@ -145,14 +145,20 @@ env = { TERM = "dumb" }
 ```toml
 [build.verify]
 reads = true
-batch_units = 500
-batch_interval = "60s"
+imaging_budget = 30
 ```
 
 `reads` turns on the private XREF and the read check ([cache.md](cache.md#verification)).
-With `reads = false`, no cache write happens. `batch_units` and `batch_interval` decide when
-a schema check (V2) releases the held sets: after that many units, or when the oldest held
-unit has waited that long, and always at the end of the build.
+With `reads = false`, no cache write happens, in every mode. `imaging_budget` paces the
+schema checks (V2): the next one starts no sooner than that many times the duration of the
+last imaging after it ended, so the checks cost about 1 / (`imaging_budget` + 1) of the
+build, and one always runs at the end ([cache.md](cache.md#the-pace-of-v2)). `0` starts one
+whenever a set waits. The cache mode sets the policy that these keys feed
+([cache.md](cache.md#the-verification-policy)); `--print-config` shows it as
+`verification.mode`.
+
+`batch_units` and `batch_interval` are ignored. Old files that set them still load, and the
+build says that they have no effect.
 
 ### `[build.cache]`
 

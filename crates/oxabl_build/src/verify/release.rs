@@ -11,10 +11,11 @@ use crate::key::{SchemaImage, SchemaPart};
 /// When held sets are checked against the databases.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
-    /// A check starts when this many sets are held.
-    pub units: usize,
-    /// A check starts when a set has waited this long.
-    pub interval: Duration,
+    /// A check starts no sooner than this many times the duration of the
+    /// last imaging after that imaging ended.
+    pub budget: u32,
+    /// The duration of the imaging of the probe, the first "last imaging".
+    pub imaging: Duration,
 }
 
 /// A set that passed V1 and V3, with the unit it belongs to.
@@ -52,6 +53,10 @@ pub struct Releaser {
     next_round: u64,
     /// When the last check that matched the probe started.
     matched: Option<Instant>,
+    /// When the last imaging ended, and how long it took.
+    imaged: (Instant, Duration),
+    /// Checks that ended, the final one not counted.
+    pub rounds: usize,
     broken: bool,
     pub dropped: Dropped,
 }
@@ -79,6 +84,8 @@ impl Releaser {
             round: None,
             next_round: 1,
             matched: None,
+            imaged: (Instant::now(), settings.imaging),
+            rounds: 0,
             broken: false,
             dropped: Dropped::default(),
         }
@@ -140,22 +147,17 @@ impl Releaser {
 
     /// Whether a check of the databases is due and none is running. Every
     /// set that waits counts: the check must start after its unit finished,
-    /// and the unit's inputs are hashed again meanwhile.
+    /// and the unit's inputs are hashed again meanwhile. Only the time since
+    /// the last imaging decides, so the checks cost a fixed share of the
+    /// build whatever the number of units.
     pub fn wants_round(&self, now: Instant) -> bool {
         if self.broken || self.round.is_some() || self.baseline.is_empty() {
             return false;
         }
-        let oldest = self
-            .held
-            .iter()
-            .map(|held| held.done_at)
-            .chain(self.candidates.values().map(|candidate| candidate.done_at))
-            .min();
+        let (ended, took) = self.imaged;
+        let wait = took.saturating_mul(self.settings.budget);
         let waiting = self.held.len() + self.candidates.len();
-        waiting > 0
-            && (waiting >= self.settings.units
-                || oldest
-                    .is_some_and(|at| now.saturating_duration_since(at) >= self.settings.interval))
+        waiting > 0 && now.saturating_duration_since(ended) >= wait
     }
 
     /// Starts a check split into `parts`; returns its id.
@@ -198,6 +200,8 @@ impl Releaser {
             return Vec::new();
         }
         let round = self.round.take().expect("the round is running");
+        self.imaged = (Instant::now(), round.started.elapsed());
+        self.rounds += 1;
         let verdict = match round.failure {
             Some(reason) => Err(reason),
             None => self.combine(&round),

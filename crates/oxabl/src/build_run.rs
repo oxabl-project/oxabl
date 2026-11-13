@@ -84,6 +84,7 @@ pub fn run(workspace: &BuildWorkspace, options: Options<'_>) -> ExitCode {
         cancel,
         sink: options.events.then(|| Box::new(print_event) as _),
         cache: selection.cache,
+        mode: selection.mode,
         wait_lock: options.wait_lock.map(Duration::from_secs),
         yield_to_newer: options.yield_to_newer,
     };

@@ -19,7 +19,7 @@ mod upload;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use oxabl_common::catch_panic;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -45,6 +45,7 @@ use crate::paths::propath::{OUT, library_name};
 use crate::plan::Plan;
 use crate::refresh::Outcome;
 use crate::store::StoredEnvironment;
+use crate::verify::policy::Policy;
 use crate::verify::reads::{Reads, trim_slash};
 use crate::verify::rehash::Rehasher;
 use crate::verify::release::{Releaser, Settings};
@@ -59,6 +60,7 @@ pub fn build(
     let started_at = Instant::now();
     let started_ns = crate::refresh::now_ns();
     let options = compile_options(&workspace.config.build)?;
+    let policy = Policy::resolve(request.mode, &workspace.config.build.verify)?;
     let prepared = prepare(workspace, &request)?;
     let BuildRequest {
         fail_fast,
@@ -155,7 +157,18 @@ pub fn build(
         .iter()
         .map(|(unit, row)| (*unit, row.duration_ms.max(1)))
         .collect();
-    let verifying = verification(workspace, &layout, cache.writes(), &mut notes);
+    let verify_config = &workspace.config.build.verify;
+    if verify_config.batch_units.is_some() || verify_config.batch_interval.is_some() {
+        notes.push(
+            "[build.verify] batch_units and batch_interval are ignored; imaging_budget paces the schema checks"
+                .to_string(),
+        );
+    }
+    let verifying = policy.verifies(
+        cache.writes(),
+        matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))),
+        &mut notes,
+    );
     let baseline: Vec<(String, blake3::Hash)> = environment
         .databases
         .iter()
@@ -220,12 +233,11 @@ pub fn build(
         sink,
         upload: verifying.then(|| Upload::start(cache.uploader())),
         release: verifying.then(|| {
-            let verify = &workspace.config.build.verify;
             Releaser::new(
                 baseline,
                 Settings {
-                    units: verify.batch_units.max(1) as usize,
-                    interval: verify.batch_interval.0,
+                    budget: policy.imaging_budget,
+                    imaging: Duration::from_millis(setup.imaging_ms.max(1)),
                 },
             )
         }),
@@ -284,6 +296,7 @@ pub fn build(
         uploaded.pushed,
         &uploaded.outcomes,
         release,
+        policy,
         &mut notes,
     );
     let closed = recorder.close();
@@ -377,34 +390,6 @@ fn worker_entry(
         Some(path) => path.clone(),
         None => entry.to_string(),
     }
-}
-
-/// Whether this build verifies its units: a cache stores sets, the read check
-/// is on and the compiler writes the `XREF-XML` that the check reads.
-fn verification(
-    workspace: &BuildWorkspace,
-    layout: &OutputLayout,
-    writes: bool,
-    notes: &mut Vec<String>,
-) -> bool {
-    if !writes {
-        return false;
-    }
-    if matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))) {
-        notes.push(
-            "no cache entries are written: [build.outputs].xref_format = \"text\" gives no compiler-resolved file names to check"
-                .to_string(),
-        );
-        return false;
-    }
-    if !workspace.config.build.verify.reads {
-        notes.push(
-            "no cache entries are written: [build.verify].reads = false turns the read check off"
-                .to_string(),
-        );
-        return false;
-    }
-    true
 }
 
 /// The XREF mode of a request: the user's, or the private `XREF-XML` when
@@ -531,12 +516,14 @@ fn cache_report(
     pushed: usize,
     outcomes: &[(CompileKey, StoreOutcome)],
     release: Option<Releaser>,
+    policy: Policy,
     notes: &mut Vec<String>,
 ) -> report::CacheReport {
     let mut cache = report::CacheReport {
         label: label.to_string(),
         writes,
         offered: pushed,
+        policy: Some(policy),
         ..Default::default()
     };
     let mut refused: Vec<(NotStoredReason, usize)> = Vec::new();
@@ -554,6 +541,7 @@ fn cache_report(
     }
     cache.not_stored = refused;
     if let Some(release) = release {
+        cache.imaging_rounds = release.rounds;
         let dropped = release.dropped;
         cache.changed_inputs = dropped.inputs.len();
         cache.schema_dropped = dropped.schema.len();
