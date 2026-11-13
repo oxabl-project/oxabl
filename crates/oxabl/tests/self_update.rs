@@ -402,9 +402,10 @@ fn a_command_of_a_managed_binary_updates_it_in_the_background() {
     wait_until("the update", || fixture.record()["version"] == NEWER);
     assert_eq!(fixture.record()["installer"], "self-update");
     assert_eq!(fixture.installed_bytes(), script(NEWER));
-    let state: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(fixture.state().join("update-state.json")).unwrap())
-            .unwrap();
+    // The schedule is written after the install record.
+    let path = fixture.state().join("update-state.json");
+    wait_until("the update state", || path.exists());
+    let state: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(state["failures"], 0);
     assert!(state["next_due"].as_u64().unwrap() > 23 * 3600);
 }
