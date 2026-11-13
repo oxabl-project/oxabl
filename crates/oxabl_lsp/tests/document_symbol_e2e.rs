@@ -339,6 +339,19 @@ fn an_edit_that_repeats_the_version_changes_the_answer() {
     finish(&client, handle);
 }
 
+// A second didOpen replaces the buffer, so it must replace the outline too.
+#[test]
+fn a_reopen_with_the_same_version_changes_the_answer() {
+    let (client, handle) = start();
+    handshake(&client, PositionEncodingKind::UTF16, true);
+    let uri = Uri::from_str("file:///reopen.p").unwrap();
+    open(&client, &uri, "PROCEDURE first:\nEND PROCEDURE.\n");
+    assert_eq!(nested(request(&client, 2, &uri))[0].name, "first");
+    open(&client, &uri, "PROCEDURE second:\nEND PROCEDURE.\n");
+    assert_eq!(nested(request(&client, 3, &uri))[0].name, "second");
+    finish(&client, handle);
+}
+
 // LSP breaks lines at `\n`, `\r\n` and `\r` only. These characters are line
 // breaks to a Unicode-aware rope, but not to a client.
 const NOT_LINE_BREAKS: [char; 4] = ['\u{2028}', '\u{2029}', '\u{0085}', '\u{000C}'];

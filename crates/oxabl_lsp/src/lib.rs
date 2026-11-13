@@ -766,6 +766,7 @@ impl<'c> Server<'c> {
                 {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
+                    self.outlines.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
                     // it: cross-file resolution must exclude this file from its
