@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use oxabl_ast::Span;
+use oxabl_common::stack;
 use oxabl_pipeline::{OutlineKind, OutlineSymbol, outline};
 
 fn slice(source: &str, span: Span) -> &str {
@@ -1004,20 +1005,22 @@ fn rules_hold_for_every_test_fixture_file() {
         collect(&dir, &mut files);
     }
     assert!(!files.is_empty(), "no fixture files found under {root:?}");
-    for file in &files {
-        let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-        let source = String::from_utf8_lossy(&bytes);
-        let first = outline(&source).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-        let second = outline(&source).unwrap();
-        assert_eq!(first, second, "{}: not deterministic", file.display());
-        let violations = rule_violations(&source, &first);
-        assert!(
-            violations.is_empty(),
-            "{}:\n{}",
-            file.display(),
-            violations.join("\n")
-        );
-    }
+    stack::run(|| {
+        for file in &files {
+            let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            let source = String::from_utf8_lossy(&bytes);
+            let first = outline(&source).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            let second = outline(&source).unwrap();
+            assert_eq!(first, second, "{}: not deterministic", file.display());
+            let violations = rule_violations(&source, &first);
+            assert!(
+                violations.is_empty(),
+                "{}:\n{}",
+                file.display(),
+                violations.join("\n")
+            );
+        }
+    });
     eprintln!("outline rules checked on {} files", files.len());
 }
 
@@ -1048,21 +1051,14 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 const NESTING: usize = 250;
+// A labelled block costs the parser two nesting levels (label and block).
+const LABELLED: usize = NESTING / 2 + 3;
 
-/// The parser recurses and the harness provides its stack: every parsing
-/// thread has 64 MiB, the nesting limit is 256 levels.
-fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(f)
-        .expect("spawn")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-}
+// The harness provides the analysis stack; the nesting limit is 256 levels.
 
 #[test]
 fn deeply_nested_blocks_do_not_overflow() {
-    on_big_stack(|| {
+    stack::run(|| {
         let mut src = String::new();
         for _ in 0..NESTING {
             src.push_str("DO:\n");
@@ -1079,7 +1075,7 @@ fn deeply_nested_blocks_do_not_overflow() {
 
 #[test]
 fn deeply_nested_blocks_in_a_procedure_lift_to_it() {
-    on_big_stack(|| {
+    stack::run(|| {
         let mut src = String::from("PROCEDURE p:\n");
         for _ in 0..NESTING {
             src.push_str("REPEAT:\n");
@@ -1101,7 +1097,7 @@ Procedure p @"p"
 
 #[test]
 fn long_else_if_chain_does_not_overflow() {
-    on_big_stack(|| {
+    stack::run(|| {
         let mut src = String::from("DEFINE VARIABLE x AS INTEGER NO-UNDO.\n");
         for i in 0..NESTING {
             src.push_str(&format!("IF x = {i} THEN DO:\nEND.\nELSE "));
@@ -1114,18 +1110,18 @@ fn long_else_if_chain_does_not_overflow() {
 
 #[test]
 fn a_symbol_deep_in_labelled_blocks_is_not_lost() {
-    on_big_stack(|| {
+    stack::run(|| {
         let mut src = String::new();
-        for i in 1..=NESTING {
+        for i in 1..=LABELLED {
             src.push_str(&format!("l{i}: DO:\n"));
         }
         src.push_str("DEFINE VARIABLE bottom AS INTEGER NO-UNDO.\n");
-        for _ in 0..NESTING {
+        for _ in 0..LABELLED {
             src.push_str("END.\n");
         }
         let symbols = run(&src);
         let mut level = &symbols;
-        for i in 1..=NESTING {
+        for i in 1..=LABELLED {
             assert_eq!(level.len(), 1, "level {i}");
             assert_eq!(level[0].kind, OutlineKind::Label, "level {i}");
             assert_eq!(level[0].name, format!("l{i}"));
@@ -1135,6 +1131,31 @@ fn a_symbol_deep_in_labelled_blocks_is_not_lost() {
         assert_eq!(level[0].kind, OutlineKind::Variable);
         assert_eq!(level[0].name, "bottom");
         assert!(level[0].children.is_empty());
+    });
+}
+
+#[test]
+fn nesting_over_the_parser_cap_keeps_the_declarations_above_the_cut() {
+    stack::run(|| {
+        let mut src = String::from(
+            "DEFINE VARIABLE above AS INTEGER NO-UNDO.\nPROCEDURE p:\n    DEFINE VARIABLE inside AS INTEGER NO-UNDO.\n",
+        );
+        for _ in 0..5000 {
+            src.push_str("DO:\n");
+        }
+        src.push_str("DEFINE VARIABLE bottom AS INTEGER NO-UNDO.\n");
+        for _ in 0..5000 {
+            src.push_str("END.\n");
+        }
+        src.push_str("END PROCEDURE.\n");
+        let symbols = run(&src);
+        assert_eq!(names(&symbols)[0], "above", "{:?}", names(&symbols));
+        let p = symbols.iter().find(|s| s.name == "p").expect("p is lost");
+        assert!(
+            names(&p.children).contains(&"inside"),
+            "{:?}",
+            names(&p.children)
+        );
     });
 }
 
