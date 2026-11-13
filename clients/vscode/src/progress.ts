@@ -101,14 +101,20 @@ export class BuildProgress {
     return this.finished.size - this.failedNow;
   }
 
-  /** Percent of the finished units that a cache gave; undefined before the first one. */
   /** Units that needed no work: built before in this workspace and unchanged. */
   get upToDate(): number {
     return this.total === undefined ? 0 : Math.max(0, this.units - this.total);
   }
 
+  /**
+   * Percent of the workspace that needs no compile: up to date or from a cache;
+   * undefined before `build-started`. Rounded down, so 100% means nothing compiles.
+   */
   get cachedPercent(): number | undefined {
-    return this.done === 0 ? undefined : Math.round((100 * this.fetched.size) / this.done);
+    if (this.total === undefined || this.units === 0) {
+      return undefined;
+    }
+    return Math.floor((100 * Math.min(this.units, this.upToDate + this.fetched.size)) / this.units);
   }
 
   fetchedFrom(cache: "local" | "remote"): number {
@@ -176,8 +182,10 @@ function buildingTooltip(p: BuildProgress, unkeyed: number | undefined): string 
     `  compiled: ${count(p.compiledNow)}, failed: ${count(p.failedNow)}`,
   ];
   if (p.units > 0) {
-    const share = Math.round((100 * p.upToDate) / p.units);
-    lines.push(`Workspace: ${count(p.units)} units, ${count(p.upToDate)} up to date (${share}%), not rebuilt`);
+    lines.push(
+      `Workspace: ${count(p.units)} units, ${count(p.upToDate)} up to date, ` +
+        `${count(p.fetched.size)} from a cache (${p.cachedPercent}% need no compile)`,
+    );
   }
   if (unkeyed) {
     lines.push(unkeyedTooltip(unkeyed));
