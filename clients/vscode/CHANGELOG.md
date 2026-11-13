@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.4.1...oxabl_vscode-v0.5.0) (2026-11-13)
+
+
+### Features
+
+* **vscode:** warn when units have no compile key, and show the up-to-date units ([6ae98a6](https://github.com/oxabl-project/oxabl/commit/6ae98a60e236085e8d8165d285b155445295a8a5))
+* **vscode:** warn when units have no compile key, and show the up-to-date units ([913c7f4](https://github.com/oxabl-project/oxabl/commit/913c7f4764442d0b988c0146a107970e1827139a))
+
 ## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.4.0...oxabl_vscode-v0.4.1) (2026-11-13)
 
 
