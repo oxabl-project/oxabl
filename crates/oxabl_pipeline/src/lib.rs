@@ -57,6 +57,10 @@
 //! renders the one [`FormatOutcome`], whose refusal arm keeps the
 //! bail-versus-internal-panic distinction structural (R5, R20).
 //!
+//! [`outline`] — the declarations of one file as a tree, for an editor's outline
+//! view, breadcrumbs and "Go to Symbol in File". It reads the raw source, like
+//! [`FormatPipeline`], so every span is a byte range of the buffer as written.
+//!
 //! [`resolve_diagnostic`] and its siblings — the single derivation of line and
 //! column from a byte span, for the byte-offset clients. The language server
 //! deliberately does not use it (R13, KTD5); see [`position`].
