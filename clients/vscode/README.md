@@ -107,7 +107,8 @@ few compiles.
   `oxabl.server.path` and `oxabl.build.args` are not read from an untrusted
   folder.
 
-The status bar item on the left shows the state:
+The status bar item on the left shows the state. While a build runs, a
+spinner turns next to it:
 
 | Item | Meaning |
 | --- | --- |
@@ -123,6 +124,18 @@ The compiler messages of each unit show in the Problems view, as the source
 clears those of the units it took from a cache. A build that you cancel keeps
 the messages of the units it did not reach. A configuration error (exit code
 2) also shows an error message with **Show Build Log**.
+
+A build starts one worker for each CPU, at most 8. To use every core, set
+`count` in `oxabl.toml`, or pass `--workers` for your machine only with
+`"oxabl.build.args": ["--workers", "16"]`:
+
+```toml
+[build.workers]
+count = 16
+```
+
+Each worker is one OpenEdge batch client with its own database connections,
+so the databases must accept that many more connections.
 
 The commands **oxabl: Build**, **oxabl: Cancel Build** and **oxabl: Show Build
 Log** do what their names say. The build log is the output channel `oxabl
