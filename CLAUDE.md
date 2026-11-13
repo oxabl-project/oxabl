@@ -96,7 +96,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 ### Workspace Structure
 
 - `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary
-- `crates/oxabl_pipeline` - The shared lint and format run every client drives; sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
+- `crates/oxabl_pipeline` - The shared lint and format run every client drives, and the document outline (`outline`, see `docs/design/document-outline.md`); sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
 - `crates/oxabl_index` - Cross-file fact extraction, the in-run batch index and the static call graph; sits *beneath* `oxabl_pipeline`
 - `crates/oxabl_daemon` - The session core: one salsa instance per workspace root, serving several clients; the **only** crate that may know about salsa
 - `crates/oxabl_daemon_protocol` - Wire types and the contract version for the daemon's `oxabl/*` methods; depends on serde and nothing else
