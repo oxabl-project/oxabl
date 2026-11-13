@@ -4,7 +4,7 @@
 //! A tree renders as one line per symbol, indented two spaces per depth:
 //! `Kind name [detail] @"selection text"`. A test compares the whole text, so
 //! a diff names the wrong line. Every outline also goes through
-//! `check_rules`, the six rules of the spec.
+//! `check_rules`, the rules of the spec.
 
 use std::path::{Path, PathBuf};
 
@@ -20,11 +20,15 @@ fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Every violation of rules 2, 3 and 4 in `symbols`, as readable text.
+/// The most symbols that nest in each other (rule 7 of the spec).
+const MAX_DEPTH: usize = 32;
+
+/// Every violation of rules 2, 3, 4 and 7 in `symbols`, as readable text.
 fn rule_violations(source: &str, symbols: &[OutlineSymbol]) -> Vec<String> {
     fn walk(
         source: &str,
         parent: Option<&OutlineSymbol>,
+        depth: usize,
         symbols: &[OutlineSymbol],
         out: &mut Vec<String>,
     ) {
@@ -69,11 +73,16 @@ fn rule_violations(source: &str, symbols: &[OutlineSymbol]) -> Vec<String> {
             if sym.name != sym.name.trim() {
                 out.push(format!("{at}: name has leading or trailing whitespace"));
             }
-            walk(source, Some(sym), &sym.children, out);
+            if depth > MAX_DEPTH {
+                out.push(format!(
+                    "{at}: {depth} ancestors, more than the {MAX_DEPTH} allowed"
+                ));
+            }
+            walk(source, Some(sym), depth + 1, &sym.children, out);
         }
     }
     let mut out = Vec::new();
-    walk(source, None, symbols, &mut out);
+    walk(source, None, 0, symbols, &mut out);
     out
 }
 
@@ -559,6 +568,72 @@ Include file.i @"file.i"
 Include inc/other.i @"inc/other.i"
 Procedure p @"p"
   Include nested.i @"nested.i"
+"#,
+    );
+}
+
+#[test]
+fn an_escaped_brace_is_not_an_include() {
+    let src = "~{inc/b.i}\n{inc/a.i}\n";
+    assert_tree(src, r#"Include inc/a.i @"inc/a.i""#);
+}
+
+#[test]
+fn declarations_in_widget_triggers_are_triggers() {
+    let src = r#"PROCEDURE p:
+    CREATE BUTTON h
+        TRIGGERS:
+            ON CHOOSE DO:
+                DEFINE VARIABLE inTrig AS INTEGER NO-UNDO.
+            END.
+            ON ENTRY, LEAVE DO:
+                DEFINE VARIABLE other AS INTEGER NO-UNDO.
+            END.
+        END TRIGGERS.
+    DEFINE VARIABLE after AS INTEGER NO-UNDO.
+END PROCEDURE.
+"#;
+    assert_tree(
+        src,
+        r#"
+Procedure p @"p"
+  Trigger CHOOSE @"CHOOSE"
+    Variable inTrig [INTEGER] @"inTrig"
+  Trigger ENTRY, LEAVE @"ENTRY, LEAVE"
+    Variable other [INTEGER] @"other"
+  Variable after [INTEGER] @"after"
+"#,
+    );
+    assert_spans(
+        "CREATE BUTTON h TRIGGERS: ON CHOOSE DO: DEFINE VARIABLE v AS INTEGER NO-UNDO. END. END TRIGGERS.\n",
+        r#"
+Trigger CHOOSE => "ON CHOOSE DO: DEFINE VARIABLE v AS INTEGER NO-UNDO. END."
+  Variable v => "DEFINE VARIABLE v AS INTEGER NO-UNDO."
+"#,
+    );
+}
+
+#[test]
+fn an_interface_with_members_has_them_as_siblings() {
+    let src = r#"INTERFACE I:
+    METHOD PUBLIC VOID A().
+    METHOD PUBLIC VOID B(INPUT x AS INTEGER).
+    METHOD PUBLIC CHARACTER C().
+    DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO GET. SET.
+    DEFINE PUBLIC EVENT E SIGNATURE VOID (INPUT n AS INTEGER).
+END INTERFACE.
+"#;
+    assert_tree(
+        src,
+        r#"
+Interface I @"I"
+  Method A [PUBLIC VOID] @"A"
+  Method B [PUBLIC VOID] @"B"
+    Parameter x [INPUT INTEGER] @"x"
+  Method C [PUBLIC CHARACTER] @"C"
+  Property P [PUBLIC INTEGER] @"P"
+  Event E [PUBLIC] @"E"
+    Parameter n [INPUT INTEGER] @"n"
 "#,
     );
 }
@@ -1053,6 +1128,14 @@ fn the_rules_checker_can_fail() {
         "overlaps",
     );
 
+    let mut deep = symbol("leaf", (0, 26), (10, 11));
+    for _ in 0..=MAX_DEPTH {
+        let mut parent = symbol("p", (0, 26), (10, 11));
+        parent.children.push(deep);
+        deep = parent;
+    }
+    assert_violation(src, &[deep], "ancestors");
+
     let multibyte = "é";
     assert_violation(multibyte, &[symbol("x", (0, 2), (1, 2))], "char boundary");
 }
@@ -1116,7 +1199,7 @@ fn collect(dir: &Path, every_file: bool, out: &mut Vec<PathBuf>) {
 
 const NESTING: usize = 250;
 // A labelled block costs the parser two nesting levels (label and block).
-const LABELLED: usize = NESTING / 2 + 3;
+const LABELLED: usize = 70;
 
 // The harness provides the analysis stack; the nesting limit is 256 levels.
 
@@ -1173,7 +1256,7 @@ fn long_else_if_chain_does_not_overflow() {
 }
 
 #[test]
-fn a_symbol_deep_in_labelled_blocks_is_not_lost() {
+fn a_tree_is_cut_at_the_depth_limit_and_loses_no_declaration() {
     stack::run(|| {
         let mut src = String::new();
         for i in 1..=LABELLED {
@@ -1185,7 +1268,7 @@ fn a_symbol_deep_in_labelled_blocks_is_not_lost() {
         }
         let symbols = run(&src);
         let mut level = &symbols;
-        for i in 1..=LABELLED {
+        for i in 1..=MAX_DEPTH {
             assert_eq!(level.len(), 1, "level {i}");
             assert_eq!(level[0].kind, OutlineKind::Label, "level {i}");
             assert_eq!(level[0].name, format!("l{i}"));
@@ -1195,6 +1278,33 @@ fn a_symbol_deep_in_labelled_blocks_is_not_lost() {
         assert_eq!(level[0].kind, OutlineKind::Variable);
         assert_eq!(level[0].name, "bottom");
         assert!(level[0].children.is_empty());
+    });
+}
+
+#[test]
+fn a_declaration_below_the_depth_limit_lifts_to_the_deepest_kept_symbol() {
+    stack::run(|| {
+        let mut src = String::new();
+        for i in 1..=LABELLED {
+            src.push_str(&format!("l{i}: DO:\n"));
+            if i > MAX_DEPTH {
+                src.push_str(&format!("DEFINE VARIABLE v{i} AS INTEGER NO-UNDO.\n"));
+            }
+        }
+        for _ in 0..LABELLED {
+            src.push_str("END.\n");
+        }
+        let symbols = run(&src);
+        let mut level = &symbols;
+        for _ in 1..MAX_DEPTH {
+            level = &level[0].children;
+        }
+        let last = &level[0];
+        assert_eq!(last.name, format!("l{MAX_DEPTH}"));
+        let lifted: Vec<String> = (MAX_DEPTH + 1..=LABELLED)
+            .map(|i| format!("v{i}"))
+            .collect();
+        assert_eq!(names(&last.children), lifted);
     });
 }
 

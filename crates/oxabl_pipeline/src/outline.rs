@@ -8,8 +8,9 @@
 use std::collections::HashSet;
 
 use oxabl_ast::{
-    AccessModifier, BufferTarget, DataType, HandleParamKind, Identifier, OnAction, OnKind,
-    ParameterDirection, ParameterType, Span, Statement, StatementKind, TempTableField, TypeSource,
+    AccessModifier, BufferTarget, CreateTarget, DataType, HandleParamKind, Identifier, OnAction,
+    OnKind, ParameterDirection, ParameterType, Span, Statement, StatementKind, TempTableField,
+    TypeSource, WidgetTrigger,
 };
 use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
 use oxabl_lexer::{Kind, Token};
@@ -82,6 +83,10 @@ pub fn outline(source: &str) -> Result<Vec<OutlineSymbol>, InternalPanic> {
 /// The longest `ON` event phrase kept as a name, in characters.
 const TRIGGER_NAME_MAX: usize = 80;
 
+/// The most symbols that nest in each other. An editor shows no deeper tree, and
+/// the JSON of one that is deeper is more than a JSON reader accepts.
+const MAX_DEPTH: usize = 32;
+
 fn outline_inner(source: &str) -> Vec<OutlineSymbol> {
     let tokens = oxabl_lexer::tokenize(source);
     let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
@@ -102,6 +107,7 @@ fn outline_inner(source: &str) -> Vec<OutlineSymbol> {
 /// input never reaches the call stack.
 enum Frame<'a> {
     Statements(std::slice::Iter<'a, Statement>),
+    Triggers(std::slice::Iter<'a, WidgetTrigger>),
     /// The symbol on top of `Walker::open` has all its children.
     Close,
 }
@@ -122,18 +128,22 @@ impl<'a> Walker<'a> {
     fn walk(&mut self, statements: &'a [Statement]) {
         let mut stack = vec![Frame::Statements(statements.iter())];
         while let Some(frame) = stack.last_mut() {
-            let next = match frame {
-                Frame::Statements(iter) => iter.next(),
+            match frame {
+                Frame::Statements(iter) => match iter.next() {
+                    Some(statement) => self.visit(statement, &mut stack),
+                    None => {
+                        stack.pop();
+                    }
+                },
+                Frame::Triggers(iter) => match iter.next() {
+                    Some(trigger) => self.widget_trigger(trigger, &mut stack),
+                    None => {
+                        stack.pop();
+                    }
+                },
                 Frame::Close => {
                     stack.pop();
                     self.close();
-                    continue;
-                }
-            };
-            match next {
-                Some(statement) => self.visit(statement, &mut stack),
-                None => {
-                    stack.pop();
                 }
             }
         }
@@ -331,6 +341,13 @@ impl<'a> Walker<'a> {
                     .as_ref()
                     .map(|table| format!("LIKE {}", table.name));
                 let mut symbol = self.named(OutlineKind::TempTable, name, detail, span);
+                if self.open.len() >= MAX_DEPTH {
+                    symbol = None;
+                    for field in fields {
+                        let field = self.field(field, span);
+                        self.emit(field);
+                    }
+                }
                 if let Some(table) = symbol.as_mut() {
                     for field in fields {
                         if let Some(child) = self.field(field, span) {
@@ -388,6 +405,10 @@ impl<'a> Walker<'a> {
                     self.open_container(symbol, statement, stack);
                 }
             }
+            StatementKind::Create {
+                target: CreateTarget::Handle { triggers, .. },
+                ..
+            } => stack.push(Frame::Triggers(triggers.iter())),
             StatementKind::TriggerProcedure { target, .. } => {
                 let symbol = self.trigger_procedure(span, target);
                 self.emit(symbol);
@@ -463,20 +484,27 @@ impl<'a> Walker<'a> {
     }
 
     /// Opens `symbol` so the children of `statement` land in it. An invalid
-    /// symbol is dropped and its children go to the enclosing symbol.
+    /// symbol is dropped and its children go to the enclosing symbol. So is a
+    /// symbol at `MAX_DEPTH`: its children nest no deeper.
     fn open_container(
         &mut self,
         symbol: Option<OutlineSymbol>,
         statement: &'a Statement,
         stack: &mut Vec<Frame<'a>>,
     ) {
-        if let Some(symbol) = symbol {
-            self.open.push(symbol);
-            stack.push(Frame::Close);
-        }
+        self.open(symbol, stack);
         children(statement, |slice| {
             stack.push(Frame::Statements(slice.iter()))
         });
+    }
+
+    fn open(&mut self, symbol: Option<OutlineSymbol>, stack: &mut Vec<Frame<'a>>) {
+        if let Some(symbol) = symbol
+            && self.open.len() < MAX_DEPTH
+        {
+            self.open.push(symbol);
+            stack.push(Frame::Close);
+        }
     }
 
     fn close(&mut self) {
@@ -749,6 +777,28 @@ impl<'a> Walker<'a> {
         self.make(OutlineKind::Trigger, &name, None, span, Some(selection))
     }
 
+    /// An `ON event-list` entry of a widget's `TRIGGERS` phrase. It has no span
+    /// of its own: the `ON` is the token before the first event.
+    fn widget_trigger(&mut self, trigger: &'a WidgetTrigger, stack: &mut Vec<Frame<'a>>) {
+        let OnAction::Block(block) = &trigger.action else {
+            return;
+        };
+        let on = trigger.events.first().and_then(|event| {
+            let before = Span {
+                start: 0,
+                end: event.span.start,
+            };
+            self.significant(before).next_back().map(token_span)
+        });
+        let span = on.map(|on| Span {
+            start: on.start,
+            end: block.span.end,
+        });
+        let symbol = span.and_then(|span| self.trigger(span, block.span.start));
+        self.open(symbol, stack);
+        stack.push(Frame::Statements(std::slice::from_ref(&**block).iter()));
+    }
+
     /// `TRIGGER PROCEDURE FOR WRITE OF Customer ...`: the name runs from the
     /// event to the end of the table.
     fn trigger_procedure(&self, span: Span, target: &Identifier) -> Option<OutlineSymbol> {
@@ -780,8 +830,12 @@ impl<'a> Walker<'a> {
 
     /// `{file.i arg}`: the name is the file, as written.
     fn include(&self, path_and_args: &str, span: Span) -> Option<OutlineSymbol> {
-        let file = path_and_args.split_whitespace().next()?;
         let written = self.source.get(span.start as usize..span.end as usize)?;
+        // `~{` escapes the brace: the text is not an include.
+        if written.starts_with('~') {
+            return None;
+        }
+        let file = path_and_args.split_whitespace().next()?;
         let selection = written.find(file).map_or(span, |at| {
             let start = span.start + at as u32;
             Span {

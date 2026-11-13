@@ -3,8 +3,16 @@
 use libfuzzer_sys::fuzz_target;
 use oxabl_pipeline::{OutlineSymbol, outline};
 
+// Rule 7: the most symbols above a symbol.
+const MAX_DEPTH: usize = 32;
+
 // The rules of docs/design/document-outline.md, "Rules that every outline obeys".
-fn check_symbols(source: &str, symbols: &[OutlineSymbol], parent: Option<(u32, u32)>) {
+fn check_symbols(
+    source: &str,
+    symbols: &[OutlineSymbol],
+    parent: Option<(u32, u32)>,
+    depth: usize,
+) {
     let len = source.len();
     let mut previous_end = None;
     for s in symbols {
@@ -37,7 +45,11 @@ fn check_symbols(source: &str, symbols: &[OutlineSymbol], parent: Option<(u32, u
             "rule 4: bad name {:?}: {s:?}",
             s.name
         );
-        check_symbols(source, &s.children, Some((a, b)));
+        assert!(
+            depth <= MAX_DEPTH,
+            "rule 7: {depth} symbols above a symbol: {s:?}"
+        );
+        check_symbols(source, &s.children, Some((a, b)), depth + 1);
     }
 }
 
@@ -52,7 +64,7 @@ fn check(data: &[u8]) {
         Ok(symbols) => symbols,
         Err(p) => panic!("rule 1: outline panicked: {p:?}"),
     };
-    check_symbols(&source, &first, None);
+    check_symbols(&source, &first, None, 0);
     match outline(&source) {
         Ok(second) => assert_eq!(first, second, "rule 5: the outline is not deterministic"),
         Err(p) => panic!("rule 1: outline panicked on the second run: {p:?}"),

@@ -47,8 +47,9 @@ a client maps it with no source map. This has three results:
 | `DEFINE FRAME` | `Frame` | The name | none |
 | `DEFINE BUTTON`, `BROWSE`, `RECTANGLE`, `IMAGE`, `MENU`, `SUB-MENU` | `Widget` | The name | none |
 | `ON ... DO:` (an `ON` statement with a trigger action: a block or one statement) | `Trigger` | The event phrase with its whitespace collapsed to one space, for example `CHOOSE OF btnOk`, at most 80 characters | none |
+| `ON ... DO:` in the `TRIGGERS:` phrase of a `CREATE` widget statement | `Trigger` | The event list, as for `ON` | none |
 | `TRIGGER PROCEDURE FOR WRITE OF Customer` | `Trigger` | `WRITE OF Customer` | `TRIGGER PROCEDURE` |
-| A statement-level `{file.i}` | `Include` | The file name as written | none |
+| A statement-level `{file.i}`. `~{file.i}` has an escaped brace and gives no symbol | `Include` | The file name as written | none |
 | `&SCOPED-DEFINE`, `&GLOBAL-DEFINE` | `PreprocessorDefine` | The macro name | `SCOPED` or `GLOBAL` |
 | A labelled block, `main-loop: DO:` | `Label` | The label | none |
 
@@ -89,6 +90,10 @@ every `&IF` branch, and `ON` blocks. It moves the declarations that it finds
 up to the nearest symbol that contains symbols, or to the top level. Children
 are in source order.
 
+A symbol has at most 32 symbols above it. A symbol that holds symbols and has
+32 above it gives no symbol of its own, and what it holds goes to the 32nd
+symbol. The tree gets no deeper, and no symbol that it holds is lost.
+
 The parameters of a function, method, constructor or event come first, then
 the declarations of the body. A `DEFINE PARAMETER` statement inside a
 procedure body is a child of that procedure.
@@ -109,6 +114,8 @@ The fuzz target `outline` and the tests check these rules:
 5. The same input gives the same output.
 6. The walker does not overflow the stack on any nesting depth that the parser
    accepts.
+7. No symbol has more than 32 symbols above it. A deeper tree is more than the
+   JSON reader of a client accepts.
 
 ## Performance
 
