@@ -5,7 +5,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 max=${MAX_LEN:-65536}
-for target in lex preprocess_parse lint format; do
+for target in lex preprocess_parse lint format outline; do
   dest="$here/corpus/$target"
   mkdir -p "$dest"
   find "$root/resources" "$root/crates" -type f \
@@ -31,7 +31,7 @@ shapes = {
     + "".join(f"&SCOPED-DEFINE a{i + 1} {{&a{i}}}{{&a{i}}}\n" for i in range(24))
     + "{&a24}\n",
 }
-for target in ("lex", "preprocess_parse", "lint", "format"):
+for target in ("lex", "preprocess_parse", "lint", "format", "outline"):
     for name, text in shapes.items():
         (Path(sys.argv[1]) / target / f"shape-{name}").write_text(text)
 PY

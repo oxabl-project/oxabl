@@ -1,7 +1,7 @@
 # Fuzz targets
 
 `cargo-fuzz` targets for the lexer, the preprocessor and parser, the lint
-pipeline and the formatter. The crate is outside the workspace, so
+pipeline, the formatter and the document outline. The crate is outside the workspace, so
 `cargo build --workspace` needs no nightly toolchain. The CI job `Fuzz targets`
 formats and lints the crate on stable, so the targets keep compiling; it does
 not run them.
@@ -12,6 +12,7 @@ not run them.
 | `preprocess_parse` | The raw parse, and the parse of the preprocessed text, never panic. |
 | `lint` | `LintPipeline::run` on one file (preprocess, parse, analyse, every rule) never panics. |
 | `format` | `try_format_source` never panics, and formatting its own output changes nothing. |
+| `outline` | `outline` never panics, its spans and names obey the rules of `docs/design/document-outline.md`, and a second run gives the same outline. |
 
 Each target runs its input with a stack of at least the analysis stack
 (`oxabl_common::stack`, 64 MiB), as the CLI and the daemon do: on a smaller
