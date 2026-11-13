@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.5.0...oxabl_vscode-v0.6.0) (2026-11-13)
+
+
+### Features
+
+* **build:** bind verification to the cache mode and pace schema checks by a time budget ([642c8ce](https://github.com/oxabl-project/oxabl/commit/642c8ce19cd43a2aa336bf61e88ef1d20244e268))
+* **build:** bind verification to the cache mode and pace V2 by a time budget ([1ef6165](https://github.com/oxabl-project/oxabl/commit/1ef616561087ca27bdd69de0408313cd154745de))
+
+
+### Bug Fixes
+
+* **vscode:** show the workspace share that needs no compile in the status bar ([958a086](https://github.com/oxabl-project/oxabl/commit/958a086f9e70671c6d08abc7bcec93f7b9744746))
+* **vscode:** show the workspace share that needs no compile in the status bar ([7f879e9](https://github.com/oxabl-project/oxabl/commit/7f879e9b7920a69187a5995fe889b295d49617fc))
+
 ## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.4.1...oxabl_vscode-v0.5.0) (2026-11-13)
 
 

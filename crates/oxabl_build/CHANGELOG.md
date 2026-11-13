@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.3.0...oxabl_build-v0.4.0) (2026-11-13)
+
+
+### Features
+
+* **build:** bind verification to the cache mode and pace schema checks by a time budget ([642c8ce](https://github.com/oxabl-project/oxabl/commit/642c8ce19cd43a2aa336bf61e88ef1d20244e268))
+* **build:** bind verification to the cache mode and pace V2 by a time budget ([1ef6165](https://github.com/oxabl-project/oxabl/commit/1ef616561087ca27bdd69de0408313cd154745de))
+* **build:** read the private XREF in its text form ([6e9c6a8](https://github.com/oxabl-project/oxabl/commit/6e9c6a8e623dae08ac266e640f2abe47f264d163))
+* **build:** read the private XREF in its text form ([988d3cb](https://github.com/oxabl-project/oxabl/commit/988d3cb50b600a6f97b236d576a6065efa10a0ef))
+* **build:** skip schema imaging when a raw digest shows no change ([85e8b1b](https://github.com/oxabl-project/oxabl/commit/85e8b1b66071a6a2698f86f3e4aa5e899c3f8cc1))
+* **build:** skip schema imaging when a raw digest shows no change ([8180ffb](https://github.com/oxabl-project/oxabl/commit/8180ffb428152d2ecf2e655e356edb0c57e96b0a))
+
+
+### Bug Fixes
+
+* **build:** cover the system tables a unit can read in the schema identity ([05bc807](https://github.com/oxabl-project/oxabl/commit/05bc8071714edbbfe59ca232c80914802a59d694))
+* **build:** cover the system tables a unit can read in the schema identity ([58dafa2](https://github.com/oxabl-project/oxabl/commit/58dafa22ecc066498a39e34a33d4c41ef58bd57d))
+* **build:** release the workspace lock on drop, not only when its descriptor closes ([5e84ddb](https://github.com/oxabl-project/oxabl/commit/5e84ddbc2655b11a4bd53817beeb70daccd926b2))
+* **build:** unlock the workspace lock before closing it ([7303f3e](https://github.com/oxabl-project/oxabl/commit/7303f3e6deeccc618f9769cf738e372a1723a7d7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.3 to 0.3.4
+    * oxabl_index bumped from 5.0.2 to 5.0.3
+    * oxabl_pipeline bumped from 3.4.1 to 3.4.2
+    * oxabl_semantic bumped from 5.0.2 to 5.0.3
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+
 ## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.2.2...oxabl_build-v0.3.0) (2026-11-12)
 
 

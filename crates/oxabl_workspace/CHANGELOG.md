@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.4.0...oxabl_workspace-v3.5.0) (2026-11-13)
+
+
+### Features
+
+* **build:** bind verification to the cache mode and pace schema checks by a time budget ([642c8ce](https://github.com/oxabl-project/oxabl/commit/642c8ce19cd43a2aa336bf61e88ef1d20244e268))
+* **build:** bind verification to the cache mode and pace V2 by a time budget ([1ef6165](https://github.com/oxabl-project/oxabl/commit/1ef616561087ca27bdd69de0408313cd154745de))
+
 ## [3.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.3.0...oxabl_workspace-v3.4.0) (2026-11-11)
 
 

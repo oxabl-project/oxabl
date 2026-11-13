@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.12](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.11...oxabl_wasm-v1.0.12) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.2.0 to 5.3.0
+    * oxabl_pipeline bumped from 3.4.1 to 3.4.2
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.4.1 to 3.4.2
+
 ## [1.0.11](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.10...oxabl_wasm-v1.0.11) (2026-11-12)
 
 
