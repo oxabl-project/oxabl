@@ -36,8 +36,9 @@ pub fn read(path: &Path, format: Format) -> Result<Xref, String> {
     parsed.map_err(|error| format!("the {name} of the compile is unusable: {error}"))
 }
 
-/// Parses one `XREF-XML` document. A `Reference` element with no `Reference-type`, or an
-/// `INCLUDE` with no name, is an error: nothing is guessed.
+/// Parses one `XREF-XML` document. A `Reference` element with no
+/// `Reference-type`, or an `INCLUDE` with no name, is an error: nothing is
+/// guessed.
 pub fn parse(xml: &str) -> Result<Xref, String> {
     let sources = oxabl_effects::xref_xml::source_files(xml).map_err(|error| error.to_string())?;
     let mut xref = Xref {

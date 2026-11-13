@@ -515,7 +515,7 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `xref_text_classes` | The same three class cases with `xref_format = "text"`: the second column names only the unit. |
 | `xref_text_resolution` | `main.p` with a requested text `XREF`: the second column names `src/main.p`, `src/defs.i`, `src/ttrows.i` and equals the `XREF-XML` `Source` list; every fixture unit passes V3 and is stored, with a requested and with the private text `XREF`. |
 | `xref_text_observed_closure` | The text `XREF` of `main.p` has an `INCLUDE` row for `defs.i`, `ttrows.i` and the definitions-only `consts.i`. |
-| `xref_text_unusual_names` | A skipped `&IF` include, a unit with a space in its name and an include path of 300 characters: the text `XREF` reads back and the units are stored. |
+| `xref_text_unusual_names` | A skipped `&IF` include, a unit with a space in its name and an include path of 200 characters: the text `XREF` reads back and the units are stored. |
 | `xref_readers` | The text reader finds every include of the fixture (its `INCLUDE` rows give the name as written, not as resolved); the XML reader finds the includes that hold a reference. |
 | `orphans` | After `SIGKILL` of oxabl during a 3,000-unit build, no `_progres` of that build is alive within 120 s. |
 | `cancel_leaves_no_worker` | `SIGINT` during a build gives exit code 130, and no worker of the build stays alive. |

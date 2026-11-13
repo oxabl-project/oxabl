@@ -178,16 +178,18 @@ fn sources_of_xml(target: &crate::common::openedge::Target) -> Vec<String> {
     sources(&workspace.read("build/xref/main.p.xref.xml"))
 }
 
-/// Names that the text format could break: a skipped include, a space in a
-/// unit name, and a path of more than 300 characters. The build is cached
-/// with the private text `XREF`, so the read check read each file back.
+/// Names that the text format could break: a skipped include (the unit is then
+/// keyed from the text `XREF`, as no include of it has a file), a space in a
+/// unit name, and an include path of about 200 characters (the compiler
+/// refuses a longer include name). The build is cached with the private text
+/// `XREF`, so the read check read each file back.
 #[test]
 #[ignore = "needs a real AVM; see the module docs"]
 fn xref_text_unusual_names() {
     let target = setup();
     let mut workspace = compile_workspace(&target);
     workspace.set_outputs("xref = \"build/xref\"\nxref_format = \"text\"");
-    let deep = format!("{0}/{0}/{0}", "d".repeat(100));
+    let deep = format!("{0}/{0}/{0}", "d".repeat(65));
     workspace.write(
         &format!("src/{deep}/deep.i"),
         "DEFINE VARIABLE deepvar AS INTEGER NO-UNDO.\nASSIGN deepvar = 1.\n",
@@ -211,7 +213,22 @@ fn xref_text_unusual_names() {
         text_sources(&text);
     }
     assert_eq!(report["summary"]["failed"], 0, "{report}");
-    assert_eq!(report["cache"]["stored"], 2, "{report}");
+    assert_eq!(
+        report["cache"]["stored"], 1,
+        "the unit with a space in its name is stored: {report}"
+    );
+    let plan = workspace.plan();
+    let skip = plan["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|unit| unit["path"] == "src/skip.p")
+        .unwrap();
+    assert_eq!(
+        skip["closure"], "observed",
+        "an include in a branch that is not taken has no file, so the unit is keyed from the text XREF: {plan}"
+    );
+    assert!(skip["key"].is_string(), "{plan}");
     let unit = text_sources(&workspace.read("build/xref/two words.p.xref"));
     assert!(
         unit.iter().any(|file| file.ends_with("/deep.i")),
