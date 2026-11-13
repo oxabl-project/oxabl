@@ -365,7 +365,9 @@ holds for a deleted include, a new class file and a renamed directory.
 - **One writer.** `oxabl build` takes an exclusive `flock` on `<state>/build.lock` before it
   opens the store for writing, and holds it to the end. The file holds the process id for
   the message. The kernel releases the lock when the process dies, so a stale lock is not
-  possible. A second `oxabl build` stops at once with exit code 3: `another oxabl build
+  possible. A build that ends unlocks the file before it closes it: a child that another
+  thread forked meanwhile holds a copy of the descriptor until it execs, and a close alone
+  would leave the lock taken for that long. A second `oxabl build` stops at once with exit code 3: `another oxabl build
   (pid 4711) holds .oxabl/build/build.lock`. `--wait-lock <seconds>` waits instead.
 - **Readers.** `oxabl build --plan` tries the lock without waiting. With the lock, it runs the
   refresh and commits it, and the next build starts from there. Without the lock, it runs
