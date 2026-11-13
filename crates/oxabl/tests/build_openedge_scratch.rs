@@ -627,11 +627,7 @@ fn the_raw_digest_on_a_served_database() {
         let workspace = raw_workspace(&served, workers);
         digests.push(raw_build(&workspace).1);
         if workers == 8 {
-            assert_eq!(
-                raw_build(&workspace).0,
-                true,
-                "the second build of eight workers"
-            );
+            assert!(raw_build(&workspace).0, "the second build of eight workers");
             let output = scratch.shell(
                 &db,
                 &format!(
