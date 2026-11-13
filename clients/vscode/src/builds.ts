@@ -4,6 +4,7 @@
 // processes, the watchers and the UI.
 
 import * as cp from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
@@ -15,6 +16,9 @@ import {
   MessageStore,
   finishedText,
   renderStatus,
+  shouldWarnUnkeyed,
+  unkeyedFromReport,
+  unkeyedText,
   type BuildMessage,
   type RootStatus,
 } from "./progress";
@@ -36,6 +40,8 @@ export interface BuildDeps {
   prepare(): Promise<string | undefined>;
   /** The binary to read the configuration with, without the checks of `prepare`. */
   binary(): string | undefined;
+  /** A directory of the extension's own, for the build reports. */
+  storageDir: string;
 }
 
 class Root {
@@ -46,6 +52,8 @@ class Root {
   child: cp.ChildProcess | undefined;
   /** Set when the extension asked the running build to stop. */
   cancelRequested = false;
+  /** Units without a compile key in the last report. */
+  unkeyed = 0;
   constructor(
     readonly dir: string,
     hooks: ConstructorParameters<typeof Scheduler>[0],
@@ -64,6 +72,8 @@ export class BuildController implements vscode.Disposable {
   private readonly spinner = vscode.window.createStatusBarItem("oxabl.build.spinner", vscode.StatusBarAlignment.Left, 0.001);
   private readonly subscriptions: vscode.Disposable[] = [];
   private readonly shownErrors = new Set<string>();
+  /** Reasons for units without a compile key that a warning named in this window. */
+  private readonly shownUnkeyed = new Set<string>();
   private started = false;
   private discovering: Promise<void> = Promise.resolve();
   /** Modification time and size of each input file at its last event. */
@@ -271,7 +281,22 @@ export class BuildController implements vscode.Disposable {
       return;
     }
 
-    const args = ["build", "--root", root.dir, "--events", "--yield", "--wait-lock", "3600", ...this.extraArgs()];
+    const extra = this.extraArgs();
+    // The report says which units have no compile key. A report the person asks
+    // for in `oxabl.build.args` serves as well.
+    const asked = extra.indexOf("--report");
+    const report = asked >= 0 ? extra[asked + 1] : this.reportPath(root);
+    const own = asked >= 0 ? [] : ["--report", report];
+    if (report) {
+      const file = path.resolve(root.dir, report);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true }).catch(() => undefined);
+      await fs.promises.rm(file, { force: true }).catch(() => undefined);
+    }
+    if (root.cancelRequested) {
+      root.scheduler.exited();
+      return;
+    }
+    const args = ["build", "--root", root.dir, "--events", "--yield", "--wait-lock", "3600", ...own, ...extra];
     this.deps.log.info(`build: ${binary} ${args.join(" ")}`);
     this.output.appendLine(`$ oxabl ${args.join(" ")}`);
     const progress = new BuildProgress();
@@ -294,7 +319,7 @@ export class BuildController implements vscode.Disposable {
         this.applyMessages(root, effect.unit, effect.kind === "messages" ? effect.messages : []);
       }
       if (progress.total !== undefined) {
-        root.status = { phase: "building", progress };
+        root.status = { phase: "building", progress, unkeyed: root.unkeyed };
       }
       this.refreshStatus();
     });
@@ -311,7 +336,41 @@ export class BuildController implements vscode.Disposable {
       const exit = code ?? progress.summary?.exit ?? -1;
       this.deps.log.info(`build: ${root.dir} exited ${exit}${root.cancelRequested ? " (cancelled)" : ""}`);
       this.finish(root, progress, exit, Date.now() - started, spawnError ?? firstError);
+      if (report && (exit === 0 || exit === 1)) {
+        void this.readReport(root, path.resolve(root.dir, report), progress.units);
+      }
     });
+  }
+
+  private reportPath(root: Root): string {
+    const id = crypto.createHash("sha256").update(root.dir).digest("hex").slice(0, 16);
+    return path.join(this.deps.storageDir, "reports", `${id}.json`);
+  }
+
+  /** Warn once for each reason that units have no compile key: the project's setup is not complete. */
+  private async readReport(root: Root, file: string, units: number): Promise<void> {
+    let text: string;
+    try {
+      text = await fs.promises.readFile(file, "utf8");
+    } catch (err) {
+      this.deps.log.warn(`build: cannot read the report ${file}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const unkeyed = unkeyedFromReport(text);
+    root.unkeyed = unkeyed?.count ?? 0;
+    if (!unkeyed) {
+      return;
+    }
+    this.deps.log.warn(`build: ${unkeyed.count} units have no compile key; most often: ${unkeyed.reason}`);
+    const key = `${root.dir}\n${unkeyed.reason}`;
+    if (!shouldWarnUnkeyed(unkeyed, units) || this.shownUnkeyed.has(key)) {
+      return;
+    }
+    this.shownUnkeyed.add(key);
+    const choice = await vscode.window.showWarningMessage(unkeyedText(unkeyed), "Show Build Log");
+    if (choice) {
+      this.showLog();
+    }
   }
 
   private finish(root: Root, progress: BuildProgress, exit: number, elapsedMs: number, reason: string | undefined): void {

@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { BuildProgress, MessageStore, finishedText, formatDuration, renderStatus } from "./progress";
+import {
+  BuildProgress,
+  MessageStore,
+  finishedText,
+  formatDuration,
+  renderStatus,
+  shouldWarnUnkeyed,
+  unkeyedFromReport,
+  unkeyedText,
+} from "./progress";
 
 const apply = (p: BuildProgress, ...events: object[]) => events.flatMap((e) => p.apply(e));
 
@@ -107,7 +116,7 @@ describe("finishedText", () => {
     for (let i = 0; i < 8; i++) apply(p, { event: "unit-fetched", path: `${i}.p`, cache: "local" });
     apply(p, { event: "summary", compiled: 2, failed: 0, fetched: 8, exit: 0 });
     expect(finishedText(p, 72_000)).toBe(
-      "oxabl build finished: 10 units, 80% from cache (8 local, 0 remote), 2 compiled in 1m 12s",
+      "oxabl build finished in 1m 12s: 10 of 12 units rebuilt, 80% from cache (8 local, 0 remote), 2 compiled",
     );
   });
 
@@ -120,5 +129,58 @@ describe("finishedText", () => {
   it("formats durations", () => {
     expect(formatDuration(59_400)).toBe("59s");
     expect(formatDuration(61_000)).toBe("1m 1s");
+  });
+});
+
+describe("unkeyedFromReport", () => {
+  const dlc = "the PROPATH entry $DLC/tty needs [workspace.sources].dlc";
+  it("counts units whose plan reason or compile note says they have no key, once each", () => {
+    const report = {
+      units: [
+        { path: "a.p", reason: `unverified: ${dlc}` },
+        { path: "b.p", reason: "unkeyable: class-with-two-propaths" },
+        { path: "c.p", reason: "source-changed" },
+      ],
+      notes: [
+        `a.p: no key from what the compiler read: ${dlc}; the unit compiles at each build`,
+        `d.p: no key from what the compiler read: ${dlc}; the unit compiles at each build`,
+        "local: 3 sets offered, 3 stored",
+      ],
+    };
+    expect(unkeyedFromReport(JSON.stringify(report))).toEqual({ count: 3, reason: dlc, reasonCount: 2 });
+  });
+
+  it("is undefined when every unit has a key or the report is not JSON", () => {
+    expect(unkeyedFromReport(JSON.stringify({ units: [{ path: "a.p", reason: "new" }], notes: [] }))).toBeUndefined();
+    expect(unkeyedFromReport("not json")).toBeUndefined();
+  });
+
+  it("tells how to finish the setup when the reason is the DLC copy", () => {
+    const text = unkeyedText({ count: 2143, reason: dlc, reasonCount: 2143 });
+    expect(text).toContain("2,143 units have no compile key");
+    expect(text).toContain(dlc);
+    expect(text).toContain("OXABL_DLC_SOURCES");
+  });
+});
+
+describe("shouldWarnUnkeyed", () => {
+  it("warns for a missing setting, or a tenth of the workspace, not for a few encrypted units", () => {
+    const missing = { count: 3, reason: "the PROPATH entry $DLC/tty needs [workspace.sources].dlc", reasonCount: 3 };
+    const encrypted = { count: 3, reason: "ms/encryptor.p looks encrypted, and the compiler does not report the includes of encrypted source", reasonCount: 1 };
+    expect(shouldWarnUnkeyed(missing, 10_300)).toBe(true);
+    expect(shouldWarnUnkeyed(encrypted, 10_300)).toBe(false);
+    expect(shouldWarnUnkeyed({ ...encrypted, count: 1_030 }, 10_300)).toBe(true);
+  });
+});
+
+describe("the building tooltip", () => {
+  it("splits this build from the workspace", () => {
+    const p = new BuildProgress();
+    apply(p, { event: "build-started", rebuild: 2578, units: 10300 }, { event: "unit-fetched", path: "a.p", cache: "remote" });
+    const tooltip = renderStatus([{ phase: "building", progress: p, unkeyed: 3 }])?.tooltip ?? "";
+    expect(tooltip).toContain("This build: 2,578 units to rebuild, 1 done");
+    expect(tooltip).toContain("from the remote cache: 1");
+    expect(tooltip).toContain("Workspace: 10,300 units, 7,722 up to date (75%), not rebuilt");
+    expect(tooltip).toContain("3 units have no compile key");
   });
 });

@@ -113,7 +113,7 @@ spinner turns next to it:
 | Item | Meaning |
 | --- | --- |
 | `oxabl: preparing` | The build starts. |
-| `oxabl 120/450 · 82% cached` | Units done (from a cache or compiled) of the units to rebuild, and the share of the done units that a cache gave. The tooltip splits local and remote, compiled and failed. |
+| `oxabl 120/450 · 82% cached` | Units done (from a cache or compiled) of the units this build rebuilds, and the share of the done units that a cache gave. Units that are up to date are not rebuilt and do not count. The tooltip has both views: this build (local and remote cache, compiled, failed) and the workspace (units up to date). |
 | `oxabl` with a check mark | The build succeeded. It hides after 3 seconds. |
 | `oxabl: 2 failed` | Units failed. It stays until the next successful build. Click it to open the Problems view. |
 | warning | The build could not run (exit code 2, 3 or other). The tooltip has the first line of its error output. Click it to open the build log. |
@@ -124,6 +124,15 @@ The compiler messages of each unit show in the Problems view, as the source
 clears those of the units it took from a cache. A build that you cancel keeps
 the messages of the units it did not reach. A configuration error (exit code
 2) also shows an error message with **Show Build Log**.
+
+A unit without a compile key compiles at every build, and no cache holds
+it. The report of each build (`--report`) says which units have none. When
+the reason names a setting that is missing, such as `[workspace.sources].dlc`,
+or when a tenth of the workspace has no key, one warning per window names the
+count and the reason: the setup of the project is not complete. A few units
+of encrypted source show only in the tooltip and the build log. The variables
+of a login profile reach the build only through VS Code: after you change
+`OXABL_DLC_SOURCES`, start VS Code again from a session that has it.
 
 A build starts one worker for each CPU, at most 8. To use every core, set
 `count` in `oxabl.toml`, or pass `--workers` for your machine only with

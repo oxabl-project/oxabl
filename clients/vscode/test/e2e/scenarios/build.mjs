@@ -106,7 +106,7 @@ export async function buildOpen(ctx) {
     const text = (await toasts(page)).find((t) => t.includes("oxabl build finished")) ?? "";
     check(
       `${name}: the notification names the units, the cache share and the time`,
-      /^oxabl build finished: 10 units, 60% from cache \(4 local, 2 remote\), 4 compiled in \d+s$/.test(text),
+      /^oxabl build finished in \d+s: 10 of 12 units rebuilt, 60% from cache \(4 local, 2 remote\), 4 compiled$/.test(text),
       `got "${text}"`,
     );
     // The check mark stays for 3 s, then the item hides.
@@ -126,7 +126,11 @@ export async function buildOpen(ctx) {
     const args = starts[0]?.args ?? [];
     check(
       `${name}: oxabl build runs with --events --yield --wait-lock 3600 in the root`,
-      args.join(" ") === `build --root ${profile.workspace} --events --yield --wait-lock 3600` && starts[0].cwd === profile.workspace,
+      args.slice(0, 7).join(" ") === `build --root ${profile.workspace} --events --yield --wait-lock 3600` &&
+        args[7] === "--report" &&
+        path.isAbsolute(args[8] ?? "") &&
+        args.length === 9 &&
+        starts[0].cwd === profile.workspace,
       `${args.join(" ")} in ${starts[0]?.cwd}`,
     );
     const config = log().filter((l) => l.event === "invoke" && l.args.includes("--print-config"));
@@ -300,6 +304,35 @@ export async function buildExternalPreemption(ctx) {
     );
     check(`${name}: the extension sent no signal`, signals(log()).length === 0);
     check(`${name}: exactly one more build was started`, buildStarts(log()).length === 2, `${buildStarts(log()).length}`);
+  });
+}
+
+/** Units without a compile key: one warning names the count and the reason, and a later build does not repeat it. */
+export async function buildUnkeyed(ctx) {
+  const name = "build-unkeyed";
+  const dlc = "the PROPATH entry $DLC/tty needs [workspace.sources].dlc";
+  const report = {
+    units: [
+      { path: "src/a.p", reason: `unverified: ${dlc}` },
+      { path: "src/b.p", reason: `unverified: ${dlc}` },
+      { path: "src/c.p", reason: "unkeyable: class-with-two-propaths" },
+    ],
+    notes: [`src/d.p: no key from what the compiler read: ${dlc}; the unit compiles at each build`],
+  };
+  const config = { builds: [{ ...QUICK_BUILD, report }] };
+  await session(ctx, name, { config }, async ({ page, log }) => {
+    await waitForText(page, "4 units have no compile key", 60_000);
+    await screenshot(page, name);
+    const warning = (await toasts(page)).find((t) => t.includes("no compile key")) ?? "";
+    check(`${name}: the warning names the reason and how to finish the setup`, warning.includes(dlc) && warning.includes("OXABL_DLC_SOURCES"), warning);
+    // VS Code folds a notification into an equal one on screen: clear it, so a repeat would show.
+    await runCommand(page, "Notifications: Clear All Notifications");
+    await focusEditor(page);
+    await editAndSave(page);
+    await waitForExits(`${name}: the build after a save`, log, 2);
+    await sleep(2_000);
+    const shown = (await toasts(page)).filter((t) => t.includes("no compile key")).length;
+    check(`${name}: a second build with the same reason shows no second warning`, shown === 0, `${shown} warnings`);
   });
 }
 
