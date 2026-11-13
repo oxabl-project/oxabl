@@ -218,8 +218,11 @@ the VSIX is not compared with the tag; the release job checks that the tag
 names the packaged version before it uploads.
 
 If the `vsix` job fails, the release has no assets and no extension offers
-it. Re-run the failed job in the same workflow run: a `workflow_dispatch` run
-never uploads, and a new push does not create the release again.
+it. Re-run the failed job in the same workflow run. If the job did not run at
+all (Release Please failed after it created the release), run the workflow by
+hand with the input `tag` set to the release tag (`oxabl_vscode-vX.Y.Z`): the
+job then builds that tag and uploads. A manual run without `tag` uploads
+nothing, and a new push does not create the release again.
 
 ## The CLI and the build loop
 
