@@ -1001,8 +1001,8 @@ fn the_rules_checker_can_fail() {
 fn rules_hold_for_every_test_fixture_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
-    for dir in fixture_roots(&root) {
-        collect(&dir, &mut files);
+    for (dir, every_file) in fixture_roots(&root) {
+        collect(&dir, every_file, &mut files);
     }
     assert!(!files.is_empty(), "no fixture files found under {root:?}");
     stack::run(|| {
@@ -1024,16 +1024,18 @@ fn rules_hold_for_every_test_fixture_file() {
     eprintln!("outline rules checked on {} files", files.len());
 }
 
-fn fixture_roots(root: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![root.join("fuzz/findings")];
+/// The directories to sweep, and whether every file in one counts: fuzz
+/// findings are raw inputs and mostly have no extension.
+fn fixture_roots(root: &Path) -> Vec<(PathBuf, bool)> {
+    let mut roots = vec![(root.join("fuzz/findings"), true)];
     let crates = std::fs::read_dir(root.join("crates")).expect("crates dir");
     for entry in crates {
-        roots.push(entry.unwrap().path().join("tests/fixtures"));
+        roots.push((entry.unwrap().path().join("tests/fixtures"), false));
     }
     roots
 }
 
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect(dir: &Path, every_file: bool, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -1041,7 +1043,9 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     entries.sort();
     for path in entries {
         if path.is_dir() {
-            collect(&path, out);
+            collect(&path, every_file, out);
+        } else if every_file {
+            out.push(path);
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
             && ["p", "cls", "i", "w"].contains(&ext.to_ascii_lowercase().as_str())
         {

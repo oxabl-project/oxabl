@@ -301,6 +301,11 @@ impl<'a> Walker<'a> {
                         (name, format!("BUFFER FOR {}", target.name))
                     }
                 };
+                // The parser names an unnamed prototype parameter `$N`; an ABL
+                // name never starts with `$`.
+                if name.name.starts_with('$') {
+                    return;
+                }
                 let symbol = self.named(OutlineKind::Parameter, name, Some(detail), span);
                 self.emit(symbol);
             }
@@ -538,17 +543,18 @@ impl<'a> Walker<'a> {
                 && on_boundary(selection.start)
                 && on_boundary(selection.end)
         });
-        let name = clean_name(name);
         debug_assert!(
-            valid && name.is_some(),
+            valid,
             "outline: no valid symbol for {kind:?} {name:?}: span {span:?}, selection {selection:?}, source length {}",
             self.source.len()
         );
         if !valid {
             return None;
         }
+        // A name of only whitespace (a vertical tab lexes as part of a name)
+        // gives no symbol.
         Some(OutlineSymbol {
-            name: name?,
+            name: clean_name(name)?,
             detail,
             kind,
             span,
