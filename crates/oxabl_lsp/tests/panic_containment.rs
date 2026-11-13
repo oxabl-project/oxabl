@@ -379,3 +379,44 @@ fn formatting_returns_no_edits_when_the_formatter_panics() {
     shutdown(&client);
     assert!(handle.join().unwrap().unwrap());
 }
+
+/// A panic in the outline is a request failure, not an empty symbol list, and
+/// the loop keeps answering.
+#[test]
+fn document_symbol_fails_the_request_when_the_outline_panics() {
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+
+    handshake(&client);
+
+    let uri = Uri::from_str("file:///panic-outline.p").unwrap();
+    open(&client, &uri, &panicking_source(panic_sites::OUTLINE));
+
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: RequestId::from(7),
+            method: "textDocument/documentSymbol".to_string(),
+            params: serde_json::json!({ "textDocument": { "uri": uri.as_str() } }),
+        }))
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let now = std::time::Instant::now();
+        assert!(now < deadline, "no documentSymbol response arrived");
+        match client.receiver.recv_timeout(deadline - now) {
+            Ok(Message::Response(resp)) if resp.id == RequestId::from(7) => {
+                let error = resp.error.as_ref().expect("an outline panic must be an error");
+                assert_eq!(error.code, lsp_server::ErrorCode::RequestFailed as i32);
+                assert!(resp.result.is_none(), "no result with the error: {resp:?}");
+                break;
+            }
+            Ok(_) => continue,
+            Err(_) => panic!("no documentSymbol response arrived"),
+        }
+    }
+
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
+}
