@@ -207,7 +207,8 @@ impl<'a> Walker<'a> {
                 name,
                 ..
             } => {
-                let mut detail = String::from(access_name(*access));
+                let mut detail = String::with_capacity(32);
+                detail.push_str(access_name(*access));
                 for (written, word) in [
                     (*is_static, "STATIC"),
                     (*is_abstract, "ABSTRACT"),
@@ -716,13 +717,22 @@ impl<'a> Walker<'a> {
         };
         let mut name = self.source[first.start..first.end].to_string();
         let mut end = first.end;
+        // The name is cut to `TRIGGER_NAME_MAX` characters, so a long phrase is not joined whole.
+        // Joined bytes are at least joined characters.
         for token in tokens {
+            if name.len() > TRIGGER_NAME_MAX {
+                break;
+            }
             join_token(self.source, &mut name, end, token);
             end = token.end;
         }
+        let last = self
+            .significant(phrase)
+            .rfind(|t| t.start >= on.end as usize)
+            .unwrap_or(first);
         let selection = Span {
             start: first.start as u32,
-            end: end as u32,
+            end: last.end as u32,
         };
         let name = truncate_chars(&name, TRIGGER_NAME_MAX);
         self.make(OutlineKind::Trigger, &name, None, span, Some(selection))
