@@ -66,6 +66,8 @@ with its parameters as children.
 ## Spans
 
 - `span` is the whole declaration, including its `END ...` and the terminator.
+  Exception: each name of a `VAR` with several names spans `name [= initial]`,
+  so the symbols do not overlap.
 - `selection_span` is the name. A constructor or a destructor has no name: its
   `selection_span` is the first keyword of the statement. A trigger's
   `selection_span` is the event phrase.
