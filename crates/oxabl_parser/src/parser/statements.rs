@@ -855,8 +855,14 @@ impl Parser<'_> {
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
         if self.check(Kind::KwEnum) {
             self.synchronize(); // skip to end of header line
-            // Skip until END ENUM.
+            // Skip until END ENUM, which the lexer makes as `END` and `ENUM`.
             while !self.at_end() {
+                if self.check(Kind::End) && self.check_at(1, Kind::KwEnum) {
+                    self.advance();
+                    self.advance();
+                    self.expect_period("Expected '.' after END ENUM")?;
+                    break;
+                }
                 if self.check(Kind::EndEnum) {
                     self.advance();
                     self.expect_period("Expected '.' after END ENUM")?;
