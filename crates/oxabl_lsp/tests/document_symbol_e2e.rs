@@ -425,3 +425,27 @@ fn crlf_and_lone_cr_still_break_lines() {
         finish(&client, handle);
     }
 }
+
+// The server runs on an analysis stack, as it does in the daemon.
+#[test]
+fn a_deeply_nested_document_gets_an_answer_and_the_server_survives() {
+    let (server, client) = Connection::memory();
+    let handle = oxabl_common::stack::builder()
+        .spawn(move || oxabl_lsp::serve(&server))
+        .unwrap();
+    handshake(&client, PositionEncodingKind::UTF16, true);
+    let uri = Uri::from_str("file:///deep.p").unwrap();
+    let depth = 5000;
+    let mut text = "IF TRUE THEN DO:\n".repeat(depth);
+    text.push_str("DEFINE VARIABLE v AS INTEGER NO-UNDO.\n");
+    text.push_str(&"END.\n".repeat(depth));
+    text.push_str("PROCEDURE p:\nEND PROCEDURE.\n");
+    open(&client, &uri, &text);
+    let response = request(&client, 2, &uri);
+    assert!(response.error.is_none(), "{response:?}");
+    // The server answers the next request too.
+    let next = Uri::from_str("file:///after.p").unwrap();
+    open(&client, &next, "PROCEDURE q:\nEND PROCEDURE.\n");
+    assert_eq!(nested(request(&client, 3, &next))[0].name, "q");
+    finish(&client, handle);
+}
