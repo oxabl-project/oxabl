@@ -2,7 +2,8 @@
 
 The extension (`clients/vscode`) has three parts. A TextMate grammar
 highlights ABL with no other extension and no `oxabl` binary. A language
-client starts `oxabl lsp` for format-on-save and diagnostics when the binary
+client starts `oxabl lsp` for format-on-save, diagnostics and the document
+outline when the binary
 is there. A self-update keeps the extension current, because it is not on the
 Marketplace. This note records how each part works and why.
 
@@ -131,7 +132,10 @@ From `clients/vscode`:
 - `xvfb-run -a pnpm run test:e2e` — the packaged VSIX in a downloaded VS Code:
   activation, the colours that the editor renders, Markdown code blocks, a
   missing binary (a line in the output channel, no message), the self-update
-  against a fake GitHub API, and screenshots. It removes every `oxabl` from
+  against a fake GitHub API, the outline (Outline view, breadcrumbs and "Go
+  to Symbol in File") from a real `oxabl` binary, and screenshots. The
+  `outline` scenario needs `OXABL_E2E_OXABL` and `OXABL_E2E_RUNTIME` and fails
+  without them. It removes every `oxabl` from
   `PATH` and sets `VSCODE_CLI=1` (otherwise VS Code reads the login shell's
   `PATH` and starts a real language server), and fails when a scenario leaves
   a process running.

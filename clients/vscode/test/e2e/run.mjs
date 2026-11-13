@@ -8,6 +8,7 @@ import { check, failures, total } from "./lib/report.mjs";
 import { manifestVersion, newerVsix, packagedVsix } from "./lib/vsix.mjs";
 import { VSCODE_VERSION, downloadVSCode, leakedProcesses, takeProfiles } from "./lib/vscode.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
+import { outline } from "./scenarios/outline.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
   updateAuto,
@@ -27,6 +28,7 @@ const SCENARIOS = [
   ["highlight-p", highlightP],
   ["highlight-cls", highlightCls],
   ["markdown", markdown],
+  ["outline", outline],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],

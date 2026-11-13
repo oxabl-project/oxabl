@@ -1,0 +1,21 @@
+/* A made-up order screen: declarations for the outline. */
+DEFINE VARIABLE cShopName AS CHARACTER NO-UNDO.
+
+DEFINE TEMP-TABLE ttOrder NO-UNDO
+  FIELD OrderNum AS INTEGER
+  FIELD OrderTotal AS DECIMAL.
+
+DEFINE BUTTON btnOk LABEL "OK".
+
+ON CHOOSE OF btnOk DO:
+  MESSAGE "chosen" VIEW-AS ALERT-BOX.
+END.
+
+PROCEDURE ShowOrders:
+  DEFINE VARIABLE iCount AS INTEGER NO-UNDO.
+  iCount = 1.
+END PROCEDURE.
+
+FUNCTION AddTax RETURNS DECIMAL (INPUT pdNet AS DECIMAL):
+  RETURN pdNet * 1.2.
+END FUNCTION.

@@ -217,6 +217,13 @@ jobs:
         working-directory: clients/vscode
     steps:
       - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      # The outline scenario runs the real language server.
+      - name: Build oxabl
+        working-directory: .
+        run: cargo build -p oxabl --locked
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -230,9 +237,14 @@ jobs:
           path: clients/vscode/.vscode-test
           key: vscode-test-${{ runner.os }}-${{ hashFiles('clients/vscode/test/e2e/lib/vscode.mjs') }}
       # The packaged VSIX in a real VS Code: highlighting, the Markdown
-      # injection, the missing-binary warning and the self-update against a
-      # fake GitHub API.
-      - run: xvfb-run -a pnpm run test:e2e
+      # injection, the missing-binary warning, the self-update against a
+      # fake GitHub API and the outline from the real server.
+      - run: |
+          mkdir -p /tmp/oxrt
+          xvfb-run -a pnpm run test:e2e
+        env:
+          OXABL_E2E_OXABL: ${{ github.workspace }}/target/debug/oxabl
+          OXABL_E2E_RUNTIME: /tmp/oxrt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

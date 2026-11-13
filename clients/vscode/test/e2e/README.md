@@ -19,6 +19,7 @@ into `.vscode-test/`.
 | --- | --- |
 | `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that a missing binary shows no message and is logged to the `oxabl` output channel. |
 | `markdown` | Keywords in a fenced `abl` block get colours. Prose around the block does not. |
+| `outline` | A real `oxabl` (`OXABL_E2E_OXABL`, with a short `OXABL_E2E_RUNTIME` directory) in `outline.p` and `OutlineDemo.cls`. The Outline view lists the symbols in the right tree (fields under the temp-table, parameter under the function, members under the class) and shows a new procedure after an edit. "Go to Symbol in File" lists the symbols, and choosing one puts the cursor on its name. The breadcrumbs show the class and the method at the cursor. It fails without the binary. |
 | `update-auto` | The extension installs a newer release from the fake API and sends the right headers. |
 | `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |
 | `update-notify` | The `notify` mode shows a message and installs nothing. |

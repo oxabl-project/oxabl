@@ -23,6 +23,11 @@ you also get:
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
   applies at once, with no reload.
+- **Document outline.** The Outline view, the breadcrumbs, "Go to Symbol in
+  File" (`Ctrl+Shift+O`) and sticky scroll show the declarations of the file:
+  classes and their members, procedures, functions, temp-tables with their
+  fields, variables, buffers and `ON` triggers. The outline reads the file as
+  written, so declarations in an include file do not show.
 
 The language server runs on Linux and macOS. The daemon needs Unix sockets.
 On Windows, open the folder in a WSL window (the WSL extension). Then the
