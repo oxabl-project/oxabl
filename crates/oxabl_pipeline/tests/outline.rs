@@ -462,6 +462,66 @@ Trigger CHOOSE OF btnCancel @\"CHOOSE   OF\\n   btnCancel\"
 }
 
 #[test]
+fn computed_accessors_hold_their_declarations_in_source_order() {
+    let src = r#"CLASS C:
+    DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO
+    GET():
+        DEFINE VARIABLE inGet AS INTEGER NO-UNDO.
+        RETURN 1.
+    END GET.
+    SET (INPUT pv AS INTEGER):
+        DEFINE VARIABLE inSet AS INTEGER NO-UNDO.
+    END SET.
+    DEFINE PUBLIC PROPERTY Q AS INTEGER NO-UNDO
+    SET (INPUT qv AS INTEGER):
+        DEFINE VARIABLE qSet AS INTEGER NO-UNDO.
+    END SET.
+END CLASS.
+"#;
+    assert_tree(
+        src,
+        "
+Class C @\"C\"
+  Property P [PUBLIC INTEGER] @\"P\"
+    Variable inGet [INTEGER] @\"inGet\"
+    Parameter pv [INPUT INTEGER] @\"pv\"
+    Variable inSet [INTEGER] @\"inSet\"
+  Property Q [PUBLIC INTEGER] @\"Q\"
+    Parameter qv [INPUT INTEGER] @\"qv\"
+    Variable qSet [INTEGER] @\"qSet\"
+",
+    );
+}
+
+#[test]
+fn auto_property_has_no_children() {
+    let src = "CLASS C:\n    DEFINE PUBLIC PROPERTY P AS INTEGER NO-UNDO GET. SET.\nEND CLASS.\n";
+    assert_tree(
+        src,
+        "
+Class C @\"C\"
+  Property P [PUBLIC INTEGER] @\"P\"
+",
+    );
+}
+
+#[test]
+fn single_statement_on_is_a_trigger_and_revert_and_persistent_run_are_not() {
+    let src = r#"ON CHOOSE OF b MESSAGE "x".
+ON CHOOSE OF b REVERT.
+ON CHOOSE OF b PERSISTENT RUN p.p.
+"#;
+    assert_tree(
+        src,
+        "
+Trigger CHOOSE OF b @\"CHOOSE OF b\"
+",
+    );
+    let symbols = run(src);
+    assert_eq!(slice(src, symbols[0].span), "ON CHOOSE OF b MESSAGE \"x\".");
+}
+
+#[test]
 fn long_trigger_name_is_cut_at_80_characters() {
     let events: Vec<String> = (0..12).map(|i| format!("CHOOSE OF button{i}")).collect();
     let src = format!("ON {} DO:\nEND.\n", events.join(" OR "));

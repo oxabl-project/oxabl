@@ -46,7 +46,7 @@ a client maps it with no source map. This has three results:
 | `DEFINE STREAM` | `Stream` | The name | none |
 | `DEFINE FRAME` | `Frame` | The name | none |
 | `DEFINE BUTTON`, `BROWSE`, `RECTANGLE`, `IMAGE`, `MENU`, `SUB-MENU` | `Widget` | The name | none |
-| `ON ... DO:` (an `ON` statement with a block) | `Trigger` | The event phrase with its whitespace collapsed to one space, for example `CHOOSE OF btnOk`, at most 80 characters | none |
+| `ON ... DO:` (an `ON` statement with a trigger action: a block or one statement) | `Trigger` | The event phrase with its whitespace collapsed to one space, for example `CHOOSE OF btnOk`, at most 80 characters | none |
 | `TRIGGER PROCEDURE FOR WRITE OF Customer` | `Trigger` | `WRITE OF Customer` | `TRIGGER PROCEDURE` |
 | A statement-level `{file.i}` | `Include` | The file name as written | none |
 | `&SCOPED-DEFINE`, `&GLOBAL-DEFINE` | `PreprocessorDefine` | The macro name | `SCOPED` or `GLOBAL` |
@@ -58,7 +58,8 @@ name `CONSTRUCTOR` or `DESTRUCTOR`.
 A detail is `None` when the table says "none". Keywords in a detail are in
 upper case. Type names and other names are as written.
 
-An `ON` statement with no block (`ON F1 HELP.`) is not a symbol. A function
+An `ON` statement with no trigger action is not a symbol. This covers a key
+remap (`ON F1 HELP.`), `REVERT` and `PERSISTENT RUN`. A function
 prototype (`FORWARD`, `IN`, `MAP TO`) is not a symbol when the same file
 defines a function with the same name (case-insensitive). Otherwise it shows,
 with its parameters as children.
@@ -77,8 +78,10 @@ with its parameters as children.
 
 These symbols contain other symbols: `Class`, `Interface`, `Procedure`,
 `Function`, `Method`, `Constructor`, `Destructor`, `Trigger` (an `ON` block),
-`Label`, `TempTable` (its fields), `Event` (its parameters) and a function
-prototype (its parameters).
+`Property` with a computed accessor (the `SET` parameters and the declarations
+of its `GET` and `SET` bodies), `Label`, `TempTable` (its fields), `Event`
+(its parameters) and a function prototype (its parameters). A property with
+only `GET.` or `SET.` has no children.
 
 The walker goes into the body of every block statement: `DO`, `REPEAT`,
 `FOR EACH`, both branches of `IF`, every `CASE` branch, `CATCH`, `FINALLY`,

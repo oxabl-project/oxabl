@@ -249,6 +249,9 @@ impl<'a> Walker<'a> {
                 is_static,
                 name,
                 data_type,
+                get_body,
+                set_body,
+                set_parameters,
                 ..
             } => {
                 let mut detail = String::from(access_name(*access));
@@ -260,7 +263,15 @@ impl<'a> Walker<'a> {
                     detail.push_str(&type_name);
                 }
                 let symbol = self.named(OutlineKind::Property, name, Some(detail), span);
-                self.emit(symbol);
+                let computed = [get_body, set_body]
+                    .into_iter()
+                    .any(|body| body.as_ref().is_some_and(|body| !body.is_empty()))
+                    || !set_parameters.is_empty();
+                if computed {
+                    self.open_container(symbol, statement, stack);
+                } else {
+                    self.emit(symbol);
+                }
             }
             StatementKind::DefineEvent { access, name, .. } => {
                 let detail = Some(access_name(*access).to_string());
@@ -815,6 +826,17 @@ fn children<'a>(statement: &'a Statement, mut f: impl FnMut(&'a [Statement])) {
             f(parameters);
         }
         StatementKind::DefineEvent { parameters, .. } => f(parameters),
+        StatementKind::Property {
+            get_body,
+            set_body,
+            set_parameters,
+            ..
+        } => {
+            // The parser reads GET before SET, and the SET parameters precede its body.
+            f(set_body.as_deref().unwrap_or_default());
+            f(set_parameters);
+            f(get_body.as_deref().unwrap_or_default());
+        }
         StatementKind::If {
             then_branch,
             else_branch,
