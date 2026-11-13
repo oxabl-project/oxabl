@@ -59,6 +59,9 @@ export class BuildController implements vscode.Disposable {
   private readonly output = vscode.window.createOutputChannel("oxabl build");
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("oxabl build");
   private readonly item = vscode.window.createStatusBarItem("oxabl.build", vscode.StatusBarAlignment.Left, 0);
+  // VS Code restarts an icon's animation each time an item's text changes, so
+  // the spinner has an item of its own whose text never changes.
+  private readonly spinner = vscode.window.createStatusBarItem("oxabl.build.spinner", vscode.StatusBarAlignment.Left, 0.001);
   private readonly subscriptions: vscode.Disposable[] = [];
   private readonly shownErrors = new Set<string>();
   private started = false;
@@ -70,6 +73,9 @@ export class BuildController implements vscode.Disposable {
 
   constructor(private readonly deps: BuildDeps) {
     this.item.name = "oxabl build";
+    this.spinner.name = "oxabl build progress";
+    this.spinner.text = "$(sync~spin)";
+    this.spinner.tooltip = "oxabl build is running";
   }
 
   private enabled(): boolean {
@@ -393,7 +399,13 @@ export class BuildController implements vscode.Disposable {
       const view = renderStatus([...this.roots.values()].map((r) => r.status));
       if (!view) {
         this.item.hide();
+        this.spinner.hide();
         return;
+      }
+      if (view.busy) {
+        this.spinner.show();
+      } else {
+        this.spinner.hide();
       }
       this.item.text = view.text;
       this.item.tooltip = view.tooltip;
@@ -432,6 +444,7 @@ export class BuildController implements vscode.Disposable {
       ),
     );
     this.item.dispose();
+    this.spinner.dispose();
     this.diagnostics.dispose();
     this.output.dispose();
   }

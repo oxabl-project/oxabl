@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { clickButton, runCommand, screenshot, statusTexts, toasts, waitForText, watchStatus } from "../lib/editor.mjs";
+import { clickButton, runCommand, screenshot, statusTexts, toasts, waitForText, watchSpinner, watchStatus } from "../lib/editor.mjs";
 import { buildExits, buildStarts, fakeOxablSource, readLog, signals, writeFakeOxabl } from "../lib/fake-oxabl.mjs";
 import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check, sleep, waitFor } from "../lib/report.mjs";
@@ -92,7 +92,16 @@ export async function buildOpen(ctx) {
   };
   await session(ctx, name, { config }, async ({ page, profile, log }) => {
     const watcher = watchStatus(page);
+    const spinner = watchSpinner(page);
     await waitForText(page, "oxabl build finished", 60_000);
+    const spins = await spinner.stop();
+    // A text change re-renders a status bar item and starts its icon's rotation
+    // again; the spinner must stay one element with one animation for the build.
+    check(
+      `${name}: the spinner turns without a restart while units finish`,
+      spins.elements === 1 && spins.animations === 1,
+      JSON.stringify(spins),
+    );
     await screenshot(page, name);
     const text = (await toasts(page)).find((t) => t.includes("oxabl build finished")) ?? "";
     check(

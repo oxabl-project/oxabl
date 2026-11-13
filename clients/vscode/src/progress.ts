@@ -146,14 +146,16 @@ export type RootStatus =
   | { phase: "idle"; last: "none" | "ok" | { failed: number } | { warning: string } };
 
 export interface StatusView {
+  /** The text, without the spinner: `busy` asks for it, in an item of its own. */
   text: string;
+  busy: boolean;
   tooltip: string;
   /** `problems` opens the Problems view, `log` the build log, `none` nothing. */
   action: "problems" | "log" | "none";
 }
 
 export function buildingText(p: BuildProgress): string {
-  const base = `$(sync~spin) oxabl ${p.done}/${p.total ?? 0}`;
+  const base = `oxabl ${p.done}/${p.total ?? 0}`;
   return p.cachedPercent === undefined ? base : `${base} · ${p.cachedPercent}% cached`;
 }
 
@@ -163,7 +165,8 @@ export function renderStatus(roots: RootStatus[]): StatusView | undefined {
   if (building && building.phase === "building") {
     const p = building.progress;
     return {
-      text: p.total === undefined ? "$(sync~spin) oxabl: preparing" : buildingText(p),
+      text: p.total === undefined ? "oxabl: preparing" : buildingText(p),
+      busy: true,
       tooltip:
         `${p.fetchedFrom("local")} fetched from the local cache, ${p.fetchedFrom("remote")} from the remote cache, ` +
         `${p.compiledNow} compiled, ${p.failedNow} failed`,
@@ -171,11 +174,12 @@ export function renderStatus(roots: RootStatus[]): StatusView | undefined {
     };
   }
   if (roots.some((r) => r.phase === "preparing")) {
-    return { text: "$(sync~spin) oxabl: preparing", tooltip: "oxabl build is starting", action: "log" };
+    return { text: "oxabl: preparing", busy: true, tooltip: "oxabl build is starting", action: "log" };
   }
   if (roots.some((r) => r.phase === "elsewhere")) {
     return {
-      text: "$(sync~spin) oxabl: build running elsewhere",
+      text: "oxabl: build running elsewhere",
+      busy: true,
       tooltip: "Another oxabl build took over the workspace; this one starts when it is done",
       action: "log",
     };
@@ -183,15 +187,15 @@ export function renderStatus(roots: RootStatus[]): StatusView | undefined {
   const idle = roots.flatMap((r) => (r.phase === "idle" ? [r.last] : []));
   const warning = idle.find((l): l is { warning: string } => typeof l === "object" && "warning" in l);
   if (warning) {
-    return { text: "$(warning) oxabl", tooltip: warning.warning, action: "log" };
+    return { text: "$(warning) oxabl", busy: false, tooltip: warning.warning, action: "log" };
   }
   const failed = idle.flatMap((l) => (typeof l === "object" && "failed" in l ? [l.failed] : []));
   if (failed.length > 0) {
     const n = failed.reduce((a, b) => a + b, 0);
-    return { text: `$(error) oxabl: ${n} failed`, tooltip: "Open the Problems view", action: "problems" };
+    return { text: `$(error) oxabl: ${n} failed`, busy: false, tooltip: "Open the Problems view", action: "problems" };
   }
   if (idle.includes("ok")) {
-    return { text: "$(check) oxabl", tooltip: "The last oxabl build succeeded", action: "none" };
+    return { text: "$(check) oxabl", busy: false, tooltip: "The last oxabl build succeeded", action: "none" };
   }
   return undefined;
 }

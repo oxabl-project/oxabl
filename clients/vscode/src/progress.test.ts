@@ -25,7 +25,7 @@ describe("BuildProgress", () => {
     const p = new BuildProgress();
     apply(p, { event: "build-started", rebuild: 3, units: 5 });
     expect(p.cachedPercent).toBeUndefined();
-    expect(renderStatus([{ phase: "building", progress: p }])?.text).toBe("$(sync~spin) oxabl 0/3");
+    expect(renderStatus([{ phase: "building", progress: p }])?.text).toBe("oxabl 0/3");
   });
 
   it("shows progress and the cache hit rate", () => {
@@ -33,7 +33,7 @@ describe("BuildProgress", () => {
     apply(p, { event: "build-started", rebuild: 4, units: 4 });
     for (const path of ["a.p", "b.p", "c.p"]) apply(p, { event: "unit-fetched", path, cache: "remote" });
     apply(p, { event: "unit-finished", path: "d.p", status: "ok" });
-    expect(renderStatus([{ phase: "building", progress: p }])?.text).toBe("$(sync~spin) oxabl 4/4 · 75% cached");
+    expect(renderStatus([{ phase: "building", progress: p }])?.text).toBe("oxabl 4/4 · 75% cached");
     expect(p.fetchedFrom("remote")).toBe(3);
   });
 

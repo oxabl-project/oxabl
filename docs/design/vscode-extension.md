@@ -333,7 +333,12 @@ attempt doubles from 1 s to 30 s.
 
 #### What it shows
 
-One status bar item (`preparing`, then `done/total · N% cached`, then a check
+Two status bar items. VS Code renders an item again when its text changes,
+which starts the rotation of a `~spin` icon again; the progress text changes
+with every unit, so the spinner is an item of its own whose text never changes,
+shown while a build is preparing, running or waiting elsewhere (the e2e
+scenario `build-open` checks that it stays one element with one animation).
+The other item has the text (`preparing`, then `done/total · N% cached`, then a check
 mark for 3 s, an error count that stays until the next success, a warning
 with the first line of stderr, or "running elsewhere"). A unit counts once,
 also when the retry pass compiles it again, and the hit rate is the units from
