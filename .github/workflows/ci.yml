@@ -41,6 +41,15 @@ jobs:
             echo "oxabl without the remote-cache feature must not depend on an oxabl-cache crate" >&2
             exit 1
           fi
+      # LSP counts only LF, CRLF and CR as line breaks. ropey's unicode_lines
+      # also counts U+2028, NEL and FF, and any crate that enables it turns it
+      # on for the language server too.
+      - name: No build turns on ropey's unicode_lines
+        run: |
+          if cargo tree --workspace --all-features -e features -i ropey | grep unicode_lines; then
+            echo "ropey's unicode_lines moves every LSP position after a U+2028, NEL or FF" >&2
+            exit 1
+          fi
 
   test:
     name: Test
