@@ -2204,7 +2204,7 @@ impl<'a> Parser<'a> {
                         name: format!("${}", params.len()),
                         span: Span {
                             start: type_start,
-                            end: self.current_span().start,
+                            end: self.prev_end(),
                         },
                     };
                     params.push(self.param_stmt(
