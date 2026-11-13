@@ -5,6 +5,8 @@ edition = "2024"
 license = "MIT"
 description = "High-performance tooling suite for Progress ABL"
 repository = "https://github.com/oxabl-project/oxabl"
+homepage = "https://oxabl.org"
+documentation = "https://docs.oxabl.org/"
 
 [[bin]]
 name = "oxabl"
