@@ -1868,6 +1868,7 @@ impl Parser<'_> {
         // Parse FIELD and INDEX definitions until period
         while !self.check(Kind::Period) && !self.at_end() {
             if self.check(Kind::Field) {
+                let field_start = self.current_span().start;
                 self.advance(); // consume FIELD
                 let field_name = self.parse_identifier()?;
 
@@ -1970,6 +1971,10 @@ impl Parser<'_> {
                     validate,
                     initial_value,
                     extent,
+                    span: Span {
+                        start: field_start,
+                        end: self.prev_end(),
+                    },
                 });
             } else if self.check(Kind::Index) {
                 self.advance(); // consume INDEX

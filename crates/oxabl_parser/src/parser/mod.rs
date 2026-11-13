@@ -1968,11 +1968,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A parameter statement that spans from `start` to the last consumed token.
+    fn param_stmt(&mut self, start: u32, kind: StatementKind) -> Statement {
+        let mut statement = self.stmt(kind);
+        statement.span = Span {
+            start,
+            end: self.prev_end(),
+        };
+        statement
+    }
+
     /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR/FUNCTION.
     ///
     /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
     ///
-    /// Each parameter becomes a `self.stmt(StatementKind::DefineParameter)`.
+    /// Each parameter becomes a `DefineParameter` statement that spans the
+    /// parameter, from its direction to its last token.
     fn parse_parenthesized_params(&mut self) -> ParseResult<Vec<Statement>> {
         self.expect_kind(Kind::LeftParen, "Expected '(' for parameter list")?;
         let mut params = Vec::new();
@@ -1990,6 +2001,7 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                let param_start = self.current_span().start;
                 let direction = match self.peek().kind {
                     Kind::Output => {
                         self.advance();
@@ -2032,14 +2044,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::Table,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::Table,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2062,10 +2077,13 @@ impl<'a> Parser<'a> {
                             target = table;
                         }
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Buffer { name, target },
-                    }));
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Buffer { name, target },
+                        },
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2083,14 +2101,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::Dataset,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::Dataset,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2108,14 +2129,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::DatasetHandle,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::DatasetHandle,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2133,14 +2157,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::TableHandle,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::TableHandle,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2180,14 +2207,17 @@ impl<'a> Parser<'a> {
                             end: self.current_span().start,
                         },
                     };
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Variable {
-                            name,
-                            type_source: TypeSource::Explicit(data_type),
-                            no_undo,
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Variable {
+                                name,
+                                type_source: TypeSource::Explicit(data_type),
+                                no_undo,
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2204,14 +2234,17 @@ impl<'a> Parser<'a> {
                     false
                 };
 
-                params.push(self.stmt(StatementKind::DefineParameter {
-                    direction,
-                    param_type: ParameterType::Variable {
-                        name,
-                        type_source,
-                        no_undo,
+                params.push(self.param_stmt(
+                    param_start,
+                    StatementKind::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Variable {
+                            name,
+                            type_source,
+                            no_undo,
+                        },
                     },
-                }));
+                ));
 
                 if !self.check(Kind::Comma) {
                     break;
