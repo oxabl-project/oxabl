@@ -1,5 +1,5 @@
 //! Already-formatted signatures keep their layout: the parameters of a
-//! `METHOD`, `CONSTRUCTOR`, `FUNCTION` or `EVENT` header and of a property
+//! `METHOD`, `CONSTRUCTOR` or `FUNCTION` header and of a property
 //! `SET (...)` belong to the header line, not to the body. Continuation lines
 //! stay aligned under the first parameter, and comments around them stay put.
 
@@ -84,8 +84,11 @@ fn method_parameters_with_comments_stay_in_the_header() {
     );
 }
 
+// A known limitation, kept as master has it: an own-line comment inside a
+// parameter list moves to the body depth, so `format --check` reports an
+// aligned list that holds one.
 #[test]
-fn own_line_comment_in_a_parameter_list_keeps_the_body_depth() {
+fn own_line_comment_in_a_parameter_list_moves_to_the_body_depth() {
     let src = expand(
         "CLASS Foo:\n\
          \tMETHOD PUBLIC VOID M(INPUT a AS INTEGER,\n\
