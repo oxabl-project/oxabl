@@ -74,6 +74,7 @@ pub use effects::{EffectFile, WorkspaceEffects};
 mod config;
 mod format;
 mod lint;
+mod outline;
 #[cfg(test)]
 mod parity;
 pub mod position;
@@ -84,6 +85,7 @@ pub use config::{
     resolve_from_config_deferred,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
+pub use outline::{OutlineKind, OutlineSymbol, outline};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
