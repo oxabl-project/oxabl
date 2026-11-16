@@ -189,9 +189,22 @@ describe("the building tooltip", () => {
     const p = new BuildProgress();
     apply(p, { event: "build-started", rebuild: 2578, units: 10300 }, { event: "unit-fetched", path: "a.p", cache: "remote" });
     const tooltip = renderStatus([{ phase: "building", progress: p, unkeyed: 3 }])?.tooltip ?? "";
-    expect(tooltip).toContain("This build: 2,578 units to rebuild, 1 done");
-    expect(tooltip).toContain("from the remote cache: 1");
-    expect(tooltip).toContain("Workspace: 10,300 units, 7,722 up to date, 1 from a cache (74% need no compile)");
+    expect(tooltip).toContain("This build: 2,578 units to rebuild");
+    expect(tooltip).toContain("Workspace: 10,300 units, 7,722 up to date before this build");
     expect(tooltip).toContain("3 units have no compile key");
+  });
+
+  it("does not change while units finish, so an open hover does not redraw", () => {
+    const p = new BuildProgress();
+    apply(p, { event: "build-started", rebuild: 3, units: 10 });
+    const tooltip = () => renderStatus([{ phase: "building", progress: p, unkeyed: 1 }])?.tooltip;
+    const before = tooltip();
+    apply(
+      p,
+      { event: "unit-fetched", path: "a.p", cache: "remote" },
+      { event: "unit-fetched", path: "b.p", cache: "local" },
+      { event: "unit-finished", path: "c.p", status: "fail" },
+    );
+    expect(tooltip()).toBe(before);
   });
 });
