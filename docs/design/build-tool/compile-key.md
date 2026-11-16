@@ -148,8 +148,19 @@ holds is skipped (`not-on-propath`).
 A unit whose compile name resolves, on the unit PROPATH, to a different file first is
 skipped (`shadowed-by`).
 
+The **output name** names the unit's output files: its r-code is `$OUT/<output stem>.r`,
+and its XREF, debug list and listing are `<output name>.<extension>` in their directories.
+It is the compile name, except for a procedure (not a class unit) that a
+`root_relative_include_paths` entry holds: then it is the unit path, so the r-code sits
+beside where the source is, as a compile with `SAVE` and no `INTO` puts it. Procedures of
+one name in different directories (`ar/post.p`, `gl/post.p`, each compiled as
+`post.p` from its own directory) so keep their own outputs. A class unit keeps its package
+path, because the compiler finds class r-code in `$OUT` by class name. The worker still
+compiles and stages by compile name; only the place of the outputs, and their paths in a
+cache entry, follow the output name.
+
 Two units whose r-code would land on one path collide: `x.p` and `x.w` in one directory, or
-`x.p` and `x.cls`. The compile stems are compared ignoring ASCII case, because r-code is
+`x.p` and `x.cls`. The output stems are compared ignoring ASCII case, because r-code is
 often deployed to case-insensitive systems. In each colliding group, the unit with the
 smallest unit path (by bytes) compiles, and every other unit is skipped with
 `output-collision: <path of the unit that compiles>`. So two keys never install over one
@@ -507,13 +518,20 @@ each `.pf` file into it: `-pf /work/build.pf,-inp 77777,-tok 4321,(end .pf),-Mm 
 8. Sort by name, by bytes. Names and values keep their case.
 
 The **drop list** holds only parameters that name a connection, a file of this process, a
-log or a secret:
+log or a secret, and `-trig`:
 
 ```text
--p -param -pf -b -q -T -db -ld -H -S -N -U -P -1 -ct -dt
+-p -param -pf -b -q -T -trig -db -ld -H -S -N -U -P -1 -ct -dt
 -clientlog -logginglevel -logentrytypes -logthreshold -numlogfiles
 -basekey -keyvalue
 ```
+
+`-trig` names the directory of the schema trigger procedures, which only a running program
+reads. Measured on OpenEdge 12.8.9 (`the_trigger_directory_changes_no_rcode_and_no_key`):
+a unit that creates and deletes rows of a table with triggers, and a trigger procedure,
+give equivalent r-code with the trigger directory, with a directory of broken triggers and
+with no `-trig`. Kept, it would make every unit unkeyable, because its value is a
+directory.
 
 Every other parameter stays, with its value. Some of them do not change r-code (`-mmax`,
 `-s`, `-inp`). Keeping them costs cache misses when two machines start the AVM differently.

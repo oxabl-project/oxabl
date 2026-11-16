@@ -77,6 +77,12 @@ impl Compile {
         .unwrap();
     }
 
+    /// Starts the workers with the command of `target` from now on.
+    pub fn set_command(&mut self, target: &Target) {
+        self.target_command = target.command.clone();
+        self.write_config();
+    }
+
     /// Replaces the lines of `[build.outputs]`; empty removes the table.
     pub fn set_outputs(&mut self, outputs: &str) {
         self.options.outputs = outputs.into();

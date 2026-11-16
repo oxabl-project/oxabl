@@ -65,8 +65,8 @@ fn stem(name: &str) -> String {
 fn skip_collisions(outcome: &Outcome, units: &mut [Placed]) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (at, placed) in units.iter().enumerate() {
-        if let Placement::Compiles { name } = &placed.placement {
-            groups.entry(stem(name)).or_default().push(at);
+        if let Placement::Compiles { output, .. } = &placed.placement {
+            groups.entry(stem(output)).or_default().push(at);
         }
     }
     for group in groups.values_mut().filter(|group| group.len() > 1) {
@@ -129,6 +129,7 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
             (Some(propath), Ok(base)) => place(
                 path,
                 base,
+                &search.own_entries(paths, base),
                 declared[*at].name().is_some() || derived[*at].is_some(),
                 &propaths[*propath],
                 is_file,

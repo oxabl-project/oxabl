@@ -76,7 +76,7 @@ fn units_without_a_key_are_not_offered_and_the_others_are() {
     assert_eq!(report.exit, 0);
     assert_eq!(
         seen.paths(),
-        ["r/plain.r"],
+        ["r/a/plain.r"],
         "only the unit with a key is offered"
     );
 }

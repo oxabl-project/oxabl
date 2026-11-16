@@ -151,8 +151,8 @@ it calls the client's `uploader()`:
 
 - **`fetch` streams.** It takes all requests in one call (the cache batches on the wire)
   and calls `on_outcome` once per key, as each one completes. Every key of one call is
-  installed into one tree, `stage/<artifact path>`: artifact paths are unique per build
-  after the output-collision rule
+  installed into one tree, `stage/<artifact path>`: an artifact path follows the unit's
+  output name, and output names are unique per build after the output-collision rule
   ([compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)), so no two keys
   share a path. An installed set is complete and verified at its artifact paths before its
   outcome is reported, and it stays installed whatever happens to later keys. Oxabl

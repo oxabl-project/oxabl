@@ -210,6 +210,42 @@ fn x_p_and_x_w_in_one_directory_compile_one_and_skip_the_other() {
 }
 
 #[test]
+fn procedures_of_one_name_in_two_directories_compile_into_their_own_directories() {
+    let workspace = Built::with(
+        "directories = [\"a\", \"b\"]\nroot_relative_include_paths = [\".\"]",
+        "[build.outputs]\nxref = \"build/xref\"\nxref_format = \"text\"\n",
+    );
+    workspace.write("a/x.p", "MESSAGE \"a\".\n");
+    workspace.write("b/x.p", "MESSAGE \"b\".\n");
+
+    let run = workspace.build_with(&["--json"]);
+
+    run.succeeded();
+    let report: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    for path in ["a/x.p", "b/x.p"] {
+        assert_eq!(unit(&report, path)["status"], "ok", "{path}");
+    }
+    assert_eq!(report["summary"]["skipped"], 0);
+    let mut files = walk(&workspace.path("build/r"));
+    files.sort();
+    assert_eq!(files, ["a/x.r", "b/x.r"]);
+    for (directory, other) in [("a", "b"), ("b", "a")] {
+        let read = workspace.reads(&format!("build/r/{directory}/x.r"));
+        let has = |source: &str| read.iter().any(|(_, sha)| *sha == workspace.sha256(source));
+        assert!(
+            has(&format!("{directory}/x.p")),
+            "{directory}/x.r: {read:?}"
+        );
+        assert!(!has(&format!("{other}/x.p")), "{directory}/x.r: {read:?}");
+        assert!(workspace.exists(&format!("build/xref/{directory}/x.p.xref")));
+    }
+
+    workspace.clear_log();
+    workspace.build().succeeded();
+    assert!(workspace.compiled().is_empty(), "both are up to date");
+}
+
+#[test]
 fn a_deleted_unit_loses_its_output() {
     let workspace = Built::new();
     workspace.write("src/a.p", "MESSAGE \"a\".\n");

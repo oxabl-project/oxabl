@@ -273,7 +273,7 @@ fn finish_unit(
         done.reads = Some(xref::read(&stage.host().join(file), format));
     }
     if compiled.ok {
-        match promote::promote(shared.root, stage.host(), &info.expected) {
+        match promote::promote(shared.root, stage.host(), &info.expected, |e| &e.staged) {
             Ok(rows) => done.outputs = rows,
             Err(message) => {
                 done.ok = false;
