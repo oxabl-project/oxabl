@@ -26,5 +26,5 @@
   "crates/oxabl_nulls": "0.2.6",
   "crates/oxabl_build": "0.4.1",
   "crates/oxabl_build_remote": "0.2.5",
-  "clients/vscode": "0.6.1"
+  "clients/vscode": "0.7.0"
 }
