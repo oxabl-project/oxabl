@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.6.1...oxabl_vscode-v0.7.0) (2026-11-16)
+
+
+### Features
+
+* **vscode:** update a managed oxabl CLI with the extension's update check ([312afa2](https://github.com/oxabl-project/oxabl/commit/312afa2c9f4b19a162b8304e93c8846c11012894))
+* **vscode:** update a managed oxabl CLI with the extension's update check ([52b4db4](https://github.com/oxabl-project/oxabl/commit/52b4db4f132401e0ea2e5859e3e1409279ab5566))
+
 ## [0.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.6.0...oxabl_vscode-v0.6.1) (2026-11-16)
 
 
