@@ -22,7 +22,8 @@
 //! reference. A text XREF has a `COMPILE` row, the same references as rows,
 //! and a row in each other file read, which puts the file in the second
 //! column; names with a space are quoted. `FAKE-XREF-RAW <text>` in a source
-//! ends the text XREF with that text, where `\n` is a line break.
+//! ends the text XREF with that text, where `\n` is a line break and `\xHH`
+//! the byte HH.
 //!
 //! Environment variables: `FAKE_AVM_STATE` is a directory for the markers of
 //! the `-ONCE` faults; `FAKE_AVM_LOG` receives one line for each compiled

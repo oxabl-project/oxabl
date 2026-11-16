@@ -22,16 +22,23 @@ pub struct Xref {
 }
 
 /// Reads the cross-reference file at `path`, in `format`.
+///
+/// The compiler writes a text `XREF` in the code page of the session, so a
+/// string literal can hold bytes that are not UTF-8. Such a byte becomes
+/// U+FFFD, which is never a quote, a space or a line break, so the rows keep
+/// their shape; a file name with one matches no file of the closure.
 pub fn read(path: &Path, format: Format) -> Result<Xref, String> {
     let name = match format {
         Format::Xml => "XREF-XML",
         Format::Text => "XREF",
     };
-    let text = std::fs::read_to_string(path)
+    let bytes = std::fs::read(path)
         .map_err(|error| format!("cannot read the {name} of the compile: {error}"))?;
     let parsed = match format {
-        Format::Xml => parse(&text),
-        Format::Text => parse_text(&text),
+        Format::Xml => String::from_utf8(bytes)
+            .map_err(|error| error.to_string())
+            .and_then(|xml| parse(&xml)),
+        Format::Text => parse_text(&String::from_utf8_lossy(&bytes)),
     };
     parsed.map_err(|error| format!("the {name} of the compile is unusable: {error}"))
 }

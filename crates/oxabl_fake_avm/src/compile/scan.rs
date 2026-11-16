@@ -29,9 +29,9 @@ pub struct Scan {
     pub faults: Vec<(Fault, usize)>,
     /// `FAKE-RESOLVE-OTHER <name> <path>`: the include `name` resolves to `path`.
     pub resolve_other: Vec<(String, String)>,
-    /// `FAKE-XREF-RAW <text>`: text for the end of a text XREF, with `\n` for
-    /// a line break.
-    pub xref_raw: Vec<String>,
+    /// `FAKE-XREF-RAW <text>`: bytes for the end of a text XREF, with `\n` for
+    /// a line break and `\xHH` for the byte HH.
+    pub xref_raw: Vec<Vec<u8>>,
 }
 
 const FAULTS: [(&str, Fault); 9] = [
@@ -115,7 +115,7 @@ pub fn scan(text: &str) -> Scan {
         }
         if let Some((_, raw)) = line.split_once("FAKE-XREF-RAW") {
             let raw = raw.trim().trim_end_matches("*/").trim();
-            found.xref_raw.push(raw.replace("\\n", "\n"));
+            found.xref_raw.push(raw_bytes(raw));
             continue;
         }
         if let Some((_, path)) = line.split_once("FAKE-READ") {
@@ -129,4 +129,33 @@ pub fn scan(text: &str) -> Scan {
         found.classes.extend(classes_of(line));
     }
     found
+}
+
+/// The bytes of a `FAKE-XREF-RAW` text: `\n` is a line break and `\xHH` the
+/// byte HH, so a test can write an XREF that is not UTF-8.
+fn raw_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut rest = text.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        rest = after;
+        if byte == b'\\' {
+            if let Some(after) = rest.strip_prefix(b"n") {
+                bytes.push(b'\n');
+                rest = after;
+                continue;
+            }
+            let hex = rest
+                .strip_prefix(b"x")
+                .and_then(|after| after.get(..2))
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            if let Some(value) = hex {
+                bytes.push(value);
+                rest = &rest[3..];
+                continue;
+            }
+        }
+        bytes.push(byte);
+    }
+    bytes
 }

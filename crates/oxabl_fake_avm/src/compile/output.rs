@@ -14,7 +14,7 @@ fn stem(name: &str) -> &str {
     }
 }
 
-fn put(path: &Path, text: &str) -> io::Result<()> {
+fn put(path: &Path, text: impl AsRef<[u8]>) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -76,7 +76,7 @@ fn field(text: &str) -> String {
 /// A text XREF like the real one: a `COMPILE` row, an `INCLUDE` or `NEW` row
 /// for each reference, and a row in each other file that was read, which makes
 /// the second column list the files the compiler opened.
-fn xref_text(name: &str, out: &Outcome) -> String {
+fn xref_text(name: &str, out: &Outcome) -> Vec<u8> {
     let unit = out.reads.first().map_or(name, |read| read.shown.as_str());
     let unit = field(unit);
     let mut text = format!("{unit} {unit} 1 COMPILE {}\n", field(name));
@@ -89,7 +89,8 @@ fn xref_text(name: &str, out: &Outcome) -> String {
             field(&read.shown)
         ));
     }
-    text.push_str(&out.xref_raw);
+    let mut text = text.into_bytes();
+    text.extend_from_slice(&out.xref_raw);
     text
 }
 
@@ -108,21 +109,21 @@ fn xref_path(path: PathBuf) -> PathBuf {
 pub fn write(ctx: &Context<'_>, name: &str, out: &Outcome) -> io::Result<()> {
     put(
         &ctx.stage.join("r").join(format!("{}.r", stem(name))),
-        &rcode(name, out),
+        rcode(name, out),
     )?;
     match ctx.xref {
         "xref-xml" => put(
             &xref_path(ctx.stage.join("xref").join(format!("{name}.xref.xml"))),
-            &xref_xml(out),
+            xref_xml(out),
         )?,
         "xref" => put(
             &xref_path(ctx.stage.join("xref").join(format!("{name}.xref"))),
-            &xref_text(name, out),
+            xref_text(name, out),
         )?,
         "private" if ctx.faults.no_private_xref => {}
         "private" => put(
             &xref_path(ctx.stage.join("verify").join(format!("{name}.xref"))),
-            &xref_text(name, out),
+            xref_text(name, out),
         )?,
         _ => {}
     }

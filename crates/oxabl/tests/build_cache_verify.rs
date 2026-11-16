@@ -692,6 +692,31 @@ fn the_row_after_a_string_row_that_spans_lines_is_read() {
     assert!(run.stderr.contains("other/after.i"), "{}", run.stderr);
 }
 
+/// The compiler writes a text XREF in the code page of the session, so a
+/// string literal of Windows-1252 source holds bytes that are not UTF-8.
+#[test]
+fn a_string_row_in_another_code_page_is_read_and_the_unit_is_cached() {
+    let (cache, _workspace, run) = with_raw_xref(
+        "src/raw.p src/raw.p 3 STRING \"caf\\xE9 \\x93quoted\\x94\" 12 NONE TRANSLATABLE\\n",
+    );
+
+    assert!(holds(&cache, "r/raw.r"), "{}", run.stderr);
+}
+
+#[test]
+fn a_file_name_that_is_not_utf8_is_not_in_the_closure_and_blocks_the_write() {
+    let (cache, _workspace, run) =
+        with_raw_xref("src/raw.p src/caf\\xE9.i 1 STRING \"x\" 1 NONE UNTRANSLATABLE\\n");
+
+    assert!(!holds(&cache, "r/raw.r"));
+    assert!(
+        run.stderr
+            .contains("which is not in the closure of the unit"),
+        "{}",
+        run.stderr
+    );
+}
+
 #[test]
 fn a_file_name_with_a_space_that_is_not_quoted_blocks_the_write() {
     let (cache, _workspace, run) =
