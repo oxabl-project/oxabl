@@ -10,6 +10,7 @@
 //! with a hash of each, and a time. Text in a source asks for a fault:
 //! `FAKE-FAIL` (an error at that line), `FAKE-FAIL-ONCE` (the first compile
 //! only), `FAKE-FAIL-SILENT` (a failure with no message), `FAKE-WARN`,
+//! `FAKE-WARN-NOPOS` (a warning with a number and no file, row or column),
 //! `FAKE-CRASH` (exit 1), `FAKE-CRASH-ONCE`, `FAKE-HANG`, `FAKE-SLOW` (two
 //! seconds before the outputs), `FAKE-NO-OUTPUT` (success with no output
 //! files), `FAKE-READ <path>` (a file the analysis cannot see) and
@@ -35,7 +36,8 @@
 //! `FAKE_AVM_SCHEMA_ERROR_AFTER=<n>` gives a wrong count after `n` compiles;
 //! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private XREF;
 //! `FAKE_AVM_XREF_LOG` receives the XREF mode of each compiled unit's request;
-//! `FAKE_AVM_COMPILE_MS=<n>` makes each compile take `n` milliseconds.
+//! `FAKE_AVM_COMPILE_MS=<n>` makes each compile take `n` milliseconds;
+//! `FAKE_AVM_DROP_MSG=1` sends one `MSG` line fewer than `DONE` counts.
 //!
 //! The raw digest (`RAWDIGEST`) hashes the schema records, so it changes with
 //! the image. `FAKE_AVM_RAW_SALT=<text>` changes it and not the image, as an

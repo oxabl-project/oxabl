@@ -9,6 +9,8 @@ fn flag(name: &str) -> bool {
 
 pub struct Faults {
     pub noise: bool,
+    /// One `MSG` line fewer than `DONE` counts (`FAKE_AVM_DROP_MSG`).
+    pub drop_msg: bool,
     pub start_delay: Option<Duration>,
     pub bad_token: bool,
     pub exit_in_handshake: bool,
@@ -64,6 +66,7 @@ impl Faults {
         Faults {
             state: state.clone(),
             noise: flag("FAKE_AVM_NOISE"),
+            drop_msg: flag("FAKE_AVM_DROP_MSG"),
             start_delay: std::env::var("FAKE_AVM_START_DELAY")
                 .ok()
                 .and_then(|ms| ms.parse().ok())

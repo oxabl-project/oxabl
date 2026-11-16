@@ -6,7 +6,7 @@ This page is for people who run `oxabl build` and for tools that read what it pr
 
 | Flag | stdout | stderr |
 | --- | --- | --- |
-| none | The summary text. | Warnings and errors. |
+| none | The summary text. It lists each failed unit, and each compiled unit that has messages, with its messages. | Warnings and errors. |
 | `--json` | The report as one JSON document. | Warnings and errors. |
 | `--events` | One JSON object per line, while the build runs. | The summary text, warnings and errors. |
 | `--report <file>` | No change. | No change. |
@@ -78,8 +78,8 @@ The compiler gave a message for a unit. Oxabl writes the messages of a unit just
 | `path` | The unit that was compiled. |
 | `type` | `warning` or `error`. A warning does not fail the unit. |
 | `number` | The number of the compiler message. `0` when the compiler gave none. |
-| `file` | The file that the message is about. It can be an include file. |
-| `row`, `column` | The position in `file`. `0` when the compiler gave none. |
+| `file` | The file that the message is about. It can be an include file. It is the unit when the compiler names no file. |
+| `row`, `column` | The position in `file`. `0` when the compiler gave none: a message with row `0` and column `0` has no position. The text report prints it with no `:row:column`. |
 | `text` | The text of the message. |
 
 ### `unit-finished`

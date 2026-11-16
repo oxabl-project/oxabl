@@ -138,16 +138,23 @@ The worker to oxabl:
 | `HASHED` | `id` `kind` `size` `sha256` | `kind` is `file`, `dir` or `none`; `size` and `sha256` (lower-case hex) are `-` unless `kind` is `file`. |
 | `HASHSET-DONE` | `id` `sha256` | The digest of a `HASHSET` list. |
 | `OK` | `id` | A `PROPATH` or `OPTIONS` is defined. |
-| `MSG` | `req` `compile-name` `type` `number` `file` `row` `column` `text` | One compiler message. `type` is `error` or `warning`. |
-| `DONE` | `req` `compile-name` `status` `ms` | One unit is complete. `status` is `ok` or `fail`. |
+| `MSG` | `req` `compile-name` `type` `number` `file` `row` `column` `text` | One compiler message. `type` is `error` or `warning`. `number`, `row` and `column` are `0` when the compiler gives none (warning 214, for example, has no position). `file` is empty when the compiler names no file; oxabl then uses the unit's path. |
+| `DONE` | `req` `compile-name` `status` `ms` `messages` | One unit is complete. `status` is `ok` or `fail`. `messages` is the number of `MSG` lines sent for the unit. |
 | `END` | `req` | The request is complete. |
 | `PONG` | `n` | Answer to `PING`. |
 | `ERROR` | `text` | A protocol error. The worker quits after it. |
 | `BYE` | | Answer to `QUIT`. The worker quits after it. |
 
 Any line that breaks this table (an unknown type, a wrong field count, a `DONE` for a unit
-that is not in flight, a `count` that does not match) is a **protocol error**. Oxabl treats
-it as a lost worker.
+that is not in flight, a `count` that does not match, a `DONE` whose `messages` differs from
+the number of `MSG` lines that came before it) is a **protocol error**. Oxabl treats it as a
+lost worker.
+
+**No line carries an unknown value.** A line that the worker builds with the unknown value
+(`?`) in a field would reach oxabl as the bare line `?`, which the reader drops as noise.
+`sendLine` therefore refuses it: the worker sends `ERROR` with the text `unknown value in a
+protocol line` and quits. Every family of lines that has a body ends in a count (`ENV-END`,
+`SCHEMA-END`, `RAW-END`, and now `DONE` for `MSG`), so a dropped line cannot go unnoticed.
 
 ## Handshake
 
@@ -248,10 +255,14 @@ For each `UNIT` of a request, the worker:
    error (exit code 2).
 5. Emits one `MSG` line for each message from `COMPILER:NUM-MESSAGES`, with
    `COMPILER:GET-MESSAGE-TYPE`, `GET-NUMBER`, `GET-FILE-NAME`, `GET-ROW`, `GET-COLUMN` and
-   `GET-MESSAGE`.
+   `GET-MESSAGE`. The compiler gives some messages no number, file, row or column (those
+   attributes are the unknown value); the worker sends `0` for each unknown number, row and
+   column. A message is an `error` only when its type is 1; any other value, the unknown value
+   included, makes it a `warning`. The unit fails on `COMPILER:ERROR`, not on the type of one message.
 6. Emits `DONE` with `fail` when `COMPILER:ERROR` is true, or when any step before the
    compile raised an error (then with a `MSG` line of number `0` that holds the error
-   text), and `ok` otherwise, plus the elapsed milliseconds from `ETIME`.
+   text), and `ok` otherwise, plus the elapsed milliseconds from `ETIME` and the number of
+   `MSG` lines it sent for the unit.
 
 **The stage path starts with `./`.** Oxabl sends the stage relative to the worker root and
 always with a leading `./` (`./.oxabl/build/stage/<build-id>/w1-1`). OpenEdge 12.8 strips a
@@ -475,6 +486,27 @@ The program has these parts. Each is one internal procedure.
 | `fingerprint` | Answer `FINGERPRINT` from `_Db` and `_DbStatus`. |
 | `hashFile` | Answer one `HASH`, or one `HASHSET`. |
 | `compileRequest` | Read the `UNIT` lines, compile each unit, emit `MSG` and `DONE`, then `END`. |
+
+### Two parts
+
+The program is two files that oxabl joins into one text: a header line
+(`/* oxabl-worker protocol 1 */`), the **compile part**
+(`resources/oxabl_worker_compile.p`) and the **driver part**
+(`resources/oxabl_worker_driver.p`). The AVM gets the joined text.
+
+| Part | Holds |
+| --- | --- |
+| Compile part | What decides how a unit compiles: the session setup (`COMPILER:MULTI-COMPILE`), the PROPATH and the compile options by id, the generator of the compile procedure and the `COMPILE` itself, and the creation of the output directories. It reads no protocol line. |
+| Driver part | The protocol, the handshake, the schema image, the hashing and the messages. It decodes a request and calls the compile part. |
+
+The compile key hashes the compile part and not the driver part
+([compile-key.md](compile-key.md#worker-program)), so a fix to the driver moves no key. Two
+guards keep that safe. A golden digest of the compile part fails on any edit until the
+digest changes in the same diff. A lint of the driver part, which lexes it with
+`oxabl_lexer`, fails on `COMPILE`, an assignment to `PROPATH`, `SESSION:` or `COMPILER:`
+attributes, `CREATE ALIAS`, `DELETE ALIAS`, `CONNECT`, `DISCONNECT`, `RUN VALUE`,
+`OS-COMMAND`, `&GLOBAL-DEFINE`, `&SCOPED-DEFINE`, and the registration of a super or a
+persistent procedure. A driver that needs one of these moves it into the compile part.
 
 The program reads no file except the files that `HASH` names, and writes no file except the
 compile outputs in the stage and its generated compile procedures under `<stage>/gen/`. It

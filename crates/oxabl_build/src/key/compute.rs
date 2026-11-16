@@ -418,7 +418,7 @@ pub fn compute(
     let base = KeyBase {
         environment: environment.identity(),
         settings: CompileSettings::lower(build),
-        worker: program::hash(),
+        worker: program::key_digest(),
         propaths: propath_digests,
     };
 

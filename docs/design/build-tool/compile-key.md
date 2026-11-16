@@ -756,8 +756,27 @@ a separate private compile instead.
 
 ## Worker program
 
-`hash(BLAKE3(bytes of the embedded worker program))`. A change to the worker program can
-change how a unit compiles, so it changes every key.
+The worker program has two parts ([worker-protocol.md](worker-protocol.md#two-parts)). Only
+the **compile part** decides how a unit compiles, so the worker section is
+`hash(BLAKE3(bytes of the compile part))`. A change to the compile part changes every key.
+A change to the driver part (the protocol, the schema image, the messages) changes none.
+
+**The alias.** Before the split, the section held the BLAKE3 hash of the whole program of
+release 5.3.2. The compile part of the split is, statement for statement, what compiled in
+that release. So, for exactly that one compile-part digest, the section holds the old
+whole-program digest, and no key of any user moves in the release that made the split. Any
+other compile part stands for its own digest. The alias is one constant and one comparison
+(`crates/oxabl_build/src/worker/program.rs`). The first edit of the compile part ends it,
+because the digest then differs, and that edit moves every key once, as a change to the
+compile should.
+
+**The guards.** The golden digest of the compile part and the lint of the driver part
+(`crates/oxabl_build/tests/worker_program.rs`) are described in
+[worker-protocol.md](worker-protocol.md#two-parts). The golden vectors pin the digest that
+release 5.3.2 put in the keys, so a worker program that moves a key fails them.
+
+The stored schema images stay bound to the hash of the whole program, because the driver part
+makes them: a new driver images the schema once again, and no unit rebuilds for it.
 
 ## The key
 
@@ -772,7 +791,7 @@ material =
     section("environment")  hash(environment_identity)
     section("options")      list(pair, compile options)
     section("outputs")      list(str, output kinds)
-    section("worker")       hash(content(worker program))
+    section("worker")       hash(content(compile part of the worker program))
 
 compile_key = derive_key("oxabl 2026-11 compile key v1", material)
 ```

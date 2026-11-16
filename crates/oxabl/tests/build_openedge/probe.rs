@@ -50,6 +50,33 @@ fn transport() {
     assert_eq!(session.finish(), Some(0));
 }
 
+/// A line built with the unknown value never leaves the worker: it answers
+/// `ERROR` and quits. The worker program is the one that ships, with one
+/// request (`PING`) changed to build such a line.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn the_worker_refuses_a_line_with_an_unknown_value() {
+    let target = setup();
+    let workspace = compile_workspace(&target);
+    let original = "WHEN \"PING\" THEN RUN sendLine(\"PONG\" + gcTab + toWire(fromWire(ENTRY(3, pcLine, gcTab)))).";
+    let source = oxabl::build::worker::program::source();
+    assert!(source.contains(original), "the PING request changed");
+    let source = source.replace(
+        original,
+        "WHEN \"PING\" THEN RUN sendLine(\"PONG\" + gcTab + intText(?)).",
+    );
+    let mut session = Session::start(&target, &workspace.host, &workspace.worker, &source);
+
+    session.send("OXW1\tPING\tx");
+
+    assert_eq!(
+        session.line(Duration::from_secs(120)).as_deref(),
+        Some("OXW1\tERROR\tunknown value in a protocol line"),
+        "the line with the unknown value was not refused"
+    );
+    assert_eq!(session.finish(), Some(0));
+}
+
 /// Every field of the handshake is there, in its form.
 #[test]
 #[ignore = "needs a real AVM; see the module docs"]

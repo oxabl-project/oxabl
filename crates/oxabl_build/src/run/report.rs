@@ -159,6 +159,7 @@ impl CacheReport {
     }
 }
 
+/// A message with row 0 and column 0 has no position.
 fn message(message: &CompilerMessage) -> Value {
     json!({
         "type": message.kind,
@@ -265,27 +266,30 @@ impl BuildReport {
         })
     }
 
-    /// The report as text: each failed unit with its messages, then the counts.
+    /// The report as text: each failed unit and each compiled unit with
+    /// messages, with its messages, then the counts.
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         for unit in &self.units {
             match &unit.status {
                 UnitStatus::Failed => out.push_str(&format!("failed    {}\n", unit.path)),
                 UnitStatus::NotRun => out.push_str(&format!("not run   {}\n", unit.path)),
+                UnitStatus::Compiled if !unit.messages.is_empty() => {
+                    out.push_str(&format!("compiled  {}\n", unit.path))
+                }
                 _ => continue,
             }
             if let Some(note) = &unit.note {
                 out.push_str(&format!("  {note}\n"));
             }
             for message in &unit.messages {
+                let at = match (message.row.as_str(), message.column.as_str()) {
+                    ("0", "0") => String::new(),
+                    (row, column) => format!(":{row}:{column}"),
+                };
                 out.push_str(&format!(
-                    "  {} {} {}:{}:{}: {}\n",
-                    message.kind,
-                    message.number,
-                    message.file,
-                    message.row,
-                    message.column,
-                    message.text
+                    "  {} {} {}{at}: {}\n",
+                    message.kind, message.number, message.file, message.text
                 ));
             }
         }

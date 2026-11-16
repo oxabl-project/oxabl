@@ -53,7 +53,7 @@ export class BuildProgress {
           const list = this.pending.get(unit) ?? [];
           list.push({
             type: e.type === "warning" ? "warning" : "error",
-            file: typeof e.file === "string" ? e.file : unit,
+            file: typeof e.file === "string" && e.file !== "" ? e.file : unit,
             row: typeof e.row === "number" ? e.row : 0,
             column: typeof e.column === "number" ? e.column : 0,
             number: typeof e.number === "number" ? e.number : 0,
