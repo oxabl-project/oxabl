@@ -351,7 +351,9 @@ unkeyable when its analysis (with includes judged in the includer's context) is 
 leaves an include unresolved, and class resolution is keyed only with one PROPATH id (K9)
 and without an external name collision (K8,
 [compile-key.md](compile-key.md#per-unit-propath-classes)). A V3 source for these reads is
-an open follow-up ([build-tool.md](../build-tool.md#follow-ups)).
+an open follow-up ([build-tool.md](../build-tool.md#follow-ups)). The `FileID` log of
+`LOG-MANAGER` names those reads for the first compile that binds a class in a fresh session
+([measured](compile-key.md#follow-up-classes-under-per-unit-propaths)).
 
 V2 has one residual case: a schema that changes and changes back between two imagings, with
 a compile in between. This needs two dictionary loads into the build's database during
