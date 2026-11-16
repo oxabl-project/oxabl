@@ -45,7 +45,9 @@ Each connection sets, in this order: `busy_timeout = 5000`, `journal_mode = WAL`
 
 `STORE_FORMAT` is one integer in `store/ddl.rs`. Any change to the DDL, a blob encoding or
 the meaning of a column increments it. There are no migrations. Format 2 adds the
-`observed` table: a store of format 1 is replaced by step 3 below.
+`observed` table: a store of format 1 is replaced by step 3 below. Format 3 adds the
+include name as written to the include edges: a store of format 2 is replaced the same
+way, and the next refresh analyses every file again.
 
 On open:
 
@@ -216,8 +218,12 @@ format.
   the previous path id of the same kind (the first of each kind is the id itself). A class
   edge (kinds `3` and `7`) also carries `varint length` and the UTF-8 class name that
   reached the target, because the class-conflict rule compares names
-  ([compile-key.md](compile-key.md#class-conflicts)); class edges sort by `(kind, path_id,
-  name)`, so one target reached by two spellings gives two entries with delta `0`.
+  ([compile-key.md](compile-key.md#class-conflicts)). An include edge (kinds `1`, `2` and
+  `6`) carries the include name as written in the same way, or length `0` when the
+  analysis does not know it, because the planner compares how each PROPATH id resolves it
+  ([compile-key.md](compile-key.md#uniform-resolution-reported-not-yet-used-for-keys)).
+  Named edges sort by `(kind, path_id, name)`, so one target reached by two names gives
+  two entries with delta `0`.
 - `unresolved`: `varint count`, then each entry as `u8 kind`, `u8 reason`, `varint length`
   and the UTF-8 name, sorted by `(kind, name)`.
 - `completeness`: `varint count`, then one `u8` per degraded reason, sorted. Count 0 means

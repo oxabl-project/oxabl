@@ -13,6 +13,7 @@ use super::environment::Environment;
 use super::keyability::{ExternalPackage, Resolved, Rules, Verdict};
 use super::layout::{Layout, Placed, lay_out, search};
 use super::options::CompileSettings;
+use super::resolution::{ClassResolution, ResolutionSummary, Resolver};
 use crate::config::BuildWorkspace;
 use crate::graph::Scratch;
 use crate::observe::class_listing;
@@ -46,6 +47,9 @@ pub struct UnitKey {
     /// With `observed`: the files of that closure, the listed classes and
     /// their closures included.
     pub observed_closure: Vec<u32>,
+    /// How the class names the unit reaches resolve under every PROPATH id;
+    /// only when K9 applies to it.
+    pub class_resolution: Option<ClassResolution>,
 }
 
 /// The class sources that a compile of a unit that oxabl cannot read could
@@ -114,6 +118,8 @@ pub struct Keyed {
     pub base: Option<KeyBase>,
     /// The class part of each unit PROPATH that a unit oxabl cannot read uses.
     pub classes: FxHashMap<usize, ClassPart>,
+    /// The counts of the class resolutions; only with more than one PROPATH id.
+    pub class_resolution: Option<ResolutionSummary>,
 }
 
 fn config_error(message: String) -> PoolError {
@@ -345,6 +351,14 @@ pub fn compute(
         let propath = &layout.propaths[placed.propath.expect("an active unit has a PROPATH")];
         rules.check(active_ids[*k], &closures[*k], propath)
     });
+    let resolutions = resolve(
+        outcome,
+        &paths,
+        &layout,
+        (&active, &active_ids),
+        &closures,
+        &class_sources,
+    );
 
     let mut warnings = Vec::new();
     let classes = workspace_classes(outcome, &layout);
@@ -490,8 +504,11 @@ pub fn compute(
             },
         })
         .collect();
-    for ((k, verdict), key) in verdicts.into_iter().enumerate().zip(keys) {
+    for (((k, verdict), key), resolution) in
+        verdicts.into_iter().enumerate().zip(keys).zip(resolutions)
+    {
         let unit = &mut units[active[k]];
+        unit.class_resolution = resolution;
         unit.observable = is_observable(&verdict, &layout.units[active[k]]);
         let reasons = verdict.into_reasons();
         match key {
@@ -515,6 +532,7 @@ pub fn compute(
             "{without_key} units that use classes are compiled without a key: the units have different PROPATHs"
         ));
     }
+    let class_resolution = (layout.propaths.len() > 1).then(|| summarise(&units));
     let propaths = base
         .propaths
         .iter()
@@ -529,7 +547,53 @@ pub fn compute(
         dlc: dlc_sha,
         base: Some(base),
         classes: class_parts,
+        class_resolution,
     })
+}
+
+/// The class resolution of each active unit that K9 applies to, by position
+/// in `active`; none with one PROPATH id.
+fn resolve(
+    outcome: &Outcome,
+    paths: &PathMap,
+    layout: &Layout,
+    (active, active_ids): (&[usize], &[u32]),
+    closures: &[Vec<u32>],
+    class_sources: &FxHashSet<u32>,
+) -> Vec<Option<ClassResolution>> {
+    if layout.propaths.len() <= 1 {
+        return vec![None; active.len()];
+    }
+    let mut resolver = Resolver::new(paths, &layout.propaths);
+    active
+        .iter()
+        .zip(active_ids)
+        .zip(closures)
+        .map(|((at, unit), closure)| {
+            let placed = &layout.units[*at];
+            let reaches_class = class_sources.contains(unit)
+                || closure.iter().any(|node| class_sources.contains(node));
+            let propath = placed.propath.filter(|_| reaches_class)?;
+            let own_name = placed.class.then(|| placed.class_name()).flatten();
+            Some(resolver.unit(outcome, (*unit, propath, own_name), closure, class_sources))
+        })
+        .collect()
+}
+
+/// The counts over the units that have a class resolution.
+fn summarise(units: &[UnitKey]) -> ResolutionSummary {
+    let mut summary = ResolutionSummary::default();
+    for unit in units {
+        let Some(resolution) = &unit.class_resolution else {
+            continue;
+        };
+        summary.units += 1;
+        if resolution.uniform {
+            summary.uniform += 1;
+            summary.released += usize::from(unit.unkeyable == ["per-unit-propath-classes"]);
+        }
+    }
+    summary
 }
 
 /// The class part of each unit PROPATH of `wanted`.

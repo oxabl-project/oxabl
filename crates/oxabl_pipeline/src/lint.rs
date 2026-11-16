@@ -1284,7 +1284,13 @@ impl<'a> LintPipeline<'a> {
         });
         let edges = edges
             .with_conditional_includes(conditional)
-            .with_conditional_references(references);
+            .with_conditional_references(references)
+            .with_include_names(expanded.resolved_includes().iter().map(|include| {
+                oxabl_index::IncludeName {
+                    path: include.path.clone(),
+                    name: include.name.clone(),
+                }
+            }));
         Ok(match closure {
             Some(closure) => edges.with_conditional_include_closure(closure),
             None => edges,

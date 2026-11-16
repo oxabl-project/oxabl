@@ -227,6 +227,44 @@ prints one warning with the number of such units.
 Real codebases checked use a single global PROPATH, so K9 costs nothing there. Keying
 classes under per-unit PROPATHs is a [follow-up](#follow-up-classes-under-per-unit-propaths).
 
+#### Uniform resolution (reported, not yet used for keys)
+
+With more than one PROPATH id, `oxabl build --plan --probe --json` reports for each unit
+that K9 applies to whether the names it reaches resolve the same under every PROPATH id.
+No key depends on this yet: K9 still applies to all these units.
+
+A **named edge** is a name as written (a class name, or an include name), the file that
+writes it, and the file `T` the analysis resolved it to. The named edges of a unit are:
+
+- every class edge of the unit and of each class source in its closure;
+- every include edge of each class source in its closure, and of the unit when it is a
+  class unit (the includes inside a class subtree, at any depth);
+- for a class unit, its own class name, with `T` the unit itself.
+
+The include edges of a procedure's own include tree stay per unit, as before.
+
+`hit(P, name)` is the first entry of PROPATH id `P` after `$OUT` that holds the file of the
+name: for a class, the package path with the extension of `T`; for an include, the name as
+written. An edge is **uniform** when all of these hold:
+
+- **U1.** For every PROPATH id `P` of the build: `hit(P, name)` is `T` or nothing. A
+  `$LIB:` entry before the entry that holds the file counts as another file, because oxabl
+  cannot list a library. A DLC default entry is not searched for workspace names.
+- **U2.** For a class: no workspace entry of any PROPATH id holds r-code for the name
+  (`pkg/Foo.r`). Oxabl does not yet know whether the AVM prefers that r-code to the source.
+- **U3.** `hit(P, name)` is `T` for the unit's own PROPATH id `P`. This compares the
+  analysis with the real compile PROPATH.
+
+Two more cases make an edge not uniform until the AVM's search is measured: a file that
+matches the name only when case is ignored (`case`), in any entry up to the one that holds
+the file, and a name that oxabl cannot turn into a path (`name`): an include name the
+analysis did not record, or a class file whose path does not end with the class name.
+Oxabl reads the class name in the case of `T`, because the analysis keeps class names in
+lower case.
+
+Uniformity is computed at each plan from the working tree, with one memo of the directory
+listings, and is never stored.
+
 ### Class conflicts
 
 With one PROPATH id, a class name resolves to one file, with one exception: a class name that
