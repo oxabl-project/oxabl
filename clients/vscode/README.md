@@ -3,6 +3,37 @@
 ABL support for VS Code, from [oxabl](https://github.com/oxabl-project/oxabl).
 It covers Progress ABL files (`.p`, `.w`, `.cls`, `.i`, `.v`).
 
+## Getting started
+
+1. Install the extension (see [Install](#install)). It updates itself.
+2. Open the folder that holds your `oxabl.toml`: the root of the ABL sources.
+   Without one, you get highlighting only. The
+   [build wrapper guide](https://github.com/oxabl-project/oxabl/blob/master/docs/build-wrapper.md)
+   explains the settings.
+3. Click **Install** when the extension offers the oxabl CLI. It updates
+   itself too.
+4. Trust the folder. A build runs the worker command of `oxabl.toml`, so
+   nothing builds in a folder you did not trust.
+5. Wait for the first build. With an empty cache it compiles every unit, which
+   can take minutes. After that, a save compiles only what it changed.
+6. Keep the build output out of git: add `.oxabl/` to `.gitignore`.
+
+## Install
+
+The extension is not on the Marketplace. Install it from a GitHub release:
+
+1. Open the newest release whose tag starts with `oxabl_vscode-v` on the
+   [releases page](https://github.com/oxabl-project/oxabl/releases).
+2. Download `oxabl-vscode-<version>.vsix`.
+3. Run `code --install-extension oxabl-vscode-<version>.vsix`. Or open the
+   Extensions view, choose `…` and **Install from VSIX…**.
+
+In a WSL window, the extension runs in WSL, so install it there: run the
+`code` command in the WSL terminal, or use **Install from VSIX…** while the
+WSL window is open. See [Windows and WSL](#windows-and-wsl).
+
+After this, the extension updates itself.
+
 ## What works without the oxabl binary
 
 Install the extension and open an ABL file. These features need nothing else:
@@ -149,22 +180,6 @@ so the databases must accept that many more connections.
 The commands **oxabl: Build**, **oxabl: Cancel Build** and **oxabl: Show Build
 Log** do what their names say. The build log is the output channel `oxabl
 build`.
-
-## Install
-
-The extension is not on the Marketplace. Install it from a GitHub release:
-
-1. Open the newest release whose tag starts with `oxabl_vscode-v` on the
-   [releases page](https://github.com/oxabl-project/oxabl/releases).
-2. Download `oxabl-vscode-<version>.vsix`.
-3. Run `code --install-extension oxabl-vscode-<version>.vsix`. Or open the
-   Extensions view, choose `…` and **Install from VSIX…**.
-
-In a WSL window, the extension runs in WSL, so install it there: run the
-`code` command in the WSL terminal, or use **Install from VSIX…** while the
-WSL window is open. See [Windows and WSL](#windows-and-wsl).
-
-After this, the extension updates itself.
 
 ## Updates
 
