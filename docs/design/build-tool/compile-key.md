@@ -225,11 +225,11 @@ analysis search what the compile searches:
 
 With one PROPATH id, every unit, and every class compiled in memory for it, then searches
 the entries that the analysis searched. With more than one PROPATH id the assumption does
-not hold in general: the shared `$OUT` tree has one `.r` per class name, a `MULTI-COMPILE`
-session keeps a class by name across PROPATH changes, and a class that is not a unit is
-compiled in memory under each user's own PROPATH. So the key covers classes only with one
-PROPATH id ([K9](#per-unit-propath-classes)), and one narrow conflict remains to check even
-then ([K8](#class-conflicts)).
+not hold in general: a class that is not a unit is
+compiled in memory under each user's own PROPATH. The `$OUT` tree has one `.r` per class
+name, and the compiler prefers it to a source on a later entry. So the key covers classes
+only with one PROPATH id ([K9](#per-unit-propath-classes)), and one narrow conflict remains
+to check even then ([K8](#class-conflicts)).
 
 The remaining gap: oxabl analyses a class that is not a unit once, from its own package
 root. K10 makes a user unkeyable when its own PROPATH reads another file, but oxabl does not
@@ -322,14 +322,15 @@ AVM; every earlier attempt to design it found a new hole:
    wrong class. A fix needs either a proof that the compiler prefers the source on the
    unit's PROPATH over `$OUT`, or a per-unit view of `$OUT`, which conflicts with one
    deployable output tree.
-2. **`MULTI-COMPILE` sessions** keep a class by name across PROPATH changes. Measured on
-   OpenEdge 12.8.9 (`per_unit_propath_class_binding`): with `a/pkg/Foo.cls` and a
-   `b/pkg/Foo.cls` that has one more method, `b/y.p` calling that method **fails to
-   compile** with error 12927 (`Could not locate element 'Extra' in class 'pkg.Foo'`): the
-   session bound it to `a`'s `Foo`, the class it compiled first. A user that calls no
-   differing member silently binds to the other class. So under per-unit PROPATHs a valid
-   program can fail locally, not only lose its key. Sessions must be separated by PROPATH id
-   (a fresh worker session per id), or toggling `MULTI-COMPILE` must be proven to clear them.
+2. **Sessions.** One session keeps a class by name while the PROPATH stays the same. Measured
+   on OpenEdge 12.8.9 (`session_binds_a_class_again_after_a_propath_change`): when the
+   PROPATH changes, the next compile binds the class again, for source and r-code, with
+   `MULTI-COMPILE` on and off. The failure of `per_unit_propath_class_binding` (error 12927
+   for a user of `b`'s extra method) comes from item 1: the `$OUT` r-code of `a`'s `Foo`
+   comes first on the PROPATH. A user that calls no differing member silently binds to the
+   other class. So under per-unit PROPATHs a valid program can fail locally, not only lose
+   its key. A fresh worker session per PROPATH id stays the cautious choice, because the
+   behaviour is measured, not documented.
 3. **External names.** A K3-accepted name must not collide with a workspace class under any
    PROPATH id.
 4. **Class units.** A class unit's package root must be an entry of every user's PROPATH, and
@@ -342,6 +343,32 @@ AVM; every earlier attempt to design it found a new hole:
    opened inside each class is needed before a divergence can be caught.
 
 Until all six exist, K9 holds.
+
+**Measured** (OpenEdge 12.8.9; tests in `crates/oxabl/tests/build_openedge/class_binding.rs`,
+listed in [testing.md](testing.md)). Each test uses two versions of a class that differ in
+one member, so the compile of a user shows which version it bound.
+
+- The compiler takes the first PROPATH entry that holds `pkg/Foo.r` or `pkg/Foo.cls`. In that
+  entry, r-code wins over the source, whichever file is newer.
+- So `$OUT` r-code of a class wins over any later entry, in a fresh session, with
+  `MULTI-COMPILE` on and off. A user of a member that only a later source has fails with
+  error 12927.
+- Stray r-code beside a class source is bound when no earlier entry holds the class. This
+  holds when the class is not a unit (its r-code is never in `$OUT`), and when `$OUT` has no
+  r-code of it yet. It is harmless when the class is a unit that the build compiles into
+  `$OUT` before the user, because `$OUT` comes first (`oxabl build` test pair).
+- An entry that holds only a stale `.r` beats a later entry with the source. An entry with
+  only the source beats a later entry with a stale `.r`.
+- On Linux the match is exact in case, for source and for r-code (error 5638).
+- A user, and a class that inherits it, read a class that has r-code in `$OUT` from that
+  r-code alone: `pkg/Foo.cls` and its includes are not opened, even when a later entry holds
+  a different `x.i`. Include uniformity matters for a class only when the compiler reads its
+  source.
+- The `FileID` log of `LOG-MANAGER` names every file a compile opens, with the unit,
+  definitions-only includes, class sources and their includes, and class r-code. A class that
+  an earlier compile of the same session bound is not named again, so the log is a full read
+  set only for the first compile that binds each class in a fresh session. For 300 compiles
+  of a small unit the log added about 10% (106 ms to 117 ms).
 
 ## The observed closure
 

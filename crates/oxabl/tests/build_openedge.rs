@@ -16,6 +16,8 @@
 
 mod common;
 
+#[path = "build_openedge/class_binding.rs"]
+mod class_binding;
 #[path = "build_openedge/compile.rs"]
 mod compile;
 #[path = "build_openedge/environment.rs"]
