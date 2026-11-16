@@ -97,10 +97,6 @@ export class BuildProgress {
     return [...this.finished.values()].filter((s) => s === "fail").length;
   }
 
-  get compiledNow(): number {
-    return this.finished.size - this.failedNow;
-  }
-
   /** Units that needed no work: built before in this workspace and unchanged. */
   get upToDate(): number {
     return this.total === undefined ? 0 : Math.max(0, this.units - this.total);
@@ -171,25 +167,20 @@ export function count(n: number): string {
 }
 
 /**
- * The two views of a build: the units it rebuilds, where the cache share comes
- * from, and the workspace, most of which is usually up to date.
+ * What `build-started` fixes: the units this build rebuilds and the workspace,
+ * most of which is usually up to date. Nothing in it changes while units
+ * finish, since VS Code redraws an open hover at every change; the status bar
+ * text counts them.
  */
 function buildingTooltip(p: BuildProgress, unkeyed: number | undefined): string {
-  const lines = [
-    `This build: ${count(p.total ?? 0)} units to rebuild, ${count(p.done)} done`,
-    `  from the local cache: ${count(p.fetchedFrom("local"))}`,
-    `  from the remote cache: ${count(p.fetchedFrom("remote"))}`,
-    `  compiled: ${count(p.compiledNow)}, failed: ${count(p.failedNow)}`,
-  ];
+  const lines = [`This build: ${count(p.total ?? 0)} units to rebuild`];
   if (p.units > 0) {
-    lines.push(
-      `Workspace: ${count(p.units)} units, ${count(p.upToDate)} up to date, ` +
-        `${count(p.fetched.size)} from a cache (${p.cachedPercent}% need no compile)`,
-    );
+    lines.push(`Workspace: ${count(p.units)} units, ${count(p.upToDate)} up to date before this build`);
   }
   if (unkeyed) {
     lines.push(unkeyedTooltip(unkeyed));
   }
+  lines.push("The status bar counts the units as they finish; the build log has each one.");
   return lines.join("\n");
 }
 

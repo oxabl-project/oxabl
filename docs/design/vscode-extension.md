@@ -349,9 +349,11 @@ workspace that needs no compile: the units up to date (`units - rebuild` of
 `build-started`) plus the units a cache gave, over `units`, rounded down so
 that 100% means nothing compiles. It is not the hit rate of this build: after
 a save the build rebuilds only the edited units, which no cache can hold, so
-that rate is 0% at almost every build. The tooltip shows this build (local and
-remote cache, compiled, failed) and the workspace on separate lines, and the
-notification says "N of M units rebuilt" with the hit rate of the build.
+that rate is 0% at almost every build. The tooltip holds only what
+`build-started` fixes (the units to rebuild, the workspace and the units up to
+date before the build), because VS Code redraws an open hover at every change
+of it, and a count per unit made it flash without a pause. The notification
+says "N of M units rebuilt" with the hit rate of the build.
 
 Each build passes `--report <global storage>/reports/<hash of root>.json`
 (or uses the `--report` of `oxabl.build.args`). After exit 0 or 1 the
