@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.4.0...oxabl_build-v0.4.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **build:** read a text XREF in any code page ([e793c36](https://github.com/oxabl-project/oxabl/commit/e793c36bc5a255187a89ebd54c2b7308c2736cc9))
+* **build:** read a text XREF in any code page ([8e16702](https://github.com/oxabl-project/oxabl/commit/8e16702d235212d79b9dc6927b2e175befff9cb5))
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.3.0...oxabl_build-v0.4.0) (2026-11-13)
 
 
