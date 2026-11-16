@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.3...oxabl_parser-v4.0.4) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.7.6 to 0.8.0
+
 ## [4.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.2...oxabl_parser-v4.0.3) (2026-11-13)
 
 

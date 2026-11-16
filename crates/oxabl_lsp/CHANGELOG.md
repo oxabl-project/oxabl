@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.1.3](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v3.1.2...oxabl_lsp-v3.1.3) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.0.4 to 4.1.0
+    * oxabl_daemon bumped from 0.5.7 to 0.5.8
+    * oxabl_pipeline bumped from 3.4.2 to 3.5.0
+  * dev-dependencies
+    * oxabl_daemon bumped from 0.5.7 to 0.5.8
+    * oxabl_analyze bumped from 4.0.4 to 4.1.0
+    * oxabl_pipeline bumped from 3.4.2 to 3.5.0
+
 ## [3.1.2](https://github.com/oxabl-project/oxabl/compare/oxabl_lsp-v3.1.1...oxabl_lsp-v3.1.2) (2026-11-13)
 
 

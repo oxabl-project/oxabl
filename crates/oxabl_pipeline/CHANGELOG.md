@@ -1,5 +1,34 @@
 # Changelog
 
+## [3.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.4.2...oxabl_pipeline-v3.5.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
+
+### Bug Fixes
+
+* **build:** resolve includes of a class from its package root, as the compiler does ([954ce9c](https://github.com/oxabl-project/oxabl/commit/954ce9c1fb6d893eae9859fa15eb5f4663d9667d))
+* **build:** resolve includes of a class from its package root, as the compiler does ([c95549f](https://github.com/oxabl-project/oxabl/commit/c95549f2a5e5418bc69585fcae56c02b07a3ec8d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.4 to 0.3.5
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+    * oxabl_flow bumped from 0.3.6 to 0.3.7
+    * oxabl_scope bumped from 0.2.6 to 0.2.7
+    * oxabl_analyze bumped from 4.0.4 to 4.1.0
+    * oxabl_formatter bumped from 2.0.6 to 2.0.7
+    * oxabl_index bumped from 5.0.3 to 5.1.0
+    * oxabl_lint bumped from 5.0.3 to 5.0.4
+    * oxabl_semantic bumped from 5.0.3 to 5.0.4
+
 ## [3.4.2](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.4.1...oxabl_pipeline-v3.4.2) (2026-11-13)
 
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [4.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.4...oxabl_analyze-v4.1.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 5.0.3 to 5.0.4
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+    * oxabl_preprocessor bumped from 0.7.6 to 0.8.0
+    * oxabl_semantic bumped from 5.0.3 to 5.0.4
+  * dev-dependencies
+    * oxabl_index bumped from 5.0.3 to 5.1.0
+
 ## [4.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.3...oxabl_analyze-v4.0.4) (2026-11-13)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.6...oxabl_preprocessor-v0.8.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
 ## [0.7.6](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.5...oxabl_preprocessor-v0.7.6) (2026-11-13)
 
 
