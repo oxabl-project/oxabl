@@ -109,21 +109,21 @@ fn xref_path(path: PathBuf) -> PathBuf {
 pub fn write(ctx: &Context<'_>, name: &str, out: &Outcome) -> io::Result<()> {
     put(
         &ctx.stage.join("r").join(format!("{}.r", stem(name))),
-        &rcode(name, out),
+        rcode(name, out),
     )?;
     match ctx.xref {
         "xref-xml" => put(
             &xref_path(ctx.stage.join("xref").join(format!("{name}.xref.xml"))),
-            &xref_xml(out),
+            xref_xml(out),
         )?,
         "xref" => put(
             &xref_path(ctx.stage.join("xref").join(format!("{name}.xref"))),
-            &xref_text(name, out),
+            xref_text(name, out),
         )?,
         "private" if ctx.faults.no_private_xref => {}
         "private" => put(
             &xref_path(ctx.stage.join("verify").join(format!("{name}.xref"))),
-            &xref_text(name, out),
+            xref_text(name, out),
         )?,
         _ => {}
     }

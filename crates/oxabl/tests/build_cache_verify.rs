@@ -710,7 +710,8 @@ fn a_file_name_that_is_not_utf8_is_not_in_the_closure_and_blocks_the_write() {
 
     assert!(!holds(&cache, "r/raw.r"));
     assert!(
-        run.stderr.contains("which is not in the closure of the unit"),
+        run.stderr
+            .contains("which is not in the closure of the unit"),
         "{}",
         run.stderr
     );
