@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.7](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.6...oxabl_flow-v0.3.7) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+
 ## [0.3.6](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.5...oxabl_flow-v0.3.6) (2026-11-13)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.7.0...oxabl_vscode-v0.7.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **build:** report compiler warnings that have no position ([fbdbddc](https://github.com/oxabl-project/oxabl/commit/fbdbddc1f322da9bb0369644bd809c727a231689))
+* **build:** report compiler warnings that have no position ([07daeae](https://github.com/oxabl-project/oxabl/commit/07daeaeec05176b50681a4f8c57e77d8b32ac944))
+
 ## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.6.1...oxabl_vscode-v0.7.0) (2026-11-16)
 
 

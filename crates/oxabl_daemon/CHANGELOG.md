@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.8](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.5.7...oxabl_daemon-v0.5.8) (2026-11-16)
+
+
+### Bug Fixes
+
+* **build:** resolve includes of a class from its package root, as the compiler does ([954ce9c](https://github.com/oxabl-project/oxabl/commit/954ce9c1fb6d893eae9859fa15eb5f4663d9667d))
+* **build:** resolve includes of a class from its package root, as the compiler does ([c95549f](https://github.com/oxabl-project/oxabl/commit/c95549f2a5e5418bc69585fcae56c02b07a3ec8d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.0.4 to 4.1.0
+    * oxabl_index bumped from 5.0.3 to 5.1.0
+    * oxabl_pipeline bumped from 3.4.2 to 3.5.0
+    * oxabl_semantic bumped from 5.0.3 to 5.0.4
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.4.2 to 3.5.0
+
 ## [0.5.7](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.5.6...oxabl_daemon-v0.5.7) (2026-11-13)
 
 
