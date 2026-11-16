@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_build"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "MIT"
 description = "The oxabl build tool: graph store, incremental refresh, planner, AVM worker pool and worker protocol"

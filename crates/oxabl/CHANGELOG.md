@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.3.0...oxabl-v5.3.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **build:** read a text XREF in any code page ([e793c36](https://github.com/oxabl-project/oxabl/commit/e793c36bc5a255187a89ebd54c2b7308c2736cc9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_build bumped from 0.4.0 to 0.4.1
+    * oxabl_build_remote bumped from 0.2.4 to 0.2.5
+
 ## [5.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.2.0...oxabl-v5.3.0) (2026-11-13)
 
 

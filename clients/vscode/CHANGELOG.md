@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.6.0...oxabl_vscode-v0.6.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **vscode:** keep the building tooltip still while units finish ([3538784](https://github.com/oxabl-project/oxabl/commit/353878461521743acf65b4364b52ce64a16f6465))
+* **vscode:** keep the building tooltip still while units finish ([e8cb367](https://github.com/oxabl-project/oxabl/commit/e8cb36724dc4c013ed7f97a645ddbbdc50270bd5))
+
 ## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.5.0...oxabl_vscode-v0.6.0) (2026-11-13)
 
 
