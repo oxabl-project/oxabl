@@ -404,6 +404,24 @@ fn a_startup_parameter_that_names_a_directory_makes_every_unit_unkeyable_k6() {
 }
 
 #[test]
+fn the_trigger_directory_is_not_part_of_the_key() {
+    let workspace = Keyed::simple();
+    workspace.write("src/a.p", "MESSAGE \"a\".\n");
+    let without = workspace.plan();
+    workspace.write("triggers/t1c.p", "TRIGGER PROCEDURE FOR CREATE OF t1.\n");
+    workspace.edit_environment(|e| e["parameters"] = json!(["-trig triggers"]));
+
+    let plan = workspace.plan();
+
+    assert!(
+        plan.key("src/a.p").is_some(),
+        "{:?}",
+        plan.unkeyable("src/a.p")
+    );
+    assert_eq!(plan.key("src/a.p"), without.key("src/a.p"));
+}
+
+#[test]
 fn a_library_entry_that_is_a_directory_makes_its_users_unkeyable_k6() {
     let workspace = Keyed::new(
         "include_paths = [\"src\", \"$LIB:acme\"]",

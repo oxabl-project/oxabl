@@ -203,6 +203,7 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   the unit PROPATH: unkeyable (K3). With the library on the PROPATH: keyable.
 - `x.p` and `x.w` in one directory: `x.p` compiles, `x.w` is skipped with
   `output-collision: <dir>/x.p`.
+- `-trig <dir>` in the startup parameters: the keys are the ones without it.
 - The DLC default entries from the worker's startup PROPATH appear in every unit PROPATH in
   `--plan --json`.
 - A `$LIB:` entry that the worker reports as a directory: its users are unkeyable with
@@ -494,6 +495,7 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `a_system_table_edit_changes_the_key_of_a_unit_that_reads_it` (scratch) | An edit of the metaschema table `_User` (a field order) on one of two databases loaded from one `.df` changes the schema identity and the key of a unit that reads `_User`: the `system` entry of the [schema image](compile-key.md#schema-identity) holds its CRC. |
 | `the_raw_digest_follows_every_schema_edit_and_no_row_change` (scratch) | Each `.df` edit of `schema_edit_table`, an initial value, mandatory, `CAN-READ`, a table and a field trigger, a sequence change and a direct ABL assignment to `_Field` change the raw digest and image again; a created row and `NEXT-VALUE` do not, and the stored image is reused. |
 | `the_raw_digest_is_the_same_under_utf8_and_iso8859_1` (scratch) | One database gives one raw digest under `-cpinternal UTF-8` and `ISO8859-1` (`LENGTH(raw)` without `"RAW"` fails it). |
+| `the_trigger_directory_changes_no_rcode_and_no_key` (scratch) | A table with a create and a delete trigger: a unit that creates and deletes its rows, and a trigger procedure, give r-code equivalent to the build without `-trig` with the trigger directory and with a directory of broken triggers, and the same keys. Pins `-trig` in the drop list. |
 | `the_raw_digest_on_a_served_database` (scratch) | `proutil idxactivate` changes the digest; on a served database the digest equals the single-user one and is the same for 1, 2 and 8 workers; the second build reuses the image; an SQL `CREATE TABLE` (`sqlexp` over TCP) changes the digest. |
 | `startup_pf` | A parameter set only in a `.pf` is in the probe, and its canonical form equals the same parameter on the command line. |
 | `param_file_hash` | Changing the bytes of a `-compileroptionsfile` file changes the environment identity. The AVM reads that file at its start and refuses a line that is not an option (error 18408), so the test changes a `#` comment line. |

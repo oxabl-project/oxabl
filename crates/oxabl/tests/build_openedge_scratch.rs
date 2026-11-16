@@ -24,7 +24,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use common::openedge::compile::{Options, compile_workspace_with};
+use common::built::unit;
+use common::openedge::compile::{Compile, Options, compile_workspace_with};
+use common::openedge::mask::Masks;
 use common::openedge::{Target, probe};
 use serde_json::Value;
 
@@ -654,4 +656,69 @@ fn the_raw_digest_on_a_served_database() {
         digests.iter().all(|digest| *digest == digests[0]),
         "{digests:?}"
     );
+}
+
+/// A create and a delete trigger on `t1`.
+const TRIGGERS: &str = "UPDATE TABLE \"t1\"
+  TABLE-TRIGGER \"CREATE\" NO-OVERRIDE PROCEDURE \"t1c.p\" CRC \"?\"
+  TABLE-TRIGGER \"DELETE\" NO-OVERRIDE PROCEDURE \"t1d.p\" CRC \"?\"
+
+";
+
+const WRITER: &str = "CREATE t1.
+ASSIGN t1.f1 = \"a\".
+FIND FIRST t1 EXCLUSIVE-LOCK NO-ERROR.
+IF AVAILABLE t1 THEN DELETE t1.
+";
+
+const CREATE_TRIGGER: &str = "TRIGGER PROCEDURE FOR CREATE OF t1.
+t1.f2 = 1.
+";
+
+/// `-trig` names the directory of the schema trigger procedures, which only a
+/// running program reads: the r-code of a unit that writes a table with
+/// triggers, and of a trigger procedure, is the same with the triggers, with
+/// broken ones and with no `-trig`, and so are the keys.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn the_trigger_directory_changes_no_rcode_and_no_key() {
+    let mut scratch = Scratch::new();
+    let db = format!("oxtg{}", std::process::id());
+    scratch.create(&db);
+    scratch.load(&db, BASE);
+    scratch.load(&db, TRIGGERS);
+    let mut workspace = compile_workspace_with(
+        &scratch.target(&db, &db),
+        Options {
+            workers: 1,
+            ..Options::default()
+        },
+    );
+    workspace.write("src/writer.p", WRITER);
+    workspace.write("src/t1c.p", CREATE_TRIGGER);
+    workspace.write("triggers/t1c.p", CREATE_TRIGGER);
+    workspace.write(
+        "broken/t1c.p",
+        "TRIGGER PROCEDURE FOR CREATE OF t1.\nthis is not ABL (\n",
+    );
+    let keys = |workspace: &Compile| {
+        let plan = workspace.plan();
+        ["src/writer.p", "src/t1c.p"].map(|path| {
+            unit(&plan, path)["key"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{path} has no key: {}", unit(&plan, path)))
+                .to_string()
+        })
+    };
+    let masks = Masks::record(&workspace, 3);
+    let without = keys(&workspace);
+
+    for directory in ["triggers", "broken"] {
+        let trig = format!("{}/{directory}", workspace.worker);
+        workspace.set_command(&scratch.target_with(&db, &db, &["-1", "-trig", &trig]));
+        workspace.drop_rcode();
+        workspace.build(&["--json"], 0);
+        masks.assert_equivalent(&workspace.rcode(), directory);
+        assert_eq!(keys(&workspace), without, "-trig {directory}");
+    }
 }

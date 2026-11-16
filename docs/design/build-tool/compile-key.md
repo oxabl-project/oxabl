@@ -507,13 +507,20 @@ each `.pf` file into it: `-pf /work/build.pf,-inp 77777,-tok 4321,(end .pf),-Mm 
 8. Sort by name, by bytes. Names and values keep their case.
 
 The **drop list** holds only parameters that name a connection, a file of this process, a
-log or a secret:
+log or a secret, and `-trig`:
 
 ```text
--p -param -pf -b -q -T -db -ld -H -S -N -U -P -1 -ct -dt
+-p -param -pf -b -q -T -trig -db -ld -H -S -N -U -P -1 -ct -dt
 -clientlog -logginglevel -logentrytypes -logthreshold -numlogfiles
 -basekey -keyvalue
 ```
+
+`-trig` names the directory of the schema trigger procedures, which only a running program
+reads. Measured on OpenEdge 12.8.9 (`the_trigger_directory_changes_no_rcode_and_no_key`):
+a unit that creates and deletes rows of a table with triggers, and a trigger procedure,
+give equivalent r-code with the trigger directory, with a directory of broken triggers and
+with no `-trig`. Kept, it would make every unit unkeyable, because its value is a
+directory.
 
 Every other parameter stays, with its value. Some of them do not change r-code (`-mmax`,
 `-s`, `-inp`). Keeping them costs cache misses when two machines start the AVM differently.

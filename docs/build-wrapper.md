@@ -161,6 +161,8 @@ When every unit has the same PROPATH (`include_paths` only), every unit can have
 
 The workers report their own environment when they start. If it differs from `[workspace.preprocessor]`, the build stops with exit code 2 and shows the value on each side. Fix the overlay. Do not hide the difference.
 
+The startup parameters of the workers are part of the compile key, except the ones that name a connection, a log, a secret or a file of the process, and `-trig`: the compiler does not read the trigger directory.
+
 `[workspace.schema].files` lists `.df` dump files for the analysis (relative to the root). The compile itself uses the databases that the worker connects. Oxabl images each database on the workers and puts the schema in the compile key, so a schema change recompiles the units that it can change.
 
 ### Outputs and options
