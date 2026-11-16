@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { clickButton, runCommand, screenshot, statusTexts, toasts, waitForText, watchSpinner, watchStatus } from "../lib/editor.mjs";
+import { bodyText, clickButton, runCommand, screenshot, statusTexts, toasts, waitForText, watchSpinner, watchStatus } from "../lib/editor.mjs";
 import { buildExits, buildStarts, fakeOxablSource, readLog, signals, writeFakeOxabl } from "../lib/fake-oxabl.mjs";
 import { startFakeGitHub } from "../lib/fake-github.mjs";
 import { check, sleep, waitFor } from "../lib/report.mjs";
-import { addSettings, installVsix, launch, makeProfile } from "../lib/vscode.mjs";
+import { addSettings, installVsix, launch, makeProfile, waitForLog } from "../lib/vscode.mjs";
 
 // Scenarios of the build loop. `oxabl` is a fake (lib/fake-oxabl.mjs) that logs
 // every invocation and signal; the extension in the real VS Code is under test.
@@ -25,7 +25,7 @@ const QUICK_BUILD = { script: [{ event: { ...started, rebuild: 0, units: 5 } }] 
  * GitHub API, and VS Code started on it. `body` gets { page, profile, logFile, server }.
  */
 async function session(ctx, name, opts, body) {
-  const { config = {}, settings = {}, files = ["sample.p", "oxabl.toml"], fake = true, launchOptions = {}, cli, before } = opts;
+  const { config = {}, settings = {}, files = ["sample.p", "oxabl.toml"], fake = true, launchOptions = {}, cli, before, newest = "99.0.0" } = opts;
   const profile = makeProfile(name, { files });
   const logFile = path.join(profile.root, "fake-oxabl.log");
   const configFile = path.join(profile.root, "fake-oxabl.json");
@@ -40,7 +40,7 @@ async function session(ctx, name, opts, body) {
   });
   installVsix(ctx.exe, profile, ctx.vsix);
   before?.(profile);
-  const server = await startFakeGitHub({ installed: ctx.installed, newest: "99.0.0", cli });
+  const server = await startFakeGitHub({ installed: ctx.installed, newest, cli });
   let vs;
   try {
     vs = await launch(ctx.exe, profile, {
@@ -445,5 +445,104 @@ export async function buildInstallBadChecksum(ctx) {
     check(`${name}: no install record is written`, !fs.existsSync(path.join(profile.root, "data", "oxabl", "install.json")));
     await sleep(2_000);
     check(`${name}: no build ran`, buildStarts(log()).length === 0);
+  });
+}
+
+// The CLI half of the update check: the extension's own check (at start, or the
+// command) also asks a managed binary whether a newer release exists.
+
+const CLI_NEXT = "9.9.10";
+const CLI_AVAILABLE = `oxabl CLI v${CLI_NEXT} is available (installed: v9.9.9).`;
+const selfUpdates = (log) => log.filter((l) => l.args?.[0] === "self-update");
+const plainSelfUpdates = (log) => selfUpdates(log).filter((l) => !l.args.includes("--check") && !l.args.includes("--help"));
+const lspStarts = (log) => log.filter((l) => l.args?.[0] === "lsp");
+const fakeVersion = (profile) => /const VERSION = "([^"]+)";/.exec(fs.readFileSync(path.join(profile.root, "fake", "oxabl"), "utf8"))?.[1];
+
+/** Writes the install record that makes the fake binary of the session managed. */
+function manageFake(profile) {
+  const data = path.join(profile.root, "data", "oxabl");
+  fs.mkdirSync(data, { recursive: true });
+  const target = fs.realpathSync(path.join(profile.root, "fake", "oxabl"));
+  fs.writeFileSync(path.join(data, "install.json"), JSON.stringify({ format: 1, installer: "install.sh", path: target, version: "9.9.9" }));
+}
+
+/** A session whose extension is current, so only the CLI can have an update. */
+const cliSession = (ctx, name, { mode, selfUpdate, managed = true }, body) =>
+  session(
+    ctx,
+    name,
+    {
+      config: { builds: [QUICK_BUILD], selfUpdate },
+      settings: { "oxabl.updates": mode },
+      newest: ctx.installed,
+      before: managed ? manageFake : undefined,
+    },
+    body,
+  );
+
+export async function cliUpdateAuto(ctx) {
+  const name = "cli-update-auto";
+  await cliSession(ctx, name, { mode: "auto", selfUpdate: { latest: CLI_NEXT } }, async ({ page, profile, log }) => {
+    await waitForText(page, `oxabl CLI updated to v${CLI_NEXT}`, 60_000);
+    check(`${name}: the status bar says the CLI was updated`, true);
+    const runs = selfUpdates(log()).filter((l) => !l.args.includes("--help")).map((l) => l.args.join(" "));
+    check(`${name}: the binary was asked first, then updated`, runs[0] === "self-update --check --json" && runs.includes("self-update"), runs.join(", "));
+    check(`${name}: the binary is the new version`, fakeVersion(profile) === CLI_NEXT, fakeVersion(profile));
+    await waitFor(`${name}: the language server restarts`, () => lspStarts(log()).length >= 2, { timeout: 30_000 });
+    check(`${name}: the language server restarted on the new binary`, lspStarts(log()).length >= 2);
+    check(`${name}: nothing asked first`, !(await bodyText(page)).includes(CLI_AVAILABLE));
+    await screenshot(page, name);
+  });
+}
+
+export async function cliUpdateNotify(ctx) {
+  const name = "cli-update-notify";
+  await cliSession(ctx, name, { mode: "notify", selfUpdate: { latest: CLI_NEXT } }, async ({ page, profile, log }) => {
+    await waitForText(page, CLI_AVAILABLE, 60_000);
+    for (const label of ["Update", "Release Notes", "Skip This Version"]) {
+      const shown = await page
+        .locator(".notification-toast .monaco-button", { hasText: label })
+        .first()
+        .waitFor({ timeout: 10_000 })
+        .then(() => true, () => false);
+      check(`${name}: the prompt has a "${label}" button`, shown);
+    }
+    check(`${name}: nothing is installed before the answer`, plainSelfUpdates(log()).length === 0 && fakeVersion(profile) === "9.9.9");
+    await screenshot(page, name);
+    await clickButton(page, "Update");
+    await waitForText(page, `oxabl was updated from 9.9.9 to ${CLI_NEXT}`, 30_000);
+    check(`${name}: Update installs the new version`, fakeVersion(profile) === CLI_NEXT, fakeVersion(profile));
+  });
+}
+
+export async function cliUpdateUnmanaged(ctx) {
+  const name = "cli-update-unmanaged";
+  await cliSession(ctx, name, { mode: "auto", selfUpdate: { latest: CLI_NEXT }, managed: false }, async ({ profile, log }) => {
+    await waitForLog(profile, "is not managed by an oxabl installer; the extension does not update it");
+    check(`${name}: the reason is in the output channel`, true);
+    check(`${name}: the binary is not asked to update`, selfUpdates(log()).length === 0, selfUpdates(log()).map((l) => l.args.join(" ")).join(", "));
+    check(`${name}: the binary is unchanged`, fakeVersion(profile) === "9.9.9");
+  });
+}
+
+export async function cliUpdateCheckFails(ctx) {
+  const name = "cli-update-check-fails";
+  await cliSession(ctx, name, { mode: "auto", selfUpdate: { latest: CLI_NEXT, checkExit: 3 } }, async ({ page, profile, log }) => {
+    await waitForLog(profile, "CLI update check failed: error: cannot reach GitHub");
+    check(`${name}: the reason is in the output channel`, true);
+    check(`${name}: nothing is installed`, plainSelfUpdates(log()).length === 0 && fakeVersion(profile) === "9.9.9");
+    check(`${name}: an automatic check shows no error`, !(await bodyText(page)).includes("could not"));
+  });
+}
+
+export async function cliUpdateManualCurrent(ctx) {
+  const name = "cli-update-manual-current";
+  await cliSession(ctx, name, { mode: "off", selfUpdate: { latest: "9.9.9" } }, async ({ page, log }) => {
+    await waitForBuilds(`${name}: the first build`, log, 1);
+    check(`${name}: mode off asks the binary nothing by itself`, selfUpdates(log()).length === 0);
+    await runCommand(page, "oxabl: Check for Updates");
+    await waitForText(page, "oxabl CLI is up to date (v9.9.9).", 30_000);
+    check(`${name}: the manual check says the CLI is up to date`, true);
+    check(`${name}: nothing is installed`, plainSelfUpdates(log()).length === 0);
   });
 }

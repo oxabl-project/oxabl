@@ -206,6 +206,20 @@ pulled never makes the check install an older version over the newer one.
 After a person installs an older version by hand in a profile that the
 extension updated, that profile stays on it until a newer tag exists.
 
+After the extension's own release, the same check asks a managed binary
+(`updates.ts` calls `CliManager.checkForUpdate`, in `binary.ts`). It runs
+whatever became of the extension's release, and its failure is reported on
+its own. A binary that is not managed, that has no `self-update`, or (for an
+automatic check) that runs with `OXABL_NO_SELF_UPDATE` is not asked. The
+binary answers `oxabl self-update --check --json` (`{installed, latest,
+update, managed}`; any other shape is an error, and nothing is installed).
+`auto` runs `oxabl self-update`, shows a status bar message and calls
+`onChanged`, which restarts the language server and reconfigures the builds;
+other modes ask with Update, Release Notes (the `oxabl-vX.Y.Z` release) and
+Skip This Version (`oxabl.updates.cliSkipped`). The binary keeps its own daily
+background check for use outside VS Code; both take the binary's update lock,
+so they never install at once.
+
 `oxabl.updates` is `auto` (the default; `notify` when VS Code's
 `extensions.autoUpdate` is off), `notify` or `off`. `oxabl: Check for Updates`
 checks at once. Every failure installs nothing. `OXABL_UPDATE_API_URL`

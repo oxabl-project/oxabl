@@ -58,6 +58,31 @@ export async function supportsSelfUpdate(binary: string): Promise<boolean> {
   }
 }
 
+/** The answer of `oxabl self-update --check --json`. */
+export interface CliUpdateCheck {
+  installed: string;
+  latest: string;
+  update: boolean;
+  managed: boolean;
+}
+
+/** `stdout` of `oxabl self-update --check --json`, or `undefined` for any other shape. */
+export function parseUpdateCheck(stdout: string): CliUpdateCheck | undefined {
+  let value: Partial<Record<keyof CliUpdateCheck, unknown>>;
+  try {
+    value = JSON.parse(stdout.trim()) as typeof value;
+  } catch {
+    return undefined;
+  }
+  const { installed, latest, update, managed } = value ?? {};
+  return typeof installed === "string" &&
+    typeof latest === "string" &&
+    typeof update === "boolean" &&
+    typeof managed === "boolean"
+    ? { installed, latest, update, managed }
+    : undefined;
+}
+
 /** What the extension needs to know about a root. */
 export interface RootConfig {
   /** Absolute directories whose changes never trigger a build. */

@@ -51,6 +51,11 @@ only; the extension is the program under test.
 | `build-binary-changed` | A binary that reports a new version restarts the language server once. |
 | `build-install` | With no binary, the install prompt shows. `Install` puts the release asset into `OXABL_INSTALL_DIR`, writes the install record (`installer: "vscode"`), leaves no staged file, and the build runs with it. |
 | `build-install-bad-checksum` | A wrong checksum installs nothing and writes no record. |
+| `cli-update-auto` | In `auto` mode the update check asks a managed binary (`self-update --check --json`), runs `self-update`, says "oxabl CLI updated" in the status bar and restarts the language server. |
+| `cli-update-notify` | In `notify` mode the prompt for the CLI has Update, Release Notes and Skip This Version, installs nothing before the answer, and `Update` installs. |
+| `cli-update-unmanaged` | A binary that the install record does not name is never asked to update; the output channel says why. |
+| `cli-update-check-fails` | A check that fails installs nothing, shows no error on an automatic check, and logs the reason. |
+| `cli-update-manual-current` | In `off` mode nothing is asked by itself; `oxabl: Check for Updates` says the CLI is up to date. |
 
 The highlight and markdown scenarios run with `oxabl.updates` set to `off` and
 assert that the fake API received no request. Every launch needs

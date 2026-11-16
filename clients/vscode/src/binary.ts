@@ -5,13 +5,16 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { runCli, supportsSelfUpdate } from "./cli";
+import { parseUpdateCheck, runCli, supportsSelfUpdate } from "./cli";
 import { WSL_DOCS_URL, classifyHost, hostMessage, type HostClass } from "./host";
 import { installCli, findCliRelease, installRecordPath, isManaged } from "./install";
 import { apiBaseFrom } from "./net";
 import { defaultInstallPath, resolveServerBinary, splitPath, type DiscoveryResult } from "./server";
 
 const DONT_ASK_KEY = "oxabl.install.dontAsk";
+const CLI_SKIPPED_KEY = "oxabl.updates.cliSkipped";
+const CLI_RELEASE_URL = "https://github.com/oxabl-project/oxabl/releases/tag/oxabl-v";
+const CHECK_TIMEOUT_MS = 60_000;
 const REOPEN_IN_WSL = "remote-wsl.reopenInWSL";
 const SELF_UPDATE_TIMEOUT_MS = 180_000;
 
@@ -147,6 +150,85 @@ export class CliManager {
   }
 
   /**
+   * The CLI half of the extension's update check. Only a managed binary is
+   * asked (`oxabl self-update --check --json`); `auto` installs a newer release
+   * and says so in the status bar, any other mode asks first. A manual check
+   * also reports "up to date". Throws when the check gives no answer, so
+   * nothing is installed on a guess.
+   */
+  async checkForUpdate(mode: "auto" | "notify" | "off", manual: boolean): Promise<void> {
+    const found = resolveBinary();
+    if (found.kind !== "found") {
+      this.log.info("CLI update check: no oxabl binary");
+      return;
+    }
+    const binary = found.command;
+    if (!(await isManaged(binary, installRecordPath()))) {
+      this.log.info(`CLI update check: ${binary} is not managed by an oxabl installer; the extension does not update it`);
+      return;
+    }
+    if (!manual && process.env.OXABL_NO_SELF_UPDATE) {
+      this.log.info("CLI update check: OXABL_NO_SELF_UPDATE is set");
+      return;
+    }
+    if (!(await supportsSelfUpdate(binary))) {
+      this.log.info(`CLI update check: ${binary} has no self-update; the build updates it when it needs to`);
+      return;
+    }
+    const out = await runCli(binary, ["self-update", "--check", "--json"], CHECK_TIMEOUT_MS);
+    const check = parseUpdateCheck(out.stdout);
+    if (!check) {
+      throw new Error(`unexpected answer from oxabl self-update --check: ${out.stdout.trim().slice(0, 200)}`);
+    }
+    if (!check.update) {
+      this.log.info(`CLI update check: up to date (v${check.installed})`);
+      if (manual) {
+        void vscode.window.showInformationMessage(`oxabl CLI is up to date (v${check.installed}).`);
+      }
+      return;
+    }
+    if (!manual && this.context.globalState.get<string>(CLI_SKIPPED_KEY) === check.latest) {
+      this.log.info(`CLI update check: v${check.latest} was skipped`);
+      return;
+    }
+    if (mode === "auto") {
+      this.log.info(`CLI update check: install v${check.latest}`);
+      await this.runSelfUpdate(binary);
+      vscode.window.setStatusBarMessage(`$(check) oxabl CLI updated to v${check.latest}`, 30_000);
+      await this.onChanged();
+      return;
+    }
+    this.log.info(`CLI update check: offer v${check.latest}`);
+    void this.offerUpdate(binary, check.installed, check.latest);
+  }
+
+  /** The `notify` prompt; not awaited, so the check does not wait for the answer. */
+  private async offerUpdate(binary: string, installed: string, latest: string): Promise<void> {
+    const choice = await vscode.window.showInformationMessage(
+      `oxabl CLI v${latest} is available (installed: v${installed}).`,
+      "Update",
+      "Release Notes",
+      "Skip This Version",
+    );
+    if (choice === "Update") {
+      await this.selfUpdate(binary, true);
+    } else if (choice === "Release Notes") {
+      void vscode.env.openExternal(vscode.Uri.parse(`${CLI_RELEASE_URL}${latest}`));
+    } else if (choice === "Skip This Version") {
+      this.log.info(`CLI update check: skipping v${latest}`);
+      await this.context.globalState.update(CLI_SKIPPED_KEY, latest);
+    }
+  }
+
+  /** `oxabl self-update`; resolves with its last line of output. */
+  private async runSelfUpdate(binary: string): Promise<string> {
+    const out = await runCli(binary, ["self-update"], SELF_UPDATE_TIMEOUT_MS);
+    const line = out.stdout.trim().split("\n").pop() ?? "oxabl self-update finished";
+    this.log.info(`self-update: ${line}`);
+    return line;
+  }
+
+  /**
    * Run `oxabl self-update` on a managed binary. `announce` shows the result and
    * runs `onChanged`; without it the caller continues on its own. True when the
    * command succeeded.
@@ -156,9 +238,7 @@ export class CliManager {
       { location: vscode.ProgressLocation.Notification, title: "Updating the oxabl CLI" },
       async () => {
         try {
-          const out = await runCli(binary, ["self-update"], SELF_UPDATE_TIMEOUT_MS);
-          const line = out.stdout.trim().split("\n").pop() ?? "oxabl self-update finished";
-          this.log.info(`self-update: ${line}`);
+          const line = await this.runSelfUpdate(binary);
           if (announce) {
             void vscode.window.showInformationMessage(line);
             await this.onChanged();
