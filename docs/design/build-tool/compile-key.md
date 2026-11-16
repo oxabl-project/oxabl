@@ -201,13 +201,40 @@ The closure is computed iteratively with a visited set over the in-memory graph,
 end.
 
 The closure assumes that the compile resolves each class name to the file, and each
-include inside a class to the file, that the analysis resolved. That holds when the build
-has **one PROPATH id**: then every unit, and every class compiled in memory for it, searches
-the same entries, and a class name resolves to one file. With more than one PROPATH id it
-does not hold in general: the shared `$OUT` tree has one `.r` per class name, which the
-compiler prefers to a source on a later entry, and a class that is not a unit is compiled in memory under each user's own PROPATH. So the key covers classes
+include inside a class to the file, that the analysis resolved. Two rules make the
+analysis search what the compile searches:
+
+- **The analysis search base.** The analysis resolves the `root_relative_include_paths`
+  of a file against its base directory, as the unit PROPATH does: the directory of a
+  procedure, and the package root of a class (see
+  [The unit PROPATH](#the-unit-propath-and-the-compile-name)). Oxabl reads the package
+  from the `CLASS`, `INTERFACE` or `ENUM` statement of the class's own text. A class whose
+  name is not written out, or whose directory does not end with its package path, is
+  analysed from its own directory. The includes that a class reaches, also through
+  another include, are searched with the class's search paths. The CLI, the language
+  server and the daemon use the same rule, so their diagnostics agree with the compile.
+- **K10.** A class source that does not compile as a unit on the unit's own PROPATH id (a
+  class that is not a unit, or a class unit that is skipped or has another PROPATH id) is
+  compiled in memory under the PROPATH of the unit that uses it. Its analysis searched from
+  its own package root. With `root_relative_include_paths` non-empty, oxabl searches each
+  include and class name of such a class again on the user's unit PROPATH (`hit(P, name)`
+  of [Uniform resolution](#uniform-resolution-reported-not-yet-used-for-keys)), with any
+  number of PROPATH ids. When the first file found is not the file the analysis resolved,
+  the user is unkeyable (`class-propath: <name> in <class> finds <file>, analysed <file>`;
+  `finds nothing` when no entry holds the name). This is the U3 check alone.
+
+With one PROPATH id, every unit, and every class compiled in memory for it, then searches
+the entries that the analysis searched. With more than one PROPATH id the assumption does
+not hold in general: a class that is not a unit is
+compiled in memory under each user's own PROPATH. The `$OUT` tree has one `.r` per class
+name, and the compiler prefers it to a source on a later entry. So the key covers classes
 only with one PROPATH id ([K9](#per-unit-propath-classes)), and one narrow conflict remains
 to check even then ([K8](#class-conflicts)).
+
+The remaining gap: oxabl analyses a class that is not a unit once, from its own package
+root. K10 makes a user unkeyable when its own PROPATH reads another file, but oxabl does not
+analyse such a class once per PROPATH id, so the user has no key instead of a key over the
+files its compile reads.
 
 ### Per-unit PROPATH classes
 
@@ -402,7 +429,10 @@ part** of the unit PROPATH:
   not cover an include that the class reads.
 
 Each listed class must pass the rules of the key as if it were the unit (K1 to K6, K8 and K9,
-with the unit PROPATH), and must not hold a name that K8 finds in conflict. K7 does not
+with the unit PROPATH), and must not hold a name that K8 finds in conflict. With
+`root_relative_include_paths` non-empty, a listed class that does not compile as a unit on
+that PROPATH id must also pass K10: the unit PROPATH resolves each of its names to the file
+the analysis did. K7 does not
 apply: a class unit that is skipped (for example `package-root-not-on-propath`, a class with
 no package in a directory that is not on the PROPATH) does not take the key away. It stays
 in the listing, with its bytes and its closure. This is sound: no successful compile can use
@@ -896,12 +926,13 @@ read its closure: [the observed closure](#the-observed-closure) can key it.
 | K1 | The unit, or a class source in its closure, has a degraded edge set. | `degraded: <path>: <reason>` |
 | K2 | The unit, or a class source in its closure, has an unresolved include (any kind, any reason). | `unresolved-include: <name> in <path>` |
 | K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]` (compared ignoring ASCII case), and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
-| K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). A class unit whose `CLASS` name is not written out is also K4 (`computed-name: class statement in <path>`, `conditional-name: class statement in <path>`), unless exactly one directory can be its package root. | `computed-name: <name> in <path>` |
+| K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). A class unit whose `CLASS` name is not written out is also K4 (`computed-name: class statement in <path>`, `conditional-name: class statement in <path>`), unless exactly one directory can be its package root, and, with `root_relative_include_paths` non-empty, that directory is the unit's own directory (the analysis searches from there). | `computed-name: <name> in <path>` |
 | K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
 | K6 | The environment was not established in this build (no probe, a failed probe, or a schema imaging failure for any database). | `environment-unknown` |
 | K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`, `package-mismatch`, `package-root-not-on-propath`). | the skip reason |
 | K8 | The unit's closure holds a class name that K3 accepted as external, and a class unit or class edge target in the whole graph has that name ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
 | K9 | The build has more than one PROPATH id, and the unit is a class unit or its closure reaches a class source ([Per-unit PROPATH classes](#per-unit-propath-classes)). | `per-unit-propath-classes` |
+| K10 | `root_relative_include_paths` is non-empty, and the unit's closure holds a class source that does not compile as a unit on the unit's PROPATH id, with an include or class name that the unit PROPATH resolves to another file than the analysis did ([The closure](#the-closure)). | `class-propath: <name> in <class> finds <file>, analysed <file>` |
 
 **A name a superclass declares is not a class.** A class that `INHERITS` a workspace
 class reads the data members of that class as names in its own scope: variables, buffers,

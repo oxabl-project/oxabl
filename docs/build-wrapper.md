@@ -141,7 +141,7 @@ Oxabl does not read a PROPATH from the AVM. It builds one for each worker from t
 For a compile, the PROPATH is, in this order:
 
 1. The output directory (`[build].output`), so that a unit that uses a class reads the r-code that this build made.
-2. `[workspace.sources].root_relative_include_paths`, relative to the directory of the unit.
+2. `[workspace.sources].root_relative_include_paths`, relative to the directory of the unit. For a class, they are relative to its package root: `.` for `a/pkg/Foo.cls`, which declares `pkg.Foo`, is `a`. The analysis searches the includes of a class from the same directory.
 3. `[workspace.sources].include_paths`, in order.
 4. The default entries of the OpenEdge installation (its `.pl` libraries). You do not list them.
 
@@ -153,7 +153,7 @@ Write each entry in `include_paths` and `root_relative_include_paths` in one of 
 
 Do not use an absolute path in these lists. Oxabl and the worker may see the same directory under different names.
 
-When every unit has the same PROPATH (`include_paths` only), every unit can have a compile key. When you set `root_relative_include_paths`, the PROPATH is different for the units of different directories. A unit that reaches a class then has no compile key. It compiles at each build, and no cache holds its result. If your code base has one global PROPATH, do not use `root_relative_include_paths`.
+When every unit has the same PROPATH (`include_paths` only), every unit can have a compile key. When you set `root_relative_include_paths`, the PROPATH is different for the units of different directories. A unit that reaches a class then has no compile key. It compiles at each build, and no cache holds its result. If your code base has one global PROPATH, do not use `root_relative_include_paths`. A class that is not a unit (outside `[workspace.sources].directories`) compiles under the PROPATH of the unit that uses it. When that PROPATH finds another file for one of its includes than the analysis found from the package root of the class, the unit has no compile key (`class-propath`).
 
 With `root_relative_include_paths`, a procedure compiles under its name in its own directory, and its r-code goes to the same path in the output directory as its source: `ar/post.p` and `gl/post.p` both compile as `post.p`, and their r-code is `ar/post.r` and `gl/post.r`. A class keeps the path of its package.
 

@@ -121,9 +121,19 @@ use crate::{PipelineConfig, ROOT_FILE_ID};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expansion {
     inner: Result<ExpandedFile, Vec<Diagnostic>>,
+    /// The directory the root-relative paths were resolved against; see
+    /// [`PipelineConfig::search_base`].
+    search_base: Option<PathBuf>,
 }
 
 impl Expansion {
+    /// The directory the root-relative paths were resolved against: the
+    /// file's own directory, or for a class its package root. `None` with no
+    /// file or no root-relative path.
+    pub fn search_base(&self) -> Option<&Path> {
+        self.search_base.as_deref()
+    }
+
     /// Absolute paths of every include file this expansion read — the watcher's
     /// changed-file → buffer matching input (R17). Empty when preprocessing was
     /// off or failed fatally.
@@ -199,6 +209,7 @@ impl Expansion {
     fn fatally_failed(diagnostics: Vec<Diagnostic>) -> Self {
         Expansion {
             inner: Err(diagnostics),
+            search_base: None,
         }
     }
 }
@@ -1249,14 +1260,15 @@ impl<'a> LintPipeline<'a> {
                 })
                 .collect();
             let includes = self.index_includes();
-            let paths = self.config.include_paths_for(self.file());
+            let base = expansion.search_base();
+            let paths = self.config.include_paths_from(base);
             let includes = oxabl_index::IncludeContext {
                 include_paths: &paths,
                 root_relative_paths: &[],
                 ..includes
             };
             let mut references =
-                |target: ClosureTarget<'_>| self.closure_references_cached(target, &paths);
+                |target: ClosureTarget<'_>| self.closure_references_cached(target, &paths, base);
             match self.closures {
                 Some(cache) => conditional_include_closure_cached(
                     &names,
@@ -1333,6 +1345,7 @@ impl<'a> LintPipeline<'a> {
         &self,
         target: ClosureTarget<'_>,
         include_paths: &[PathBuf],
+        base: Option<&Path>,
     ) -> Vec<ClosureReference> {
         let (Some(cache), RunIndex::Shared(index)) = (self.closures, &self.index) else {
             return self.closure_references(target, include_paths);
@@ -1341,11 +1354,7 @@ impl<'a> LintPipeline<'a> {
             path: oxabl_index::search::normalize_lexically(target.path),
             name: target.name.to_string(),
             include_paths: include_paths.to_vec(),
-            directory: self
-                .file()
-                .filter(|_| !self.config.root_relative_include_paths.is_empty())
-                .and_then(Path::parent)
-                .map(Path::to_path_buf),
+            directory: base.map(Path::to_path_buf),
         };
         let slot = Arc::clone(
             cache
@@ -1500,16 +1509,18 @@ impl<'a> LintPipeline<'a> {
         // through `run` must be contained, and the same panic through `expand`
         // must escape.
         panic_if_injected(panic_sites::ANALYZE, source);
+        let search_base = self.config.search_base(self.file(), source);
         Expansion {
             inner: expand_source_with(
                 ROOT_FILE_ID,
                 self.file().and_then(Path::to_str),
                 source,
                 self.fs,
-                &self.config.include_paths_for(self.file()),
+                &self.config.include_paths_from(search_base.as_deref()),
                 &self.config.preprocessor,
                 self.preprocess,
             ),
+            search_base,
         }
     }
 

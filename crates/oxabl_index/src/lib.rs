@@ -52,6 +52,7 @@
 mod batch;
 pub mod calls;
 mod closure;
+pub mod declared;
 mod deps;
 mod facts;
 mod producers;
@@ -111,7 +112,7 @@ const INDEXED_FILE: FileId = FileId::new(1);
 pub struct IncludeContext<'a> {
     pub fs: &'a dyn FileSystem,
     pub include_paths: &'a [PathBuf],
-    /// Paths resolved against the directory of the file being indexed and searched
+    /// Paths resolved against the base directory of the file being indexed and searched
     /// before `include_paths`; see [`search::root_include_paths`].
     pub root_relative_paths: &'a [PathBuf],
     /// Answers the AVM's predefined names (`{&OPSYS}` and friends).
@@ -129,14 +130,15 @@ impl<'a> IncludeContext<'a> {
         }
     }
 
-    /// The search paths of the file at `file`: the root-relative paths against
-    /// its directory, then the include paths.
-    pub fn paths_for(&self, file: &Path) -> std::borrow::Cow<'a, [PathBuf]> {
+    /// The search paths of the file at `file` with the text `source`: the
+    /// root-relative paths against its base directory
+    /// ([`search::search_base`]), then the include paths.
+    pub fn paths_for(&self, file: &Path, source: &str) -> std::borrow::Cow<'a, [PathBuf]> {
         if self.root_relative_paths.is_empty() {
             return std::borrow::Cow::Borrowed(self.include_paths);
         }
         std::borrow::Cow::Owned(search::root_include_paths(
-            file,
+            search::search_base(file, source).as_deref(),
             self.root_relative_paths,
             self.include_paths,
         ))
@@ -144,14 +146,14 @@ impl<'a> IncludeContext<'a> {
 }
 
 /// [`index_file`] for the file at `path`, its includes read with the search
-/// paths of its own directory.
+/// paths of its base directory.
 pub fn index_file_at(
     file: IndexedFileId,
     path: &Path,
     source: &str,
     includes: &IncludeContext<'_>,
 ) -> (FileFacts, Vec<PathBuf>) {
-    let paths = includes.paths_for(path);
+    let paths = includes.paths_for(path, source);
     let includes = IncludeContext {
         include_paths: &paths,
         root_relative_paths: &[],
@@ -184,7 +186,7 @@ pub fn program_signatures_at(
     if written.main.is_some() && written.procedures.iter().all(|(_, s)| s.is_some()) {
         return (Some(written), Vec::new());
     }
-    let paths = includes.paths_for(path);
+    let paths = includes.paths_for(path, source);
     let includes = IncludeContext {
         include_paths: &paths,
         root_relative_paths: &[],
@@ -281,7 +283,7 @@ pub(crate) fn expanded_text_at(
     source: &str,
     includes: &IncludeContext<'_>,
 ) -> Option<String> {
-    let paths = includes.paths_for(path);
+    let paths = includes.paths_for(path, source);
     let includes = IncludeContext {
         include_paths: &paths,
         root_relative_paths: &[],

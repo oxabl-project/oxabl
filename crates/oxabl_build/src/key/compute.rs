@@ -33,7 +33,7 @@ pub struct UnitKey {
     pub key: Option<[u8; 32]>,
     /// The digest of each section of the key, when there is a key.
     pub components: Option<Components>,
-    /// Why there is no key: the rules K1 to K9, or the reason the unit is
+    /// Why there is no key: the rules K1 to K10, or the reason the unit is
     /// skipped. Empty when there is a key.
     pub unkeyable: Vec<String>,
     pub skipped: bool,
@@ -351,9 +351,22 @@ pub fn compute(
         let propath = &layout.propaths[placed.propath.expect("an active unit has a PROPATH")];
         rules.check(active_ids[*k], &closures[*k], propath)
     });
+    let mut resolver = Resolver::new(&paths, &layout.propaths);
+    let own_units = class_units_on_own_propath(&layout, (&active, &active_ids));
+    if search.has_root_relative() {
+        misread_classes(
+            outcome,
+            &layout,
+            (&active, &closures),
+            &class_sources,
+            (&own_units, &mut resolver),
+            &mut verdicts,
+        );
+    }
+
     let resolutions = resolve(
         outcome,
-        &paths,
+        &mut resolver,
         &layout,
         (&active, &active_ids),
         &closures,
@@ -368,9 +381,16 @@ pub fn compute(
         let placed = &layout.units[active[k]];
         if placed.class {
             let path = outcome.name(active_ids[k]);
+            // The analysis searches from the class's own directory when its
+            // text does not give its name, so a derived package root
+            // elsewhere would search other root-relative entries.
+            let derived_here = placed
+                .derived
+                .as_deref()
+                .is_some_and(|name| !(search.has_root_relative() && name.contains('.')));
             match placed.declared {
                 Declared::Name(_) => {}
-                _ if placed.derived.is_some() => {}
+                _ if derived_here => {}
                 Declared::Conditional => {
                     verdict.add_reason(4, format!("conditional-name: class statement in {path}"));
                 }
@@ -400,7 +420,10 @@ pub fn compute(
         .filter(|k| is_observable(&verdicts[*k], &layout.units[active[*k]]))
         .filter_map(|k| layout.units[active[k]].propath)
         .collect();
-    let class_parts = class_parts(outcome, &paths, &layout, &rules, &classes, &wanted);
+    let mut class_parts = class_parts(outcome, &paths, &layout, &rules, &classes, &wanted);
+    if search.has_root_relative() {
+        misread_listed(outcome, &mut class_parts, (&own_units, &mut resolver));
+    }
     let unhashed: BTreeSet<String> = class_parts
         .values()
         .flat_map(|part| &part.files)
@@ -555,7 +578,7 @@ pub fn compute(
 /// in `active`; none with one PROPATH id.
 fn resolve(
     outcome: &Outcome,
-    paths: &PathMap,
+    resolver: &mut Resolver<'_>,
     layout: &Layout,
     (active, active_ids): (&[usize], &[u32]),
     closures: &[Vec<u32>],
@@ -564,7 +587,6 @@ fn resolve(
     if layout.propaths.len() <= 1 {
         return vec![None; active.len()];
     }
-    let mut resolver = Resolver::new(paths, &layout.propaths);
     active
         .iter()
         .zip(active_ids)
@@ -578,6 +600,89 @@ fn resolve(
             Some(resolver.unit(outcome, (*unit, propath, own_name), closure, class_sources))
         })
         .collect()
+}
+
+/// The class units whose analysis searched what their own compile does, with
+/// their PROPATH id.
+fn class_units_on_own_propath(
+    layout: &Layout,
+    (active, active_ids): (&[usize], &[u32]),
+) -> FxHashMap<u32, usize> {
+    active
+        .iter()
+        .zip(active_ids)
+        .filter_map(|(at, id)| {
+            let placed = &layout.units[*at];
+            let written = placed.declared.name().is_some()
+                || placed
+                    .derived
+                    .as_deref()
+                    .is_some_and(|name| !name.contains('.'));
+            placed
+                .propath
+                .filter(|_| placed.class && written)
+                .map(|propath| (*id, propath))
+        })
+        .collect()
+}
+
+/// K10: a class source in a unit's closure that does not compile as a unit
+/// on the same PROPATH is compiled under the unit's PROPATH, while the
+/// analysis searched from the class's own package root. Each name of the
+/// class that the unit's PROPATH resolves to another file than the analysis
+/// did makes the unit unkeyable.
+fn misread_classes(
+    outcome: &Outcome,
+    layout: &Layout,
+    (active, closures): (&[usize], &[Vec<u32>]),
+    class_sources: &FxHashSet<u32>,
+    (own, resolver): (&FxHashMap<u32, usize>, &mut Resolver<'_>),
+    verdicts: &mut [Verdict],
+) {
+    for (k, verdict) in verdicts.iter_mut().enumerate() {
+        let Some(propath) = layout.units[active[k]].propath else {
+            continue;
+        };
+        for source in closures[k]
+            .iter()
+            .filter(|node| class_sources.contains(node))
+        {
+            if own.get(source) == Some(&propath) {
+                continue;
+            }
+            for misread in resolver.misread(outcome, *source, propath).iter() {
+                verdict.add_reason(10, misread.reason());
+            }
+        }
+    }
+}
+
+/// K10 for the classes listed in the class part of each PROPATH id.
+fn misread_listed(
+    outcome: &Outcome,
+    parts: &mut FxHashMap<usize, ClassPart>,
+    (own, resolver): (&FxHashMap<u32, usize>, &mut Resolver<'_>),
+) {
+    let ids: FxHashMap<&str, u32> = outcome
+        .names
+        .iter()
+        .enumerate()
+        .map(|(id, name)| (name.as_str(), id as u32))
+        .collect();
+    for (propath, part) in parts.iter_mut() {
+        for class in &part.listing {
+            let Some(id) = ids.get(class.as_str()).copied() else {
+                continue;
+            };
+            if own.get(&id) == Some(propath) {
+                continue;
+            }
+            for misread in resolver.misread(outcome, id, *propath).iter() {
+                part.reasons
+                    .push(format!("observed-class: {class}: {}", misread.reason()));
+            }
+        }
+    }
 }
 
 /// The counts over the units that have a class resolution.

@@ -1,6 +1,6 @@
 //! How each class name in a unit's closure, and each include inside a class
-//! subtree, resolves under every PROPATH id of the build. Reported only: no key
-//! depends on it yet.
+//! subtree, resolves under every PROPATH id of the build. The uniform
+//! resolution is reported only; [`Resolver::misread`] gives K10.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
@@ -54,6 +54,36 @@ pub struct Differing {
     /// The analysed file and every other file the name can resolve to.
     pub files: Vec<String>,
     pub failed: Vec<Failed>,
+}
+
+/// A named edge of a class source that a compile searching another unit's
+/// PROPATH does not resolve to the file the analysis did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Misread {
+    /// The class name, or the include name as written; empty when unknown.
+    pub name: String,
+    /// The class source that writes the name.
+    pub via: String,
+    /// The file the analysis resolved the name to.
+    pub analysed: String,
+    /// The file the PROPATH finds first; `None` when it finds none, or
+    /// when the name cannot be searched.
+    pub found: Option<String>,
+}
+
+impl Misread {
+    /// The K10 reason.
+    pub fn reason(&self) -> String {
+        let name = match self.name.is_empty() {
+            true => "<unknown name>",
+            false => self.name.as_str(),
+        };
+        let found = self.found.as_deref().unwrap_or("nothing");
+        format!(
+            "class-propath: {name} in {} finds {found}, analysed {}",
+            self.via, self.analysed
+        )
+    }
 }
 
 /// Whether every named edge a unit reaches is uniform, and the ones that are
@@ -116,6 +146,7 @@ pub struct Resolver<'a> {
     hits: FxHashMap<(usize, String, bool), Rc<Hit>>,
     globals: FxHashMap<(bool, Rel, u32), Rc<Global>>,
     by_source: FxHashMap<(u32, usize), Rc<Vec<Differing>>>,
+    misread: FxHashMap<(u32, usize), Rc<Vec<Misread>>>,
 }
 
 fn is_workspace_entry(entry: &str) -> bool {
@@ -164,6 +195,24 @@ fn class_rel(name: &str, target: &str) -> Option<(String, String)> {
     same.then(|| (format!("{}.{extension}", tail.join("/")), tail.join(".")))
 }
 
+/// The name of an edge as a path below a PROPATH entry, and the name to show.
+fn named_rel(class: bool, name: Option<&str>, target: &str) -> (Rel, String) {
+    match (class, name) {
+        (_, None) => (Rel::Unknown, String::new()),
+        (true, Some(name)) => match class_rel(name, target) {
+            Some((rel, spelled)) => (
+                Rel::Path {
+                    rel,
+                    exact_only: false,
+                },
+                spelled,
+            ),
+            None => (Rel::Unknown, name.to_string()),
+        },
+        (false, Some(name)) => (include_rel(name), name.to_string()),
+    }
+}
+
 impl<'a> Resolver<'a> {
     pub fn new(paths: &'a PathMap, propaths: &'a [Vec<String>]) -> Self {
         let mut workspace_entries: Vec<String> = Vec::new();
@@ -181,6 +230,7 @@ impl<'a> Resolver<'a> {
             hits: FxHashMap::default(),
             globals: FxHashMap::default(),
             by_source: FxHashMap::default(),
+            misread: FxHashMap::default(),
         }
     }
 
@@ -338,20 +388,7 @@ impl<'a> Resolver<'a> {
         target: u32,
     ) -> Option<Differing> {
         let target_path = outcome.name(target);
-        let (rel, shown) = match (class, name) {
-            (_, None) => (Rel::Unknown, String::new()),
-            (true, Some(name)) => match class_rel(name, target_path) {
-                Some((rel, spelled)) => (
-                    Rel::Path {
-                        rel,
-                        exact_only: false,
-                    },
-                    spelled,
-                ),
-                None => (Rel::Unknown, name.to_string()),
-            },
-            (false, Some(name)) => (include_rel(name), name.to_string()),
-        };
+        let (rel, shown) = named_rel(class, name, target_path);
         let global = self.global(class, &rel, (target, target_path));
         let mut failed = global.failed.clone();
         let mut files = global.files.clone();
@@ -373,6 +410,46 @@ impl<'a> Resolver<'a> {
             files: files.into_iter().collect(),
             failed: failed.into_iter().collect(),
         })
+    }
+
+    /// The class and include edges of the class source `source` that PROPATH
+    /// id `propath` resolves to another file than the analysis did: what a
+    /// compile on that PROPATH reads instead (U3 alone).
+    pub fn misread(&mut self, outcome: &Outcome, source: u32, propath: usize) -> Rc<Vec<Misread>> {
+        if let Some(found) = self.misread.get(&(source, propath)) {
+            return found.clone();
+        }
+        let mut misread = Vec::new();
+        if let Some(analysis) = outcome.analyses.get(source) {
+            for edge in &analysis.edges {
+                let class = edge.kind.is_class();
+                if !(class || edge.kind.is_include()) {
+                    continue;
+                }
+                let analysed = outcome.name(edge.target);
+                let (rel, shown) = named_rel(class, edge.name.as_deref(), analysed);
+                let found = match &rel {
+                    Rel::Fixed => continue,
+                    Rel::Unknown => None,
+                    Rel::Path { rel, exact_only } => {
+                        let hit = self.hit(propath, rel, *exact_only);
+                        if hit.file.as_deref() == Some(analysed) {
+                            continue;
+                        }
+                        hit.file.clone()
+                    }
+                };
+                misread.push(Misread {
+                    name: shown,
+                    via: outcome.name(source).to_string(),
+                    analysed: analysed.to_string(),
+                    found,
+                });
+            }
+        }
+        let misread = Rc::new(misread);
+        self.misread.insert((source, propath), misread.clone());
+        misread
     }
 
     /// The edges of the analysis of `source` that are not uniform for a unit

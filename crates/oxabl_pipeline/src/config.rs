@@ -247,14 +247,32 @@ impl PipelineConfig {
         EncodedFileSystem::new(self.decoding)
     }
 
-    /// The search paths of the file at `file`: each root-relative path resolved
-    /// against its directory, then [`include_paths`](Self::include_paths), each
-    /// once. The include paths alone with no file or no root-relative path.
-    pub fn include_paths_for(&self, file: Option<&Path>) -> Cow<'_, [PathBuf]> {
-        match file {
-            Some(file) if !self.root_relative_include_paths.is_empty() => {
+    /// The search paths of the file at `file` with the text `source`: each
+    /// root-relative path resolved against its base directory
+    /// ([`search_base`](Self::search_base)), then
+    /// [`include_paths`](Self::include_paths), each once. The include paths
+    /// alone with no file or no root-relative path.
+    pub fn include_paths_for(&self, file: Option<&Path>, source: &str) -> Cow<'_, [PathBuf]> {
+        self.include_paths_from(self.search_base(file, source).as_deref())
+    }
+
+    /// The directory the root-relative paths of the file at `file` with the
+    /// text `source` are resolved against: its own directory, or for a class
+    /// its package root, as the compiler searches
+    /// ([`search_base`](oxabl_index::search::search_base)). `None` with no file
+    /// or no root-relative path.
+    pub fn search_base(&self, file: Option<&Path>, source: &str) -> Option<PathBuf> {
+        let file = file.filter(|_| !self.root_relative_include_paths.is_empty())?;
+        oxabl_index::search::search_base(file, source)
+    }
+
+    /// [`include_paths_for`](Self::include_paths_for) for a file whose base
+    /// directory is `base`.
+    pub fn include_paths_from(&self, base: Option<&Path>) -> Cow<'_, [PathBuf]> {
+        match base {
+            Some(base) if !self.root_relative_include_paths.is_empty() => {
                 Cow::Owned(oxabl_index::search::root_include_paths(
-                    file,
+                    Some(base),
                     &self.root_relative_include_paths,
                     &self.include_paths,
                 ))
@@ -1583,11 +1601,11 @@ mod tests {
 
         let file = root.join("app/main.p");
         assert_eq!(
-            config.include_paths_for(Some(&file)).into_owned(),
+            config.include_paths_for(Some(&file), "").into_owned(),
             [root.join("app"), root.join("app/rf"), root.join("inc")]
         );
         assert_eq!(
-            config.include_paths_for(None).into_owned(),
+            config.include_paths_for(None, "").into_owned(),
             config.include_paths
         );
         assert!(config.searches_any_path());
@@ -1600,7 +1618,7 @@ mod tests {
             ..PipelineConfig::default()
         };
         assert!(matches!(
-            config.include_paths_for(Some(Path::new("/app/main.p"))),
+            config.include_paths_for(Some(Path::new("/app/main.p")), ""),
             Cow::Borrowed(paths) if paths == [PathBuf::from("/inc")]
         ));
         let none = PipelineConfig {
