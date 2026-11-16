@@ -149,8 +149,10 @@ Each file holds one responsibility. Target: no file over about 400 lines.
 | `cache` | `seam.rs`, `local.rs`, `layered.rs` | The `ArtifactCache` trait, the local cache, the local-then-remote chain. |
 | `lock.rs`, `events.rs`, `run.rs` | | The workspace lock, the event stream, the build orchestration. |
 
-The worker program is `crates/oxabl_build/resources/oxabl_worker.p`, embedded with
-`include_str!`.
+The worker program is two files, `crates/oxabl_build/resources/oxabl_worker_compile.p` and
+`oxabl_worker_driver.p`, embedded with `include_str!` and joined (see
+[worker-protocol.md](build-tool/worker-protocol.md#two-parts)). The compile key hashes only
+the compile part.
 
 ### Why not the daemon
 

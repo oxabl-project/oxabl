@@ -112,6 +112,45 @@ fn compile_a_class_and_its_user() {
     assert_eq!(again["summary"]["compiled"], 0, "{again}");
 }
 
+/// A `DO TRANSACTION` block inside another one makes warning 214. The
+/// compiler gives that warning no row and no column, so the worker sends 0
+/// for both. The unit compiles, and the report holds the warning with the
+/// unit's path.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn warning_without_position() {
+    let target = setup();
+    let workspace = compile_workspace(&target);
+    workspace.write(
+        "src/nested.p",
+        "DO TRANSACTION:\n    DO TRANSACTION:\n        PUT UNFORMATTED \"inner\" SKIP.\n    END.\nEND.\n",
+    );
+
+    let output = workspace.build(&["--json"], 0);
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one JSON document");
+    let nested = unit(&report, "src/nested.p");
+    assert_eq!(nested["status"], "ok", "{nested}");
+    let warning = nested["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["number"] == 214)
+        .unwrap_or_else(|| panic!("no warning 214 in {nested}"));
+    assert_eq!(warning["type"], "warning", "{warning}");
+    assert_eq!(warning["file"], "src/nested.p", "{warning}");
+    assert_eq!(warning["row"], 0, "{warning}");
+    assert_eq!(warning["column"], 0, "{warning}");
+    assert!(workspace.exists("build/r/nested.r"));
+
+    workspace.drop_rcode();
+    let text = workspace.build(&[], 0);
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("compiled  src/nested.p"), "{text}");
+    assert!(text.contains("  warning 214 src/nested.p: "), "{text}");
+}
+
 /// The same project built in two workspaces that share a local cache. With
 /// no XREF output requested, the build writes a private text `XREF` and reads
 /// it back: this is the first time that the read check meets the file names

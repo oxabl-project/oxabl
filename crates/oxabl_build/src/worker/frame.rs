@@ -290,6 +290,7 @@ pub enum Reply {
         name: Vec<u8>,
         status: String,
         ms: String,
+        messages: String,
     },
     End {
         req: String,
@@ -454,12 +455,13 @@ impl Reply {
                 })))
             }
             "DONE" => {
-                expect(4, &fields)?;
+                expect(5, &fields)?;
                 Ok(Reply::Done {
                     req: ascii(&take(&mut fields))?,
                     name: take(&mut fields),
                     status: ascii(&take(&mut fields))?,
                     ms: ascii(&take(&mut fields))?,
+                    messages: ascii(&take(&mut fields))?,
                 })
             }
             "END" => {

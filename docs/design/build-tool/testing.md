@@ -28,7 +28,9 @@ Part of [the oxabl build PRD](../build-tool.md).
 | --- | --- |
 | Observed analysis (slice 1) | `crates/oxabl_pipeline/tests/observations.rs` |
 | CLI build and plan | `crates/oxabl/tests/build_*.rs`, one file per behaviour group |
-| Golden key vectors | `crates/oxabl/tests/build_key_vectors.rs` with `crates/oxabl_build/tests/key_vectors.json` |
+| Golden key vectors | `crates/oxabl/tests/build_key_vectors.rs` with `crates/oxabl_build/tests/key_vectors.json`; they pin the worker digest of release 5.3.2 |
+| Worker program: golden digest of the compile part, the alias, the driver lint | `crates/oxabl_build/tests/worker_program.rs` |
+| Compiler messages without a position, and the `DONE` message count | `crates/oxabl/tests/build_compile_messages.rs` |
 | Remote cache | `crates/oxabl/tests/build_remote_*.rs` (only the package that owns the `oxabl` binary gets `CARGO_BIN_EXE_oxabl`) |
 | OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `crates/oxabl/tests/build_openedge_scratch.rs` |
 | Parity | `scripts/plan-parity.sh` |
@@ -42,7 +44,8 @@ oxabl cannot hide behind the same bug in the fake.
 
 The tests use it as the worker command:
 `command = ["<path to oxabl_fake_avm>", "{program}"]`. It checks that `{program}` exists and
-starts with the worker program's header line.
+starts with the worker program's header line. `DONE` carries the number of `MSG` lines, as
+the protocol says; the fake implements that on its own.
 
 ### What it does
 
@@ -95,6 +98,8 @@ starts with the worker program's header line.
 | `FAKE-FAIL-SILENT` in a source | `DONE fail` with no `MSG` line; tests that a failed unit still carries a reason. |
 | `FAKE-NO-OUTPUT` in a source | `DONE ok` but no `.r` in the stage; tests the `no output` failure. |
 | `FAKE-WARN` in a source | `MSG` warning, `DONE ok`. |
+| `FAKE-WARN-NOPOS` in a source | `MSG` warning 214 with an empty file and row and column 0, `DONE ok`; tests a warning that has no position. |
+| `FAKE_AVM_DROP_MSG=1` | Send one `MSG` line fewer than the `messages` count of `DONE`; tests that the count is a protocol check. |
 | `FAKE-CRASH` in a source | Exit 1 while compiling it. |
 | `FAKE-CRASH-ONCE` in a source | Exit 1 the first time, using a marker file in `FAKE_AVM_STATE`. |
 | `FAKE-HANG` in a source | Sleep forever while compiling it. |
@@ -506,6 +511,8 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `dlc_default_entries` | A unit that uses an `OpenEdge.*` class compiles with no `$DLC` entry in `include_paths`. |
 | `compile_fixture` | The fixture builds; outputs exist; a planted error gives a `MSG` with row and column. |
 | `class_order` | The cycle and the hierarchy compile; users of a changed class compile after it. |
+| `warning_without_position` | A `DO TRANSACTION` inside another one gives warning 214, which has no row and no column: the unit is `ok`, and the report holds the warning with row `0`, column `0` and the unit as its file; the text report prints it with no position. On OpenEdge 12.8 the compiler gives `GET-NUMBER` 214, `GET-MESSAGE-TYPE` 2, `GET-FILE-NAME` the source as found on the PROPATH, and `?` for `GET-ROW` and `GET-COLUMN`. |
+| `the_worker_refuses_a_line_with_an_unknown_value` | The shipped worker program, with one request changed to build a line that holds the unknown value, answers `ERROR` and quits, and sends no line. |
 | `portable_rcode` | The fixture copied to two roots gives equivalent r-code for every unit. |
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
 | `two_workspaces_share_compiled_units_through_the_local_cache` | A first workspace compiles, a second one at another path compiles nothing, fetches every unit from the local cache, and the fetched r-code runs (passed on OpenEdge 12.8 with slice 7). |

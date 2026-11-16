@@ -15,7 +15,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | `<state>/state.db` (and `-wal`, `-shm`) | The SQLite store. |
 | `<state>/build.lock` | The workspace lock. |
 | `<state>/stage/<build-id>/` | Compile and fetch stages of one build. |
-| `<state>/worker/<program-hash>/oxabl_worker.p` | The worker program, written once per hash. |
+| `<state>/worker/<program-hash>/oxabl_worker.p` | The worker program (header, compile part and driver part), written once per hash of the whole program. |
 | `<state>/logs/<build-id>/` | Worker logs of the last five builds. |
 
 `<state>` is `[build].state`, default `.oxabl/build`. It must be under the workspace root,

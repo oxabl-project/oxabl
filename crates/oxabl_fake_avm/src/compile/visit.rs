@@ -173,6 +173,7 @@ fn apply(fault: Fault, row: usize, file: &str, unit: &str, faults: &Faults, out:
     match fault {
         Fault::Fail => out.fail(file, row, 1234, "FAKE-FAIL"),
         Fault::Warn => out.warn(file, row, "FAKE-WARN"),
+        Fault::WarnNoPosition => out.warn_without_position("FAKE-WARN-NOPOS"),
         Fault::Crash => std::process::exit(1),
         Fault::FailOnce => {
             if let Some(marker) = marker(faults, "fail-once", unit)

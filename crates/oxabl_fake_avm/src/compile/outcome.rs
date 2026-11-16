@@ -85,6 +85,19 @@ impl Outcome {
         });
     }
 
+    /// A warning that has a number and no file, row or column, like the
+    /// compiler's warning 214.
+    pub fn warn_without_position(&mut self, text: &str) {
+        self.messages.push(Message {
+            kind: "warning",
+            number: 214,
+            file: String::new(),
+            row: 0,
+            column: 0,
+            text: text.to_string(),
+        });
+    }
+
     /// Takes over what a class compiled on the side read and said.
     pub fn merge(&mut self, other: Outcome) {
         self.ok &= other.ok;

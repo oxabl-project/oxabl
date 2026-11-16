@@ -256,7 +256,16 @@ fn finish_unit(
         unit,
         ok: compiled.ok,
         ms: compiled.ms,
-        messages: compiled.messages,
+        messages: compiled
+            .messages
+            .into_iter()
+            .map(|mut message| {
+                if message.file.is_empty() {
+                    message.file = info.path.clone();
+                }
+                message
+            })
+            .collect(),
         note: silent.then(|| "the compile failed and the worker gave no message".to_string()),
         outputs: Vec::new(),
         lost: false,

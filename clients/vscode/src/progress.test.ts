@@ -75,6 +75,23 @@ describe("BuildProgress", () => {
       { kind: "clear", unit: "b.p" },
     ]);
   });
+
+  it("attributes a message with no file to its unit and keeps row 0 as no position", () => {
+    const p = new BuildProgress();
+    const effects = apply(
+      p,
+      { event: "unit-started", path: "a.p" },
+      { event: "message", path: "a.p", file: "", row: 0, column: 0, number: 214, text: "nested", type: "warning" },
+      { event: "unit-finished", path: "a.p", status: "ok" },
+    );
+    expect(effects).toEqual([
+      {
+        kind: "messages",
+        unit: "a.p",
+        messages: [{ type: "warning", file: "a.p", row: 0, column: 0, number: 214, text: "nested" }],
+      },
+    ]);
+  });
 });
 
 describe("MessageStore", () => {

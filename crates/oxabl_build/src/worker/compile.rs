@@ -20,9 +20,13 @@ pub struct Limits {
 pub struct CompilerMessage {
     /// `error` or `warning`.
     pub kind: String,
+    /// `0` when the compiler gives no number.
     pub number: String,
+    /// Empty when the compiler names no file.
     pub file: String,
+    /// `0` when the compiler gives no position.
     pub row: String,
+    /// `0` when the compiler gives no position.
     pub column: String,
     pub text: String,
 }
@@ -123,6 +127,7 @@ impl Session {
                     name,
                     status,
                     ms,
+                    messages: counted,
                 } => {
                     let name = self.decode(&name)?;
                     if got != req || request.units.get(next) != Some(&name) {
@@ -136,6 +141,15 @@ impl Session {
                     let ms = ms
                         .parse()
                         .map_err(|_| protocol(format!("bad DONE time `{ms}`")))?;
+                    let counted: usize = counted
+                        .parse()
+                        .map_err(|_| protocol(format!("bad DONE message count `{counted}`")))?;
+                    if counted != messages.len() {
+                        return Err(protocol(format!(
+                            "DONE for {name} counts {counted} messages, {} arrived",
+                            messages.len()
+                        )));
+                    }
                     on_done(CompiledUnit {
                         name,
                         ok,

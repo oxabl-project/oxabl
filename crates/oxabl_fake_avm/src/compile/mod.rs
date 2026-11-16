@@ -96,7 +96,12 @@ impl Compiler {
             }
             let result = self.compile_unit(&context, &name)?;
             self.compiled += 1;
-            for message in &result.messages {
+            let sent = if faults.drop_msg {
+                result.messages.len().saturating_sub(1)
+            } else {
+                result.messages.len()
+            };
+            for message in &result.messages[..sent] {
                 emit(
                     out,
                     "MSG",
@@ -114,10 +119,17 @@ impl Compiler {
             }
             let status: &[u8] = if result.ok { b"ok" } else { b"fail" };
             let ms = started.elapsed().as_millis().to_string();
+            let messages = result.messages.len().to_string();
             emit(
                 out,
                 "DONE",
-                &[req.as_bytes(), name.as_bytes(), status, ms.as_bytes()],
+                &[
+                    req.as_bytes(),
+                    name.as_bytes(),
+                    status,
+                    ms.as_bytes(),
+                    messages.as_bytes(),
+                ],
             )?;
         }
         emit(out, "END", &[req.as_bytes()])
