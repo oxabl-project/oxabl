@@ -2495,7 +2495,7 @@ checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 
 [[package]]
 name = "oxabl"
-version = "5.3.1"
+version = "5.3.2"
 dependencies = [
  "blake3",
  "clap",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_build"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "blake3",
  "encoding_rs",
@@ -2643,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_build_remote"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "base64 0.22.1",
  "oxabl-cache-client",
@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_wasm"
-version = "1.0.13"
+version = "1.0.14"
 dependencies = [
  "oxabl",
  "oxabl_pipeline",
