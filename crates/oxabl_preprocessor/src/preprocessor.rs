@@ -10,8 +10,9 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use crate::PreprocVarTable;
 use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment};
 use crate::span_tree::{
-    BranchDirective, ElidedKind, ElidedReference, PreprocessedFile, SkippedBranch, SkippedInclude,
-    SkippedText, SpanNode, TextLoss, TextLossKind, UnreadableInclude, UnresolvedInclude,
+    BranchDirective, ElidedKind, ElidedReference, PreprocessedFile, ResolvedInclude, SkippedBranch,
+    SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind, UnreadableInclude,
+    UnresolvedInclude,
 };
 use crate::var_table::BaseVars;
 
@@ -166,6 +167,7 @@ impl<'fs> Preprocessor<'fs> {
             dependencies: Vec::new(),
             unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
+            resolved_includes: Vec::new(),
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             text_losses: Vec::new(),
@@ -201,6 +203,7 @@ impl<'fs> Preprocessor<'fs> {
             ctx.diagnostics,
         );
         processed.unreadable_includes = ctx.unreadable_includes;
+        processed.resolved_includes = ctx.resolved_includes;
         processed.skipped_includes = ctx.skipped_includes;
         processed.skipped_text = ctx.skipped_text;
         processed.text_losses = ctx.text_losses;
@@ -266,6 +269,8 @@ struct ProcessContext<'a> {
     unresolved_includes: Vec<UnresolvedInclude>,
     /// Includes that resolved to a path but could not be read (PREPROC005).
     unreadable_includes: Vec<UnreadableInclude>,
+    /// Include references that resolved to a file, with the name as written.
+    resolved_includes: Vec<ResolvedInclude>,
     /// Include references written in branches that were not taken.
     skipped_includes: Vec<SkippedInclude>,
     /// Stretches of text in branches that were not taken.
@@ -1237,6 +1242,10 @@ impl ProcessContext<'_> {
         // located; only where the reference ends, and so what it passes, is lost.
         // The node is empty: the text stays as written.
         if let Some(path) = self.fs.resolve_include(self.include_paths, &name) {
+            self.resolved_includes.push(ResolvedInclude {
+                name: name.to_string(),
+                path: path.clone(),
+            });
             // A read, so a watcher learns of the path.
             let _ = self.fs.read(&path);
             if i as u32 > *chunk_start {
@@ -1737,6 +1746,10 @@ impl ProcessContext<'_> {
                 return None;
             }
         };
+        self.resolved_includes.push(ResolvedInclude {
+            name: include_name.to_string(),
+            path: path.clone(),
+        });
 
         // Read the include file
         let content = match self.fs.read(&path) {

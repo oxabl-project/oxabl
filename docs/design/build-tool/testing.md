@@ -293,6 +293,19 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   nothing is cached for `src/q.p`. Without `src/Acme/Util/X.cls`, `src/q.p` is keyable.
 - Class conflict, incremental: after that build, touch only `src/q.p`: still
   `class-conflict`, although `src/Acme/Util/X.cls` is up to date.
+- Uniform resolution (`build_class_resolution.rs`), the `class_resolution` of
+  `--plan --probe --json`. A shared layout: `directories = ["a", "b", "lib"]`,
+  `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`, `a/x.p` and `b/y.p` use
+  `pkg.Foo`, which only `lib/pkg/Foo.cls` holds. Exact outcomes:
+  - as is: three PROPATH ids, the three units are uniform, still unkeyable with
+    `per-unit-propath-classes`, and `class_resolution` is `3` units, `3` uniform, `3`
+    released; `a/plain.p` has no `class_resolution`;
+  - the per-unit layout above (`a/pkg/Foo.cls` and `b/pkg/Foo.cls`): `pkg.Foo` fails `U1`
+    for `a/x.p`, `b/y.p` and `a/pkg/Foo.cls`, with both files named;
+  - `lib/pkg/Foo.cls` includes `{v.i}`, with `lib/v.i` and `a/v.i`: the include fails `U1`
+    for all three units and also `U3` for `a/x.p`, whose own PROPATH finds `a/v.i`;
+  - a stray `a/pkg/Foo.r`: `pkg.Foo` fails `U2` for all three units;
+  - `{v.i}` with `lib/v.i` and `b/V.i`: the include fails `case` for all three units.
 - A class unit `src/x/Foo.cls` that declares `pkg.Foo`: skipped with `package-mismatch`.
   A class unit `a/pkg/Foo.cls` with no `.` in `root_relative_include_paths` and no `a` in
   `include_paths`: skipped with `package-root-not-on-propath: a`.

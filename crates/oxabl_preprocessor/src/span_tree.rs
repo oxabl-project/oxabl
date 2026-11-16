@@ -70,6 +70,16 @@ pub struct UnresolvedInclude {
     pub unterminated: bool,
 }
 
+/// An include reference that resolved to a file, with the name it was written
+/// with. The name decides where a compiler with another search path finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedInclude {
+    /// The include as written, after `{&var}` pre-expansion.
+    pub name: String,
+    /// The path the include resolved to.
+    pub path: PathBuf,
+}
+
 /// An include that resolved to a path whose content could not be read.
 ///
 /// The file exists, so editing it changes the including unit, but its own
@@ -226,6 +236,9 @@ pub struct PreprocessedFile {
     /// Every include reference, at any depth, that resolved to a path whose
     /// content could not be read.
     pub unreadable_includes: Vec<UnreadableInclude>,
+    /// Every include reference, at any depth, that resolved to a file, in the
+    /// order they were met.
+    pub resolved_includes: Vec<ResolvedInclude>,
     /// Every include reference, at any depth, written inside a branch that was not
     /// taken. Never expanded.
     pub skipped_includes: Vec<SkippedInclude>,
@@ -265,6 +278,7 @@ impl PreprocessedFile {
             dependencies,
             unresolved_includes,
             unreadable_includes: Vec::new(),
+            resolved_includes: Vec::new(),
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             text_losses: Vec::new(),

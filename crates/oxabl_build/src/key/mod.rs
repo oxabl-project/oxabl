@@ -14,6 +14,7 @@ pub mod parameters;
 pub mod predefined;
 pub mod raw_digest;
 pub mod record;
+pub mod resolution;
 pub mod schema_image;
 
 pub use digest::FileDigest;

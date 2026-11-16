@@ -72,9 +72,9 @@ pub use closure::{
 pub use deps::{
     BranchKind, ClosureReference, Completeness, ConditionalBranch, ConditionalInclude,
     ConditionalIncludeClosure, ConditionalReference, DegradedReason, DependencyEdge,
-    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
-    NestedUnresolvedIncludeInput, UnreadableIncludeInput, UnresolvedIncludeInput,
-    UnresolvedReference, build_edge_set,
+    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeName,
+    IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
+    UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
 pub use producers::{SharedProducers, definitions_in};

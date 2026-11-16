@@ -3,7 +3,8 @@
 use crate::kinds::{EdgeKind, ObservationKind};
 
 /// One edge of an analysed node. `name` is the class name that reached the
-/// target, for class edges.
+/// target, for class edges, and the include name as written, for include
+/// edges, when the analysis knows it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Edge {
     pub kind: EdgeKind,
