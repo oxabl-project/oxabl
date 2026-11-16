@@ -63,8 +63,8 @@ pub struct Rules<'a> {
 /// The verdict on one unit.
 #[derive(Debug, Default)]
 pub struct Verdict {
-    /// One list per rule K1 to K9, each sorted.
-    reasons: [Vec<String>; 9],
+    /// One list per rule K1 to K10, each sorted.
+    reasons: [Vec<String>; 10],
     /// The class names K3 accepted in the unit's closure.
     pub accepted: Vec<Accepted>,
     /// A reason other than one that says oxabl cannot read the unit applies.
@@ -72,7 +72,7 @@ pub struct Verdict {
 }
 
 impl Verdict {
-    /// Adds a reason under rule `rule` (1 to 9).
+    /// Adds a reason under rule `rule` (1 to 10).
     pub fn add_reason(&mut self, rule: usize, reason: String) {
         self.reasons[rule - 1].push(reason);
         self.blocking = true;

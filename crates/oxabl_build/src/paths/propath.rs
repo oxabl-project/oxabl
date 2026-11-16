@@ -79,6 +79,11 @@ impl Search {
         }
     }
 
+    /// Whether `root_relative_include_paths` is non-empty.
+    pub fn has_root_relative(&self) -> bool {
+        !self.root_relative.is_empty()
+    }
+
     /// The root-relative entries joined to the base directory `base`, as
     /// canonical paths. An entry that leaves the root keeps its absolute
     /// spelling.

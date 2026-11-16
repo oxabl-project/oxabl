@@ -306,6 +306,22 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
     for all three units and also `U3` for `a/x.p`, whose own PROPATH finds `a/v.i`;
   - a stray `a/pkg/Foo.r`: `pkg.Foo` fails `U2` for all three units;
   - `{v.i}` with `lib/v.i` and `b/V.i`: the include fails `case` for all three units.
+- Package root (`build_package_root.rs`), `root_relative_include_paths = ["."]`:
+  - `a/pkg/Foo.cls` includes `{x.i}`, with `a/x.i` and `a/pkg/x.i`: `a/x.p` and
+    `a/pkg/Foo.cls` are keyed, and `pkg/Foo.r` records `a/x.i`. An edit of `a/x.i` makes
+    both rebuild, the build compiles both, and the r-code records the new hash. An edit of
+    `a/pkg/x.i` leaves both up to date;
+  - the same layout with a second directory `b`: two PROPATH ids, and `a/x.p` and
+    `a/pkg/Foo.cls` are uniform (no `U3`);
+  - `a/x.p` uses `pkg.Bar` from `lib/pkg/Bar.cls` (`include_paths = ["lib"]`, not a source
+    directory), which includes `{v.i}`: with `lib/v.i` only, `a/x.p` is keyed; with
+    `a/v.i` too, `a/x.p` is unkeyable with `class-propath: v.i in lib/pkg/Bar.cls finds
+    a/v.i, analysed lib/v.i`, the compile records `a/v.i`, and an edit of `a/v.i` makes it
+    rebuild and compile again;
+  - in that layout, a unit that oxabl cannot read gets no observed key:
+    `observed-class: lib/pkg/Bar.cls: class-propath: ...`;
+  - a class whose name is not written out, whose only package root `a` oxabl derives
+    (`root_relative_include_paths = ["rf"]`, `include_paths = ["a"]`): `computed-name`.
 - A class unit `src/x/Foo.cls` that declares `pkg.Foo`: skipped with `package-mismatch`.
   A class unit `a/pkg/Foo.cls` with no `.` in `root_relative_include_paths` and no `a` in
   `include_paths`: skipped with `package-root-not-on-propath: a`.
@@ -533,6 +549,7 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them (`a/plain.p` is), the exit code is 0. Recorded: both users run with `a`'s `Foo`. |
 | `procedures_of_one_name_in_two_directories` | `a/x.p` and `b/x.p` with `root_relative_include_paths = ["."]`: both compile, their r-code is `a/x.r` and `b/x.r`, and each runs from its own r-code. |
 | `per_unit_propath_class_binding` | The same layout, where `b/pkg/Foo.cls` has one more method and `b/y.p` calls it: `b/y.p` fails with error 12927 (`Could not locate element 'Extra' in class 'pkg.Foo'`), because `MULTI-COMPILE` bound it to `a`'s `Foo`. Pins the [follow-up](compile-key.md#follow-up-classes-under-per-unit-propaths). |
+| `class_includes_are_searched_where_the_compiler_searches` | `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`. `a/pkg/Foo.cls` includes `{x.i}`; `a/x.i` and `a/pkg/x.i` declare different methods, and the user calls the one in `a/x.i`. `lib/pkg/Bar.cls` (not a unit) includes `{v.i}`; `a/v.i` and `lib/v.i` declare different methods, and `a/z.p` calls the one in `a/v.i`. All compile, so the compiler reads the include of a class unit from its package root, and the include of a class that is not a unit from the user's PROPATH. `a/z.p` is unkeyable with `class-propath`. After an edit of `a/x.i`, `a/x.p` and `a/pkg/Foo.cls` rebuild and the user prints the new text. |
 | `one_propath_gives_keyable_class_users` | With one PROPATH id, class users are keyable and stored. |
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: in all three cases the `XREF-XML` `Source` elements list only the unit itself, no class file ([cache.md](cache.md#what-v3-covers)). Goes red if a later OpenEdge lists one. |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |

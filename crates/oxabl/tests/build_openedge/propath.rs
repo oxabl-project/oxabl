@@ -201,3 +201,62 @@ fn per_unit_propath_class_binding() {
         );
     }
 }
+
+/// A method body for an include, returning `place`.
+fn method(name: &str, place: &str) -> String {
+    format!("    METHOD PUBLIC CHARACTER {name}():\n        RETURN \"{place}\".\n    END METHOD.\n")
+}
+
+/// The includes of a class unit come from its package root, and the includes
+/// of a class that is not a unit from the PROPATH of the unit that uses it. In
+/// each pair the include the compiler must not read declares another method,
+/// so a compile that read it would fail.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn class_includes_are_searched_where_the_compiler_searches() {
+    let target = setup();
+    let workspace = compile_workspace_with(
+        &target,
+        Options {
+            sources: "directories = [\"a\"]\nroot_relative_include_paths = [\".\"]\ninclude_paths = [\"lib\"]".into(),
+            workers: 1,
+            ..Options::default()
+        },
+    );
+    workspace.write("a/x.p", USER);
+    workspace.write("a/pkg/Foo.cls", "CLASS pkg.Foo:\n{x.i}\nEND CLASS.\n");
+    workspace.write("a/x.i", &method("Place", "package root"));
+    workspace.write("a/pkg/x.i", &method("Beside", "beside the class"));
+    workspace.write(
+        "a/z.p",
+        "DEFINE VARIABLE o AS pkg.Bar NO-UNDO.\no = NEW pkg.Bar().\nPUT UNFORMATTED o:Where() SKIP.\n",
+    );
+    workspace.write("lib/pkg/Bar.cls", "CLASS pkg.Bar:\n{v.i}\nEND CLASS.\n");
+    workspace.write("a/v.i", &method("Where", "user directory"));
+    workspace.write("lib/v.i", &method("Other", "beside the package"));
+
+    let plan = workspace.plan();
+    assert_eq!(plan["propaths"].as_array().unwrap().len(), 1, "{plan}");
+    for path in ["a/x.p", "a/pkg/Foo.cls"] {
+        assert_eq!(unit(&plan, path)["closure"], "parsed", "{path}: {plan}");
+    }
+    assert_eq!(
+        unkeyable(&plan, "a/z.p"),
+        ["class-propath: v.i in lib/pkg/Bar.cls finds a/v.i, analysed lib/v.i"]
+    );
+    let report = workspace.build_report();
+    for path in ["a/x.p", "a/pkg/Foo.cls", "a/z.p"] {
+        assert_eq!(unit(&report, path)["status"], "ok", "{path}: {report}");
+    }
+    let printed = workspace.run_program(&target, &run_from_rcode("a/x.p"));
+    assert!(printed.contains("package root"), "{printed}");
+
+    workspace.write("a/x.i", &method("Place", "package root, edited"));
+    let plan = workspace.plan();
+    for path in ["a/x.p", "a/pkg/Foo.cls"] {
+        assert_eq!(unit(&plan, path)["action"], "rebuild", "{path}: {plan}");
+    }
+    workspace.build_report();
+    let printed = workspace.run_program(&target, &run_from_rcode("a/x.p"));
+    assert!(printed.contains("package root, edited"), "{printed}");
+}
