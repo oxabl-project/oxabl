@@ -26,8 +26,8 @@ pub struct Outcome {
     pub reads: Vec<Read>,
     /// Each reference the XREF names: its type and identifier, as written.
     pub references: Vec<(&'static str, String)>,
-    /// Text that the text XREF ends with, from `FAKE-XREF-RAW`.
-    pub xref_raw: String,
+    /// Bytes that the text XREF ends with, from `FAKE-XREF-RAW`.
+    pub xref_raw: Vec<u8>,
     /// The text of the unit itself.
     pub source: String,
     pub slow: bool,
@@ -43,7 +43,7 @@ impl Outcome {
             messages: Vec::new(),
             reads: Vec::new(),
             references: Vec::new(),
-            xref_raw: String::new(),
+            xref_raw: Vec::new(),
             source: String::new(),
             slow: false,
             no_output: false,
@@ -93,6 +93,6 @@ impl Outcome {
             self.record(read);
         }
         self.references.extend(other.references);
-        self.xref_raw.push_str(&other.xref_raw);
+        self.xref_raw.extend(other.xref_raw);
     }
 }
