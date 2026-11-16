@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { parsePrintConfig, parseVersionOutput } from "./cli";
+import { parsePrintConfig, parseUpdateCheck, parseVersionOutput } from "./cli";
 import { isBuildInput, isIgnored, ownerRoot } from "./roots";
 
 const config = (settings: Record<string, unknown>) =>
@@ -37,6 +37,24 @@ describe("parseVersionOutput", () => {
   it("reads oxabl X.Y.Z and nothing else", () => {
     expect(parseVersionOutput("oxabl 5.2.0\n")).toBe("5.2.0");
     expect(parseVersionOutput("oxabl-fake 5.2.0")).toBeUndefined();
+  });
+});
+
+describe("parseUpdateCheck", () => {
+  it("reads the answer of oxabl self-update --check --json", () => {
+    expect(parseUpdateCheck('{"installed":"5.3.0","latest":"5.3.1","update":true,"managed":true}\n')).toEqual({
+      installed: "5.3.0",
+      latest: "5.3.1",
+      update: true,
+      managed: true,
+    });
+  });
+
+  it("gives nothing for any other answer, so nothing is installed on a guess", () => {
+    expect(parseUpdateCheck("oxabl is up to date (5.3.1)")).toBeUndefined();
+    expect(parseUpdateCheck('{"installed":"5.3.0","latest":"5.3.1","update":"yes","managed":true}')).toBeUndefined();
+    expect(parseUpdateCheck('{"installed":"5.3.0","update":true,"managed":true}')).toBeUndefined();
+    expect(parseUpdateCheck("null")).toBeUndefined();
   });
 });
 

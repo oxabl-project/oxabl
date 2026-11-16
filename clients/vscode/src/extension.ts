@@ -65,7 +65,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
   );
 
   // Not awaited: an update check never delays the language client.
-  registerUpdates(context, log);
+  registerUpdates(context, log, cli);
   applyBuildEnabled();
 
   await startClient();

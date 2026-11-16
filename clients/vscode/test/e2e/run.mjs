@@ -21,6 +21,11 @@ import {
   buildTooOldManaged,
   buildSaveKeepsItsBuild,
   buildUntrusted,
+  cliUpdateAuto,
+  cliUpdateCheckFails,
+  cliUpdateManualCurrent,
+  cliUpdateNotify,
+  cliUpdateUnmanaged,
 } from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
@@ -66,6 +71,11 @@ const SCENARIOS = [
   ["build-binary-changed", buildBinaryChanged],
   ["build-install", buildInstall],
   ["build-install-bad-checksum", buildInstallBadChecksum],
+  ["cli-update-auto", cliUpdateAuto],
+  ["cli-update-notify", cliUpdateNotify],
+  ["cli-update-unmanaged", cliUpdateUnmanaged],
+  ["cli-update-check-fails", cliUpdateCheckFails],
+  ["cli-update-manual-current", cliUpdateManualCurrent],
 ];
 
 // Measurements, not checks of the product's output: they run only when named in

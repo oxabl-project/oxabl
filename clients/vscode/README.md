@@ -212,6 +212,20 @@ yet). It says "up to date" only when the newest release is not newer than the
 version that runs. When the newest version is already in the extensions folder,
 it asks you to reload the window.
 
+### The CLI
+
+The same check also updates the `oxabl` binary, but only one that the
+installer or this extension installed (the install record names it). It asks
+the binary (`oxabl self-update --check --json`) whether a newer release
+exists. With `auto` it runs `oxabl self-update`, shows "oxabl CLI updated to
+vX.Y.Z" in the status bar and restarts the language server on the new binary.
+With `notify` it asks first, with the same three buttons. A manual check also
+says when the CLI is up to date. A binary from somewhere else (`cargo install`,
+a path in `oxabl.server.path` that the installer did not write) is never
+touched; the output channel says so. `OXABL_NO_SELF_UPDATE` stops the
+automatic CLI check too. Outside VS Code, a managed binary still checks by
+itself once a day when you run it.
+
 ## Settings
 
 | Setting | Default | Description |
