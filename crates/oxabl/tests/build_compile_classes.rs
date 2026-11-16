@@ -69,7 +69,7 @@ fn per_unit_propath_classes_build_with_one_class_skipped_and_three_units_unkeyab
     assert!(unit(&plan, "a/plain.p")["key"].is_string());
     assert_eq!(unit(&plan, "a/plain.p")["action"], "up-to-date");
     assert!(workspace.exists("build/r/pkg/Foo.r"));
-    assert!(workspace.exists("build/r/x.r") && workspace.exists("build/r/y.r"));
+    assert!(workspace.exists("build/r/a/x.r") && workspace.exists("build/r/b/y.r"));
 }
 
 #[test]

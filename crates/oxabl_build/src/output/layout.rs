@@ -6,12 +6,15 @@ use oxabl_workspace::{BuildConfig, WorkspaceConfig, XrefFormat};
 
 use crate::error::BuildError;
 
-/// One output file of a unit: where the worker writes it in its stage, and
-/// where it belongs in the workspace.
+/// One output file of a unit: where the worker writes it in its stage, its
+/// path in a cache entry, and where it belongs in the workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expected {
-    /// Relative to the stage directory.
+    /// Relative to the worker's stage directory, by compile name.
     pub staged: String,
+    /// Relative to a cache entry and to the stage of a fetch, by output name,
+    /// so it is unique in a build.
+    pub artifact: String,
     /// Relative to the workspace root.
     pub dest: String,
 }
@@ -49,6 +52,14 @@ fn relative(root: &Path, key: &str, directory: &Path) -> Result<String, BuildErr
         )));
     }
     Ok(parts.join("/"))
+}
+
+/// `name` without its extension.
+fn stem(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !extension.contains('/') => stem,
+        _ => name,
+    }
 }
 
 fn outside(key: &str, directory: &Path) -> BuildError {
@@ -112,15 +123,13 @@ impl OutputLayout {
         Ok(())
     }
 
-    /// The files the compile of `name` must produce.
-    pub fn expected(&self, name: &str) -> Vec<Expected> {
-        let stem = match name.rsplit_once('.') {
-            Some((stem, extension)) if !extension.contains('/') => stem,
-            _ => name,
-        };
+    /// The files the compile of `name` must produce. The worker writes them
+    /// under `name`; they belong under `output`, the unit's output name.
+    pub fn expected(&self, name: &str, output: &str) -> Vec<Expected> {
         let mut files = vec![Expected {
-            staged: format!("r/{stem}.r"),
-            dest: format!("{}/{stem}.r", self.rcode),
+            staged: format!("r/{}.r", stem(name)),
+            artifact: format!("r/{}.r", stem(output)),
+            dest: format!("{}/{}.r", self.rcode, stem(output)),
         }];
         if let Some((directory, format)) = &self.xref {
             let extension = match format {
@@ -129,19 +138,22 @@ impl OutputLayout {
             };
             files.push(Expected {
                 staged: format!("xref/{name}.{extension}"),
-                dest: format!("{directory}/{name}.{extension}"),
+                artifact: format!("xref/{output}.{extension}"),
+                dest: format!("{directory}/{output}.{extension}"),
             });
         }
         if let Some(directory) = &self.debug_list {
             files.push(Expected {
                 staged: format!("dbg/{name}.dbg"),
-                dest: format!("{directory}/{name}.dbg"),
+                artifact: format!("dbg/{output}.dbg"),
+                dest: format!("{directory}/{output}.dbg"),
             });
         }
         if let Some(directory) = &self.listing {
             files.push(Expected {
                 staged: format!("lst/{name}.lst"),
-                dest: format!("{directory}/{name}.lst"),
+                artifact: format!("lst/{output}.lst"),
+                dest: format!("{directory}/{output}.lst"),
             });
         }
         files

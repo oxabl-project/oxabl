@@ -180,7 +180,7 @@ pub fn complete(ctx: &Ctx<'_>, state: &mut State<'_>, done: UnitDone) {
                 .iter()
                 .zip(&done.outputs)
                 .map(|(expected, row)| ArtifactFileRef {
-                    path: ArtifactPath(expected.staged.clone()),
+                    path: ArtifactPath(expected.artifact.clone()),
                     disk_path: ctx.root.join(&row.path),
                     size: row.size,
                     blake3: row.hash,

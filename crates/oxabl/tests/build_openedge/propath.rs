@@ -97,7 +97,7 @@ fn per_unit_propath_classes() {
     assert!(unit(&plan, "a/plain.p")["key"].is_string());
     assert_eq!(unit(&plan, "a/plain.p")["action"], "up-to-date");
 
-    for user in ["x", "y"] {
+    for user in ["a/x", "b/y"] {
         let printed = workspace.run_program(&target, &run_from_rcode(&format!("{user}.p")));
         eprintln!("EVIDENCE per_unit_propath_classes {user}.p ran: {printed:?}");
     }
@@ -106,6 +106,40 @@ fn per_unit_propath_classes() {
     let plan = workspace.plan();
     assert_eq!(unkeyable(&plan, "b/y.p"), ["per-unit-propath-classes"]);
     assert_eq!(unit(&plan, "a/plain.p")["action"], "up-to-date");
+}
+
+/// Procedures of one name in two directories, each unit searching its own
+/// directory first: both compile, each into its own directory, and each runs
+/// from its own r-code.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn procedures_of_one_name_in_two_directories() {
+    let target = setup();
+    let workspace = compile_workspace_with(
+        &target,
+        Options {
+            sources: "directories = [\"a\", \"b\"]\nroot_relative_include_paths = [\".\"]".into(),
+            workers: 1,
+            ..Options::default()
+        },
+    );
+    workspace.write("a/x.p", "PUT UNFORMATTED \"from a\" SKIP.\n");
+    workspace.write("b/x.p", "PUT UNFORMATTED \"from b\" SKIP.\n");
+
+    let output = workspace.build(&["--json"], 0);
+
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for path in ["a/x.p", "b/x.p"] {
+        assert_eq!(unit(&report, path)["status"], "ok", "{path}");
+    }
+    assert_eq!(
+        workspace.rcode().keys().collect::<Vec<_>>(),
+        ["a/x.r", "b/x.r"]
+    );
+    for directory in ["a", "b"] {
+        let printed = workspace.run_program(&target, &run_from_rcode(&format!("{directory}/x.p")));
+        assert!(printed.contains(&format!("from {directory}")), "{printed}");
+    }
 }
 
 /// With one PROPATH id the users of the class are keyable and the build has no

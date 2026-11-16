@@ -148,8 +148,19 @@ holds is skipped (`not-on-propath`).
 A unit whose compile name resolves, on the unit PROPATH, to a different file first is
 skipped (`shadowed-by`).
 
+The **output name** names the unit's output files: its r-code is `$OUT/<output stem>.r`,
+and its XREF, debug list and listing are `<output name>.<extension>` in their directories.
+It is the compile name, except for a procedure (not a class unit) that a
+`root_relative_include_paths` entry holds: then it is the unit path, so the r-code sits
+beside where the source is, as a compile with `SAVE` and no `INTO` puts it. Procedures of
+one name in different directories (`ar/post.p`, `gl/post.p`, each compiled as
+`post.p` from its own directory) so keep their own outputs. A class unit keeps its package
+path, because the compiler finds class r-code in `$OUT` by class name. The worker still
+compiles and stages by compile name; only the place of the outputs, and their paths in a
+cache entry, follow the output name.
+
 Two units whose r-code would land on one path collide: `x.p` and `x.w` in one directory, or
-`x.p` and `x.cls`. The compile stems are compared ignoring ASCII case, because r-code is
+`x.p` and `x.cls`. The output stems are compared ignoring ASCII case, because r-code is
 often deployed to case-insensitive systems. In each colliding group, the unit with the
 smallest unit path (by bytes) compiles, and every other unit is skipped with
 `output-collision: <path of the unit that compiles>`. So two keys never install over one

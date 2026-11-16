@@ -27,6 +27,8 @@ use crate::worker::{Pool, PoolError, program};
 pub struct UnitKey {
     /// The name the worker compiles; `None` for a skipped unit.
     pub compile_name: Option<String>,
+    /// The name of the unit's output files ([`Placement::Compiles`]).
+    pub output_name: Option<String>,
     pub key: Option<[u8; 32]>,
     /// The digest of each section of the key, when there is a key.
     pub components: Option<Components>,
@@ -424,7 +426,7 @@ pub fn compute(
         let verdict = &verdicts[*k];
         let at = active[*k];
         let unit = active_ids[*k];
-        let Placement::Compiles { name } = &layout.units[at].placement else {
+        let Placement::Compiles { name, .. } = &layout.units[at].placement else {
             return Err(Vec::new());
         };
         let Content::Hash(unit_content) = outcome.content_of(unit) else {
@@ -480,8 +482,9 @@ pub fn compute(
                 propath: placed.propath,
                 ..UnitKey::default()
             },
-            Placement::Compiles { name } => UnitKey {
+            Placement::Compiles { name, output } => UnitKey {
                 compile_name: Some(name.clone()),
+                output_name: Some(output.clone()),
                 propath: placed.propath,
                 ..UnitKey::default()
             },

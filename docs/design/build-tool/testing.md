@@ -203,6 +203,9 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   the unit PROPATH: unkeyable (K3). With the library on the PROPATH: keyable.
 - `x.p` and `x.w` in one directory: `x.p` compiles, `x.w` is skipped with
   `output-collision: <dir>/x.p`.
+- `a/x.p` and `b/x.p` with `root_relative_include_paths = ["."]`: both compile as `x.p`,
+  their r-code and XREF go to `a/` and `b/` of the output directories, and a second copy of
+  the workspace fetches both from the local cache, each the r-code of its own source.
 - `-trig <dir>` in the startup parameters: the keys are the ones without it.
 - The DLC default entries from the worker's startup PROPATH appear in every unit PROPATH in
   `--plan --json`.
@@ -508,6 +511,7 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `two_workspaces_share_compiled_units_through_the_local_cache` | A first workspace compiles, a second one at another path compiles nothing, fetches every unit from the local cache, and the fetched r-code runs (passed on OpenEdge 12.8 with slice 7). |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
 | `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them (`a/plain.p` is), the exit code is 0. Recorded: both users run with `a`'s `Foo`. |
+| `procedures_of_one_name_in_two_directories` | `a/x.p` and `b/x.p` with `root_relative_include_paths = ["."]`: both compile, their r-code is `a/x.r` and `b/x.r`, and each runs from its own r-code. |
 | `per_unit_propath_class_binding` | The same layout, where `b/pkg/Foo.cls` has one more method and `b/y.p` calls it: `b/y.p` fails with error 12927 (`Could not locate element 'Extra' in class 'pkg.Foo'`), because `MULTI-COMPILE` bound it to `a`'s `Foo`. Pins the [follow-up](compile-key.md#follow-up-classes-under-per-unit-propaths). |
 | `one_propath_gives_keyable_class_users` | With one PROPATH id, class users are keyable and stored. |
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: in all three cases the `XREF-XML` `Source` elements list only the unit itself, no class file ([cache.md](cache.md#what-v3-covers)). Goes red if a later OpenEdge lists one. |

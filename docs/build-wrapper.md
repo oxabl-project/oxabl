@@ -155,6 +155,8 @@ Do not use an absolute path in these lists. Oxabl and the worker may see the sam
 
 When every unit has the same PROPATH (`include_paths` only), every unit can have a compile key. When you set `root_relative_include_paths`, the PROPATH is different for the units of different directories. A unit that reaches a class then has no compile key. It compiles at each build, and no cache holds its result. If your code base has one global PROPATH, do not use `root_relative_include_paths`.
 
+With `root_relative_include_paths`, a procedure compiles under its name in its own directory, and its r-code goes to the same path in the output directory as its source: `ar/post.p` and `gl/post.p` both compile as `post.p`, and their r-code is `ar/post.r` and `gl/post.r`. A class keeps the path of its package.
+
 ### The environment of the compile
 
 `[workspace.preprocessor]` states the compile environment to the analysis. `proversion` is required: it is the OpenEdge version of the workers, for example `"12.8"`. Without it the build stops with exit code 2. `databases` lists the logical names of the databases that the worker connects, in the order of connection. The other keys have defaults for a 64-bit Unix batch compile.

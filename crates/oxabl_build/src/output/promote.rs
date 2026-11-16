@@ -50,19 +50,21 @@ fn move_file(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// Moves every expected output of a unit from `stage` to its place below
-/// `root`. Nothing moves unless every output is in the stage as a regular
-/// file. Returns one row for each output.
-pub fn promote(root: &Path, stage: &Path, expected: &[Expected]) -> Result<Vec<OutputRow>, String> {
+/// Moves every expected output of a unit from `stage`, where `at` gives its
+/// path, to its place below `root`. Nothing moves unless every output is in
+/// the stage as a regular file. Returns one row for each output.
+pub fn promote(
+    root: &Path,
+    stage: &Path,
+    expected: &[Expected],
+    at: impl Fn(&Expected) -> &str,
+) -> Result<Vec<OutputRow>, String> {
     for file in expected {
-        let source = stage.join(&file.staged);
+        let source = stage.join(at(file));
         match fs::symlink_metadata(&source) {
             Ok(meta) if meta.is_file() => {}
             _ => {
-                return Err(format!(
-                    "the compile produced no regular file {}",
-                    file.staged
-                ));
+                return Err(format!("the compile produced no regular file {}", at(file)));
             }
         }
     }
@@ -72,7 +74,7 @@ pub fn promote(root: &Path, stage: &Path, expected: &[Expected]) -> Result<Vec<O
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", file.dest))?;
         }
-        move_file(&stage.join(&file.staged), &target)
+        move_file(&stage.join(at(file)), &target)
             .map_err(|e| format!("cannot install {}: {e}", file.dest))?;
         rows.push(
             describe(&target, &file.dest).map_err(|e| format!("cannot read {}: {e}", file.dest))?,

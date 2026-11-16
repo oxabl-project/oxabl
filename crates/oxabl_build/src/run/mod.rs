@@ -374,9 +374,13 @@ fn info(layout: &OutputLayout, path: &str, key: &UnitKey) -> UnitInfo {
         .compile_name
         .clone()
         .expect("a compiling unit has a name");
+    let output = key
+        .output_name
+        .as_deref()
+        .expect("a compiling unit has an output name");
     UnitInfo {
         path: path.to_string(),
-        expected: layout.expected(&name),
+        expected: layout.expected(&name, output),
         name,
         propath: key.propath.expect("a compiling unit has a PROPATH"),
         key: key.key,
@@ -500,7 +504,7 @@ fn fetch_plan(
             expect: info
                 .expected
                 .iter()
-                .map(|expected| ArtifactPath(expected.staged.clone()))
+                .map(|expected| ArtifactPath(expected.artifact.clone()))
                 .collect(),
         });
         unit_of.insert(key, *unit);
