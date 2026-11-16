@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.2](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.4.1...oxabl_build-v0.4.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **build:** build code bases with a PROPATH per directory ([f2fd40a](https://github.com/oxabl-project/oxabl/commit/f2fd40a2df6f25b9b87e87dfe3b80d2059b43bbd))
+* **build:** give procedures of one name in different directories their own outputs ([15f6cea](https://github.com/oxabl-project/oxabl/commit/15f6cea51b8548a933271610dcdabf04106b892c))
+* **build:** leave the trigger directory out of the compile key ([44a5782](https://github.com/oxabl-project/oxabl/commit/44a5782fd9edc4a018a435f5140bce04e9a4235b))
+
 ## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.4.0...oxabl_build-v0.4.1) (2026-11-16)
 
 

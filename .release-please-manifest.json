@@ -1,5 +1,5 @@
 {
-  "crates/oxabl": "5.3.1",
+  "crates/oxabl": "5.3.2",
   "crates/oxabl_lexer": "2.0.1",
   "crates/oxabl_parser": "4.0.3",
   "crates/oxabl_ast": "4.0.0",
@@ -16,7 +16,7 @@
   "crates/oxabl_formatter": "2.0.6",
   "crates/oxabl_index": "5.0.3",
   "crates/oxabl_lsp": "3.1.2",
-  "crates/oxabl_wasm": "1.0.13",
+  "crates/oxabl_wasm": "1.0.14",
   "crates/oxabl_daemon_protocol": "0.3.0",
   "crates/oxabl_daemon": "0.5.7",
   "crates/oxabl_flow": "0.3.6",
@@ -24,7 +24,7 @@
   "crates/oxabl_scope": "0.2.6",
   "crates/oxabl_effects": "0.3.4",
   "crates/oxabl_nulls": "0.2.6",
-  "crates/oxabl_build": "0.4.1",
-  "crates/oxabl_build_remote": "0.2.5",
+  "crates/oxabl_build": "0.4.2",
+  "crates/oxabl_build_remote": "0.2.6",
   "clients/vscode": "0.7.0"
 }
