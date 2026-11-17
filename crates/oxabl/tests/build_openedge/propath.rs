@@ -44,8 +44,10 @@ fn layout(workspace: &Compile) {
 }
 
 /// Two directories that each hold a `pkg/Foo.cls`, with each unit searching its
-/// own directory first: the units that reach a class have no key, one `Foo`
-/// compiles and the other is skipped, and nothing but the plain unit is cached.
+/// own directory first: one `Foo` compiles and the other is skipped. The user
+/// in `a` binds the `Foo` its analysis found and is keyed; the user in `b`
+/// binds `a`'s `Foo` from `$OUT`, not the one its analysis found, and has no
+/// key.
 /// The two `Foo` have different signatures, so running each user from the one
 /// `pkg/Foo.r` records which `Foo` the AVM compiled the user against.
 #[test]
@@ -74,7 +76,7 @@ fn per_unit_propath_classes() {
     assert_eq!(skipped["status"], "skipped");
     assert_eq!(skipped["skipped"], "output-collision: a/pkg/Foo.cls");
     assert!(
-        stderr.contains("3 units that use classes are compiled without a key"),
+        stderr.contains("1 units that use classes are compiled without a key"),
         "{stderr}"
     );
     assert_eq!(
@@ -82,20 +84,16 @@ fn per_unit_propath_classes() {
         1,
         "{stderr}"
     );
-    assert_eq!(report["cache"]["offered"], 1, "{report}");
-    assert_eq!(report["cache"]["stored"], 1, "{report}");
+    assert_eq!(report["cache"]["offered"], 3, "{report}");
+    assert_eq!(report["cache"]["stored"], 3, "{report}");
 
     let plan = workspace.plan();
     assert_eq!(plan["propaths"].as_array().unwrap().len(), 2);
-    for path in ["a/x.p", "b/y.p", "a/pkg/Foo.cls"] {
-        assert_eq!(
-            unkeyable(&plan, path),
-            ["per-unit-propath-classes"],
-            "{path}"
-        );
+    assert_eq!(unkeyable(&plan, "b/y.p"), [DIFFERING]);
+    for path in ["a/x.p", "a/pkg/Foo.cls", "a/plain.p"] {
+        assert!(unit(&plan, path)["key"].is_string(), "{path}");
+        assert_eq!(unit(&plan, path)["action"], "up-to-date", "{path}");
     }
-    assert!(unit(&plan, "a/plain.p")["key"].is_string());
-    assert_eq!(unit(&plan, "a/plain.p")["action"], "up-to-date");
 
     for user in ["a/x", "b/y"] {
         let printed = workspace.run_program(&target, &run_from_rcode(&format!("{user}.p")));
@@ -104,8 +102,76 @@ fn per_unit_propath_classes() {
 
     workspace.write("b/y.p", &format!("{USER}PUT UNFORMATTED \"edit\" SKIP.\n"));
     let plan = workspace.plan();
-    assert_eq!(unkeyable(&plan, "b/y.p"), ["per-unit-propath-classes"]);
+    assert_eq!(unkeyable(&plan, "b/y.p"), [DIFFERING]);
     assert_eq!(unit(&plan, "a/plain.p")["action"], "up-to-date");
+}
+
+const DIFFERING: &str = "per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls)";
+
+fn uniform_layout(workspace: &Compile) {
+    workspace.write("a/x.p", USER);
+    workspace.write("b/y.p", USER);
+    workspace.write("lib/pkg/Foo.cls", "CLASS pkg.Foo:\n{v.i}\nEND CLASS.\n");
+    workspace.write("lib/v.i", &method("Place", "lib"));
+    // A shadow that a user's PROPATH finds first: the users read `Foo` from
+    // its r-code in `$OUT`, never its includes.
+    workspace.write("a/v.i", &method("Other", "a"));
+    workspace.write("a/pkg/Foo.r", "not r-code");
+}
+
+fn uniform_workspace(target: &crate::common::openedge::Target) -> Compile {
+    compile_workspace_with(
+        target,
+        Options {
+            sources: "directories = [\"a\", \"b\", \"lib\"]\nroot_relative_include_paths = [\".\"]\ninclude_paths = [\"lib\"]".into(),
+            workers: 1,
+            ..Options::default()
+        },
+    )
+}
+
+/// Users in two directories of one class unit in a third, with a shadowing
+/// include and stray r-code in a user's directory: every unit is keyed, the
+/// programs run, a second build compiles nothing, and a second workspace
+/// fetches every unit from the local cache and runs them again.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn per_unit_propath_uniform_classes() {
+    let target = setup();
+    let cache = tempfile::TempDir::new().unwrap();
+    let first = uniform_workspace(&target);
+    uniform_layout(&first);
+
+    let plan = first.plan();
+    assert_eq!(plan["propaths"].as_array().unwrap().len(), 3, "{plan}");
+    for path in ["a/x.p", "b/y.p", "lib/pkg/Foo.cls"] {
+        assert!(unit(&plan, path)["key"].is_string(), "{path}: {plan}");
+    }
+    let output = first.build_with_cache(&["--json"], 0, "developer", Some(cache.path()));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("without a key"), "{stderr}");
+    assert_eq!(report["summary"]["compiled"], 3, "{report}");
+    assert_eq!(report["cache"]["stored"], 3, "{report}");
+    for user in ["a/x", "b/y"] {
+        let printed = first.run_program(&target, &run_from_rcode(&format!("{user}.p")));
+        assert!(printed.contains("lib\nRAN"), "{user}: {printed}");
+    }
+
+    let output = first.build_with_cache(&["--json"], 0, "developer", Some(cache.path()));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["summary"]["compiled"], 0, "{report}");
+
+    let second = uniform_workspace(&target);
+    uniform_layout(&second);
+    let output = second.build_with_cache(&["--json"], 0, "developer", Some(cache.path()));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["summary"]["compiled"], 0, "{report}");
+    assert_eq!(report["summary"]["fetched"], 3, "{report}");
+    for user in ["a/x", "b/y"] {
+        let printed = second.run_program(&target, &run_from_rcode(&format!("{user}.p")));
+        assert!(printed.contains("lib\nRAN"), "{user}: {printed}");
+    }
 }
 
 /// Procedures of one name in two directories, each unit searching its own

@@ -634,6 +634,12 @@ impl ExpandedFile {
         self.chunks.get(found)
     }
 
+    /// The file that wrote a byte of the **expanded** buffer, and its offset
+    /// in that file's own bytes. `None` past the end of the expansion.
+    pub fn resolve_offset(&self, offset: u32) -> Option<(FileId, u32)> {
+        self.resolve(offset)
+    }
+
     /// Resolve a virtual (expanded) offset to `(origin file, real offset)`.
     /// Returns `None` when the offset is past the end of the expansion.
     fn resolve(&self, virt: u32) -> Option<(FileId, u32)> {

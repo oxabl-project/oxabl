@@ -536,3 +536,346 @@ fn session_binds_a_class_again_after_a_propath_change() {
         }
     }
 }
+
+/// A class of a cycle: `pkg.<me>` has `New<me>` and calls `New<other>` on a
+/// `pkg.<other>`. The stale version has only `Old<me>` and names no class.
+fn cycle_class(me: &str, other: &str, stale: bool) -> String {
+    match stale {
+        true => format!(
+            "CLASS pkg.{me}:\n    METHOD PUBLIC LOGICAL Old{me}():\n        RETURN TRUE.\n    END METHOD.\nEND CLASS.\n"
+        ),
+        false => format!(
+            "CLASS pkg.{me}:\n    METHOD PUBLIC LOGICAL New{me}():\n        RETURN TRUE.\n    END METHOD.\n    METHOD PUBLIC LOGICAL Use{other}():\n        DEFINE VARIABLE o AS pkg.{other} NO-UNDO.\n        o = NEW pkg.{other}().\n        RETURN o:New{other}().\n    END METHOD.\nEND CLASS.\n"
+        ),
+    }
+}
+
+impl Lab {
+    /// The stale r-code of `pkg.<me>` as the file `path`.
+    fn stale_cycle_rcode(&self, me: &str, path: &str) {
+        let stage = format!("stale-{me}");
+        self.workspace
+            .write(&format!("{stage}/pkg/{me}.cls"), &cycle_class(me, "", true));
+        let printed = self.session(
+            &[&stage],
+            true,
+            &self.comp(&format!("{stage}/pkg/{me}.cls"), &format!("{stage}/r")),
+        );
+        assert!(printed.contains(&format!("{me}.cls OK")), "{printed}");
+        let to = self.workspace.path(path);
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        fs::copy(self.workspace.path(&format!("{stage}/r/pkg/{me}.r")), to).unwrap();
+    }
+
+    /// A cycle `pkg.A` <-> `pkg.B` below `dir`, with stale r-code beside the
+    /// sources when `stray`, and stale r-code in `dir/out` when `warm`.
+    fn cycle(&self, dir: &str, stray: bool, warm: bool) {
+        for (me, other) in [("A", "B"), ("B", "A")] {
+            self.workspace.write(
+                &format!("{dir}/src/pkg/{me}.cls"),
+                &cycle_class(me, other, false),
+            );
+            if stray {
+                self.stale_cycle_rcode(me, &format!("{dir}/src/pkg/{me}.r"));
+            }
+            if warm {
+                self.stale_cycle_rcode(me, &format!("{dir}/out/pkg/{me}.r"));
+            }
+        }
+        fs::create_dir_all(self.workspace.path(&format!("{dir}/out"))).unwrap();
+    }
+}
+
+/// A cycle: `pkg.A` and `pkg.B` each call a member that only the current
+/// version of the other has. Stale r-code of the other class, beside its
+/// source (`cold`) or in the output directory (`warm`), is bound first: both
+/// compiles fail, also in a second pass in the same session and in a fresh
+/// session, because a failed compile writes no r-code. With no r-code first,
+/// each compile reads the other class's source. The compiler has no rule of
+/// its own for a cycle.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn a_cycle_binds_the_first_rcode_it_finds_for_the_other_class() {
+    let lab = Lab::new();
+    for (name, stray, warm, ok) in [
+        ("cold", true, false, false),
+        ("warm", false, true, false),
+        ("clean", false, false, true),
+    ] {
+        lab.cycle(name, stray, warm);
+        let a = lab.comp(&format!("{name}/src/pkg/A.cls"), &format!("{name}/stage"));
+        let b = lab.comp(&format!("{name}/src/pkg/B.cls"), &format!("{name}/stage"));
+        let propath = [format!("{name}/out"), format!("{name}/src")];
+        let propath = [propath[0].as_str(), propath[1].as_str()];
+        let one = lab.session(&propath, true, &format!("{a}{b}{a}{b}"));
+        let fresh = lab.session(&propath, true, &format!("{a}{b}"));
+        eprintln!("EVIDENCE cycle {name}: {one} / {fresh}");
+        let (status, count) = match ok {
+            true => (".cls OK", 6),
+            false => (".cls ERR", 6),
+        };
+        assert_eq!(
+            one.matches(status).count() + fresh.matches(status).count(),
+            count,
+            "{name}: {one}\n{fresh}"
+        );
+        if !ok {
+            assert!(
+                one.contains("12927") && fresh.contains("12927"),
+                "{name}: {one}"
+            );
+        }
+    }
+}
+
+/// The r-code of pass 1 and pass 2 of `A` and `B`.
+type Cycle = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// R-code to put in place before a pass, by class.
+type Placed<'a> = Vec<(&'a str, &'a [u8])>;
+
+/// The r-code of a cycle member against what the compile bound for the other
+/// class, under the r-code oracle (masks from clean compiles of the cycle).
+/// Pass 1 compiles both into `$OUT`, pass 2 compiles both again into another
+/// directory. With r-code first that an older compile made from a compatible
+/// `B` (one more method), beside the source or in `$OUT`, pass 1 gives an
+/// `A.r` that differs from a clean compile: a compile depends on the bytes of
+/// the r-code it binds. Pass 2 in a fresh session, or in the same session
+/// after PROPATH is set to `""` and back, gives clean r-code: it binds the
+/// r-code of pass 1, whatever pass 1 bound. In the same session without that
+/// reset, also after `MULTI-COMPILE` is turned off and on, the class bound in
+/// pass 1 stays bound while its file is unchanged: stray r-code stays, r-code
+/// in `$OUT` that pass 1 replaced is read again. For the passes over a job of
+/// `oxabl build` that holds a cycle.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn a_second_pass_after_a_propath_reset_binds_only_this_builds_rcode() {
+    use crate::common::openedge::mask::Mask;
+    let lab = Lab::new();
+    let read = |path: &str| fs::read(lab.workspace.path(path)).unwrap();
+    // A compatible B' with one more method, as r-code.
+    lab.workspace
+        .write("bp/src/pkg/A.cls", &cycle_class("A", "B", false));
+    lab.workspace.write(
+        "bp/src/pkg/B.cls",
+        &cycle_class("B", "A", false).replace(
+            "END CLASS.",
+            "    METHOD PUBLIC LOGICAL Extra():\n        RETURN TRUE.\n    END METHOD.\nEND CLASS.",
+        ),
+    );
+    let printed = lab.session(&["bp/src"], true, &lab.comp("bp/src/pkg/B.cls", "bp/r"));
+    assert!(printed.contains("B.cls OK"), "{printed}");
+    let bprime = read("bp/r/pkg/B.r");
+    // One case in the directory `c`: the sources, then `stray` beside them
+    // and `out` in the output directory; pass 1 into `c/out`, then pass 2
+    // into `c/p2` in a fresh session (`fresh`) or in the same one after
+    // `reset`. Returns pass 1 and pass 2 r-code of A and B.
+    let case = |stray: &[(&str, &[u8])], out: &[(&str, &[u8])], fresh: bool, reset: &str| {
+        let _ = fs::remove_dir_all(lab.workspace.path("c"));
+        for (me, other) in [("A", "B"), ("B", "A")] {
+            lab.workspace.write(
+                &format!("c/src/pkg/{me}.cls"),
+                &cycle_class(me, other, false),
+            );
+        }
+        fs::create_dir_all(lab.workspace.path("c/out/pkg")).unwrap();
+        for (me, bytes) in stray {
+            fs::write(lab.workspace.path(&format!("c/src/pkg/{me}.r")), bytes).unwrap();
+        }
+        for (me, bytes) in out {
+            fs::write(lab.workspace.path(&format!("c/out/pkg/{me}.r")), bytes).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(1200));
+        let both = |into: &str| {
+            format!(
+                "{}{}",
+                lab.comp("c/src/pkg/A.cls", into),
+                lab.comp("c/src/pkg/B.cls", into)
+            )
+        };
+        let propath = ["c/out", "c/src"];
+        let printed = match fresh {
+            true => {
+                let one = lab.session(&propath, true, &both("c/out"));
+                one + &lab.session(&propath, true, &both("c/p2"))
+            }
+            false => lab.session(
+                &propath,
+                true,
+                &format!("{}{reset}{}", both("c/out"), both("c/p2")),
+            ),
+        };
+        assert_eq!(printed.matches(".cls OK").count(), 4, "{printed}");
+        (
+            read("c/out/pkg/A.r"),
+            read("c/out/pkg/B.r"),
+            read("c/p2/pkg/A.r"),
+            read("c/p2/pkg/B.r"),
+        )
+    };
+    let samples: Vec<_> = (0..4).map(|_| case(&[], &[], true, "")).collect();
+    let mask = |pick: &dyn Fn(&Cycle) -> Vec<u8>| {
+        let first = pick(&samples[0]);
+        let others: Vec<Vec<u8>> = samples[1..].iter().map(pick).collect();
+        let refs: Vec<&[u8]> = others.iter().map(Vec::as_slice).collect();
+        (first.clone(), Mask::from_samples(&first, &refs))
+    };
+    let (a1, ma1) = mask(&|s| s.0.clone());
+    let (b1, mb1) = mask(&|s| s.1.clone());
+    let (a2, ma2) = mask(&|s| s.2.clone());
+    let (b2, mb2) = mask(&|s| s.3.clone());
+    assert!(ma1.equivalent(&a1, &a2).is_ok() && mb1.equivalent(&b1, &b2).is_ok());
+    eprintln!(
+        "EVIDENCE clean: pass 2 vs pass 1 A {:?} B {:?}; mask sizes {} {}",
+        ma1.equivalent(&a1, &a2),
+        mb1.equivalent(&b1, &b2),
+        ma1.len(),
+        ma2.len()
+    );
+    let multi = "COMPILER:MULTI-COMPILE = FALSE.\nCOMPILER:MULTI-COMPILE = TRUE.\n";
+    let propath = "DEFINE VARIABLE cKeep AS CHARACTER NO-UNDO.\ncKeep = PROPATH.\nPROPATH = \"\".\nPROPATH = cKeep.\n";
+    let cases: [(&str, Placed, Placed); 3] = [
+        ("current stray", vec![("A", &a1), ("B", &b1)], vec![]),
+        (
+            "compatible stray B",
+            vec![("A", &a1), ("B", &bprime)],
+            vec![],
+        ),
+        ("compatible B in out", vec![], vec![("B", &bprime)]),
+    ];
+    for (name, stray, out) in &cases {
+        for (session, fresh, reset) in [
+            ("fresh", true, ""),
+            ("same", false, ""),
+            ("same+reset", false, multi),
+            ("same+propath", false, propath),
+        ] {
+            let got = case(stray, out, fresh, reset);
+            let current = matches!(*name, "current stray");
+            let stays = *name == "compatible stray B" && matches!(session, "same" | "same+reset");
+            assert_eq!(
+                ma1.equivalent(&a1, &got.0).is_ok(),
+                current,
+                "{name} {session}: pass 1 A"
+            );
+            assert!(
+                mb1.equivalent(&b1, &got.1).is_ok(),
+                "{name} {session}: pass 1 B"
+            );
+            assert_eq!(
+                ma2.equivalent(&a2, &got.2).is_ok(),
+                !stays,
+                "{name} {session}: pass 2 A"
+            );
+            assert!(
+                mb2.equivalent(&b2, &got.3).is_ok(),
+                "{name} {session}: pass 2 B"
+            );
+            eprintln!(
+                "EVIDENCE {name} / pass 2 {session}: pass 1 A {:?} B {:?}; pass 2 A {:?} B {:?}",
+                ma1.equivalent(&a1, &got.0),
+                mb1.equivalent(&b1, &got.1),
+                ma2.equivalent(&a2, &got.2),
+                mb2.equivalent(&b2, &got.3)
+            );
+        }
+    }
+}
+
+/// `oxabl build` over a cycle of class units with r-code beside both sources
+/// that an older compile made: `A.r` current, `B.r` from a compatible `B` with
+/// one more method. The job compiles in passes, so every r-code is equivalent
+/// to a clean build's, and every unit is keyed.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn build_cycle_with_stray_rcode_gives_clean_rcode() {
+    use crate::common::openedge::mask::Masks;
+    let write = |lab: &Lab| {
+        lab.workspace
+            .write("src/pkg/A.cls", &cycle_class("A", "B", false));
+        lab.workspace
+            .write("src/pkg/B.cls", &cycle_class("B", "A", false));
+        lab.workspace.write(
+            "src/user.p",
+            "DEFINE VARIABLE o AS pkg.A NO-UNDO.\no = NEW pkg.A().\nMESSAGE o:UseB().\n",
+        );
+    };
+    let clean = Lab::new();
+    write(&clean);
+    let masks = Masks::record(&clean.workspace, 4);
+
+    let lab = Lab::new();
+    write(&lab);
+    lab.workspace
+        .write("bp/pkg/A.cls", &cycle_class("A", "B", false));
+    lab.workspace.write(
+        "bp/pkg/B.cls",
+        &cycle_class("B", "A", false).replace(
+            "END CLASS.",
+            "    METHOD PUBLIC LOGICAL Extra():\n        RETURN TRUE.\n    END METHOD.\nEND CLASS.",
+        ),
+    );
+    let printed = lab.session(&["bp"], true, &lab.comp("bp/pkg/B.cls", "bp-r"));
+    assert!(printed.contains("B.cls OK"), "{printed}");
+    fs::copy(
+        lab.workspace.path("bp-r/pkg/B.r"),
+        lab.workspace.path("src/pkg/B.r"),
+    )
+    .unwrap();
+    fs::write(lab.workspace.path("src/pkg/A.r"), &masks.first["pkg/A.r"]).unwrap();
+
+    let plan = lab.workspace.plan();
+    for path in ["src/pkg/A.cls", "src/pkg/B.cls", "src/user.p"] {
+        assert!(unit(&plan, path)["key"].is_string(), "{path}: {plan}");
+    }
+    let (statuses, report) =
+        build_statuses(&lab, &["src/pkg/A.cls", "src/pkg/B.cls", "src/user.p"]);
+    assert_eq!(statuses, ["ok", "ok", "ok"], "{report}");
+    fs::remove_file(lab.workspace.path("src/pkg/A.r")).unwrap();
+    fs::remove_file(lab.workspace.path("src/pkg/B.r")).unwrap();
+    masks.assert_equivalent(&lab.workspace.rcode(), "stray r-code beside a cycle");
+}
+
+/// A class `wsobj` with no package on the PROPATH, with a static method
+/// `OnlyStatic`, and a variable `wsobj` of type `Progress.Lang.Object`.
+/// `wsobj:OnlyStatic()` compiles only when the name is the class, and
+/// `wsobj:ToString()` only when it is the variable. With the variable
+/// defined before the use, the name is the variable, also inside an internal
+/// procedure; with no variable it is the class. For the analysis of branches
+/// the preprocessor did not take: `x:member` there is no class reference
+/// when a main-block variable `x` comes before it.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn a_variable_hides_a_class_of_the_same_name() {
+    let lab = Lab::new();
+    lab.workspace.write(
+        "c/wsobj.cls",
+        "CLASS wsobj:\n    METHOD PUBLIC STATIC LOGICAL OnlyStatic():\n        RETURN TRUE.\n    END METHOD.\nEND CLASS.\n",
+    );
+    let define = "DEFINE VARIABLE wsobj AS Progress.Lang.Object NO-UNDO.\n";
+    let compiles = |name: &str, text: &str| {
+        let file = format!("v/{name}.p");
+        lab.workspace.write(&file, text);
+        let printed = lab.session(&["c"], true, &lab.comp(&file, "v-r"));
+        eprintln!("EVIDENCE {name}: {}", printed.trim().replace('\n', " | "));
+        printed.contains(&format!("{name}.p OK"))
+    };
+    assert!(compiles("class_static", "wsobj:OnlyStatic().\n"));
+    assert!(!compiles("class_instance", "wsobj:ToString().\n"));
+    assert!(!compiles(
+        "var_static",
+        &format!("{define}wsobj:OnlyStatic().\n")
+    ));
+    assert!(compiles(
+        "var_instance",
+        &format!("{define}wsobj:ToString().\n")
+    ));
+    assert!(compiles(
+        "var_in_procedure",
+        &format!("{define}PROCEDURE p:\n    wsobj:ToString().\nEND PROCEDURE.\n")
+    ));
+    assert!(!compiles(
+        "var_static_in_procedure",
+        &format!("{define}PROCEDURE p:\n    wsobj:OnlyStatic().\nEND PROCEDURE.\n")
+    ));
+}

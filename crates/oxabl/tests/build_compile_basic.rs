@@ -41,7 +41,7 @@ fn a_class_compiles_before_its_user_and_the_user_reads_the_new_class() {
 }
 
 #[test]
-fn two_classes_in_a_cycle_compile_in_one_request() {
+fn two_classes_in_a_cycle_compile_on_one_worker_in_two_passes() {
     let workspace = Built::new();
     workspace.workers("count = 2");
     workspace.write(
@@ -60,9 +60,9 @@ fn two_classes_in_a_cycle_compile_in_one_request() {
         .into_iter()
         .filter(|(_, what)| what.starts_with("pkg/"))
         .collect();
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    assert_eq!(
-        lines[0].0, lines[1].0,
+    assert_eq!(lines.len(), 4, "two passes over the cycle: {lines:?}");
+    assert!(
+        lines.iter().all(|line| line.0 == lines[0].0),
         "the cycle went to two workers while A was slow: {lines:?}"
     );
     assert!(workspace.exists("build/r/pkg/A.r") && workspace.exists("build/r/pkg/B.r"));

@@ -9,7 +9,8 @@
 //! request's PROPATH, and writes a text r-code file that lists what it read
 //! with a hash of each, and a time. Text in a source asks for a fault:
 //! `FAKE-FAIL` (an error at that line), `FAKE-FAIL-ONCE` (the first compile
-//! only), `FAKE-FAIL-SILENT` (a failure with no message), `FAKE-WARN`,
+//! only), `FAKE-FAIL-TWICE` (the first two compiles), `FAKE-FAIL-SILENT` (a
+//! failure with no message), `FAKE-WARN`,
 //! `FAKE-WARN-NOPOS` (a warning with a number and no file, row or column),
 //! `FAKE-CRASH` (exit 1), `FAKE-CRASH-ONCE`, `FAKE-HANG`, `FAKE-SLOW` (two
 //! seconds before the outputs), `FAKE-NO-OUTPUT` (success with no output

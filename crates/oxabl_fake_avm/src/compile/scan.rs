@@ -5,6 +5,7 @@
 pub enum Fault {
     Fail,
     FailOnce,
+    FailTwice,
     Warn,
     WarnNoPosition,
     Crash,
@@ -35,10 +36,11 @@ pub struct Scan {
     pub xref_raw: Vec<Vec<u8>>,
 }
 
-const FAULTS: [(&str, Fault); 10] = [
+const FAULTS: [(&str, Fault); 11] = [
     ("FAKE-CRASH-ONCE", Fault::CrashOnce),
     ("FAKE-FAIL-SILENT", Fault::FailSilent),
     ("FAKE-FAIL-ONCE", Fault::FailOnce),
+    ("FAKE-FAIL-TWICE", Fault::FailTwice),
     ("FAKE-CRASH", Fault::Crash),
     ("FAKE-FAIL", Fault::Fail),
     ("FAKE-WARN-NOPOS", Fault::WarnNoPosition),

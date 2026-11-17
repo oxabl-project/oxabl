@@ -150,8 +150,24 @@ pub fn complete(ctx: &Ctx<'_>, state: &mut State<'_>, done: UnitDone) {
         }
     };
     cacheable &= !rekeyed;
+    // A class unit that failed left no r-code in `$OUT`, so the compile bound
+    // what the PROPATH found instead, which the key need not hold.
+    if tainted {
+        key = None;
+        components = None;
+        note = Some("a unit it reads failed in this build".to_string());
+    } else if done.unsettled && done.ok {
+        key = None;
+        components = None;
+        note = Some(
+            "a class of its cycle did not compile in the pass before, so it may have read r-code of another build"
+                .to_string(),
+        );
+    }
+    cacheable &= !done.unsettled;
     if verifying
         && !rekeyed
+        && key.is_some()
         && let Err(why) = check_reads(ctx, state, &done, &closure)
     {
         key = None;

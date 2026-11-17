@@ -14,16 +14,18 @@ use std::time::Instant;
 use crate::faults::Faults;
 use crate::frame::{self, emit};
 use crate::log;
-use outcome::Read;
-use visit::Context;
+use visit::{Bound, Context};
 
 /// The state a worker keeps between requests.
 #[derive(Default)]
 pub struct Compiler {
     propaths: HashMap<String, Vec<String>>,
-    /// Classes read from source, by lower-case class name, with the files each
-    /// one read. A session keeps them for good, as `MULTI-COMPILE` does.
-    classes: HashMap<String, Vec<Read>>,
+    /// The classes the session has bound, by lower-case class name. As
+    /// measured on OpenEdge: a class stays bound to its file while the
+    /// PROPATH stays the same and the file does not change.
+    classes: HashMap<String, Bound>,
+    /// The PROPATH of the last request: another one empties `classes`.
+    current: Option<Vec<String>>,
     /// The units this worker has compiled.
     pub compiled: usize,
 }
@@ -69,6 +71,10 @@ impl Compiler {
         let debug_list = text(line, 5) == "1";
         let listing = text(line, 6) == "1";
         let count: usize = text(line, 7).parse().unwrap_or(0);
+        if self.current.as_ref() != Some(&propath) {
+            self.classes.clear();
+            self.current = Some(propath.clone());
+        }
         let mut units = Vec::with_capacity(count);
         let mut buffer = String::new();
         for _ in 0..count {

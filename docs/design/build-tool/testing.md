@@ -63,13 +63,14 @@ the protocol says; the fake implements that on its own.
 - **Compile.** It resolves the compile name on the request PROPATH (the first entry that
   has the file; `$OUT`-mapped entries first). It reads the source and follows its includes:
   every `{name}` and `{name args}` is resolved on the PROPATH and read, recursively. For each
-  `INHERITS X`, `IMPLEMENTS X` and `NEW X(`, it reads `X.r` from the output entry when that
-  exists, and the source otherwise. A `FAKE-READ <path>` line makes it read that file
+  `INHERITS X`, `IMPLEMENTS X` and `NEW X(`, it searches the PROPATH as the AVM does: the
+  first entry (the output entry first) that holds `X.r` or `X.cls`, exact in case, the
+  r-code first in an entry. A `FAKE-READ <path>` line makes it read that file
   directly; the oxabl analysis does not see it, which tests the read check.
-- **Class cache.** Like `MULTI-COMPILE`, it keeps each class it has compiled from source by
-  class name for the rest of its session, and does not drop it when the PROPATH changes. So
-  the fake behaves like the AVM when one class name has two files, and the per-unit PROPATH
-  test sees the AVM-like output while it checks that no key and no cache write exist.
+- **Class cache.** As measured on the AVM, a session keeps each class it has bound (r-code or
+  source) by class name while the PROPATH of the requests stays the same and the bound file
+  does not change. A request with another PROPATH empties it. So stray r-code bound once
+  stays bound, and the rebind before a later pass over a cycle is needed in the fake too.
 - **Startup parameters.** `FAKE_AVM_ENV` gives the command-line parameters and the `.pf`
   contents separately; the fake reports `startup_parameters` with `.pf` contents expanded,
   `-pf <path>` and `(end .pf)` items, as the AVM does.
@@ -95,6 +96,7 @@ the protocol says; the fake implements that on its own.
 | --- | --- |
 | `FAKE-FAIL` in a source | `MSG` error 1234 at that line, `DONE fail`. |
 | `FAKE-FAIL-ONCE` in a source | `MSG` error and `DONE fail` the first time (marker in `FAKE_AVM_STATE`), `DONE ok` after; tests the retry pass. |
+| `FAKE-FAIL-TWICE` in a source | Like `FAKE-FAIL-ONCE`, for the first two compiles; tests a cycle whose last pass is not settled. |
 | `FAKE-FAIL-SILENT` in a source | `DONE fail` with no `MSG` line; tests that a failed unit still carries a reason. |
 | `FAKE-NO-OUTPUT` in a source | `DONE ok` but no `.r` in the stage; tests the `no output` failure. |
 | `FAKE-WARN` in a source | `MSG` warning, `DONE ok`. |
@@ -250,7 +252,16 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   a real AVM).
 - `[build.compile].options` with a character outside letters, digits and `-_:,.`: exit code
   2.
-- Two classes in a cycle: one request with both.
+- Two classes in a cycle: both compile on one worker, in two passes (four compiles).
+- Cycles (`build_class_cycles.rs`), `pkg.A` and `pkg.B` read each other, `src/user.p` reads
+  `pkg.A`, and stray r-code lies beside both sources:
+  - every unit is keyed; `pkg/A.cls` and `pkg/B.cls` compile twice, `user.p` once; the fake
+    r-code of `A`, `B` and `user` records `build/r/pkg/<other>.r` and no `src/...r`; a
+    second build compiles nothing;
+  - `FAKE-FAIL-ONCE` in `A`: `A` compiles three times and both classes are up to date;
+  - `FAKE-FAIL-TWICE` in `A`: `A` compiles three times and is `ok`, but the last pass is not
+    settled: `A` and `B` rebuild at the next plan with the note `a class of its cycle did
+    not compile in the pass before, ...`, and only `user.p` is written to the cache.
 - `FAKE-CRASH-ONCE`: the unit compiles on the second dispatch; one `worker-lost` event.
 - `FAKE-CRASH`: the unit fails with `worker lost twice`; the other units compile.
 - `FAKE-HANG` with `unit_timeout = "2s"`: the unit fails, the build ends.
@@ -263,7 +274,7 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - A second build: no compile in the fake log.
 - An include edit: only its includers in the fake log.
 - `FAKE-FAIL` in a class: its old `.r` is gone, its users compile and are tainted (no
-  cache write), and the exit code is 1.
+  cache write, recorded without a key), and the exit code is 1.
 - `--events` and `--report`: the shapes, and one `unit-finished` per compiled unit.
 - Per-unit PROPATH classes. `root_relative_include_paths = ["."]`, `directories = ["a",
   "b"]`, units `a/x.p` and `b/y.p` each doing `NEW pkg.Foo()`, class units `a/pkg/Foo.cls`
@@ -272,18 +283,38 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   - both class units have the compile name `pkg/Foo.cls` and collide on `pkg/Foo.r`, so
     `a/pkg/Foo.cls` (the smaller path) compiles and `b/pkg/Foo.cls` is skipped with
     `output-collision: a/pkg/Foo.cls`;
-  - `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`;
-    `a/plain.p` is keyable;
-  - one warning gives the number of units without a key;
+  - `b/y.p` is unkeyable with `per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls,
+    b/pkg/Foo.cls)`: it binds `a/pkg/Foo.cls` from `$OUT`, not the class its analysis
+    found; `a/x.p`, `a/pkg/Foo.cls` and `a/plain.p` are keyed;
+  - one warning gives the number of units without a key and names the edge;
   - `a/pkg/Foo.cls`, `a/x.p`, `b/y.p` and `a/plain.p` compile; the exit code is 0, because a
     skipped unit is not a failure;
-  - nothing is written to any cache for the three unkeyable units; `a/plain.p` is written.
+  - nothing is written to any cache for `b/y.p`; the three keyed units are written.
 
   The same workspace with `root_relative_include_paths = []` and `include_paths = ["a"]`
   (one PROPATH id, `b/` removed) has no warning and keyable users of `pkg.Foo`.
 - Per-unit PROPATH classes, incremental. After the build above, touch only `b/y.p`: the
-  plan still reports `per-unit-propath-classes` for it, although the other units are up to
-  date and not in the rebuild set (PROPATH ids are counted over the whole graph).
+  plan still reports `per-unit-propath-classes` for it, and `a/x.p` keeps its key.
+- Keys under per-unit PROPATHs (`build_class_keys.rs`), `directories = ["a", "b", "lib"]`,
+  `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`, users `a/x.p` and
+  `b/y.p` of the class unit `lib/pkg/Foo.cls`, which includes `{v.i}`:
+  - every unit is keyed (`released` 3), the build has no warning, and the fake r-code of
+    each user records `build/r/pkg/Foo.r` with its current hash and no class source; a
+    second build compiles 0; a second workspace on the same local cache fetches all 4 units,
+    compiles 0, and its users record the fetched `pkg/Foo.r`;
+  - stray `lib/pkg/Foo.r` and `a/pkg/Foo.r`: still keyed, users bind `$OUT`;
+  - `a/v.i` shadowing `lib/v.i`: still keyed, and `pkg/Foo.r` records `lib/v.i`;
+  - `a/pkg/Foo.cls` added after a cached build: `lib/pkg/Foo.cls` is skipped, `b/y.p` is
+    unkeyable with `per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, lib/pkg/Foo.cls)`,
+    one warning names it, nothing is fetched, and only `a/x.p` and `a/pkg/Foo.cls` are
+    written to the cache;
+  - `FAKE-FAIL` in `lib/pkg/Foo.cls`, with stray `lib/pkg/Foo.r` that the users bind once
+    `$OUT` holds no r-code of it: both users compile `ok` and tainted, only
+    `a/plain.p` is cached, and the next plan rebuilds both users with
+    `a unit it reads failed in this build`;
+  - a class unit `lib/pkg/A.cls` that uses `ext/pkg/B.cls` (not a unit) with `{w.i}`, where
+    `A`'s PROPATH finds `lib/w.i` and the analysis `ext/w.i`: `A` and its user `a/x.p`
+    both have `class-propath: w.i in ext/pkg/B.cls finds lib/w.i, analysed ext/w.i`.
 - Class conflict with a library (one PROPATH id). `include_paths = ["src", "$LIB:acme"]`
   (`acme` is a `.pl`, digest `sha256:`), `case_insensitive_lookup = false`,
   `[build.external_packages] "Acme.Util." = ["$LIB:acme"]`, a class unit
@@ -296,16 +327,35 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - Uniform resolution (`build_class_resolution.rs`), the `class_resolution` of
   `--plan --probe --json`. A shared layout: `directories = ["a", "b", "lib"]`,
   `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`, `a/x.p` and `b/y.p` use
-  `pkg.Foo`, which only `lib/pkg/Foo.cls` holds. Exact outcomes:
-  - as is: three PROPATH ids, the three units are uniform, still unkeyable with
-    `per-unit-propath-classes`, and `class_resolution` is `3` units, `3` uniform, `3`
-    released; `a/plain.p` has no `class_resolution`;
-  - the per-unit layout above (`a/pkg/Foo.cls` and `b/pkg/Foo.cls`): `pkg.Foo` fails `U1`
-    for `a/x.p`, `b/y.p` and `a/pkg/Foo.cls`, with both files named;
-  - `lib/pkg/Foo.cls` includes `{v.i}`, with `lib/v.i` and `a/v.i`: the include fails `U1`
-    for all three units and also `U3` for `a/x.p`, whose own PROPATH finds `a/v.i`;
-  - a stray `a/pkg/Foo.r`: `pkg.Foo` fails `U2` for all three units;
-  - `{v.i}` with `lib/v.i` and `b/V.i`: the include fails `case` for all three units.
+  `pkg.Foo`, a class unit `lib/pkg/Foo.cls`; a source layout is the same without `lib` in
+  `directories`, so `lib/pkg/Foo.cls` is not a unit. Exact outcomes:
+  - shared layout as is: three PROPATH ids, the three units are uniform; `a/plain.p` has no
+    `class_resolution`;
+  - the per-unit layout above (`a/pkg/Foo.cls` and `b/pkg/Foo.cls`): `a/x.p` and
+    `a/pkg/Foo.cls` are uniform (`$OUT` holds `a/pkg/Foo.cls`), `b/y.p` fails `U1` with both
+    files named;
+  - `{v.i}` in the class, with `lib/v.i` and `a/v.i`: in the source layout the include fails
+    `U1` for both users and also `U3` for `a/x.p`; in the shared layout all three units are
+    uniform, because users read the class unit's r-code from `$OUT`;
+  - stray `a/pkg/Foo.r` and `lib/pkg/Foo.r` beside the class unit: uniform;
+  - source layout with `a/pkg/Foo.r`: `a/x.p` fails `rcode`, `b/y.p` fails `U1`;
+  - `b/V.i` and `a/Pkg/foo.r` (case differs only): uniform, the match is exact in case.
+- Class r-code (`build_class_rcode.rs`), K11:
+  - a unit whose include defines a variable `wsobj` and uses `wsobj:setmsg(...)` in an
+    `&IF 0` branch of an internal procedure, beside a class `w.wsobj` with stray
+    `w/wsobj.r`: keyed (the name is the variable); with the same branch before the
+    definition too: `class-rcode: w/wsobj.r`;
+  - one PROPATH id, `include_paths = ["src", "lib"]`, `src/x.p` uses `pkg.Bar`, a class
+    that is not a unit, with `lib/pkg/Bar.r` beside `lib/pkg/Bar.cls`: `src/x.p` is
+    unkeyable with `class-rcode: lib/pkg/Bar.r`, `src/plain.p` is keyed, and the build
+    warns once, naming the file. The fake r-code of `x.r` records `lib/pkg/Bar.r`; an edit
+    of `lib/pkg/Bar.r` compiles `x.p` again and the new hash is recorded;
+  - a unit that oxabl cannot read in that layout has no observed key:
+    `observed-class: lib/pkg/Bar.cls: class-rcode: lib/pkg/Bar.r`;
+  - `src/pkg/Bar.r` beside a class unit `src/pkg/Bar.cls`: both units keyed and up to date
+    after a build, and `x.r` records `build/r/pkg/Bar.r`, never `src/pkg/Bar.r`;
+  - two directories with their own PROPATHs: `lib/pkg/Bar.r` gives both users
+    `class-rcode`; `a/pkg/Bar.r` gives it to `a/x.p` only.
 - Package root (`build_package_root.rs`), `root_relative_include_paths = ["."]`:
   - `a/pkg/Foo.cls` includes `{x.i}`, with `a/x.i` and `a/pkg/x.i`: `a/x.p` and
     `a/pkg/Foo.cls` are keyed, and `pkg/Foo.r` records `a/x.i`. An edit of `a/x.i` makes
@@ -552,7 +602,8 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
 | `two_workspaces_share_compiled_units_through_the_local_cache` | A first workspace compiles, a second one at another path compiles nothing, fetches every unit from the local cache, and the fetched r-code runs (passed on OpenEdge 12.8 with slice 7). |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
-| `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them (`a/plain.p` is), the exit code is 0. Recorded: both users run with `a`'s `Foo`. |
+| `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `b/y.p` is unkeyable with `per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls)` and is not cached, `a/x.p`, `a/pkg/Foo.cls` and `a/plain.p` are keyed and cached (3 stored), the exit code is 0. Recorded: both users run with `a`'s `Foo`. |
+| `per_unit_propath_uniform_classes` | Users `a/x.p` and `b/y.p` of the class unit `lib/pkg/Foo.cls` (three PROPATH ids), whose include `{v.i}` gives the method `Place`; `a/v.i` declares another method and `a/pkg/Foo.r` is not r-code, both first on `a`'s PROPATH. Every unit is keyed, there is no warning, both programs print `lib`; a second build compiles 0; a second workspace on the same local cache fetches 3 and compiles 0, and both programs print `lib` again. |
 | `procedures_of_one_name_in_two_directories` | `a/x.p` and `b/x.p` with `root_relative_include_paths = ["."]`: both compile, their r-code is `a/x.r` and `b/x.r`, and each runs from its own r-code. |
 | `per_unit_propath_class_binding` | The same layout, where `b/pkg/Foo.cls` has one more method and `b/y.p` calls it: `b/y.p` fails with error 12927 (`Could not locate element 'Extra' in class 'pkg.Foo'`). The cause is the `$OUT` r-code of `a`'s `Foo`, which comes first on the PROPATH (`out_rcode_beats_a_later_source_in_a_fresh_session`), not the session (`session_binds_a_class_again_after_a_propath_change`). Pins the [follow-up](compile-key.md#follow-up-classes-under-per-unit-propaths). |
 | `class_includes_are_searched_where_the_compiler_searches` | `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`. `a/pkg/Foo.cls` includes `{x.i}`; `a/x.i` and `a/pkg/x.i` declare different methods, and the user calls the one in `a/x.i`. `lib/pkg/Bar.cls` (not a unit) includes `{v.i}`; `a/v.i` and `lib/v.i` declare different methods, and `a/z.p` calls the one in `a/v.i`. All compile, so the compiler reads the include of a class unit from its package root, and the include of a class that is not a unit from the user's PROPATH. `a/z.p` is unkeyable with `class-propath`. After an edit of `a/x.i`, `a/x.p` and `a/pkg/Foo.cls` rebuild and the user prints the new text. |
@@ -567,6 +618,10 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `fileid_log_names_compiler_reads` | The `FileID` log of `LOG-MANAGER` names the unit, a definitions-only include, a class source with its includes and a class r-code. A class that an earlier compile of the session bound is not named again, with `MULTI-COMPILE` on and off. |
 | `build_class_unit_binds_out_not_stray_rcode` | `oxabl build` with a class unit and stray `pkg/Foo.r` in its source directory: users bind the r-code the build wrote to `$OUT`. |
 | `build_class_that_is_not_a_unit_binds_stray_rcode` | `oxabl build` with a class in an include-only directory next to stray `pkg/Foo.r`: users bind the stray r-code, and `$OUT` has no r-code of the class. |
+| `a_cycle_binds_the_first_rcode_it_finds_for_the_other_class` | `pkg.A` and `pkg.B` call a member only the current other has. Stale r-code of the other beside its source (`cold`) or in the output directory (`warm`): both compiles fail with 12927 in pass 1, in pass 2 of the same session and in a fresh session. With none (`clean`) both compile. |
+| `a_second_pass_after_a_propath_reset_binds_only_this_builds_rcode` | Under the r-code oracle (masks from four clean compiles of the cycle): with r-code first from a compatible `B` (one more method), beside the source or in `$OUT`, pass 1 gives an `A.r` that is not equivalent to a clean one. Pass 2 is equivalent in a fresh session and after `PROPATH = ""` and back; in the same session, also after `MULTI-COMPILE` off and on, it is not when the bound r-code was stray. Pins the [passes over a cycle](compile-key.md#passes-over-a-cycle). |
+| `build_cycle_with_stray_rcode_gives_clean_rcode` | `oxabl build` over the cycle and a user, with current `A.r` and compatible `B.r` beside the sources: every unit is keyed and `ok`, and the r-code is equivalent to a clean build's. With one pass, `A.r` is not. |
+| `a_variable_hides_a_class_of_the_same_name` | A class `wsobj` with a static method and a variable `wsobj AS Progress.Lang.Object`: with the variable defined before the use, also inside an internal procedure, `wsobj:ToString()` compiles and `wsobj:OnlyStatic()` fails (12927); with no variable it is the other way round (14633). |
 | `session_binds_a_class_again_after_a_propath_change` | A session that compiled a user of `pkg.Foo` through one PROPATH binds the class again when the PROPATH changes, for source and r-code, with `MULTI-COMPILE` on and off. The same PROPATH keeps the first class. |
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: in all three cases the `XREF-XML` `Source` elements list only the unit itself, no class file ([cache.md](cache.md#what-v3-covers)). Goes red if a later OpenEdge lists one. |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |

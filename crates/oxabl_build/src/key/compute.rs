@@ -13,7 +13,7 @@ use super::environment::Environment;
 use super::keyability::{ExternalPackage, Resolved, Rules, Verdict};
 use super::layout::{Layout, Placed, lay_out, search};
 use super::options::CompileSettings;
-use super::resolution::{ClassResolution, ResolutionSummary, Resolver};
+use super::resolution::{ClassResolution, ResolutionSummary, Resolver, Units};
 use crate::config::BuildWorkspace;
 use crate::graph::Scratch;
 use crate::observe::class_listing;
@@ -33,7 +33,7 @@ pub struct UnitKey {
     pub key: Option<[u8; 32]>,
     /// The digest of each section of the key, when there is a key.
     pub components: Option<Components>,
-    /// Why there is no key: the rules K1 to K10, or the reason the unit is
+    /// Why there is no key: the rules K1 to K11, or the reason the unit is
     /// skipped. Empty when there is a key.
     pub unkeyable: Vec<String>,
     pub skipped: bool,
@@ -343,7 +343,6 @@ pub fn compute(
         digests: &hashed.entries,
         mirror_mismatch: &mirror_mismatch,
         class_sources: &class_sources,
-        several_propaths: layout.propaths.len() > 1,
     };
     let positions: Vec<usize> = (0..active.len()).collect();
     let mut verdicts = parallel::map(&positions, |k| {
@@ -351,15 +350,21 @@ pub fn compute(
         let propath = &layout.propaths[placed.propath.expect("an active unit has a PROPATH")];
         rules.check(active_ids[*k], &closures[*k], propath)
     });
-    let mut resolver = Resolver::new(&paths, &layout.propaths);
-    let own_units = class_units_on_own_propath(&layout, (&active, &active_ids));
+    let units = resolver_units(&layout, (&active, &active_ids), &closures, &class_sources);
+    let mut resolver = Resolver::new(&paths, &layout.propaths, units);
     if search.has_root_relative() {
+        let written = class_units_with_written_names(&layout, (&active, &active_ids));
         misread_classes(
             outcome,
-            &layout,
-            (&active, &closures),
+            (&active_ids, &closures),
+            (&class_sources, &written),
+            &mut resolver,
+            &mut verdicts,
+        );
+        inherit_misread(
+            (&active_ids, &closures),
             &class_sources,
-            (&own_units, &mut resolver),
+            &resolver,
             &mut verdicts,
         );
     }
@@ -370,13 +375,16 @@ pub fn compute(
         &layout,
         (&active, &active_ids),
         &closures,
-        &class_sources,
+        &mut verdicts,
     );
 
     let mut warnings = Vec::new();
     let classes = workspace_classes(outcome, &layout);
     let mut conflicts: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
     let mut without_key = 0;
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut rcode: BTreeSet<String> = BTreeSet::new();
+    let mut rcode_units = 0;
     for (k, verdict) in verdicts.iter_mut().enumerate() {
         let placed = &layout.units[active[k]];
         if placed.class {
@@ -422,8 +430,9 @@ pub fn compute(
         .collect();
     let mut class_parts = class_parts(outcome, &paths, &layout, &rules, &classes, &wanted);
     if search.has_root_relative() {
-        misread_listed(outcome, &mut class_parts, (&own_units, &mut resolver));
+        misread_listed(outcome, &mut class_parts, &mut resolver);
     }
+    rcode_listed(outcome, &mut class_parts, &mut resolver);
     let unhashed: BTreeSet<String> = class_parts
         .values()
         .flat_map(|part| &part.files)
@@ -542,7 +551,18 @@ pub fn compute(
                 unit.observed_closure = closure;
             }
             Err(extra) => {
-                without_key += usize::from(reasons.iter().any(|r| r == "per-unit-propath-classes"));
+                let differing: Vec<&str> = reasons
+                    .iter()
+                    .filter_map(|r| r.strip_prefix("per-unit-propath-classes: "))
+                    .collect();
+                without_key += usize::from(!differing.is_empty());
+                names.extend(differing.into_iter().map(str::to_string));
+                let bound: Vec<&str> = reasons
+                    .iter()
+                    .filter_map(|r| r.strip_prefix("class-rcode: "))
+                    .collect();
+                rcode_units += usize::from(!bound.is_empty());
+                rcode.extend(bound.into_iter().map(str::to_string));
                 unit.unkeyable = match reasons.is_empty() {
                     true => vec!["unreadable: the unit's own bytes".to_string()],
                     false => reasons.into_iter().chain(extra).collect(),
@@ -551,8 +571,25 @@ pub fn compute(
         }
     }
     if without_key > 0 {
+        let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+        let more = match names.len() > shown.len() {
+            true => format!(" and {} more", names.len() - shown.len()),
+            false => String::new(),
+        };
         warnings.push(format!(
-            "{without_key} units that use classes are compiled without a key: the units have different PROPATHs"
+            "{without_key} units that use classes are compiled without a key: their PROPATHs resolve a name to different files ({}{more})",
+            shown.join("; ")
+        ));
+    }
+    if !rcode.is_empty() {
+        let shown: Vec<&str> = rcode.iter().take(3).map(String::as_str).collect();
+        let more = match rcode.len() > shown.len() {
+            true => format!(" and {} more", rcode.len() - shown.len()),
+            false => String::new(),
+        };
+        warnings.push(format!(
+            "{rcode_units} units that use classes are compiled without a key: the compiler binds class r-code that oxabl does not hash ({}{more})",
+            shown.join(", ")
         ));
     }
     let class_resolution = (layout.propaths.len() > 1).then(|| summarise(&units));
@@ -574,80 +611,116 @@ pub fn compute(
     })
 }
 
-/// The class resolution of each active unit that K9 applies to, by position
-/// in `active`; none with one PROPATH id.
+/// What the resolver needs to know about the units that compile: their
+/// PROPATH ids and closures, and the class units whose r-code `$OUT` holds.
+fn resolver_units<'a>(
+    layout: &Layout,
+    (active, active_ids): (&[usize], &[u32]),
+    closures: &'a [Vec<u32>],
+    class_sources: &'a FxHashSet<u32>,
+) -> Units<'a> {
+    let mut units = Units {
+        propath: FxHashMap::default(),
+        closure: FxHashMap::default(),
+        out: FxHashMap::default(),
+        compiles: FxHashSet::default(),
+        class_sources,
+    };
+    for ((at, id), closure) in active.iter().zip(active_ids).zip(closures) {
+        let placed = &layout.units[*at];
+        if let Some(propath) = placed.propath {
+            units.propath.insert(*id, propath);
+        }
+        units.closure.insert(*id, closure.as_slice());
+        let Placement::Compiles { output, .. } = &placed.placement else {
+            continue;
+        };
+        let Some(stem) = output.strip_suffix(".cls").filter(|_| placed.class) else {
+            continue;
+        };
+        units.out.insert(stem.to_string(), *id);
+        units.compiles.insert(*id);
+    }
+    units
+}
+
+/// The class resolution of each active unit that is a class or reaches one,
+/// by position in `active`, with its K9 and K11 reasons added to its
+/// verdict. Kept for the plan only with more than one PROPATH id.
 fn resolve(
     outcome: &Outcome,
     resolver: &mut Resolver<'_>,
     layout: &Layout,
     (active, active_ids): (&[usize], &[u32]),
     closures: &[Vec<u32>],
-    class_sources: &FxHashSet<u32>,
+    verdicts: &mut [Verdict],
 ) -> Vec<Option<ClassResolution>> {
-    if layout.propaths.len() <= 1 {
-        return vec![None; active.len()];
+    let several = layout.propaths.len() > 1;
+    let mut resolutions = Vec::with_capacity(active.len());
+    for (k, (unit, closure)) in active_ids.iter().zip(closures).enumerate() {
+        let class_sources = resolver.units().class_sources;
+        let reaches_class =
+            class_sources.contains(unit) || closure.iter().any(|node| class_sources.contains(node));
+        if !reaches_class || layout.units[active[k]].propath.is_none() {
+            resolutions.push(None);
+            continue;
+        }
+        let resolution = resolver.unit(outcome, *unit);
+        for reason in resolution.rcode_reasons() {
+            verdicts[k].add_reason(11, reason);
+        }
+        for reason in resolution.propath_reasons() {
+            verdicts[k].add_reason(9, reason);
+        }
+        resolutions.push(several.then_some(resolution));
     }
-    active
-        .iter()
-        .zip(active_ids)
-        .zip(closures)
-        .map(|((at, unit), closure)| {
-            let placed = &layout.units[*at];
-            let reaches_class = class_sources.contains(unit)
-                || closure.iter().any(|node| class_sources.contains(node));
-            let propath = placed.propath.filter(|_| reaches_class)?;
-            let own_name = placed.class.then(|| placed.class_name()).flatten();
-            Some(resolver.unit(outcome, (*unit, propath, own_name), closure, class_sources))
-        })
-        .collect()
+    resolutions
 }
 
-/// The class units whose analysis searched what their own compile does, with
-/// their PROPATH id.
-fn class_units_on_own_propath(
+/// The class units whose analysis searched what their own compile does.
+fn class_units_with_written_names(
     layout: &Layout,
     (active, active_ids): (&[usize], &[u32]),
-) -> FxHashMap<u32, usize> {
+) -> FxHashSet<u32> {
     active
         .iter()
         .zip(active_ids)
-        .filter_map(|(at, id)| {
-            let placed = &layout.units[*at];
-            let written = placed.declared.name().is_some()
-                || placed
-                    .derived
-                    .as_deref()
-                    .is_some_and(|name| !name.contains('.'));
-            placed
-                .propath
-                .filter(|_| placed.class && written)
-                .map(|propath| (*id, propath))
+        .filter(|(at, _)| {
+            let placed = &layout.units[**at];
+            placed.class
+                && (placed.declared.name().is_some()
+                    || placed
+                        .derived
+                        .as_deref()
+                        .is_some_and(|name| !name.contains('.')))
         })
+        .map(|(_, id)| *id)
         .collect()
 }
 
-/// K10: a class source in a unit's closure that does not compile as a unit
-/// on the same PROPATH is compiled under the unit's PROPATH, while the
+/// K10: a class source in a unit's closure that its compile does not read
+/// from `$OUT` is compiled in memory under the unit's PROPATH, while the
 /// analysis searched from the class's own package root. Each name of the
 /// class that the unit's PROPATH resolves to another file than the analysis
-/// did makes the unit unkeyable.
+/// did makes the unit unkeyable. A class unit whose analysis did not search
+/// what its compile does (`written`) is searched on the unit's PROPATH too.
 fn misread_classes(
     outcome: &Outcome,
-    layout: &Layout,
-    (active, closures): (&[usize], &[Vec<u32>]),
-    class_sources: &FxHashSet<u32>,
-    (own, resolver): (&FxHashMap<u32, usize>, &mut Resolver<'_>),
+    (active_ids, closures): (&[u32], &[Vec<u32>]),
+    (class_sources, written): (&FxHashSet<u32>, &FxHashSet<u32>),
+    resolver: &mut Resolver<'_>,
     verdicts: &mut [Verdict],
 ) {
     for (k, verdict) in verdicts.iter_mut().enumerate() {
-        let Some(propath) = layout.units[active[k]].propath else {
+        let unit = active_ids[k];
+        let Some(propath) = resolver.units().propath.get(&unit).copied() else {
             continue;
         };
         for source in closures[k]
             .iter()
             .filter(|node| class_sources.contains(node))
         {
-            if own.get(source) == Some(&propath) {
+            if written.contains(source) && resolver.units().binds_out(*source) {
                 continue;
             }
             for misread in resolver.misread(outcome, *source, propath).iter() {
@@ -657,11 +730,48 @@ fn misread_classes(
     }
 }
 
-/// K10 for the classes listed in the class part of each PROPATH id.
+/// K10 of a class unit that a user reads from `$OUT`: the r-code there holds
+/// what the class's own compile read in place of the analysed file, and the
+/// user's key does not hold it.
+fn inherit_misread(
+    (active_ids, closures): (&[u32], &[Vec<u32>]),
+    class_sources: &FxHashSet<u32>,
+    resolver: &Resolver<'_>,
+    verdicts: &mut [Verdict],
+) {
+    let own: FxHashMap<u32, Vec<String>> = active_ids
+        .iter()
+        .zip(verdicts.iter())
+        .filter(|(id, verdict)| {
+            resolver.units().compiles.contains(id) && !verdict.reasons(10).is_empty()
+        })
+        .map(|(id, verdict)| (*id, verdict.reasons(10).to_vec()))
+        .collect();
+    if own.is_empty() {
+        return;
+    }
+    for (k, verdict) in verdicts.iter_mut().enumerate() {
+        for source in closures[k]
+            .iter()
+            .filter(|node| class_sources.contains(node))
+        {
+            if !resolver.units().binds_out(*source) {
+                continue;
+            }
+            for reason in own.get(source).into_iter().flatten() {
+                verdict.add_reason(10, reason.clone());
+            }
+        }
+    }
+}
+
+/// K10 for the classes listed in the class part of each PROPATH id. The
+/// units that use a class part compile after every class unit, so a class
+/// unit that compiles is read from `$OUT`.
 fn misread_listed(
     outcome: &Outcome,
     parts: &mut FxHashMap<usize, ClassPart>,
-    (own, resolver): (&FxHashMap<u32, usize>, &mut Resolver<'_>),
+    resolver: &mut Resolver<'_>,
 ) {
     let ids: FxHashMap<&str, u32> = outcome
         .names
@@ -674,12 +784,40 @@ fn misread_listed(
             let Some(id) = ids.get(class.as_str()).copied() else {
                 continue;
             };
-            if own.get(&id) == Some(propath) {
+            if resolver.units().compiles.contains(&id) {
                 continue;
             }
             for misread in resolver.misread(outcome, id, *propath).iter() {
                 part.reasons
                     .push(format!("observed-class: {class}: {}", misread.reason()));
+            }
+        }
+    }
+}
+
+/// K11 for the classes listed in the class part of each PROPATH id: a
+/// listed class that is not a unit that compiles, and whose r-code the
+/// PROPATH finds before its source.
+fn rcode_listed(
+    outcome: &Outcome,
+    parts: &mut FxHashMap<usize, ClassPart>,
+    resolver: &mut Resolver<'_>,
+) {
+    let ids: FxHashMap<&str, u32> = outcome
+        .names
+        .iter()
+        .enumerate()
+        .map(|(id, name)| (name.as_str(), id as u32))
+        .collect();
+    for (propath, part) in parts.iter_mut() {
+        for class in &part.listing {
+            let id = ids.get(class.as_str()).copied();
+            if id.is_some_and(|id| resolver.units().compiles.contains(&id)) {
+                continue;
+            }
+            if let Some(file) = resolver.rcode_before(*propath, class) {
+                part.reasons
+                    .push(format!("observed-class: {class}: class-rcode: {file}"));
             }
         }
     }
@@ -695,7 +833,9 @@ fn summarise(units: &[UnitKey]) -> ResolutionSummary {
         summary.units += 1;
         if resolution.uniform {
             summary.uniform += 1;
-            summary.released += usize::from(unit.unkeyable == ["per-unit-propath-classes"]);
+        }
+        if unit.key.is_some() {
+            summary.released += 1;
         }
     }
     summary

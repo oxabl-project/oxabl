@@ -221,7 +221,7 @@ format.
   ([compile-key.md](compile-key.md#class-conflicts)). An include edge (kinds `1`, `2` and
   `6`) carries the include name as written in the same way, or length `0` when the
   analysis does not know it, because the planner compares how each PROPATH id resolves it
-  ([compile-key.md](compile-key.md#uniform-resolution-reported-not-yet-used-for-keys)).
+  ([compile-key.md](compile-key.md#uniform-resolution)).
   Named edges sort by `(kind, path_id, name)`, so one target reached by two names gives
   two entries with delta `0`.
 - `unresolved`: `varint count`, then each entry as `u8 kind`, `u8 reason`, `varint length`
