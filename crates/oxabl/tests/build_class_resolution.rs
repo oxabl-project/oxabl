@@ -61,11 +61,7 @@ fn a_class_that_every_propath_resolves_to_one_file_is_uniform() {
             &json!({ "uniform": true, "differing": [] }),
             "{path}"
         );
-        assert_eq!(
-            unkeyable(&plan, path),
-            json!(["per-unit-propath-classes"]),
-            "{path}: no key changes"
-        );
+        assert_eq!(unkeyable(&plan, path), json!([]), "{path}: keyed");
     }
     assert!(
         unit(&plan, "a/plain.p").get("class_resolution").is_none(),

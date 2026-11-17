@@ -56,8 +56,6 @@ pub struct Rules<'a> {
     /// mirror.
     pub mirror_mismatch: &'a FxHashSet<String>,
     pub class_sources: &'a FxHashSet<u32>,
-    /// Whether units have more than one distinct PROPATH.
-    pub several_propaths: bool,
 }
 
 /// The verdict on one unit.
@@ -100,6 +98,11 @@ impl Verdict {
                 list
             })
             .collect()
+    }
+
+    /// The reasons under rule `rule` (1 to 11).
+    pub fn reasons(&self, rule: usize) -> &[String] {
+        &self.reasons[rule - 1]
     }
 
     pub fn is_keyable(&self) -> bool {
@@ -215,15 +218,13 @@ impl Rules<'_> {
         }
     }
 
-    /// Applies K1 to K6 and K9 to `unit`, whose closure is `closure`, with
+    /// Applies K1 to K6 to `unit`, whose closure is `closure`, with
     /// `propath` as its search path.
     pub fn check(&self, unit: u32, closure: &[u32], propath: &[String]) -> Verdict {
         let mut verdict = Verdict::default();
-        let mut reaches_class = false;
         for node in std::iter::once(unit).chain(closure.iter().copied()) {
             self.check_file(&mut verdict, node);
             let class_source = self.class_sources.contains(&node);
-            reaches_class |= node != unit && class_source;
             // An include is analysed in its includer's context; its own
             // analysis as a root says nothing about the includer.
             if node != unit && !class_source {
@@ -253,9 +254,6 @@ impl Rules<'_> {
             if self.digests.get(entry) == Some(&Resolved::Unhashable) {
                 verdict.add_reason(6, format!("unhashable-library: {entry}"));
             }
-        }
-        if self.several_propaths && (reaches_class || self.class_sources.contains(&unit)) {
-            verdict.add_reason(9, "per-unit-propath-classes".to_string());
         }
         verdict
     }

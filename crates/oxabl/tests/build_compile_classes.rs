@@ -32,7 +32,7 @@ fn unkeyable(plan: &serde_json::Value, path: &str) -> Vec<String> {
 }
 
 #[test]
-fn per_unit_propath_classes_build_with_one_class_skipped_and_three_units_unkeyable() {
+fn per_unit_propath_classes_build_with_one_class_skipped_and_the_user_of_the_other_unkeyable() {
     let workspace = per_unit_propaths();
 
     let run = workspace.build_with(&["--json"]);
@@ -47,8 +47,9 @@ fn per_unit_propath_classes_build_with_one_class_skipped_and_three_units_unkeyab
     assert_eq!(skipped["skipped"], "output-collision: a/pkg/Foo.cls");
     assert_eq!(report["summary"]["skipped"], 1);
     assert!(
-        run.stderr
-            .contains("3 units that use classes are compiled without a key"),
+        run.stderr.contains(
+            "1 units that use classes are compiled without a key: their PROPATHs resolve a name to different files (pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls))"
+        ),
         "one warning counts the units: {}",
         run.stderr
     );
@@ -59,15 +60,15 @@ fn per_unit_propath_classes_build_with_one_class_skipped_and_three_units_unkeyab
         2,
         "two PROPATH ids"
     );
-    for path in ["a/x.p", "b/y.p", "a/pkg/Foo.cls"] {
-        assert_eq!(
-            unkeyable(&plan, path),
-            ["per-unit-propath-classes"],
-            "{path}"
-        );
+    assert_eq!(
+        unkeyable(&plan, "b/y.p"),
+        ["per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls)"],
+        "b/y.p binds the r-code of a/pkg/Foo.cls from $OUT"
+    );
+    for path in ["a/x.p", "a/pkg/Foo.cls", "a/plain.p"] {
+        assert!(unit(&plan, path)["key"].is_string(), "{path}");
+        assert_eq!(unit(&plan, path)["action"], "up-to-date", "{path}");
     }
-    assert!(unit(&plan, "a/plain.p")["key"].is_string());
-    assert_eq!(unit(&plan, "a/plain.p")["action"], "up-to-date");
     assert!(workspace.exists("build/r/pkg/Foo.r"));
     assert!(workspace.exists("build/r/a/x.r") && workspace.exists("build/r/b/y.r"));
 }
@@ -98,7 +99,10 @@ fn a_per_unit_propath_unit_stays_unkeyable_when_only_another_unit_changes() {
 
     let plan = workspace.plan();
 
-    assert_eq!(unkeyable(&plan, "b/y.p"), ["per-unit-propath-classes"]);
+    assert_eq!(
+        unkeyable(&plan, "b/y.p"),
+        ["per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls)"]
+    );
     assert_eq!(unit(&plan, "a/plain.p")["action"], "up-to-date");
 }
 

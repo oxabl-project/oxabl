@@ -263,7 +263,7 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - A second build: no compile in the fake log.
 - An include edit: only its includers in the fake log.
 - `FAKE-FAIL` in a class: its old `.r` is gone, its users compile and are tainted (no
-  cache write), and the exit code is 1.
+  cache write, recorded without a key), and the exit code is 1.
 - `--events` and `--report`: the shapes, and one `unit-finished` per compiled unit.
 - Per-unit PROPATH classes. `root_relative_include_paths = ["."]`, `directories = ["a",
   "b"]`, units `a/x.p` and `b/y.p` each doing `NEW pkg.Foo()`, class units `a/pkg/Foo.cls`
@@ -272,18 +272,37 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   - both class units have the compile name `pkg/Foo.cls` and collide on `pkg/Foo.r`, so
     `a/pkg/Foo.cls` (the smaller path) compiles and `b/pkg/Foo.cls` is skipped with
     `output-collision: a/pkg/Foo.cls`;
-  - `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`;
-    `a/plain.p` is keyable;
-  - one warning gives the number of units without a key;
+  - `b/y.p` is unkeyable with `per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls,
+    b/pkg/Foo.cls)`: it binds `a/pkg/Foo.cls` from `$OUT`, not the class its analysis
+    found; `a/x.p`, `a/pkg/Foo.cls` and `a/plain.p` are keyed;
+  - one warning gives the number of units without a key and names the edge;
   - `a/pkg/Foo.cls`, `a/x.p`, `b/y.p` and `a/plain.p` compile; the exit code is 0, because a
     skipped unit is not a failure;
-  - nothing is written to any cache for the three unkeyable units; `a/plain.p` is written.
+  - nothing is written to any cache for `b/y.p`; the three keyed units are written.
 
   The same workspace with `root_relative_include_paths = []` and `include_paths = ["a"]`
   (one PROPATH id, `b/` removed) has no warning and keyable users of `pkg.Foo`.
 - Per-unit PROPATH classes, incremental. After the build above, touch only `b/y.p`: the
-  plan still reports `per-unit-propath-classes` for it, although the other units are up to
-  date and not in the rebuild set (PROPATH ids are counted over the whole graph).
+  plan still reports `per-unit-propath-classes` for it, and `a/x.p` keeps its key.
+- Keys under per-unit PROPATHs (`build_class_keys.rs`), `directories = ["a", "b", "lib"]`,
+  `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`, users `a/x.p` and
+  `b/y.p` of the class unit `lib/pkg/Foo.cls`, which includes `{v.i}`:
+  - every unit is keyed (`released` 3), the build has no warning, and the fake r-code of
+    each user records `build/r/pkg/Foo.r` with its current hash and no class source; a
+    second build compiles 0; a second workspace on the same local cache fetches all 4 units,
+    compiles 0, and its users record the fetched `pkg/Foo.r`;
+  - stray `lib/pkg/Foo.r` and `a/pkg/Foo.r`: still keyed, users bind `$OUT`;
+  - `a/v.i` shadowing `lib/v.i`: still keyed, and `pkg/Foo.r` records `lib/v.i`;
+  - `a/pkg/Foo.cls` added after a cached build: `lib/pkg/Foo.cls` is skipped, `b/y.p` is
+    unkeyable with `per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, lib/pkg/Foo.cls)`,
+    one warning names it, nothing is fetched, and only `a/x.p` and `a/pkg/Foo.cls` are
+    written to the cache;
+  - `FAKE-FAIL` in `lib/pkg/Foo.cls`: both users compile `ok` and tainted, only
+    `a/plain.p` is cached, and the next plan rebuilds both users with
+    `a unit it reads failed in this build`;
+  - a class unit `lib/pkg/A.cls` that uses `ext/pkg/B.cls` (not a unit) with `{w.i}`, where
+    `A`'s PROPATH finds `lib/w.i` and the analysis `ext/w.i`: `A` and its user `a/x.p`
+    both have `class-propath: w.i in ext/pkg/B.cls finds lib/w.i, analysed ext/w.i`.
 - Class conflict with a library (one PROPATH id). `include_paths = ["src", "$LIB:acme"]`
   (`acme` is a `.pl`, digest `sha256:`), `case_insensitive_lookup = false`,
   `[build.external_packages] "Acme.Util." = ["$LIB:acme"]`, a class unit
@@ -561,7 +580,8 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `xref_does_not_change_rcode` | With and without `XREF`, equivalent r-code. |
 | `two_workspaces_share_compiled_units_through_the_local_cache` | A first workspace compiles, a second one at another path compiles nothing, fetches every unit from the local cache, and the fetched r-code runs (passed on OpenEdge 12.8 with slice 7). |
 | `run_target_not_read` | Editing a `RUN` target leaves the caller's r-code equivalent. |
-| `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `a/x.p`, `b/y.p` and `a/pkg/Foo.cls` are unkeyable with `per-unit-propath-classes`, nothing is written to any cache for them (`a/plain.p` is), the exit code is 0. Recorded: both users run with `a`'s `Foo`. |
+| `per_unit_propath_classes` | The slice-6 per-unit PROPATH layout on a real AVM: `a/pkg/Foo.cls` compiles, `b/pkg/Foo.cls` is skipped with `output-collision`, `b/y.p` is unkeyable with `per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls)` and is not cached, `a/x.p`, `a/pkg/Foo.cls` and `a/plain.p` are keyed and cached (3 stored), the exit code is 0. Recorded: both users run with `a`'s `Foo`. |
+| `per_unit_propath_uniform_classes` | Users `a/x.p` and `b/y.p` of the class unit `lib/pkg/Foo.cls` (three PROPATH ids), whose include `{v.i}` gives the method `Place`; `a/v.i` declares another method and `a/pkg/Foo.r` is not r-code, both first on `a`'s PROPATH. Every unit is keyed, there is no warning, both programs print `lib`; a second build compiles 0; a second workspace on the same local cache fetches 3 and compiles 0, and both programs print `lib` again. |
 | `procedures_of_one_name_in_two_directories` | `a/x.p` and `b/x.p` with `root_relative_include_paths = ["."]`: both compile, their r-code is `a/x.r` and `b/x.r`, and each runs from its own r-code. |
 | `per_unit_propath_class_binding` | The same layout, where `b/pkg/Foo.cls` has one more method and `b/y.p` calls it: `b/y.p` fails with error 12927 (`Could not locate element 'Extra' in class 'pkg.Foo'`). The cause is the `$OUT` r-code of `a`'s `Foo`, which comes first on the PROPATH (`out_rcode_beats_a_later_source_in_a_fresh_session`), not the session (`session_binds_a_class_again_after_a_propath_change`). Pins the [follow-up](compile-key.md#follow-up-classes-under-per-unit-propaths). |
 | `class_includes_are_searched_where_the_compiler_searches` | `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`. `a/pkg/Foo.cls` includes `{x.i}`; `a/x.i` and `a/pkg/x.i` declare different methods, and the user calls the one in `a/x.i`. `lib/pkg/Bar.cls` (not a unit) includes `{v.i}`; `a/v.i` and `lib/v.i` declare different methods, and `a/z.p` calls the one in `a/v.i`. All compile, so the compiler reads the include of a class unit from its package root, and the include of a class that is not a unit from the user's PROPATH. `a/z.p` is unkeyable with `class-propath`. After an edit of `a/x.i`, `a/x.p` and `a/pkg/Foo.cls` rebuild and the user prints the new text. |

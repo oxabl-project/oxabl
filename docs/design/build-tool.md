@@ -462,10 +462,11 @@ entries, then `[workspace.sources].include_paths`, then the DLC default entries
 ([compile-key.md](build-tool/compile-key.md#the-unit-propath-and-the-compile-name)). The output directory comes first, so a
 unit that uses a class reads the r-code that this build just made for it. The scheduler
 order makes that r-code current. The prune step and the delete-on-failure rule make sure
-no stale or orphan r-code is there. Because every unit reads the one `$OUT` tree, classes
-are keyed only when the build has one PROPATH id (K9,
-[compile-key.md](build-tool/compile-key.md#per-unit-propath-classes)); with one PROPATH id,
-a K3-accepted external name that a workspace class also has is K8.
+no stale or orphan r-code is there. Because every unit reads the one `$OUT` tree, a unit
+whose PROPATH would find another file for a class than the one `$OUT` holds, or than other
+units find, has no key (K9,
+[compile-key.md](build-tool/compile-key.md#per-unit-propath-classes)); a K3-accepted external
+name that a workspace class also has is K8, and class r-code that oxabl does not hash is K11.
 
 ## CLI surface
 

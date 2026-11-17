@@ -414,13 +414,14 @@ request needs an id that the worker does not know yet, then `COMPILE` and the `U
 
 ### Classes and sessions
 
-`COMPILER:MULTI-COMPILE` keeps each class that a session has compiled, by class name, and
-does not drop it when `PROPATH` changes. All units also share one `$OUT` tree, where one
-class name has one `.r`. With one PROPATH id in the build, every unit resolves a class name
-to the same file, so sessions are shared freely and the keys are sound. With more than one
-PROPATH id, the plan makes every unit that reaches a class unkeyable (K9,
-[compile-key.md](compile-key.md#per-unit-propath-classes)); any worker may compile it, as the
-AVM would. The pool has no session rule of its own.
+`COMPILER:MULTI-COMPILE` keeps each class that a session has compiled, by class name, while
+`PROPATH` stays the same. Measured on OpenEdge 12.8.9: after a change of `PROPATH` the next
+compile binds the class again. All units also share one `$OUT` tree, where one class name
+has one `.r`. The plan keys a unit only when every class name it reaches resolves to the
+same file under every PROPATH id, or to the class unit's r-code in `$OUT` (K9,
+[compile-key.md](compile-key.md#per-unit-propath-classes)). So whichever session compiles a
+keyed unit, it binds the same files. Any worker may compile any unit, as the AVM would. The
+pool has no session rule of its own.
 
 ### Timeouts
 

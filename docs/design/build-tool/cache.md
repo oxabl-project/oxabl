@@ -348,9 +348,12 @@ same files for all 545 units of a real code base):
 So V3 cannot see a divergent resolution of a class or of a definitions-only include. For
 those reads the **closure that the plan builds is the only guard**: K1 and K2 make a unit
 unkeyable when its analysis (with includes judged in the includer's context) is degraded or
-leaves an include unresolved, and class resolution is keyed only with one PROPATH id (K9)
-and without an external name collision (K8,
-[compile-key.md](compile-key.md#per-unit-propath-classes)). A V3 source for these reads is
+leaves an include unresolved. Class resolution is keyed only when oxabl's emulation of the
+compiler's search finds one file for each class name under every PROPATH id, or the class
+unit's r-code in `$OUT` (K9), without an external name collision (K8), and without class
+r-code that oxabl does not hash (K11,
+[compile-key.md](compile-key.md#per-unit-propath-classes)). The emulation follows the
+measured search, so this guard does not depend on the number of PROPATH ids. A V3 source for these reads is
 an open follow-up ([build-tool.md](../build-tool.md#follow-ups)). The `FileID` log of
 `LOG-MANAGER` names those reads for the first compile that binds a class in a fresh session
 ([measured](compile-key.md#follow-up-classes-under-per-unit-propaths)).

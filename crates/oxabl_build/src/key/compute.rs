@@ -343,7 +343,6 @@ pub fn compute(
         digests: &hashed.entries,
         mirror_mismatch: &mirror_mismatch,
         class_sources: &class_sources,
-        several_propaths: layout.propaths.len() > 1,
     };
     let positions: Vec<usize> = (0..active.len()).collect();
     let mut verdicts = parallel::map(&positions, |k| {
@@ -368,6 +367,12 @@ pub fn compute(
             &mut resolver,
             &mut verdicts,
         );
+        inherit_misread(
+            (&active_ids, &closures),
+            &class_sources,
+            &resolver,
+            &mut verdicts,
+        );
     }
 
     let resolutions = resolve(
@@ -383,6 +388,7 @@ pub fn compute(
     let classes = workspace_classes(outcome, &layout);
     let mut conflicts: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
     let mut without_key = 0;
+    let mut names: BTreeSet<String> = BTreeSet::new();
     let mut rcode: BTreeSet<String> = BTreeSet::new();
     let mut rcode_units = 0;
     for (k, verdict) in verdicts.iter_mut().enumerate() {
@@ -551,7 +557,12 @@ pub fn compute(
                 unit.observed_closure = closure;
             }
             Err(extra) => {
-                without_key += usize::from(reasons.iter().any(|r| r == "per-unit-propath-classes"));
+                let differing: Vec<&str> = reasons
+                    .iter()
+                    .filter_map(|r| r.strip_prefix("per-unit-propath-classes: "))
+                    .collect();
+                without_key += usize::from(!differing.is_empty());
+                names.extend(differing.into_iter().map(str::to_string));
                 let bound: Vec<&str> = reasons
                     .iter()
                     .filter_map(|r| r.strip_prefix("class-rcode: "))
@@ -566,8 +577,14 @@ pub fn compute(
         }
     }
     if without_key > 0 {
+        let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+        let more = match names.len() > shown.len() {
+            true => format!(" and {} more", names.len() - shown.len()),
+            false => String::new(),
+        };
         warnings.push(format!(
-            "{without_key} units that use classes are compiled without a key: the units have different PROPATHs"
+            "{without_key} units that use classes are compiled without a key: their PROPATHs resolve a name to different files ({}{more})",
+            shown.join("; ")
         ));
     }
     if !rcode.is_empty() {
@@ -667,6 +684,9 @@ fn resolve(
         for reason in resolution.rcode_reasons() {
             verdicts[k].add_reason(11, reason);
         }
+        for reason in resolution.propath_reasons() {
+            verdicts[k].add_reason(9, reason);
+        }
         resolutions.push(several.then(|| (*resolution).clone()));
     }
     resolutions
@@ -723,6 +743,42 @@ fn misread_classes(
                 .iter()
             {
                 verdict.add_reason(10, misread.reason());
+            }
+        }
+    }
+}
+
+/// K10 of a class unit that a user reads from `$OUT`: the r-code there holds
+/// what the class's own compile read in place of the analysed file, and the
+/// user's key does not hold it.
+fn inherit_misread(
+    (active_ids, closures): (&[u32], &[Vec<u32>]),
+    class_sources: &FxHashSet<u32>,
+    resolver: &Resolver<'_>,
+    verdicts: &mut [Verdict],
+) {
+    let own: FxHashMap<u32, Vec<String>> = active_ids
+        .iter()
+        .zip(verdicts.iter())
+        .filter(|(id, verdict)| {
+            resolver.units().compiles.contains(id) && !verdict.reasons(10).is_empty()
+        })
+        .map(|(id, verdict)| (*id, verdict.reasons(10).to_vec()))
+        .collect();
+    if own.is_empty() {
+        return;
+    }
+    for (k, verdict) in verdicts.iter_mut().enumerate() {
+        let unit = active_ids[k];
+        for source in closures[k]
+            .iter()
+            .filter(|node| class_sources.contains(node))
+        {
+            if !resolver.units().binds_out(unit, *source) {
+                continue;
+            }
+            for reason in own.get(source).into_iter().flatten() {
+                verdict.add_reason(10, reason.clone());
             }
         }
     }
@@ -796,7 +852,9 @@ fn summarise(units: &[UnitKey]) -> ResolutionSummary {
         summary.units += 1;
         if resolution.uniform {
             summary.uniform += 1;
-            summary.released += usize::from(unit.unkeyable == ["per-unit-propath-classes"]);
+        }
+        if unit.key.is_some() {
+            summary.released += 1;
         }
     }
     summary

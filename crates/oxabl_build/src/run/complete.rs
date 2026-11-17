@@ -150,6 +150,13 @@ pub fn complete(ctx: &Ctx<'_>, state: &mut State<'_>, done: UnitDone) {
         }
     };
     cacheable &= !rekeyed;
+    // A class unit that failed left no r-code in `$OUT`, so the compile bound
+    // what the PROPATH found instead, which the key need not hold.
+    if tainted {
+        key = None;
+        components = None;
+        note = Some("a unit it reads failed in this build".to_string());
+    }
     if verifying
         && !rekeyed
         && let Err(why) = check_reads(ctx, state, &done, &closure)
