@@ -167,6 +167,8 @@ fn users_of_a_class_unit_that_failed_are_not_stored_with_a_key() {
     let cache = TempDir::new().unwrap();
     let workspace = per_directory(cache.path());
     workspace.write("lib/pkg/Foo.cls", &format!("/* FAKE-FAIL */\n{FOO}"));
+    // With no r-code in `$OUT`, the users bind this one and compile.
+    workspace.write("lib/pkg/Foo.r", "stray r-code");
 
     let run = workspace.build_with(&["--json"]);
 

@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::context::{Imaging, Verify};
 use super::types::{Msg, UnitDone, UnitInfo};
@@ -49,6 +49,9 @@ pub struct Shared<'a> {
     /// The units of each job that no worker has finished or lost yet.
     pub remaining: Mutex<Vec<Vec<u32>>>,
     pub next_request: &'a AtomicU64,
+    /// The units of a cycle that a lost worker left in a final pass that was
+    /// not settled: their results have no key.
+    pub unsettled: Mutex<FxHashSet<u32>>,
 }
 
 impl Shared<'_> {

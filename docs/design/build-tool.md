@@ -393,8 +393,9 @@ never compiled on its own.
 4. **Priority.** The longest path from the job to a component that nothing depends on,
    weighted by the last compile duration of each unit (`results.duration_ms`, 1 ms when
    unknown). Ties break by path. This starts the long chains first.
-5. **Cycles.** All units of one job go to one worker in one request. The ABL compiler
-   compiles a cycle of classes in one `MULTI-COMPILE` session.
+5. **Cycles.** All units of one job go to one worker. The job compiles in passes, with a
+   rebind of the session before each later pass, so that the last pass reads only this
+   build's r-code of the cycle ([compile-key.md](build-tool/compile-key.md#passes-over-a-cycle)).
 6. **Fetches.** A unit whose key is being fetched is a pending component. A hit finishes
    it; a miss makes it a job. Jobs that wait on no pending component start at once.
 7. **Failure does not block.** A failed job finishes. Its dependents still compile; the

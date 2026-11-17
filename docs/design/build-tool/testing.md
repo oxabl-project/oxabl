@@ -63,13 +63,14 @@ the protocol says; the fake implements that on its own.
 - **Compile.** It resolves the compile name on the request PROPATH (the first entry that
   has the file; `$OUT`-mapped entries first). It reads the source and follows its includes:
   every `{name}` and `{name args}` is resolved on the PROPATH and read, recursively. For each
-  `INHERITS X`, `IMPLEMENTS X` and `NEW X(`, it reads `X.r` from the output entry when that
-  exists, and the source otherwise. A `FAKE-READ <path>` line makes it read that file
+  `INHERITS X`, `IMPLEMENTS X` and `NEW X(`, it searches the PROPATH as the AVM does: the
+  first entry (the output entry first) that holds `X.r` or `X.cls`, exact in case, the
+  r-code first in an entry. A `FAKE-READ <path>` line makes it read that file
   directly; the oxabl analysis does not see it, which tests the read check.
-- **Class cache.** Like `MULTI-COMPILE`, it keeps each class it has compiled from source by
-  class name for the rest of its session, and does not drop it when the PROPATH changes. So
-  the fake behaves like the AVM when one class name has two files, and the per-unit PROPATH
-  test sees the AVM-like output while it checks that no key and no cache write exist.
+- **Class cache.** As measured on the AVM, a session keeps each class it has bound (r-code or
+  source) by class name while the PROPATH of the requests stays the same and the bound file
+  does not change. A request with another PROPATH empties it. So stray r-code bound once
+  stays bound, and the rebind before a later pass over a cycle is needed in the fake too.
 - **Startup parameters.** `FAKE_AVM_ENV` gives the command-line parameters and the `.pf`
   contents separately; the fake reports `startup_parameters` with `.pf` contents expanded,
   `-pf <path>` and `(end .pf)` items, as the AVM does.
@@ -95,6 +96,7 @@ the protocol says; the fake implements that on its own.
 | --- | --- |
 | `FAKE-FAIL` in a source | `MSG` error 1234 at that line, `DONE fail`. |
 | `FAKE-FAIL-ONCE` in a source | `MSG` error and `DONE fail` the first time (marker in `FAKE_AVM_STATE`), `DONE ok` after; tests the retry pass. |
+| `FAKE-FAIL-TWICE` in a source | Like `FAKE-FAIL-ONCE`, for the first two compiles; tests a cycle whose last pass is not settled. |
 | `FAKE-FAIL-SILENT` in a source | `DONE fail` with no `MSG` line; tests that a failed unit still carries a reason. |
 | `FAKE-NO-OUTPUT` in a source | `DONE ok` but no `.r` in the stage; tests the `no output` failure. |
 | `FAKE-WARN` in a source | `MSG` warning, `DONE ok`. |
@@ -250,7 +252,16 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   a real AVM).
 - `[build.compile].options` with a character outside letters, digits and `-_:,.`: exit code
   2.
-- Two classes in a cycle: one request with both.
+- Two classes in a cycle: both compile on one worker, in two passes (four compiles).
+- Cycles (`build_class_cycles.rs`), `pkg.A` and `pkg.B` read each other, `src/user.p` reads
+  `pkg.A`, and stray r-code lies beside both sources:
+  - every unit is keyed; `pkg/A.cls` and `pkg/B.cls` compile twice, `user.p` once; the fake
+    r-code of `A`, `B` and `user` records `build/r/pkg/<other>.r` and no `src/...r`; a
+    second build compiles nothing;
+  - `FAKE-FAIL-ONCE` in `A`: `A` compiles three times and both classes are up to date;
+  - `FAKE-FAIL-TWICE` in `A`: `A` compiles three times and is `ok`, but the last pass is not
+    settled: `A` and `B` rebuild at the next plan with the note `a class of its cycle did
+    not compile in the pass before, ...`, and only `user.p` is written to the cache.
 - `FAKE-CRASH-ONCE`: the unit compiles on the second dispatch; one `worker-lost` event.
 - `FAKE-CRASH`: the unit fails with `worker lost twice`; the other units compile.
 - `FAKE-HANG` with `unit_timeout = "2s"`: the unit fails, the build ends.
@@ -596,6 +607,9 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `fileid_log_names_compiler_reads` | The `FileID` log of `LOG-MANAGER` names the unit, a definitions-only include, a class source with its includes and a class r-code. A class that an earlier compile of the session bound is not named again, with `MULTI-COMPILE` on and off. |
 | `build_class_unit_binds_out_not_stray_rcode` | `oxabl build` with a class unit and stray `pkg/Foo.r` in its source directory: users bind the r-code the build wrote to `$OUT`. |
 | `build_class_that_is_not_a_unit_binds_stray_rcode` | `oxabl build` with a class in an include-only directory next to stray `pkg/Foo.r`: users bind the stray r-code, and `$OUT` has no r-code of the class. |
+| `a_cycle_binds_the_first_rcode_it_finds_for_the_other_class` | `pkg.A` and `pkg.B` call a member only the current other has. Stale r-code of the other beside its source (`cold`) or in the output directory (`warm`): both compiles fail with 12927 in pass 1, in pass 2 of the same session and in a fresh session. With none (`clean`) both compile. |
+| `a_second_pass_after_a_propath_reset_binds_only_this_builds_rcode` | Under the r-code oracle (masks from four clean compiles of the cycle): with r-code first from a compatible `B` (one more method), beside the source or in `$OUT`, pass 1 gives an `A.r` that is not equivalent to a clean one. Pass 2 is equivalent in a fresh session and after `PROPATH = ""` and back; in the same session, also after `MULTI-COMPILE` off and on, it is not when the bound r-code was stray. Pins the [passes over a cycle](compile-key.md#passes-over-a-cycle). |
+| `build_cycle_with_stray_rcode_gives_clean_rcode` | `oxabl build` over the cycle and a user, with current `A.r` and compatible `B.r` beside the sources: every unit is keyed and `ok`, and the r-code is equivalent to a clean build's. With one pass, `A.r` is not. |
 | `session_binds_a_class_again_after_a_propath_change` | A session that compiled a user of `pkg.Foo` through one PROPATH binds the class again when the PROPATH changes, for source and r-code, with `MULTI-COMPILE` on and off. The same PROPATH keeps the first class. |
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: in all three cases the `XREF-XML` `Source` elements list only the unit itself, no class file ([cache.md](cache.md#what-v3-covers)). Goes red if a later OpenEdge lists one. |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |

@@ -149,23 +149,15 @@ pub struct Units<'a> {
     pub out: FxHashMap<String, u32>,
     /// The ids of `out`.
     pub compiles: FxHashSet<u32>,
-    /// For each class unit that compiles and is in a compile-time cycle, the
-    /// nodes of its closure.
-    pub cycles: FxHashMap<u32, FxHashSet<u32>>,
     pub class_sources: &'a FxHashSet<u32>,
 }
 
 impl Units<'_> {
-    /// Whether `a` and the class unit `b` are in one compile-time cycle: one
-    /// job compiles them, in no fixed order.
-    fn one_cycle(&self, a: u32, b: u32) -> bool {
-        self.cycles.get(&b).is_some_and(|nodes| nodes.contains(&a))
-    }
-
-    /// Whether the compile of `unit` reads the class `class` from `$OUT`:
-    /// `class` is a class unit that compiles before `unit`.
-    pub fn binds_out(&self, unit: u32, class: u32) -> bool {
-        self.compiles.contains(&class) && !self.one_cycle(unit, class)
+    /// Whether a compile reads the class `class` from `$OUT`: `class` is a
+    /// class unit that compiles in this build, before its users or, in a
+    /// cycle, in the pass before.
+    pub fn binds_out(&self, class: u32) -> bool {
+        self.compiles.contains(&class)
     }
 }
 
@@ -200,8 +192,6 @@ enum Read {
     Source,
 }
 
-const NO_CYCLE: u32 = u32::MAX;
-
 /// Emulates the PROPATH search over the working tree, with every directory
 /// listing and every answer kept for the rest of the plan.
 pub struct Resolver<'a> {
@@ -211,9 +201,9 @@ pub struct Resolver<'a> {
     listings: FxHashMap<std::path::PathBuf, Option<Rc<FxHashSet<String>>>>,
     exists: FxHashMap<(String, String), Option<String>>,
     hits: FxHashMap<(usize, Vec<String>), Rc<Hit>>,
-    by_source: FxHashMap<(u32, usize, Read, u32), Rc<Vec<Differing>>>,
-    by_unit: FxHashMap<u32, Rc<ClassResolution>>,
-    misread: FxHashMap<(u32, usize, u32), Rc<Vec<Misread>>>,
+    by_source: FxHashMap<(u32, usize, Read), Rc<Vec<Differing>>>,
+    by_unit: FxHashMap<u32, Rc<Vec<Differing>>>,
+    misread: FxHashMap<(u32, usize), Rc<Vec<Misread>>>,
 }
 
 fn join(entry: &str, rel: &str) -> String {
@@ -387,12 +377,12 @@ impl<'a> Resolver<'a> {
         })
     }
 
-    /// The verdict on a class edge to `target` that the compile of `unit`
-    /// binds, on PROPATH id `propath`.
+    /// The verdict on a class edge to `target` that a compile on PROPATH id
+    /// `propath` binds.
     fn class_edge(
         &mut self,
         outcome: &Outcome,
-        (unit, propath): (u32, usize),
+        propath: usize,
         (name, via): (Option<&str>, u32),
         target: u32,
     ) -> Option<Differing> {
@@ -411,7 +401,7 @@ impl<'a> Resolver<'a> {
         let mut files = BTreeSet::new();
         let mut rcode = None;
         match self.units.out.get(&stem).copied() {
-            Some(class) if !self.units.one_cycle(unit, class) => {
+            Some(class) => {
                 if class != target {
                     failed.insert(Failed::U1);
                     files.insert(outcome.name(class).to_string());
@@ -517,18 +507,11 @@ impl<'a> Resolver<'a> {
     }
 
     /// The class and include edges of the class source `source` that PROPATH
-    /// id `propath` resolves to another file than the analysis did, for the
-    /// compile of `unit`: what that compile reads instead (U3 alone). A class
-    /// that `$OUT` gives, or that resolves to r-code (K11), is not one.
-    /// `unit` is `None` for a unit that compiles after every class unit.
-    pub fn misread(
-        &mut self,
-        outcome: &Outcome,
-        source: u32,
-        (unit, propath): (Option<u32>, usize),
-    ) -> Rc<Vec<Misread>> {
-        let context = unit.map_or(NO_CYCLE, |unit| self.context(unit));
-        if let Some(found) = self.misread.get(&(source, propath, context)) {
+    /// id `propath` resolves to another file than the analysis did: what a
+    /// compile on it reads instead (U3 alone). A class that `$OUT` gives, or
+    /// that resolves to r-code (K11), is not one.
+    pub fn misread(&mut self, outcome: &Outcome, source: u32, propath: usize) -> Rc<Vec<Misread>> {
+        if let Some(found) = self.misread.get(&(source, propath)) {
             return found.clone();
         }
         let mut misread = Vec::new();
@@ -551,9 +534,7 @@ impl<'a> Resolver<'a> {
                         });
                         continue;
                     };
-                    if let Some(class) = self.units.out.get(&stem).copied()
-                        && !unit.is_some_and(|unit| self.units.one_cycle(unit, class))
-                    {
+                    if self.units.out.contains_key(&stem) {
                         continue;
                     }
                     let hit = self.class_hit(propath, &stem);
@@ -584,30 +565,20 @@ impl<'a> Resolver<'a> {
             }
         }
         let misread = Rc::new(misread);
-        self.misread
-            .insert((source, propath, context), misread.clone());
+        self.misread.insert((source, propath), misread.clone());
         misread
     }
 
-    /// The part of `unit` that decides how its compile resolves a class: the
-    /// unit itself when it is in a compile-time cycle.
-    fn context(&self, unit: u32) -> u32 {
-        match self.units.cycles.contains_key(&unit) {
-            true => unit,
-            false => NO_CYCLE,
-        }
-    }
-
-    /// The edges of the analysis of `source` that are not uniform for the
-    /// compile of `unit` on PROPATH id `propath`.
+    /// The edges of the analysis of `source` that are not uniform for a
+    /// compile on PROPATH id `propath`.
     fn source(
         &mut self,
         outcome: &Outcome,
         source: u32,
         read: Read,
-        (unit, propath): (u32, usize),
+        propath: usize,
     ) -> Rc<Vec<Differing>> {
-        let key = (source, propath, read, self.context(unit));
+        let key = (source, propath, read);
         if let Some(found) = self.by_source.get(&key) {
             return found.clone();
         }
@@ -617,7 +588,7 @@ impl<'a> Resolver<'a> {
             for edge in &analysis.edges {
                 let named = (edge.name.as_deref(), source);
                 if edge.kind.is_class() {
-                    differing.extend(self.class_edge(outcome, (unit, propath), named, edge.target));
+                    differing.extend(self.class_edge(outcome, propath, named, edge.target));
                 } else if edge.kind.is_include() && is_class && self.several() {
                     let every = read == Read::Source;
                     differing.extend(self.include_edge(
@@ -635,63 +606,66 @@ impl<'a> Resolver<'a> {
         differing
     }
 
-    /// The resolution of the unit `unit`, which compiles: the class edges of
-    /// the unit and of every class source in its closure, and the include
-    /// edges of each class whose source its compile reads. A class unit that
-    /// it reads from `$OUT` adds its own resolution instead: the compile of
-    /// that class read its names.
-    pub fn unit(&mut self, outcome: &Outcome, unit: u32) -> Rc<ClassResolution> {
+    /// The edges that the compile of the unit `unit` itself reads: its
+    /// class edges, its include edges when it is a class, and the edges of
+    /// each class in its closure whose source it reads, on its own PROPATH.
+    fn own(&mut self, outcome: &Outcome, unit: u32) -> Rc<Vec<Differing>> {
         if let Some(found) = self.by_unit.get(&unit) {
             return found.clone();
         }
-        let Some(propath) = self.units.propath.get(&unit).copied() else {
-            return Rc::new(ClassResolution {
-                uniform: true,
-                differing: Vec::new(),
-            });
-        };
+        let mut differing = Vec::new();
+        if let Some(propath) = self.units.propath.get(&unit).copied() {
+            differing.extend(
+                self.source(outcome, unit, Read::Own, propath)
+                    .iter()
+                    .cloned(),
+            );
+            let closure: Vec<u32> = self
+                .units
+                .closure
+                .get(&unit)
+                .map_or(Vec::new(), |c| c.to_vec());
+            for source in closure {
+                if self.units.class_sources.contains(&source) && !self.units.binds_out(source) {
+                    differing.extend(
+                        self.source(outcome, source, Read::Source, propath)
+                            .iter()
+                            .cloned(),
+                    );
+                }
+            }
+        }
+        let differing = Rc::new(differing);
+        self.by_unit.insert(unit, differing.clone());
+        differing
+    }
+
+    /// The resolution of the unit `unit`, which compiles: what its own compile
+    /// reads, and for each class unit in its closure, which it reads from
+    /// `$OUT`, what the compile of that class read.
+    pub fn unit(&mut self, outcome: &Outcome, unit: u32) -> ClassResolution {
+        let mut differing: BTreeMap<(String, &'static str, String), Differing> = BTreeMap::new();
         let closure: Vec<u32> = self
             .units
             .closure
             .get(&unit)
-            .map(|closure| closure.to_vec())
-            .unwrap_or_default();
-        let mut differing: BTreeMap<(String, &'static str, String), Differing> = BTreeMap::new();
-        let mut add = |found: &Differing| {
-            differing
-                .entry((found.via.clone(), found.kind, found.name.clone()))
-                .or_insert_with(|| found.clone());
-        };
-        for found in self
-            .source(outcome, unit, Read::Own, (unit, propath))
-            .iter()
-        {
-            add(found);
-        }
-        for source in closure
-            .iter()
-            .copied()
-            .filter(|node| self.units.class_sources.contains(node))
-        {
-            if self.units.binds_out(unit, source) {
-                for found in &self.unit(outcome, source).differing {
-                    add(found);
-                }
-            } else {
-                for found in self
-                    .source(outcome, source, Read::Source, (unit, propath))
-                    .iter()
-                {
-                    add(found);
-                }
+            .map_or(Vec::new(), |c| c.to_vec());
+        let compiles = std::iter::once(unit).chain(
+            closure
+                .into_iter()
+                .filter(|node| self.units.binds_out(*node)),
+        );
+        for node in compiles.collect::<Vec<u32>>() {
+            for found in self.own(outcome, node).iter() {
+                differing
+                    .entry((found.via.clone(), found.kind, found.name.clone()))
+                    .or_insert_with(|| found.clone());
             }
         }
         let differing: Vec<Differing> = differing.into_values().collect();
-        let resolution = Rc::new(ClassResolution {
+        ClassResolution {
             uniform: differing.is_empty(),
             differing,
-        });
-        self.by_unit.insert(unit, resolution.clone());
-        resolution
+        }
     }
 }

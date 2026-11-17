@@ -24,6 +24,15 @@ pub struct Context<'a> {
     pub faults: &'a Faults,
 }
 
+/// A class a session has bound: the file, its hash then, and what the
+/// class read.
+#[derive(Clone)]
+pub struct Bound {
+    real: PathBuf,
+    sha256: String,
+    reads: Vec<Read>,
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -137,6 +146,17 @@ impl Compiler {
         if !visited.insert(lower.clone()) {
             return;
         }
+        if let Some(bound) = self.classes.get(&lower).cloned() {
+            let same =
+                std::fs::read(&bound.real).is_ok_and(|bytes| sha256_hex(&bytes) == bound.sha256);
+            if same {
+                for read in bound.reads {
+                    out.record(read);
+                }
+                return;
+            }
+            self.classes.remove(&lower);
+        }
         let relative = class.replace('.', "/");
         let rcode = format!("{relative}.r");
         let source = format!("{relative}.cls");
@@ -147,29 +167,39 @@ impl Compiler {
             if let Some(found) = resolve::find(entry, &rcode, ctx.dlc)
                 && let Ok(bytes) = std::fs::read(&found.real)
             {
-                out.record(Read {
+                let read = Read {
                     shown: found.shown,
                     sha256: sha256_hex(&bytes),
-                });
+                };
+                self.bind(lower, found.real, read.sha256.clone(), vec![read.clone()]);
+                out.record(read);
                 return;
             }
             let Some(found) = resolve::find(entry, &source, ctx.dlc) else {
                 continue;
             };
-            let bound = (ctx.propath.to_vec(), lower.clone());
-            if let Some(reads) = self.classes.get(&bound) {
-                for read in reads.clone() {
-                    out.record(read);
-                }
+            let Ok(bytes) = std::fs::read(&found.real) else {
                 return;
-            }
+            };
+            let real = found.real.clone();
             let mut side = Outcome::new();
             self.visit_file(ctx, unit, &found, &mut side, visited, false);
             let _ = output::write_stray(ctx, &relative);
-            self.classes.insert(bound, side.reads.clone());
+            self.bind(lower, real, sha256_hex(&bytes), side.reads.clone());
             out.merge(side);
             return;
         }
+    }
+
+    fn bind(&mut self, class: String, real: PathBuf, sha256: String, reads: Vec<Read>) {
+        self.classes.insert(
+            class,
+            Bound {
+                real,
+                sha256,
+                reads,
+            },
+        );
     }
 }
 
@@ -190,6 +220,17 @@ fn apply(fault: Fault, row: usize, file: &str, unit: &str, faults: &Faults, out:
             {
                 let _ = std::fs::write(&marker, b"");
                 out.fail(file, row, 1234, "FAKE-FAIL-ONCE");
+            }
+        }
+        Fault::FailTwice => {
+            for kind in ["fail-twice-1", "fail-twice-2"] {
+                if let Some(marker) = marker(faults, kind, unit)
+                    && !marker.exists()
+                {
+                    let _ = std::fs::write(&marker, b"");
+                    out.fail(file, row, 1234, "FAKE-FAIL-TWICE");
+                    return;
+                }
             }
         }
         Fault::CrashOnce => match marker(faults, "crash-once", unit) {

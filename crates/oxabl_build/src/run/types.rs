@@ -45,6 +45,9 @@ pub struct UnitDone {
     /// What the compiler read, from its cross-reference, when verification or
     /// the observed closure asks for it.
     pub reads: Option<Result<Xref, String>>,
+    /// The unit is in a cycle of classes, and one of them did not compile in
+    /// the pass before: the unit may have read r-code of another build.
+    pub unsettled: bool,
 }
 
 /// A set the cache gave for one unit, installed at its final paths.

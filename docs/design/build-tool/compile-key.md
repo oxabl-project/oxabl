@@ -272,8 +272,14 @@ unit PROPATH, and holds the r-code of every class unit that compiles in this bui
   compiles it again, and it is never written to a cache.
 - **A class unit that is skipped** (an output collision, a package mismatch) writes no
   r-code: for its users it is a class that is not a unit, bound by the search.
-- **A cycle.** Units in one compile-time cycle compile in one job, in no fixed order, so a
-  user in a cycle with a class unit is checked as if the class were not a unit.
+- **A cycle.** Units in one compile-time cycle compile in one job, so they cannot read each
+  other's r-code of this build first. The compiler has no rule of its own for a cycle
+  (measured): it binds the first r-code it finds for the other class, also stray r-code
+  beside the source, or the r-code that the last build left in `$OUT`, and the r-code it
+  makes depends on the bytes of the r-code it bound. So a job of more than one unit
+  compiles in **passes** ([Passes over a cycle](#passes-over-a-cycle)), and its last pass
+  reads only this build's r-code of the cycle from `$OUT`. Members of a cycle are then
+  class units read from `$OUT` like any other.
 - **A class edge that the analysis misses** leaves the user unordered against the class, so
   it can bind the `$OUT` r-code of an earlier build. This is the closure assumption that
   every key makes, with one PROPATH id too: the key cannot hold a class that the closure
@@ -285,6 +291,43 @@ same name. So for such a user only the file of the class matters, not its includ
 class unit's own compile resolved them on its own PROPATH, and its own key holds them. A
 user inherits what makes that compile read other files than the analysis: the edges that
 are not uniform for the class unit (K9, K11), and its K10 reasons.
+
+#### Passes over a cycle
+
+Measured on OpenEdge 12.8.9 (`a_cycle_binds_the_first_rcode_it_finds_for_the_other_class`,
+`a_second_pass_after_a_propath_reset_binds_only_this_builds_rcode` and
+`build_cycle_with_stray_rcode_gives_clean_rcode` in
+`crates/oxabl/tests/build_openedge/class_binding.rs`):
+
+- A cycle member `A` that binds r-code of `B` made from another source (stray r-code beside
+  `B.cls`, or last build's `$OUT/pkg/B.r`) gives an `A.r` that differs from a clean compile,
+  also when that `B` is compatible (one more method). When the other `B` lacks a member that
+  `A` calls, the compile fails (12927). With no r-code first, the compile reads `B.cls`.
+- A compile that binds the r-code of the pass before gives clean r-code, whatever that pass
+  bound: the r-code a compile makes depends on the interface of the classes it binds, and
+  the interface of `B.r` comes from `B.cls`.
+- A session keeps a class bound to its file while the PROPATH stays the same and the file
+  does not change: stray r-code bound once stays bound, also after `MULTI-COMPILE` is turned
+  off and on. Setting PROPATH to `""` and back makes the next compile bind again.
+
+So a job of more than one unit compiles in passes, all on one worker:
+
+1. **Pass 1** compiles every unit and installs the outputs, but reports nothing.
+2. Before each later pass, and after the last one, the worker gets a **rebind**: a
+   `COMPILE` request with no unit on an empty PROPATH id. The next request sets the unit
+   PROPATH again, so the session binds every class again.
+3. When every unit compiled in pass 1, **pass 2** is the last pass. Otherwise pass 2 too
+   reports nothing, and **pass 3** is the last pass.
+4. The results of the last pass count. It is **settled** when every unit compiled in the
+   pass before: then every unit read this build's r-code of the others. A last pass that is
+   not settled records its units without a key (note
+   `a class of its cycle did not compile in the pass before, so it may have read r-code of
+   another build`), so the next build compiles them again, and writes nothing to a cache.
+
+A worker lost in a pass that reports nothing puts the whole job back. One lost in a last
+pass that is not settled puts back the units it did not finish, still without a key.
+
+The cost is one more compile of each unit of a cycle, and a third one when pass 1 fails.
 
 #### Uniform resolution
 

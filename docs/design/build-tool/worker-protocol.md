@@ -420,8 +420,16 @@ compile binds the class again. All units also share one `$OUT` tree, where one c
 has one `.r`. The plan keys a unit only when every class name it reaches resolves to the
 same file under every PROPATH id, or to the class unit's r-code in `$OUT` (K9,
 [compile-key.md](compile-key.md#per-unit-propath-classes)). So whichever session compiles a
-keyed unit, it binds the same files. Any worker may compile any unit, as the AVM would. The
-pool has no session rule of its own.
+keyed unit, it binds the same files. Any worker may compile any unit, as the AVM would.
+
+A session also keeps a class bound to its file while the PROPATH stays the same and the file
+does not change (measured). The one session rule: a job of more than one unit (a cycle)
+compiles in passes, and before each later pass and after the last one oxabl sends a
+**rebind**, a `COMPILE` request with no `UNIT` line on PROPATH id `0`, which is defined with
+no entry. The worker sets PROPATH to `""`, and the next request sets the unit PROPATH again,
+so the session binds every class again
+([compile-key.md](compile-key.md#passes-over-a-cycle)). The worker program has no code of
+its own for it.
 
 ### Timeouts
 
@@ -438,7 +446,8 @@ the protocol. Then oxabl:
 3. puts the unit that was in flight back in the queue, together with the units of the same
    request that had not started, as one job with the lost unit first (a request holds more
    than one unit only for a cycle of classes, which must stay together); only the lost unit
-   counts a loss;
+   counts a loss. A loss in a pass over a cycle that reports nothing puts the whole job back
+   ([compile-key.md](compile-key.md#passes-over-a-cycle));
 4. marks a unit that is lost a second time in one build as failed, with the message
    `worker lost twice while compiling this unit`;
 5. starts a new worker in the slot, with a new stage (`w<n>-<s+1>`). The new worker must

@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::context::{Ctx, State};
 use super::coordinate::Coordinator;
@@ -96,6 +96,7 @@ pub fn run(
         restart: pool.restart(),
         lost: &ctx.lost,
         next_request: &ctx.next_request,
+        unsettled: Mutex::new(FxHashSet::default()),
     };
     let plan = ctx.fetch.as_ref().filter(|_| fetching);
     let awaiting: Vec<u32> = plan

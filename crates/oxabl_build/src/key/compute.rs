@@ -350,13 +350,7 @@ pub fn compute(
         let propath = &layout.propaths[placed.propath.expect("an active unit has a PROPATH")];
         rules.check(active_ids[*k], &closures[*k], propath)
     });
-    let units = resolver_units(
-        outcome,
-        &layout,
-        (&active, &active_ids),
-        &closures,
-        &class_sources,
-    );
+    let units = resolver_units(&layout, (&active, &active_ids), &closures, &class_sources);
     let mut resolver = Resolver::new(&paths, &layout.propaths, units);
     if search.has_root_relative() {
         let written = class_units_with_written_names(&layout, (&active, &active_ids));
@@ -618,10 +612,8 @@ pub fn compute(
 }
 
 /// What the resolver needs to know about the units that compile: their
-/// PROPATH ids and closures, the class units whose r-code `$OUT` holds, and
-/// the class units in a compile-time cycle.
+/// PROPATH ids and closures, and the class units whose r-code `$OUT` holds.
 fn resolver_units<'a>(
-    outcome: &Outcome,
     layout: &Layout,
     (active, active_ids): (&[usize], &[u32]),
     closures: &'a [Vec<u32>],
@@ -632,7 +624,6 @@ fn resolver_units<'a>(
         closure: FxHashMap::default(),
         out: FxHashMap::default(),
         compiles: FxHashSet::default(),
-        cycles: FxHashMap::default(),
         class_sources,
     };
     for ((at, id), closure) in active.iter().zip(active_ids).zip(closures) {
@@ -649,12 +640,6 @@ fn resolver_units<'a>(
         };
         units.out.insert(stem.to_string(), *id);
         units.compiles.insert(*id);
-        let cyclic = closure
-            .iter()
-            .any(|node| outcome.after.edges(*node).contains(id));
-        if cyclic {
-            units.cycles.insert(*id, closure.iter().copied().collect());
-        }
     }
     units
 }
@@ -687,7 +672,7 @@ fn resolve(
         for reason in resolution.propath_reasons() {
             verdicts[k].add_reason(9, reason);
         }
-        resolutions.push(several.then(|| (*resolution).clone()));
+        resolutions.push(several.then_some(resolution));
     }
     resolutions
 }
@@ -735,13 +720,10 @@ fn misread_classes(
             .iter()
             .filter(|node| class_sources.contains(node))
         {
-            if written.contains(source) && resolver.units().binds_out(unit, *source) {
+            if written.contains(source) && resolver.units().binds_out(*source) {
                 continue;
             }
-            for misread in resolver
-                .misread(outcome, *source, (Some(unit), propath))
-                .iter()
-            {
+            for misread in resolver.misread(outcome, *source, propath).iter() {
                 verdict.add_reason(10, misread.reason());
             }
         }
@@ -769,12 +751,11 @@ fn inherit_misread(
         return;
     }
     for (k, verdict) in verdicts.iter_mut().enumerate() {
-        let unit = active_ids[k];
         for source in closures[k]
             .iter()
             .filter(|node| class_sources.contains(node))
         {
-            if !resolver.units().binds_out(unit, *source) {
+            if !resolver.units().binds_out(*source) {
                 continue;
             }
             for reason in own.get(source).into_iter().flatten() {
@@ -806,7 +787,7 @@ fn misread_listed(
             if resolver.units().compiles.contains(&id) {
                 continue;
             }
-            for misread in resolver.misread(outcome, id, (None, *propath)).iter() {
+            for misread in resolver.misread(outcome, id, *propath).iter() {
                 part.reasons
                     .push(format!("observed-class: {class}: {}", misread.reason()));
             }
