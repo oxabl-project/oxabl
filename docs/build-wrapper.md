@@ -177,7 +177,7 @@ The startup parameters of the workers are part of the compile key, except the on
 
 - `[build].output` is the r-code directory. It must be under the root. Oxabl owns it: the first build needs it absent or empty, and oxabl deletes files in it that it did not make. The same holds for each directory of `[build.outputs]` (`xref`, `debug_list`, `listing`). Do not point two settings at one directory, and do not put a directory inside another.
 - `[build.compile]` sets the options of the `COMPILE` statement.
-- `[build].state` is the directory for the graph store, the locks and the worker logs (default `.oxabl/build`). Keep it, and the output directories, out of version control.
+- `[build].state` is the directory for the graph store, the locks and the worker logs (default `.oxabl/build`). When the state or an output directory is below a directory of its own (for example `.oxabl/build` and `.oxabl/r`), a build writes a `.gitignore` that holds `*` in that top directory (`.oxabl/`), so git ignores the tree and the code base needs no change. Oxabl never replaces a `.gitignore`. It writes none in the root, in an output directory or in a directory that holds other files. It only warns when it cannot write the file. When an output directory is a top directory itself (for example `output = "build"`), add it to the ignore file of your version control.
 
 ### The local cache
 

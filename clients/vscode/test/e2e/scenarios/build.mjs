@@ -23,8 +23,10 @@ const QUICK_BUILD = { script: [{ event: { ...started, rebuild: 0, units: 5 } }] 
 /**
  * One scenario: a profile with the fake `oxabl` as `oxabl.server.path`, a fake
  * GitHub API, and VS Code started on it. `body` gets { page, profile, logFile, server }.
+ * With `again`, VS Code then closes and starts anew on the same profile (the
+ * workspace state stays), and `again` gets the same arguments as `body`.
  */
-async function session(ctx, name, opts, body) {
+async function session(ctx, name, opts, body, again) {
   const { config = {}, settings = {}, files = ["sample.p", "oxabl.toml"], fake = true, launchOptions = {}, cli, before, newest = "99.0.0" } = opts;
   const profile = makeProfile(name, { files });
   const logFile = path.join(profile.root, "fake-oxabl.log");
@@ -43,12 +45,19 @@ async function session(ctx, name, opts, body) {
   const server = await startFakeGitHub({ installed: ctx.installed, newest, cli });
   let vs;
   try {
-    vs = await launch(ctx.exe, profile, {
-      open: ["sample.p"],
-      env: { OXABL_UPDATE_API_URL: server.url, FAKE_OXABL_LOG: logFile, FAKE_OXABL_CONFIG: configFile },
-      ...launchOptions,
-    });
+    const start = () =>
+      launch(ctx.exe, profile, {
+        open: ["sample.p"],
+        env: { OXABL_UPDATE_API_URL: server.url, FAKE_OXABL_LOG: logFile, FAKE_OXABL_CONFIG: configFile },
+        ...launchOptions,
+      });
+    vs = await start();
     await body({ page: vs.page, profile, logFile, server, log: () => readLog(logFile) });
+    if (again) {
+      await vs.close();
+      vs = await start();
+      await again({ page: vs.page, profile, logFile, server, log: () => readLog(logFile) });
+    }
   } finally {
     if (vs) await vs.close();
     await server.close();
@@ -149,6 +158,12 @@ export async function buildOpen(ctx) {
     await sleep(1_500);
     const after = (await toasts(page)).filter((t) => t.includes("oxabl build finished"));
     check(`${name}: a build after a save shows no notification`, after.length === 0, after.join(" | "));
+  }, async ({ page, log }) => {
+    // A later window of the same workspace has its own first build, and tells nothing of a build that went well.
+    await waitForExits(`${name}: the build of the later window to end`, log, 3);
+    await sleep(2_000);
+    const later = (await toasts(page)).filter((t) => t.includes("oxabl build finished"));
+    check(`${name}: a later window shows no notification for its first build`, later.length === 0, later.join(" | "));
   });
 }
 
@@ -333,6 +348,12 @@ export async function buildUnkeyed(ctx) {
     await sleep(2_000);
     const shown = (await toasts(page)).filter((t) => t.includes("no compile key")).length;
     check(`${name}: a second build with the same reason shows no second warning`, shown === 0, `${shown} warnings`);
+  }, async ({ page, log }) => {
+    // A later window of the same workspace does not repeat it.
+    await waitForExits(`${name}: the build of the later window to end`, log, 3);
+    await sleep(2_000);
+    const later = (await toasts(page)).filter((t) => t.includes("no compile key")).length;
+    check(`${name}: a later window shows no second warning`, later === 0, `${later} warnings`);
   });
 }
 

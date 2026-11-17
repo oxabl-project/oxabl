@@ -1,6 +1,7 @@
 //! Output directories: layout, ownership, stages, promotion and pruning.
 
 pub mod check;
+pub mod ignore;
 pub mod layout;
 pub mod ownership;
 pub mod promote;

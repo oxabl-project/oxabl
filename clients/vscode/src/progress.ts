@@ -113,10 +113,21 @@ export class BuildProgress {
     return Math.floor((100 * Math.min(this.units, this.upToDate + this.fetched.size)) / this.units);
   }
 
+  /**
+   * Whether this build is the project's first: every unit is in the rebuild
+   * set, none up to date, in a project large enough to take minutes.
+   */
+  get firstBuild(): boolean {
+    return this.total !== undefined && this.total >= FIRST_BUILD_MIN_UNITS && this.upToDate === 0;
+  }
+
   fetchedFrom(cache: "local" | "remote"): number {
     return [...this.fetched.values()].filter((c) => c === cache).length;
   }
 }
+
+/** Below this many units, a build that rebuilds everything is quick and needs no warning. */
+const FIRST_BUILD_MIN_UNITS = 500;
 
 const num = (v: unknown): number => (typeof v === "number" ? v : 0);
 
@@ -176,6 +187,12 @@ function buildingTooltip(p: BuildProgress, unkeyed: number | undefined): string 
   const lines = [`This build: ${count(p.total ?? 0)} units to rebuild`];
   if (p.units > 0) {
     lines.push(`Workspace: ${count(p.units)} units, ${count(p.upToDate)} up to date before this build`);
+  }
+  if (p.firstBuild) {
+    lines.push(
+      "First build of this project: every unit is new to oxabl and compiles once, unless a cache holds it. " +
+        "This can take 10 minutes or more on a large project. Later builds compile only what changed.",
+    );
   }
   if (unkeyed) {
     lines.push(unkeyedTooltip(unkeyed));
