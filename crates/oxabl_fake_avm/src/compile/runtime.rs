@@ -121,6 +121,7 @@ fn compile(
         dlc,
         faults,
         save_strays: false,
+        request: &[],
     };
     let out = Compiler::default().compile_found(&context, name, found);
     match out.ok {

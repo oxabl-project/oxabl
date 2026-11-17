@@ -7,6 +7,9 @@ use std::collections::HashSet;
 pub struct Read {
     pub shown: String,
     pub sha256: String,
+    /// Whether the cross-reference names the file. As measured, it names no
+    /// class r-code that a compile binds.
+    pub listed: bool,
 }
 
 /// One compiler message.
