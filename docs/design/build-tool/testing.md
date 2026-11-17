@@ -33,6 +33,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | Compiler messages without a position, and the `DONE` message count | `crates/oxabl/tests/build_compile_messages.rs` |
 | Remote cache | `crates/oxabl/tests/build_remote_*.rs` (only the package that owns the `oxabl` binary gets `CARGO_BIN_EXE_oxabl`) |
 | OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `crates/oxabl/tests/build_openedge_scratch.rs` |
+| The fake runtime and the shared case table of the runtime rule | `crates/oxabl/tests/build_runtime_fake.rs` with `crates/oxabl/tests/common/runtime_cases.rs` |
 | Parity | `scripts/plan-parity.sh` |
 
 ## The fake AVM
@@ -78,7 +79,9 @@ the protocol says; the fake implements that on its own.
   `HASHSET` with the digest of the list. `FAKE_AVM_DLC` points it at its own copy of the
   `$DLC` files, so two workers can see different copies.
 - **Outputs.** The `.r` is text: a header, the compile name, one line `read <path> <hash>` for
-  each file read, and `compiled-at <nanoseconds>`. The last line makes outputs of one
+  each file read, one line `say <text>` for each `FAKE-SAY <text>` in the unit and its
+  includes, one line `uses <class>` for each class that the unit and its includes name, and
+  `compiled-at <nanoseconds>`. The last line makes outputs of one
   source differ between compiles, like real r-code. A test can read a `.r` and check that it
   matches the current files: that is the wrong-hit oracle. It writes the text XREF or the
   `XREF-XML` as requested, and the text XREF for the `private` mode; the text XREF has a
@@ -119,8 +122,25 @@ the protocol says; the fake implements that on its own.
 | `FAKE_AVM_RAW_SALT=<text>`, `FAKE_AVM_RAW_CHANGE_FILE=<path>`, `FAKE_AVM_RAW_CHANGE_FROM=<n>` | Change the raw digest and not the image: always, while the file exists, or from the `n`-th raw request of the process on. |
 | `FAKE_AVM_RAW_FAULT=<fault>`, `FAKE_AVM_RAW_FAULT_SHARE=<p>` | Break the raw digest answer of share `p` (default 0): `missing-piece`, `extra-piece`, `bounds`, `bad-hash`, `bad-count`, `error` or `exit`. |
 | `FAKE_AVM_COMPILE_MS=<n>` | Sleep `n` ms in each compile, to measure what oxabl spends between compiles. |
+| `FAKE-SAY <text>` in a source | The program prints `SAYS <text>` when the runtime runs it (a `say` line of its r-code). |
 | `FAKE-RESOLVE-OTHER <name> <path>` in a source | Resolve include `<name>` to `<path>` instead of the first PROPATH match, as a divergent AVM would. |
 
+- **Runtime.** `oxabl_fake_avm -p <program>` runs a program, and `oxabl_fake_avm -new
+  <class>` makes an object of a class, as a project's runtime does. The PROPATH comes from
+  the `PROPATH` variable (entries split at `,` and `:`); an unset or empty variable is an
+  error, so a test cannot forget it. The fake finds the file by the measured rule: entry by
+  entry, `<stem>.r` before the source in each entry, no date check; a full path runs the
+  `.r` beside it first, whatever the PROPATH holds. It prints `RUN <name> <file> rcode` or
+  `RUN <name> <file> compiled-on-the-fly`, then `SAYS <text>` for each `say` line and the
+  `read <path> <hash>` lines (from the r-code, or from a compile in memory for a source).
+  Then it loads each class in a `uses` line by the same rule and prints the same lines after
+  `NEW <class> <file> ...`. A name it cannot find is `** "<name>" was not found. (293)` and
+  exit code 1; a `.r` that is not fake r-code is error 2888. So a test asks the runtime
+  which file runs and from which source hash, not the disk.
+- **A project's own compile.** `oxabl_fake_avm -c <name> [-save-into <dir>]` writes the
+  r-code of `<name>` as `COMPILE <name> SAVE [INTO <dir>]` does, with the PROPATH from the
+  `PROPATH` variable: beside the source it found, or below `<dir>`. Tests use it to make
+  r-code of another build tool.
 - **Log.** It appends one line per compiled unit to `FAKE_AVM_LOG` (`<worker pid> <compile
   name>`), so a test counts compiles and sees which worker compiled what. It also writes its
   pid there at start and `exit` at quit, so a test can check that no worker stays alive.
@@ -584,6 +604,22 @@ project (the source entries alone, or an output entry before each source entry) 
 that the other layout fails it. `run_from_rcode` in `compile.rs` sets `PROPATH` to
 `build/r`, so it is only for tests about the r-code itself.
 
+The fake AVM's runtime follows the same rule, and the same oracle applies to it: the test
+sets its `PROPATH` variable as the project's environment would. One table of cases,
+`crates/oxabl/tests/common/runtime_cases.rs` (E1, E1b, E1c and E4: which entry wins, r-code
+beside a newer source, each name of a program, a name with no r-code, a class), runs
+against the fake in `build_runtime_fake.rs` (public CI) and against OpenEdge in
+`build_openedge/runtime.rs`. When both pass, the fake encodes the measured rule, and a
+fake-AVM test that asks the fake runtime what runs proves what a real runtime runs. A
+change of the rule changes the table, and both runs must pass again.
+
+| Fake-AVM test (`build_runtime_fake.rs`) | What it proves |
+| --- | --- |
+| `the_shared_case_table_holds_on_the_fake_runtime` | Every case of the shared table on the fake runtime. |
+| `the_fake_runtime_runs_nothing_without_a_propath` | An unset or empty `PROPATH` is exit code 1, not a run on a default PROPATH. |
+| `the_runtime_ignores_an_output_directory_it_does_not_search` | The incident on the fake: r-code of the project's own compile beside the sources, an edit of a program, an include and a class, `oxabl build` into `build/r`, and a runtime PROPATH of `src` alone: all three print the **old** text, and `hello.p` runs `src/hello.r`. Red with `build/r` first. |
+| `an_edit_shows_in_a_runtime_that_searches_the_output_first` | The same project with the runtime PROPATH `build/r`, then `src`: the new text, `hello.p` runs `build/r/hello.r`, and that r-code records the current hash of `src/hello.p`. Red with `src` alone. |
+
 ### Tests
 
 | Test | What it proves |
@@ -643,6 +679,7 @@ that the other layout fails it. `run_from_rcode` in `compile.rs` sets `PROPATH` 
 | `xref_text_observed_closure` | The text `XREF` of `main.p` has an `INCLUDE` row for `defs.i`, `ttrows.i` and the definitions-only `consts.i`. |
 | `xref_text_unusual_names` | A skipped `&IF` include, a unit with a space in its name and an include path of 200 characters: the text `XREF` reads back and the units are stored. |
 | `xref_readers` | The text reader finds every include of the fixture (its `INCLUDE` rows give the name as written, not as resolved); the XML reader finds the includes that hold a reference. |
+| `the_shared_case_table_holds_on_openedge` | The shared case table of `common/runtime_cases.rs` on the AVM: `-p` with the name or the full path, and `DYNAMIC-NEW` for a class. A name with no `.r` and no source prints error 293. |
 | `the_runtime_searches_entry_by_entry` | E1: `a/x.p` and, in a later entry, `b/x.r` of another source. `RUN x.p` on `a,b` runs `a/x.p`; on `b,a` it runs `b/x.r`. The runtime searches entry by entry, r-code before source in each entry. |
 | `rcode_beside_a_newer_source_runs` | E1b: `a/x.r` of an old source beside a newer, edited `a/x.p`: `RUN x.p` runs the old r-code. The runtime does not compare times. |
 | `every_name_of_a_program_runs_the_rcode_beside_it` | E1c: with the E1b setup, `RUN x`, `RUN x.r`, `RUN` of the full path of `a/x.p`, `-p <full path>` and `-p x.p` all run `a/x.r`. With `o/x.r` in an entry before `a`, `-p x.p` runs `o/x.r`, and the full path of `a/x.p` (`-p` and `RUN VALUE`) still runs `a/x.r`. `RUN x` with no `x.r` is error 293. |

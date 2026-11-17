@@ -3,6 +3,7 @@
 mod outcome;
 mod output;
 mod resolve;
+pub mod runtime;
 mod scan;
 mod visit;
 
@@ -92,6 +93,7 @@ impl Compiler {
             listing,
             dlc,
             faults,
+            save_strays: true,
         };
         for name in units {
             let started = Instant::now();

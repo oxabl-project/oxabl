@@ -30,6 +30,10 @@ pub struct Outcome {
     pub xref_raw: Vec<u8>,
     /// The text of the unit itself.
     pub source: String,
+    /// What the unit and its includes print when it runs (`FAKE-SAY`).
+    pub says: Vec<String>,
+    /// The classes the unit and its includes name, which the runtime loads.
+    pub uses: Vec<String>,
     pub slow: bool,
     /// Report success and write no outputs.
     pub no_output: bool,
@@ -45,6 +49,8 @@ impl Outcome {
             references: Vec::new(),
             xref_raw: Vec::new(),
             source: String::new(),
+            says: Vec::new(),
+            uses: Vec::new(),
             slow: false,
             no_output: false,
             seen: HashSet::new(),
@@ -98,7 +104,8 @@ impl Outcome {
         });
     }
 
-    /// Takes over what a class compiled on the side read and said.
+    /// Takes over what a class compiled on the side read and said. What the
+    /// class prints and uses stays the class's own.
     pub fn merge(&mut self, other: Outcome) {
         self.ok &= other.ok;
         self.messages.extend(other.messages);
