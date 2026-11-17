@@ -1,6 +1,12 @@
-//! How each class name in a unit's closure, and each include inside a class
-//! subtree, resolves under every PROPATH id of the build. The uniform
-//! resolution is reported only; [`Resolver::misread`] gives K10.
+//! How the class names a unit reaches, and the includes of the class sources
+//! the compiler reads, resolve: on the unit's own PROPATH and under every
+//! PROPATH id of the build.
+//!
+//! The search is the one measured on the compiler: `$OUT` comes first and
+//! holds the r-code of every class unit that compiles in this build; after
+//! it, the first entry that holds `<pkg>/<Name>.r` or `<pkg>/<Name>.cls`,
+//! exact in case, r-code before source. An include is the first entry that
+//! holds the name as written, exact in case.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
@@ -13,19 +19,16 @@ use crate::paths::PathMap;
 use crate::paths::propath::{OUT, library_name};
 use crate::refresh::Outcome;
 
-/// A condition a named edge fails. U1 to U3 are the conditions of a uniform
-/// edge; `case` and `name` fail closed until the AVM's search is measured.
+/// A condition a named edge fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Failed {
     /// Another PROPATH id resolves the name to another file, or a library
     /// entry comes before the file.
     U1,
-    /// A workspace entry holds r-code for the class name.
-    U2,
     /// The unit's own PROPATH does not resolve the name to the analysed file.
     U3,
-    /// A file matches the name only when case is ignored.
-    Case,
+    /// The unit's own compile binds class r-code that is not in the key.
+    Rcode,
     /// The written name is unknown, or does not match the analysed file.
     Name,
 }
@@ -34,9 +37,8 @@ impl Failed {
     pub fn as_str(self) -> &'static str {
         match self {
             Failed::U1 => "U1",
-            Failed::U2 => "U2",
             Failed::U3 => "U3",
-            Failed::Case => "case",
+            Failed::Rcode => "rcode",
             Failed::Name => "name",
         }
     }
@@ -54,6 +56,8 @@ pub struct Differing {
     /// The analysed file and every other file the name can resolve to.
     pub files: Vec<String>,
     pub failed: Vec<Failed>,
+    /// With [`Failed::Rcode`]: the class r-code the compile binds.
+    pub rcode: Option<String>,
 }
 
 /// A named edge of a class source that a compile searching another unit's
@@ -94,13 +98,75 @@ pub struct ClassResolution {
     pub differing: Vec<Differing>,
 }
 
+impl ClassResolution {
+    /// The K11 reasons: the class r-code the unit's compile binds that the
+    /// key does not hold.
+    pub fn rcode_reasons(&self) -> Vec<String> {
+        self.differing
+            .iter()
+            .filter_map(|edge| edge.rcode.as_ref())
+            .map(|file| format!("class-rcode: {file}"))
+            .collect()
+    }
+
+    /// The K9 reasons: one per name that does not resolve the same under
+    /// every PROPATH id, or not to the analysed file on the unit's own.
+    pub fn propath_reasons(&self) -> Vec<String> {
+        self.differing
+            .iter()
+            .filter(|edge| edge.failed.iter().any(|f| *f != Failed::Rcode))
+            .map(|edge| {
+                let name = match edge.kind {
+                    "include" => format!("{{{}}} in {}", edge.name, edge.via),
+                    _ => edge.name.clone(),
+                };
+                format!(
+                    "per-unit-propath-classes: {name} ({})",
+                    edge.files.join(", ")
+                )
+            })
+            .collect()
+    }
+}
+
 /// The counts over the units that have a [`ClassResolution`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResolutionSummary {
     pub units: usize,
     pub uniform: usize,
-    /// Uniform units whose only reason is K9.
+    /// Units that have a key.
     pub released: usize,
+}
+
+/// What the resolver knows about the units of the build.
+pub struct Units<'a> {
+    /// The PROPATH id of each unit that compiles.
+    pub propath: FxHashMap<u32, usize>,
+    /// The closure of each unit that compiles.
+    pub closure: FxHashMap<u32, &'a [u32]>,
+    /// The class units that compile, by the stem of their r-code below
+    /// `$OUT` (`pkg/Foo`).
+    pub out: FxHashMap<String, u32>,
+    /// The ids of `out`.
+    pub compiles: FxHashSet<u32>,
+    /// For each class unit that compiles and is in a compile-time cycle, the
+    /// nodes of its closure.
+    pub cycles: FxHashMap<u32, FxHashSet<u32>>,
+    pub class_sources: &'a FxHashSet<u32>,
+}
+
+impl Units<'_> {
+    /// Whether `a` and the class unit `b` are in one compile-time cycle: one
+    /// job compiles them, in no fixed order.
+    fn one_cycle(&self, a: u32, b: u32) -> bool {
+        self.cycles.get(&b).is_some_and(|nodes| nodes.contains(&a))
+    }
+
+    /// Whether the compile of `unit` reads the class `class` from `$OUT`:
+    /// `class` is a class unit that compiles before `unit`.
+    pub fn binds_out(&self, unit: u32, class: u32) -> bool {
+        self.compiles.contains(&class) && !self.one_cycle(unit, class)
+    }
 }
 
 /// What one PROPATH id finds for a name.
@@ -108,25 +174,14 @@ pub struct ResolutionSummary {
 struct Hit {
     /// The first file that matches the name exactly.
     file: Option<String>,
-    /// Files that match only when case is ignored, in the entries up to the
-    /// one that holds `file`.
-    variants: Vec<String>,
     /// A library entry before `file`: it may hold the name.
     library: Option<String>,
-}
-
-/// What every PROPATH id says about one name and its analysed file.
-#[derive(Debug, Default)]
-struct Global {
-    files: BTreeSet<String>,
-    failed: BTreeSet<Failed>,
 }
 
 /// The name an edge was written with, as a path below a PROPATH entry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Rel {
-    /// A relative path; `exact_only` when it leaves its entry, so that only an
-    /// exact match is looked for.
+    /// A relative path; `exact_only` when it leaves its entry.
     Path { rel: String, exact_only: bool },
     /// An absolute name: no PROPATH search.
     Fixed,
@@ -134,23 +189,31 @@ enum Rel {
     Unknown,
 }
 
+/// Which edges of a source count, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Read {
+    /// The unit's own text: its class edges, and its include edges when it is
+    /// a class, on its own PROPATH.
+    Own,
+    /// A class the unit's compile reads from source: its class edges, and its
+    /// include edges on every PROPATH id.
+    Source,
+}
+
+const NO_CYCLE: u32 = u32::MAX;
+
 /// Emulates the PROPATH search over the working tree, with every directory
 /// listing and every answer kept for the rest of the plan.
 pub struct Resolver<'a> {
     paths: &'a PathMap,
     propaths: &'a [Vec<String>],
-    /// The workspace entries of every PROPATH id, `$OUT` excluded.
-    workspace_entries: Vec<String>,
-    listings: FxHashMap<std::path::PathBuf, Option<Rc<Vec<String>>>>,
-    found: FxHashMap<(String, String, bool), Rc<Vec<String>>>,
-    hits: FxHashMap<(usize, String, bool), Rc<Hit>>,
-    globals: FxHashMap<(bool, Rel, u32), Rc<Global>>,
-    by_source: FxHashMap<(u32, usize), Rc<Vec<Differing>>>,
-    misread: FxHashMap<(u32, usize), Rc<Vec<Misread>>>,
-}
-
-fn is_workspace_entry(entry: &str) -> bool {
-    !entry.starts_with(['$', '/'])
+    units: Units<'a>,
+    listings: FxHashMap<std::path::PathBuf, Option<Rc<FxHashSet<String>>>>,
+    exists: FxHashMap<(String, String), Option<String>>,
+    hits: FxHashMap<(usize, Vec<String>), Rc<Hit>>,
+    by_source: FxHashMap<(u32, usize, Read, u32), Rc<Vec<Differing>>>,
+    by_unit: FxHashMap<u32, Rc<ClassResolution>>,
+    misread: FxHashMap<(u32, usize, u32), Rc<Vec<Misread>>>,
 }
 
 fn join(entry: &str, rel: &str) -> String {
@@ -177,11 +240,11 @@ fn include_rel(name: &str) -> Rel {
     }
 }
 
-/// The path of the class `name` below a package root, spelled as the analysed
-/// file `target` spells it, and the name with that spelling. `None` when the
-/// file does not end with the name's package path.
-fn class_rel(name: &str, target: &str) -> Option<(String, String)> {
-    let (stem, extension) = target.rsplit_once('.')?;
+/// The path stem of the class `name` below a package root, spelled as the
+/// analysed file `target` spells it (`pkg/Foo`), and the name with that
+/// spelling. `None` when the file does not end with the name's package path.
+fn class_stem(name: &str, target: &str) -> Option<(String, String)> {
+    let (stem, _) = target.rsplit_once('.')?;
     let parts: Vec<&str> = name.split('.').collect();
     let components: Vec<&str> = stem.split('/').collect();
     if components.len() < parts.len() {
@@ -192,49 +255,37 @@ fn class_rel(name: &str, target: &str) -> Option<(String, String)> {
         .iter()
         .zip(&parts)
         .all(|(component, part)| component.eq_ignore_ascii_case(part));
-    same.then(|| (format!("{}.{extension}", tail.join("/")), tail.join(".")))
+    same.then(|| (tail.join("/"), tail.join(".")))
 }
 
-/// The name of an edge as a path below a PROPATH entry, and the name to show.
-fn named_rel(class: bool, name: Option<&str>, target: &str) -> (Rel, String) {
-    match (class, name) {
-        (_, None) => (Rel::Unknown, String::new()),
-        (true, Some(name)) => match class_rel(name, target) {
-            Some((rel, spelled)) => (
-                Rel::Path {
-                    rel,
-                    exact_only: false,
-                },
-                spelled,
-            ),
-            None => (Rel::Unknown, name.to_string()),
-        },
-        (false, Some(name)) => (include_rel(name), name.to_string()),
-    }
+fn sorted(files: BTreeSet<String>) -> Vec<String> {
+    files.into_iter().collect()
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(paths: &'a PathMap, propaths: &'a [Vec<String>]) -> Self {
-        let mut workspace_entries: Vec<String> = Vec::new();
-        for entry in propaths.iter().flatten() {
-            if is_workspace_entry(entry) && !workspace_entries.contains(entry) {
-                workspace_entries.push(entry.clone());
-            }
-        }
+    pub fn new(paths: &'a PathMap, propaths: &'a [Vec<String>], units: Units<'a>) -> Self {
         Resolver {
             paths,
             propaths,
-            workspace_entries,
+            units,
             listings: FxHashMap::default(),
-            found: FxHashMap::default(),
+            exists: FxHashMap::default(),
             hits: FxHashMap::default(),
-            globals: FxHashMap::default(),
             by_source: FxHashMap::default(),
+            by_unit: FxHashMap::default(),
             misread: FxHashMap::default(),
         }
     }
 
-    fn listing(&mut self, dir: &Path) -> Option<Rc<Vec<String>>> {
+    pub fn units(&self) -> &Units<'a> {
+        &self.units
+    }
+
+    fn several(&self) -> bool {
+        self.propaths.len() > 1
+    }
+
+    fn listing(&mut self, dir: &Path) -> Option<Rc<FxHashSet<String>>> {
         if let Some(listing) = self.listings.get(dir) {
             return listing.clone();
         }
@@ -250,53 +301,43 @@ impl<'a> Resolver<'a> {
         listing
     }
 
-    /// The files below `entry` whose path matches `rel` when case is ignored,
-    /// as canonical paths; only the exact path with `exact_only`.
-    fn find(&mut self, entry: &str, rel: &str, exact_only: bool) -> Rc<Vec<String>> {
-        let key = (entry.to_string(), rel.to_string(), exact_only);
-        if let Some(found) = self.found.get(&key) {
+    /// The canonical path of the file `rel` below `entry`, when the entry
+    /// holds it with exactly that spelling.
+    fn exists(&mut self, entry: &str, rel: &str, exact_only: bool) -> Option<String> {
+        let key = (entry.to_string(), rel.to_string());
+        if let Some(found) = self.exists.get(&key) {
             return found.clone();
         }
-        let mut found = Vec::new();
-        if exact_only {
+        let found = if exact_only {
             let joined = normalize_lexically(&Path::new(entry).join(rel));
             let canonical = joined.to_string_lossy().into_owned();
-            if self.paths.absolute(&canonical).is_file() {
-                found.push(canonical);
-            }
+            self.paths
+                .absolute(&canonical)
+                .is_file()
+                .then_some(canonical)
         } else {
-            let mut level: Vec<(std::path::PathBuf, String)> =
-                vec![(self.paths.absolute(entry), entry.to_string())];
-            let parts: Vec<&str> = rel.split('/').collect();
-            for (at, part) in parts.iter().enumerate() {
-                let mut next = Vec::new();
-                for (dir, canonical) in &level {
-                    let Some(listing) = self.listing(dir) else {
-                        continue;
-                    };
-                    for name in listing
-                        .iter()
-                        .filter(|name| name.eq_ignore_ascii_case(part))
-                    {
-                        next.push((dir.join(name), join(canonical, name)));
-                    }
+            let mut dir = self.paths.absolute(entry);
+            let mut whole = true;
+            for part in rel.split('/') {
+                let held = self
+                    .listing(&dir)
+                    .is_some_and(|listing| listing.contains(part));
+                if !held {
+                    whole = false;
+                    break;
                 }
-                if at + 1 == parts.len() {
-                    next.retain(|(path, _)| path.is_file());
-                }
-                level = next;
+                dir = dir.join(part);
             }
-            found.extend(level.into_iter().map(|(_, canonical)| canonical));
-            found.sort();
-        }
-        let found = Rc::new(found);
-        self.found.insert(key, found.clone());
+            (whole && dir.is_file()).then(|| join(entry, rel))
+        };
+        self.exists.insert(key, found.clone());
         found
     }
 
-    /// What PROPATH id `propath` finds for `rel`.
-    fn hit(&mut self, propath: usize, rel: &str, exact_only: bool) -> Rc<Hit> {
-        let key = (propath, rel.to_string(), exact_only);
+    /// What PROPATH id `propath` finds first, after `$OUT`, for any of
+    /// `names`: the first entry that holds one, the earlier name first.
+    fn hit(&mut self, propath: usize, names: &[String], exact_only: bool) -> Rc<Hit> {
+        let key = (propath, names.to_vec());
         if let Some(hit) = self.hits.get(&key) {
             return hit.clone();
         }
@@ -306,20 +347,16 @@ impl<'a> Resolver<'a> {
             .filter(|entry| *entry != OUT)
             .cloned()
             .collect();
-        for entry in &entries {
+        'entries: for entry in &entries {
             if library_name(entry).is_some() {
                 hit.library.get_or_insert_with(|| entry.clone());
                 continue;
             }
-            let exact = normalize_lexically(Path::new(&join(entry, rel)))
-                .to_string_lossy()
-                .into_owned();
-            let found = self.find(entry, rel, exact_only);
-            hit.variants
-                .extend(found.iter().filter(|path| **path != exact).cloned());
-            if found.contains(&exact) {
-                hit.file = Some(exact);
-                break;
+            for name in names {
+                if let Some(file) = self.exists(entry, name, exact_only) {
+                    hit.file = Some(file);
+                    break 'entries;
+                }
             }
         }
         if hit.file.is_none() {
@@ -330,93 +367,168 @@ impl<'a> Resolver<'a> {
         hit
     }
 
-    /// U1, U2 and the case rule for a name whose analysed file is `target`.
-    fn global(&mut self, class: bool, rel: &Rel, target: (u32, &str)) -> Rc<Global> {
-        let key = (class, rel.clone(), target.0);
-        if let Some(global) = self.globals.get(&key) {
-            return global.clone();
-        }
-        let mut global = Global::default();
-        match rel {
-            Rel::Fixed => {}
-            Rel::Unknown => {
-                global.failed.insert(Failed::Name);
-            }
-            Rel::Path { rel, exact_only } => {
-                for propath in 0..self.propaths.len() {
-                    let hit = self.hit(propath, rel, *exact_only);
-                    if let Some(file) = hit.file.as_ref().filter(|file| *file != target.1) {
-                        global.failed.insert(Failed::U1);
-                        global.files.insert(file.clone());
-                    }
-                    if let Some(library) = &hit.library {
-                        global.failed.insert(Failed::U1);
-                        global.files.insert(library.clone());
-                    }
-                    if !hit.variants.is_empty() {
-                        global.failed.insert(Failed::Case);
-                        global.files.extend(hit.variants.iter().cloned());
-                    }
+    fn class_hit(&mut self, propath: usize, stem: &str) -> Rc<Hit> {
+        self.hit(
+            propath,
+            &[format!("{stem}.r"), format!("{stem}.cls")],
+            false,
+        )
+    }
+
+    /// The class r-code that PROPATH id `propath` finds before the class
+    /// source `class`, under any class name the path can have (`Foo`,
+    /// `pkg.Foo`, ...): the package is not known for a class only listed.
+    pub fn rcode_before(&mut self, propath: usize, class: &str) -> Option<String> {
+        let stem = class.strip_suffix(".cls")?;
+        let parts: Vec<&str> = stem.split('/').collect();
+        (0..parts.len()).rev().find_map(|from| {
+            let hit = self.class_hit(propath, &parts[from..].join("/"));
+            hit.file.clone().filter(|file| file.ends_with(".r"))
+        })
+    }
+
+    /// The verdict on a class edge to `target` that the compile of `unit`
+    /// binds, on PROPATH id `propath`.
+    fn class_edge(
+        &mut self,
+        outcome: &Outcome,
+        (unit, propath): (u32, usize),
+        (name, via): (Option<&str>, u32),
+        target: u32,
+    ) -> Option<Differing> {
+        let target_path = outcome.name(target);
+        let Some((stem, shown)) = name.and_then(|name| class_stem(name, target_path)) else {
+            return self.several().then(|| Differing {
+                kind: "class",
+                name: name.unwrap_or_default().to_string(),
+                via: outcome.name(via).to_string(),
+                files: vec![target_path.to_string()],
+                failed: vec![Failed::Name],
+                rcode: None,
+            });
+        };
+        let mut failed = BTreeSet::new();
+        let mut files = BTreeSet::new();
+        let mut rcode = None;
+        match self.units.out.get(&stem).copied() {
+            Some(class) if !self.units.one_cycle(unit, class) => {
+                if class != target {
+                    failed.insert(Failed::U1);
+                    files.insert(outcome.name(class).to_string());
                 }
-                if class {
-                    let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(stem, _)| stem);
-                    let rcode = format!("{stem}.r");
-                    for entry in self.workspace_entries.clone() {
-                        let found = self.find(&entry, &rcode, *exact_only);
-                        if !found.is_empty() {
-                            global.failed.insert(Failed::U2);
-                            global.files.extend(found.iter().cloned());
+            }
+            _ => {
+                let own = self.class_hit(propath, &stem);
+                match own.file.as_deref() {
+                    Some(file) if file.ends_with(".r") => {
+                        failed.insert(Failed::Rcode);
+                        files.insert(file.to_string());
+                        rcode = Some(file.to_string());
+                    }
+                    found if self.several() && found != Some(target_path) => {
+                        failed.insert(Failed::U3);
+                        files.extend(found.map(str::to_string));
+                    }
+                    _ => {}
+                }
+                if self.several() {
+                    for other in 0..self.propaths.len() {
+                        let hit = self.class_hit(other, &stem);
+                        if let Some(file) = hit.file.as_deref()
+                            && file != target_path
+                            && Some(file) != rcode.as_deref()
+                        {
+                            failed.insert(Failed::U1);
+                            files.insert(file.to_string());
+                        }
+                        if let Some(library) = &hit.library {
+                            failed.insert(Failed::U1);
+                            files.insert(library.clone());
                         }
                     }
                 }
             }
         }
-        if !global.failed.is_empty() {
-            global.files.insert(target.1.to_string());
+        if failed.is_empty() {
+            return None;
         }
-        let global = Rc::new(global);
-        self.globals.insert(key, global.clone());
-        global
+        files.insert(target_path.to_string());
+        Some(Differing {
+            kind: "class",
+            name: shown,
+            via: outcome.name(via).to_string(),
+            files: sorted(files),
+            failed: failed.into_iter().collect(),
+            rcode,
+        })
     }
 
-    /// The verdict on one named edge, for a unit on PROPATH id `propath`.
-    fn edge(
+    /// The verdict on an include edge of a class source, read on PROPATH id
+    /// `propath`, and with `every` on every PROPATH id too.
+    fn include_edge(
         &mut self,
         outcome: &Outcome,
         propath: usize,
-        (class, name, via): (bool, Option<&str>, u32),
+        (name, via): (Option<&str>, u32),
         target: u32,
+        every: bool,
     ) -> Option<Differing> {
         let target_path = outcome.name(target);
-        let (rel, shown) = named_rel(class, name, target_path);
-        let global = self.global(class, &rel, (target, target_path));
-        let mut failed = global.failed.clone();
-        let mut files = global.files.clone();
-        if let Rel::Path { rel, exact_only } = &rel {
-            let hit = self.hit(propath, rel, *exact_only);
-            if hit.file.as_deref() != Some(target_path) {
-                failed.insert(Failed::U3);
-                files.insert(target_path.to_string());
-                files.extend(hit.file.iter().cloned());
+        let rel = name.map_or(Rel::Unknown, include_rel);
+        let mut failed = BTreeSet::new();
+        let mut files = BTreeSet::new();
+        match &rel {
+            Rel::Fixed => return None,
+            Rel::Unknown => {
+                failed.insert(Failed::Name);
+            }
+            Rel::Path { rel, exact_only } => {
+                let names = [rel.clone()];
+                let own = self.hit(propath, &names, *exact_only);
+                if own.file.as_deref() != Some(target_path) {
+                    failed.insert(Failed::U3);
+                    files.extend(own.file.clone());
+                }
+                for other in (0..self.propaths.len()).filter(|_| every) {
+                    let hit = self.hit(other, &names, *exact_only);
+                    if let Some(file) = hit.file.as_ref().filter(|file| *file != target_path) {
+                        failed.insert(Failed::U1);
+                        files.insert(file.clone());
+                    }
+                    if let Some(library) = &hit.library {
+                        failed.insert(Failed::U1);
+                        files.insert(library.clone());
+                    }
+                }
             }
         }
         if failed.is_empty() {
             return None;
         }
+        files.insert(target_path.to_string());
         Some(Differing {
-            kind: if class { "class" } else { "include" },
-            name: shown,
+            kind: "include",
+            name: name.unwrap_or_default().to_string(),
             via: outcome.name(via).to_string(),
-            files: files.into_iter().collect(),
+            files: sorted(files),
             failed: failed.into_iter().collect(),
+            rcode: None,
         })
     }
 
     /// The class and include edges of the class source `source` that PROPATH
-    /// id `propath` resolves to another file than the analysis did: what a
-    /// compile on that PROPATH reads instead (U3 alone).
-    pub fn misread(&mut self, outcome: &Outcome, source: u32, propath: usize) -> Rc<Vec<Misread>> {
-        if let Some(found) = self.misread.get(&(source, propath)) {
+    /// id `propath` resolves to another file than the analysis did, for the
+    /// compile of `unit`: what that compile reads instead (U3 alone). A class
+    /// that `$OUT` gives, or that resolves to r-code (K11), is not one.
+    /// `unit` is `None` for a unit that compiles after every class unit.
+    pub fn misread(
+        &mut self,
+        outcome: &Outcome,
+        source: u32,
+        (unit, propath): (Option<u32>, usize),
+    ) -> Rc<Vec<Misread>> {
+        let context = unit.map_or(NO_CYCLE, |unit| self.context(unit));
+        if let Some(found) = self.misread.get(&(source, propath, context)) {
             return found.clone();
         }
         let mut misread = Vec::new();
@@ -427,17 +539,41 @@ impl<'a> Resolver<'a> {
                     continue;
                 }
                 let analysed = outcome.name(edge.target);
-                let (rel, shown) = named_rel(class, edge.name.as_deref(), analysed);
-                let found = match &rel {
-                    Rel::Fixed => continue,
-                    Rel::Unknown => None,
-                    Rel::Path { rel, exact_only } => {
-                        let hit = self.hit(propath, rel, *exact_only);
-                        if hit.file.as_deref() == Some(analysed) {
-                            continue;
-                        }
-                        hit.file.clone()
+                let name = edge.name.as_deref();
+                let (shown, found) = if class {
+                    let Some((stem, shown)) = name.and_then(|name| class_stem(name, analysed))
+                    else {
+                        misread.push(Misread {
+                            name: name.unwrap_or_default().to_string(),
+                            via: outcome.name(source).to_string(),
+                            analysed: analysed.to_string(),
+                            found: None,
+                        });
+                        continue;
+                    };
+                    if let Some(class) = self.units.out.get(&stem).copied()
+                        && !unit.is_some_and(|unit| self.units.one_cycle(unit, class))
+                    {
+                        continue;
                     }
+                    let hit = self.class_hit(propath, &stem);
+                    match hit.file.as_deref() {
+                        Some(file) if file == analysed || file.ends_with(".r") => continue,
+                        found => (shown, found.map(str::to_string)),
+                    }
+                } else {
+                    let found = match name.map_or(Rel::Unknown, include_rel) {
+                        Rel::Fixed => continue,
+                        Rel::Unknown => None,
+                        Rel::Path { rel, exact_only } => {
+                            let hit = self.hit(propath, &[rel], exact_only);
+                            if hit.file.as_deref() == Some(analysed) {
+                                continue;
+                            }
+                            hit.file.clone()
+                        }
+                    };
+                    (name.unwrap_or_default().to_string(), found)
                 };
                 misread.push(Misread {
                     name: shown,
@@ -448,72 +584,114 @@ impl<'a> Resolver<'a> {
             }
         }
         let misread = Rc::new(misread);
-        self.misread.insert((source, propath), misread.clone());
+        self.misread
+            .insert((source, propath, context), misread.clone());
         misread
     }
 
-    /// The edges of the analysis of `source` that are not uniform for a unit
-    /// on PROPATH id `propath`: its class edges, and its include edges when
-    /// it is a class source.
+    /// The part of `unit` that decides how its compile resolves a class: the
+    /// unit itself when it is in a compile-time cycle.
+    fn context(&self, unit: u32) -> u32 {
+        match self.units.cycles.contains_key(&unit) {
+            true => unit,
+            false => NO_CYCLE,
+        }
+    }
+
+    /// The edges of the analysis of `source` that are not uniform for the
+    /// compile of `unit` on PROPATH id `propath`.
     fn source(
         &mut self,
         outcome: &Outcome,
         source: u32,
-        class_source: bool,
-        propath: usize,
+        read: Read,
+        (unit, propath): (u32, usize),
     ) -> Rc<Vec<Differing>> {
-        if let Some(found) = self.by_source.get(&(source, propath)) {
+        let key = (source, propath, read, self.context(unit));
+        if let Some(found) = self.by_source.get(&key) {
             return found.clone();
         }
+        let is_class = self.units.class_sources.contains(&source);
         let mut differing = Vec::new();
         if let Some(analysis) = outcome.analyses.get(source) {
             for edge in &analysis.edges {
-                let class = edge.kind.is_class();
-                if !(class || (class_source && edge.kind.is_include())) {
-                    continue;
+                let named = (edge.name.as_deref(), source);
+                if edge.kind.is_class() {
+                    differing.extend(self.class_edge(outcome, (unit, propath), named, edge.target));
+                } else if edge.kind.is_include() && is_class && self.several() {
+                    let every = read == Read::Source;
+                    differing.extend(self.include_edge(
+                        outcome,
+                        propath,
+                        named,
+                        edge.target,
+                        every,
+                    ));
                 }
-                let named = (class, edge.name.as_deref(), source);
-                differing.extend(self.edge(outcome, propath, named, edge.target));
             }
         }
         let differing = Rc::new(differing);
-        self.by_source.insert((source, propath), differing.clone());
+        self.by_source.insert(key, differing.clone());
         differing
     }
 
-    /// The resolution of `unit` on PROPATH id `propath`, whose closure is
-    /// `closure`. A class unit counts its own name, `own_name`, as an edge.
-    pub fn unit(
-        &mut self,
-        outcome: &Outcome,
-        (unit, propath, own_name): (u32, usize, Option<&str>),
-        closure: &[u32],
-        class_sources: &FxHashSet<u32>,
-    ) -> ClassResolution {
+    /// The resolution of the unit `unit`, which compiles: the class edges of
+    /// the unit and of every class source in its closure, and the include
+    /// edges of each class whose source its compile reads. A class unit that
+    /// it reads from `$OUT` adds its own resolution instead: the compile of
+    /// that class read its names.
+    pub fn unit(&mut self, outcome: &Outcome, unit: u32) -> Rc<ClassResolution> {
+        if let Some(found) = self.by_unit.get(&unit) {
+            return found.clone();
+        }
+        let Some(propath) = self.units.propath.get(&unit).copied() else {
+            return Rc::new(ClassResolution {
+                uniform: true,
+                differing: Vec::new(),
+            });
+        };
+        let closure: Vec<u32> = self
+            .units
+            .closure
+            .get(&unit)
+            .map(|closure| closure.to_vec())
+            .unwrap_or_default();
         let mut differing: BTreeMap<(String, &'static str, String), Differing> = BTreeMap::new();
-        let mut add = |found: Differing| {
+        let mut add = |found: &Differing| {
             differing
                 .entry((found.via.clone(), found.kind, found.name.clone()))
-                .or_insert(found);
+                .or_insert_with(|| found.clone());
         };
-        if let Some(name) = own_name
-            && let Some(found) = self.edge(outcome, propath, (true, Some(name), unit), unit)
+        for found in self
+            .source(outcome, unit, Read::Own, (unit, propath))
+            .iter()
         {
             add(found);
         }
-        let unit_is_class = class_sources.contains(&unit);
-        for found in self.source(outcome, unit, unit_is_class, propath).iter() {
-            add(found.clone());
-        }
-        for source in closure.iter().filter(|node| class_sources.contains(node)) {
-            for found in self.source(outcome, *source, true, propath).iter() {
-                add(found.clone());
+        for source in closure
+            .iter()
+            .copied()
+            .filter(|node| self.units.class_sources.contains(node))
+        {
+            if self.units.binds_out(unit, source) {
+                for found in &self.unit(outcome, source).differing {
+                    add(found);
+                }
+            } else {
+                for found in self
+                    .source(outcome, source, Read::Source, (unit, propath))
+                    .iter()
+                {
+                    add(found);
+                }
             }
         }
         let differing: Vec<Differing> = differing.into_values().collect();
-        ClassResolution {
+        let resolution = Rc::new(ClassResolution {
             uniform: differing.is_empty(),
             differing,
-        }
+        });
+        self.by_unit.insert(unit, resolution.clone());
+        resolution
     }
 }

@@ -296,16 +296,31 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
 - Uniform resolution (`build_class_resolution.rs`), the `class_resolution` of
   `--plan --probe --json`. A shared layout: `directories = ["a", "b", "lib"]`,
   `root_relative_include_paths = ["."]`, `include_paths = ["lib"]`, `a/x.p` and `b/y.p` use
-  `pkg.Foo`, which only `lib/pkg/Foo.cls` holds. Exact outcomes:
-  - as is: three PROPATH ids, the three units are uniform, still unkeyable with
-    `per-unit-propath-classes`, and `class_resolution` is `3` units, `3` uniform, `3`
-    released; `a/plain.p` has no `class_resolution`;
-  - the per-unit layout above (`a/pkg/Foo.cls` and `b/pkg/Foo.cls`): `pkg.Foo` fails `U1`
-    for `a/x.p`, `b/y.p` and `a/pkg/Foo.cls`, with both files named;
-  - `lib/pkg/Foo.cls` includes `{v.i}`, with `lib/v.i` and `a/v.i`: the include fails `U1`
-    for all three units and also `U3` for `a/x.p`, whose own PROPATH finds `a/v.i`;
-  - a stray `a/pkg/Foo.r`: `pkg.Foo` fails `U2` for all three units;
-  - `{v.i}` with `lib/v.i` and `b/V.i`: the include fails `case` for all three units.
+  `pkg.Foo`, a class unit `lib/pkg/Foo.cls`; a source layout is the same without `lib` in
+  `directories`, so `lib/pkg/Foo.cls` is not a unit. Exact outcomes:
+  - shared layout as is: three PROPATH ids, the three units are uniform; `a/plain.p` has no
+    `class_resolution`;
+  - the per-unit layout above (`a/pkg/Foo.cls` and `b/pkg/Foo.cls`): `a/x.p` and
+    `a/pkg/Foo.cls` are uniform (`$OUT` holds `a/pkg/Foo.cls`), `b/y.p` fails `U1` with both
+    files named;
+  - `{v.i}` in the class, with `lib/v.i` and `a/v.i`: in the source layout the include fails
+    `U1` for both users and also `U3` for `a/x.p`; in the shared layout all three units are
+    uniform, because users read the class unit's r-code from `$OUT`;
+  - stray `a/pkg/Foo.r` and `lib/pkg/Foo.r` beside the class unit: uniform;
+  - source layout with `a/pkg/Foo.r`: `a/x.p` fails `rcode`, `b/y.p` fails `U1`;
+  - `b/V.i` and `a/Pkg/foo.r` (case differs only): uniform, the match is exact in case.
+- Class r-code (`build_class_rcode.rs`), K11:
+  - one PROPATH id, `include_paths = ["src", "lib"]`, `src/x.p` uses `pkg.Bar`, a class
+    that is not a unit, with `lib/pkg/Bar.r` beside `lib/pkg/Bar.cls`: `src/x.p` is
+    unkeyable with `class-rcode: lib/pkg/Bar.r`, `src/plain.p` is keyed, and the build
+    warns once, naming the file. The fake r-code of `x.r` records `lib/pkg/Bar.r`; an edit
+    of `lib/pkg/Bar.r` compiles `x.p` again and the new hash is recorded;
+  - a unit that oxabl cannot read in that layout has no observed key:
+    `observed-class: lib/pkg/Bar.cls: class-rcode: lib/pkg/Bar.r`;
+  - `src/pkg/Bar.r` beside a class unit `src/pkg/Bar.cls`: both units keyed and up to date
+    after a build, and `x.r` records `build/r/pkg/Bar.r`, never `src/pkg/Bar.r`;
+  - two directories with their own PROPATHs: `lib/pkg/Bar.r` gives both users
+    `class-rcode`; `a/pkg/Bar.r` gives it to `a/x.p` only.
 - Package root (`build_package_root.rs`), `root_relative_include_paths = ["."]`:
   - `a/pkg/Foo.cls` includes `{x.i}`, with `a/x.i` and `a/pkg/x.i`: `a/x.p` and
     `a/pkg/Foo.cls` are keyed, and `pkg/Foo.r` records `a/x.i`. An edit of `a/x.i` makes

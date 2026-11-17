@@ -138,29 +138,38 @@ impl Compiler {
             return;
         }
         let relative = class.replace('.', "/");
-        if let Some(found) = resolve::in_output(ctx.propath, &format!("{relative}.r"), ctx.dlc)
-            && let Ok(bytes) = std::fs::read(&found.real)
-        {
-            out.record(Read {
-                shown: found.shown,
-                sha256: sha256_hex(&bytes),
-            });
-            return;
-        }
-        if let Some(reads) = self.classes.get(&lower) {
-            for read in reads.clone() {
-                out.record(read);
+        let rcode = format!("{relative}.r");
+        let source = format!("{relative}.cls");
+        // The first entry that holds the r-code or the source decides, the
+        // r-code first; `$OUT` is the first entry.
+        for entry in ctx.propath {
+            let entry = std::slice::from_ref(entry);
+            if let Some(found) = resolve::find(entry, &rcode, ctx.dlc)
+                && let Ok(bytes) = std::fs::read(&found.real)
+            {
+                out.record(Read {
+                    shown: found.shown,
+                    sha256: sha256_hex(&bytes),
+                });
+                return;
             }
+            let Some(found) = resolve::find(entry, &source, ctx.dlc) else {
+                continue;
+            };
+            let bound = (ctx.propath.to_vec(), lower.clone());
+            if let Some(reads) = self.classes.get(&bound) {
+                for read in reads.clone() {
+                    out.record(read);
+                }
+                return;
+            }
+            let mut side = Outcome::new();
+            self.visit_file(ctx, unit, &found, &mut side, visited, false);
+            let _ = output::write_stray(ctx, &relative);
+            self.classes.insert(bound, side.reads.clone());
+            out.merge(side);
             return;
         }
-        let Some(found) = resolve::find(ctx.propath, &format!("{relative}.cls"), ctx.dlc) else {
-            return;
-        };
-        let mut side = Outcome::new();
-        self.visit_file(ctx, unit, &found, &mut side, visited, false);
-        let _ = output::write_stray(ctx, &relative);
-        self.classes.insert(lower, side.reads.clone());
-        out.merge(side);
     }
 }
 

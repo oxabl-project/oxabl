@@ -36,14 +36,3 @@ pub fn find(propath: &[String], relative: &str, dlc: &Path) -> Option<Found> {
         })
     })
 }
-
-/// `relative` in the first entry of `propath`, the output directory, when it
-/// holds the file.
-pub fn in_output(propath: &[String], relative: &str, dlc: &Path) -> Option<Found> {
-    let entry = propath.first()?;
-    let real = real(entry, relative, dlc);
-    real.is_file().then(|| Found {
-        shown: join(entry, relative),
-        real,
-    })
-}

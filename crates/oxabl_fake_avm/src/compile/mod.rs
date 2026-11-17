@@ -21,9 +21,10 @@ use visit::Context;
 #[derive(Default)]
 pub struct Compiler {
     propaths: HashMap<String, Vec<String>>,
-    /// Classes read from source, by lower-case class name, with the files each
-    /// one read. A session keeps them for good, as `MULTI-COMPILE` does.
-    classes: HashMap<String, Vec<Read>>,
+    /// Classes read from source, by PROPATH and lower-case class name, with
+    /// the files each one read. A session keeps a class while the PROPATH
+    /// stays the same, as `MULTI-COMPILE` does.
+    classes: HashMap<(Vec<String>, String), Vec<Read>>,
     /// The units this worker has compiled.
     pub compiled: usize,
 }

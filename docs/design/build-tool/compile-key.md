@@ -291,6 +291,33 @@ lower case.
 Uniformity is computed at each plan from the working tree, with one memo of the directory
 listings, and is never stored.
 
+### Class r-code
+
+Measured on OpenEdge 12.8.9 ([Measured](#follow-up-classes-under-per-unit-propaths)): the
+compiler binds a class from the first PROPATH entry that holds `<pkg>/<Name>.r` or
+`<pkg>/<Name>.cls`, exact in case. In that entry the r-code wins, whatever the dates of the
+files. `$OUT` is the first entry, and the build compiles each class unit into it before the
+units that use it (classes before their users).
+
+So a class that is not a class unit of this build (a class outside
+`[workspace.sources].directories`, or a class unit that is skipped) is bound from its first
+hit on the user's PROPATH. When that hit is r-code (a `.r` that an older compile with `SAVE`
+left beside the source, or a `.r` in an earlier entry), the compile reads bytes that the key
+does not hold, and an edit of that `.r` would not change the key. The unit is unkeyable
+under K11 (`class-rcode: <file>`), also with one PROPATH id. The build prints one warning
+that counts these units and names the first r-code files. R-code beside a class unit does
+no harm: the users bind the class unit's r-code in `$OUT`.
+
+A unit keyed by its [observed closure](#the-observed-closure) may use any listed class, so a
+listed class that is not a class unit of this build gives the class part the reason
+`observed-class: <class>: class-rcode: <file>` when r-code comes before it on the PROPATH
+under any name its path can have (`Foo`, `pkg.Foo`, ...): the class part does not know its
+package.
+
+R-code in a `$LIB:` library is covered: the library's digest is in the key (K3 accepts a
+library class only through a hashed library). A `$LIB:` entry before the class source
+counts as another file only for the uniform resolution (U1).
+
 ### Class conflicts
 
 With one PROPATH id, a class name resolves to one file, with one exception: a class name that
@@ -933,6 +960,7 @@ read its closure: [the observed closure](#the-observed-closure) can key it.
 | K8 | The unit's closure holds a class name that K3 accepted as external, and a class unit or class edge target in the whole graph has that name ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
 | K9 | The build has more than one PROPATH id, and the unit is a class unit or its closure reaches a class source ([Per-unit PROPATH classes](#per-unit-propath-classes)). | `per-unit-propath-classes` |
 | K10 | `root_relative_include_paths` is non-empty, and the unit's closure holds a class source that does not compile as a unit on the unit's PROPATH id, with an include or class name that the unit PROPATH resolves to another file than the analysis did ([The closure](#the-closure)). | `class-propath: <name> in <class> finds <file>, analysed <file>` |
+| K11 | The unit's compile binds class r-code that oxabl does not hash: a class in its closure that is not a class unit compiling into `$OUT` in this build, and whose first PROPATH hit (the first entry that holds `<pkg>/<Name>.r` or `<pkg>/<Name>.cls`, exact in case, the r-code first) on the unit's PROPATH is r-code ([Class r-code](#class-r-code)). With any number of PROPATH ids. | `class-rcode: <file>` |
 
 **A name a superclass declares is not a class.** A class that `INHERITS` a workspace
 class reads the data members of that class as names in its own scope: variables, buffers,
