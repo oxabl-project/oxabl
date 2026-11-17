@@ -340,6 +340,10 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   - source layout with `a/pkg/Foo.r`: `a/x.p` fails `rcode`, `b/y.p` fails `U1`;
   - `b/V.i` and `a/Pkg/foo.r` (case differs only): uniform, the match is exact in case.
 - Class r-code (`build_class_rcode.rs`), K11:
+  - a unit whose include defines a variable `wsobj` and uses `wsobj:setmsg(...)` in an
+    `&IF 0` branch of an internal procedure, beside a class `w.wsobj` with stray
+    `w/wsobj.r`: keyed (the name is the variable); with the same branch before the
+    definition too: `class-rcode: w/wsobj.r`;
   - one PROPATH id, `include_paths = ["src", "lib"]`, `src/x.p` uses `pkg.Bar`, a class
     that is not a unit, with `lib/pkg/Bar.r` beside `lib/pkg/Bar.cls`: `src/x.p` is
     unkeyable with `class-rcode: lib/pkg/Bar.r`, `src/plain.p` is keyed, and the build
@@ -610,6 +614,7 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `a_cycle_binds_the_first_rcode_it_finds_for_the_other_class` | `pkg.A` and `pkg.B` call a member only the current other has. Stale r-code of the other beside its source (`cold`) or in the output directory (`warm`): both compiles fail with 12927 in pass 1, in pass 2 of the same session and in a fresh session. With none (`clean`) both compile. |
 | `a_second_pass_after_a_propath_reset_binds_only_this_builds_rcode` | Under the r-code oracle (masks from four clean compiles of the cycle): with r-code first from a compatible `B` (one more method), beside the source or in `$OUT`, pass 1 gives an `A.r` that is not equivalent to a clean one. Pass 2 is equivalent in a fresh session and after `PROPATH = ""` and back; in the same session, also after `MULTI-COMPILE` off and on, it is not when the bound r-code was stray. Pins the [passes over a cycle](compile-key.md#passes-over-a-cycle). |
 | `build_cycle_with_stray_rcode_gives_clean_rcode` | `oxabl build` over the cycle and a user, with current `A.r` and compatible `B.r` beside the sources: every unit is keyed and `ok`, and the r-code is equivalent to a clean build's. With one pass, `A.r` is not. |
+| `a_variable_hides_a_class_of_the_same_name` | A class `wsobj` with a static method and a variable `wsobj AS Progress.Lang.Object`: with the variable defined before the use, also inside an internal procedure, `wsobj:ToString()` compiles and `wsobj:OnlyStatic()` fails (12927); with no variable it is the other way round (14633). |
 | `session_binds_a_class_again_after_a_propath_change` | A session that compiled a user of `pkg.Foo` through one PROPATH binds the class again when the PROPATH changes, for source and r-code, with `MULTI-COMPILE` on and off. The same PROPATH keeps the first class. |
 | `xref_xml_classes` | A unit using a class from source, from `$OUT` r-code and from a `.pl`: in all three cases the `XREF-XML` `Source` elements list only the unit itself, no class file ([cache.md](cache.md#what-v3-covers)). Goes red if a later OpenEdge lists one. |
 | `mixed_provenance` | Classes `t.B`, `t.A INHERITS t.B` and a program doing `NEW t.A()`: compile all three, compile `B` again, run the program with the old `A.r` and the new `B.r`: the result is correct. A regression guard for the per-unit key (measured to pass on OpenEdge 12.8). |

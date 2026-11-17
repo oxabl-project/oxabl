@@ -193,7 +193,12 @@ target in `S`. `U` itself is never in `S`.
   interfaces and the classes it names are in `S`.
 - Conditional includes and classes (a name in an `&IF` branch that oxabl did not take) are
   in `S` when they resolve. Oxabl's `&IF` evaluation can differ from the AVM's; this keeps
-  the key a superset of what any branch reads.
+  the key a superset of what any branch reads. Such a branch is read as text, so `x:member`
+  there may name a class `x` or a variable `x`. The compiler takes a variable that is
+  defined before the use (measured, `a_variable_hides_a_class_of_the_same_name`), so `x` is
+  no class name when the main block of the unit defines a variable or parameter `x` earlier
+  in the same file and include, or in an include or at a place of the root file that comes
+  earlier.
 - Not in `S`: `RUN` targets, shared producers and schema tables. The compiler does not open
   a `RUN` target or a shared producer. Schema enters the key through the environment.
 

@@ -835,3 +835,47 @@ fn build_cycle_with_stray_rcode_gives_clean_rcode() {
     fs::remove_file(lab.workspace.path("src/pkg/B.r")).unwrap();
     masks.assert_equivalent(&lab.workspace.rcode(), "stray r-code beside a cycle");
 }
+
+/// A class `wsobj` with no package on the PROPATH, with a static method
+/// `OnlyStatic`, and a variable `wsobj` of type `Progress.Lang.Object`.
+/// `wsobj:OnlyStatic()` compiles only when the name is the class, and
+/// `wsobj:ToString()` only when it is the variable. With the variable
+/// defined before the use, the name is the variable, also inside an internal
+/// procedure; with no variable it is the class. For the analysis of branches
+/// the preprocessor did not take: `x:member` there is no class reference
+/// when a main-block variable `x` comes before it.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn a_variable_hides_a_class_of_the_same_name() {
+    let lab = Lab::new();
+    lab.workspace.write(
+        "c/wsobj.cls",
+        "CLASS wsobj:\n    METHOD PUBLIC STATIC LOGICAL OnlyStatic():\n        RETURN TRUE.\n    END METHOD.\nEND CLASS.\n",
+    );
+    let define = "DEFINE VARIABLE wsobj AS Progress.Lang.Object NO-UNDO.\n";
+    let compiles = |name: &str, text: &str| {
+        let file = format!("v/{name}.p");
+        lab.workspace.write(&file, text);
+        let printed = lab.session(&["c"], true, &lab.comp(&file, "v-r"));
+        eprintln!("EVIDENCE {name}: {}", printed.trim().replace('\n', " | "));
+        printed.contains(&format!("{name}.p OK"))
+    };
+    assert!(compiles("class_static", "wsobj:OnlyStatic().\n"));
+    assert!(!compiles("class_instance", "wsobj:ToString().\n"));
+    assert!(!compiles(
+        "var_static",
+        &format!("{define}wsobj:OnlyStatic().\n")
+    ));
+    assert!(compiles(
+        "var_instance",
+        &format!("{define}wsobj:ToString().\n")
+    ));
+    assert!(compiles(
+        "var_in_procedure",
+        &format!("{define}PROCEDURE p:\n    wsobj:ToString().\nEND PROCEDURE.\n")
+    ));
+    assert!(!compiles(
+        "var_static_in_procedure",
+        &format!("{define}PROCEDURE p:\n    wsobj:OnlyStatic().\nEND PROCEDURE.\n")
+    ));
+}

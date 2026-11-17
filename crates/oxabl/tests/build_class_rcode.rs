@@ -183,3 +183,50 @@ fn rcode_beside_a_listed_class_gives_no_observed_key() {
         "{plan}"
     );
 }
+
+/// A unit whose include defines a variable named like a class of the unit's
+/// directory, `w.wsobj` in `w/wsobj.cls`, with stray `w/wsobj.r` beside it.
+/// `wsobj:...` in a branch the analysis did not take names the variable.
+fn variable_named_like_a_class(use_before: bool) -> Built {
+    let workspace = Built::with(
+        "directories = [\"w\"]\nroot_relative_include_paths = [\".\"]\ninclude_paths = [\".\"]",
+        "",
+    );
+    workspace.write(
+        "w/wsobj.cls",
+        "CLASS w.wsobj:\n  METHOD PUBLIC VOID setmsg(INPUT p AS CHARACTER):\n  END METHOD.\nEND CLASS.\n",
+    );
+    workspace.write("w/wsobj.r", "stray r-code");
+    let skipped = "&IF 0 &THEN\n  wsobj:setmsg(\"x\").\n&ENDIF\n";
+    workspace.write(
+        "w/u.i",
+        &format!(
+            "{}DEFINE VARIABLE wsobj AS CLASS w.wsobj NO-UNDO.\nPROCEDURE p:\n{skipped}END PROCEDURE.\n",
+            if use_before { skipped } else { "" }
+        ),
+    );
+    workspace.write("w/u.p", "{w/u.i}\nwsobj = NEW w.wsobj().\n");
+    workspace
+}
+
+#[test]
+fn a_variable_named_like_a_class_in_a_skipped_branch_is_not_a_class_reference() {
+    let workspace = variable_named_like_a_class(false);
+
+    let plan = workspace.plan();
+
+    assert_eq!(unkeyable(&plan, "w/u.p"), json!([]), "{plan}");
+}
+
+#[test]
+fn a_skipped_name_before_the_variable_may_still_be_a_class() {
+    let workspace = variable_named_like_a_class(true);
+
+    let plan = workspace.plan();
+
+    assert_eq!(
+        unkeyable(&plan, "w/u.p"),
+        json!(["class-rcode: w/wsobj.r"]),
+        "before its definition the name is not the variable: {plan}"
+    );
+}
