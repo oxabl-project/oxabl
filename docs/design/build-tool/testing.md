@@ -308,7 +308,8 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
     unkeyable with `per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, lib/pkg/Foo.cls)`,
     one warning names it, nothing is fetched, and only `a/x.p` and `a/pkg/Foo.cls` are
     written to the cache;
-  - `FAKE-FAIL` in `lib/pkg/Foo.cls`: both users compile `ok` and tainted, only
+  - `FAKE-FAIL` in `lib/pkg/Foo.cls`, with stray `lib/pkg/Foo.r` that the users bind once
+    `$OUT` holds no r-code of it: both users compile `ok` and tainted, only
     `a/plain.p` is cached, and the next plan rebuilds both users with
     `a unit it reads failed in this build`;
   - a class unit `lib/pkg/A.cls` that uses `ext/pkg/B.cls` (not a unit) with `{w.i}`, where
