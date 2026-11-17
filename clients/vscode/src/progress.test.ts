@@ -211,6 +211,39 @@ describe("the building tooltip", () => {
     expect(tooltip).toContain("3 units have no compile key");
   });
 
+  it("says that the first build of a large project takes several minutes", () => {
+    const p = new BuildProgress();
+    apply(p, { event: "build-started", rebuild: 10300, units: 10300 });
+    const tooltip = renderStatus([{ phase: "building", progress: p }])?.tooltip ?? "";
+    expect(tooltip).toContain("First build of this project");
+    expect(tooltip).toContain("10 minutes or more");
+    expect(tooltip).toContain("Later builds compile only what changed");
+  });
+
+  it("keeps the usual tooltip when some units were built before, or the project is small", () => {
+    for (const [rebuild, units] of [
+      [2578, 10300],
+      [10299, 10300],
+      [3, 3],
+      [0, 0],
+    ]) {
+      const p = new BuildProgress();
+      apply(p, { event: "build-started", rebuild, units });
+      const tooltip = renderStatus([{ phase: "building", progress: p }])?.tooltip ?? "";
+      expect(tooltip, `${rebuild} of ${units}`).not.toContain("First build");
+    }
+  });
+
+  it("keeps the first-build tooltip while units finish", () => {
+    const p = new BuildProgress();
+    apply(p, { event: "build-started", rebuild: 1000, units: 1000 });
+    const tooltip = () => renderStatus([{ phase: "building", progress: p }])?.tooltip;
+    const before = tooltip();
+    apply(p, { event: "unit-fetched", path: "a.p", cache: "remote" }, { event: "unit-finished", path: "b.p", status: "ok" });
+    expect(tooltip()).toBe(before);
+    expect(before).toContain("First build");
+  });
+
   it("does not change while units finish, so an open hover does not redraw", () => {
     const p = new BuildProgress();
     apply(p, { event: "build-started", rebuild: 3, units: 10 });

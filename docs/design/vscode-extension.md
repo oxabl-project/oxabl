@@ -366,21 +366,29 @@ a save the build rebuilds only the edited units, which no cache can hold, so
 that rate is 0% at almost every build. The tooltip holds only what
 `build-started` fixes (the units to rebuild, the workspace and the units up to
 date before the build), because VS Code redraws an open hover at every change
-of it, and a count per unit made it flash without a pause. The notification
+of it, and a count per unit made it flash without a pause. When no unit was up
+to date before the build (`rebuild` equals `units`) and the workspace has 500
+units or more, the tooltip also says that this is the first build of the project
+and that it can take 10 minutes or more. The signal is in the events of oxabl, so
+it needs no guess about files. A build that rebuilds everything for another
+reason, such as a change of the environment, gets the same text. The notification
 says "N of M units rebuilt" with the hit rate of the build.
 
 Each build passes `--report <global storage>/reports/<hash of root>.json`
 (or uses the `--report` of `oxabl.build.args`). After exit 0 or 1 the
 extension counts the units without a compile key: a plan reason `unkeyable` or
 `unverified`, or a report note "no key from what the compiler read". It warns
-once per window and reason when the reason names a missing setting (`needs [`)
+once per workspace, root and reason (kept in `workspaceState`, so VS Code does
+not repeat it at every start) when the reason names a missing setting (`needs [`)
 or a tenth of the workspace has no key: such a project compiles that share at
 every save. Encrypted source has no key by nature, so a few such units only
 show in the tooltip and the log. Compiler messages go to a diagnostic
 collection `oxabl build`: each unit's set is replaced at its `unit-finished`
 and cleared at its `unit-fetched` (a cache gives no messages), and a cancelled
 build keeps the sets of the units it did not reach. One notification shows when
-the first build of the window ends; later builds show the status bar only. On
+the first build of the window ends; later builds show the status bar only. A
+success is told once per root (`workspaceState`), because "N units up to date"
+at every start tells nothing; a failure is told in every window. On
 deactivate every running build gets `SIGINT`, and `SIGKILL` after 5 s.
 
 ### Tests

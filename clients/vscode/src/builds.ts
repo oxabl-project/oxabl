@@ -22,6 +22,7 @@ import {
   type BuildMessage,
   type RootStatus,
 } from "./progress";
+import { Memory, Once } from "./once";
 import { isBuildInput, isConfigFile, isIgnored, ownerRoot } from "./roots";
 import { Scheduler } from "./scheduler";
 
@@ -42,6 +43,8 @@ export interface BuildDeps {
   binary(): string | undefined;
   /** A directory of the extension's own, for the build reports. */
   storageDir: string;
+  /** What the workspace remembers between two windows. */
+  memory: Memory;
 }
 
 class Root {
@@ -72,8 +75,8 @@ export class BuildController implements vscode.Disposable {
   private readonly spinner = vscode.window.createStatusBarItem("oxabl.build.spinner", vscode.StatusBarAlignment.Left, 0.001);
   private readonly subscriptions: vscode.Disposable[] = [];
   private readonly shownErrors = new Set<string>();
-  /** Reasons for units without a compile key that a warning named in this window. */
-  private readonly shownUnkeyed = new Set<string>();
+  private readonly unkeyedNotices: Once;
+  private readonly finishedNotices: Once;
   private started = false;
   private discovering: Promise<void> = Promise.resolve();
   /** Modification time and size of each input file at its last event. */
@@ -82,6 +85,8 @@ export class BuildController implements vscode.Disposable {
   private statusTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly deps: BuildDeps) {
+    this.unkeyedNotices = new Once(deps.memory, "unkeyed");
+    this.finishedNotices = new Once(deps.memory, "finished");
     this.item.name = "oxabl build";
     this.spinner.name = "oxabl build progress";
     this.spinner.text = "$(sync~spin)";
@@ -347,7 +352,7 @@ export class BuildController implements vscode.Disposable {
     return path.join(this.deps.storageDir, "reports", `${id}.json`);
   }
 
-  /** Warn once for each reason that units have no compile key: the project's setup is not complete. */
+  /** Warn once per workspace for each reason that units have no compile key: the project's setup is not complete. */
   private async readReport(root: Root, file: string, units: number): Promise<void> {
     let text: string;
     try {
@@ -362,11 +367,10 @@ export class BuildController implements vscode.Disposable {
       return;
     }
     this.deps.log.warn(`build: ${unkeyed.count} units have no compile key; most often: ${unkeyed.reason}`);
-    const key = `${root.dir}\n${unkeyed.reason}`;
-    if (!shouldWarnUnkeyed(unkeyed, units) || this.shownUnkeyed.has(key)) {
+    if (!shouldWarnUnkeyed(unkeyed, units) || this.unkeyedNotices.shown(root.dir, unkeyed.reason)) {
       return;
     }
-    this.shownUnkeyed.add(key);
+    await this.unkeyedNotices.mark(root.dir, unkeyed.reason);
     const choice = await vscode.window.showWarningMessage(unkeyedText(unkeyed), "Show Build Log");
     if (choice) {
       this.showLog();
@@ -390,11 +394,11 @@ export class BuildController implements vscode.Disposable {
           this.refreshStatus();
         }
       }, OK_VISIBLE_MS);
-      this.reportFirst(progress, exit, elapsedMs);
+      this.reportFirst(root, progress, exit, elapsedMs);
       root.scheduler.exited();
     } else if (exit === 1) {
       root.status = { phase: "idle", last: { failed: progress.summary?.failed ?? progress.failedNow } };
-      this.reportFirst(progress, exit, elapsedMs);
+      this.reportFirst(root, progress, exit, elapsedMs);
       root.scheduler.exited();
     } else {
       root.status = { phase: "idle", last: { warning: reason ?? `oxabl build exited with code ${exit}` } };
@@ -409,14 +413,21 @@ export class BuildController implements vscode.Disposable {
     this.refreshStatus();
   }
 
-  /** The notification of the first build that ends in this window. Later builds show the status bar only. */
-  private reportFirst(progress: BuildProgress, exit: number, elapsedMs: number): void {
+  /**
+   * The notification of the first build that ends in this window. Later builds
+   * show the status bar only. A success is told once per workspace; a failure
+   * is told in every window.
+   */
+  private reportFirst(root: Root, progress: BuildProgress, exit: number, elapsedMs: number): void {
     if (this.firstReported) {
       return;
     }
     this.firstReported = true;
     if (exit === 0) {
-      void vscode.window.showInformationMessage(finishedText(progress, elapsedMs));
+      if (!this.finishedNotices.shown(root.dir, "")) {
+        void this.finishedNotices.mark(root.dir, "");
+        void vscode.window.showInformationMessage(finishedText(progress, elapsedMs));
+      }
     } else {
       const n = progress.summary?.failed ?? progress.failedNow;
       void vscode.window

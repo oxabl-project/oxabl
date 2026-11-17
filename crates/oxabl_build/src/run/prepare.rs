@@ -10,7 +10,7 @@ use crate::error::BuildError;
 use crate::key::compute::compute;
 use crate::key::image_store;
 use crate::lock::{LockOutcome, WorkspaceLock, holder, try_acquire_file, try_acquire_marked};
-use crate::output::{OutputLayout, ownership, stage};
+use crate::output::{OutputLayout, ignore, ownership, stage};
 use crate::paths::PathMap;
 use crate::plan::run::{Committed, refresh_and_commit};
 use crate::plan::{Plan, StoredInputs, decide};
@@ -161,6 +161,15 @@ pub fn prepare(
         &request.cancel,
     )?;
     stage::remove_stale(&settings.state_dir);
+    let ignored = ignore::write(
+        &settings.root,
+        &[settings.state_dir.clone(), settings.store_dir.clone()],
+        &layout
+            .directories()
+            .iter()
+            .map(|directory| settings.root.join(directory))
+            .collect::<Vec<_>>(),
+    );
 
     let refresh_request = Request {
         need_graph: true,
@@ -205,6 +214,7 @@ pub fn prepare(
     setup.dlc_hash_ms = started.pool.dlc_hash_ms();
     let planning = Instant::now();
     let mut notes = committed.notes.clone();
+    notes.extend(ignored);
     notes.extend(started.warnings.iter().cloned());
     notes.extend(keyed.warnings.iter().cloned());
     notes.extend(committed.outcome.warnings.iter().cloned());
