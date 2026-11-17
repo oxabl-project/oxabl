@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.7.1...oxabl_vscode-v0.8.0) (2026-11-17)
+
+
+### Features
+
+* **build:** write a .gitignore into the directory that holds oxabl's output ([35150ca](https://github.com/oxabl-project/oxabl/commit/35150ca43b1a13855b2d2dc80825b3fa0a5d313a))
+* onboarding polish: a .gitignore of oxabl's own, a first-build tooltip, notices once per workspace ([d6f7c24](https://github.com/oxabl-project/oxabl/commit/d6f7c242d7bd7c843fbe555883f060f9b3206eed))
+* **vscode:** say in the tooltip that a first build takes several minutes ([a2bfd92](https://github.com/oxabl-project/oxabl/commit/a2bfd926768afe18ae1c10570c9f072bd0378a21))
+
+
+### Bug Fixes
+
+* **vscode:** show a warning about units without a key once per workspace ([cb2dad4](https://github.com/oxabl-project/oxabl/commit/cb2dad4dc42998670f31217d49d102d3cbbee620))
+
 ## [0.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.7.0...oxabl_vscode-v0.7.1) (2026-11-16)
 
 
