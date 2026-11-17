@@ -327,6 +327,12 @@ Each scenario is one test. "Build" means `oxabl build` with the fake AVM.
   `include_paths`: skipped with `package-root-not-on-propath: a`.
 - An output directory with a foreign file and no marker: exit code 2. A foreign `.r` put
   into a managed output directory: deleted by the next build, and no unit reads it.
+- Version control (`build_gitignore.rs`), in a git repository: with `output = ".oxabl/r"`
+  a build leaves nothing under `.oxabl/` in `git status --untracked-files=all`, writes
+  `.oxabl/.gitignore` with `*`, and writes no file in the root, in `.oxabl/r` or in
+  `.oxabl/build`. An existing `.oxabl/.gitignore` is unchanged. With `output = "build"` there
+  is no `build/.gitignore` (and the build works), and `.oxabl/` still gets one. With a file of
+  the user in `out/` next to `out/r`, there is no `out/.gitignore`.
 
 ### Slice 7: verification and the local cache
 

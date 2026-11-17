@@ -16,7 +16,10 @@ It covers Progress ABL files (`.p`, `.w`, `.cls`, `.i`, `.v`).
    nothing builds in a folder you did not trust.
 5. Wait for the first build. With an empty cache it compiles every unit, which
    can take minutes. After that, a save compiles only what it changed.
-6. Keep the build output out of git: add `.oxabl/` to `.gitignore`.
+6. Nothing to add to `.gitignore` for the default output: the CLI writes a
+   `.gitignore` into `.oxabl/`. Add an output directory that is not below
+   `.oxabl/` (for example `build`) to your ignore file yourself. An older CLI
+   also needs `.oxabl/` there.
 
 ## Install
 
