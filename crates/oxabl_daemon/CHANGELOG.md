@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.9](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.5.8...oxabl_daemon-v0.5.9) (2026-11-17)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.1.0 to 4.2.0
+    * oxabl_pipeline bumped from 3.5.0 to 3.6.0
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.5.0 to 3.6.0
+
 ## [0.5.8](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.5.7...oxabl_daemon-v0.5.8) (2026-11-16)
 
 

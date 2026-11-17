@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.5.0...oxabl_pipeline-v3.6.0) (2026-11-17)
+
+
+### Features
+
+* **build:** key units that use classes under per-directory PROPATHs ([f17685f](https://github.com/oxabl-project/oxabl/commit/f17685fb429585f7d7182b3cf5b65eb7f9b206b5))
+
+
+### Bug Fixes
+
+* **pipeline:** a name written as x:member in a skipped branch is a variable when one comes before it ([62d447a](https://github.com/oxabl-project/oxabl/commit/62d447a57952e7f302c0f051667f06905ce27c36))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.1.0 to 4.2.0
+
 ## [3.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.4.2...oxabl_pipeline-v3.5.0) (2026-11-16)
 
 

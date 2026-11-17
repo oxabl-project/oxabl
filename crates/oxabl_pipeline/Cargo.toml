@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_pipeline"
-version = "3.5.0"
+version = "3.6.0"
 edition = "2024"
 license = "MIT"
 description = "Shared lint and format pipelines over one resolved oxabl configuration"
@@ -30,7 +30,7 @@ oxabl_scope = { path = "../oxabl_scope", version = "0.2.7" }
 # For `Span`: a dependency edge carries the offsets in the dependent file where the
 # dependency is written, and `src/reverse.rs` hands them to a client.
 oxabl_ast = { path = "../oxabl_ast", version = "4.0.0" }
-oxabl_analyze = { path = "../oxabl_analyze", version = "4.1.0" }
+oxabl_analyze = { path = "../oxabl_analyze", version = "4.2.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.2.2" }
 oxabl_formatter = { path = "../oxabl_formatter", version = "2.0.7" }
 oxabl_index = { path = "../oxabl_index", version = "5.1.0" }

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.6.0...oxabl_build-v0.7.0) (2026-11-17)
+
+
+### Features
+
+* **build:** key units that use classes under per-directory PROPATHs ([f17685f](https://github.com/oxabl-project/oxabl/commit/f17685fb429585f7d7182b3cf5b65eb7f9b206b5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_pipeline bumped from 3.5.0 to 3.6.0
+
 ## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.5.0...oxabl_build-v0.6.0) (2026-11-17)
 
 
