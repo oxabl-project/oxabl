@@ -26,8 +26,9 @@ pub struct Prepared {
     pub plan: Plan,
     pub notes: Vec<String>,
     pub setup: Setup,
-    /// The workspace lock and the output lock, held to the end.
-    pub _locks: (WorkspaceLock, WorkspaceLock),
+    /// The workspace lock and the lock of the r-code directory, held to the
+    /// end.
+    pub _locks: (WorkspaceLock, Option<WorkspaceLock>),
 }
 
 /// How long past the cancel grace a build waits for the one it stopped.
@@ -143,7 +144,6 @@ pub fn prepare(
         &mut |_| stop_yielding_holder(&settings.state_dir, grace, &mut stopped),
     )?;
     ownership::claim(&settings.root, &layout.directories())?;
-    let output_dir = settings.root.join(&layout.rcode);
     // The stopped build frees its locks one after the other: the output lock
     // may stay busy a moment after the workspace lock.
     let output_wait = if stopped {
@@ -154,12 +154,16 @@ pub fn prepare(
     } else {
         request.wait_lock
     };
-    let output_lock = acquire(
-        || try_acquire_file(&output_dir, ownership::LOCK),
-        &format!("{}/{}", layout.rcode, ownership::LOCK),
-        output_wait,
-        &request.cancel,
-    )?;
+    // In place, the workspace lock in the state directory is the only lock.
+    let output_lock = match layout.rcode_directory() {
+        Some(directory) => Some(acquire(
+            || try_acquire_file(&settings.root.join(directory), ownership::LOCK),
+            &format!("{directory}/{}", ownership::LOCK),
+            output_wait,
+            &request.cancel,
+        )?),
+        None => None,
+    };
     stage::remove_stale(&settings.state_dir);
     let ignored = ignore::write(
         &settings.root,

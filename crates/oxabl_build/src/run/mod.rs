@@ -39,7 +39,7 @@ use crate::events::Event;
 use crate::graph::Scratch;
 use crate::key::compute::{Keyed, UnitKey};
 use crate::observe::{Observer, Places};
-use crate::output::{OutputLayout, prune, stage};
+use crate::output::{OutputLayout, in_place, prune, stage};
 use crate::paths::PathMap;
 use crate::paths::propath::{OUT, library_name};
 use crate::plan::Plan;
@@ -142,6 +142,12 @@ pub fn build(
         let key = keys.get(&entry.path).expect("every unit has a key state");
         infos.insert(unit, info(&layout, &entry.path, key));
     }
+    if layout.beside_source()
+        && let Err(error) = clear_in_place(root, &plan, &outcome, &infos)
+    {
+        pool.shutdown();
+        return Err(error);
+    }
     let propaths: Vec<Vec<String>> = keys
         .keyed
         .propaths
@@ -183,7 +189,7 @@ pub fn build(
             &outcome.names,
             environment.facts.get("dlc"),
             &spec.worker_root,
-            &layout.rcode,
+            layout.rcode_directory(),
         ),
     });
     let observer = observer(
@@ -391,14 +397,81 @@ fn info(layout: &OutputLayout, path: &str, key: &UnitKey) -> UnitInfo {
     }
 }
 
+/// Before anything compiles in place: refuses a build that cannot write a
+/// directory it must install into, and deletes the r-code beside each skipped
+/// unit and each class unit of the build. The runtime runs r-code beside a
+/// source before the source, and a user binds class r-code it finds first.
+fn clear_in_place(
+    root: &std::path::Path,
+    plan: &Plan,
+    outcome: &Outcome,
+    infos: &FxHashMap<u32, UnitInfo>,
+) -> Result<(), BuildError> {
+    let installs: Vec<String> = infos
+        .values()
+        .flat_map(|info| &info.expected)
+        .filter(|expected| expected.in_place)
+        .map(|expected| expected.dest.clone())
+        .collect();
+    let unwritable = in_place::unwritable(root, &installs);
+    if !unwritable.is_empty() {
+        return Err(BuildError::Infrastructure(format!(
+            "cannot write r-code beside the source in {}",
+            shown(&unwritable)
+        )));
+    }
+    let skipped: HashSet<&str> = plan.skipped.iter().map(String::as_str).collect();
+    let compiling: Vec<String> = outcome
+        .units
+        .iter()
+        .map(|unit| outcome.name(*unit))
+        .filter(|path| !skipped.contains(path))
+        .map(in_place::rcode_path)
+        .collect();
+    let classes: Vec<String> = infos
+        .values()
+        .filter(|info| crate::paths::propath::is_class_unit(&info.path))
+        .flat_map(|info| &info.expected)
+        .filter(|expected| expected.in_place)
+        .map(|expected| expected.dest.clone())
+        .collect();
+    let clear = in_place::Clear {
+        skipped: &plan.skipped,
+        compiling: &compiling,
+        classes: &classes,
+    };
+    match in_place::clear(root, &clear) {
+        Ok(_) => Ok(()),
+        Err(failed) => Err(BuildError::Infrastructure(format!(
+            "cannot delete the r-code beside the source of {}; the runtime would run it",
+            shown(&failed)
+        ))),
+    }
+}
+
+/// The first items of `items`, and how many more there are.
+fn shown(items: &[String]) -> String {
+    let first: Vec<&str> = items.iter().take(5).map(String::as_str).collect();
+    match items.len() > first.len() {
+        true => format!(
+            "{} and {} more",
+            first.join(", "),
+            items.len() - first.len()
+        ),
+        false => first.join(", "),
+    }
+}
+
 /// A PROPATH entry as the worker sees it.
 fn worker_entry(
     entry: &str,
     layout: &OutputLayout,
     libraries: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    if entry == OUT {
-        return layout.rcode.clone();
+    if entry == OUT
+        && let Some(directory) = layout.rcode_directory()
+    {
+        return directory.to_string();
     }
     match library_name(entry).and_then(|name| libraries.get(name)) {
         Some(path) => path.clone(),
@@ -460,7 +533,7 @@ fn observer<'a>(
             paths,
             worker_dlc: trim_slash(facts.worker_dlc),
             worker_root: trim_slash(facts.worker_root),
-            rcode: &layout.rcode,
+            rcode: layout.rcode_directory(),
         },
         outcome,
         base: keyed.base.as_ref()?,

@@ -469,6 +469,42 @@ units find, has no key (K9,
 [compile-key.md](build-tool/compile-key.md#per-unit-propath-classes)); a K3-accepted external
 name that a workspace class also has is K8, and class r-code that oxabl does not hash is K11.
 
+### R-code beside the source
+
+With `[build].rcode = "beside-source"` there is no output directory for the r-code. The
+r-code of each unit is at its unit path with the extension `.r` (`a/x.p` gives `a/x.r`,
+`a/pkg/Foo.cls` gives `a/pkg/Foo.r`, `rf/x.w` gives `rf/x.r`). For a class this is
+`<package root>/<pkg>/<Name>.r`, where the compiler and the runtime look. A runtime whose
+PROPATH holds only the source directories runs it, and so does a program that starts by the
+full path of its source (measured: [compile-key.md](build-tool/compile-key.md#measured-runtime-and-r-code-beside-the-source)).
+
+- **One build tool.** Oxabl owns the r-code beside every unit of the workspace. R-code
+  there before the first build is stale: oxabl replaces it when the unit compiles, and
+  deletes it before the first compile or fetch when the unit is skipped (unless a unit that
+  compiles has the same file) or is a class unit of the build. So no user binds class
+  r-code that is older than its class, also when the analysis misses the edge, and a
+  skipped unit never runs old r-code. A unit that fails loses its r-code.
+- **The worker is unchanged.** It compiles `SAVE INTO` its stage. Oxabl renames the staged
+  file to the path beside the source (one file system: the stage is under the root). A
+  runtime that has the old file open keeps it. Oxabl creates no directory beside the
+  sources. Before the first compile, it checks that it can write each directory it installs
+  into; a directory it cannot write stops the build with exit code 3 and its name. A file it
+  cannot delete stops the build in the same way, because the runtime would run it.
+- **The unit PROPATH has no `$OUT`.** A user binds a class unit from its r-code beside the
+  source, which the scheduler compiles first. This changes the `propath` part of every key
+  once; the keys of `directory` mode do not change.
+- **A cycle starts from the sources.** At each attempt of a job with more than one unit,
+  oxabl deletes the r-code beside each member before the first pass. Stale r-code that does
+  not fit the new sources would fail every compile of the cycle (error 12927).
+- **The analysis does not see r-code.** The digest of a directory listing leaves out names
+  that end in `.r` and the temporary names of an install (`*.oxabl-tmp-*`), in both modes.
+  `RUN x.r` is never searched. So r-code that a build writes starts no analysis.
+- **Version control.** Oxabl writes no `.gitignore` into the source directories. The code
+  base's own `.gitignore` must ignore `*.r`.
+- **Not yet.** R-code of a unit whose source is gone stays until a later version of oxabl
+  removes it. Change of mode, the manifest of installed files and the restore of a changed
+  `.r` come with that version.
+
 ## CLI surface
 
 ```text

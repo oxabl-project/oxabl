@@ -21,6 +21,9 @@ pub fn describe(path: &Path, dest: &str) -> io::Result<OutputRow> {
     })
 }
 
+/// What the name of a temporary file beside an output holds.
+pub const TEMP_INFIX: &str = ".oxabl-tmp-";
+
 /// Moves `from` to `to` with `rename`; across file systems it copies to a
 /// temporary name beside `to`, calls `fsync` and renames that.
 fn move_file(from: &Path, to: &Path) -> io::Result<()> {
@@ -28,7 +31,7 @@ fn move_file(from: &Path, to: &Path) -> io::Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
             let temp = to.with_file_name(format!(
-                "{}.oxabl-tmp-{}",
+                "{}{TEMP_INFIX}{}",
                 to.file_name().unwrap_or_default().to_string_lossy(),
                 std::process::id()
             ));
@@ -71,7 +74,7 @@ pub fn promote(
     let mut rows = Vec::with_capacity(expected.len());
     for file in expected {
         let target = root.join(&file.dest);
-        if let Some(parent) = target.parent() {
+        if let Some(parent) = target.parent().filter(|_| !file.in_place) {
             fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", file.dest))?;
         }
         move_file(&stage.join(at(file)), &target)
@@ -83,9 +86,31 @@ pub fn promote(
     Ok(rows)
 }
 
-/// Deletes the outputs of a unit, whatever state they are in.
-pub fn remove(root: &Path, expected: &[Expected]) {
-    for file in expected {
-        let _ = fs::remove_file(root.join(&file.dest));
+/// Deletes the outputs of a unit, whatever state they are in. An output that
+/// is not there is deleted; any other failure names the file, because an
+/// output left in place can run.
+pub fn remove(root: &Path, expected: &[Expected]) -> Result<(), String> {
+    remove_where(root, expected, |_| true)
+}
+
+/// Like [`remove`], for the outputs beside the source alone.
+pub fn remove_in_place(root: &Path, expected: &[Expected]) -> Result<(), String> {
+    remove_where(root, expected, |file| file.in_place)
+}
+
+fn remove_where(
+    root: &Path,
+    expected: &[Expected],
+    which: impl Fn(&Expected) -> bool,
+) -> Result<(), String> {
+    let mut failed = None;
+    for file in expected.iter().filter(|file| which(file)) {
+        match fs::remove_file(root.join(&file.dest)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                failed.get_or_insert_with(|| format!("cannot delete {}: {error}", file.dest));
+            }
+            _ => {}
+        }
     }
+    failed.map_or(Ok(()), Err)
 }

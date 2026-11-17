@@ -34,6 +34,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | Remote cache | `crates/oxabl/tests/build_remote_*.rs` (only the package that owns the `oxabl` binary gets `CARGO_BIN_EXE_oxabl`) |
 | OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `crates/oxabl/tests/build_openedge_scratch.rs` |
 | The fake runtime and the shared case table of the runtime rule | `crates/oxabl/tests/build_runtime_fake.rs` with `crates/oxabl/tests/common/runtime_cases.rs` |
+| R-code beside the source (`[build].rcode = "beside-source"`), asked of the fake runtime | `crates/oxabl/tests/build_beside_source.rs` |
 | Parity | `scripts/plan-parity.sh` |
 
 ## The fake AVM
@@ -67,7 +68,13 @@ the protocol says; the fake implements that on its own.
   `INHERITS X`, `IMPLEMENTS X` and `NEW X(`, it searches the PROPATH as the AVM does: the
   first entry (the output entry first) that holds `X.r` or `X.cls`, exact in case, the
   r-code first in an entry. A `FAKE-READ <path>` line makes it read that file
-  directly; the oxabl analysis does not see it, which tests the read check.
+  directly; the oxabl analysis does not see it, which tests the read check. A `NEW X` in a
+  comment is a class use that the fake sees and the analysis does not.
+- **Error 12927.** Binding the class r-code of another unit of the same request fails the
+  compile with errors 12927 and 196 when that r-code was compiled from a source of that
+  unit whose bytes have changed since (the first `read` line of the r-code). This is the
+  model of stale r-code of a cycle that does not fit the new sources (E8 cycle in
+  `build_openedge/runtime.rs`). A compile with `-c` is one unit alone and never fails so.
 - **Class cache.** As measured on the AVM, a session keeps each class it has bound (r-code or
   source) by class name while the PROPATH of the requests stays the same and the bound file
   does not change. A request with another PROPATH empties it. So stray r-code bound once
@@ -84,7 +91,8 @@ the protocol says; the fake implements that on its own.
   `compiled-at <nanoseconds>`. The last line makes outputs of one
   source differ between compiles, like real r-code. A test can read a `.r` and check that it
   matches the current files: that is the wrong-hit oracle. It writes the text XREF or the
-  `XREF-XML` as requested, and the text XREF for the `private` mode; the text XREF has a
+  `XREF-XML` as requested, and the text XREF for the `private` mode. As measured, neither
+  names class r-code that the compile bound (the `.r` keeps its `read` line). The text XREF has a
   `COMPILE` row, an `INCLUDE` or `NEW` row for each reference, and a row in each other file
   read, which puts that file in the second column (names with a space are quoted;
   `FAKE-XREF-RAW <text>` in a source ends the file with `<text>`, where `\n` is a line break,
@@ -619,6 +627,27 @@ change of the rule changes the table, and both runs must pass again.
 | `the_fake_runtime_runs_nothing_without_a_propath` | An unset or empty `PROPATH` is exit code 1, not a run on a default PROPATH. |
 | `the_runtime_ignores_an_output_directory_it_does_not_search` | The incident on the fake: r-code of the project's own compile beside the sources, an edit of a program, an include and a class, `oxabl build` into `build/r`, and a runtime PROPATH of `src` alone: all three print the **old** text, and `hello.p` runs `src/hello.r`. Red with `build/r` first. |
 | `an_edit_shows_in_a_runtime_that_searches_the_output_first` | The same project with the runtime PROPATH `build/r`, then `src`: the new text, `hello.p` runs `build/r/hello.r`, and that r-code records the current hash of `src/hello.p`. Red with `src` alone. |
+
+With `[build].rcode = "beside-source"` the same oracle answers. Each test of
+`build_beside_source.rs` asks the fake runtime, with the runtime PROPATH of the project:
+
+| Fake-AVM test (`build_beside_source.rs`) | What it proves |
+| --- | --- |
+| `an_edit_runs_on_a_runtime_that_searches_only_the_sources` | The pair of the incident: the same project, r-code of the project's own tool beside the sources, runtime PROPATH `src` alone. After the edit and `oxabl build`, all three print the new text, `hello.p` runs `src/hello.r`, which records the current hash of `src/hello.p`, and there is no output directory. |
+| `the_unit_propath_has_no_output_entry` | No PROPATH of the plan holds `$OUT`. |
+| `output_and_beside_source_together_are_refused` | `[build].output` with `rcode = "beside-source"` is exit code 2 for `--plan` and a build, the message names both keys, and nothing is written. |
+| `the_effective_configuration_shows_where_the_rcode_goes` | `--print-config` shows `build.rcode` with its value and source, `directory` by default. |
+| `a_second_build_compiles_and_analyses_nothing` | After the first build writes r-code into `src`, the second build compiles nothing and makes no analysis again: a user of `pkg.greet` that a case-blind lookup found by listing `src` and `src/pkg` (the listing filter; the test checks that the store holds both listings), a `RUN hello.r.` (never searched) and a user of a class whose r-code is now beside it (the r-code beside a class unit is that class, present or not). |
+| `a_linked_directory_is_one_place_for_rcode` | A directory linked into the sources gives one unit and one r-code file; the second build compiles nothing, and both spellings run it. |
+| `units_collide_only_in_one_directory` | `x.p` and `x.w` in one directory collide (`x.w` is skipped), and the r-code of `x.p` survives the delete of the skipped unit's r-code over two builds; `one/y.p` and `two/y.p` each run their own. |
+| `classes_of_one_name_in_two_roots_keep_their_own_outputs` | `a/pkg/Foo.cls` and `b/pkg/Foo.cls` under per-directory PROPATHs both compile, each with its own XREF (the output name is the unit path), and each package root runs its own class. |
+| `a_skipped_unit_keeps_no_rcode` | The r-code of the project's own tool beside a unit that is `shadowed-by` another is deleted: the runtime compiles the current source. |
+| `a_failed_unit_keeps_no_rcode` | A unit that fails loses the r-code of the project's own tool: the runtime never runs it. |
+| `a_user_that_compiles_first_binds_no_old_class_rcode` | A user that the analysis does not see use a class compiles before it and binds the class source, not the r-code of the project's own tool: the build deletes the r-code of each class it builds before the first compile. |
+| `a_cycle_with_incompatible_old_rcode_compiles_from_the_sources` | A cycle whose r-code of the project's own tool does not fit the new sources (the fake's error 12927) compiles in two passes and runs the new text of both classes. |
+| `a_read_only_source_directory_stops_the_build` | A source directory that the build cannot write stops it with exit code 3 before any compile, naming the directory once. Fails, never passes, under a user that can write a read-only directory. |
+| `rcode_a_compile_names_is_outside_the_closure` | V3 with no output directory: a compile that names r-code (here a class's r-code beside its source) fails the read check. |
+| `a_unit_outside_the_root_is_skipped` | A unit of a source directory outside the root is skipped (`outside-root`) and gets no r-code beside it. |
 
 ### Tests
 

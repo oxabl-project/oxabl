@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use oxabl_workspace::RcodePlace;
+
 use rustc_hash::FxHashMap;
 
 use crate::config::BuildWorkspace;
@@ -125,7 +127,7 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
     };
     let placements = parallel::map(&work, |at| {
         let path = outcome.name(outcome.units[*at]);
-        match &staged[*at] {
+        let placement = match &staged[*at] {
             (Some(propath), Ok(base)) => place(
                 path,
                 base,
@@ -136,6 +138,16 @@ pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
             ),
             (_, Err(reason)) => Placement::Skipped(reason.clone()),
             (None, Ok(_)) => unreachable!("a base directory has a PROPATH"),
+        };
+        match placement {
+            Placement::Compiles { .. } if search.beside_source() && path.starts_with(['$', '/']) => {
+                Placement::Skipped("outside-root: r-code beside the source needs a source below the workspace root".to_string())
+            }
+            Placement::Compiles { name, .. } if search.beside_source() => Placement::Compiles {
+                name,
+                output: path.to_string(),
+            },
+            placement => placement,
         }
     });
     let mut units: Vec<Placed> = placements
@@ -176,6 +188,7 @@ pub fn search(
         sources.root_relative_include_paths.clone(),
         include,
         defaults,
+        workspace.config.build.rcode == RcodePlace::BesideSource,
     ))
 }
 

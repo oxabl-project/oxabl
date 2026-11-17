@@ -171,7 +171,10 @@ CREATE TABLE environments (
   `tracked_by` is a bit set: `1` a unit found by the walk, `2` a file an analysis read,
   `4` a path an analysis found absent, `8` a file or an absent path of an observed closure.
 - `listings` holds the directories that a case-insensitive lookup listed. `digest` is the
-  BLAKE3 hash of the sorted entry names, each followed by a NUL byte.
+  BLAKE3 hash of the sorted entry names, each followed by a NUL byte. Names that a build
+  writes are left out: names that end in `.r` (ASCII case ignored) and the temporary names
+  of an install (`*.oxabl-tmp-*`). The analysis never resolves a name to either, and r-code
+  that a build writes beside the sources must not start an analysis.
 - `analyses` holds one row per analysed node: every unit and every class source that a
   unit reaches. Include files are not analysed alone; the unit that includes them reports
   their edges.

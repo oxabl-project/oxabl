@@ -89,7 +89,8 @@ empty component, no leading `./` and no trailing `/`. Case is the case on disk.
   itself is `.`.
 - A file or directory under the host DLC source directory (`[workspace.sources].dlc`): `$DLC/`
   followed by its path relative to that directory. `$DLC` alone is the directory itself.
-- The output directory, as a PROPATH entry only: `$OUT`.
+- The output directory, as a PROPATH entry only: `$OUT`. With `[build].rcode =
+  "beside-source"` there is no `$OUT`.
 - A procedure library outside the root and outside `$DLC`, named in `[build.libraries]`, as a
   PROPATH entry only: `$LIB:<name>`.
 
@@ -102,7 +103,7 @@ when its lexical form is under the root, and the file it names is read through t
 The **unit PROPATH** is the search path that the worker sets before it compiles the unit,
 as a list of canonical paths, in order:
 
-1. `$OUT`.
+1. `$OUT`, unless `[build].rcode` is `beside-source`.
 2. Each `[workspace.sources].root_relative_include_paths` entry, joined to the unit's
    **base directory** and made canonical (`.` with a procedure in `src/ar` gives `src/ar`).
    The base directory of a procedure (`.p`, `.w`, ...) is its own directory. The base
@@ -137,8 +138,8 @@ Each entry is a directory or a procedure library. In the key, an entry carries a
 - `absent` for an entry that the worker reports as missing. An entry that the worker cannot
   hash makes the environment unknown for the units that use it (K6).
 
-The **compile name** is the unit path relative to the first entry after `$OUT` that holds
-it. For a class unit it must be the package path with the extension (`pkg/Foo.cls`): the
+The **compile name** is the unit path relative to the first entry other than `$OUT` that
+holds it. For a class unit it must be the package path with the extension (`pkg/Foo.cls`): the
 first entry that holds the class unit must be its package root, or an `include_paths`
 entry that is the same directory. Otherwise the unit is skipped with
 `package-root-not-on-propath: <package root>` (for example, a class `a/pkg/Foo.cls` with no
@@ -159,12 +160,21 @@ path, because the compiler finds class r-code in `$OUT` by class name. The worke
 compiles and stages by compile name; only the place of the outputs, and their paths in a
 cache entry, follow the output name.
 
+With `[build].rcode = "beside-source"` the output name of every unit is its unit path, and
+its r-code is `<unit path stem>.r` beside its source. A class unit's r-code is then
+`<package root>/<pkg>/<Name>.r`, where the compiler finds it by class name. Its XREF, debug
+list and listing are `<unit path>.<extension>` in their directories, so two class units of
+one name in two package roots keep their own files. A unit outside the root is skipped
+(`outside-root`): oxabl writes no r-code outside the root.
+
 Two units whose r-code would land on one path collide: `x.p` and `x.w` in one directory, or
 `x.p` and `x.cls`. The output stems are compared ignoring ASCII case, because r-code is
 often deployed to case-insensitive systems. In each colliding group, the unit with the
 smallest unit path (by bytes) compiles, and every other unit is skipped with
 `output-collision: <path of the unit that compiles>`. So two keys never install over one
-final path.
+final path. With the r-code beside the source, only units of one directory can collide. A
+file that the walk reaches through two spellings (a linked directory) is one unit, so two
+units never name one real file.
 
 The worker compiles `COMPILE VALUE(<compile name>)` with the unit PROPATH as worker-side
 paths (`$OUT` is the worker-side output directory, a root-relative entry is relative to the
@@ -431,6 +441,21 @@ R-code in a `$LIB:` library is covered: the library's digest is in the key (K3 a
 library class only through a hashed library). A `$LIB:` entry before the class source
 counts as another file only for the uniform resolution (U1).
 
+#### Class r-code beside the source
+
+With `[build].rcode = "beside-source"` there is no `$OUT`, and the r-code of a unit of the
+build is at its path with `.r`. The search treats that path as a fact of the plan, not of
+the disk, so a key does not change when the first build writes the file:
+
+- the r-code beside a class unit that compiles is that class unit (its `.cls`), present or
+  not: the build deletes it before anything compiles and compiles the class before its
+  users. The users then pass U3 and U1 on that hit, as for any class source;
+- the r-code beside a procedure that compiles is r-code, present or not. A class name that
+  it shadows is K11;
+- the r-code beside a skipped unit is absent: the build deletes it. A unit skipped by an
+  `output-collision` has the r-code of the unit that compiles;
+- any other `.r` is read from the disk, as above (K11).
+
 ### Class conflicts
 
 With one PROPATH id, a class name resolves to one file, with one exception: a class name that
@@ -642,8 +667,8 @@ and the unit keeps no key, when one of these steps fails:
    preprocessor definitions, which has no `Source` element.
 2. **The compiler agrees.** Each `Source` element must map to a canonical path, as V3 maps
    it. It must be the unit, a file that step 1 found, or a listed class. R-code in `$OUT`
-   and a member of a library pass, as in V3. Otherwise the host and the compiler resolve
-   differently.
+   and a member of a library pass, as in V3. With the r-code beside the source no r-code
+   passes. Otherwise the host and the compiler resolve differently.
 
 The store keeps the closure, the absent set and the listing of the class part, as the plan
 found it ([store.md](store.md#columns)). The refresh tracks their files as it tracks the

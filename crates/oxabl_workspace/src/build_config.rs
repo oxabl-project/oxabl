@@ -17,8 +17,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildConfig {
-    /// R-code output directory, under the workspace root. Required to compile.
+    /// R-code output directory, under the workspace root. Required to compile
+    /// when `rcode` is `directory`; must be empty when it is `beside-source`.
     pub output: PathBuf,
+
+    /// Where the r-code of a unit goes.
+    pub rcode: RcodePlace,
 
     /// State directory, under the workspace root. Default `.oxabl/build`.
     pub state: PathBuf,
@@ -59,6 +63,7 @@ impl Default for BuildConfig {
     fn default() -> Self {
         BuildConfig {
             output: PathBuf::new(),
+            rcode: RcodePlace::Directory,
             state: PathBuf::from(".oxabl/build"),
             store: PathBuf::new(),
             exclude: Vec::new(),
@@ -81,6 +86,17 @@ impl BuildConfig {
     pub fn directory(path: &Path) -> Option<&Path> {
         (!path.as_os_str().is_empty()).then_some(path)
     }
+}
+
+/// Where `oxabl build` puts the r-code of a unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum RcodePlace {
+    /// Below `[build].output`, a directory that oxabl owns.
+    #[default]
+    Directory,
+    /// Beside the source of the unit: `a/x.p` gives `a/x.r`.
+    BesideSource,
 }
 
 /// The form of the cross-reference output.

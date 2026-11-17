@@ -140,7 +140,7 @@ Oxabl does not read a PROPATH from the AVM. It builds one for each worker from t
 
 For a compile, the PROPATH is, in this order:
 
-1. The output directory (`[build].output`), so that a unit that uses a class reads the r-code that this build made.
+1. The output directory (`[build].output`), so that a unit that uses a class reads the r-code that this build made. With `[build].rcode = "beside-source"` there is no such entry: the r-code of a class is beside its source, and the build compiles the class before its users.
 2. `[workspace.sources].root_relative_include_paths`, relative to the directory of the unit. For a class, they are relative to its package root: `.` for `a/pkg/Foo.cls`, which declares `pkg.Foo`, is `a`. The analysis searches the includes of a class from the same directory.
 3. `[workspace.sources].include_paths`, in order.
 4. The default entries of the OpenEdge installation (its `.pl` libraries). You do not list them.
@@ -175,6 +175,7 @@ The startup parameters of the workers are part of the compile key, except the on
 
 ### Outputs and options
 
+- `[build].rcode` says where the r-code goes: `directory` (the default, below `[build].output`) or `beside-source` (beside the source of each unit, `a/x.p` gives `a/x.r`, with no `[build].output`). Use `beside-source` when the runtime PROPATH of the project holds the source directories and no output directory: a runtime runs the r-code beside a source before the source, also r-code of an older tool. Oxabl then owns the r-code beside each unit. It deletes the old r-code of a skipped unit and of each class it builds before the first compile, and of a unit that fails. The code base's own `.gitignore` must ignore `*.r`. A wrapper may set `build.rcode` in an overlay; each change of mode compiles or fetches everything.
 - `[build].output` is the r-code directory. It must be under the root. Oxabl owns it: the first build needs it absent or empty, and oxabl deletes files in it that it did not make. The same holds for each directory of `[build.outputs]` (`xref`, `debug_list`, `listing`). Do not point two settings at one directory, and do not put a directory inside another.
 - `[build.compile]` sets the options of the `COMPILE` statement.
 - `[build].state` is the directory for the graph store, the locks and the worker logs (default `.oxabl/build`). When the state or an output directory is below a directory of its own (for example `.oxabl/build` and `.oxabl/r`), a build writes a `.gitignore` that holds `*` in that top directory (`.oxabl/`), so git ignores the tree and the code base needs no change. Oxabl never replaces a `.gitignore`. It writes none in the root, in an output directory or in a directory that holds other files. It only warns when it cannot write the file. When an output directory is a top directory itself (for example `output = "build"`), add it to the ignore file of your version control.

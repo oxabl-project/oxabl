@@ -63,6 +63,8 @@ pub fn canonical_entry(
 pub struct Search {
     root_relative: Vec<PathBuf>,
     shared: Vec<String>,
+    /// The r-code goes beside the source: no `$OUT` entry.
+    beside_source: bool,
 }
 
 impl Search {
@@ -72,11 +74,18 @@ impl Search {
         root_relative: Vec<PathBuf>,
         include_paths: Vec<String>,
         defaults: Vec<String>,
+        beside_source: bool,
     ) -> Self {
         Search {
             root_relative,
             shared: include_paths.into_iter().chain(defaults).collect(),
+            beside_source,
         }
+    }
+
+    /// Whether the r-code goes beside the source.
+    pub fn beside_source(&self) -> bool {
+        self.beside_source
     }
 
     /// Whether `root_relative_include_paths` is non-empty.
@@ -95,12 +104,16 @@ impl Search {
             .collect()
     }
 
-    /// The unit PROPATH of a unit whose base directory is `base`: `$OUT`, the
-    /// root-relative entries joined to `base`, the include paths and the DLC
-    /// default entries, with later duplicates removed.
+    /// The unit PROPATH of a unit whose base directory is `base`: `$OUT`
+    /// unless the r-code goes beside the source, the root-relative entries
+    /// joined to `base`, the include paths and the DLC default entries, with
+    /// later duplicates removed.
     pub fn propath(&self, paths: &PathMap, base: &str) -> Vec<String> {
         let joined = self.own_entries(paths, base);
-        let mut propath = vec![OUT.to_string()];
+        let mut propath: Vec<String> = match self.beside_source {
+            true => Vec::new(),
+            false => vec![OUT.to_string()],
+        };
         for entry in joined.into_iter().chain(self.shared.iter().cloned()) {
             if !propath.contains(&entry) {
                 propath.push(entry);
@@ -157,7 +170,7 @@ pub fn derive_base(search: &Search, paths: &PathMap, unit: &str) -> Option<(Stri
     while let Some(base) = directory {
         let on_propath = || {
             let propath = search.propath(paths, &base);
-            propath.iter().skip(1).any(|entry| *entry == base)
+            propath.contains(&base)
         };
         if let Some(name) = class_name_below(&base, unit)
             && on_propath()
@@ -215,7 +228,7 @@ pub enum Placement {
 }
 
 /// The compile name of `unit` on `propath`: its path below the first entry
-/// after `$OUT` that holds it. `base` is the unit's base directory, `own` its
+/// other than `$OUT` that holds it. `base` is the unit's base directory, `own` its
 /// root-relative entries ([`Search::own_entries`]), and `class` says whether
 /// its name must be the package path. `is_file` tells whether a canonical path
 /// names a file, for the entries before the holder.
@@ -227,7 +240,7 @@ pub fn place(
     propath: &[String],
     is_file: impl Fn(&str) -> bool,
 ) -> Placement {
-    let entries = propath.iter().skip(1);
+    let entries = propath.iter().filter(|entry| *entry != OUT);
     let holder = entries
         .clone()
         .enumerate()

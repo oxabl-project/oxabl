@@ -7,6 +7,13 @@
 //! it, the first entry that holds `<pkg>/<Name>.r` or `<pkg>/<Name>.cls`,
 //! exact in case, r-code before source. An include is the first entry that
 //! holds the name as written, exact in case.
+//!
+//! With the r-code beside the source there is no `$OUT`. The r-code of a unit
+//! of the build is then a fact of the plan, not of the disk, so that a key
+//! does not change when the first build writes it: the r-code beside a class
+//! unit that compiles is that class, the r-code beside a procedure that
+//! compiles is r-code, and the r-code beside a skipped unit is absent (the
+//! build deletes it).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
@@ -138,6 +145,18 @@ pub struct ResolutionSummary {
     pub released: usize,
 }
 
+/// The r-code beside the source of a unit, as the search sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InPlace {
+    /// Beside a class unit that compiles: the class source, which the build
+    /// compiles before its users.
+    Class(String),
+    /// Beside a procedure that compiles: r-code.
+    Rcode,
+    /// Beside a skipped unit: deleted before anything compiles.
+    Absent,
+}
+
 /// What the resolver knows about the units of the build.
 pub struct Units<'a> {
     /// The PROPATH id of each unit that compiles.
@@ -147,9 +166,12 @@ pub struct Units<'a> {
     /// The class units that compile, by the stem of their r-code below
     /// `$OUT` (`pkg/Foo`).
     pub out: FxHashMap<String, u32>,
-    /// The ids of `out`.
+    /// The class units that compile, whose r-code their users bind.
     pub compiles: FxHashSet<u32>,
     pub class_sources: &'a FxHashSet<u32>,
+    /// With the r-code beside the source: the r-code path of each unit of the
+    /// workspace below the root.
+    pub in_place: FxHashMap<String, InPlace>,
 }
 
 impl Units<'_> {
@@ -343,6 +365,22 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             for name in names {
+                let in_place = match name.ends_with(".r") {
+                    true => self.units.in_place.get(&join(entry, name)),
+                    false => None,
+                };
+                match in_place {
+                    Some(InPlace::Class(class)) => {
+                        hit.file = Some(class.clone());
+                        break 'entries;
+                    }
+                    Some(InPlace::Rcode) => {
+                        hit.file = Some(join(entry, name));
+                        break 'entries;
+                    }
+                    Some(InPlace::Absent) => continue,
+                    None => {}
+                }
                 if let Some(file) = self.exists(entry, name, exact_only) {
                     hit.file = Some(file);
                     break 'entries;

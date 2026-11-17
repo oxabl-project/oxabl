@@ -13,8 +13,9 @@ pub struct Places<'a> {
     pub worker_dlc: &'a str,
     /// The workspace root as the worker sees it, without a trailing `/`.
     pub worker_root: &'a str,
-    /// The r-code directory, root-relative: `$OUT` on a PROPATH.
-    pub rcode: &'a str,
+    /// The r-code directory, root-relative: `$OUT` on a PROPATH. `None` when
+    /// the r-code goes beside the source.
+    pub rcode: Option<&'a str>,
 }
 
 impl Places<'_> {
@@ -22,7 +23,7 @@ impl Places<'_> {
     /// for an entry the host cannot search.
     fn below(&self, entry: &str, name: &str) -> Option<Result<String, String>> {
         let directory = match entry {
-            OUT => self.rcode,
+            OUT => self.rcode?,
             _ if library_name(entry).is_some() => return None,
             _ if entry.starts_with('/') => {
                 return Some(Err(format!(
@@ -81,7 +82,7 @@ impl Places<'_> {
 /// include resolves to or a listed class: else the host and the compiler
 /// disagree, and there is no closure. Class r-code in `$OUT` and members of a
 /// library pass, as in V3: the class listing, the order of the compiles and
-/// the PROPATH digests cover them.
+/// the PROPATH digests cover them. With no `$OUT`, no r-code passes.
 pub fn observe(
     xref: &Xref,
     unit: &str,
@@ -110,9 +111,11 @@ pub fn observe(
             .filter(|_| !name.contains("<<"))
             .ok_or_else(|| format!("the compiler read {name}, which has no canonical path"))?;
         let rcode = source.ends_with(".r")
-            && source
-                .strip_prefix(places.rcode)
-                .is_some_and(|rest| rest.starts_with('/'));
+            && places.rcode.is_some_and(|rcode| {
+                source
+                    .strip_prefix(rcode)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            });
         let known =
             rcode || closure.files.contains(&source) || classes.binary_search(&source).is_ok();
         if source != unit && !known {
