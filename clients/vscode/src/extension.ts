@@ -41,6 +41,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
       return found.kind === "found" ? found.command : undefined;
     },
     storageDir: context.globalStorageUri.fsPath,
+    memory: context.workspaceState,
   });
   context.subscriptions.push(
     log,

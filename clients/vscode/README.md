@@ -115,8 +115,9 @@ few compiles.
 
 - It builds once when the folder opens, and shows one notification when that
   first build ends: "oxabl build finished: 450 units, 82% from cache (370
-  local, 0 remote), 80 compiled in 1m 12s". Later builds show only the status
-  bar.
+  local, 0 remote), 80 compiled in 1m 12s". It tells this once for each
+  project; a later window and later builds show only the status bar. A first
+  build that fails shows its error in every window.
 - It builds again when you save a file, and when a `.p`, `.w`, `.cls`, `.i`,
   `.v` or `.df` file, `oxabl.toml` or `.oxabl/cache.toml` changes on disk. So
   an agent, a `git checkout` or another tool that edits files also starts a
@@ -162,8 +163,9 @@ the messages of the units it did not reach. A configuration error (exit code
 A unit without a compile key compiles at every build, and no cache holds
 it. The report of each build (`--report`) says which units have none. When
 the reason names a setting that is missing, such as `[workspace.sources].dlc`,
-or when a tenth of the workspace has no key, one warning per window names the
-count and the reason: the setup of the project is not complete. A few units
+or when a tenth of the workspace has no key, one warning names the count and
+the reason. It shows once for each project and reason, not at every start of
+VS Code: the setup of the project is not complete. A few units
 of encrypted source show only in the tooltip and the build log. The variables
 of a login profile reach the build only through VS Code: after you change
 `OXABL_DLC_SOURCES`, start VS Code again from a session that has it.

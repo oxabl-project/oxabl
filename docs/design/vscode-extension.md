@@ -378,14 +378,17 @@ Each build passes `--report <global storage>/reports/<hash of root>.json`
 (or uses the `--report` of `oxabl.build.args`). After exit 0 or 1 the
 extension counts the units without a compile key: a plan reason `unkeyable` or
 `unverified`, or a report note "no key from what the compiler read". It warns
-once per window and reason when the reason names a missing setting (`needs [`)
+once per workspace, root and reason (kept in `workspaceState`, so VS Code does
+not repeat it at every start) when the reason names a missing setting (`needs [`)
 or a tenth of the workspace has no key: such a project compiles that share at
 every save. Encrypted source has no key by nature, so a few such units only
 show in the tooltip and the log. Compiler messages go to a diagnostic
 collection `oxabl build`: each unit's set is replaced at its `unit-finished`
 and cleared at its `unit-fetched` (a cache gives no messages), and a cancelled
 build keeps the sets of the units it did not reach. One notification shows when
-the first build of the window ends; later builds show the status bar only. On
+the first build of the window ends; later builds show the status bar only. A
+success is told once per root (`workspaceState`), because "N units up to date"
+at every start tells nothing; a failure is told in every window. On
 deactivate every running build gets `SIGINT`, and `SIGKILL` after 5 s.
 
 ### Tests
