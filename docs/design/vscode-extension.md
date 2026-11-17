@@ -366,7 +366,12 @@ a save the build rebuilds only the edited units, which no cache can hold, so
 that rate is 0% at almost every build. The tooltip holds only what
 `build-started` fixes (the units to rebuild, the workspace and the units up to
 date before the build), because VS Code redraws an open hover at every change
-of it, and a count per unit made it flash without a pause. The notification
+of it, and a count per unit made it flash without a pause. When no unit was up
+to date before the build (`rebuild` equals `units`) and the workspace has 500
+units or more, the tooltip also says that this is the first build of the project
+and that it can take 10 minutes or more. The signal is in the events of oxabl, so
+it needs no guess about files. A build that rebuilds everything for another
+reason, such as a change of the environment, gets the same text. The notification
 says "N of M units rebuilt" with the hit rate of the build.
 
 Each build passes `--report <global storage>/reports/<hash of root>.json`

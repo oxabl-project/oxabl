@@ -147,7 +147,7 @@ spinner turns next to it:
 | Item | Meaning |
 | --- | --- |
 | `oxabl: preparing` | The build starts. |
-| `oxabl 120/450 · 97% cached` | Units done (from a cache or compiled) of the units this build rebuilds, and the share of the workspace that needs no compile: units up to date plus units a cache gave, rounded down, so 100% means nothing compiles. The tooltip says how many units this build rebuilds and how many of the workspace were up to date before it. It does not change while units finish, so it stays readable. |
+| `oxabl 120/450 · 97% cached` | Units done (from a cache or compiled) of the units this build rebuilds, and the share of the workspace that needs no compile: units up to date plus units a cache gave, rounded down, so 100% means nothing compiles. The tooltip says how many units this build rebuilds and how many of the workspace were up to date before it. For the first build of a large project (no unit up to date, 500 units or more) it also says that the build can take 10 minutes or more and that later builds compile only what changed. It does not change while units finish, so it stays readable. |
 | `oxabl` with a check mark | The build succeeded. It hides after 3 seconds. |
 | `oxabl: 2 failed` | Units failed. It stays until the next successful build. Click it to open the Problems view. |
 | warning | The build could not run (exit code 2, 3 or other). The tooltip has the first line of its error output. Click it to open the build log. |
