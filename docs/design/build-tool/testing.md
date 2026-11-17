@@ -573,6 +573,17 @@ for every unit above 20,000 bytes, and at least one such unit must exist (the fi
 `bulk.p`, about 190 KB of r-code, has 0.64 %); small units sit at 0.7 to 1.1 %. A tamper
 control in `portable_rcode` flips one unmasked byte and expects the oracle to refuse it.
 
+### The runtime oracle
+
+A test that asks what a project runs takes the runtime PROPATH from the environment the
+program starts in, as a project configures it: the `PROPATH` variable, or a `.pf` or `.ini`
+that the run command passes. `runtime.rs` sets the variable with `env` in front of the AVM
+executable of `OXABL_OPENEDGE_COMMAND`. No program in such a test sets `PROPATH`, and no test
+derives the runtime PROPATH from oxabl's output directory. A test names the layout of the
+project (the source entries alone, or an output entry before each source entry) and shows
+that the other layout fails it. `run_from_rcode` in `compile.rs` sets `PROPATH` to
+`build/r`, so it is only for tests about the r-code itself.
+
 ### Tests
 
 | Test | What it proves |
@@ -632,6 +643,17 @@ control in `portable_rcode` flips one unmasked byte and expects the oracle to re
 | `xref_text_observed_closure` | The text `XREF` of `main.p` has an `INCLUDE` row for `defs.i`, `ttrows.i` and the definitions-only `consts.i`. |
 | `xref_text_unusual_names` | A skipped `&IF` include, a unit with a space in its name and an include path of 200 characters: the text `XREF` reads back and the units are stored. |
 | `xref_readers` | The text reader finds every include of the fixture (its `INCLUDE` rows give the name as written, not as resolved); the XML reader finds the includes that hold a reference. |
+| `the_runtime_searches_entry_by_entry` | E1: `a/x.p` and, in a later entry, `b/x.r` of another source. `RUN x.p` on `a,b` runs `a/x.p`; on `b,a` it runs `b/x.r`. The runtime searches entry by entry, r-code before source in each entry. |
+| `rcode_beside_a_newer_source_runs` | E1b: `a/x.r` of an old source beside a newer, edited `a/x.p`: `RUN x.p` runs the old r-code. The runtime does not compare times. |
+| `every_name_of_a_program_runs_the_rcode_beside_it` | E1c: with the E1b setup, `RUN x`, `RUN x.r`, `RUN` of the full path of `a/x.p`, `-p <full path>` and `-p x.p` all run `a/x.r`. With `o/x.r` in an entry before `a`, `-p x.p` runs `o/x.r`, and the full path of `a/x.p` (`-p` and `RUN VALUE`) still runs `a/x.r`. `RUN x` with no `x.r` is error 293. |
+| `compile_save_replaces_the_rcode_file` | E3: `COMPILE ... SAVE` and `SAVE INTO` over an existing `.r` give a new inode; a hard link to the old file keeps the old bytes. |
+| `class_rcode_beside_a_newer_source_runs` | E4: `a/pkg/Foo.r` of an older source beside `a/pkg/Foo.cls`: `DYNAMIC-NEW "pkg.Foo"` and a user compiled on the fly both get the old class. |
+| `the_compiler_opens_no_procedure_rcode` | E7: `u.p` runs `v.p`; random bytes at `u.r` and `v.r` beside the sources. The compile of `u.p` by name opens `u.r` (the `FileID` log), not `v.r`, and its r-code is equivalent to a compile without them under the r-code oracle. |
+| `stale_rcode_beside_a_procedure_changes_no_compile` | E9: `COMPILE x.p SAVE` by name with stale r-code of another version at `a/x.r`: the compile opens it, succeeds, and the r-code is equivalent to a compile without it; the program runs the new text. |
+| `class_users_bind_the_rcode_compiled_beside_the_class` | E8: compile PROPATH of the source entries alone. `a/pkg/Foo.cls` compiled `SAVE INTO a` gives `a/pkg/Foo.r`; users in `a/` (PROPATH `a`) and `b/` (PROPATH `b,a`) bind it (the `FileID` log names `a/pkg/Foo.r`, not `Foo.cls`). With stale `a/pkg/Foo.r` first, the users bind the stale class until the class compiles over it, then the new one. |
+| `a_cycle_in_place_after_two_passes` | E8: the cycle `pkg.A` <-> `pkg.B` compiled in place (`SAVE INTO` the source entry, PROPATH that entry alone), two passes in fresh sessions. With compatible stale r-code beside both, the r-code after pass 2 is equivalent to a clean build's (one pass is not). With stale r-code that lacks the members the other calls, all four compiles fail with 12927 and the stale files stay. |
+| `the_runtime_ignores_an_output_directory_it_does_not_search` | The incident, pinned: r-code of the project's own `COMPILE ... SAVE` beside the sources, an edit of a program, an include and a class, `oxabl build` into `build/r`, and a runtime PROPATH of the source directory alone: all three print the **old** text. Red with `build/r` first. |
+| `an_edit_of_a_program_shows_in_the_runtime` | The same project with the runtime PROPATH `build/r`, then `src` (one output entry before each source entry): the program, the include and the class print the new text. Red with `src` alone. |
 | `orphans` | After `SIGKILL` of oxabl during a 3,000-unit build, no `_progres` of that build is alive within 120 s. |
 | `cancel_leaves_no_worker` | `SIGINT` during a build gives exit code 130, and no worker of the build stays alive. |
 

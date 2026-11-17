@@ -539,7 +539,7 @@ fn session_binds_a_class_again_after_a_propath_change() {
 
 /// A class of a cycle: `pkg.<me>` has `New<me>` and calls `New<other>` on a
 /// `pkg.<other>`. The stale version has only `Old<me>` and names no class.
-fn cycle_class(me: &str, other: &str, stale: bool) -> String {
+pub(crate) fn cycle_class(me: &str, other: &str, stale: bool) -> String {
     match stale {
         true => format!(
             "CLASS pkg.{me}:\n    METHOD PUBLIC LOGICAL Old{me}():\n        RETURN TRUE.\n    END METHOD.\nEND CLASS.\n"
