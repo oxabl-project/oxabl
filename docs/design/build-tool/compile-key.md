@@ -509,6 +509,38 @@ one member, so the compile of a user shows which version it bound.
   set only for the first compile that binds each class in a fresh session. For 300 compiles
   of a small unit the log added about 10% (106 ms to 117 ms).
 
+### Measured: runtime and r-code beside the source
+
+Facts for a design that writes r-code beside the source; no rule above changes. OpenEdge
+12.8.9, tests in `crates/oxabl/tests/build_openedge/runtime.rs`, listed in
+[testing.md](testing.md). The runtime PROPATH of each run comes from the environment.
+
+- **The runtime search.** `RUN x.p` takes the first PROPATH entry that holds `x.r` or `x.p`,
+  and in that entry the r-code, whatever the dates of the files. This is the rule of the
+  compiler for a class. A class gets the r-code in its entry too, also when it is made at
+  run time (`DYNAMIC-NEW`).
+- **Names.** `RUN x`, `RUN x.r`, `RUN x.p` and `-p x.p` search the PROPATH. The full path of
+  a source (`RUN VALUE("<dir>/x.p")`, `-p <dir>/x.p`) runs `<dir>/x.r` when it exists, also
+  when an earlier entry holds another `x.r`. So r-code in a separate directory serves a
+  program that starts by name, and only r-code beside the source serves a program that
+  starts by the path of its source. A runtime that searches only the source entries never
+  runs r-code in a separate directory: after an edit and a build it runs the r-code that an
+  older compile left beside the source.
+- **`COMPILE ... SAVE` writes a new file.** `SAVE` and `SAVE INTO` over an existing `.r`
+  give a new inode. A hard link to the old file keeps the old bytes.
+- **Procedure r-code is no compile input.** The compile of `u.p` by name opens `u.r` when
+  the PROPATH search finds it first (the `FileID` log), and does not open the `.r` of a `RUN`
+  target. The r-code is equivalent to a compile without those files under the r-code
+  oracle, also when `u.r` holds random bytes or r-code of another version.
+- **Classes in place.** With the source entries alone on the compile PROPATH (no `$OUT`), a
+  class unit compiled `SAVE INTO` its package root puts its r-code beside the source, and its
+  users in that directory and in another source directory bind that file. Stale r-code at
+  that path is bound until the class compiles over it; then the users bind the new r-code.
+- **A cycle in place.** Two passes in fresh sessions over `pkg.A` <-> `pkg.B` with stale but
+  compatible r-code beside both give r-code equivalent to a clean build's. Stale r-code that
+  lacks a member the other class calls makes every compile of both passes fail (12927), and
+  a failed compile writes no r-code, so the stale files stay.
+
 ## The observed closure
 
 Some units have no key only because oxabl cannot read their closure from their source: a

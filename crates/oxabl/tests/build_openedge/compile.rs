@@ -29,7 +29,10 @@ pub const FIXTURE_UNITS: &[(&str, &str)] = &[
     ("src/useleaf.p", "useleaf.r"),
 ];
 
-/// Runs a program of the fixture from the r-code alone.
+/// Runs a program of the fixture from the r-code alone. Only for tests about
+/// the r-code itself: its PROPATH is oxabl's output directory, which a project
+/// runtime need not search. A test about what a project runs takes its PROPATH
+/// from the environment (`runtime.rs`).
 pub fn run_from_rcode(program: &str) -> String {
     format!(
         "FILE-INFO:FILE-NAME = \".\".\nPROPATH = FILE-INFO:FULL-PATHNAME + \"/build/r\".\nRUN {program}.\nPUT UNFORMATTED \"RAN\" SKIP.\nQUIT.\n"
