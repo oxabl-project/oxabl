@@ -134,7 +134,11 @@ fn a_cycle_that_does_not_settle_is_recorded_without_a_key() {
     ]);
     for path in ["src/pkg/A.cls", "src/pkg/B.cls"] {
         assert_eq!(unit(&plan, path)["action"], "rebuild", "{path}: {plan}");
-        assert_eq!(unit(&plan, path)["reasons"][0]["details"], note, "{path}: {plan}");
+        assert_eq!(
+            unit(&plan, path)["reasons"][0]["details"],
+            note,
+            "{path}: {plan}"
+        );
     }
     assert_eq!(
         common::cache::entries(cache.path()).len(),
