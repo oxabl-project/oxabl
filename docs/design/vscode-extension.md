@@ -299,14 +299,35 @@ updated when it is managed, and otherwise one message asks for a newer oxabl.
 ### The build loop
 
 A *root* is a folder with an `oxabl.toml` in the workspace. It builds when
-`oxabl build --root R --print-config --json` exits 0 and has values for
-`build.output` and `build.workers.command` (`oxabl.build.args` go to this call
-too: an overlay can supply the worker command). The same output gives the
-directories whose changes are ignored: `build.output`, `build.outputs.*`,
-`build.state` and `build.store`. Any other change under `.git` is ignored too.
+`oxabl build --root R --print-config --json` exits 0, has a value for
+`build.workers.command`, and has a place for the r-code: a value for
+`build.output` (`build.rcode` absent or `directory`), or `build.rcode` =
+`beside-source` (`oxabl.build.args` go to this call too: an overlay can supply
+the worker command). Another value of `build.rcode` does not build: the
+extension does not know where that r-code goes. The same output gives the
+directories whose changes are ignored: `build.output` (in `directory` mode
+only), `build.outputs.*`, `build.state` and `build.store`. With
+`beside-source`, the build writes r-code into the source directories, so no
+source directory is on that list. Any other change under `.git` is ignored too.
+
+When the call fails (for example, a binary older than a key of `oxabl.toml`
+refuses the file with exit code 2), the root does not build. The extension
+writes the reason to both output channels and shows it once as an error
+notification, `oxabl build: cannot read the build setup: <reason>`.
+
+The order of the updates for `build.rcode`: the extension first, then the
+binary, then the `oxabl.toml` files. An older extension reads `build.output`
+only, so it does not build a root with `beside-source`: saves start no build
+and nothing tells why. An older binary refuses `build.rcode` (unknown keys are
+errors), which the newer extension shows as above. Both cases build nothing,
+so no build writes r-code to a place that the project does not expect.
 
 Triggers are the build at open, saves, and a file watcher on
-`**/*.{p,w,cls,i,v,df}`, `**/oxabl.toml` and `**/.oxabl/cache.toml`. The
+`**/*.{p,w,cls,i,v,df}`, `**/oxabl.toml` and `**/.oxabl/cache.toml`. A `.r`
+file is never a trigger, so r-code that a build writes beside the sources
+starts no build (the e2e scenario `build-beside-source`). The language server
+registers no glob that matches a `.r` file either, and an `.r` event that a
+client sends anyway recomputes no open buffer (`crates/oxabl_lsp/tests/watcher_e2e.rs`). The
 watcher is there because agents, `git` and other tools edit files without a
 save. A save is also seen by the watcher. The extension keeps the modification
 time and size of each file at its last event, so the second event of one save

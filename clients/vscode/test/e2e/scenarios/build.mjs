@@ -230,6 +230,61 @@ export async function buildBurstDisk(ctx) {
   });
 }
 
+export async function buildBesideSource(ctx) {
+  const name = "build-beside-source";
+  const config = {
+    printConfig: {
+      settings: {
+        "build.rcode": { value: "beside-source", source: "oxabl.toml" },
+        "build.state": { value: ".oxabl/build", source: "default" },
+        "build.workers.command": { value: ["fake-worker", "{program}"], source: "oxabl.toml" },
+      },
+    },
+    builds: [QUICK_BUILD],
+  };
+  await session(ctx, name, { config }, async ({ profile, log }) => {
+    await waitForExits(`${name}: the build at open`, log, 1);
+    check(`${name}: a root with r-code beside the source and no output builds at open`, buildStarts(log()).length >= 1, `${buildStarts(log()).length}`);
+    // A build the extension starts for another reason (a check of the binary) must not count below.
+    await sleep(3_000);
+    const before = buildStarts(log()).length;
+
+    // What a build in place writes: r-code beside each source, in the source directories.
+    const src = path.join(profile.workspace, "src");
+    fs.mkdirSync(path.join(src, "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(profile.workspace, "sample.r"), "r-code\n");
+    fs.writeFileSync(path.join(src, "pkg", "Foo.r"), "r-code\n");
+    fs.writeFileSync(path.join(src, "UPPER.R"), "r-code\n");
+    for (let i = 0; i < 200; i++) {
+      fs.writeFileSync(path.join(src, `unit${i}.r`), `r-code ${i}\n`);
+      await sleep(5);
+    }
+    await sleep(3_000);
+    check(`${name}: r-code written beside the sources starts no build`, buildStarts(log()).length === before, `${buildStarts(log()).length - before} builds`);
+
+    fs.writeFileSync(path.join(src, "edited.p"), "/* edited */\n");
+    await waitForBuilds(`${name}: a source written beside the r-code starts a build`, log, before + 1, 15_000);
+    check(`${name}: a source in the same directories still starts a build`, true);
+  });
+}
+
+export async function buildConfigRefused(ctx) {
+  const name = "build-config-refused";
+  // What a binary from before `build.rcode` says about an oxabl.toml that sets it.
+  const stderr = "error: oxabl.toml: unknown field `rcode`, expected one of `output`, `state`";
+  const config = { printConfig: { exit: 2, stderr }, builds: [QUICK_BUILD] };
+  await session(ctx, name, { config }, async ({ page, log }) => {
+    await waitForText(page, "oxabl build: cannot read the build setup", 60_000);
+    const text = (await toasts(page)).find((t) => t.includes("cannot read the build setup")) ?? "";
+    check(`${name}: the notification gives the binary's reason`, text.includes("unknown field `rcode`"), `got "${text}"`);
+    await screenshot(page, name);
+    await sleep(3_000);
+    const asked = log().filter((l) => l.event === "invoke" && l.args?.includes("--print-config"));
+    check(`${name}: the configuration was asked for`, asked.length >= 1, `${asked.length}`);
+    check(`${name}: a configuration the binary refuses runs no build`, buildStarts(log()).length === 0, `${buildStarts(log()).length} builds`);
+  });
+}
+
 function burstChecks(name, log) {
   const starts = buildStarts(log);
   const sigs = signals(log);

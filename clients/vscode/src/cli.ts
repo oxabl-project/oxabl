@@ -96,8 +96,11 @@ function textValue(settings: Record<string, { value?: unknown } | undefined>, ke
 
 /**
  * The root's build setup from `oxabl build --print-config --json`, or
- * `undefined` when the root does not build: no `build.output` or no worker
- * command.
+ * `undefined` when the root does not build: no worker command, or no place for
+ * the r-code (`build.output`, or `build.rcode = "beside-source"`). An unknown
+ * `build.rcode` does not build. With r-code beside the source, the build writes
+ * into the source directories, so they are not on the ignore list; the watcher
+ * takes no `.r` file as a build input (`roots.ts`).
  */
 export function parsePrintConfig(stdout: string, root: string): RootConfig | undefined {
   let settings: Record<string, { value?: unknown } | undefined>;
@@ -106,9 +109,10 @@ export function parsePrintConfig(stdout: string, root: string): RootConfig | und
   } catch {
     return undefined;
   }
-  const output = textValue(settings, "build.output");
+  const rcode = textValue(settings, "build.rcode") ?? "directory";
+  const output = rcode === "directory" ? textValue(settings, "build.output") : undefined;
   const command = settings["build.workers.command"]?.value;
-  if (!output || !Array.isArray(command) || command.length === 0) {
+  if (!(output || rcode === "beside-source") || !Array.isArray(command) || command.length === 0) {
     return undefined;
   }
   const dirs = [
@@ -122,16 +126,20 @@ export function parsePrintConfig(stdout: string, root: string): RootConfig | und
   return { ignore: dirs.flatMap((d) => (d ? [path.resolve(root, d)] : [])) };
 }
 
-/** `RootConfig` of `root`, or `undefined` when it does not build (or the call fails). */
+/**
+ * `RootConfig` of `root`, or no `config` when it does not build. `error` is
+ * set when the binary could not read the configuration, for example a binary
+ * older than a key of the `oxabl.toml`.
+ */
 export async function readRootConfig(
   binary: string,
   root: string,
   extraArgs: string[],
-): Promise<RootConfig | undefined> {
+): Promise<{ config?: RootConfig; error?: string }> {
   try {
     const out = await runCli(binary, ["build", "--root", root, "--print-config", "--json", ...extraArgs], 30_000);
-    return parsePrintConfig(out.stdout, root);
-  } catch {
-    return undefined;
+    return { config: parsePrintConfig(out.stdout, root) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
   }
 }

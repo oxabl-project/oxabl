@@ -42,6 +42,8 @@ only; the extension is the program under test.
 | `build-save-keeps-its-build` | The watcher event that follows a save neither cancels the build of that save nor delays it. |
 | `build-burst-save` | Ten saves while a build runs: one `SIGINT` to that build, one new build that completes. |
 | `build-burst-disk` | Two hundred files written on disk while a build runs: the same. Files in the output and state directories start no build. |
+| `build-beside-source` | A root whose configuration has `build.rcode = "beside-source"` and no `build.output` builds at open. Two hundred `.r` files written into the source directories (and `.R`, and below `pkg/`) start no build; a `.p` written beside them starts one. |
+| `build-config-refused` | `--print-config` exits 2 with the error of a binary that does not know `build.rcode`: an error notification gives that reason, and no build runs. |
 | `build-diagnostic` | A compiler message shows in the Problems panel. A failed first build gives an error notification, and `oxabl: 1 failed` stays in the status bar. |
 | `build-untrusted` | An untrusted workspace runs no `oxabl build`, not even `--print-config`. Granting trust starts the build. |
 | `build-external-preemption` | A build that exits 130 without a signal from the extension: the status bar says `running elsewhere` and one more build starts. |

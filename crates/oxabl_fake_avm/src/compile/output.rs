@@ -7,14 +7,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::outcome::Outcome;
 use super::visit::Context;
 
-fn stem(name: &str) -> &str {
+pub fn stem(name: &str) -> &str {
     match name.rsplit_once('.') {
         Some((stem, extension)) if !extension.contains('/') => stem,
         _ => name,
     }
 }
 
-fn put(path: &Path, text: impl AsRef<[u8]>) -> io::Result<()> {
+pub fn put(path: &Path, text: impl AsRef<[u8]>) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -27,12 +27,19 @@ fn nanoseconds() -> u128 {
         .map_or(0, |elapsed| elapsed.as_nanos())
 }
 
-/// The text of an r-code file: the unit, each file it read with its hash, and
-/// the time, which makes two compiles of one source differ like real r-code.
-fn rcode(name: &str, out: &Outcome) -> String {
+/// The text of an r-code file: the unit, each file it read with its hash,
+/// what it prints and the classes it uses when it runs, and the time, which
+/// makes two compiles of one source differ like real r-code.
+pub fn rcode(name: &str, out: &Outcome) -> String {
     let mut text = format!("oxabl-fake-r 1\nunit {name}\n");
     for read in &out.reads {
         text.push_str(&format!("read {} {}\n", read.shown, read.sha256));
+    }
+    for say in &out.says {
+        text.push_str(&format!("say {say}\n"));
+    }
+    for class in &out.uses {
+        text.push_str(&format!("uses {class}\n"));
     }
     text.push_str(&format!("compiled-at {}\n", nanoseconds()));
     text

@@ -22,6 +22,9 @@ pub struct Context<'a> {
     pub listing: bool,
     pub dlc: &'a Path,
     pub faults: &'a Faults,
+    /// Whether a class compiled on the side leaves r-code in the stage; a
+    /// compile outside the protocol leaves none.
+    pub save_strays: bool,
 }
 
 /// A class a session has bound: the file, its hash then, and what the
@@ -52,15 +55,22 @@ impl Compiler {
             out.fail(name, 0, 293, &format!("Cannot find or open file {name}"));
             return Ok(out);
         };
-        let mut visited: HashSet<String> = class_of_unit(name).into_iter().collect();
-        self.visit_file(ctx, name, &found, &mut out, &mut visited, true);
-        if out.slow {
-            std::thread::sleep(Duration::from_secs(2));
-        }
+        let out = self.compile_found(ctx, name, &found);
         if out.ok && !out.no_output {
             output::write(ctx, name, &out)?;
         }
         Ok(out)
+    }
+
+    /// Compiles the unit `name`, found at `found`, and writes nothing.
+    pub fn compile_found(&mut self, ctx: &Context<'_>, name: &str, found: &Found) -> Outcome {
+        let mut out = Outcome::new();
+        let mut visited: HashSet<String> = class_of_unit(name).into_iter().collect();
+        self.visit_file(ctx, name, found, &mut out, &mut visited, true);
+        if out.slow {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        out
     }
 
     fn visit_file(
@@ -91,6 +101,7 @@ impl Compiler {
         for raw in &found_in_text.xref_raw {
             out.xref_raw.extend_from_slice(raw);
         }
+        out.says.extend(found_in_text.says.iter().cloned());
         for (fault, row) in &found_in_text.faults {
             apply(*fault, *row, &found.shown, unit, ctx.faults, out);
         }
@@ -130,6 +141,9 @@ impl Compiler {
         }
         for class in &found_in_text.classes {
             out.references.push(("NEW", class.clone()));
+            if !out.uses.iter().any(|used| used.eq_ignore_ascii_case(class)) {
+                out.uses.push(class.clone());
+            }
             self.visit_class(ctx, unit, class, out, visited);
         }
     }
@@ -184,7 +198,9 @@ impl Compiler {
             let real = found.real.clone();
             let mut side = Outcome::new();
             self.visit_file(ctx, unit, &found, &mut side, visited, false);
-            let _ = output::write_stray(ctx, &relative);
+            if ctx.save_strays {
+                let _ = output::write_stray(ctx, &relative);
+            }
             self.bind(lower, real, sha256_hex(&bytes), side.reads.clone());
             out.merge(side);
             return;

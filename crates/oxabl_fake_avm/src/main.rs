@@ -5,6 +5,25 @@
 //! The environment comes from the JSON file named by `--env`, else by
 //! `FAKE_AVM_ENV`.
 //!
+//! Two more forms stand in for the AVM outside the worker protocol. Both take
+//! the PROPATH from the `PROPATH` variable (entries split at `,` and `:`), and
+//! fail when it is unset or empty.
+//! - The runtime: `oxabl_fake_avm -p <program>` runs a program by a name or a
+//!   full path, and `oxabl_fake_avm -new <class>` makes an object of a class.
+//!   It finds the file as measured on OpenEdge: entry by entry, `<stem>.r`
+//!   before the source in each entry, no date check; a full path runs the `.r`
+//!   beside it first. It prints `RUN <name> <file> rcode` or `RUN <name> <file>
+//!   compiled-on-the-fly`, then `SAYS <text>` for each `FAKE-SAY <text>` of the
+//!   program and its includes, and the `read <path> <hash>` lines of its r-code
+//!   (of the compile in memory for a source). Then it loads each class the
+//!   program uses by the same rule and prints the same lines after `NEW
+//!   <class> <file> ...`. A name it cannot find is `** "<name>" was not found.
+//!   (293)` on stderr and exit code 1; a `.r` that is not fake r-code is error
+//!   2888.
+//! - A compile: `oxabl_fake_avm -c <name> [-save-into <dir>]` writes the r-code
+//!   of `<name>` as `COMPILE <name> SAVE [INTO <dir>]` does, beside the source
+//!   it found on the PROPATH or below `<dir>`.
+//!
 //! A compile reads the unit, its includes and the classes it uses on the
 //! request's PROPATH, and writes a text r-code file that lists what it read
 //! with a hash of each, and a time. Text in a source asks for a fault:
@@ -88,8 +107,34 @@ fn check_program(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The runtime and compile forms; `None` for the worker form.
+fn outside_the_protocol(args: &[String]) -> Option<Result<(), String>> {
+    match args {
+        [start, target] if start == "-p" || start == "-new" => {
+            Some(compile::runtime::run(start, target))
+        }
+        [flag, name] if flag == "-c" => Some(compile::runtime::compile_and_save(name, None)),
+        [flag, name, into, dir] if flag == "-c" && into == "-save-into" => {
+            Some(compile::runtime::compile_and_save(name, Some(dir)))
+        }
+        [first, ..] if matches!(first.as_str(), "-p" | "-new" | "-c") => Some(Err(
+            "usage: oxabl_fake_avm -p <program> | -new <class> | -c <name> [-save-into <dir>]"
+                .to_string(),
+        )),
+        _ => None,
+    }
+}
+
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = outside_the_protocol(&all) {
+        if let Err(message) = result {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let mut args = all.into_iter();
     let Some(program) = args.next() else {
         eprintln!("usage: oxabl_fake_avm <program> [--env <file>]");
         std::process::exit(2);

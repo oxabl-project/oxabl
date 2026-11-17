@@ -27,6 +27,8 @@ pub struct Scan {
     pub classes: Vec<String>,
     /// Paths named by `FAKE-READ`.
     pub reads: Vec<String>,
+    /// Texts named by `FAKE-SAY`: what the program prints when it runs.
+    pub says: Vec<String>,
     /// Each fault with the line it is on, counted from 1.
     pub faults: Vec<(Fault, usize)>,
     /// `FAKE-RESOLVE-OTHER <name> <path>`: the include `name` resolves to `path`.
@@ -120,6 +122,11 @@ pub fn scan(text: &str) -> Scan {
         if let Some((_, raw)) = line.split_once("FAKE-XREF-RAW") {
             let raw = raw.trim().trim_end_matches("*/").trim();
             found.xref_raw.push(raw_bytes(raw));
+            continue;
+        }
+        if let Some((_, text)) = line.split_once("FAKE-SAY") {
+            let text = text.trim().trim_end_matches("*/").trim();
+            found.says.push(text.to_string());
             continue;
         }
         if let Some((_, path)) = line.split_once("FAKE-READ") {

@@ -160,7 +160,7 @@ export class BuildController implements vscode.Disposable {
     await this.discover();
     if (this.roots.size === 0) {
       void vscode.window.showInformationMessage(
-        "oxabl: no project to build. A build needs an oxabl.toml with [build].output and [build.workers].command.",
+        "oxabl: no project to build. A build needs an oxabl.toml with [build.workers].command and [build].output or [build].rcode = \"beside-source\".",
       );
       return;
     }
@@ -199,9 +199,9 @@ export class BuildController implements vscode.Disposable {
     const binary = this.deps.binary();
     const dirs = binary ? await this.candidates() : [];
     const found = await Promise.all(
-      dirs.map(async (dir) => [dir, binary ? await readRootConfig(binary, dir, this.extraArgs()) : undefined] as const),
+      dirs.map(async (dir) => [dir, binary ? await readRootConfig(binary, dir, this.extraArgs()) : {}] as const),
     );
-    for (const [dir, config] of found) {
+    for (const [dir, { config, error }] of found) {
       const existing = this.roots.get(dir);
       if (config && existing) {
         existing.config = config;
@@ -218,7 +218,19 @@ export class BuildController implements vscode.Disposable {
         existing.scheduler.cancelAll();
         this.roots.delete(dir);
         this.deps.log.info(`${dir} does not build any more`);
-      } else {
+      }
+      if (config) {
+        continue;
+      }
+      if (error) {
+        this.deps.log.warn(`cannot read the build setup of ${dir}: ${error}; not building it`);
+        this.output.appendLine(`${dir}: cannot read the build setup: ${error}`);
+        const reason = `cannot read the build setup: ${error}`;
+        if (!this.shownErrors.has(reason)) {
+          this.shownErrors.add(reason);
+          void vscode.window.showErrorMessage(`oxabl build: ${reason}`, "Show Build Log").then((choice) => choice && this.showLog());
+        }
+      } else if (!existing) {
         this.deps.log.info(`${dir} has an oxabl.toml but no build setup; not building it`);
       }
     }

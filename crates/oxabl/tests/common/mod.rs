@@ -6,12 +6,14 @@
 pub mod built;
 pub mod cache;
 pub mod fake_github;
+pub mod fake_runtime;
 pub mod key_spec;
 pub mod keyed;
 pub mod openedge;
 #[cfg(feature = "remote-cache")]
 pub mod remote;
 pub mod remote_double;
+pub mod runtime_cases;
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -19,6 +19,7 @@ use crate::common::openedge::Target;
 use crate::common::openedge::compile::{Compile, Options, compile_workspace_with};
 use crate::common::openedge::mask::Mask;
 use crate::common::openedge::worker::expand;
+use crate::common::runtime_cases::{CASES, Case, Made, Start, class_of};
 use crate::setup;
 
 /// ABL that compiles a file, `SAVE` alone when `pcInto` is empty, and prints
@@ -301,6 +302,90 @@ fn every_name_of_a_program_runs_the_rcode_beside_it() {
     }
     let printed = runtime.session(&["o", "a"], &format!("RUN VALUE(\"{full}\")."));
     assert_eq!(said(&printed), ["old"], "{printed}");
+}
+
+/// A class `class` whose `ToString` gives `text`.
+fn class_says(class: &str, text: &str) -> String {
+    format!(
+        "CLASS {class}:\n    METHOD PUBLIC OVERRIDE CHARACTER ToString():\n        RETURN \"{text}\".\n    END METHOD.\nEND CLASS.\n"
+    )
+}
+
+impl Runtime {
+    /// Makes the files of a case of the shared table: r-code is compiled from
+    /// a stage of its own and placed with an older time than the sources.
+    fn make(&self, case: &Case) {
+        for (at, (path, made)) in case.files.iter().enumerate() {
+            let text = |text: &str| match class_of(path) {
+                Some(class) => class_says(&class, text),
+                None => says(text),
+            };
+            match (made, class_of(path)) {
+                (Made::Source(said), _) => {
+                    self.workspace.write(path, &text(said));
+                    self.stamp(path, 100);
+                }
+                (Made::Rcode(said), None) => {
+                    self.rcode_of(path, &text(said));
+                    self.stamp(path, 0);
+                }
+                (Made::Rcode(said), Some(class)) => {
+                    let stage = format!("stage{at}");
+                    let relative = class.replace('.', "/");
+                    self.workspace
+                        .write(&format!("{stage}/{relative}.cls"), &text(said));
+                    self.compile(
+                        &[&stage],
+                        &format!("{stage}/{relative}.cls"),
+                        &format!("{stage}/r"),
+                    );
+                    self.place(&format!("{stage}/r/{relative}.r"), path);
+                    self.stamp(path, 0);
+                }
+            }
+        }
+    }
+
+    /// Starts a case of the shared table: `-p` with the name or the full path,
+    /// or `DYNAMIC-NEW` of the class in a session.
+    fn start_case(&self, case: &Case) -> String {
+        match case.start {
+            Start::Name(name) => self.start(case.propath, name),
+            Start::FullPath(file) => self.start(case.propath, &self.worker(file)),
+            Start::Class(class) => self.session(
+                case.propath,
+                &format!(
+                    "DEFINE VARIABLE o AS Progress.Lang.Object NO-UNDO.\no = DYNAMIC-NEW \"{class}\" ().\nPUT UNFORMATTED \"SAYS \" o:ToString() SKIP."
+                ),
+            ),
+        }
+    }
+}
+
+/// The shared case table of `common/runtime_cases.rs` (E1, E1b, E1c, E4) on
+/// the real AVM. `build_runtime_fake.rs` runs the same table against the fake
+/// runtime, so the two agree on the rule.
+#[test]
+#[ignore = "needs a real AVM; see the module docs"]
+fn the_shared_case_table_holds_on_openedge() {
+    let mut failed = Vec::new();
+    for case in CASES {
+        let runtime = Runtime::new();
+        runtime.make(case);
+        let printed = runtime.start_case(case);
+        let got = said(&printed);
+        let ok = match case.says {
+            Some(text) => got == [text],
+            None => got.is_empty() && printed.contains("(293)"),
+        };
+        if !ok {
+            failed.push(format!(
+                "{}: expected {:?}, got {got:?}\n{printed}",
+                case.what, case.says
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
 /// E3: `COMPILE ... SAVE` and `COMPILE ... SAVE INTO` over an existing `.r`

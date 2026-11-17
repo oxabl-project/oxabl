@@ -8,9 +8,11 @@ import { check, failures, total } from "./lib/report.mjs";
 import { manifestVersion, newerVsix, packagedVsix } from "./lib/vsix.mjs";
 import { VSCODE_VERSION, downloadVSCode, leakedProcesses, takeProfiles } from "./lib/vscode.mjs";
 import {
+  buildBesideSource,
   buildBinaryChanged,
   buildBurstDisk,
   buildBurstSave,
+  buildConfigRefused,
   buildDiagnostic,
   buildExternalPreemption,
   buildInstall,
@@ -62,6 +64,8 @@ const SCENARIOS = [
   ["build-save-keeps-its-build", buildSaveKeepsItsBuild],
   ["build-burst-save", buildBurstSave],
   ["build-burst-disk", buildBurstDisk],
+  ["build-beside-source", buildBesideSource],
+  ["build-config-refused", buildConfigRefused],
   ["build-diagnostic", buildDiagnostic],
   ["build-untrusted", buildUntrusted],
   ["build-external-preemption", buildExternalPreemption],
