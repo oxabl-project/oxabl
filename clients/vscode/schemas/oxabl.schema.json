@@ -180,7 +180,7 @@
         },
         "output": {
           "default": "",
-          "description": "R-code output directory, under the workspace root. Required to compile.",
+          "description": "R-code output directory, under the workspace root. Required to compile when `rcode` is `directory`; must be empty when it is `beside-source`.",
           "type": "string"
         },
         "outputs": {
@@ -196,6 +196,15 @@
             "xref_format": "xml"
           },
           "description": "Directories for the optional compiler outputs."
+        },
+        "rcode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RcodePlace"
+            }
+          ],
+          "default": "directory",
+          "description": "Where the r-code of a unit goes."
         },
         "state": {
           "default": ".oxabl/build",
@@ -597,6 +606,25 @@
         }
       },
       "type": "object"
+    },
+    "RcodePlace": {
+      "description": "Where `oxabl build` puts the r-code of a unit.",
+      "oneOf": [
+        {
+          "description": "Below `[build].output`, a directory that oxabl owns.",
+          "enum": [
+            "directory"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Beside the source of the unit: `a/x.p` gives `a/x.r`.",
+          "enum": [
+            "beside-source"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "SchemaConfig": {
       "additionalProperties": false,
@@ -1278,6 +1306,7 @@
           "xref": "",
           "xref_format": "xml"
         },
+        "rcode": "directory",
         "state": ".oxabl/build",
         "store": "",
         "verify": {

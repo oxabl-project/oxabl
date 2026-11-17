@@ -10,8 +10,8 @@ mod observing;
 mod workspace;
 
 pub use build_config::{
-    BuildCache, BuildCompile, BuildConfig, BuildOutputs, BuildVerify, BuildWorkers, Size, TimeSpan,
-    XrefFormat,
+    BuildCache, BuildCompile, BuildConfig, BuildOutputs, BuildVerify, BuildWorkers, RcodePlace,
+    Size, TimeSpan, XrefFormat,
 };
 pub use cached::CachedFileSystem;
 pub use config::{

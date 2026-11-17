@@ -25,6 +25,8 @@ pub struct Context<'a> {
     /// Whether a class compiled on the side leaves r-code in the stage; a
     /// compile outside the protocol leaves none.
     pub save_strays: bool,
+    /// The compile names of the request.
+    pub request: &'a [String],
 }
 
 /// A class a session has bound: the file, its hash then, and what the
@@ -92,6 +94,7 @@ impl Compiler {
         out.record(Read {
             shown: found.shown.clone(),
             sha256: sha256_hex(&bytes),
+            listed: true,
         });
         let text = String::from_utf8_lossy(&bytes).into_owned();
         if is_unit {
@@ -110,6 +113,7 @@ impl Compiler {
                 out.record(Read {
                     shown: path.clone(),
                     sha256: sha256_hex(&bytes),
+                    listed: true,
                 });
             }
         }
@@ -181,9 +185,27 @@ impl Compiler {
             if let Some(found) = resolve::find(entry, &rcode, ctx.dlc)
                 && let Ok(bytes) = std::fs::read(&found.real)
             {
+                if let Some(stale) = stale_partner(ctx, unit, &bytes) {
+                    out.fail(
+                        &found.shown,
+                        0,
+                        12927,
+                        &format!(
+                            "{} was compiled from another version of {stale}",
+                            found.shown
+                        ),
+                    );
+                    out.fail(
+                        &found.shown,
+                        0,
+                        196,
+                        &format!("Could not understand {class}"),
+                    );
+                }
                 let read = Read {
                     shown: found.shown,
                     sha256: sha256_hex(&bytes),
+                    listed: false,
                 };
                 self.bind(lower, found.real, read.sha256.clone(), vec![read.clone()]);
                 out.record(read);
@@ -217,6 +239,25 @@ impl Compiler {
             },
         );
     }
+}
+
+/// The model of error 12927, as measured with r-code of two classes of a
+/// cycle that each compiled against another version of the other: class
+/// r-code of another unit of the request, compiled from a source of that unit
+/// whose bytes have changed since, does not fit the class being compiled.
+/// The unit it names, or `None` when the r-code fits.
+fn stale_partner(ctx: &Context<'_>, unit: &str, rcode: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(rcode);
+    let mut lines = text.lines();
+    let name = lines.find_map(|line| line.strip_prefix("unit "))?;
+    if name == unit || !ctx.request.iter().any(|other| other == name) {
+        return None;
+    }
+    let (path, sha256) = lines
+        .find_map(|line| line.strip_prefix("read "))?
+        .split_once(' ')?;
+    let now = std::fs::read(path).ok().map(|bytes| sha256_hex(&bytes));
+    (now.as_deref() != Some(sha256)).then(|| name.to_string())
 }
 
 fn marker(faults: &Faults, kind: &str, unit: &str) -> Option<PathBuf> {

@@ -134,12 +134,31 @@ fn run_job(
     let mut units = std::mem::take(&mut shared.remaining.lock().unwrap()[job]);
     units.retain(|unit| match unsendable(worker, shared, *unit) {
         Some(note) => {
-            promote::remove(shared.root, &shared.infos[unit].expected);
+            let note = with_removed(
+                note,
+                promote::remove(shared.root, &shared.infos[unit].expected),
+            );
             shared.send_done(tx, refused(job, *unit, note));
             false
         }
         None => true,
     });
+    // Each attempt of a cycle starts from the sources: r-code beside a class
+    // of the cycle can be older than any of them. A class whose r-code stays
+    // fails the whole cycle, which would bind it.
+    let cleared = match units.len() > 1 {
+        true => units
+            .iter()
+            .map(|unit| promote::remove_in_place(shared.root, &shared.infos[unit].expected))
+            .find_map(Result::err),
+        false => None,
+    };
+    if let Some(why) = cleared {
+        for unit in units {
+            shared.send_done(tx, failed_before(job, unit, why.clone()));
+        }
+        return Flow::Continue;
+    }
     if units.len() < 2 {
         let pass = Pass::Final { settled: true };
         return match run_pass(worker, shared, tx, job, (&units, pass, false), scratch) {
@@ -247,6 +266,22 @@ fn unsendable(worker: &Worker, shared: &Shared<'_>, unit: u32) -> Option<String>
     std::iter::once(info.name.as_str())
         .chain(shared.propaths[info.propath].iter().map(String::as_str))
         .find_map(|text| worker.check_encoding(text).err())
+}
+
+/// `note`, and the reason the outputs of the unit could not be deleted.
+fn with_removed(note: String, removed: Result<(), String>) -> String {
+    match removed {
+        Ok(()) => note,
+        Err(why) => format!("{note}; {why}"),
+    }
+}
+
+/// A unit that fails before its compile, for `note`; a retry can work.
+fn failed_before(job: usize, unit: u32, note: String) -> UnitDone {
+    UnitDone {
+        lost: false,
+        ..refused(job, unit, note)
+    }
 }
 
 fn refused(job: usize, unit: u32, note: String) -> UnitDone {
@@ -409,7 +444,12 @@ fn finish_unit(
         }
     }
     if !done.ok {
-        promote::remove(shared.root, &info.expected);
+        if let Err(why) = promote::remove(shared.root, &info.expected) {
+            done.note = Some(match done.note.take() {
+                Some(note) => format!("{note}; {why}"),
+                None => why,
+            });
+        }
         if report && shared.fail_fast {
             shared.queue.stop();
         }
@@ -460,7 +500,7 @@ fn lost(
         };
         if count >= 2 {
             undone.remove(0);
-            crate::output::promote::remove(shared.root, &shared.infos[&unit].expected);
+            let removed = promote::remove(shared.root, &shared.infos[&unit].expected);
             shared.send_done(
                 tx,
                 UnitDone {
@@ -469,7 +509,10 @@ fn lost(
                     ok: false,
                     ms: 0,
                     messages: Vec::new(),
-                    note: Some("worker lost twice while compiling this unit".to_string()),
+                    note: Some(with_removed(
+                        "worker lost twice while compiling this unit".to_string(),
+                        removed,
+                    )),
                     outputs: Vec::new(),
                     lost: true,
                     finished: Instant::now(),

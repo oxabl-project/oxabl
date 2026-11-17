@@ -13,10 +13,11 @@ use super::environment::Environment;
 use super::keyability::{ExternalPackage, Resolved, Rules, Verdict};
 use super::layout::{Layout, Placed, lay_out, search};
 use super::options::CompileSettings;
-use super::resolution::{ClassResolution, ResolutionSummary, Resolver, Units};
+use super::resolution::{ClassResolution, InPlace, ResolutionSummary, Resolver, Units};
 use crate::config::BuildWorkspace;
 use crate::graph::Scratch;
 use crate::observe::class_listing;
+use crate::output::in_place::rcode_path;
 use crate::paths::propath::{OUT, Placement, is_class_unit, library_name};
 use crate::paths::{Declared, PathMap};
 use crate::refresh::{Content, Observed, Outcome, parallel};
@@ -350,7 +351,13 @@ pub fn compute(
         let propath = &layout.propaths[placed.propath.expect("an active unit has a PROPATH")];
         rules.check(active_ids[*k], &closures[*k], propath)
     });
-    let units = resolver_units(&layout, (&active, &active_ids), &closures, &class_sources);
+    let units = resolver_units(
+        outcome,
+        (&layout, search.beside_source()),
+        (&active, &active_ids),
+        &closures,
+        &class_sources,
+    );
     let mut resolver = Resolver::new(&paths, &layout.propaths, units);
     if search.has_root_relative() {
         let written = class_units_with_written_names(&layout, (&active, &active_ids));
@@ -612,9 +619,11 @@ pub fn compute(
 }
 
 /// What the resolver needs to know about the units that compile: their
-/// PROPATH ids and closures, and the class units whose r-code `$OUT` holds.
+/// PROPATH ids and closures, the class units whose r-code `$OUT` holds, and
+/// with the r-code beside the source, the r-code of every unit.
 fn resolver_units<'a>(
-    layout: &Layout,
+    outcome: &Outcome,
+    (layout, beside_source): (&Layout, bool),
     (active, active_ids): (&[usize], &[u32]),
     closures: &'a [Vec<u32>],
     class_sources: &'a FxHashSet<u32>,
@@ -625,6 +634,7 @@ fn resolver_units<'a>(
         out: FxHashMap::default(),
         compiles: FxHashSet::default(),
         class_sources,
+        in_place: FxHashMap::default(),
     };
     for ((at, id), closure) in active.iter().zip(active_ids).zip(closures) {
         let placed = &layout.units[*at];
@@ -638,10 +648,52 @@ fn resolver_units<'a>(
         let Some(stem) = output.strip_suffix(".cls").filter(|_| placed.class) else {
             continue;
         };
-        units.out.insert(stem.to_string(), *id);
+        if !beside_source {
+            units.out.insert(stem.to_string(), *id);
+        }
         units.compiles.insert(*id);
     }
+    if beside_source {
+        units.in_place = in_place_rcode(outcome, layout);
+    }
     units
+}
+
+/// The r-code beside each unit below the root, as a compile of this build
+/// finds it: the unit's own class or r-code when it compiles, the winner's
+/// when a collision skips it, else absent.
+fn in_place_rcode(outcome: &Outcome, layout: &Layout) -> FxHashMap<String, InPlace> {
+    let mut by_unit: FxHashMap<&str, InPlace> = FxHashMap::default();
+    for (id, placed) in outcome.units.iter().zip(&layout.units) {
+        let path = outcome.name(*id);
+        if path.starts_with(['$', '/']) {
+            continue;
+        }
+        if let Placement::Compiles { .. } = placed.placement {
+            let found = match placed.class {
+                true => InPlace::Class(path.to_string()),
+                false => InPlace::Rcode,
+            };
+            by_unit.insert(path, found);
+        }
+    }
+    let mut in_place = FxHashMap::default();
+    for (id, placed) in outcome.units.iter().zip(&layout.units) {
+        let path = outcome.name(*id);
+        if path.starts_with(['$', '/']) {
+            continue;
+        }
+        let found = match &placed.placement {
+            Placement::Compiles { .. } => by_unit[path].clone(),
+            Placement::Skipped(reason) => reason
+                .strip_prefix("output-collision: ")
+                .and_then(|winner| by_unit.get(winner))
+                .cloned()
+                .unwrap_or(InPlace::Absent),
+        };
+        in_place.insert(rcode_path(path), found);
+    }
+    in_place
 }
 
 /// The class resolution of each active unit that is a class or reaches one,

@@ -61,7 +61,7 @@ the installation) after `include_paths`, without listing them
 
 ```toml
 [build]
-output = "build/r"
+output = "build/r"           # or: rcode = "beside-source", and no output
 state = ".oxabl/build"
 store = ""
 exclude = ["**/test-fixtures/**"]
@@ -77,7 +77,8 @@ acme-util = "/opt/libs/acme-util.pl"
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `output` | required for `oxabl build` | r-code output directory. Must be under the root (the workers put it on their PROPATH through the root). Oxabl owns it: it must be empty at the first build, and oxabl deletes files it did not produce ([output ownership](../build-tool.md#output-ownership)). The same holds for the `[build.outputs]` directories. |
+| `output` | required for `oxabl build` when `rcode` is `directory` | r-code output directory. Must be under the root (the workers put it on their PROPATH through the root). Oxabl owns it: it must be empty at the first build, and oxabl deletes files it did not produce ([output ownership](../build-tool.md#output-ownership)). The same holds for the `[build.outputs]` directories. Must be absent when `rcode` is `beside-source`. |
+| `rcode` | `directory` | Where the r-code of a unit goes. `directory`: below `output`. `beside-source`: beside the source of the unit, with no `output` (`a/x.p` gives `a/x.r`, `a/pkg/Foo.cls` gives `a/pkg/Foo.r`). A runtime that searches only the source directories runs that r-code. Both `output` and `beside-source` set is exit code 2, and the message names both keys. See [r-code beside the source](../build-tool.md#r-code-beside-the-source). An overlay may set it. |
 | `state` | `.oxabl/build` | State directory. Must be under the root. |
 | `store` | `""` (in `state`) | Host directory for `state.db` only, for a root on a network filesystem. Absolute or relative. |
 | `exclude` | `[]` | Glob patterns (root-relative, `**` allowed) of root files that are not units. |
@@ -94,7 +95,10 @@ debug_list = "build/dbg"
 listing = ""
 ```
 
-Each directory is optional (`""` or absent means off) and must be under the root.
+Each directory is optional (`""` or absent means off) and must be under the root. They
+stay directories that oxabl owns also when `[build].rcode` is `beside-source`. Then the
+path of a file in them is the unit path (`xref/a/pkg/Foo.cls.xref.xml`), so two classes of
+one name in two package roots keep their own files.
 `xref_format` is `"xml"` (`XREF-XML`) or `"text"` (`XREF`), default `"xml"`. Either file serves
 as the private cross-reference that verification reads, so one compile gives both
 ([cache.md](cache.md#verification)). The text form is much cheaper for the compiler to write.

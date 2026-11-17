@@ -255,6 +255,18 @@ pub const BARE_PROGRAM_EXTENSIONS: &[&str] = &["p", "w"];
 /// Whether the last segment of a `RUN` target carries an extension.
 ///
 /// The last segment only, so a directory named `util.d` is not mistaken for one.
+/// Whether a `RUN` target names r-code (`RUN x.r`, ASCII case ignored). Its
+/// source is not searched: the runtime runs the r-code, and a build may write
+/// that file at any time, so it is never read as source and its absence is
+/// never a fact of the workspace.
+fn names_rcode(target: &str) -> bool {
+    target
+        .rsplit(['/', '\\'])
+        .next()
+        .and_then(|last| last.rsplit_once('.'))
+        .is_some_and(|(stem, extension)| !stem.is_empty() && extension.eq_ignore_ascii_case("r"))
+}
+
 fn has_extension(target: &str) -> bool {
     target
         .rsplit(['/', '\\'])
@@ -305,6 +317,9 @@ pub fn find_name_with<E: AsRef<str>>(
     kind: NameKind,
     bare_extensions: &[E],
 ) -> IndexAnswer<PathBuf> {
+    if kind == NameKind::Program && names_rcode(name.as_written()) {
+        return IndexAnswer::Unknowable;
+    }
     if kind == NameKind::Program && !has_extension(name.as_written()) {
         let mut tried: Vec<&str> = Vec::with_capacity(bare_extensions.len());
         for extension in bare_extensions {
@@ -371,6 +386,9 @@ pub fn find_name_ignoring_case<E: AsRef<str>>(
     kind: NameKind,
     bare_extensions: &[E],
 ) -> IndexAnswer<PathBuf> {
+    if kind == NameKind::Program && names_rcode(name.as_written()) {
+        return IndexAnswer::Unknowable;
+    }
     let mut candidates: Vec<(PathBuf, ExtensionPolicy)> = Vec::new();
     match kind {
         NameKind::Class => candidates.push((class_path(name), ExtensionPolicy::WalkRoots)),

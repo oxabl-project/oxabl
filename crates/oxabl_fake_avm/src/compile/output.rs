@@ -47,7 +47,7 @@ pub fn rcode(name: &str, out: &Outcome) -> String {
 
 fn xref_xml(out: &Outcome) -> String {
     let mut text = String::from("<?xml version=\"1.0\"?>\n<Cross-reference>\n");
-    for (index, read) in out.reads.iter().enumerate() {
+    for (index, read) in out.reads.iter().filter(|read| read.listed).enumerate() {
         text.push_str(&format!(
             "<Source File-num=\"{}\" File-name=\"{}\"/>\n",
             index + 1,
@@ -90,7 +90,7 @@ fn xref_text(name: &str, out: &Outcome) -> Vec<u8> {
     for (kind, identifier) in &out.references {
         text.push_str(&format!("{unit} {unit} 1 {kind} {}\n", field(identifier)));
     }
-    for read in out.reads.iter().skip(1) {
+    for read in out.reads.iter().skip(1).filter(|read| read.listed) {
         text.push_str(&format!(
             "{unit} {} 1 STRING \"x\" 1 NONE UNTRANSLATABLE\n",
             field(&read.shown)

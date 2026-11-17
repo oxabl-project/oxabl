@@ -5,6 +5,7 @@ use rustc_hash::FxHashMap;
 
 use super::parallel;
 use super::probe::{Probe, Stat, is_racy, probe};
+use crate::output::promote::TEMP_INFIX;
 use crate::store::ListingRow;
 
 /// The digest of a directory that does not exist.
@@ -12,8 +13,18 @@ fn absent_digest() -> [u8; 32] {
     *blake3::hash(b"\0absent directory").as_bytes()
 }
 
+/// Whether a name of a directory is something a build writes there: r-code
+/// (`.r`, ASCII case ignored) or a temporary file of an install. The analysis
+/// never resolves a name to either, so they do not count in a listing.
+fn is_build_output(name: &[u8]) -> bool {
+    let rcode = name.len() > 2 && name[name.len() - 2..].eq_ignore_ascii_case(b".r");
+    let infix = TEMP_INFIX.as_bytes();
+    rcode || name.windows(infix.len()).any(|window| window == infix)
+}
+
 /// The BLAKE3 hash of the sorted entry names of `path`, each followed by a NUL
-/// byte; the digest of a missing directory when it cannot be listed.
+/// byte, without the names a build writes; the digest of a missing directory
+/// when it cannot be listed.
 fn digest_directory(path: &Path) -> [u8; 32] {
     let Ok(entries) = std::fs::read_dir(path) else {
         return absent_digest();
@@ -21,6 +32,7 @@ fn digest_directory(path: &Path) -> [u8; 32] {
     let mut names: Vec<Vec<u8>> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.file_name().as_bytes().to_vec())
+        .filter(|name| !is_build_output(name))
         .collect();
     names.sort_unstable();
     let mut hasher = blake3::Hasher::new();

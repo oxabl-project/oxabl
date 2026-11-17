@@ -94,8 +94,9 @@ impl Compiler {
             dlc,
             faults,
             save_strays: true,
+            request: &units,
         };
-        for name in units {
+        for name in units.clone() {
             let started = Instant::now();
             log::append(faults.log.as_deref(), &name);
             log::append(faults.xref_log.as_deref(), &format!("{name} {xref}"));
