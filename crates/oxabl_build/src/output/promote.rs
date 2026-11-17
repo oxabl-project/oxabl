@@ -10,14 +10,17 @@ use crate::store::OutputRow;
 
 /// The stat and the hash of the file at `path`, as an output row for `dest`.
 pub fn describe(path: &Path, dest: &str) -> io::Result<OutputRow> {
+    let observed_ns = crate::refresh::now_ns();
     let meta = fs::metadata(path)?;
     let bytes = fs::read(path)?;
     Ok(OutputRow {
         path: dest.to_string(),
         size: meta.len(),
         mtime_ns: meta.mtime() * 1_000_000_000 + meta.mtime_nsec(),
+        ctime_ns: meta.ctime() * 1_000_000_000 + meta.ctime_nsec(),
         ino: meta.ino(),
         hash: *blake3::hash(&bytes).as_bytes(),
+        observed_ns,
     })
 }
 

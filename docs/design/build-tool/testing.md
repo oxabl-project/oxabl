@@ -34,7 +34,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | Remote cache | `crates/oxabl/tests/build_remote_*.rs` (only the package that owns the `oxabl` binary gets `CARGO_BIN_EXE_oxabl`) |
 | OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `crates/oxabl/tests/build_openedge_scratch.rs` |
 | The fake runtime and the shared case table of the runtime rule | `crates/oxabl/tests/build_runtime_fake.rs` with `crates/oxabl/tests/common/runtime_cases.rs` |
-| R-code beside the source (`[build].rcode = "beside-source"`), asked of the fake runtime | `crates/oxabl/tests/build_beside_source.rs` |
+| R-code beside the source (`[build].rcode = "beside-source"`), asked of the fake runtime | `crates/oxabl/tests/build_beside_source.rs`; the manifest, orphans, mode switches, intact check and kills: `build_beside_source_owned.rs` |
 | Parity | `scripts/plan-parity.sh` |
 
 ## The fake AVM
@@ -648,6 +648,22 @@ With `[build].rcode = "beside-source"` the same oracle answers. Each test of
 | `a_read_only_source_directory_stops_the_build` | A source directory that the build cannot write stops it with exit code 3 before any compile, naming the directory once. Fails, never passes, under a user that can write a read-only directory. |
 | `rcode_a_compile_names_is_outside_the_closure` | V3 with no output directory: a compile that names r-code (here a class's r-code beside its source) fails the read check. |
 | `a_unit_outside_the_root_is_skipped` | A unit of a source directory outside the root is skipped (`outside-root`) and gets no r-code beside it. |
+
+| Fake-AVM test (`build_beside_source_owned.rs`) | What it proves |
+| --- | --- |
+| `a_deleted_source_no_longer_runs` | After its source is deleted, a program does not run any more, with the store kept and with the store deleted (then only the manifest knows the r-code). The directory that the delete empties goes too. R-code with no source that oxabl never installed stays byte-equal, and the manifest names only the units. |
+| `rcode_of_a_deleted_source_that_oxabl_did_not_write_stays` | R-code beside a deleted source whose bytes are not the ones oxabl installed stays, and the build warns `kept <path>`. |
+| `a_switch_to_beside_source_removes_the_output_directory_rcode` | After a switch from `build/r` to `beside-source`, a runtime with the PROPATH `build/r,src` runs the r-code beside the source, and `build` (with its marker, lock and `.gitignore`) is gone. |
+| `a_new_output_directory_removes_the_old_one` | Directory mode: after a change of `[build].output`, a runtime with the old directory first runs the new r-code, and the old directory is gone. |
+| `a_switch_back_removes_the_rcode_beside_the_source` | After a switch back to `build/r`, a runtime with the PROPATH `src` compiles the new source, never older r-code, with the store kept and deleted; no manifest stays. |
+| `rcode_deleted_or_replaced_by_hand_is_restored` | A `.r` deleted by hand, and one replaced with other r-code, are installed again and run this build's code. |
+| `rcode_changed_with_its_old_size_and_mtime_is_restored` | A `.r` changed by hand with the same size and its old modification time put back is installed again: the change time differs. |
+| `a_temporary_file_of_a_stopped_install_is_removed` | `x.r.oxabl-tmp-<pid>` beside a manifest path is deleted; another name with the infix stays. |
+| `a_kill_after_an_install_leaves_no_rcode_that_runs` | A `SIGKILL` after a unit's r-code is installed and before the store records it, then the source and the store deleted: the next build deletes the r-code (an intent line). The test checks that the kill stopped the build. |
+| `a_kill_after_the_intents_leaves_nothing_stale` | A `SIGKILL` once the intents are in the manifest and before any install, with r-code of the project's own tool beside a class, its user and a program; that program's source is then deleted. The next build runs the new code, deletes the program's r-code, leaves no temporary file, and the manifest names only units. |
+
+The racy rule of the intact check has a unit test in `output/check.rs`: a write in the clock
+tick of the last hash leaves every stat field equal, and no black-box test can make one.
 
 ### Tests
 

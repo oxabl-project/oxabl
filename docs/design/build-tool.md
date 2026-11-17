@@ -455,6 +455,10 @@ that the key covers, and the key would be wrong. So:
   another output directory`.
 - In a directory with the marker, the prune step deletes every file that no result owns,
   except oxabl's own files (`.oxabl-output`, `.oxabl-build.lock`).
+- R-code that a result of the store holds at a path that no unit expects now (after a
+  change of `[build].output` or of `[build].rcode`) is deleted before the first compile, when
+  its bytes are still the recorded ones. A directory that this empties is deleted with
+  oxabl's own files in it, and a `.gitignore` that oxabl wrote.
 
 ### Worker PROPATH and the output directory
 
@@ -501,9 +505,39 @@ full path of its source (measured: [compile-key.md](build-tool/compile-key.md#me
   `RUN x.r` is never searched. So r-code that a build writes starts no analysis.
 - **Version control.** Oxabl writes no `.gitignore` into the source directories. The code
   base's own `.gitignore` must ignore `*.r`.
-- **Not yet.** R-code of a unit whose source is gone stays until a later version of oxabl
-  removes it. Change of mode, the manifest of installed files and the restore of a changed
-  `.r` come with that version.
+- **The manifest.** `<state>/installed` lists each path beside a source that oxabl wrote,
+  with the BLAKE3 hash and the size it installed. It is a file of its own, not part of the
+  store, so a new store format does not lose it. Before its first delete or rename, a build
+  appends a line with the path alone (an intent) for each unit it builds, and calls `fsync`
+  once. At its end it writes the whole file again (temporary file, `fsync`, `rename`). So a
+  kill at any moment leaves each path that oxabl wrote in the manifest.
+- **Orphans, in both modes.** Before the first compile, a build deletes each manifest path
+  that is not the r-code path of a unit that compiles now (the source is gone, the unit is
+  skipped, or the mode is `directory` now). It deletes the file when its bytes have the
+  recorded hash or its line is an intent: nothing but oxabl writes there. Other bytes stay,
+  with a warning. R-code that is not in the manifest and not beside a unit (r-code shipped
+  without its source) is never touched. A directory that such a delete empties is removed,
+  because `git` cannot remove a directory that holds an ignored file. A delete that fails
+  stops the build with exit code 3.
+- **A change of mode.** A build also deletes the r-code of each result in the store whose
+  path no unit expects now, when the file still has the recorded bytes, and then each
+  directory that this empties, with the marker, the lock and the `.gitignore` that oxabl
+  wrote. So a switch to `beside-source` removes the copy in the old `[build].output`, and a
+  switch back removes the r-code beside the sources (through the manifest). Each switch
+  compiles or fetches every unit. An overlay can set `build.rcode`, so it can cause a
+  switch. When the store is gone (a new store format deletes it), oxabl does not know the
+  old output directory: delete it by hand.
+- **Intact r-code.** Each recorded output is compared with its size, modification time,
+  change time and inode. A row taken less than two seconds after the last change of the
+  file (racy) does not vouch for the bytes, and the file is hashed again. A missing or
+  changed file compiles again, or comes from a cache. The next build hashes once each
+  output that the build before it installed.
+- **Temporary files.** An install across file systems writes `x.r.oxabl-tmp-<pid>` beside
+  the source. A build deletes such files in the directories of the manifest paths before it
+  installs anything.
+- **One root for each source file.** Two workspace roots whose sources overlap write the
+  same r-code with different keys, and each build of one root sees the other's r-code as a
+  change. A source file must belong to one root.
 
 ## CLI surface
 

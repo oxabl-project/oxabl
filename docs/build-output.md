@@ -250,7 +250,7 @@ The `cache` object:
 | 0 | Every unit compiled or came from a cache. A skipped unit is not a failure. |
 | 1 | At least one unit failed to compile after the retry pass. |
 | 2 | A usage or configuration error. For example: no worker command, no `[build].output` (and no `[build].rcode = "beside-source"`), both of them, an unknown key in `oxabl.toml` or in the overlay, an output directory that oxabl does not own, or workers that disagree about the environment. Nothing compiled. |
-| 3 | Oxabl could not use something it needs: the store, a lock (another build runs in the workspace, and it does not yield), the workers (none started, or none was left), or, with the r-code beside the source, a source directory it must write or old r-code it must delete. Nothing compiled. |
+| 3 | Oxabl could not use something it needs: the store, a lock (another build runs in the workspace, and it does not yield), the workers (none started, or none was left), or, with the r-code beside the source, a source directory it must write or old r-code it must delete, or r-code that it installed and that no unit expects now (in both modes) that it cannot delete. Nothing compiled. |
 | 130 | A `SIGINT` or `SIGTERM` cancelled the build. The store is consistent. The next build compiles what was not recorded. A build that runs with `--yield` also exits with 130 when a newer build stops it (see [The lock and `--yield`](#the-lock-and---yield)). |
 
 `oxabl build --plan` and `oxabl build --print-config` exit with 0 when they printed their answer, with 2 for a usage or configuration error and with 3 when the store cannot be read.

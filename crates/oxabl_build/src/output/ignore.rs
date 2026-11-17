@@ -99,6 +99,12 @@ fn writable(path: &Path, top: &Top) -> bool {
     true
 }
 
+/// Whether the file at `path` is a `.gitignore` that oxabl wrote.
+pub fn is_ours(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == FILE)
+        && fs::read(path).is_ok_and(|bytes| bytes == CONTENT.as_bytes())
+}
+
 /// Writes the file through a temporary one, so a reader never sees half of
 /// it and a file that appears meanwhile is never replaced.
 fn create(directory: &Path) -> std::io::Result<()> {
