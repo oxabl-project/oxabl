@@ -1,5 +1,21 @@
 # Changelog
 
+## [5.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.4.0...oxabl-v5.5.0) (2026-11-17)
+
+
+### Features
+
+* **build:** write a .gitignore into the directory that holds oxabl's output ([35150ca](https://github.com/oxabl-project/oxabl/commit/35150ca43b1a13855b2d2dc80825b3fa0a5d313a))
+* onboarding polish: a .gitignore of oxabl's own, a first-build tooltip, notices once per workspace ([d6f7c24](https://github.com/oxabl-project/oxabl/commit/d6f7c242d7bd7c843fbe555883f060f9b3206eed))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_build bumped from 0.5.0 to 0.6.0
+    * oxabl_build_remote bumped from 0.2.7 to 0.2.8
+
 ## [5.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.3.2...oxabl-v5.4.0) (2026-11-16)
 
 
