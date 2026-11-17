@@ -108,7 +108,8 @@ binary. On macOS and on other CPUs, run `cargo install oxabl`.
 
 ## Build on open and on save
 
-With an `oxabl.toml` that has `[build].output` and `[build.workers].command`,
+With an `oxabl.toml` that has `[build.workers].command` and `[build].output`
+(or `[build].rcode = "beside-source"`),
 the extension runs `oxabl build` for that folder. The build uses the local and
 the remote cache of `oxabl build`, so a folder that someone else built needs
 few compiles.
@@ -121,8 +122,8 @@ few compiles.
 - It builds again when you save a file, and when a `.p`, `.w`, `.cls`, `.i`,
   `.v` or `.df` file, `oxabl.toml` or `.oxabl/cache.toml` changes on disk. So
   an agent, a `git checkout` or another tool that edits files also starts a
-  build. Changes in the output and state directories of the build, and in
-  `.git`, start nothing.
+  build. Changes in the output and state directories of the build, in `.git`,
+  and of `.r` files start nothing.
 - A burst of changes gives one build. The build waits for `oxabl.build.debounce`
   milliseconds of quiet (at most 5 seconds from the first change; file events
   from disk wait a little longer, because VS Code hands them over in batches).
@@ -133,9 +134,24 @@ few compiles.
   build` in a terminal while the extension builds, your build stops the
   extension's build and the extension builds again after yours. A build that
   you start without `--yield` is never stopped.
-- A folder builds only when `oxabl build --print-config --json` shows both
-  `build.output` and `build.workers.command`. The extension reads this again
-  when `oxabl.toml` changes.
+- A folder builds only when `oxabl build --print-config --json` shows
+  `build.workers.command` and a place for the r-code: `build.output`, or
+  `build.rcode = "beside-source"`. The extension reads this again when
+  `oxabl.toml` changes. When the CLI cannot read `oxabl.toml` (for example, a
+  CLI that is older than a key in it), an error notification gives the reason
+  and the folder does not build. Update the extension before the CLI.
+- With `build.rcode = "beside-source"`, each build writes a `.r` file beside
+  each source. A `.r` file starts no build. VS Code itself still watches these
+  files and shows them in the Explorer. To stop that, add `**/*.r` to the
+  settings `files.watcherExclude` and `files.exclude`:
+
+  ```json
+  "files.watcherExclude": { "**/*.r": true },
+  "files.exclude": { "**/*.r": true }
+  ```
+
+  The `.gitignore` of the project must ignore `*.r`. oxabl does not write a
+  `.gitignore` into the source directories.
 - No build runs in a folder that you did not trust (**Workspaces: Manage
   Workspace Trust**), because a build runs the worker command from
   `oxabl.toml`. The build starts when you grant trust. The settings

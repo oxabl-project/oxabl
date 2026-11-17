@@ -31,6 +31,34 @@ describe("parsePrintConfig", () => {
     expect(parsePrintConfig(config({ ...full, "build.workers.command": [] }), "/w/p")).toBeUndefined();
     expect(parsePrintConfig("not json", "/w/p")).toBeUndefined();
   });
+
+  it("builds a root of a binary with build.rcode in directory mode as before", () => {
+    expect(parsePrintConfig(config({ ...full, "build.rcode": "directory" }), "/w/p")?.ignore).toEqual([
+      "/w/p/build/r",
+      "/w/p/.oxabl/build",
+      "/w/p/build/xref",
+    ]);
+    expect(parsePrintConfig(config({ ...full, "build.rcode": "directory", "build.output": "" }), "/w/p")).toBeUndefined();
+  });
+
+  it("builds a root with r-code beside the source and ignores no source directory", () => {
+    const beside = { ...full, "build.output": "", "build.rcode": "beside-source" };
+    const ignore = parsePrintConfig(config(beside), "/w/p")?.ignore;
+    expect(ignore).toEqual(["/w/p/.oxabl/build", "/w/p/build/xref"]);
+    for (const source of ["/w/p/a.p", "/w/p/src/a.p", "/w/p/src/pkg/Foo.cls", "/w/p/build/r/a.p"]) {
+      expect(isIgnored(source, ignore!)).toBe(false);
+    }
+    // An output left in the configuration is not where the r-code goes, so it is no reason to ignore a directory.
+    expect(parsePrintConfig(config({ ...beside, "build.output": "src" }), "/w/p")?.ignore).toEqual([
+      "/w/p/.oxabl/build",
+      "/w/p/build/xref",
+    ]);
+  });
+
+  it("does not build a root whose r-code place it does not know", () => {
+    expect(parsePrintConfig(config({ ...full, "build.rcode": "elsewhere" }), "/w/p")).toBeUndefined();
+    expect(parsePrintConfig(config({ ...full, "build.output": "", "build.rcode": "beside-source", "build.workers.command": [] }), "/w/p")).toBeUndefined();
+  });
 });
 
 describe("parseVersionOutput", () => {
@@ -78,6 +106,8 @@ describe("roots", () => {
       expect(isBuildInput(f)).toBe(true);
     }
     expect(isBuildInput("README.md")).toBe(false);
-    expect(isBuildInput("a.r")).toBe(false);
+    for (const rcode of ["a.r", "A.R", `src${path.sep}pkg${path.sep}Foo.r`]) {
+      expect(isBuildInput(rcode)).toBe(false);
+    }
   });
 });
