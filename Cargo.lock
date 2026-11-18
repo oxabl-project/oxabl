@@ -2495,7 +2495,7 @@ checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 
 [[package]]
 name = "oxabl"
-version = "5.7.0"
+version = "5.7.1"
 dependencies = [
  "blake3",
  "clap",
@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_daemon"
-version = "0.5.10"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "codspeed-criterion-compat",
@@ -2699,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_daemon_protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_lsp"
-version = "3.1.5"
+version = "3.1.6"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "oxabl_wasm"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "oxabl",
  "oxabl_pipeline",

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.5.10...oxabl_daemon-v0.6.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **daemon:** CONTRACT_VERSION is 5, because Registration has a new field. A contract 4 client and a contract 5 daemon refuse each other.
+
+### Bug Fixes
+
+* **daemon:** a registration names the daemon's build ([475b323](https://github.com/oxabl-project/oxabl/commit/475b3237d05090bdcd440724d35afd6c063c48a8))
+* **daemon:** replace a daemon that outlived an upgrade ([d556c51](https://github.com/oxabl-project/oxabl/commit/d556c516cb2146066d3e557c89ac34cf1e19b1aa))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_daemon_protocol bumped from 0.3.0 to 0.4.0
+
 ## [0.5.10](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.5.9...oxabl_daemon-v0.5.10) (2026-11-18)
 
 

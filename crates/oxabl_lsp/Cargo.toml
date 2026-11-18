@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_lsp"
-version = "3.1.5"
+version = "3.1.6"
 edition = "2024"
 license = "MIT"
 description = "stdio LSP server surfacing oxabl parse/lint/preprocessor diagnostics live in an editor"
@@ -16,8 +16,8 @@ oxabl_common = { path = "../oxabl_common", version = "1.2.2" }
 #
 # The session core: the incremental substrate and supersession disciplines. This
 # crate keeps the LSP framing and rendering; it owns no second copy of either.
-oxabl_daemon = { path = "../oxabl_daemon", version = "0.5.10" }
-oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.3.0" }
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.6.0" }
+oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.4.0" }
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.6.1" }
 oxabl_style = { path = "../oxabl_style", version = "0.2.1" }
 oxabl_workspace = { path = "../oxabl_workspace", version = "3.6.0" }
@@ -30,7 +30,7 @@ serde_json = "1"
 
 [dev-dependencies]
 # Some parity fixtures drive the session core directly.
-oxabl_daemon = { path = "../oxabl_daemon", version = "0.5.10" }
+oxabl_daemon = { path = "../oxabl_daemon", version = "0.6.0" }
 oxabl_analyze = { path = "../oxabl_analyze", version = "4.2.1" }
 oxabl_ast = { path = "../oxabl_ast", version = "4.0.0" }
 oxabl_schema = { path = "../oxabl_schema", version = "0.4.6", features = ["test-support"] }
