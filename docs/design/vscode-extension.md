@@ -292,7 +292,14 @@ timeout counts idle time, so a slow download of the binary does not fail.
 Before each build the extension runs `oxabl --version` and compares it with
 the version the language client started with. `oxabl self-update` replaces the
 file under a running server, which keeps its old inode; the extension
-restarts the client when the version differs. It also checks once per binary
+restarts the client when the version differs. The new `oxabl lsp` then finds
+the `oxabl daemon` of the old binary still serving the root: the registration
+names the version of the binary, so it stops that older daemon (`SIGTERM`,
+`SIGKILL` after one second) and starts one of its own build, which reads
+`oxabl.toml` with the new rules. The other clients of the stopped daemon (a
+second window, the desktop app) lose their connection and start again. A newer
+daemon is not stopped: `oxabl lsp` exits and names both versions. It also
+checks once per binary
 version that `oxabl build --help` mentions `--yield`. A binary without it is
 updated when it is managed, and otherwise one message asks for a newer oxabl.
 

@@ -621,6 +621,9 @@ fn surface_source_context(sem: &oxabl_semantic::Semantic, output: &mut Output) -
 }
 
 fn main() -> ExitCode {
+    // A daemon and the client that finds it compare this, so a daemon that outlived
+    // an upgrade of the binary is replaced.
+    oxabl_daemon::set_build_version(env!("CARGO_PKG_VERSION"));
     let cli = Cli::parse();
     // The server runs for hours: its check starts first. A command that ends
     // soon schedules its check after it has done its work.

@@ -119,7 +119,7 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 
 /// Find the daemon serving `root`, starting one if discovery says there is none.
 ///
-/// One loop, not a check followed by a loop, because discovery has three answers and
+/// One loop, not a check followed by a loop, because discovery has four answers and
 /// only one of them may start a daemon:
 ///
 /// * `Absent` — nothing is registered. Start a daemon, once, and keep polling.
@@ -127,25 +127,68 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 ///   probed. Neither starting a daemon nor connecting is defensible on that answer, so
 ///   the loop waits. The reason is kept, because a client that runs out of attempts
 ///   over a refused directory must say *that* and not "timed out".
-/// * `Live` / `VersionMismatch` — decided; return or refuse.
+/// * `VersionMismatch` — a daemon of another build serves the root. An older one,
+///   typically one that outlived an upgrade, is stopped (`SIGTERM`, then `SIGKILL`
+///   after [`STOP_GRACE`]) and the loop starts a daemon of this build once it is
+///   gone. A newer one is an error: replacing it would let two builds that both stay
+///   in use stop each other's daemon on every restart of their editors. So is a
+///   second daemon of another build, which means another build keeps starting them.
+/// * `Live` — decided; return it.
 #[cfg(unix)]
 fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registration> {
-    // Every 20ms for two seconds. A cold start is far quicker; the budget is for a
-    // machine under load.
-    const ATTEMPTS: u32 = 100;
-    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+    use std::time::{Duration, Instant};
 
+    // Polled every 20ms for two seconds. A cold start is far quicker; the budget is
+    // for a machine under load.
+    const BUDGET: Duration = Duration::from_secs(2);
+    const INTERVAL: Duration = Duration::from_millis(20);
+
+    let mut deadline = Instant::now() + BUDGET;
     let mut started = false;
+    let mut stopping: Option<StaleDaemon> = None;
+    // A daemon of another build too busy to be named on its socket: that can clear,
+    // so the loop keeps polling and reports it only at the deadline.
+    let mut busy: Option<String> = None;
     let mut refusal: Option<String> = None;
-    for attempt in 0..=ATTEMPTS {
+    loop {
         match oxabl_daemon::discover(root) {
             oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
-            oxabl_daemon::Discovery::VersionMismatch(registration) => anyhow::bail!(
-                "the {} oxabl daemon uses contract {}, but this client uses {}",
-                if started { "started" } else { "running" },
-                registration.contract_version,
-                oxabl_daemon_protocol::CONTRACT_VERSION,
-            ),
+            oxabl_daemon::Discovery::VersionMismatch(registration) => match &mut stopping {
+                // The daemon this client stopped, not gone yet.
+                Some(stale) if stale.registration.pid == registration.pid => {
+                    if !stale.killed && stale.since.elapsed() >= STOP_GRACE {
+                        stop(&registration, root, true)?;
+                        stale.killed = true;
+                    }
+                }
+                // Another daemon of another build after this client stopped one or
+                // started its own.
+                Some(_) => anyhow::bail!(keeps_starting(&registration, root)),
+                None if started => anyhow::bail!(keeps_starting(&registration, root)),
+                None if !older_than_this_build(&registration) => anyhow::bail!(
+                    "{}. That daemon is not older than this client: update this oxabl, or \
+                     stop it with `kill {}`",
+                    mismatch_message(&registration, root),
+                    registration.pid
+                ),
+                None => match oxabl_daemon::stop_daemon(&registration, false) {
+                    Ok(()) => {
+                        busy = None;
+                        stopping = Some(StaleDaemon {
+                            registration,
+                            since: Instant::now(),
+                            killed: false,
+                        });
+                        // The old daemon's exit is not this client's start: both get
+                        // time.
+                        deadline = Instant::now() + STOP_GRACE + BUDGET;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        busy = Some(not_stopped(&registration, root, &error));
+                    }
+                    Err(error) => anyhow::bail!(not_stopped(&registration, root, &error)),
+                },
+            },
             // Keep the latest reason rather than the first: a cause that has cleared
             // should not be the one reported, and one that has not will be read again
             // on the next pass.
@@ -168,20 +211,120 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
         }
         // Nothing changes between the last poll and the give-up, so it is not waited
         // for.
-        if attempt < ATTEMPTS {
-            std::thread::sleep(INTERVAL);
+        if Instant::now() >= deadline {
+            break;
         }
+        std::thread::sleep(INTERVAL);
     }
 
-    match refusal {
-        // The timeout is the symptom; the refusal is the cause, and a message that
-        // reports only the symptom sends its reader looking for a slow machine when the
-        // answer is a directory mode.
-        Some(reason) => {
-            anyhow::bail!("the oxabl daemon did not become ready within two seconds: {reason}")
-        }
-        None => anyhow::bail!("the oxabl daemon did not become ready within two seconds"),
+    // The timeout is the symptom; the refusal, or a daemon that would not stop, is the
+    // cause, and a message that reports only the symptom sends its reader looking for
+    // a slow machine when the answer is a directory mode.
+    if let Some(stale) = stopping.filter(|_| !started) {
+        anyhow::bail!(
+            "{}, and it did not stop. Stop it with `kill -9 {}`",
+            mismatch_message(&stale.registration, root),
+            stale.registration.pid
+        );
     }
+    if let Some(busy) = busy {
+        anyhow::bail!(busy);
+    }
+    match refusal {
+        Some(reason) => {
+            anyhow::bail!("the oxabl daemon did not become ready in time: {reason}")
+        }
+        None => anyhow::bail!("the oxabl daemon did not become ready in time"),
+    }
+}
+
+/// How long a daemon of another build has to exit on `SIGTERM` before `SIGKILL`.
+#[cfg(unix)]
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A daemon of another build this client has signalled to exit.
+#[cfg(unix)]
+struct StaleDaemon {
+    registration: oxabl_daemon_protocol::Registration,
+    since: std::time::Instant,
+    killed: bool,
+}
+
+/// Signal a daemon of another build to exit, or fail naming both builds.
+#[cfg(unix)]
+fn stop(
+    registration: &oxabl_daemon_protocol::Registration,
+    root: &Path,
+    force: bool,
+) -> Result<()> {
+    oxabl_daemon::stop_daemon(registration, force)
+        .map_err(|error| anyhow::anyhow!(not_stopped(registration, root, &error)))
+}
+
+/// A daemon of another build that could not be signalled, with the way to stop it.
+#[cfg(unix)]
+fn not_stopped(
+    registration: &oxabl_daemon_protocol::Registration,
+    root: &Path,
+    error: &std::io::Error,
+) -> String {
+    format!(
+        "{}, and it could not be stopped: {error}. Stop it with `kill {}`",
+        mismatch_message(registration, root),
+        registration.pid
+    )
+}
+
+/// Whether the daemon a registration names is of an older build than this client.
+///
+/// Versions compare by their numbers; a registration without one predates the field
+/// and is older. At an equal version the contract decides.
+#[cfg(unix)]
+fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> bool {
+    fn numbers(version: &str) -> Option<(u64, u64, u64)> {
+        let core = version.split(['-', '+']).next()?;
+        let mut parts = core.split('.').map(|part| part.parse::<u64>().ok());
+        Some((parts.next()??, parts.next()??, parts.next()??))
+    }
+    if registration.daemon_version.is_empty() {
+        return true;
+    }
+    match (
+        numbers(&registration.daemon_version),
+        numbers(oxabl_daemon::build_version()),
+    ) {
+        (Some(theirs), Some(ours)) if theirs != ours => theirs < ours,
+        _ => registration.contract_version < oxabl_daemon_protocol::CONTRACT_VERSION,
+    }
+}
+
+/// A daemon of another build that appeared after this client stopped one or
+/// started its own.
+#[cfg(unix)]
+fn keeps_starting(registration: &oxabl_daemon_protocol::Registration, root: &Path) -> String {
+    format!(
+        "{}; another oxabl of that build keeps starting a daemon for this root",
+        mismatch_message(registration, root)
+    )
+}
+
+/// A daemon of another build, with both builds named.
+#[cfg(unix)]
+fn mismatch_message(registration: &oxabl_daemon_protocol::Registration, root: &Path) -> String {
+    let version = if registration.daemon_version.is_empty() {
+        "an older version"
+    } else {
+        registration.daemon_version.as_str()
+    };
+    format!(
+        "the oxabl daemon for {} (pid {}) is {version} with contract {}, but this client \
+         is {} with contract {}",
+        root.display(),
+        registration.pid,
+        registration.contract_version,
+        oxabl_daemon::build_version(),
+        oxabl_daemon_protocol::CONTRACT_VERSION,
+    )
 }
 
 #[cfg(unix)]
