@@ -1,5 +1,23 @@
 # Changelog
 
+## [5.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.7.0...oxabl-v5.7.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **daemon:** replace a daemon that outlived an upgrade ([d556c51](https://github.com/oxabl-project/oxabl/commit/d556c516cb2146066d3e557c89ac34cf1e19b1aa))
+* **daemon:** the editor replaces a daemon that outlived an upgrade ([a87fc8e](https://github.com/oxabl-project/oxabl/commit/a87fc8e764a37f7db9fe09b6b8fdae1ba7eaaced))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lsp bumped from 3.1.5 to 3.1.6
+    * oxabl_daemon bumped from 0.5.10 to 0.6.0
+  * dev-dependencies
+    * oxabl_daemon_protocol bumped from 0.3.0 to 0.4.0
+
 ## [5.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.6.0...oxabl-v5.7.0) (2026-11-18)
 
 

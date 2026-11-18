@@ -1,6 +1,6 @@
 [package]
 name = "oxabl_daemon"
-version = "0.5.10"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "Long-lived oxabl session core: one salsa instance per workspace root, serving several clients"
@@ -17,7 +17,7 @@ repository = "https://github.com/oxabl-project/oxabl/crates/oxabl_daemon"
 oxabl_analyze = { path = "../oxabl_analyze", version = "4.2.1" }
 oxabl_ast = { path = "../oxabl_ast", version = "4.0.0" }
 oxabl_common = { path = "../oxabl_common", version = "1.2.2" }
-oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.3.0" }
+oxabl_daemon_protocol = { path = "../oxabl_daemon_protocol", version = "0.4.0" }
 oxabl_index = { path = "../oxabl_index", version = "5.2.0" }
 oxabl_pipeline = { path = "../oxabl_pipeline", version = "3.6.1" }
 oxabl_semantic = { path = "../oxabl_semantic", version = "5.0.5" }
