@@ -535,6 +535,15 @@ full path of its source (measured: [compile-key.md](build-tool/compile-key.md#me
 - **Temporary files.** An install across file systems writes `x.r.oxabl-tmp-<pid>` beside
   the source. A build deletes such files in the directories of the manifest paths before it
   installs anything.
+- **Caches.** A cache entry holds the r-code by the unit path (`r/<unit stem>.r`), and a
+  fetch installs it beside the source of the workspace that fetches, with the same rename
+  as a compile. So a second copy of a project fetches its r-code into its own source
+  directories. The keys of the two modes differ (no `$OUT` in the unit PROPATH), so a
+  cache never gives r-code of one mode to the other. The keys of `directory` mode are the
+  keys of oxabl 5.6.0. A user that oxabl cannot key compiles after the fetch of each class
+  unit of the build is installed or answered as a miss. On one file system, the local cache
+  stores a reflink or a hard link of the r-code beside the source. On another file system
+  it stores a copy, up to `[build.cache].local_max_size`.
 - **One root for each source file.** Two workspace roots whose sources overlap write the
   same r-code with different keys, and each build of one root sees the other's r-code as a
   change. A source file must belong to one root.
