@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.5.0...oxabl_workspace-v3.6.0) (2026-11-18)
+
+
+### Features
+
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([c4c88a7](https://github.com/oxabl-project/oxabl/commit/c4c88a7de0162dcf0a9fd792f699405125a2aa9d))
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([e317d75](https://github.com/oxabl-project/oxabl/commit/e317d758247fceab45b13d82891f9025b6d7bb04))
+
 ## [3.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.4.0...oxabl_workspace-v3.5.0) (2026-11-13)
 
 
