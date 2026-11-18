@@ -567,10 +567,13 @@ fn refuse(path: &Path, why: &str, errno: Errno) -> io::Error {
 /// What a client found when it looked for a daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Discovery {
-    /// A daemon is running and speaks a contract this build can talk to.
+    /// A daemon of this build is running.
     Live(Registration),
-    /// A daemon is running and speaks a different contract. Reported rather than
-    /// connected to, so the mismatch is named before a request is attempted.
+    /// A daemon is running from another build: it speaks a different contract, or it
+    /// is another version of the daemon. Reported rather than connected to, so the
+    /// mismatch is named before a request is attempted. A daemon answers with its own
+    /// code, so one that outlived an upgrade must be replaced, not used: see
+    /// [`stop_daemon`].
     VersionMismatch(Registration),
     /// The question could not be answered, and the reason says nothing about whether a
     /// daemon is there: the registration could not be read for a reason that is not
@@ -605,12 +608,13 @@ pub enum DaemonState {
     /// A daemon is mid-start: the registration on disk is not yet the registration the
     /// daemon that will serve this root is going to write.
     ///
-    /// Two shapes reach here. The plain one is a registration whose socket nobody
+    /// Three shapes reach here. The plain one is a registration whose socket nobody
     /// answers and whose writer is still alive — a daemon between taking the lock and
-    /// serving. The other is a socket that *does* answer while the pid in the
-    /// registration is gone, which is a stale body being read next to a fresh daemon's
-    /// socket: a killed daemon's file still on disk, and its replacement bound but not
-    /// yet registered. Both mean "keep polling", and neither may be reported as
+    /// serving. The others are a socket that *does* answer while the pid in the
+    /// registration is gone, or while the kernel names another process as its
+    /// listener: a stale body being read next to a fresh daemon's socket, a killed
+    /// daemon's file still on disk and its replacement bound but not yet registered.
+    /// All mean "keep polling", and none may be reported as
     /// `Running`, because the registration a client would act on — its contract
     /// version above all — belongs to the dead process rather than to the one
     /// answering.
@@ -654,10 +658,13 @@ pub fn discover(workspace_root: &Path) -> Discovery {
 /// Given a state, it takes no syscall to check.
 fn classify(state: DaemonState) -> Discovery {
     match state {
-        // Answering or busy: both mean a client must not start a second daemon, and
-        // both mean the registration in hand belongs to the process answering.
+        // Answering or busy: both mean a client must not start a second daemon. For an
+        // answering socket the registration belongs to the listener; a busy one cannot
+        // say, which is why `stop_daemon` checks again before it signals.
         DaemonState::Running(registration) | DaemonState::Saturated(registration) => {
-            if registration.contract_version != CONTRACT_VERSION {
+            if registration.contract_version != CONTRACT_VERSION
+                || registration.daemon_version != crate::build_version()
+            {
                 Discovery::VersionMismatch(registration)
             } else {
                 Discovery::Live(registration)
@@ -699,13 +706,17 @@ pub fn daemon_state(workspace_root: &Path) -> DaemonState {
         // exits on — a live daemon of the right version killing the editor's server. So
         // a registration whose writer is gone is never `Running`, whatever the socket
         // says: it is a start in progress, and the client polls until the fresh
-        // registration lands.
+        // registration lands. Where the kernel names the listener, a listener that is
+        // not the registered pid is the same case, whatever else holds that pid now.
         let answered = probe_socket(Path::new(&registration.socket_path));
         match answered {
-            Liveness::Answering | Liveness::Saturated if !process_is_alive(registration.pid) => {
+            Liveness::Answering(Some(listener)) if listener != registration.pid => {
                 DaemonState::Starting(registration)
             }
-            Liveness::Answering => DaemonState::Running(registration),
+            Liveness::Answering(_) | Liveness::Saturated if !process_is_alive(registration.pid) => {
+                DaemonState::Starting(registration)
+            }
+            Liveness::Answering(_) => DaemonState::Running(registration),
             Liveness::Saturated => DaemonState::Saturated(registration),
             Liveness::Undecided(_) => DaemonState::Undecided(registration),
             // Nothing is listening. Whether that is a crash or a start in progress
@@ -880,8 +891,9 @@ fn report_once(message: &str) -> bool {
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Liveness {
-    /// The connection was accepted, or queued for a listener that exists.
-    Answering,
+    /// The connection was accepted, or queued for a listener that exists. Carries the
+    /// listener's pid where the kernel reports it (`SO_PEERCRED`, Linux only).
+    Answering(Option<u32>),
     /// A live listener that could not take it now.
     Saturated,
     /// There is no socket at the path.
@@ -923,9 +935,22 @@ fn probe_socket(path: &Path) -> Liveness {
         Err(errno) => return Liveness::Undecided(errno),
     };
     match rustix::net::connect(&socket, &address) {
-        Ok(()) => Liveness::Answering,
+        Ok(()) => Liveness::Answering(listener_pid(&socket)),
         Err(errno) => classify_connect_failure(errno),
     }
+}
+
+/// The pid of the process listening on the other end of a connected socket.
+#[cfg(target_os = "linux")]
+fn listener_pid(socket: &rustix::fd::OwnedFd) -> Option<u32> {
+    let credentials = rustix::net::sockopt::socket_peercred(socket).ok()?;
+    u32::try_from(credentials.pid.as_raw_pid()).ok()
+}
+
+/// No portable call names the listener, so there is no pid to compare.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn listener_pid(_socket: &rustix::fd::OwnedFd) -> Option<u32> {
+    None
 }
 
 /// Read a failed connect as a statement about the owner of the socket.
@@ -988,7 +1013,7 @@ pub enum SocketOwner {
 #[cfg(unix)]
 pub fn socket_owner(socket_path: &Path) -> SocketOwner {
     match probe_socket(socket_path) {
-        Liveness::Answering | Liveness::Saturated => SocketOwner::Answering,
+        Liveness::Answering(_) | Liveness::Saturated => SocketOwner::Answering,
         Liveness::Gone | Liveness::Unanswered => SocketOwner::Debris,
         Liveness::Undecided(errno) => SocketOwner::Unprobeable(errno),
     }
@@ -1099,6 +1124,7 @@ pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Resu
         // what the handshake compares a client's root against (R26). Advertising the
         // raw spelling would let the registration disagree with its own file name.
         workspace_root: advertisable(&canonical_root(workspace_root)?, "the workspace root")?,
+        daemon_version: crate::build_version().to_string(),
     };
     let body = serde_json::to_string_pretty(&registration)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -1306,6 +1332,73 @@ fn sibling_of_registration(registration: &Path, extension: &str) -> io::Result<P
         )
     })?;
     Ok(registration.with_file_name(format!("{stem}{extension}")))
+}
+
+/// Signal the daemon a registration names to exit: `SIGTERM`, or `SIGKILL` when
+/// `force` is set.
+///
+/// For a client that discovered a daemon of another build
+/// ([`Discovery::VersionMismatch`]). A pid read from a file is not proof: it may
+/// belong to a process that reused it. So the socket is probed again, and the signal
+/// goes only to the pid the kernel names as its listener. Nothing listening is
+/// success, as is a process that is already gone. Where the listener cannot be named
+/// (a busy socket, a Unix other than Linux), nothing is signalled and the error says
+/// so. The daemon's lock and socket are left for the next daemon to take over, as
+/// after a crash.
+#[cfg(unix)]
+pub fn stop_daemon(registration: &Registration, force: bool) -> io::Result<()> {
+    const SIGKILL: i32 = 9;
+    const SIGTERM: i32 = 15;
+    const ESRCH: i32 = 3;
+    let pid = checked_pid(registration.pid).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a process id", registration.pid),
+        )
+    })?;
+    match probe_socket(Path::new(&registration.socket_path)) {
+        Liveness::Answering(Some(listener)) if listener == registration.pid => {}
+        Liveness::Gone | Liveness::Unanswered => return Ok(()),
+        Liveness::Answering(Some(listener)) => {
+            return Err(io::Error::other(format!(
+                "pid {listener}, not the registered pid {}, listens on {}",
+                registration.pid, registration.socket_path
+            )));
+        }
+        Liveness::Answering(None) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this platform does not name the process listening on the socket",
+            ));
+        }
+        Liveness::Saturated => {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "the daemon is too busy to name itself on its socket",
+            ));
+        }
+        Liveness::Undecided(errno) => return Err(io::Error::from(errno)),
+    }
+    // SAFETY: `pid` is range-checked strictly positive, so this signals one process
+    // and never a process group.
+    let result = unsafe { libc_kill(pid, if force { SIGKILL } else { SIGTERM }) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ESRCH) {
+        return Ok(());
+    }
+    Err(error)
+}
+
+/// Windows named pipes are deferred, so discovery never finds a daemon to stop.
+#[cfg(not(unix))]
+pub fn stop_daemon(_registration: &Registration, _force: bool) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the oxabl daemon currently requires Unix sockets",
+    ))
 }
 
 /// A process id read from disk, or `None` when the number cannot be one (R15).
@@ -2241,7 +2334,7 @@ mod tests {
             let mut saturated = false;
             for _ in 0..256 {
                 match probe_socket(&socket) {
-                    Liveness::Answering => continue,
+                    Liveness::Answering(_) => continue,
                     Liveness::Saturated => {
                         saturated = true;
                         break;
@@ -2281,6 +2374,7 @@ mod tests {
                 socket_path: socket_for(root).to_string_lossy().into_owned(),
                 contract_version: CONTRACT_VERSION + 7,
                 workspace_root: root.to_string_lossy().into_owned(),
+                daemon_version: crate::build_version().to_string(),
             };
             fs::write(
                 registration_path_for(root).expect("a registration path"),
@@ -2358,6 +2452,7 @@ mod tests {
             socket_path: "/c/oxabl/daemon/%proj.sock".to_string(),
             contract_version: CONTRACT_VERSION,
             workspace_root: "/proj".to_string(),
+            daemon_version: crate::build_version().to_string(),
         };
 
         assert!(matches!(
@@ -2580,6 +2675,7 @@ mod tests {
                 socket_path: socket_for(root).to_string_lossy().into_owned(),
                 contract_version: CONTRACT_VERSION + 7,
                 workspace_root: root.to_string_lossy().into_owned(),
+                daemon_version: crate::build_version().to_string(),
             };
             fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("write");
             // A daemon of the wrong contract is still a daemon: it answers.

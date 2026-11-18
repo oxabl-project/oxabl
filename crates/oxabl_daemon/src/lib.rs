@@ -58,7 +58,7 @@ pub use listener::{Listener, Stopper, connection_over};
 pub use methods::register_methods;
 pub use registry::{
     DaemonState, Discovery, daemon_state, discover, register, registration_path_for,
-    socket_path_for, unregister,
+    socket_path_for, stop_daemon, unregister,
 };
 pub use server::{serve, serve_stdio, serve_with_first};
 pub use session::{
@@ -66,6 +66,26 @@ pub use session::{
     canonical_path, canonical_root, dispose,
 };
 
-/// This build's version, reported at the handshake so a human reading a contract
-/// mismatch can see which side is stale.
+/// This crate's version.
 pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+static BUILD_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Name the build of the running binary, before any daemon or client starts.
+///
+/// A daemon also runs the code of the crates above this one (the language server,
+/// the binary), so the identity a registration carries is the binary's version.
+/// The first call wins.
+pub fn set_build_version(version: &'static str) {
+    let _ = BUILD_VERSION.set(version);
+}
+
+/// The build a daemon registers and a client compares: the version given to
+/// [`set_build_version`], or this crate's name and version when none was given.
+/// The fallback is not a binary version, so no client orders it against one.
+pub fn build_version() -> &'static str {
+    BUILD_VERSION
+        .get()
+        .copied()
+        .unwrap_or(concat!("oxabl_daemon ", env!("CARGO_PKG_VERSION")))
+}
