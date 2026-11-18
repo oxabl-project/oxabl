@@ -37,10 +37,18 @@ directory per output kind.
 
 | Kind | Artifact path | Final path |
 | --- | --- | --- |
-| `rcode` | `r/<compile stem>.r` | `[build].output/<compile stem>.r` |
-| `xref` / `xref-xml` | `xref/<compile name>.xref` or `.xref.xml` | `[build.outputs].xref/...` |
-| `debug-list` | `dbg/<compile name>.dbg` | `[build.outputs].debug_list/...` |
-| `listing` | `lst/<compile name>.lst` | `[build.outputs].listing/...` |
+| `rcode` | `r/<output stem>.r` | `[build].output/<output stem>.r`, or `<unit stem>.r` beside the source |
+| `xref` / `xref-xml` | `xref/<output name>.xref` or `.xref.xml` | `[build.outputs].xref/...` |
+| `debug-list` | `dbg/<output name>.dbg` | `[build.outputs].debug_list/...` |
+| `listing` | `lst/<output name>.lst` | `[build.outputs].listing/...` |
+
+The output name is defined in
+[compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name): with `[build].rcode = "beside-source"`
+it is the unit path of every unit (`src/a/x.p` gives `r/src/a/x.r`). So two class units of
+one name below two package roots never share an artifact path in a fetch stage. The keys of
+the two modes differ (the unit PROPATH of `beside-source` has no `$OUT`), so their entries
+never meet. A fetch in place installs each file beside its source with the same rename as
+a compile.
 
 The output directories are configuration and are not in the key. So the artifact path is
 relative to the artifact root, not to the workspace root, and two workspaces with different

@@ -34,7 +34,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | Remote cache | `crates/oxabl/tests/build_remote_*.rs` (only the package that owns the `oxabl` binary gets `CARGO_BIN_EXE_oxabl`) |
 | OpenEdge suite | `crates/oxabl/tests/build_openedge.rs` and `crates/oxabl/tests/build_openedge_scratch.rs` |
 | The fake runtime and the shared case table of the runtime rule | `crates/oxabl/tests/build_runtime_fake.rs` with `crates/oxabl/tests/common/runtime_cases.rs` |
-| R-code beside the source (`[build].rcode = "beside-source"`), asked of the fake runtime | `crates/oxabl/tests/build_beside_source.rs`; the manifest, orphans, mode switches, intact check and kills: `build_beside_source_owned.rs` |
+| R-code beside the source (`[build].rcode = "beside-source"`), asked of the fake runtime | `crates/oxabl/tests/build_beside_source.rs`; the manifest, orphans, mode switches, intact check and kills: `build_beside_source_owned.rs`; the caches and the keys of the two modes: `build_beside_source_cache.rs` |
 | Parity | `scripts/plan-parity.sh` |
 
 ## The fake AVM
@@ -661,6 +661,14 @@ With `[build].rcode = "beside-source"` the same oracle answers. Each test of
 | `a_temporary_file_of_a_stopped_install_is_removed` | `x.r.oxabl-tmp-<pid>` beside a manifest path is deleted; another name with the infix stays. |
 | `a_kill_after_an_install_leaves_no_rcode_that_runs` | A `SIGKILL` after a unit's r-code is installed and before the store records it, then the source and the store deleted: the next build deletes the r-code (an intent line). The test checks that the kill stopped the build. |
 | `a_kill_after_the_intents_leaves_nothing_stale` | A `SIGKILL` once the intents are in the manifest and before any install, with r-code of the project's own tool beside a class, its user and a program; that program's source is then deleted. The next build runs the new code, deletes the program's r-code, leaves no temporary file, and the manifest names only units. |
+
+| Fake-AVM test (`build_beside_source_cache.rs`) | What it proves |
+| --- | --- |
+| `a_second_workspace_fetches_into_place_and_runs_what_the_first_built` | A local cache entry holds the r-code by the unit path (`r/src/hello.r`). A second copy of the project, with r-code of the project's own tool beside its sources, fetches all four units and compiles none. Its runtime with the PROPATH `src` runs the new text from the r-code beside each source, and loads the fetched class r-code. A third build fetches nothing. |
+| `classes_of_one_name_in_two_roots_are_fetched_each_to_its_own_place` | `a/pkg/Foo.cls` and `b/pkg/Foo.cls` are fetched into a second copy, and each package root runs its own class. With the artifact path by compile name, both sets meet in the fetch stage and `b` runs the class of `a`. |
+| `a_user_with_no_key_compiles_after_its_class_is_fetched_into_place` | Through the API with a remote double that answers after 1.5 s: a user with no key (oxabl cannot read it) compiles after the fetch of its class, and binds the fetched r-code beside the class, not the class source and not the r-code of the project's own tool. |
+| `keys_of_directory_mode_do_not_move` | The keys of a program, a program with an include, a class and its user in `directory` mode equal the literal keys that oxabl 5.6.0 printed for the same project. |
+| `keys_differ_between_the_modes` | The same project has another key for each unit with `rcode = "beside-source"`, and no PROPATH with `$OUT`: no cache entry of one mode is a hit for the other. |
 
 The racy rule of the intact check has a unit test in `output/check.rs`: a write in the clock
 tick of the last hash leaves every stat field equal, and no black-box test can make one.
