@@ -5,6 +5,7 @@ mod context;
 mod coordinate;
 mod fetch;
 mod finish;
+mod installed;
 mod pass;
 mod prepare;
 mod record;
@@ -123,6 +124,15 @@ pub fn build(
         .filter(|unit| !compiling.contains(unit))
         .copied()
         .collect();
+    let installed = match installed::begin(
+        settings, &layout, &plan, &outcome, &results, &compiling, &mut notes,
+    ) {
+        Ok(installed) => installed,
+        Err(error) => {
+            pool.shutdown();
+            return Err(error);
+        }
+    };
     let owned: HashSet<String> = results
         .outputs
         .iter()
@@ -311,6 +321,7 @@ pub fn build(
         policy,
         &mut notes,
     );
+    let manifest = installed.finish(&results.outputs, recorder.installed());
     let closed = recorder.close();
     pool.shutdown();
     stage::remove_stale(&settings.state_dir);
@@ -318,6 +329,7 @@ pub fn build(
         return Err(error);
     }
     closed?;
+    manifest?;
     let mut report = finish::report(
         &plan,
         &id_of,

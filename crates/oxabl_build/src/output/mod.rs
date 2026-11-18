@@ -4,6 +4,8 @@ pub mod check;
 pub mod ignore;
 pub mod in_place;
 pub mod layout;
+pub mod manifest;
+pub mod orphans;
 pub mod ownership;
 pub mod promote;
 pub mod prune;

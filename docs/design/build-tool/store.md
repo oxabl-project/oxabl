@@ -47,7 +47,10 @@ Each connection sets, in this order: `busy_timeout = 5000`, `journal_mode = WAL`
 the meaning of a column increments it. There are no migrations. Format 2 adds the
 `observed` table: a store of format 1 is replaced by step 3 below. Format 3 adds the
 include name as written to the include edges: a store of format 2 is replaced the same
-way, and the next refresh analyses every file again.
+way, and the next refresh analyses every file again. Format 4 adds `ctime_ns` and
+`observed_ns` to the `outputs` table, for the check of intact outputs. The manifest of the
+r-code beside the sources (`<state>/installed`) is not in the store, so a new store does
+not lose it ([build-tool.md](../build-tool.md#r-code-beside-the-source)).
 
 On open:
 
@@ -140,8 +143,10 @@ CREATE TABLE outputs (
     path     TEXT NOT NULL,
     size     INTEGER NOT NULL,
     mtime_ns INTEGER NOT NULL,
+    ctime_ns INTEGER NOT NULL,
     ino      INTEGER NOT NULL,
     hash     BLOB NOT NULL,
+    observed_ns INTEGER NOT NULL,
     PRIMARY KEY (unit_id, path)
 ) WITHOUT ROWID;
 
@@ -192,7 +197,10 @@ CREATE TABLE environments (
   without dropped parameters. The planner compares two records field by field to name an
   `environment-changed` reason. Rows that no result refers to are deleted at commit.
 - `outputs` holds each output file of a result: its root-relative final path, its stat
-  and the BLAKE3 hash of its bytes. The planner skips colliding units before any compile
+  and the BLAKE3 hash of its bytes, with the time the hash was taken (`observed_ns`). The
+  planner trusts an output when `size`, `mtime_ns`, `ctime_ns` and `ino` are equal and the
+  row was not racy (taken two seconds or more after the last change); else it hashes the
+  file, and equal bytes record the new stat. The planner skips colliding units before any compile
   (`output-collision`, [compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)),
   so two units never reach one output. `outputs_by_path` is the guard behind that rule: an
   insert that breaks it is a bug, and the build stops with exit code 3 and names both units.
