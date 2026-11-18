@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.8.0...oxabl_vscode-v0.9.0) (2026-11-18)
+
+
+### Features
+
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([c4c88a7](https://github.com/oxabl-project/oxabl/commit/c4c88a7de0162dcf0a9fd792f699405125a2aa9d))
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([e317d75](https://github.com/oxabl-project/oxabl/commit/e317d758247fceab45b13d82891f9025b6d7bb04))
+* **vscode:** build a root with r-code beside the source ([4c3473a](https://github.com/oxabl-project/oxabl/commit/4c3473abe43a6cd618c4c11da27e373217dafe50))
+
 ## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.7.1...oxabl_vscode-v0.8.0) (2026-11-17)
 
 

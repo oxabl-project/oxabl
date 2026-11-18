@@ -1,5 +1,45 @@
 # Changelog
 
+## [5.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.6.0...oxabl-v5.7.0) (2026-11-18)
+
+
+### Features
+
+* **build:** own the r-code beside the sources with a manifest ([d72c57b](https://github.com/oxabl-project/oxabl/commit/d72c57b2c4421c8f806c31505514c64b85269933))
+* **build:** own the r-code beside the sources with a manifest ([1fb37fc](https://github.com/oxabl-project/oxabl/commit/1fb37fce8218a116ad360ff3595af696bb0d39e8))
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([c4c88a7](https://github.com/oxabl-project/oxabl/commit/c4c88a7de0162dcf0a9fd792f699405125a2aa9d))
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([e317d75](https://github.com/oxabl-project/oxabl/commit/e317d758247fceab45b13d82891f9025b6d7bb04))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+    * oxabl_preprocessor bumped from 0.8.0 to 0.8.1
+    * oxabl_semantic bumped from 5.0.4 to 5.0.5
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+    * oxabl_analyze bumped from 4.2.0 to 4.2.1
+    * oxabl_pipeline bumped from 3.6.0 to 3.6.1
+    * oxabl_lint bumped from 5.0.4 to 5.0.5
+    * oxabl_lsp bumped from 3.1.4 to 3.1.5
+    * oxabl_daemon bumped from 0.5.9 to 0.5.10
+    * oxabl_build bumped from 0.7.0 to 0.8.0
+    * oxabl_build_remote bumped from 0.2.9 to 0.2.10
+    * oxabl_formatter bumped from 2.0.7 to 2.0.8
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.2.0 to 4.2.1
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+    * oxabl_pipeline bumped from 3.6.0 to 3.6.1
+    * oxabl_flow bumped from 0.3.7 to 0.3.8
+    * oxabl_handles bumped from 0.2.7 to 0.2.8
+    * oxabl_scope bumped from 0.2.7 to 0.2.8
+    * oxabl_effects bumped from 0.3.5 to 0.3.6
+    * oxabl_nulls bumped from 0.2.7 to 0.2.8
+    * oxabl_index bumped from 5.1.0 to 5.2.0
+
 ## [5.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.5.0...oxabl-v5.6.0) (2026-11-17)
 
 
