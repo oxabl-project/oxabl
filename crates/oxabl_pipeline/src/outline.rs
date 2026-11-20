@@ -746,12 +746,15 @@ impl<'a> Walker<'a> {
                     .is_some()
                 {
                     // A value is a number or a member name; `A,B` combines two.
+                    // Tokens that touch the value, as in `-1`, belong to it.
                     let mut want_value = true;
                     while let Some(t) = tokens.next_if(|t| {
                         if want_value {
                             !matches!(t.kind, Kind::Period | Kind::End | Kind::Comma)
                         } else {
                             t.kind == Kind::Comma
+                                || (t.start == last.end
+                                    && !matches!(t.kind, Kind::Period | Kind::End))
                         }
                     }) {
                         want_value = t.kind == Kind::Comma;

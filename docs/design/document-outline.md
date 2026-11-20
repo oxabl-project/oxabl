@@ -59,9 +59,10 @@ enclosing block early.
 | `&SCOPED-DEFINE`, `&GLOBAL-DEFINE` | `PreprocessorDefine` | The macro name | `SCOPED` or `GLOBAL` |
 | A labelled block, `main-loop: DO:` | `Label` | The label | none |
 
-A member spans `name [= value]`. The value is a number or a member name, or
-a list of member names with commas, as in a `FLAGS` enum. The parser skips an
-`ENUM` block, so the outline reads it from the tokens, up to `END ENUM.`.
+A member spans `name [= value]`. The value is a number with an optional sign
+(`-1`), a member name, or a list of member names with commas, as in a `FLAGS`
+enum. The parser skips an `ENUM` block, so the outline reads it from the
+tokens, up to `END [ENUM].`.
 
 A constructor or a destructor that no class contains (a broken file) has the
 name `CONSTRUCTOR` or `DESTRUCTOR`.

@@ -1412,6 +1412,29 @@ Enum acme.Access => "ENUM acme.Access FLAGS: DEFINE ENUM Read = 1 Write = 2 RW =
 }
 
 #[test]
+fn a_signed_enum_value_belongs_to_its_member() {
+    let src = "ENUM Level:\n  DEFINE ENUM Neg = -1 Pos = +2 Next.\nEND ENUM.\n";
+    assert_tree(
+        src,
+        r#"
+Enum Level @"Level"
+  EnumMember Neg @"Neg"
+  EnumMember Pos @"Pos"
+  EnumMember Next @"Next"
+"#,
+    );
+    assert_spans(
+        src,
+        r#"
+Enum Level => "ENUM Level: DEFINE ENUM Neg = -1 Pos = +2 Next. END ENUM."
+  EnumMember Neg => "Neg = -1"
+  EnumMember Pos => "Pos = +2"
+  EnumMember Next => "Next"
+"#,
+    );
+}
+
+#[test]
 fn an_enum_member_list_may_span_several_define_statements() {
     let src = "ENUM Level:\n  DEFINE ENUM Low = 1.\n  DEFINE ENUM Mid.\n  DEFINE ENUM High = 9 Top.\nEND ENUM.\nDEFINE VARIABLE after AS INTEGER NO-UNDO.\n";
     assert_tree(
