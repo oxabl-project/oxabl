@@ -7,17 +7,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { apiBaseFrom, type UpdateEnv } from "./net";
 import {
-  DEFAULT_API_BASE,
   NotReadyError,
   UpdateError,
   downloadVerified,
   findUpdate,
   highestInstalledVersion,
-  isLoopbackHost,
   isPendingReloadSpent,
   type AvailableUpdate,
-  type UpdateEnv,
 } from "./update";
 
 const LAST_CHECK_KEY = "oxabl.updates.lastCheck";
@@ -30,6 +28,11 @@ const RELEASE_URL = "https://github.com/oxabl-project/oxabl/releases/tag/oxabl_v
 
 type Mode = "auto" | "notify" | "off";
 
+/** The CLI half of a check (`CliManager`): asked after the extension's own release. */
+export interface CliUpdates {
+  checkForUpdate(mode: Mode, manual: boolean): Promise<void>;
+}
+
 /** Whether the person asked for the check (a manual one reports every outcome). */
 type Trigger = "automatic" | "manual";
 
@@ -39,14 +42,18 @@ let busy = false;
  * Register the check command and start the automatic check without awaiting
  * it. A timer repeats the check; the 24-hour stamp keeps it to one a day.
  */
-export function registerUpdates(context: vscode.ExtensionContext, log: vscode.LogOutputChannel): void {
+export function registerUpdates(
+  context: vscode.ExtensionContext,
+  log: vscode.LogOutputChannel,
+  cli: CliUpdates,
+): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("oxabl.checkForUpdates", () =>
-      checkForUpdates(context, log, "manual"),
+      checkForUpdates(context, log, cli, "manual"),
     ),
   );
-  void checkForUpdates(context, log, "automatic");
-  const timer = setInterval(() => void checkForUpdates(context, log, "automatic"), TIMER_INTERVAL_MS);
+  void checkForUpdates(context, log, cli, "automatic");
+  const timer = setInterval(() => void checkForUpdates(context, log, cli, "automatic"), TIMER_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 }
 
@@ -58,28 +65,9 @@ function currentMode(): Mode {
   return mode === "auto" && autoUpdate === false ? "notify" : mode;
 }
 
-/** The test hook `OXABL_UPDATE_API_URL`, honoured only for a loopback host. */
-function apiOverride(log: vscode.LogOutputChannel): string | undefined {
-  const override = process.env.OXABL_UPDATE_API_URL;
-  if (!override) {
-    return undefined;
-  }
-  try {
-    if (isLoopbackHost(new URL(override).hostname)) {
-      return override;
-    }
-  } catch {
-    // Reported below with the other rejected values.
-  }
-  log.warn("ignoring OXABL_UPDATE_API_URL: the host is not a loopback address");
-  return undefined;
-}
-
 function updateEnv(context: vscode.ExtensionContext, log: vscode.LogOutputChannel): UpdateEnv {
-  const override = apiOverride(log);
   return {
-    apiBase: (override || DEFAULT_API_BASE).replace(/\/+$/, ""),
-    allowHttp: Boolean(override),
+    ...apiBaseFrom(process.env.OXABL_UPDATE_API_URL, (m) => log.warn(m)),
     installedVersion: context.extension.packageJSON.version as string,
   };
 }
@@ -87,6 +75,7 @@ function updateEnv(context: vscode.ExtensionContext, log: vscode.LogOutputChanne
 async function checkForUpdates(
   context: vscode.ExtensionContext,
   log: vscode.LogOutputChannel,
+  cli: CliUpdates,
   trigger: Trigger,
 ): Promise<void> {
   const manual = trigger === "manual";
@@ -115,6 +104,30 @@ async function checkForUpdates(
   try {
     // Written before the network call: a failing check is not retried at once.
     await context.globalState.update(LAST_CHECK_KEY, Date.now());
+    await checkExtension(context, log, trigger);
+    // The binary is checked whatever became of the extension's release.
+    try {
+      await cli.checkForUpdate(currentMode(), manual);
+    } catch (err) {
+      const reason = failureReason(err);
+      log.error(`CLI update check failed: ${reason}`);
+      if (manual) {
+        void vscode.window.showErrorMessage(`oxabl: could not check the CLI for updates: ${reason}`);
+      }
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+/** The extension's own release: find it, then install or offer it. Reports its own failure. */
+async function checkExtension(
+  context: vscode.ExtensionContext,
+  log: vscode.LogOutputChannel,
+  trigger: Trigger,
+): Promise<void> {
+  const manual = trigger === "manual";
+  try {
     const env = updateEnv(context, log);
     const installed = env.installedVersion;
     const mode = currentMode();
@@ -168,8 +181,6 @@ async function checkForUpdates(
     if (manual) {
       void vscode.window.showErrorMessage(`oxabl: could not check for updates: ${reason}`);
     }
-  } finally {
-    busy = false;
   }
 }
 

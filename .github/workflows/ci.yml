@@ -41,6 +41,22 @@ jobs:
             echo "oxabl without the remote-cache feature must not depend on an oxabl-cache crate" >&2
             exit 1
           fi
+      # The self-update feature of the umbrella crate is the only way to the HTTP
+      # and TLS stack besides the remote cache, so a plain `cargo install oxabl`
+      # carries no network or crypto code.
+      - name: Only the self-update and remote-cache features reach the network stack
+        run: |
+          pattern='^(reqwest|hyper|hyper-rustls|hyper-util|rustls|rustls-webpki|tokio|tokio-rustls|ring|aws-lc-rs|aws-lc-sys) '
+          if cargo tree -p oxabl -e normal,build --prefix none | grep -E "$pattern"; then
+            echo "oxabl without the self-update and remote-cache features must not depend on an HTTP or TLS crate" >&2
+            exit 1
+          fi
+          if cargo tree -p oxabl_build -e normal,build --prefix none | grep -E "$pattern"; then
+            echo "oxabl_build must not depend on an HTTP or TLS crate" >&2
+            exit 1
+          fi
+          # Positive control: the check above would pass for any pattern.
+          cargo tree -p oxabl --features self-update -e normal,build --prefix none | grep -Eq '^reqwest '
 
   test:
     name: Test
@@ -77,6 +93,35 @@ jobs:
           cargo test -p oxabl --features remote-cache --locked \
             --test build_remote_cache --test build_remote_faults --test build_remote_trust \
             --test build_remote_fetch_volume --test build_remote_fetch_tree
+
+  self-update:
+    name: Self-update
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      # The tests copy the built binary and update the copy from a fake GitHub
+      # on a loopback port.
+      - run: cargo test -p oxabl --features self-update --locked --test self_update
+      - run: cargo clippy -p oxabl --all-targets --features remote-cache,self-update --locked -- -D warnings
+
+  install-script:
+    name: Install script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      - run: shellcheck scripts/install.sh
+      # The tests run the script against a fake GitHub on a loopback port. dash
+      # is /bin/sh on Ubuntu, so this runs the script as a plain POSIX shell.
+      - name: Run the script with dash
+        run: OXABL_TEST_SH=/bin/dash cargo test -p oxabl --locked --test install_script
+      - name: Run the script with bash
+        run: OXABL_TEST_SH=/bin/bash cargo test -p oxabl --locked --test install_script
 
   musl-binary:
     name: Static Linux binary

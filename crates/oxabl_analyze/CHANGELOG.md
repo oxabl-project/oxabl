@@ -1,5 +1,91 @@
 # Changelog
 
+## [4.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.2.0...oxabl_analyze-v4.2.1) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 5.0.4 to 5.0.5
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+    * oxabl_preprocessor bumped from 0.8.0 to 0.8.1
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+    * oxabl_semantic bumped from 5.0.4 to 5.0.5
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+  * dev-dependencies
+    * oxabl_index bumped from 5.1.0 to 5.2.0
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+
+## [4.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.1.0...oxabl_analyze-v4.2.0) (2026-11-17)
+
+
+### Features
+
+* **build:** key units that use classes under per-directory PROPATHs ([f17685f](https://github.com/oxabl-project/oxabl/commit/f17685fb429585f7d7182b3cf5b65eb7f9b206b5))
+
+
+### Bug Fixes
+
+* **pipeline:** a name written as x:member in a skipped branch is a variable when one comes before it ([62d447a](https://github.com/oxabl-project/oxabl/commit/62d447a57952e7f302c0f051667f06905ce27c36))
+
+## [4.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.4...oxabl_analyze-v4.1.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 5.0.3 to 5.0.4
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+    * oxabl_preprocessor bumped from 0.7.6 to 0.8.0
+    * oxabl_semantic bumped from 5.0.3 to 5.0.4
+  * dev-dependencies
+    * oxabl_index bumped from 5.0.3 to 5.1.0
+
+## [4.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.3...oxabl_analyze-v4.0.4) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 5.0.2 to 5.0.3
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+    * oxabl_preprocessor bumped from 0.7.5 to 0.7.6
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+    * oxabl_semantic bumped from 5.0.2 to 5.0.3
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+  * dev-dependencies
+    * oxabl_index bumped from 5.0.2 to 5.0.3
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+
+## [4.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.2...oxabl_analyze-v4.0.3) (2026-11-12)
+
+
+### Bug Fixes
+
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([958fe45](https://github.com/oxabl-project/oxabl/commit/958fe45edf0555ea774c125e949af5c34b30263a))
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([fbbe2ec](https://github.com/oxabl-project/oxabl/commit/fbbe2ec08e8e7b1e89c145052acea0edc25f186f)), closes [#337](https://github.com/oxabl-project/oxabl/issues/337)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lint bumped from 5.0.1 to 5.0.2
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+    * oxabl_preprocessor bumped from 0.7.4 to 0.7.5
+    * oxabl_semantic bumped from 5.0.1 to 5.0.2
+  * dev-dependencies
+    * oxabl_index bumped from 5.0.1 to 5.0.2
+
 ## [4.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.0.1...oxabl_analyze-v4.0.2) (2026-11-11)
 
 

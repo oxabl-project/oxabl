@@ -37,10 +37,18 @@ directory per output kind.
 
 | Kind | Artifact path | Final path |
 | --- | --- | --- |
-| `rcode` | `r/<compile stem>.r` | `[build].output/<compile stem>.r` |
-| `xref` / `xref-xml` | `xref/<compile name>.xref` or `.xref.xml` | `[build.outputs].xref/...` |
-| `debug-list` | `dbg/<compile name>.dbg` | `[build.outputs].debug_list/...` |
-| `listing` | `lst/<compile name>.lst` | `[build.outputs].listing/...` |
+| `rcode` | `r/<output stem>.r` | `[build].output/<output stem>.r`, or `<unit stem>.r` beside the source |
+| `xref` / `xref-xml` | `xref/<output name>.xref` or `.xref.xml` | `[build.outputs].xref/...` |
+| `debug-list` | `dbg/<output name>.dbg` | `[build.outputs].debug_list/...` |
+| `listing` | `lst/<output name>.lst` | `[build.outputs].listing/...` |
+
+The output name is defined in
+[compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name): with `[build].rcode = "beside-source"`
+it is the unit path of every unit (`src/a/x.p` gives `r/src/a/x.r`). So two class units of
+one name below two package roots never share an artifact path in a fetch stage. The keys of
+the two modes differ (the unit PROPATH of `beside-source` has no `$OUT`), so their entries
+never meet. A fetch in place installs each file beside its source with the same rename as
+a compile.
 
 The output directories are configuration and are not in the key. So the artifact path is
 relative to the artifact root, not to the workspace root, and two workspaces with different
@@ -151,8 +159,8 @@ it calls the client's `uploader()`:
 
 - **`fetch` streams.** It takes all requests in one call (the cache batches on the wire)
   and calls `on_outcome` once per key, as each one completes. Every key of one call is
-  installed into one tree, `stage/<artifact path>`: artifact paths are unique per build
-  after the output-collision rule
+  installed into one tree, `stage/<artifact path>`: an artifact path follows the unit's
+  output name, and output names are unique per build after the output-collision rule
   ([compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)), so no two keys
   share a path. An installed set is complete and verified at its artifact paths before its
   outcome is reported, and it stays installed whatever happens to later keys. Oxabl
@@ -278,54 +286,115 @@ with compiling.
 | Check | How | On failure |
 | --- | --- | --- |
 | V1 inputs | Hash again every file in the unit's closure, and the unit, with hashes taken after the unit's `DONE`. A file hashed after that moment for another unit is reused. A `$DLC/...` file is hashed again by an idle worker (`HASH`), from the copy the AVM compiles with, not from the host mirror. Every hash must equal the hash the key used. | The unit is not written. |
-| V2 schema | The databases are imaged again before each upload batch is released (`[build.verify] batch_interval` and `batch_units`, default every 60 s or 500 units, and at the end), split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. | Every held and later unit of this build is not written. |
-| V3 reads | Read the unit's private `XREF-XML`. Take the file name of every `Source` element: these are the files the compiler opened, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
+| V2 schema | The databases are imaged again before held sets are released, split across the idle workers as in the probe ([worker-protocol.md](worker-protocol.md#schema-image)). An imaging starts when a set waits and `[build.verify].imaging_budget` times the duration of the last imaging has passed since it ended ([pace](#the-pace-of-v2)), and once at the end. A unit is released only after an imaging that **started after the unit finished** gives the schema identities of the probe. When the raw digest pins the image of every database ([compile-key.md](compile-key.md#the-raw-digest)), each check is a raw pass in place of the imaging, in every cache mode: an equal digest means equal metaschema records, so the identities of the probe. A changed digest is a changed schema; the build does not image again. | Every held and later unit of this build is not written. |
+| V3 reads | Read the unit's cross-reference: the private text `XREF`, or the `XREF-XML` or text `XREF` that the user asked for. Take the file in the second column of every row (text) or the file name of every `Source` element (XML): these are the files that hold a reference, as the compiler resolved them. Map each name to a canonical path: a relative name is relative to the worker root, an absolute name under the worker's `dlc` becomes `$DLC/...`. Never resolve a name again on the host. Every one must be the unit or in its closure; a name that does not map fails the check. | The unit is not written. Its result is recorded with `key = NULL` and the file in `note`, so it compiles again at each build (`unverified`). The summary names the file and asks for a bug report, because the analysis missed an input. |
 
 For a unit keyed by its [observed closure](compile-key.md#the-observed-closure), the closure
 of V1 and V3 is the observed one, with its class part. Before them, the build observes the compile again: when it
 read another closure than the key holds, the key does not describe the outputs, so the build
 stores the new closure and writes nothing.
 
+### The verification policy
+
+`verify::policy::Policy` is the one value that every check reads. A build makes it once, at
+the start, from the cache mode ([Trust](#trust)) and `[build.verify]`. `--print-config`
+shows the mode as `verification.mode`, next to the `[build.verify]` settings it reads, and
+the report holds the policy and the number of V2 imagings (`cache.verification`,
+`cache.imaging_rounds`).
+
+A cache that other people read is written only by a `ci` build: a `developer` build writes
+its own namespace, and only that developer reads it. So the modes differ in how much a
+wrong entry can cost, and the policy follows:
+
+| Mode | Policy |
+| --- | --- |
+| `ci` | Every check, always, at full strength. No setting lowers one: a setting that would, while the build still writes a cache, is refused with exit code 2, in `Policy::resolve` and nowhere else. No such setting exists yet. |
+| `developer` | The same checks as `ci` today. A cheaper form of a check (a sample, a reused pass) belongs here only, as a new field of the policy. |
+| `read-only` | Nothing is written, so nothing is verified. |
+
+`reads = false` lowers no check: it turns the cache write off, in every mode, and the build
+says so in a note. Only a check that runs while a cache is still
+written must be refused in `ci`.
+
+### The pace of V2
+
+An imaging costs every worker for its whole duration (3.6 s on 16 workers is about the work
+of 100 compiles on the measured databases), so the number of units is the wrong trigger:
+more workers make the same unit count a larger share of the build. A check starts when a
+set waits and `imaging_budget` times the duration of the last imaging has passed since that
+imaging ended. The imaging of the probe is the first one. When the checks are raw passes,
+the duration of a raw pass takes the place of the imaging (the raw passes of the start are
+the first one), so the checks come more often at the same share of the build. With the default of 30 the checks
+cost at most about 1 / 31 of a build, for any database size and worker count. `0` starts a
+check whenever a set waits. The check at the end stays, and the rule that a unit is released
+only after an imaging that started after it finished does not change.
+
+`batch_units` and `batch_interval` are still read, so that old files load, and ignored; the
+build says so in a note. A longest wait (`batch_interval`) would force a check whatever it
+costs, and so break the bound. Waiting costs no memory worth a bound: a held set is a key and
+the paths of its files, never their bytes. The price is time and cancel. The uploads of held
+sets start at the release instead of streaming, so a `ci` build ends later by the upload of
+the last sets, and a build that is cancelled keeps the sets that no imaging has released.
+
 ### What V3 covers
 
-Measured on OpenEdge 12.8.9 (`xref_xml_classes`, `xref_xml_resolution`):
+Measured on OpenEdge 12.8.9 (`xref_xml_classes`, `xref_xml_resolution` and their text
+forms `xref_text_classes`, `xref_text_resolution`; the text `XREF` and the `XREF-XML` name the
+same files for all 545 units of a real code base):
 
 - **Classes: not covered.** For a unit that uses a class from source (not a unit), from
-  `$OUT` r-code or from a `.pl`, the `XREF-XML` lists only the unit itself as a `Source`. It
-  names no class file at all (the reference appears as `Reference-type="NEW"` with the class
+  `$OUT` r-code or from a `.pl`, the cross-reference lists only the unit itself (as a
+  `Source`, or in the second column). It names no class file at all (the reference appears as `Reference-type="NEW"` with the class
   name, never with a file).
 - **Includes with only preprocessor definitions: not covered.** The compiler lists a
-  `Source` only for a file that holds a reference. An include that holds only
-  `&GLOBAL-DEFINE`s is not listed, and neither the listing, the debug list nor the text XREF
-  gives its resolved path (they give the name as written).
+  file that holds a reference (a `Source`, or a row in the second column). An include that
+  holds only `&GLOBAL-DEFINE`s is not listed. Its `INCLUDE` row gives the name as written,
+  and neither the listing, the debug list nor `STRING-XREF` gives its resolved path.
 - **Other includes: covered.** Every include that holds a reference is a `Source`, with its
   name as the compiler resolved it.
 
 So V3 cannot see a divergent resolution of a class or of a definitions-only include. For
 those reads the **closure that the plan builds is the only guard**: K1 and K2 make a unit
 unkeyable when its analysis (with includes judged in the includer's context) is degraded or
-leaves an include unresolved, and class resolution is keyed only with one PROPATH id (K9)
-and without an external name collision (K8,
-[compile-key.md](compile-key.md#per-unit-propath-classes)). A V3 source for these reads is
-an open follow-up ([build-tool.md](../build-tool.md#follow-ups)).
+leaves an include unresolved. Class resolution is keyed only when oxabl's emulation of the
+compiler's search finds one file for each class name under every PROPATH id, or the class
+unit's r-code in `$OUT` (K9), without an external name collision (K8), and without class
+r-code that oxabl does not hash (K11,
+[compile-key.md](compile-key.md#per-unit-propath-classes)). The emulation follows the
+measured search, so this guard does not depend on the number of PROPATH ids. A V3 source for these reads is
+an open follow-up ([build-tool.md](../build-tool.md#follow-ups)). The `FileID` log of
+`LOG-MANAGER` names those reads for the first compile that binds a class in a fresh session
+([measured](compile-key.md#follow-up-classes-under-per-unit-propaths)).
 
 V2 has one residual case: a schema that changes and changes back between two imagings, with
 a compile in between. This needs two dictionary loads into the build's database during
 the build; CI builds use a database of their own, and the case is stated, not hidden.
 
-The private `XREF-XML` is on when any cache write is on (`[build.verify].reads`, default
+The private cross-reference is the text `XREF`: the compiler writes it in about a seventh of
+the time and a sixth of the bytes of the `XREF-XML` (545 units, 16 workers: +1 s against +9 s
+on a 14 s compile). It is on when any cache write is on (`[build.verify].reads`, default
 `true`). With no cache that stores (`read-only`, `--no-cache`, no cache configured), only a
 request that holds a unit keyed by its observed closure asks for it
 ([compile-key.md](compile-key.md#the-observed-closure)): the other compiles skip the
-`XREF-XML` and the read check. When the user requests `xref-xml`, that output serves as the private one. When the
-user requests text XREF (`xref_format = "text"`), one compile cannot give both forms, so
-oxabl writes no cache entries for that configuration and says so at the start of each
-build. With `reads = false`, oxabl writes nothing to any cache. The `XREF-XML` reader is in
-`oxabl_effects`; slice 10 checks it against real compiler output.
+cross-reference and the read check. When the user requests an `xref` output, in either
+`xref_format`, that file serves as the private one, so one compile gives both and the
+directory of the output makes no difference. With `reads = false`, oxabl writes nothing to any
+cache. The reader is `observe::xref` in `oxabl_build`; the opt-in OpenEdge tests check it
+against real compiler output.
+
+The text reader is strict, because a row of the text form is not a line. A name with a space
+is in double quotes with `""` for a quote, a `STRING` row holds the value of a string, which
+can hold line breaks, and the line of a row is a number or `IMPLICIT`. The reader follows
+quotes across lines, takes the type of a row only from its fourth field, and fails on a row
+of another shape, a quote that is not closed, an empty file, or a file that does not end with
+a line break. A failure is a failed V3, as for an absent file: the unit is not cached and
+has no key. A name that holds a space and is not quoted cannot be told from two fields, so
+it fails too. The compiler writes no `COMPILE` row for encrypted source, so the first row is
+not checked.
 
 Verification costs one hash of each closure file per unit completion window (BLAKE3 on all
-cores, about 1 s for 500 MB of source), one schema imaging per upload batch (about 6 s with 8 workers on the measured databases), and one XREF read
-per unit.
+cores, about 1 s for 500 MB of source), one schema imaging per `imaging_budget` (about 6 s with 8 workers on the measured databases),
+and one XREF read per unit.
 
 ## Local cache
 

@@ -49,8 +49,8 @@ impl<'a, 'b> Coordinator<'a, 'b> {
     ) -> Self {
         let count = schedule.len();
         let mut job_of = FxHashMap::default();
-        for job in 0..count {
-            for unit in &shared.jobs[job] {
+        for (job, units) in shared.jobs.iter().enumerate().take(count) {
+            for unit in units {
                 job_of.insert(*unit, job);
             }
         }
@@ -193,13 +193,10 @@ impl<'a, 'b> Coordinator<'a, 'b> {
             return;
         }
         if release.wants_round(Instant::now()) {
-            let round = release.begin(self.workers);
-            for part in 0..self.workers {
-                self.shared.queue.push_task(Task {
-                    round,
-                    part,
-                    parts: self.workers,
-                });
+            let parts = release.parts(self.workers);
+            let round = release.begin(parts);
+            for part in 0..parts {
+                self.shared.queue.push_task(Task { round, part, parts });
             }
         }
     }

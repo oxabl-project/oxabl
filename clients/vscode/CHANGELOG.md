@@ -1,5 +1,96 @@
 # Changelog
 
+## [0.9.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.8.0...oxabl_vscode-v0.9.0) (2026-11-18)
+
+
+### Features
+
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([c4c88a7](https://github.com/oxabl-project/oxabl/commit/c4c88a7de0162dcf0a9fd792f699405125a2aa9d))
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([e317d75](https://github.com/oxabl-project/oxabl/commit/e317d758247fceab45b13d82891f9025b6d7bb04))
+* **vscode:** build a root with r-code beside the source ([4c3473a](https://github.com/oxabl-project/oxabl/commit/4c3473abe43a6cd618c4c11da27e373217dafe50))
+
+## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.7.1...oxabl_vscode-v0.8.0) (2026-11-17)
+
+
+### Features
+
+* **build:** write a .gitignore into the directory that holds oxabl's output ([35150ca](https://github.com/oxabl-project/oxabl/commit/35150ca43b1a13855b2d2dc80825b3fa0a5d313a))
+* onboarding polish: a .gitignore of oxabl's own, a first-build tooltip, notices once per workspace ([d6f7c24](https://github.com/oxabl-project/oxabl/commit/d6f7c242d7bd7c843fbe555883f060f9b3206eed))
+* **vscode:** say in the tooltip that a first build takes several minutes ([a2bfd92](https://github.com/oxabl-project/oxabl/commit/a2bfd926768afe18ae1c10570c9f072bd0378a21))
+
+
+### Bug Fixes
+
+* **vscode:** show a warning about units without a key once per workspace ([cb2dad4](https://github.com/oxabl-project/oxabl/commit/cb2dad4dc42998670f31217d49d102d3cbbee620))
+
+## [0.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.7.0...oxabl_vscode-v0.7.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **build:** report compiler warnings that have no position ([fbdbddc](https://github.com/oxabl-project/oxabl/commit/fbdbddc1f322da9bb0369644bd809c727a231689))
+* **build:** report compiler warnings that have no position ([07daeae](https://github.com/oxabl-project/oxabl/commit/07daeaeec05176b50681a4f8c57e77d8b32ac944))
+
+## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.6.1...oxabl_vscode-v0.7.0) (2026-11-16)
+
+
+### Features
+
+* **vscode:** update a managed oxabl CLI with the extension's update check ([312afa2](https://github.com/oxabl-project/oxabl/commit/312afa2c9f4b19a162b8304e93c8846c11012894))
+* **vscode:** update a managed oxabl CLI with the extension's update check ([52b4db4](https://github.com/oxabl-project/oxabl/commit/52b4db4f132401e0ea2e5859e3e1409279ab5566))
+
+## [0.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.6.0...oxabl_vscode-v0.6.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **vscode:** keep the building tooltip still while units finish ([3538784](https://github.com/oxabl-project/oxabl/commit/353878461521743acf65b4364b52ce64a16f6465))
+* **vscode:** keep the building tooltip still while units finish ([e8cb367](https://github.com/oxabl-project/oxabl/commit/e8cb36724dc4c013ed7f97a645ddbbdc50270bd5))
+
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.5.0...oxabl_vscode-v0.6.0) (2026-11-13)
+
+
+### Features
+
+* **build:** bind verification to the cache mode and pace schema checks by a time budget ([642c8ce](https://github.com/oxabl-project/oxabl/commit/642c8ce19cd43a2aa336bf61e88ef1d20244e268))
+* **build:** bind verification to the cache mode and pace V2 by a time budget ([1ef6165](https://github.com/oxabl-project/oxabl/commit/1ef616561087ca27bdd69de0408313cd154745de))
+
+
+### Bug Fixes
+
+* **vscode:** show the workspace share that needs no compile in the status bar ([958a086](https://github.com/oxabl-project/oxabl/commit/958a086f9e70671c6d08abc7bcec93f7b9744746))
+* **vscode:** show the workspace share that needs no compile in the status bar ([7f879e9](https://github.com/oxabl-project/oxabl/commit/7f879e9b7920a69187a5995fe889b295d49617fc))
+
+## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.4.1...oxabl_vscode-v0.5.0) (2026-11-13)
+
+
+### Features
+
+* **vscode:** warn when units have no compile key, and show the up-to-date units ([6ae98a6](https://github.com/oxabl-project/oxabl/commit/6ae98a60e236085e8d8165d285b155445295a8a5))
+* **vscode:** warn when units have no compile key, and show the up-to-date units ([913c7f4](https://github.com/oxabl-project/oxabl/commit/913c7f4764442d0b988c0146a107970e1827139a))
+
+## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.4.0...oxabl_vscode-v0.4.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **vscode:** keep the build spinner turning while units finish ([95d6b5d](https://github.com/oxabl-project/oxabl/commit/95d6b5da9f8d8c883e380a4622d358d8ba93f5dc))
+* **vscode:** keep the build spinner turning while units finish ([75d4a4c](https://github.com/oxabl-project/oxabl/commit/75d4a4cab979bb7a9a8c799f49531e416f22b753))
+
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.2...oxabl_vscode-v0.4.0) (2026-11-12)
+
+
+### Features
+
+* **vscode:** document the build loop and test it against a fake oxabl ([c36e010](https://github.com/oxabl-project/oxabl/commit/c36e01056a28b45a436e96ccd5e2b3d5b0f2505a))
+* **vscode:** install the CLI and build on open and on save ([4064da5](https://github.com/oxabl-project/oxabl/commit/4064da5d45f75c72ba39ac9b5d55b197bc9fdec3))
+* **vscode:** install the CLI and build on open and on save ([26c998a](https://github.com/oxabl-project/oxabl/commit/26c998a0cc1e4b67f803c29f9a3a9aab165cade3))
+
+
+### Bug Fixes
+
+* **vscode:** install the newest release over a managed binary that has no self-update ([122f0cb](https://github.com/oxabl-project/oxabl/commit/122f0cb900914dcc253626235e2e0ce606b679c5))
+
 ## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.3.1...oxabl_vscode-v0.3.2) (2026-11-11)
 
 

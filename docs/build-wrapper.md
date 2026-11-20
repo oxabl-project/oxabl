@@ -140,8 +140,8 @@ Oxabl does not read a PROPATH from the AVM. It builds one for each worker from t
 
 For a compile, the PROPATH is, in this order:
 
-1. The output directory (`[build].output`), so that a unit that uses a class reads the r-code that this build made.
-2. `[workspace.sources].root_relative_include_paths`, relative to the directory of the unit.
+1. The output directory (`[build].output`), so that a unit that uses a class reads the r-code that this build made. With `[build].rcode = "beside-source"` there is no such entry: the r-code of a class is beside its source, and the build compiles the class before its users.
+2. `[workspace.sources].root_relative_include_paths`, relative to the directory of the unit. For a class, they are relative to its package root: `.` for `a/pkg/Foo.cls`, which declares `pkg.Foo`, is `a`. The analysis searches the includes of a class from the same directory.
 3. `[workspace.sources].include_paths`, in order.
 4. The default entries of the OpenEdge installation (its `.pl` libraries). You do not list them.
 
@@ -153,7 +153,15 @@ Write each entry in `include_paths` and `root_relative_include_paths` in one of 
 
 Do not use an absolute path in these lists. Oxabl and the worker may see the same directory under different names.
 
-When every unit has the same PROPATH (`include_paths` only), every unit can have a compile key. When you set `root_relative_include_paths`, the PROPATH is different for the units of different directories. A unit that reaches a class then has no compile key. It compiles at each build, and no cache holds its result. If your code base has one global PROPATH, do not use `root_relative_include_paths`.
+When you set `root_relative_include_paths`, the PROPATH is different for the units of different directories. A unit that uses a class still has a compile key. The compiler reads a class from the first PROPATH entry that holds its r-code (`pkg/Foo.r`) or its source (`pkg/Foo.cls`), the r-code first, and the output directory comes first. So a user reads each class of `[workspace.sources].directories` from the r-code that this build made, whatever its directory finds. A unit has no compile key, and compiles at each build, only in these cases:
+
+- `per-unit-propath-classes: <name> (<files>)`: the name resolves to different files for different units. For example, `a/pkg/Foo.cls` and `b/pkg/Foo.cls` both exist: one is skipped (`output-collision`), and a user whose own directory finds the skipped one reads the other. Or a class that is not a unit, or an include inside it, resolves differently from the directories of its users.
+- `class-propath`: a class that is not a unit (outside `[workspace.sources].directories`) compiles under the PROPATH of the unit that uses it, and that PROPATH finds another file for one of its includes than the analysis found from the package root of the class.
+- `class-rcode: <file>`: the compile reads class r-code that oxabl does not hash. This is a `.r` file beside a class that is not a unit, or in an earlier PROPATH entry, often left by an older compile with `SAVE`. This applies with one PROPATH too. Delete the `.r` file, or add the class's directory to `[workspace.sources].directories`. A `.r` file beside a class that is a unit does no harm.
+
+`oxabl build --plan --probe --json` gives each unit's `class_resolution` with the names and files.
+
+With `root_relative_include_paths`, a procedure compiles under its name in its own directory, and its r-code goes to the same path in the output directory as its source: `ar/post.p` and `gl/post.p` both compile as `post.p`, and their r-code is `ar/post.r` and `gl/post.r`. A class keeps the path of its package.
 
 ### The environment of the compile
 
@@ -161,13 +169,16 @@ When every unit has the same PROPATH (`include_paths` only), every unit can have
 
 The workers report their own environment when they start. If it differs from `[workspace.preprocessor]`, the build stops with exit code 2 and shows the value on each side. Fix the overlay. Do not hide the difference.
 
+The startup parameters of the workers are part of the compile key, except the ones that name a connection, a log, a secret or a file of the process, and `-trig`: the compiler does not read the trigger directory.
+
 `[workspace.schema].files` lists `.df` dump files for the analysis (relative to the root). The compile itself uses the databases that the worker connects. Oxabl images each database on the workers and puts the schema in the compile key, so a schema change recompiles the units that it can change.
 
 ### Outputs and options
 
+- `[build].rcode` says where the r-code goes: `directory` (the default, below `[build].output`) or `beside-source` (beside the source of each unit, `a/x.p` gives `a/x.r`, with no `[build].output`). Use `beside-source` when the runtime PROPATH of the project holds the source directories and no output directory: a runtime runs the r-code beside a source before the source, also r-code of an older tool. Oxabl then owns the r-code beside each unit. It deletes the old r-code of a skipped unit and of each class it builds before the first compile, and of a unit that fails. It also deletes the r-code it installed when no unit expects it now (a deleted source, or a change back to `directory`), and a change to `beside-source` deletes the old output directory. The code base's own `.gitignore` must ignore `*.r`. A wrapper may set `build.rcode` in an overlay; each change of mode compiles or fetches everything.
 - `[build].output` is the r-code directory. It must be under the root. Oxabl owns it: the first build needs it absent or empty, and oxabl deletes files in it that it did not make. The same holds for each directory of `[build.outputs]` (`xref`, `debug_list`, `listing`). Do not point two settings at one directory, and do not put a directory inside another.
 - `[build.compile]` sets the options of the `COMPILE` statement.
-- `[build].state` is the directory for the graph store, the locks and the worker logs (default `.oxabl/build`). Keep it, and the output directories, out of version control.
+- `[build].state` is the directory for the graph store, the locks and the worker logs (default `.oxabl/build`). When the state or an output directory is below a directory of its own (for example `.oxabl/build` and `.oxabl/r`), a build writes a `.gitignore` that holds `*` in that top directory (`.oxabl/`), so git ignores the tree and the code base needs no change. Oxabl never replaces a `.gitignore`. It writes none in the root, in an output directory or in a directory that holds other files. It only warns when it cannot write the file. When an output directory is a top directory itself (for example `output = "build"`), add it to the ignore file of your version control.
 
 ### The local cache
 
@@ -190,6 +201,7 @@ oxabl build --root <root> --config-overlay <file> --events --report <file>
 ```
 
 - Run one build for each workspace at a time. A second build stops with exit code 3 and the process id of the first. `--wait-lock <seconds>` waits for the lock instead.
+- An editor or a wrapper that builds in the background runs `oxabl build --events --yield --wait-lock 3600`. A build from a terminal or an agent then does not wait for it: it stops the `--yield` build with one `SIGINT`, and that build exits with 130. A `--yield` build never stops a build that has no `--yield`. See [The lock and `--yield`](build-output.md#the-lock-and---yield).
 - Read **stdout** for the events and keep **stderr** for the human text. Read stdout until it closes.
 - Keep the report file. It has the result of each unit.
 - Use the exit code of the process to decide what to do (see [Exit codes](build-output.md#exit-codes)). The `summary` event has the same code.

@@ -119,7 +119,10 @@ pub fn decode_edges(bytes: &[u8]) -> Result<Vec<Edge>, StoreError> {
         };
         let target = u32::try_from(u64::from(base) + reader.varint()?)
             .map_err(|_| corrupt("path id out of range"))?;
-        let name = kind.carries_name().then(|| reader.text()).transpose()?;
+        let name = match kind.carries_name() {
+            true => Some(reader.text()?).filter(|name| !name.is_empty()),
+            false => None,
+        };
         edges.push(Edge { kind, target, name });
         previous = Some((kind, target));
     }

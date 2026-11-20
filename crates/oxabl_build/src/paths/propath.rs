@@ -63,6 +63,8 @@ pub fn canonical_entry(
 pub struct Search {
     root_relative: Vec<PathBuf>,
     shared: Vec<String>,
+    /// The r-code goes beside the source: no `$OUT` entry.
+    beside_source: bool,
 }
 
 impl Search {
@@ -72,25 +74,47 @@ impl Search {
         root_relative: Vec<PathBuf>,
         include_paths: Vec<String>,
         defaults: Vec<String>,
+        beside_source: bool,
     ) -> Self {
         Search {
             root_relative,
             shared: include_paths.into_iter().chain(defaults).collect(),
+            beside_source,
         }
     }
 
-    /// The unit PROPATH of a unit whose base directory is `base`: `$OUT`, the
-    /// root-relative entries joined to `base`, the include paths and the DLC
-    /// default entries, with later duplicates removed. An entry that leaves
-    /// the root keeps its absolute spelling.
-    pub fn propath(&self, paths: &PathMap, base: &str) -> Vec<String> {
+    /// Whether the r-code goes beside the source.
+    pub fn beside_source(&self) -> bool {
+        self.beside_source
+    }
+
+    /// Whether `root_relative_include_paths` is non-empty.
+    pub fn has_root_relative(&self) -> bool {
+        !self.root_relative.is_empty()
+    }
+
+    /// The root-relative entries joined to the base directory `base`, as
+    /// canonical paths. An entry that leaves the root keeps its absolute
+    /// spelling.
+    pub fn own_entries(&self, paths: &PathMap, base: &str) -> Vec<String> {
         let base = paths.absolute(base);
-        let joined = self
-            .root_relative
+        self.root_relative
             .iter()
-            .map(|entry| paths.canonical(&base.join(entry)));
-        let mut propath = vec![OUT.to_string()];
-        for entry in joined.chain(self.shared.iter().cloned()) {
+            .map(|entry| paths.canonical(&base.join(entry)))
+            .collect()
+    }
+
+    /// The unit PROPATH of a unit whose base directory is `base`: `$OUT`
+    /// unless the r-code goes beside the source, the root-relative entries
+    /// joined to `base`, the include paths and the DLC default entries, with
+    /// later duplicates removed.
+    pub fn propath(&self, paths: &PathMap, base: &str) -> Vec<String> {
+        let joined = self.own_entries(paths, base);
+        let mut propath: Vec<String> = match self.beside_source {
+            true => Vec::new(),
+            false => vec![OUT.to_string()],
+        };
+        for entry in joined.into_iter().chain(self.shared.iter().cloned()) {
             if !propath.contains(&entry) {
                 propath.push(entry);
             }
@@ -146,7 +170,7 @@ pub fn derive_base(search: &Search, paths: &PathMap, unit: &str) -> Option<(Stri
     while let Some(base) = directory {
         let on_propath = || {
             let propath = search.propath(paths, &base);
-            propath.iter().skip(1).any(|entry| *entry == base)
+            propath.contains(&base)
         };
         if let Some(name) = class_name_below(&base, unit)
             && on_propath()
@@ -193,22 +217,30 @@ fn below<'a>(entry: &str, unit: &'a str) -> Option<&'a str> {
 /// Where a unit compiles from, or why it cannot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Placement {
-    Compiles { name: String },
+    /// `output` names the unit's output files: the compile name, or the unit
+    /// path for a procedure that a root-relative entry holds, so procedures
+    /// of one name in different directories keep their own outputs.
+    Compiles {
+        name: String,
+        output: String,
+    },
     Skipped(String),
 }
 
 /// The compile name of `unit` on `propath`: its path below the first entry
-/// after `$OUT` that holds it. `base` is the unit's base directory and
-/// `class` says whether its name must be the package path. `is_file` tells
-/// whether a canonical path names a file, for the entries before the holder.
+/// other than `$OUT` that holds it. `base` is the unit's base directory, `own` its
+/// root-relative entries ([`Search::own_entries`]), and `class` says whether
+/// its name must be the package path. `is_file` tells whether a canonical path
+/// names a file, for the entries before the holder.
 pub fn place(
     unit: &str,
     base: &str,
+    own: &[String],
     class: bool,
     propath: &[String],
     is_file: impl Fn(&str) -> bool,
 ) -> Placement {
-    let entries = propath.iter().skip(1);
+    let entries = propath.iter().filter(|entry| *entry != OUT);
     let holder = entries
         .clone()
         .enumerate()
@@ -234,7 +266,12 @@ pub fn place(
             return Placement::Skipped(format!("shadowed-by: {candidate}"));
         }
     }
+    let output = match !class && own.contains(entry) {
+        true => unit,
+        false => name,
+    };
     Placement::Compiles {
         name: name.to_string(),
+        output: output.to_string(),
     }
 }

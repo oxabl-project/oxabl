@@ -1,20 +1,24 @@
 //! V2: a set is released to the caches only after the databases were imaged
 //! again, after the unit finished, with the schema identities of the probe.
+//! When the raw digest pins the image of every database, a check is a raw
+//! pass: an equal digest means equal records, so an equal identity.
 
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 
 use crate::cache::ArtifactSetRef;
-use crate::key::{SchemaImage, SchemaPart};
+use crate::key::raw_digest::{BUCKETS, MAX_WORKERS};
+use crate::key::{RawDigest, RawPart, SchemaImage, SchemaPart};
 
 /// When held sets are checked against the databases.
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
-    /// A check starts when this many sets are held.
-    pub units: usize,
-    /// A check starts when a set has waited this long.
-    pub interval: Duration,
+    /// A check starts no sooner than this many times the duration of the
+    /// last imaging after that imaging ended.
+    pub budget: u32,
+    /// The duration of the imaging of the probe, the first "last imaging".
+    pub imaging: Duration,
 }
 
 /// A set that passed V1 and V3, with the unit it belongs to.
@@ -24,11 +28,18 @@ struct Candidate {
     done_at: Instant,
 }
 
-/// One imaging of the databases, split into parts that idle workers take.
+/// One part of a schema check, as a worker answered it.
+#[derive(Clone, Debug)]
+pub enum Share {
+    Image(Vec<SchemaPart>),
+    Raw(Vec<RawPart>),
+}
+
+/// One schema check of the databases, split into parts that idle workers take.
 struct Round {
     id: u64,
     started: Instant,
-    shares: Vec<Option<Vec<SchemaPart>>>,
+    shares: Vec<Option<Share>>,
     failure: Option<String>,
 }
 
@@ -45,6 +56,9 @@ pub struct Dropped {
 /// Holds verified sets until the schema check releases them.
 pub struct Releaser {
     baseline: Vec<(String, blake3::Hash)>,
+    /// The raw digest of each database at the probe, when every database
+    /// has one; the checks are then raw passes.
+    raw: Option<Vec<String>>,
     settings: Settings,
     candidates: FxHashMap<u32, Candidate>,
     held: Vec<Candidate>,
@@ -52,6 +66,10 @@ pub struct Releaser {
     next_round: u64,
     /// When the last check that matched the probe started.
     matched: Option<Instant>,
+    /// When the last imaging ended, and how long it took.
+    imaged: (Instant, Duration),
+    /// Checks that ended, the final one not counted.
+    pub rounds: usize,
     broken: bool,
     pub dropped: Dropped,
 }
@@ -73,14 +91,43 @@ impl Releaser {
     pub fn new(baseline: Vec<(String, blake3::Hash)>, settings: Settings) -> Releaser {
         Releaser {
             baseline,
+            raw: None,
             settings,
             candidates: FxHashMap::default(),
             held: Vec::new(),
             round: None,
             next_round: 1,
             matched: None,
+            imaged: (Instant::now(), settings.imaging),
+            rounds: 0,
             broken: false,
             dropped: Dropped::default(),
+        }
+    }
+
+    /// Makes the checks raw passes against `raw`, the digest of each
+    /// database of the baseline, in its order.
+    pub fn with_raw(mut self, raw: Vec<String>) -> Releaser {
+        assert_eq!(
+            raw.len(),
+            self.baseline.len(),
+            "one raw digest per database"
+        );
+        self.raw = Some(raw);
+        self
+    }
+
+    /// Whether the checks are raw passes.
+    pub fn is_raw(&self) -> bool {
+        self.raw.is_some()
+    }
+
+    /// The number of parts of a check with `workers` workers: a raw pass
+    /// uses at most [`MAX_WORKERS`].
+    pub fn parts(&self, workers: usize) -> usize {
+        match self.raw {
+            Some(_) => workers.min(MAX_WORKERS),
+            None => workers,
         }
     }
 
@@ -140,22 +187,17 @@ impl Releaser {
 
     /// Whether a check of the databases is due and none is running. Every
     /// set that waits counts: the check must start after its unit finished,
-    /// and the unit's inputs are hashed again meanwhile.
+    /// and the unit's inputs are hashed again meanwhile. Only the time since
+    /// the last imaging decides, so the checks cost a fixed share of the
+    /// build whatever the number of units.
     pub fn wants_round(&self, now: Instant) -> bool {
         if self.broken || self.round.is_some() || self.baseline.is_empty() {
             return false;
         }
-        let oldest = self
-            .held
-            .iter()
-            .map(|held| held.done_at)
-            .chain(self.candidates.values().map(|candidate| candidate.done_at))
-            .min();
+        let (ended, took) = self.imaged;
+        let wait = took.saturating_mul(self.settings.budget);
         let waiting = self.held.len() + self.candidates.len();
-        waiting > 0
-            && (waiting >= self.settings.units
-                || oldest
-                    .is_some_and(|at| now.saturating_duration_since(at) >= self.settings.interval))
+        waiting > 0 && now.saturating_duration_since(ended) >= wait
     }
 
     /// Starts a check split into `parts`; returns its id.
@@ -182,7 +224,7 @@ impl Releaser {
         &mut self,
         id: u64,
         part: usize,
-        result: Result<Vec<SchemaPart>, String>,
+        result: Result<Share, String>,
     ) -> Vec<ArtifactSetRef> {
         let Some(round) = self.round.as_mut().filter(|round| round.id == id) else {
             return Vec::new();
@@ -190,14 +232,18 @@ impl Releaser {
         match result {
             Ok(shares) => round.shares[part] = Some(shares),
             Err(reason) => {
+                // The failure decides the round; the share only marks the
+                // part as answered.
                 round.failure.get_or_insert(reason);
-                round.shares[part] = Some(Vec::new());
+                round.shares[part] = Some(Share::Image(Vec::new()));
             }
         }
         if round.shares.iter().any(Option::is_none) {
             return Vec::new();
         }
         let round = self.round.take().expect("the round is running");
+        self.imaged = (Instant::now(), round.started.elapsed());
+        self.rounds += 1;
         let verdict = match round.failure {
             Some(reason) => Err(reason),
             None => self.combine(&round),
@@ -206,17 +252,49 @@ impl Releaser {
     }
 
     fn combine(&self, round: &Round) -> Result<(), String> {
+        let shares = round.shares.iter().flatten();
+        if self.raw.is_some() {
+            let mut digests = Vec::new();
+            for (at, (ldb, _)) in self.baseline.iter().enumerate() {
+                let mut parts: Vec<RawPart> = Vec::new();
+                for share in shares.clone() {
+                    let Share::Raw(share) = share else {
+                        return Err("a schema check got an image in place of a raw digest".into());
+                    };
+                    parts.extend(share.get(at).cloned());
+                }
+                digests.push(RawDigest::combine(ldb.clone(), parts, BUCKETS)?);
+            }
+            return self.digests_match(&digests);
+        }
         let mut images = Vec::new();
         for (at, (ldb, _)) in self.baseline.iter().enumerate() {
-            let parts: Vec<SchemaPart> = round
-                .shares
-                .iter()
-                .flatten()
-                .filter_map(|share| share.get(at).cloned())
-                .collect();
+            let mut parts: Vec<SchemaPart> = Vec::new();
+            for share in shares.clone() {
+                let Share::Image(share) = share else {
+                    return Err("a schema check got a raw digest in place of an image".into());
+                };
+                parts.extend(share.get(at).cloned());
+            }
             images.push(SchemaImage::combine(ldb.clone(), parts)?);
         }
         images_match(&self.baseline, &images)
+    }
+
+    /// Whether `digests` are the raw digests of the probe.
+    fn digests_match(&self, digests: &[RawDigest]) -> Result<(), String> {
+        let raw = self.raw.as_deref().unwrap_or_default();
+        if digests.len() != raw.len() {
+            return Err("the databases are not the ones of the probe".to_string());
+        }
+        for (((ldb, _), probe), digest) in self.baseline.iter().zip(raw).zip(digests) {
+            if digest.ldb != *ldb || digest.digest != *probe {
+                return Err(format!(
+                    "the schema of {ldb} differs from the probe: its raw digest changed"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn conclude(
@@ -254,6 +332,16 @@ impl Releaser {
     ) -> Vec<ArtifactSetRef> {
         self.round = None;
         let verdict = images.and_then(|images| images_match(&self.baseline, &images));
+        self.conclude(verdict, None)
+    }
+
+    /// The check that ends the build, from a raw pass over all databases now.
+    pub fn conclude_with_raw(
+        &mut self,
+        digests: Result<Vec<RawDigest>, String>,
+    ) -> Vec<ArtifactSetRef> {
+        self.round = None;
+        let verdict = digests.and_then(|digests| self.digests_match(&digests));
         self.conclude(verdict, None)
     }
 

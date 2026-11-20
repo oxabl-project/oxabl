@@ -14,6 +14,7 @@ mod build_probe;
 mod build_run;
 mod display_path;
 mod explain;
+mod self_update;
 mod watch;
 
 use clap::Parser as ClapParser;
@@ -332,6 +333,31 @@ enum Cli {
     },
     /// Run the language server over stdio (LSP), publishing live diagnostics.
     Lsp,
+
+    /// Check for a newer oxabl release and install it.
+    // Hidden: the advertised surface stays at the commands every build has,
+    // and a binary without the `self-update` feature only explains itself.
+    #[command(hide = true)]
+    ///
+    /// Only a binary that the installer script or the VS Code extension put in
+    /// place updates itself (exit 2 otherwise). Exit 3 when the check could not
+    /// be established: network, API, an incomplete release or a failed
+    /// verification. A binary built without the `self-update` feature exits 2.
+    /// A managed binary also checks in the background, at most once a day;
+    /// `CI` or `OXABL_NO_SELF_UPDATE` turn that off.
+    SelfUpdate {
+        /// Install nothing; print whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+
+        /// With `--check`, print the verdict as JSON.
+        #[arg(long, requires = "check")]
+        json: bool,
+
+        /// The detached worker of the automatic check.
+        #[arg(long, hide = true, conflicts_with_all = ["check", "json"])]
+        background: bool,
+    },
     /// Serve one workspace through the shared oxabl daemon.
     #[command(hide = true)]
     Daemon {
@@ -405,7 +431,7 @@ enum Cli {
         /// and stop. With `--json`, print it as a JSON document.
         #[arg(
             long,
-            conflicts_with_all = ["plan", "probe", "all", "files", "since", "events", "report", "fail_fast", "wait_lock"]
+            conflicts_with_all = ["plan", "probe", "all", "files", "since", "events", "report", "fail_fast", "wait_lock", "yield_to_newer"]
         )]
         print_config: bool,
 
@@ -438,6 +464,13 @@ enum Cli {
         /// stopping when another build holds it.
         #[arg(long, value_name = "SECONDS", conflicts_with_all = ["plan", "probe"])]
         wait_lock: Option<u64>,
+
+        /// Step aside for any newer build: mark the workspace lock so another
+        /// `oxabl build` stops this one (exit 130) instead of failing on the
+        /// lock. For an editor or a wrapper; a terminal or agent build
+        /// preempts it.
+        #[arg(long = "yield", conflicts_with_all = ["plan", "probe"])]
+        yield_to_newer: bool,
     },
 }
 
@@ -588,12 +621,28 @@ fn surface_source_context(sem: &oxabl_semantic::Semantic, output: &mut Output) -
 }
 
 fn main() -> ExitCode {
+    // A daemon and the client that finds it compare this, so a daemon that outlived
+    // an upgrade of the binary is replaced.
+    oxabl_daemon::set_build_version(env!("CARGO_PKG_VERSION"));
     let cli = Cli::parse();
+    // The server runs for hours: its check starts first. A command that ends
+    // soon schedules its check after it has done its work.
+    let after = matches!(
+        cli,
+        Cli::Check { .. } | Cli::Format { .. } | Cli::Build { .. }
+    );
+    if matches!(cli, Cli::Lsp) {
+        self_update::schedule_if_due();
+    }
     // Every command may parse ABL: give it a stack of known size, not `ulimit -s`.
-    oxabl_common::stack::run(|| run(cli))
+    let code = oxabl_common::stack::run(|| dispatch(cli));
+    if after {
+        self_update::schedule_if_due();
+    }
+    code
 }
 
-fn run(cli: Cli) -> ExitCode {
+fn dispatch(cli: Cli) -> ExitCode {
     match cli {
         Cli::Check {
             path,
@@ -684,6 +733,15 @@ fn run(cli: Cli) -> ExitCode {
             jobs,
         } => run_format(&path, check, stdout, style.as_deref(), job_count(jobs)),
         Cli::Lsp => run_lsp(),
+        Cli::SelfUpdate {
+            check,
+            json,
+            background,
+        } => self_update::run(&self_update::Options {
+            check,
+            json,
+            background,
+        }),
         Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
         Cli::Schema => run_schema(),
         Cli::Build {
@@ -703,6 +761,7 @@ fn run(cli: Cli) -> ExitCode {
             no_cache,
             no_remote_cache,
             wait_lock,
+            yield_to_newer,
         } => build_cmd::run(build_cmd::Options {
             plan,
             probe,
@@ -720,6 +779,7 @@ fn run(cli: Cli) -> ExitCode {
             no_cache,
             no_remote_cache,
             wait_lock,
+            yield_to_newer,
         }),
     }
 }
@@ -2568,12 +2628,7 @@ fn run_conformance(
     if debug {
         let real_fs = path_config.file_system();
         for file in &files {
-            run_debug_parse(
-                file,
-                preprocess,
-                &real_fs,
-                &path_config.include_paths_for(Some(file)),
-            );
+            run_debug_parse(file, preprocess, &real_fs, &path_config);
         }
         return ExitCode::SUCCESS;
     }
@@ -2604,11 +2659,7 @@ fn run_conformance(
         || (),
         |(), file| {
             if preprocess {
-                parse_file_with_preprocess(
-                    file,
-                    &real_fs,
-                    &path_config.include_paths_for(Some(file)),
-                )
+                parse_file_with_preprocess(file, &real_fs, &path_config)
             } else {
                 (parse_file(file, path_config.decoding), String::new())
             }
@@ -2689,7 +2740,7 @@ fn parse_file(path: &Path, decoding: SourceDecoding) -> FileResult {
 fn parse_file_with_preprocess(
     path: &Path,
     fs: &EncodedFileSystem,
-    include_paths: &[PathBuf],
+    config: &PipelineConfig,
 ) -> (FileResult, String) {
     // Read the file
     let source = match fs.read(path).map(|text| text.to_string()) {
@@ -2704,7 +2755,8 @@ fn parse_file_with_preprocess(
     };
 
     // Preprocess
-    let preprocessor = Preprocessor::new(fs, include_paths);
+    let include_paths = config.include_paths_for(Some(path), &source);
+    let preprocessor = Preprocessor::new(fs, &include_paths);
     let file_id = ROOT_FILE_ID;
     let preprocessed = match preprocessor.process(file_id, &source) {
         Ok(pf) => pf,
@@ -2981,12 +3033,7 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) -> Result<(), E
     }
 }
 
-fn run_debug_parse(
-    path: &Path,
-    preprocess: bool,
-    fs: &EncodedFileSystem,
-    include_paths: &[PathBuf],
-) {
+fn run_debug_parse(path: &Path, preprocess: bool, fs: &EncodedFileSystem, config: &PipelineConfig) {
     let source = match fs.read(path).map(|text| text.to_string()) {
         Ok(s) => s,
         Err(e) => {
@@ -2996,7 +3043,8 @@ fn run_debug_parse(
     };
 
     let parse_source: String = if preprocess {
-        let preprocessor = Preprocessor::new(fs, include_paths);
+        let include_paths = config.include_paths_for(Some(path), &source);
+        let preprocessor = Preprocessor::new(fs, &include_paths);
         let file_id = ROOT_FILE_ID;
         match preprocessor.process(file_id, &source) {
             Ok(pf) => {

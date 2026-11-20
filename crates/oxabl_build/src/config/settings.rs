@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use oxabl_workspace::{BuildConfig, WorkspaceConfig, dlc_sources};
+use oxabl_workspace::{BuildConfig, RcodePlace, WorkspaceConfig, dlc_sources};
 
 use super::Excludes;
 use crate::error::BuildError;
@@ -33,6 +33,13 @@ impl BuildSettings {
             Some(store) => root.join(store),
             None => state_dir.clone(),
         };
+        if build.rcode == RcodePlace::BesideSource
+            && BuildConfig::directory(&build.output).is_some()
+        {
+            return Err(BuildError::Usage(
+                "[build].output and [build].rcode = \"beside-source\" are both set; the r-code goes to one place, so set one of them".to_string(),
+            ));
+        }
         for (key, directory) in [
             ("[build].output", &build.output),
             ("[build.outputs].xref", &build.outputs.xref),

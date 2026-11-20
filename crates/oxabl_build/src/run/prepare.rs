@@ -8,8 +8,9 @@ use super::{BuildRequest, Setup, ms};
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::compute::compute;
-use crate::lock::{LockOutcome, WorkspaceLock, try_acquire, try_acquire_file};
-use crate::output::{OutputLayout, ownership, stage};
+use crate::key::image_store;
+use crate::lock::{LockOutcome, WorkspaceLock, holder, try_acquire_file, try_acquire_marked};
+use crate::output::{OutputLayout, ignore, ownership, stage};
 use crate::paths::PathMap;
 use crate::plan::run::{Committed, refresh_and_commit};
 use crate::plan::{Plan, StoredInputs, decide};
@@ -25,9 +26,13 @@ pub struct Prepared {
     pub plan: Plan,
     pub notes: Vec<String>,
     pub setup: Setup,
-    /// The workspace lock and the output lock, held to the end.
-    pub _locks: (WorkspaceLock, WorkspaceLock),
+    /// The workspace lock and the lock of the r-code directory, held to the
+    /// end.
+    pub _locks: (WorkspaceLock, Option<WorkspaceLock>),
 }
+
+/// How long past the cancel grace a build waits for the one it stopped.
+const YIELD_MARGIN: Duration = Duration::from_secs(30);
 
 /// Takes a lock with `attempt`, trying again every 100 ms for up to `wait`.
 fn acquire(
@@ -36,10 +41,28 @@ fn acquire(
     wait: Option<Duration>,
     cancel: &Cancel,
 ) -> Result<WorkspaceLock, BuildError> {
-    let deadline = Instant::now() + wait.unwrap_or_default();
+    acquire_by(attempt, what, wait, cancel, &mut |_| None)
+}
+
+/// Like [`acquire`]. Each time the lock is busy `stop_holder` may stop the
+/// holder; it returns the time to wait for the lock from then on.
+fn acquire_by(
+    attempt: impl Fn() -> LockOutcome,
+    what: &str,
+    wait: Option<Duration>,
+    cancel: &Cancel,
+    stop_holder: &mut dyn FnMut(&LockOutcome) -> Option<Duration>,
+) -> Result<WorkspaceLock, BuildError> {
+    let mut deadline = Instant::now() + wait.unwrap_or_default();
     loop {
         match attempt() {
-            LockOutcome::Busy(_) if Instant::now() < deadline => {
+            outcome @ LockOutcome::Busy(_) => {
+                if let Some(longer) = stop_holder(&outcome) {
+                    deadline = deadline.max(Instant::now() + longer);
+                }
+                if Instant::now() >= deadline {
+                    return lock(outcome, what);
+                }
                 if cancel.is_cancelled() {
                     return Err(BuildError::Cancelled);
                 }
@@ -48,6 +71,42 @@ fn acquire(
             outcome => return lock(outcome, what),
         }
     }
+}
+
+/// Stops the holder of the workspace lock once, when it marked itself as a
+/// build that yields and its process is one: a reused pid is left alone.
+/// Returns the longest the caller waits for the lock to go free.
+fn stop_yielding_holder(
+    state_dir: &std::path::Path,
+    grace: Duration,
+    sent: &mut bool,
+) -> Option<Duration> {
+    if *sent {
+        return None;
+    }
+    let holder = holder(state_dir).filter(|holder| holder.yielding)?;
+    if holder.pid == std::process::id() || !is_yielding_build(holder.pid) {
+        return None;
+    }
+    let pid = rustix::process::Pid::from_raw(holder.pid as i32)?;
+    rustix::process::kill_process(pid, rustix::process::Signal::INT).ok()?;
+    *sent = true;
+    eprintln!(
+        "stopping the build (pid {}) that yields to a newer one",
+        holder.pid
+    );
+    Some(grace + YIELD_MARGIN)
+}
+
+/// Whether `pid` runs `oxabl build --yield`, by its command line.
+fn is_yielding_build(pid: u32) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|bytes| {
+        let args: Vec<&[u8]> = bytes.split(|b| *b == 0).collect();
+        let program = args.first().and_then(|a| a.rsplit(|b| *b == b'/').next());
+        program.is_some_and(|name| name.starts_with(b"oxabl"))
+            && args.contains(&&b"build"[..])
+            && args.contains(&&b"--yield"[..])
+    })
 }
 
 fn lock(outcome: LockOutcome, what: &str) -> Result<WorkspaceLock, BuildError> {
@@ -72,23 +131,49 @@ pub fn prepare(
     request: &BuildRequest<'_>,
 ) -> Result<Prepared, BuildError> {
     let settings = &workspace.settings;
-    let spec = PoolSpec::from_config(workspace, request.workers, random::build_id())?;
+    let mut spec = PoolSpec::from_config(workspace, request.workers, random::build_id())?;
+    spec.images = Some(settings.state_dir.join(image_store::FILE));
     let layout = OutputLayout::lower(&workspace.config, &settings.root)?;
-    let workspace_lock = acquire(
-        || try_acquire(&settings.state_dir),
+    let grace = workspace.config.build.workers.cancel_grace.0;
+    let mut stopped = false;
+    let workspace_lock = acquire_by(
+        || try_acquire_marked(&settings.state_dir, request.yield_to_newer),
         &format!("{}/build.lock", settings.state_dir.display()),
         request.wait_lock,
         &request.cancel,
+        &mut |_| stop_yielding_holder(&settings.state_dir, grace, &mut stopped),
     )?;
     ownership::claim(&settings.root, &layout.directories())?;
-    let output_dir = settings.root.join(&layout.rcode);
-    let output_lock = acquire(
-        || try_acquire_file(&output_dir, ownership::LOCK),
-        &format!("{}/{}", layout.rcode, ownership::LOCK),
-        request.wait_lock,
-        &request.cancel,
-    )?;
+    // The stopped build frees its locks one after the other: the output lock
+    // may stay busy a moment after the workspace lock.
+    let output_wait = if stopped {
+        request
+            .wait_lock
+            .map(|w| w.max(grace + YIELD_MARGIN))
+            .or(Some(grace + YIELD_MARGIN))
+    } else {
+        request.wait_lock
+    };
+    // In place, the workspace lock in the state directory is the only lock.
+    let output_lock = match layout.rcode_directory() {
+        Some(directory) => Some(acquire(
+            || try_acquire_file(&settings.root.join(directory), ownership::LOCK),
+            &format!("{directory}/{}", ownership::LOCK),
+            output_wait,
+            &request.cancel,
+        )?),
+        None => None,
+    };
     stage::remove_stale(&settings.state_dir);
+    let ignored = ignore::write(
+        &settings.root,
+        &[settings.state_dir.clone(), settings.store_dir.clone()],
+        &layout
+            .directories()
+            .iter()
+            .map(|directory| settings.root.join(directory))
+            .collect::<Vec<_>>(),
+    );
 
     let refresh_request = Request {
         need_graph: true,
@@ -115,6 +200,7 @@ pub fn prepare(
     let mut started = started?;
     setup.workers_ms = started.timing.workers_ms;
     setup.imaging_ms = started.timing.imaging_ms;
+    setup.raw_digest_ms = started.timing.raw_ms;
     let keying = Instant::now();
     let keyed = match compute(
         workspace,
@@ -132,6 +218,7 @@ pub fn prepare(
     setup.dlc_hash_ms = started.pool.dlc_hash_ms();
     let planning = Instant::now();
     let mut notes = committed.notes.clone();
+    notes.extend(ignored);
     notes.extend(started.warnings.iter().cloned());
     notes.extend(keyed.warnings.iter().cloned());
     notes.extend(committed.outcome.warnings.iter().cloned());

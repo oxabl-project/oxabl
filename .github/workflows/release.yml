@@ -4,6 +4,14 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          An existing release tag (oxabl-vX.Y.Z or oxabl_vscode-vX.Y.Z) whose
+          assets to build and upload again, for a release whose asset jobs did
+          not run. Empty: build and publish only, upload nothing.
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -73,11 +81,15 @@ jobs:
   binary:
     name: Static Linux binary
     needs: release-please
-    # Never on workflow_dispatch: it must not upload to a release.
-    if: ${{ github.event_name == 'push' && needs.release-please.outputs.oxabl_released == 'true' }}
+    # On workflow_dispatch only for an explicit oxabl tag, built from that tag.
+    if: >-
+      ${{ (github.event_name == 'push' && needs.release-please.outputs.oxabl_released == 'true')
+      || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'oxabl-v')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
       # The build runs in a rust:alpine container that the script starts. This way
       # the toolchain, musl and the C build tools are the same here and on a
       # developer machine, and a job container is not needed: the JavaScript
@@ -95,21 +107,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.release-please.outputs.oxabl_tag }}
+          TAG: ${{ inputs.tag || needs.release-please.outputs.oxabl_tag }}
 
   vsix:
     name: VS Code extension
     needs: release-please
-    # Never on workflow_dispatch: it must not upload to a release. The
-    # extension updates itself from these two assets, so a release without
-    # them is never offered (see clients/vscode/README.md, "Updates").
-    if: ${{ github.event_name == 'push' && needs.release-please.outputs.vscode_released == 'true' }}
+    # On workflow_dispatch only for an explicit oxabl_vscode tag, built from
+    # that tag. The extension updates itself from these two assets, so a
+    # release without them is never offered (see clients/vscode/README.md,
+    # "Updates").
+    if: >-
+      ${{ (github.event_name == 'push' && needs.release-please.outputs.vscode_released == 'true')
+      || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'oxabl_vscode-v')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: clients/vscode
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -124,11 +141,11 @@ jobs:
             exit 1
           fi
         env:
-          TAG: ${{ needs.release-please.outputs.vscode_tag }}
+          TAG: ${{ inputs.tag || needs.release-please.outputs.vscode_tag }}
       - run: bash scripts/package-vsix.sh dist
       - name: Upload to the release
         run: gh release upload "$TAG" dist/*.vsix dist/*.vsix.sha256 --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.release-please.outputs.vscode_tag }}
+          TAG: ${{ inputs.tag || needs.release-please.outputs.vscode_tag }}

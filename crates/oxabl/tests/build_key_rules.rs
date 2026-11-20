@@ -404,6 +404,24 @@ fn a_startup_parameter_that_names_a_directory_makes_every_unit_unkeyable_k6() {
 }
 
 #[test]
+fn the_trigger_directory_is_not_part_of_the_key() {
+    let workspace = Keyed::simple();
+    workspace.write("src/a.p", "MESSAGE \"a\".\n");
+    let without = workspace.plan();
+    workspace.write("triggers/t1c.p", "TRIGGER PROCEDURE FOR CREATE OF t1.\n");
+    workspace.edit_environment(|e| e["parameters"] = json!(["-trig triggers"]));
+
+    let plan = workspace.plan();
+
+    assert!(
+        plan.key("src/a.p").is_some(),
+        "{:?}",
+        plan.unkeyable("src/a.p")
+    );
+    assert_eq!(plan.key("src/a.p"), without.key("src/a.p"));
+}
+
+#[test]
 fn a_library_entry_that_is_a_directory_makes_its_users_unkeyable_k6() {
     let workspace = Keyed::new(
         "include_paths = [\"src\", \"$LIB:acme\"]",
@@ -759,7 +777,7 @@ fn the_dlc_default_entries_are_on_every_unit_propath() {
 }
 
 #[test]
-fn units_with_different_propaths_that_reach_a_class_are_unkeyable_k9() {
+fn a_unit_whose_propath_resolves_a_class_to_another_file_is_unkeyable_k9() {
     let workspace = Keyed::new(
         "directories = [\"a\", \"b\"]\nroot_relative_include_paths = [\".\"]",
         "",
@@ -778,14 +796,21 @@ fn units_with_different_propaths_that_reach_a_class_are_unkeyable_k9() {
 
     let plan = workspace.plan();
 
-    for unit in ["a/x.p", "b/y.p", "a/pkg/Foo.cls"] {
-        assert_unkeyable(&plan, unit, &["per-unit-propath-classes"]);
+    assert_unkeyable(
+        &plan,
+        "b/y.p",
+        &["per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls)"],
+    );
+    for unit in ["a/x.p", "a/pkg/Foo.cls", "a/plain.p"] {
+        assert!(
+            plan.key(unit).is_some(),
+            "{unit}: $OUT holds the class it found"
+        );
     }
-    assert!(plan.key("a/plain.p").is_some());
     assert_eq!(plan.action("b/pkg/Foo.cls"), "skip");
     assert_unkeyable(&plan, "b/pkg/Foo.cls", &["output-collision: a/pkg/Foo.cls"]);
     assert!(
-        plan.stderr.contains("3 units"),
+        plan.stderr.contains("1 units"),
         "one warning counts the units: {}",
         plan.stderr
     );
@@ -831,8 +856,12 @@ fn a_k9_unit_stays_unkeyable_when_only_another_unit_changes() {
     );
     let plan = workspace.plan();
 
-    assert_unkeyable(&plan, "b/y.p", &["per-unit-propath-classes"]);
-    assert_unkeyable(&plan, "a/x.p", &["per-unit-propath-classes"]);
+    assert_unkeyable(
+        &plan,
+        "b/y.p",
+        &["per-unit-propath-classes: pkg.Foo (a/pkg/Foo.cls, b/pkg/Foo.cls)"],
+    );
+    assert!(plan.key("a/x.p").is_some());
 }
 
 fn acme_workspace(with_class: bool) -> Keyed {

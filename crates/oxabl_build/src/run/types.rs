@@ -3,10 +3,10 @@
 use std::time::Instant;
 
 use crate::cache::Origin;
-use crate::key::SchemaPart;
 use crate::observe::xref::Xref;
 use crate::output::Expected;
 use crate::store::{Components, OutputRow};
+use crate::verify::release::Share;
 use crate::worker::compile::CompilerMessage;
 
 /// One unit of the build with what a compile and its record need.
@@ -42,9 +42,12 @@ pub struct UnitDone {
     pub lost: bool,
     /// When the worker reported the end of the unit.
     pub finished: Instant,
-    /// What the compiler read, from its `XREF-XML`, when verification or
+    /// What the compiler read, from its cross-reference, when verification or
     /// the observed closure asks for it.
     pub reads: Option<Result<Xref, String>>,
+    /// The unit is in a cycle of classes, and one of them did not compile in
+    /// the pass before: the unit may have read r-code of another build.
+    pub unsettled: bool,
 }
 
 /// A set the cache gave for one unit, installed at its final paths.
@@ -71,7 +74,7 @@ pub enum Msg {
     Image {
         round: u64,
         part: usize,
-        result: Result<Vec<SchemaPart>, String>,
+        result: Result<Share, String>,
     },
     WorkerLost {
         worker: usize,
