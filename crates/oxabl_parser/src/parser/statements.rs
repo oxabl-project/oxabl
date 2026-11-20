@@ -855,8 +855,16 @@ impl Parser<'_> {
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
         if self.check(Kind::KwEnum) {
             self.synchronize(); // skip to end of header line
-            // Skip until END ENUM.
+            // Skip until `END [ENUM].`; the lexer makes `END ENUM` as two tokens.
             while !self.at_end() {
+                if self.check(Kind::End) {
+                    self.advance();
+                    if self.check(Kind::KwEnum) {
+                        self.advance();
+                    }
+                    self.expect_period("Expected '.' after END ENUM")?;
+                    break;
+                }
                 if self.check(Kind::EndEnum) {
                     self.advance();
                     self.expect_period("Expected '.' after END ENUM")?;
@@ -1868,6 +1876,7 @@ impl Parser<'_> {
         // Parse FIELD and INDEX definitions until period
         while !self.check(Kind::Period) && !self.at_end() {
             if self.check(Kind::Field) {
+                let field_start = self.current_span().start;
                 self.advance(); // consume FIELD
                 let field_name = self.parse_identifier()?;
 
@@ -1970,6 +1979,10 @@ impl Parser<'_> {
                     validate,
                     initial_value,
                     extent,
+                    span: Span {
+                        start: field_start,
+                        end: self.prev_end(),
+                    },
                 });
             } else if self.check(Kind::Index) {
                 self.advance(); // consume INDEX
@@ -5891,7 +5904,8 @@ impl Parser<'_> {
     /// Parse a CLASS definition.
     ///
     /// ```text
-    /// `CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]:`
+    /// `CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]`
+    /// `    [USE-WIDGET-POOL] [ABSTRACT] [FINAL] [SERIALIZABLE]:`
     ///     body
     /// END CLASS.
     /// ```
@@ -5921,37 +5935,30 @@ impl Parser<'_> {
         // keywords used as namespace prefixes (e.g. `do.widgetobj`) are accepted.
         let name = self.parse_class_qualified_name()?;
 
-        // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
-        self.parse_class_modifiers(&mut is_abstract, &mut is_final);
-
-        // Parse optional INHERITS
-        let inherits = if self.check(Kind::Inherits) {
-            self.advance();
-            Some(self.parse_class_qualified_name()?)
-        } else {
-            None
-        };
-
-        // Parse optional IMPLEMENTS (comma-separated)
+        // The options may follow any clause; ABL documents them after INHERITS/IMPLEMENTS
+        let mut use_widget_pool = false;
+        let mut inherits = None;
         let mut implements = Vec::new();
-        if self.check(Kind::Implements) {
-            self.advance();
-            implements.push(self.parse_class_qualified_name()?);
-            while self.check(Kind::Comma) {
+        loop {
+            self.parse_class_modifiers(&mut is_abstract, &mut is_final);
+            if self.check(Kind::Inherits) && inherits.is_none() {
+                self.advance();
+                inherits = Some(self.parse_class_qualified_name()?);
+            } else if self.check(Kind::Implements) && implements.is_empty() {
                 self.advance();
                 implements.push(self.parse_class_qualified_name()?);
-            }
-        }
-
-        // Trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
-        let mut use_widget_pool = false;
-        loop {
-            if self.check(Kind::UseWidgetPool) {
+                while self.check(Kind::Comma) {
+                    self.advance();
+                    implements.push(self.parse_class_qualified_name()?);
+                }
+            } else if self.check(Kind::UseWidgetPool) {
                 use_widget_pool = true;
-            } else if !self.check(Kind::Serializable) {
+                self.advance();
+            } else if self.check(Kind::Serializable) {
+                self.advance(); // not modelled on the AST
+            } else {
                 break;
             }
-            self.advance();
         }
 
         // Expect colon to start body
@@ -6012,6 +6019,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::Colon, "Expected ':' after INTERFACE header")?;
 
         // Parse body until END INTERFACE
+        let outer_in_interface = std::mem::replace(&mut self.in_interface, true);
         let mut body = Vec::new();
         while !self.at_end() {
             if self.check(Kind::End) {
@@ -6026,6 +6034,7 @@ impl Parser<'_> {
             }
             self.parse_block_statement_recovering(&mut body);
         }
+        self.in_interface = outer_in_interface;
 
         Ok(self.stmt(StatementKind::Interface {
             name,
@@ -6146,25 +6155,9 @@ impl Parser<'_> {
             }));
         }
 
-        // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
-        // Track whether we opened with '.' — in interface declarations, '.' is the
-        // statement terminator (no body) rather than a body opener. We detect this
-        // below by checking if the first meaningful token is END followed by a
-        // non-METHOD keyword (e.g. END INTERFACE, END CLASS).
-        let opened_with_period = self.check(Kind::Period);
-        if self.check(Kind::Colon) || self.check(Kind::Period) {
+        // In an interface a signature ends at its period and has no body.
+        if self.in_interface && self.check(Kind::Period) {
             self.advance();
-        } else {
-            return Err(ParseError {
-                message: "Expected ':' after METHOD header".to_string(),
-                span: self.current_span(),
-            });
-        }
-
-        // Interface method signatures end with '.' and have no body. Detect this by
-        // looking for END (not METHOD) immediately after the '.' opener. In that case,
-        // return an empty body so the enclosing INTERFACE parser handles END INTERFACE.
-        if opened_with_period && self.check(Kind::End) && !self.check_at(1, Kind::Method) {
             return Ok(self.stmt(StatementKind::Method {
                 access,
                 is_static,
@@ -6175,6 +6168,16 @@ impl Parser<'_> {
                 parameters,
                 body: Vec::new(),
             }));
+        }
+
+        // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
+        if self.check(Kind::Colon) || self.check(Kind::Period) {
+            self.advance();
+        } else {
+            return Err(ParseError {
+                message: "Expected ':' after METHOD header".to_string(),
+                span: self.current_span(),
+            });
         }
 
         let mut body = Vec::new();

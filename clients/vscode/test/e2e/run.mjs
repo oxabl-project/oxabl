@@ -17,6 +17,8 @@ import {
   buildExternalPreemption,
   buildInstall,
   buildInstallBadChecksum,
+  installNoProject,
+  quietNoProject,
   buildOpen,
   buildTooOld,
   buildUnkeyed,
@@ -30,6 +32,7 @@ import {
   cliUpdateUnmanaged,
 } from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
+import { outline } from "./scenarios/outline.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
   updateAuto,
@@ -49,6 +52,7 @@ const SCENARIOS = [
   ["highlight-p", highlightP],
   ["highlight-cls", highlightCls],
   ["markdown", markdown],
+  ["outline", outline],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],
@@ -75,6 +79,8 @@ const SCENARIOS = [
   ["build-binary-changed", buildBinaryChanged],
   ["build-install", buildInstall],
   ["build-install-bad-checksum", buildInstallBadChecksum],
+  ["install-no-project", installNoProject],
+  ["quiet-no-project", quietNoProject],
   ["cli-update-auto", cliUpdateAuto],
   ["cli-update-notify", cliUpdateNotify],
   ["cli-update-unmanaged", cliUpdateUnmanaged],

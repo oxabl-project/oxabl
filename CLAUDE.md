@@ -65,7 +65,7 @@ Generated files are written directly to their target locations and include a "DO
 
 ### The VS Code grammar
 
-`clients/vscode/syntaxes/abl.tmLanguage.json` is generated. Change its structure in `resources/abl.tmLanguage.template.json` (`{{word:NAME}}` and `{{keywords:CATEGORY}}` placeholders) or the keyword data, then run `cargo run -p oxabl_codegen -- grammar`. The CI job `Grammar drift` fails when the committed grammar is not the generated one. Test it from `clients/vscode`: `pnpm test` (corpus and regex compile), `pnpm run test:grammar` (assertion and snapshot tests), `xvfb-run -a pnpm run test:e2e` (the packaged VSIX in a real VS Code). The categories, the rules and the release and self-update design are in `docs/design/vscode-extension.md`.
+`clients/vscode/syntaxes/abl.tmLanguage.json` is generated. Change its structure in `resources/abl.tmLanguage.template.json` (`{{word:NAME}}` and `{{keywords:CATEGORY}}` placeholders) or the keyword data, then run `cargo run -p oxabl_codegen -- grammar`. The CI job `Grammar drift` fails when the committed grammar is not the generated one. Test it from `clients/vscode`: `pnpm test` (corpus and regex compile), `pnpm run test:grammar` (assertion and snapshot tests), `OXABL_E2E_OXABL=$PWD/../../target/debug/oxabl OXABL_E2E_RUNTIME=<short dir> xvfb-run -a pnpm run test:e2e` (the packaged VSIX in a real VS Code; run `cargo build -p oxabl` first, because the `outline` scenario uses the real language server and fails without these variables). The categories, the rules and the release and self-update design are in `docs/design/vscode-extension.md`.
 
 ### The OpenEdge metaschema catalog
 
@@ -96,7 +96,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 ### Workspace Structure
 
 - `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary. Its `self-update` cargo feature (off by default, like `remote-cache`; the release binary has both) adds `oxabl self-update` and the background check of a managed binary (`src/self_update/`: the GitHub reader, the install procedure, the install record, the schedule). It reuses the `reqwest` and `rustls` stack that `remote-cache` links, so no second HTTP stack. `scripts/install.sh` is the installer and shares the install record (`install.json`) with the updater and the VS Code extension
-- `crates/oxabl_pipeline` - The shared lint and format run every client drives; sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
+- `crates/oxabl_pipeline` - The shared lint and format run every client drives, and the document outline (`outline`, see `docs/design/document-outline.md`); sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
 - `crates/oxabl_index` - Cross-file fact extraction, the in-run batch index and the static call graph; sits *beneath* `oxabl_pipeline`
 - `crates/oxabl_daemon` - The session core: one salsa instance per workspace root, serving several clients; the **only** crate that may know about salsa
 - `crates/oxabl_daemon_protocol` - Wire types and the contract version for the daemon's `oxabl/*` methods; depends on serde and nothing else

@@ -1,9 +1,10 @@
 //! `oxabl lsp` — a stdio LSP server that surfaces oxabl's parse + lint +
 //! loud-preprocessor diagnostics live in an editor (Track A).
 //!
-//! v1 is a diagnostics-and-formatting server: it completes the LSP handshake,
+//! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`. Strict database rules can also enable effect code lenses.
+//! `textDocument/formatting` and `textDocument/documentSymbol`. Strict database rules can also
+//! enable effect code lenses.
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -21,6 +22,7 @@ mod code_lens;
 pub mod debounce;
 pub mod diagnostics;
 pub mod document;
+mod document_symbol;
 pub mod formatting;
 pub mod position;
 
@@ -37,12 +39,12 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Formatting, Request as _};
+use lsp_types::request::{DocumentSymbolRequest, Formatting, Request as _};
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams, ServerInfo,
-    TextEdit, Uri,
+    DocumentSymbolParams, InitializeParams, InitializeResult, PositionEncodingKind,
+    PublishDiagnosticsParams, ServerInfo, TextEdit, Uri,
 };
 use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
 use oxabl_workspace::FeaturesConfig;
@@ -491,10 +493,17 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
     declared.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// What the handshake learned from the client's capabilities.
+struct Negotiated {
+    options: code_lens::Options,
+    /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
+    hierarchical_symbols: bool,
+}
+
 fn serve_initialized(
     connection: &Connection,
     debounce_window: std::time::Duration,
-    options: code_lens::Options,
+    options: Negotiated,
     workspace_root: Option<PathBuf>,
     session_root: PathBuf,
     host: SessionHost,
@@ -525,7 +534,7 @@ fn serve_initialized(
 /// Also returns the client's declared **workspace root**, when it declared one.
 /// That is what lets the server's watch and its configuration cover a *project*
 /// rather than whichever directory happened to hold the first opened document.
-fn handshake(connection: &Connection) -> Result<(code_lens::Options, Option<PathBuf>)> {
+fn handshake(connection: &Connection) -> Result<(Negotiated, Option<PathBuf>)> {
     let (id, params) = connection
         .initialize_start()
         .context("LSP initialize_start")?;
@@ -536,18 +545,25 @@ fn finish_handshake(
     connection: &Connection,
     id: RequestId,
     params: serde_json::Value,
-) -> Result<(code_lens::Options, Option<PathBuf>)> {
+) -> Result<(Negotiated, Option<PathBuf>)> {
     let init: InitializeParams =
         serde_json::from_value(params).context("deserializing InitializeParams")?;
 
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
     let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let hierarchical_symbols = init
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|c| c.document_symbol.as_ref())
+        .and_then(|c| c.hierarchical_document_symbol_support)
+        .unwrap_or(false);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
         && workspace_root.as_ref().is_some_and(|root| {
-            let (config, _) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+            let (config, _) = PipelineConfig::resolve_for_editor(root, &ConfigOverrides::default());
             let fs = oxabl_workspace::RealFileSystem;
             oxabl_pipeline::LintPipeline::new(&config, &fs)
                 .with_file(root)
@@ -568,7 +584,13 @@ fn finish_handshake(
     connection
         .initialize_finish(id, serde_json::to_value(result)?)
         .context("LSP initialize_finish")?;
-    Ok((options, workspace_root))
+    Ok((
+        Negotiated {
+            options,
+            hierarchical_symbols,
+        },
+        workspace_root,
+    ))
 }
 
 /// The workspace root the client declared, if any.
@@ -600,6 +622,8 @@ struct Server<'c> {
     connection: &'c Connection,
     /// Negotiated position encoding, applied at every span→Range mapping (KTD4).
     encoding: PositionEncodingKind,
+    /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
+    hierarchical_symbols: bool,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
     /// The daemon's one session map. No analysis state lives in this client.
@@ -626,12 +650,14 @@ struct Server<'c> {
     /// formatting request costs no style resolution and no `StyleGuide` clone.
     formatter: FormatPipeline,
     /// The `[workspace.features]` of the installed configuration, which counts
-    /// as both off while `oxabl.toml` cannot be read. Both on until a
-    /// configuration is resolved.
+    /// as both off while `oxabl.toml` cannot be read and when there is none.
+    /// Both off until a configuration is resolved.
     features: FeaturesConfig,
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
+    /// The last outline of each open buffer, for its version.
+    outlines: document_symbol::OutlineCache,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
 }
@@ -662,16 +688,21 @@ struct ComputeResult {
 impl<'c> Server<'c> {
     fn new(
         connection: &'c Connection,
-        options: code_lens::Options,
+        negotiated: Negotiated,
         debounce_window: std::time::Duration,
         workspace_root: Option<PathBuf>,
         session_root: PathBuf,
         host: SessionHost,
     ) -> Self {
+        let Negotiated {
+            options,
+            hierarchical_symbols,
+        } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         Server {
             connection,
             encoding: options.encoding.clone(),
+            hierarchical_symbols,
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -679,9 +710,11 @@ impl<'c> Server<'c> {
             workspace_anchor: None,
             workspace_root,
             formatter,
-            features: FeaturesConfig::default(),
+            // Off until a resolved configuration says otherwise.
+            features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
+            outlines: document_symbol::OutlineCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
         }
     }
@@ -725,6 +758,8 @@ impl<'c> Server<'c> {
                                 self.handle_code_lens(req, &lens_tx)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
+                            } else if req.method == DocumentSymbolRequest::METHOD {
+                                self.handle_document_symbol(req)?;
                             } else {
                                 self.respond(Response::new_err(
                                     req.id,
@@ -875,6 +910,7 @@ impl<'c> Server<'c> {
                 {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
+                    self.outlines.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
                     // it: cross-file resolution must exclude this file from its
@@ -898,6 +934,7 @@ impl<'c> Server<'c> {
                 {
                     let uri = params.text_document.uri;
                     let encoding = self.encoding.clone();
+                    self.outlines.invalidate(&uri);
                     self.documents.change(
                         &uri,
                         params.text_document.version,
@@ -941,6 +978,7 @@ impl<'c> Server<'c> {
                 {
                     let uri = params.text_document.uri;
                     self.documents.close(&uri);
+                    self.outlines.invalidate(&uri);
                     self.host.with(|sessions| {
                         sessions
                             .for_root(&self.session_root)
@@ -1071,7 +1109,8 @@ impl<'c> Server<'c> {
     /// editor's diagnostics *silently* while the CLI printed a `warning:` line
     /// for the same file.
     fn resolve_config_from(&mut self, path: &Path) {
-        let (resolved, warnings) = PipelineConfig::resolve(path, &ConfigOverrides::default());
+        let (resolved, warnings) =
+            PipelineConfig::resolve_for_editor(path, &ConfigOverrides::default());
         self.report_config_warnings(&warnings);
         self.install_config(resolved);
     }
@@ -1454,6 +1493,47 @@ impl<'c> Server<'c> {
         self.respond(Response::new_ok(req.id, edits))
     }
 
+    /// `textDocument/documentSymbol`: the outline of the open buffer's raw
+    /// text, from the cache when the version matches. An unopened URI gives
+    /// `null`; a contained panic is a request failure, never an empty list.
+    fn handle_document_symbol(&mut self, req: Request) -> Result<()> {
+        let params = match serde_json::from_value::<DocumentSymbolParams>(req.params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.respond(Response::new_err(
+                    req.id,
+                    ErrorCode::InvalidParams as i32,
+                    format!("oxabl-lsp: invalid documentSymbol params: {error}"),
+                ));
+            }
+        };
+        let uri = params.text_document.uri;
+        let Some(doc) = self.documents.get(&uri) else {
+            return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
+        };
+        let outline = self
+            .outlines
+            .get_or_compute(&uri, doc.version, || oxabl_pipeline::outline(&doc.text()));
+        let response = match outline {
+            Ok(symbols) => Response::new_ok(
+                req.id,
+                document_symbol::to_response(
+                    symbols,
+                    &uri,
+                    &doc.rope,
+                    &self.encoding,
+                    self.hierarchical_symbols,
+                ),
+            ),
+            Err(panic) => Response::new_err(
+                req.id,
+                ErrorCode::RequestFailed as i32,
+                format!("oxabl-lsp: the outline failed: {panic}"),
+            ),
+        };
+        self.respond(response)
+    }
+
     fn respond(&self, response: Response) -> Result<()> {
         self.connection
             .sender
@@ -1523,11 +1603,14 @@ mod tests {
     fn server(connection: &Connection) -> Server<'_> {
         Server::new(
             connection,
-            code_lens::Options {
-                encoding: PositionEncodingKind::UTF8,
-                supported: false,
-                dynamic: false,
-                refresh: false,
+            Negotiated {
+                options: code_lens::Options {
+                    encoding: PositionEncodingKind::UTF8,
+                    supported: false,
+                    dynamic: false,
+                    refresh: false,
+                },
+                hierarchical_symbols: false,
             },
             std::time::Duration::from_millis(10),
             None,

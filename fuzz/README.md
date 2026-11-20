@@ -1,7 +1,7 @@
 # Fuzz targets
 
 `cargo-fuzz` targets for the lexer, the preprocessor and parser, the lint
-pipeline and the formatter. The crate is outside the workspace, so
+pipeline, the formatter and the document outline. The crate is outside the workspace, so
 `cargo build --workspace` needs no nightly toolchain. The CI job `Fuzz targets`
 formats and lints the crate on stable, so the targets keep compiling; it does
 not run them.
@@ -12,11 +12,12 @@ not run them.
 | `preprocess_parse` | The raw parse, and the parse of the preprocessed text, never panic. |
 | `lint` | `LintPipeline::run` on one file (preprocess, parse, analyse, every rule) never panics. |
 | `format` | `try_format_source` never panics, and formatting its own output changes nothing. |
+| `outline` | `outline` never panics, its spans and names obey the rules of `docs/design/document-outline.md`, and a second run gives the same outline. |
 
 Each target runs its input with a stack of at least the analysis stack
 (`oxabl_common::stack`, 64 MiB), as the CLI and the daemon do: on a smaller
 stack, a nest that the parser accepts can overflow and show as a false crash.
-`run.sh` raises `ulimit -s`, so the input runs directly on libFuzzer's thread.
+`run.sh` raises `ulimit -s`, so the input runs directly on libFuzzer's thread. It also builds with debug assertions (`-a`), so a `debug_assert` in the parser or a pass is a finding.
 With a smaller limit, for example a target started by hand, a worker thread on
 the analysis stack runs it, at about 0.5 ms more per input (`src/lib.rs`).
 
@@ -40,3 +41,7 @@ inputs of the findings in the table below.
 | `findings/format/bare-cr-not-stable.abl` | `format` | The first format gives `"\r\n"`, the second `""`. |
 | `findings/daemon/stack-overflow-from-edits.cls` | `oxabl lsp` (see `scripts/soak`) | 416 `(` in a document kill the daemon. |
 | `findings/daemon/macro-doubling-1gb.p` | `oxabl check` | 28 `&SCOPED-DEFINE` lines that double each other: 1.3 GB, and 3 GB at 30 lines. |
+| `findings/outline/define-no-valid-symbol-6b` | `outline` | `&scop` plus a vertical tab: the `PreprocessorDefine` name is only whitespace, so `clean_name` gives `None` and the walker's `debug_assert` in `make` fires. |
+| `findings/outline/name-outside-statement-24b` | `outline` | An untyped parameter list (`METHOD VOID Ru(n  ):`): the parser names the parameter `$0` with a span up to the next token, past the end of the parameter statement, and `named` asserts the name is inside the statement. |
+| `findings/outline/parser-comment-tilde-2b` | `outline` (and any target built with debug assertions) | `~&`: a `Kind::Comment` token starts with `~`, and `classify_comment` in `oxabl_parser` asserts on it. Not in the outline code: the lexer left the token start on a stray `~`. The lexer keeps a stray `~` in the next token, on purpose: the formatter's guard compares token text, so it sees a lost tilde. `classify_comment` now skips leading tildes. |
+| `findings/outline/parser-comment-tilde-blank-4b` | `outline` (and any target built with debug assertions) | `~ //`: the same assertion. The lexer also keeps the blanks after a stray `~` in the comment token. `classify_comment` now skips the blanks after a leading tilde too. |

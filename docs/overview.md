@@ -26,6 +26,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - Work with oxabl to parse, lint, and format code directly in your editor
   - sub-millisecond time for single file operations
   - format/lint on save
+  - document outline (`textDocument/documentSymbol`): the Outline view, breadcrumbs and "Go to Symbol in File", from `oxabl_pipeline::outline` on the raw buffer (`docs/design/document-outline.md`)
   - Status: Experimental; usable in-editor via the sideloadable VS Code extension (`clients/vscode/`)
 - Formatter
   - Format ABL code from the CLI or LSP
@@ -53,7 +54,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - **Source files are UTF-8 unless `[workspace.sources].encoding` says otherwise.** Many ABL trees are stored in a single-byte code page. Set `encoding = "windows-1252"` or `encoding = "iso-8859-1"` (the default is `"utf-8"`; `utf8`, `latin1` and `cp1252` are accepted as aliases), and every file that oxabl reads from disk is decoded that way: roots, include files, classes and `.df` schema files, in `oxabl check`, `analyze`, `format`, the language server and the daemon. Offsets and columns in a report count the decoded text. A UTF-8 byte order mark always means UTF-8, is removed whatever the setting says, and `oxabl format` writes it back. `oxabl format` also writes a file back in its own encoding. With `"utf-8"`, a file that is not valid UTF-8 cannot be read, and `check` reports it as a failure that names the setting. For a tree that mixes UTF-8 files and single-byte ones, keep `encoding = "utf-8"` and set `fallback_encoding = "windows-1252"`: a file that is not valid UTF-8 is then decoded with the fallback. A single-byte encoding decodes every file, so the fallback never applies to it. Under `windows-1252`, the five bytes the code page leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) decode to the C1 control of the same value. A custom `FileSystem` decodes for itself; `oxabl_workspace::EncodedFileSystem` is the disk filesystem that follows the setting, and `RealFileSystem` stays UTF-8.
   - **A `RUN` target with no extension is tried with the extensions in `[workspace.sources].run_extensions`.** `RUN post-order` can name a program file, but it can also name an internal procedure. oxabl looks for `post-order.p` and then `post-order.w`, and the first file it finds is the dependency. To change the extensions or their order, set the list in `oxabl.toml` (for example `run_extensions = ["w", "p", "pp"]`). A leading dot is ignored, and an entry that is empty or holds a path separator is dropped with a warning. Each extension is tried as written and then in lower case. The default is `["p", "w"]`. A bare name that no file supplies is an internal procedure of a running program, so the dependency edge set has no row for it. A target with an extension or a path (`RUN a/b.p`) still gets a row when no configured path supplies it.
 - Easy one-line installer and VS Code extension for getting started
-  - Status: VS Code extension available (experimental). Each release of the `oxabl_vscode` component carries the VSIX on GitHub Releases, and the extension updates itself from there (`oxabl.updates`). It highlights ABL with its own TextMate grammar, with no `oxabl` binary; with the binary it launches `oxabl lsp` for format-on-save, live diagnostics, and `oxabl.toml` schema completion. See `clients/vscode/README.md` and `docs/design/vscode-extension.md`. One-line installer: not started.
+  - Status: VS Code extension available (experimental). Each release of the `oxabl_vscode` component carries the VSIX on GitHub Releases, and the extension updates itself from there (`oxabl.updates`). It highlights ABL with its own TextMate grammar, with no `oxabl` binary; with the binary it launches `oxabl lsp` for format-on-save, live diagnostics, the document outline, and `oxabl.toml` schema completion. See `clients/vscode/README.md` and `docs/design/vscode-extension.md`. One-line installer: not started.
 - Build system
   - Incremental compiling (via the Progress compiler)
   - Remote cache
@@ -332,7 +333,7 @@ The compile tests build the fixture in `crates/oxabl/tests/fixtures/openedge/`. 
 
 ### Feature switches
 
-The `[workspace.features]` table in `oxabl.toml` turns oxabl features on or off for a project. `oxabl.toml` is the one place that decides. Both keys default to `true`.
+The `[workspace.features]` table in `oxabl.toml` turns oxabl features on or off for a project. `oxabl.toml` is the one place that decides. In an `oxabl.toml`, both keys default to `true`.
 
 | Key | Covers in the editor | Covers in the CLI |
 |---|---|---|
@@ -345,9 +346,11 @@ With `diagnostics = false`, the language server publishes an empty list for each
 
 `oxabl format` (also `--check` and `--stdout`) exits 2 with `format = false`. It writes nothing. `--style` skips `oxabl.toml`, so it also skips the switch. No command-line flag overrides `[workspace.features]`. `build`, `explain`, `analyze`, `lsp` and `daemon` do not read it.
 
-**An `oxabl.toml` that oxabl cannot read turns both features off.** The language server then publishes no diagnostics and returns no formatting edits until the file is fixed. It sends one `window/showMessage` warning that names the problem, and it keeps the `window/logMessage` lines. A project that turned a feature off does not get it back from a typo. With no `oxabl.toml` at all, both features stay on.
+**An `oxabl.toml` that oxabl cannot read turns both features off.** The language server then publishes no diagnostics and returns no formatting edits until the file is fixed. It sends one `window/showMessage` warning that names the problem, and it keeps the `window/logMessage` lines. A project that turned a feature off does not get it back from a typo.
 
-A rollout that uses only the syntax highlighting of the VS Code extension turns both off:
+**With no `oxabl.toml` at all, the language server turns both features off,** and the CLI keeps both on. An editor offers only what needs no setup, the document outline, until a project adds an `oxabl.toml`. So installing the CLI for the outline does not start formatting or linting code that no project configured. The server shows no message about it.
+
+A project that wants only the highlighting and the outline in the editor turns both off:
 
 ```toml
 [workspace]

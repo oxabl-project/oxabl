@@ -7075,6 +7075,7 @@ mod tests {
                     validate: false,
                     initial_value: None,
                     extent: None,
+                    span: Span::DUMMY,
                 },
                 TempTableField {
                     name: id("Name"),
@@ -7082,6 +7083,7 @@ mod tests {
                     validate: false,
                     initial_value: None,
                     extent: None,
+                    span: Span::DUMMY,
                 },
             ],
             indexes: vec![],
@@ -7119,6 +7121,7 @@ mod tests {
             validate: false,
             initial_value: None,
             extent: None,
+            span: Span::DUMMY,
         };
         let tt = |name: &str, fname: &str| {
             stmt(StatementKind::DefineTempTable {
@@ -7171,6 +7174,7 @@ mod tests {
             validate: false,
             initial_value: None,
             extent: None,
+            span: Span::DUMMY,
         };
         let (_, _, diags) = run(vec![stmt(StatementKind::DefineTempTable {
             access: None,

@@ -155,6 +155,8 @@ pub mod panic_sites {
     /// contained and reports no answer — instead of committing an empty
     /// diagnostic set for the buffer that named it.
     pub const LSP_INDEX: &str = "lsp.index";
+    /// The shared document outline.
+    pub const OUTLINE: &str = "outline";
 }
 
 /// Panic when `source` carries this `site`'s injection marker.

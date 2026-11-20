@@ -6812,6 +6812,109 @@ fn parse_abstract_class() {
 }
 
 #[test]
+fn parse_class_header_modifier_orders() {
+    // (source, abstract, final, use_widget_pool, inherits, implements)
+    let cases = [
+        (
+            "CLASS a.b.Cls INHERITS Base FINAL: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS a.b.Cls INHERITS Base ABSTRACT: END CLASS.",
+            true,
+            false,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS Cls IMPLEMENTS I1 FINAL SERIALIZABLE: END CLASS.",
+            false,
+            true,
+            false,
+            false,
+            1,
+        ),
+        (
+            "CLASS Cls IMPLEMENTS I1, I2 ABSTRACT: END CLASS.",
+            true,
+            false,
+            false,
+            false,
+            2,
+        ),
+        (
+            "CLASS Cls INHERITS B IMPLEMENTS I1 USE-WIDGET-POOL FINAL SERIALIZABLE: END CLASS.",
+            false,
+            true,
+            true,
+            true,
+            1,
+        ),
+        (
+            "CLASS Cls USE-WIDGET-POOL ABSTRACT: END CLASS.",
+            true,
+            false,
+            true,
+            false,
+            0,
+        ),
+        (
+            "CLASS Cls INHERITS B FINAL USE-WIDGET-POOL: END CLASS.",
+            false,
+            true,
+            true,
+            true,
+            0,
+        ),
+        (
+            "CLASS FINAL Cls INHERITS B: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS Cls FINAL INHERITS B: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+    ];
+    for (source, abs, fin, uwp, inh, imp) in cases {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
+        match stmt.kind {
+            StatementKind::Class {
+                inherits,
+                implements,
+                is_abstract,
+                is_final,
+                use_widget_pool,
+                ..
+            } => {
+                assert_eq!(is_abstract, abs, "{source}: abstract");
+                assert_eq!(is_final, fin, "{source}: final");
+                assert_eq!(use_widget_pool, uwp, "{source}: use-widget-pool");
+                assert_eq!(inherits.is_some(), inh, "{source}: inherits");
+                assert_eq!(implements.len(), imp, "{source}: implements");
+            }
+            _ => panic!("Expected Class statement"),
+        }
+    }
+}
+
+#[test]
 fn parse_final_class() {
     let source = "CLASS FINAL MyClass: END CLASS.";
     let tokens = tokenize(source);
@@ -11632,6 +11735,28 @@ fn comments_appbuilder_directive_is_line_excluding_newline() {
 }
 
 #[test]
+fn comments_led_by_a_stray_tilde_are_line_comments() {
+    for source in ["~&ANALYZE-SUSPEND x\nvar x as int.", "~~~&x\nvar x as int."] {
+        let comments = collect_program_comments(source);
+        assert_eq!(comments.len(), 1, "{source:?}");
+        assert_eq!(comments[0].kind, CommentKind::Line, "{source:?}");
+    }
+}
+
+#[test]
+fn comments_after_a_stray_tilde_and_blanks_keep_their_kind() {
+    for (source, kind) in [
+        ("~ //x\nvar x as int.", CommentKind::Line),
+        ("~ ~\t//x\nvar x as int.", CommentKind::Line),
+        ("~\t/* b */\nvar x as int.", CommentKind::Block),
+    ] {
+        let comments = collect_program_comments(source);
+        assert_eq!(comments.len(), 1, "{source:?}");
+        assert_eq!(comments[0].kind, kind, "{source:?}");
+    }
+}
+
+#[test]
 fn comments_include_and_macro_refs_are_not_comments() {
     let source = "{lib/util.i}\n{&MY-MACRO}\nvar x as int.";
     let comments = collect_program_comments(source);
@@ -14796,5 +14921,86 @@ fn block_headers_cut_at_the_end_of_the_file_do_not_panic() {
         let tokens = tokenize(source);
         let program = Parser::new(&tokens, source).parse_program();
         assert!(!program.errors.is_empty(), "{source}");
+    }
+}
+
+// ── INTERFACE members never have bodies ──
+
+fn interface_body(source: &str) -> Vec<Statement> {
+    let program = parse_with_errors(source);
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 1);
+    match program.statements.into_iter().next().unwrap().kind {
+        StatementKind::Interface { body, .. } => body,
+        other => panic!("Expected Interface statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn interface_members_are_flat_siblings_with_empty_bodies() {
+    let source = "INTERFACE I:\n\
+        METHOD PUBLIC VOID A().\n\
+        METHOD PUBLIC VOID B().\n\
+        DEFINE PUBLIC PROPERTY P AS INTEGER GET. SET.\n\
+        DEFINE PUBLIC EVENT E SIGNATURE VOID ().\n\
+        METHOD PUBLIC CHARACTER C(INPUT x AS INTEGER).\n\
+        END INTERFACE.";
+    let body = interface_body(source);
+    assert_eq!(body.len(), 5);
+    for stmt in &body {
+        if let StatementKind::Method { body, .. } = &stmt.kind {
+            assert!(body.is_empty());
+            let text = &source[stmt.span.start as usize..stmt.span.end as usize];
+            assert!(text.starts_with("METHOD") && text.ends_with("."), "{text}");
+            assert_eq!(text.matches('.').count(), 1, "{text}");
+        }
+    }
+    assert!(matches!(body[0].kind, StatementKind::Method { .. }));
+    assert!(matches!(body[1].kind, StatementKind::Method { .. }));
+    assert!(matches!(body[2].kind, StatementKind::Property { .. }));
+    assert!(matches!(body[3].kind, StatementKind::DefineEvent { .. }));
+    assert!(matches!(body[4].kind, StatementKind::Method { .. }));
+}
+
+#[test]
+fn interface_that_inherits_keeps_its_methods_flat() {
+    let body = interface_body(
+        "INTERFACE I INHERITS J, K:\n\
+         METHOD PUBLIC VOID A().\n\
+         METHOD PUBLIC VOID B().\n\
+         END INTERFACE.",
+    );
+    assert_eq!(body.len(), 2);
+    for stmt in &body {
+        match &stmt.kind {
+            StatementKind::Method { body, .. } => assert!(body.is_empty()),
+            other => panic!("Expected Method, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn abstract_class_method_does_not_swallow_the_next_method() {
+    let program = parse_with_errors(
+        "CLASS C:\n\
+         METHOD PUBLIC ABSTRACT VOID X().\n\
+         METHOD PUBLIC VOID Y():\n\
+         MESSAGE \"y\".\n\
+         END METHOD.\n\
+         END CLASS.",
+    );
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    match &program.statements[0].kind {
+        StatementKind::Class { body, .. } => {
+            assert_eq!(body.len(), 2);
+            match (&body[0].kind, &body[1].kind) {
+                (StatementKind::Method { body: x, .. }, StatementKind::Method { body: y, .. }) => {
+                    assert!(x.is_empty());
+                    assert_eq!(y.len(), 1);
+                }
+                other => panic!("Expected two methods, got {other:?}"),
+            }
+        }
+        other => panic!("Expected Class statement, got {other:?}"),
     }
 }

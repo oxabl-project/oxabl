@@ -12,7 +12,7 @@ use oxabl_common::FileId;
 use oxabl_formatter::try_format_source;
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
-use oxabl_pipeline::{LintPipeline, PipelineConfig};
+use oxabl_pipeline::{LintPipeline, PipelineConfig, outline};
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
@@ -55,6 +55,13 @@ fn main() {
         time("lex", &mut rows, &|| {
             tokenize(&source);
         });
+        time("parse", &mut rows, &|| {
+            let tokens = tokenize(&source);
+            Parser::new(&tokens, &source).parse_program();
+        });
+        time("outline", &mut rows, &|| {
+            let _ = outline(&source);
+        });
         time("preprocess+parse", &mut rows, &|| {
             let fs = InMemoryFileSystem::new();
             let pp = Preprocessor::new(&fs as &dyn FileSystem, &include_paths);
@@ -73,7 +80,14 @@ fn main() {
             let _ = try_format_source(&source, &style);
         });
     }
-    for stage in ["lex", "preprocess+parse", "lint", "format"] {
+    for stage in [
+        "lex",
+        "parse",
+        "outline",
+        "preprocess+parse",
+        "lint",
+        "format",
+    ] {
         let mut stage_rows: Vec<_> = rows.iter().filter(|r| r.0 == stage).collect();
         stage_rows.sort_by(|a, b| b.1.total_cmp(&a.1));
         println!("== {stage}");

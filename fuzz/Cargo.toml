@@ -53,6 +53,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "outline"
+path = "fuzz_targets/outline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "slowest"
 path = "src/slowest.rs"
 test = false

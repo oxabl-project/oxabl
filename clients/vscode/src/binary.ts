@@ -31,11 +31,6 @@ function currentHost(): HostClass {
   return classifyHost({ platform: process.platform, arch: process.arch, remoteName: vscode.env.remoteName });
 }
 
-/** Whether a folder of the workspace holds an `oxabl.toml`. */
-async function hasProject(): Promise<boolean> {
-  return (await vscode.workspace.findFiles("**/oxabl.toml", "**/{node_modules,.git}/**", 1)).length > 0;
-}
-
 export class CliManager {
   /**
    * `onChanged` runs after the binary was installed or updated on request, so the
@@ -47,12 +42,12 @@ export class CliManager {
     private readonly onChanged: () => Promise<void>,
   ) {}
 
-  /** The one prompt at open: no binary and a project that needs it. Silent otherwise. */
+  /**
+   * The one prompt at open: no binary. The outline needs no `oxabl.toml`, so it
+   * shows in any folder; whatever needs a project stays silent without one.
+   */
   async offerInstall(): Promise<void> {
     if (resolveBinary().kind === "found" || this.context.globalState.get<boolean>(DONT_ASK_KEY)) {
-      return;
-    }
-    if (!(await hasProject())) {
       return;
     }
     const host = currentHost();
@@ -61,7 +56,7 @@ export class CliManager {
       return;
     }
     const choice = await vscode.window.showInformationMessage(
-      "The oxabl CLI is not installed. It builds and checks this project.",
+      "The oxabl CLI is not installed. Install it for the outline, breadcrumbs and Go to Symbol in ABL files.",
       "Install",
       "Not Now",
       "Don't Ask Again",

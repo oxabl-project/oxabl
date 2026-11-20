@@ -80,3 +80,7 @@ harness = false
 [[bench]]
 name = "effects_bench"
 harness = false
+
+[[bench]]
+name = "outline_bench"
+harness = false

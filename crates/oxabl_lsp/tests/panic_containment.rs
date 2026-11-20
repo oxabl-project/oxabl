@@ -13,6 +13,8 @@
 //! dev-dependencies) makes a guarded site panic when the source carries
 //! `OXABL-TEST-PANIC:<site>` in a comment. All fixtures are synthetic ABL.
 
+mod support;
+
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
@@ -40,7 +42,8 @@ fn panicking_source(site: &str) -> String {
 /// A buffer with an unused variable and no marker → one LINT0002.
 const GOOD_SOURCE: &str = "DEFINE VARIABLE y AS INTEGER NO-UNDO.\n";
 
-fn handshake(client: &Connection) {
+fn handshake(client: &Connection) -> tempfile::TempDir {
+    let project = support::project();
     let params = InitializeParams {
         capabilities: ClientCapabilities {
             general: Some(GeneralClientCapabilities {
@@ -49,6 +52,7 @@ fn handshake(client: &Connection) {
             }),
             ..Default::default()
         },
+        workspace_folders: support::folders(project.path()),
         ..Default::default()
     };
     client
@@ -65,6 +69,7 @@ fn handshake(client: &Connection) {
         }
     }
     notify(client, "initialized", serde_json::json!({}));
+    project
 }
 
 fn notify(client: &Connection, method: &str, params: serde_json::Value) {
@@ -184,7 +189,7 @@ fn main_loop_survives_a_panic_during_diagnostics() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
 
-    handshake(&client);
+    let _project = handshake(&client);
 
     let bad = Uri::from_str("file:///panic-open.p").unwrap();
     open(
@@ -226,7 +231,7 @@ fn main_loop_survives_a_panic_in_buffer_dependencies() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
 
-    handshake(&client);
+    let _project = handshake(&client);
 
     let bad = Uri::from_str("file:///panic-deps.p").unwrap();
     open(
@@ -256,7 +261,7 @@ fn worker_keeps_publishing_other_buffers_after_a_panic() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
 
-    handshake(&client);
+    let _project = handshake(&client);
 
     // Open clean, then edit *into* a panicking state so the panic happens on the
     // debounced worker path rather than the immediate open path.
@@ -302,7 +307,7 @@ fn the_panicking_buffer_recovers_when_edited_back() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
 
-    handshake(&client);
+    let _project = handshake(&client);
 
     let uri = Uri::from_str("file:///panic-then-heal.p").unwrap();
     open(
@@ -332,7 +337,7 @@ fn formatting_returns_no_edits_when_the_formatter_panics() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
 
-    handshake(&client);
+    let _project = handshake(&client);
 
     let uri = Uri::from_str("file:///panic-format.p").unwrap();
     // Mis-indented *and* marked: without the marker this buffer would produce a
@@ -375,6 +380,50 @@ fn formatting_returns_no_edits_when_the_formatter_panics() {
         edits.is_empty(),
         "a formatter panic must yield zero edits, got {edits:?}"
     );
+
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
+}
+
+/// A panic in the outline is a request failure, not an empty symbol list, and
+/// the loop keeps answering.
+#[test]
+fn document_symbol_fails_the_request_when_the_outline_panics() {
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+
+    let _project = handshake(&client);
+
+    let uri = Uri::from_str("file:///panic-outline.p").unwrap();
+    open(&client, &uri, &panicking_source(panic_sites::OUTLINE));
+
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: RequestId::from(7),
+            method: "textDocument/documentSymbol".to_string(),
+            params: serde_json::json!({ "textDocument": { "uri": uri.as_str() } }),
+        }))
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let now = std::time::Instant::now();
+        assert!(now < deadline, "no documentSymbol response arrived");
+        match client.receiver.recv_timeout(deadline - now) {
+            Ok(Message::Response(resp)) if resp.id == RequestId::from(7) => {
+                let error = resp
+                    .error
+                    .as_ref()
+                    .expect("an outline panic must be an error");
+                assert_eq!(error.code, lsp_server::ErrorCode::RequestFailed as i32);
+                assert!(resp.result.is_none(), "no result with the error: {resp:?}");
+                break;
+            }
+            Ok(_) => continue,
+            Err(_) => panic!("no documentSymbol response arrived"),
+        }
+    }
 
     shutdown(&client);
     assert!(handle.join().unwrap().unwrap());

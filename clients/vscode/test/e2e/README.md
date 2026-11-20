@@ -17,8 +17,9 @@ into `.vscode-test/`.
 
 | Scenario | What it checks |
 | --- | --- |
-| `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that a missing binary shows no message and is logged to the `oxabl` output channel. |
+| `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that a missing binary is logged to the `oxabl` output channel and that the only message is the offer to install the CLI. |
 | `markdown` | Keywords in a fenced `abl` block get colours. Prose around the block does not. |
+| `outline` | A real `oxabl` (`OXABL_E2E_OXABL`, with a short `OXABL_E2E_RUNTIME` directory) in `outline.p` and `OutlineDemo.cls`. The Outline view lists the symbols in the right tree (fields under the temp-table, parameter under the function, members under the class) and shows a new procedure after an edit. "Go to Symbol in File" lists the symbols, and choosing one puts the cursor on its name. The breadcrumbs show the class and the method at the cursor. It fails without the binary. |
 | `update-auto` | The extension installs a newer release from the fake API and sends the right headers. |
 | `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |
 | `update-notify` | The `notify` mode shows a message and installs nothing. |
@@ -52,6 +53,8 @@ only; the extension is the program under test.
 | `build-too-old-managed` | A managed binary without `--yield` and without `self-update` is replaced by the newest release, then builds. |
 | `build-binary-changed` | A binary that reports a new version restarts the language server once. |
 | `build-install` | With no binary, the install prompt shows. `Install` puts the release asset into `OXABL_INSTALL_DIR`, writes the install record (`installer: "vscode"`), leaves no staged file, and the build runs with it. |
+| `install-no-project` | No `oxabl.toml` and no binary: the install prompt shows. `Install` starts the language server with the installed CLI. No message is about `oxabl.toml` or a build, and no `oxabl build` runs, not even `--print-config`. |
+| `quiet-no-project` | A binary and no `oxabl.toml`: the language server starts, no oxabl message shows, and no `oxabl build` runs. |
 | `build-install-bad-checksum` | A wrong checksum installs nothing and writes no record. |
 | `cli-update-auto` | In `auto` mode the update check asks a managed binary (`self-update --check --json`), runs `self-update`, says "oxabl CLI updated" in the status bar and restarts the language server. |
 | `cli-update-notify` | In `notify` mode the prompt for the CLI has Update, Release Notes and Skip This Version, installs nothing before the answer, and `Update` installs. |

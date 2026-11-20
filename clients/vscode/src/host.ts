@@ -32,7 +32,7 @@ export const WSL_DOCS_URL = "https://github.com/oxabl-project/oxabl/tree/master/
 /** The message for a host that cannot install the binary. */
 export function hostMessage(host: Exclude<HostClass, { kind: "supported" }>): string {
   if (host.kind === "windows") {
-    return "The oxabl CLI runs on Linux. Reopen this folder in WSL to install and use it.";
+    return "oxabl does not run on Windows. Open this file in a window connected to WSL for ABL language features.";
   }
   return (
     `Released oxabl binaries exist only for Linux x86_64 (this is ${host.platform} ${host.arch}). ` +

@@ -450,7 +450,7 @@ export async function buildBinaryChanged(ctx) {
 /** The CLI release the install scenarios serve: the fake itself, which answers --version and builds. */
 const CLI_VERSION = "5.2.0";
 const cliRelease = (digest) => ({ version: CLI_VERSION, binary: Buffer.from(fakeOxablSource(CLI_VERSION)), digest });
-const INSTALL_PROMPT = "The oxabl CLI is not installed. It builds and checks this project.";
+const INSTALL_PROMPT = "The oxabl CLI is not installed. Install it for the outline, breadcrumbs and Go to Symbol in ABL files.";
 
 export async function buildInstall(ctx) {
   const name = "build-install";
@@ -482,6 +482,53 @@ export async function buildInstall(ctx) {
       check(`${name}: the build ran with the installed binary`, built?.script === fs.realpathSync(target), built?.script);
     },
   );
+}
+
+/** Every oxabl message on screen, sampled for `ms` so a late one is seen too. */
+async function oxablToastsFor(page, ms) {
+  const seen = new Set();
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    for (const t of await toasts(page)) seen.add(t);
+    await sleep(250);
+  }
+  return [...seen];
+}
+
+/** No `oxabl.toml`: the install prompt still shows, and Install starts the server but no build. */
+export async function installNoProject(ctx) {
+  const name = "install-no-project";
+  await session(ctx, name, { fake: false, files: ["sample.p"], cli: cliRelease("good") }, async ({ page, profile, log }) => {
+    await waitForText(page, INSTALL_PROMPT, 60_000);
+    check(`${name}: the install prompt shows without an oxabl.toml`, true);
+    await screenshot(page, name);
+    await clickButton(page, "Install");
+    const target = path.join(profile.root, "bin", "oxabl");
+    await waitFor(
+      `${name}: the language server starts with the installed CLI`,
+      () => fs.existsSync(target) && log().some((l) => l.args?.[0] === "lsp" && l.script === fs.realpathSync(target)),
+      { timeout: 60_000, interval: 200 },
+    );
+    check(`${name}: the language server starts with the installed CLI`, true);
+    const shown = await oxablToastsFor(page, 8_000);
+    const about = shown.filter((t) => /oxabl\.toml|build/i.test(t));
+    check(`${name}: no message is about oxabl.toml or a build`, about.length === 0, about.join(" | "));
+    const builds = log().filter((l) => l.args?.[0] === "build");
+    check(`${name}: no oxabl build runs, not even --print-config`, builds.length === 0, JSON.stringify(builds.map((l) => l.args)));
+  });
+}
+
+/** A CLI and no `oxabl.toml`: the server runs, and nothing is shown or built. */
+export async function quietNoProject(ctx) {
+  const name = "quiet-no-project";
+  await session(ctx, name, { files: ["sample.p"] }, async ({ page, log }) => {
+    await waitFor(`${name}: the language server starts`, () => log().some((l) => l.args?.[0] === "lsp"), { timeout: 60_000, interval: 200 });
+    check(`${name}: the language server starts`, true);
+    const shown = await oxablToastsFor(page, 8_000);
+    check(`${name}: no oxabl message shows`, shown.length === 0, shown.join(" | "));
+    const builds = log().filter((l) => l.args?.[0] === "build");
+    check(`${name}: no oxabl build runs, not even --print-config`, builds.length === 0, JSON.stringify(builds.map((l) => l.args)));
+  });
 }
 
 /** A managed binary from before self-update and --yield: the extension installs the newest release over it. */
