@@ -563,7 +563,7 @@ fn finish_handshake(
     if options.supported
         && !options.dynamic
         && workspace_root.as_ref().is_some_and(|root| {
-            let (config, _) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+            let (config, _) = PipelineConfig::resolve_for_editor(root, &ConfigOverrides::default());
             let fs = oxabl_workspace::RealFileSystem;
             oxabl_pipeline::LintPipeline::new(&config, &fs)
                 .with_file(root)
@@ -650,8 +650,8 @@ struct Server<'c> {
     /// formatting request costs no style resolution and no `StyleGuide` clone.
     formatter: FormatPipeline,
     /// The `[workspace.features]` of the installed configuration, which counts
-    /// as both off while `oxabl.toml` cannot be read. Both on until a
-    /// configuration is resolved.
+    /// as both off while `oxabl.toml` cannot be read and when there is none.
+    /// Both off until a configuration is resolved.
     features: FeaturesConfig,
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
@@ -710,7 +710,8 @@ impl<'c> Server<'c> {
             workspace_anchor: None,
             workspace_root,
             formatter,
-            features: FeaturesConfig::default(),
+            // Off until a resolved configuration says otherwise.
+            features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
             outlines: document_symbol::OutlineCache::default(),
@@ -1108,7 +1109,8 @@ impl<'c> Server<'c> {
     /// editor's diagnostics *silently* while the CLI printed a `warning:` line
     /// for the same file.
     fn resolve_config_from(&mut self, path: &Path) {
-        let (resolved, warnings) = PipelineConfig::resolve(path, &ConfigOverrides::default());
+        let (resolved, warnings) =
+            PipelineConfig::resolve_for_editor(path, &ConfigOverrides::default());
         self.report_config_warnings(&warnings);
         self.install_config(resolved);
     }

@@ -333,7 +333,7 @@ The compile tests build the fixture in `crates/oxabl/tests/fixtures/openedge/`. 
 
 ### Feature switches
 
-The `[workspace.features]` table in `oxabl.toml` turns oxabl features on or off for a project. `oxabl.toml` is the one place that decides. Both keys default to `true`.
+The `[workspace.features]` table in `oxabl.toml` turns oxabl features on or off for a project. `oxabl.toml` is the one place that decides. In an `oxabl.toml`, both keys default to `true`.
 
 | Key | Covers in the editor | Covers in the CLI |
 |---|---|---|
@@ -346,9 +346,11 @@ With `diagnostics = false`, the language server publishes an empty list for each
 
 `oxabl format` (also `--check` and `--stdout`) exits 2 with `format = false`. It writes nothing. `--style` skips `oxabl.toml`, so it also skips the switch. No command-line flag overrides `[workspace.features]`. `build`, `explain`, `analyze`, `lsp` and `daemon` do not read it.
 
-**An `oxabl.toml` that oxabl cannot read turns both features off.** The language server then publishes no diagnostics and returns no formatting edits until the file is fixed. It sends one `window/showMessage` warning that names the problem, and it keeps the `window/logMessage` lines. A project that turned a feature off does not get it back from a typo. With no `oxabl.toml` at all, both features stay on.
+**An `oxabl.toml` that oxabl cannot read turns both features off.** The language server then publishes no diagnostics and returns no formatting edits until the file is fixed. It sends one `window/showMessage` warning that names the problem, and it keeps the `window/logMessage` lines. A project that turned a feature off does not get it back from a typo.
 
-A rollout that uses only the syntax highlighting of the VS Code extension turns both off:
+**With no `oxabl.toml` at all, the language server turns both features off,** and the CLI keeps both on. An editor offers only what needs no setup, the document outline, until a project adds an `oxabl.toml`. So installing the CLI for the outline does not start formatting or linting code that no project configured. The server shows no message about it.
+
+A project that wants only the highlighting and the outline in the editor turns both off:
 
 ```toml
 [workspace]

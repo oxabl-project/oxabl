@@ -146,6 +146,9 @@ VS Code asks for the outline, the breadcrumbs and sticky scroll separately.
 - Ranges use the negotiated position encoding.
 - A document that is not open gives `null`. A contained panic gives the error
   `RequestFailed`, never an empty list. Bad params give `InvalidParams`.
+- The outline needs no setup: it works without an `oxabl.toml` and does not
+  follow `[workspace.features]`. Without an `oxabl.toml`, the server turns
+  diagnostics and formatting off, so the outline is all that an editor gets.
 
 | `OutlineKind` | LSP `SymbolKind` |
 | --- | --- |
