@@ -11744,6 +11744,19 @@ fn comments_led_by_a_stray_tilde_are_line_comments() {
 }
 
 #[test]
+fn comments_after_a_stray_tilde_and_blanks_keep_their_kind() {
+    for (source, kind) in [
+        ("~ //x\nvar x as int.", CommentKind::Line),
+        ("~ ~\t//x\nvar x as int.", CommentKind::Line),
+        ("~\t/* b */\nvar x as int.", CommentKind::Block),
+    ] {
+        let comments = collect_program_comments(source);
+        assert_eq!(comments.len(), 1, "{source:?}");
+        assert_eq!(comments[0].kind, kind, "{source:?}");
+    }
+}
+
+#[test]
 fn comments_include_and_macro_refs_are_not_comments() {
     let source = "{lib/util.i}\n{&MY-MACRO}\nvar x as int.";
     let comments = collect_program_comments(source);

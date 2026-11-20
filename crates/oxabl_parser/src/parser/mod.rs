@@ -480,12 +480,17 @@ impl<'a> Parser<'a> {
     /// assert.
     fn classify_comment(&self, start: usize) -> Option<CommentKind> {
         let bytes = self.source.as_bytes();
-        // The lexer keeps a stray `~` in the token that follows it (`~&x`), so
-        // a comment can lead with tildes: classify it by what comes after them.
+        // The lexer keeps a stray `~` in the token that follows it (`~&x`, `~ //x`),
+        // with the blanks after it, so a comment can lead with tildes and blanks:
+        // classify it by what comes after them.
         let start = start
-            + bytes
-                .get(start..)
-                .map_or(0, |rest| rest.iter().take_while(|&&b| b == b'~').count());
+            + match bytes.get(start) {
+                Some(b'~') => bytes[start..]
+                    .iter()
+                    .take_while(|&&b| b == b'~' || b.is_ascii_whitespace())
+                    .count(),
+                _ => 0,
+            };
         match bytes.get(start) {
             Some(b'/') => match bytes.get(start + 1) {
                 Some(b'*') => Some(CommentKind::Block),
