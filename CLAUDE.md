@@ -102,8 +102,8 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 - `crates/oxabl_daemon_protocol` - Wire types and the contract version for the daemon's `oxabl/*` methods; depends on serde and nothing else
 - `crates/oxabl_lexer` - Tokenizer for ABL source code (MVP complete)
 - `crates/oxabl_ast` - AST node definitions (expressions, statements, literals)
-- `crates/oxabl_parser` - Parser for ABL source code (actively developed)
-- `crates/oxabl_common` - Shared utilities including `SourceMap` and the `catch_panic` guard
+- `crates/oxabl_parser` - Parser for ABL source code (actively developed). It stops at `Parser::MAX_NESTING` levels of nesting and `Parser::MAX_CHAIN` operators in a left-deep chain and reports a `PARSE001` error, so every recursive pass over its tree has a known depth. `crates/oxabl/tests/deep_nesting.rs` tests this through the CLI and the daemon
+- `crates/oxabl_common` - Shared utilities including `SourceMap`, the `catch_panic` guard and `stack`, the stack size of every thread that parses or analyses ABL. A stack overflow aborts the process and `catch_panic` cannot stop it, so start such a thread with `stack::builder()` or `stack::run`, never `thread::spawn` or `scope.spawn`
 - `crates/oxabl_codegen` - Code generation tool for lexer keywords
 - `crates/oxabl_flow` - Control-flow graphs per unit with ABL block semantics, plus a dataflow solver
 - `crates/oxabl_handles` - Lifetimes of dynamic objects per unit (create, free and escape sites, leaking paths), read by the `strict.handles` rules

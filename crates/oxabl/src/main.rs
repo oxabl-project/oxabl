@@ -634,7 +634,8 @@ fn main() -> ExitCode {
     if matches!(cli, Cli::Lsp) {
         self_update::schedule_if_due();
     }
-    let code = dispatch(cli);
+    // Every command may parse ABL: give it a stack of known size, not `ulimit -s`.
+    let code = oxabl_common::stack::run(|| dispatch(cli));
     if after {
         self_update::schedule_if_due();
     }
@@ -2147,17 +2148,19 @@ fn in_task_order<'t, T: Sync, S, R: Send>(
         for _ in 0..jobs {
             let sender = sender.clone();
             let (next, thread_state, work) = (&next, &thread_state, &work);
-            scope.spawn(move || {
-                let mut state = thread_state();
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(task) = tasks.get(i) else { break };
-                    let result = work(&mut state, task);
-                    if sender.send((i, result)).is_err() {
-                        break;
+            oxabl_common::stack::builder()
+                .spawn_scoped(scope, move || {
+                    let mut state = thread_state();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(task) = tasks.get(i) else { break };
+                        let result = work(&mut state, task);
+                        if sender.send((i, result)).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
+                })
+                .expect("failed to spawn a worker thread");
         }
         drop(sender);
         let mut waiting: HashMap<usize, R> = HashMap::new();

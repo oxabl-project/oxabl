@@ -13,6 +13,13 @@ not run them.
 | `lint` | `LintPipeline::run` on one file (preprocess, parse, analyse, every rule) never panics. |
 | `format` | `try_format_source` never panics, and formatting its own output changes nothing. |
 
+Each target runs its input with a stack of at least the analysis stack
+(`oxabl_common::stack`, 64 MiB), as the CLI and the daemon do: on a smaller
+stack, a nest that the parser accepts can overflow and show as a false crash.
+`run.sh` raises `ulimit -s`, so the input runs directly on libFuzzer's thread.
+With a smaller limit, for example a target started by hand, a worker thread on
+the analysis stack runs it, at about 0.5 ms more per input (`src/lib.rs`).
+
 ```bash
 cargo install --locked cargo-fuzz --root target/tools   # once, into the checkout
 export PATH=$PWD/target/tools/bin:$PATH

@@ -296,7 +296,8 @@ impl Listener {
             // traffic — a restart loop out of one thread that could not be made. One
             // client we cannot serve is one client: the stream is dropped, which the
             // peer sees as a disconnect, and the loop keeps serving everybody else.
-            let client = thread::Builder::new().spawn(move || {
+            // The client's requests parse and analyse on this thread.
+            let client = oxabl_common::stack::builder().spawn(move || {
                 let (connection, threads) = connection_over(stream);
                 serve(&connection, &host);
                 // Dropping the sender lets the writer thread finish.
