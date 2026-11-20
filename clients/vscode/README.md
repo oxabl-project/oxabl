@@ -50,48 +50,55 @@ Install the extension and open an ABL file. These features need nothing else:
 ## What needs the oxabl language server
 
 The extension starts `oxabl lsp` when it finds the `oxabl` executable. Then
-you also get:
+you also get, with no setup:
 
-- **Format on save.** The formatter changes ABL files only. It leaves a file
-  that it cannot format safely byte for byte unchanged.
-- **Live diagnostics.** Lint and semantic diagnostics show in the Problems
-  panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
-  applies at once, with no reload.
 - **Document outline.** The Outline view, the breadcrumbs, "Go to Symbol in
   File" (`Ctrl+Shift+O`) and sticky scroll show the declarations of the file:
   classes and their members, procedures, functions, temp-tables with their
   fields, variables, buffers and `ON` triggers. The outline reads the file as
   written, so declarations in an include file do not show.
 
+A folder with an `oxabl.toml` is a project. A project also gets:
+
+- **Format on save.** The formatter changes ABL files only. It leaves a file
+  that it cannot format safely byte for byte unchanged.
+- **Live diagnostics.** Lint and semantic diagnostics show in the Problems
+  panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
+  applies at once, with no reload.
+
+Without an `oxabl.toml`, the language server does not format and does not
+report diagnostics, and it shows no message about it. Add an `oxabl.toml` to
+turn them on.
+
 The extension does not bundle the `oxabl` binary. It looks for it in this
 order: the `oxabl.server.path` setting, `~/.local/bin/oxabl` (the directory in
 `OXABL_INSTALL_DIR` when that is set), then your `PATH`. To get the binary, see
-[Install the oxabl CLI](#install-the-oxabl-cli). When the binary is missing and
-the folder has no `oxabl.toml`, the extension shows no message, because the
-highlighting works without it. The `oxabl` output channel (**Output** panel)
-says that the binary was not found. Install the binary later, then run
-**oxabl: Restart Server**.
+[Install the oxabl CLI](#install-the-oxabl-cli). The `oxabl` output channel
+(**Output** panel) says when the binary was not found. Install the binary later,
+then run **oxabl: Restart Server**.
 
-These features follow `[workspace.features]` in `oxabl.toml`. A project
-turns them off there: `diagnostics = false` stops the diagnostics and the
-code lenses, and `format = false` stops formatting, so format on save does
+In a project, these features follow `[workspace.features]` in `oxabl.toml`:
+`diagnostics = false` stops the diagnostics and the code lenses, and `format = false` stops formatting, so format on save does
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
-it. To use only the highlighting, turn both off in `oxabl.toml`.
+it.
 
 `oxabl.enable: false` stops the server on one machine, also when the binary
 is installed.
 
 ## Install the oxabl CLI
 
-When a folder has an `oxabl.toml` and no `oxabl` binary is found, the
-extension asks once: "The oxabl CLI is not installed. It builds and checks this
-project." The buttons are **Install**, **Not Now** and **Don't Ask Again**.
+When no `oxabl` binary is found, the extension asks when it starts, that is
+when you open an ABL file: "The oxabl CLI is not installed. Install it for the
+outline, breadcrumbs and Go to Symbol in ABL files." The buttons are
+**Install**, **Not Now** and **Don't Ask Again**. The prompt shows with or
+without an `oxabl.toml`.
 
 **Install** downloads the newest release from GitHub, checks its SHA-256, runs
 `oxabl --version` on the downloaded file, and only then replaces
 `~/.local/bin/oxabl` (the directory in `OXABL_INSTALL_DIR`, when set). It writes
 `~/.local/share/oxabl/install.json`, which tells `oxabl self-update` that this
-binary is its own. Then it starts the language server and the build. Any
+binary is its own. Then it starts the language server, and in a project the
+build. Any
 failure installs nothing and shows the reason.
 
 The command **oxabl: Install or Update the CLI** does the same on request. For
@@ -107,9 +114,12 @@ Only Linux x86_64 binaries are released.
 The language server needs Unix sockets, so it does not run on Windows. The
 extension runs where the folder is: in a WSL window, it runs in WSL, so the
 CLI is the Linux binary there. In a local Windows window, no binary can be
-installed. When the folder has an `oxabl.toml`, the extension offers **Reopen
-Folder in WSL** (it needs the WSL extension) and does not download a Windows
-binary. On macOS and on other CPUs, run `cargo install oxabl`.
+installed. When you open an ABL file there, the extension says "oxabl does
+not run on Windows. Open this file in a window connected to WSL for ABL
+language features." It offers **Reopen Folder in WSL** (with the WSL extension; else
+**Open Docs**) and **Don't Ask Again**, and does not download a Windows
+binary. Highlighting still works in the Windows window. On macOS and on other
+CPUs, run `cargo install oxabl`.
 
 ## Build on open and on save
 

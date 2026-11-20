@@ -259,9 +259,12 @@ diagnostics) and `extension.ts`.
 extension runs on the remote host, where the files and the binary are.
 `host.ts` classifies the host from `process.platform`, `process.arch` and
 `vscode.env.remoteName`: Linux x86_64 (local or remote) is supported; a local
-Windows window gets the offer to reopen the folder in WSL (the WSL extension's
-`remote-wsl.reopenInWSL`, else a link to the README); any other platform or
-CPU gets a message to run `cargo install oxabl`. The extension never
+Windows window gets the message "oxabl does not run on Windows. Open this file
+in a window connected to WSL for ABL language features." with the offer to
+reopen the folder in WSL (the WSL extension's `remote-wsl.reopenInWSL`, else a
+link to the README); any other platform or CPU gets a message to run
+`cargo install oxabl`. These messages show with or without an `oxabl.toml`,
+like the install prompt. The extension never
 downloads a Windows binary: the language server needs Unix sockets.
 
 `capabilities.untrustedWorkspaces` is `limited`. A build runs the worker
@@ -277,9 +280,12 @@ The order is `oxabl.server.path`, `${OXABL_INSTALL_DIR:-~/.local/bin}/oxabl`,
 then `PATH`. The install path comes before `PATH` because it is where the
 installer and `oxabl self-update` write.
 
-With no binary and an `oxabl.toml` in the workspace, one prompt offers the
-install (`Don't Ask Again` is kept in `globalState`). Without an `oxabl.toml`
-there is no prompt: the highlighting needs no binary. The install follows the
+With no binary, one prompt offers the install when the extension starts, that
+is when an ABL file opens or the workspace has an `oxabl.toml` (`Don't Ask
+Again` is kept in `globalState`). The prompt shows without an `oxabl.toml` too,
+because the outline needs no setup. Everything that needs a project stays
+silent without one: the language server turns diagnostics and formatting off,
+and the build loop finds no root, so it runs nothing and shows nothing. The install follows the
 contract that `install.sh` and `oxabl self-update` share: newest plain
 `oxabl-vX.Y.Z` tag (`/git/matching-refs/tags/oxabl-v`; the extension's own tags
 start with `oxabl_vscode-v`, so they never match), a release that is not a
