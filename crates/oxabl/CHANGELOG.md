@@ -1,5 +1,51 @@
 # Changelog
 
+## [5.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.7.1...oxabl-v5.8.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+
+
+### Bug Fixes
+
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+    * oxabl_preprocessor bumped from 0.8.1 to 0.8.2
+    * oxabl_semantic bumped from 5.0.5 to 5.1.0
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+    * oxabl_analyze bumped from 4.2.1 to 4.2.2
+    * oxabl_pipeline bumped from 3.6.1 to 3.7.0
+    * oxabl_lint bumped from 5.0.5 to 5.1.0
+    * oxabl_lsp bumped from 3.1.6 to 3.2.0
+    * oxabl_daemon bumped from 0.6.0 to 0.6.1
+    * oxabl_build bumped from 0.8.0 to 0.8.1
+    * oxabl_build_remote bumped from 0.2.10 to 0.2.11
+    * oxabl_formatter bumped from 2.0.8 to 2.1.0
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.2.1 to 4.2.2
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+    * oxabl_pipeline bumped from 3.6.1 to 3.7.0
+    * oxabl_flow bumped from 0.3.8 to 0.4.0
+    * oxabl_handles bumped from 0.2.8 to 0.2.9
+    * oxabl_scope bumped from 0.2.8 to 0.2.9
+    * oxabl_effects bumped from 0.3.6 to 0.3.7
+    * oxabl_nulls bumped from 0.2.8 to 0.2.9
+    * oxabl_index bumped from 5.2.0 to 5.2.1
+
 ## [5.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.7.0...oxabl-v5.7.1) (2026-11-18)
 
 

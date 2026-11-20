@@ -1,5 +1,25 @@
 # Changelog
 
+## [4.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.2.1...oxabl_analyze-v4.2.2) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_lint bumped from 5.0.5 to 5.1.0
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+    * oxabl_preprocessor bumped from 0.8.1 to 0.8.2
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+    * oxabl_semantic bumped from 5.0.5 to 5.1.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+  * dev-dependencies
+    * oxabl_index bumped from 5.2.0 to 5.2.1
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+
 ## [4.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.2.0...oxabl_analyze-v4.2.1) (2026-11-18)
 
 

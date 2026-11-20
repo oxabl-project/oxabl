@@ -1,5 +1,42 @@
 # Changelog
 
+## [3.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.6.1...oxabl_pipeline-v3.7.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+* **lsp:** without an oxabl.toml, no diagnostics and no formatting ([c120ed7](https://github.com/oxabl-project/oxabl/commit/c120ed7697a8b5df89fc9d106315380ae7a0c5f7))
+
+
+### Bug Fixes
+
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+* **pipeline:** a signed ENUM value belongs to its member ([83e61c6](https://github.com/oxabl-project/oxabl/commit/83e61c61b6fe20e258a0cd704e66a64c0d01f8eb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.6 to 0.3.7
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+    * oxabl_flow bumped from 0.3.8 to 0.4.0
+    * oxabl_scope bumped from 0.2.8 to 0.2.9
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_analyze bumped from 4.2.1 to 4.2.2
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_formatter bumped from 2.0.8 to 2.1.0
+    * oxabl_index bumped from 5.2.0 to 5.2.1
+    * oxabl_lint bumped from 5.0.5 to 5.1.0
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+    * oxabl_semantic bumped from 5.0.5 to 5.1.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+  * dev-dependencies
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+
 ## [3.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.6.0...oxabl_pipeline-v3.6.1) (2026-11-18)
 
 

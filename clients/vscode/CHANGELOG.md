@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.9.0...oxabl_vscode-v0.10.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+* **vscode:** offer the oxabl CLI without an oxabl.toml ([4451768](https://github.com/oxabl-project/oxabl/commit/4451768b7cab5a28f654d1adbc0f6dfc538cbdb0))
+
 ## [0.9.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.8.0...oxabl_vscode-v0.9.0) (2026-11-18)
 
 

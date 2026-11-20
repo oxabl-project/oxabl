@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.1](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.8.0...oxabl_build-v0.8.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_effects bumped from 0.3.6 to 0.3.7
+    * oxabl_index bumped from 5.2.0 to 5.2.1
+    * oxabl_pipeline bumped from 3.6.1 to 3.7.0
+    * oxabl_semantic bumped from 5.0.5 to 5.1.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+  * dev-dependencies
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+
 ## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_build-v0.7.0...oxabl_build-v0.8.0) (2026-11-18)
 
 
