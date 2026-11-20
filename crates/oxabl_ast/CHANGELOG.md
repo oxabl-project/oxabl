@@ -1,5 +1,21 @@
 # Changelog
 
+## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v4.0.0...oxabl_ast-v5.0.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** span the parameters of a signature and the fields of a temp-table
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+
+
+### Bug Fixes
+
+* **parser:** span the parameters of a signature and the fields of a temp-table ([b360566](https://github.com/oxabl-project/oxabl/commit/b360566b59a85292c5bd53d2b8a0ff7db9f2a6ef))
+
 ## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v3.0.0...oxabl_ast-v4.0.0) (2026-11-06)
 
 

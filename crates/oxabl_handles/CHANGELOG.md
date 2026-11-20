@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.9](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.8...oxabl_handles-v0.2.9) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_flow bumped from 0.3.8 to 0.4.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+
 ## [0.2.8](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.7...oxabl_handles-v0.2.8) (2026-11-18)
 
 

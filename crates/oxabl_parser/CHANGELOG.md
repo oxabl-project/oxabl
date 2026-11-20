@@ -1,5 +1,31 @@
 # Changelog
 
+## [4.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.5...oxabl_parser-v4.1.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+
+
+### Bug Fixes
+
+* **parser:** a comment after a stray tilde and blanks keeps its kind ([080a4e8](https://github.com/oxabl-project/oxabl/commit/080a4e800d8843d1545e7470f583e6d3116bab3c))
+* **parser:** an ENUM block may end with a bare END ([aea1993](https://github.com/oxabl-project/oxabl/commit/aea1993038fbb34355b0a96d39d40f9a883de588))
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.8.1 to 0.8.2
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+
 ## [4.0.5](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.4...oxabl_parser-v4.0.5) (2026-11-18)
 
 

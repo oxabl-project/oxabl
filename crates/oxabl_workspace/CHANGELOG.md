@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.6.0...oxabl_workspace-v3.6.1) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+
 ## [3.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.5.0...oxabl_workspace-v3.6.0) (2026-11-18)
 
 
