@@ -477,6 +477,22 @@ fn an_include_without_its_argument_stays_an_error() {
 }
 
 #[test]
+fn an_enum_block_may_end_with_a_bare_end() {
+    let source = "ENUM E:\n  DEFINE ENUM A B.\nEND.\nDEFINE VARIABLE after AS INTEGER NO-UNDO.\n";
+    let program = parse_clean(source);
+    assert_eq!(program.statements.len(), 2);
+    let enum_span = program.statements[0].span;
+    assert_eq!(
+        &source[enum_span.start as usize..enum_span.end as usize],
+        "ENUM E:\n  DEFINE ENUM A B.\nEND."
+    );
+    assert!(matches!(
+        program.statements[1].kind,
+        StatementKind::VariableDeclaration { .. }
+    ));
+}
+
+#[test]
 fn an_enum_block_ends_at_end_enum() {
     let source =
         "ENUM E:\n  DEFINE ENUM A B.\nEND ENUM.\nDEFINE VARIABLE after AS INTEGER NO-UNDO.\n";
