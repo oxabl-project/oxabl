@@ -31,7 +31,7 @@
 //! has a parse error, and recovery is required to still surface semantic/lint
 //! diagnostics (R6).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -898,7 +898,7 @@ pub fn expand_source_with(
                 &mut std::collections::HashSet::new(),
                 &mut file_paths,
             );
-            let mut substitutions = Vec::new();
+            let mut substitutions = HashSet::new();
             collect_substitution_sites(&pf.tree, &mut substitutions);
             // An include that failed to resolve deeper down is that file's gap to
             // report, not this one's — the same origin rule diagnostics follow. A
@@ -1181,7 +1181,7 @@ fn collect_file_paths(
 }
 
 /// Every `{&var}` substitution in the tree, as the file and span that wrote it.
-fn collect_substitution_sites(nodes: &[SpanNode], out: &mut Vec<FileSpan>) {
+fn collect_substitution_sites(nodes: &[SpanNode], out: &mut HashSet<FileSpan>) {
     for node in nodes {
         if let SpanNode::Include {
             site,
@@ -1189,7 +1189,7 @@ fn collect_substitution_sites(nodes: &[SpanNode], out: &mut Vec<FileSpan>) {
             children,
         } = node
         {
-            out.push(*site);
+            out.insert(*site);
             collect_substitution_sites(children, out);
         } else if let SpanNode::Include { children, .. } = node {
             collect_substitution_sites(children, out);
@@ -1203,7 +1203,7 @@ fn collect_substitution_sites(nodes: &[SpanNode], out: &mut Vec<FileSpan>) {
 fn substitution_site(
     via: &[FileSpan],
     root: FileId,
-    substitutions: &[FileSpan],
+    substitutions: &HashSet<FileSpan>,
 ) -> Option<FileSpan> {
     let first = via.first().filter(|site| site.file == root)?;
     via.iter()
