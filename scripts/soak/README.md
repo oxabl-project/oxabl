@@ -21,4 +21,12 @@ python3 -I scripts/soak/session.py --binary target/release/oxabl --runtime targe
 python3 -I scripts/soak/procs.py --binary target/release/oxabl --runtime target/rt roots --n 20
 ```
 
+RSS counts memory the allocator keeps, so a growth of a few hundred KB per 1000
+edits can be noise. To see what grows, take a heap profile: build with the
+system allocator (remove `#[global_allocator]` in `crates/oxabl/src/main.rs`,
+locally), start `valgrind --tool=massif --vgdb=yes oxabl daemon <root>` with the
+same `XDG_RUNTIME_DIR` before the client starts (a client uses the daemon its
+root already has), and compare snapshots taken with
+`vgdb --pid=<pid> detailed_snapshot <file>`.
+
 The extension host side is `clients/vscode/test/e2e/scenarios/server.mjs`.
