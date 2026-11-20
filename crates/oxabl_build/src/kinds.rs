@@ -52,9 +52,18 @@ impl EdgeKind {
         matches!(self, EdgeKind::Class | EdgeKind::ConditionalClass)
     }
 
-    /// Whether the stored edge carries the class name that reached the target.
+    /// Whether the target is an include file.
+    pub fn is_include(self) -> bool {
+        matches!(
+            self,
+            EdgeKind::DirectInclude | EdgeKind::TransitiveInclude | EdgeKind::ConditionalInclude
+        )
+    }
+
+    /// Whether the stored edge carries the name that reached the target: the
+    /// class name, or the include name as written.
     pub fn carries_name(self) -> bool {
-        self.is_class()
+        self.is_class() || self.is_include()
     }
 }
 

@@ -10,16 +10,22 @@ use crate::store::OutputRow;
 
 /// The stat and the hash of the file at `path`, as an output row for `dest`.
 pub fn describe(path: &Path, dest: &str) -> io::Result<OutputRow> {
+    let observed_ns = crate::refresh::now_ns();
     let meta = fs::metadata(path)?;
     let bytes = fs::read(path)?;
     Ok(OutputRow {
         path: dest.to_string(),
         size: meta.len(),
         mtime_ns: meta.mtime() * 1_000_000_000 + meta.mtime_nsec(),
+        ctime_ns: meta.ctime() * 1_000_000_000 + meta.ctime_nsec(),
         ino: meta.ino(),
         hash: *blake3::hash(&bytes).as_bytes(),
+        observed_ns,
     })
 }
+
+/// What the name of a temporary file beside an output holds.
+pub const TEMP_INFIX: &str = ".oxabl-tmp-";
 
 /// Moves `from` to `to` with `rename`; across file systems it copies to a
 /// temporary name beside `to`, calls `fsync` and renames that.
@@ -28,7 +34,7 @@ fn move_file(from: &Path, to: &Path) -> io::Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
             let temp = to.with_file_name(format!(
-                "{}.oxabl-tmp-{}",
+                "{}{TEMP_INFIX}{}",
                 to.file_name().unwrap_or_default().to_string_lossy(),
                 std::process::id()
             ));
@@ -50,29 +56,31 @@ fn move_file(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// Moves every expected output of a unit from `stage` to its place below
-/// `root`. Nothing moves unless every output is in the stage as a regular
-/// file. Returns one row for each output.
-pub fn promote(root: &Path, stage: &Path, expected: &[Expected]) -> Result<Vec<OutputRow>, String> {
+/// Moves every expected output of a unit from `stage`, where `at` gives its
+/// path, to its place below `root`. Nothing moves unless every output is in
+/// the stage as a regular file. Returns one row for each output.
+pub fn promote(
+    root: &Path,
+    stage: &Path,
+    expected: &[Expected],
+    at: impl Fn(&Expected) -> &str,
+) -> Result<Vec<OutputRow>, String> {
     for file in expected {
-        let source = stage.join(&file.staged);
+        let source = stage.join(at(file));
         match fs::symlink_metadata(&source) {
             Ok(meta) if meta.is_file() => {}
             _ => {
-                return Err(format!(
-                    "the compile produced no regular file {}",
-                    file.staged
-                ));
+                return Err(format!("the compile produced no regular file {}", at(file)));
             }
         }
     }
     let mut rows = Vec::with_capacity(expected.len());
     for file in expected {
         let target = root.join(&file.dest);
-        if let Some(parent) = target.parent() {
+        if let Some(parent) = target.parent().filter(|_| !file.in_place) {
             fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", file.dest))?;
         }
-        move_file(&stage.join(&file.staged), &target)
+        move_file(&stage.join(at(file)), &target)
             .map_err(|e| format!("cannot install {}: {e}", file.dest))?;
         rows.push(
             describe(&target, &file.dest).map_err(|e| format!("cannot read {}: {e}", file.dest))?,
@@ -81,9 +89,31 @@ pub fn promote(root: &Path, stage: &Path, expected: &[Expected]) -> Result<Vec<O
     Ok(rows)
 }
 
-/// Deletes the outputs of a unit, whatever state they are in.
-pub fn remove(root: &Path, expected: &[Expected]) {
-    for file in expected {
-        let _ = fs::remove_file(root.join(&file.dest));
+/// Deletes the outputs of a unit, whatever state they are in. An output that
+/// is not there is deleted; any other failure names the file, because an
+/// output left in place can run.
+pub fn remove(root: &Path, expected: &[Expected]) -> Result<(), String> {
+    remove_where(root, expected, |_| true)
+}
+
+/// Like [`remove`], for the outputs beside the source alone.
+pub fn remove_in_place(root: &Path, expected: &[Expected]) -> Result<(), String> {
+    remove_where(root, expected, |file| file.in_place)
+}
+
+fn remove_where(
+    root: &Path,
+    expected: &[Expected],
+    which: impl Fn(&Expected) -> bool,
+) -> Result<(), String> {
+    let mut failed = None;
+    for file in expected.iter().filter(|file| which(file)) {
+        match fs::remove_file(root.join(&file.dest)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                failed.get_or_insert_with(|| format!("cannot delete {}: {error}", file.dest));
+            }
+            _ => {}
+        }
     }
+    failed.map_or(Ok(()), Err)
 }

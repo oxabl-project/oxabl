@@ -42,9 +42,9 @@ fn check_reads(
             state.notes.push(format!(
                 "{path}: {why}; the unit is not cached and compiles at each build"
             ));
-            Err(format!("unreadable XREF-XML: {why}"))
+            Err(format!("unreadable XREF: {why}"))
         }
-        None => Err("no XREF-XML".to_string()),
+        None => Err("no XREF".to_string()),
     }
 }
 
@@ -82,7 +82,7 @@ fn observe_compile(ctx: &Ctx<'_>, state: &mut State<'_>, done: &UnitDone) -> Opt
     let observed = match done.reads.as_ref() {
         Some(Ok(xref)) => observe(xref, &info.path, &entries, classes, &observer.places),
         Some(Err(why)) => Err(why.clone()),
-        None => Err("no XREF-XML".to_string()),
+        None => Err("no XREF".to_string()),
     };
     let closure = match observed {
         Ok(closure) => closure,
@@ -150,8 +150,24 @@ pub fn complete(ctx: &Ctx<'_>, state: &mut State<'_>, done: UnitDone) {
         }
     };
     cacheable &= !rekeyed;
+    // A class unit that failed left no r-code in `$OUT`, so the compile bound
+    // what the PROPATH found instead, which the key need not hold.
+    if tainted {
+        key = None;
+        components = None;
+        note = Some("a unit it reads failed in this build".to_string());
+    } else if done.unsettled && done.ok {
+        key = None;
+        components = None;
+        note = Some(
+            "a class of its cycle did not compile in the pass before, so it may have read r-code of another build"
+                .to_string(),
+        );
+    }
+    cacheable &= !done.unsettled;
     if verifying
         && !rekeyed
+        && key.is_some()
         && let Err(why) = check_reads(ctx, state, &done, &closure)
     {
         key = None;
@@ -180,7 +196,7 @@ pub fn complete(ctx: &Ctx<'_>, state: &mut State<'_>, done: UnitDone) {
                 .iter()
                 .zip(&done.outputs)
                 .map(|(expected, row)| ArtifactFileRef {
-                    path: ArtifactPath(expected.staged.clone()),
+                    path: ArtifactPath(expected.artifact.clone()),
                     disk_path: ctx.root.join(&row.path),
                     size: row.size,
                     blake3: row.hash,

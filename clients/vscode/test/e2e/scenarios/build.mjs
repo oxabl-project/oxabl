@@ -1,0 +1,624 @@
+import fs from "node:fs";
+import path from "node:path";
+import { bodyText, clickButton, runCommand, screenshot, statusTexts, toasts, waitForText, watchSpinner, watchStatus } from "../lib/editor.mjs";
+import { buildExits, buildStarts, fakeOxablSource, readLog, signals, writeFakeOxabl } from "../lib/fake-oxabl.mjs";
+import { startFakeGitHub } from "../lib/fake-github.mjs";
+import { check, sleep, waitFor } from "../lib/report.mjs";
+import { addSettings, installVsix, launch, makeProfile, waitForLog } from "../lib/vscode.mjs";
+
+// Scenarios of the build loop. `oxabl` is a fake (lib/fake-oxabl.mjs) that logs
+// every invocation and signal; the extension in the real VS Code is under test.
+
+const started = { event: "build-started", format: 1, workers: 2 };
+const fetched = (p, cache = "local") => ({ event: "unit-fetched", path: p, cache });
+const unitStarted = (p) => ({ event: "unit-started", path: p, worker: 1 });
+const unitFinished = (p, status = "ok") => ({ event: "unit-finished", path: p, status, ms: 5 });
+
+/** A build that outlasts the scenario's burst unless it gets SIGINT. */
+const LONG_BUILD = {
+  script: [{ event: { ...started, rebuild: 5, units: 5 } }, { wait: 60_000 }],
+};
+const QUICK_BUILD = { script: [{ event: { ...started, rebuild: 0, units: 5 } }] };
+
+/**
+ * One scenario: a profile with the fake `oxabl` as `oxabl.server.path`, a fake
+ * GitHub API, and VS Code started on it. `body` gets { page, profile, logFile, server }.
+ * With `again`, VS Code then closes and starts anew on the same profile (the
+ * workspace state stays), and `again` gets the same arguments as `body`.
+ */
+async function session(ctx, name, opts, body, again) {
+  const { config = {}, settings = {}, files = ["sample.p", "oxabl.toml"], fake = true, launchOptions = {}, cli, before, newest = "99.0.0" } = opts;
+  const profile = makeProfile(name, { files });
+  const logFile = path.join(profile.root, "fake-oxabl.log");
+  const configFile = path.join(profile.root, "fake-oxabl.json");
+  fs.writeFileSync(configFile, JSON.stringify(config));
+  const exe = fake ? writeFakeOxabl(path.join(profile.root, "fake")) : undefined;
+  addSettings(profile, {
+    "oxabl.updates": "off",
+    "oxabl.build.debounce": 300,
+    "editor.formatOnSave": false,
+    ...(exe ? { "oxabl.server.path": exe } : {}),
+    ...settings,
+  });
+  installVsix(ctx.exe, profile, ctx.vsix);
+  before?.(profile);
+  const server = await startFakeGitHub({ installed: ctx.installed, newest, cli });
+  let vs;
+  try {
+    const start = () =>
+      launch(ctx.exe, profile, {
+        open: ["sample.p"],
+        env: { OXABL_UPDATE_API_URL: server.url, FAKE_OXABL_LOG: logFile, FAKE_OXABL_CONFIG: configFile },
+        ...launchOptions,
+      });
+    vs = await start();
+    await body({ page: vs.page, profile, logFile, server, log: () => readLog(logFile) });
+    if (again) {
+      await vs.close();
+      vs = await start();
+      await again({ page: vs.page, profile, logFile, server, log: () => readLog(logFile) });
+    }
+  } finally {
+    if (vs) await vs.close();
+    await server.close();
+  }
+  return { profile, log: readLog(logFile) };
+}
+
+const waitForBuilds = (what, ctxLog, n, timeout = 60_000) =>
+  waitFor(what, () => buildStarts(ctxLog()).length >= n, { timeout, interval: 100 });
+const waitForExits = (what, ctxLog, n, timeout = 60_000) =>
+  waitFor(what, () => buildExits(ctxLog()).length >= n, { timeout, interval: 100 });
+
+/** Types a character and saves, as a person editing the open file does. */
+async function editAndSave(page) {
+  await page.keyboard.type("x");
+  await page.keyboard.press("Control+S");
+}
+
+async function focusEditor(page) {
+  await page.locator(".monaco-editor .view-lines").first().click();
+}
+
+export async function buildOpen(ctx) {
+  const name = "build-open";
+  const units = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"].map((n) => `src/${n}.p`);
+  const config = {
+    builds: [
+      {
+        script: [
+          { wait: 800 },
+          { event: { ...started, rebuild: 10, units: 12 } },
+          ...units.slice(0, 4).flatMap((u) => [{ wait: 120 }, { event: fetched(u, "local") }]),
+          ...units.slice(4, 6).flatMap((u) => [{ wait: 120 }, { event: fetched(u, "remote") }]),
+          ...units.slice(6).flatMap((u) => [{ wait: 150 }, { event: unitStarted(u) }, { wait: 150 }, { event: unitFinished(u) }]),
+          { wait: 800 },
+        ],
+        summary: { fetched: 6, compiled: 4 },
+      },
+      QUICK_BUILD,
+    ],
+  };
+  await session(ctx, name, { config }, async ({ page, profile, log }) => {
+    const watcher = watchStatus(page);
+    const spinner = watchSpinner(page);
+    await waitForText(page, "oxabl build finished", 60_000);
+    const spins = await spinner.stop();
+    // A text change re-renders a status bar item and starts its icon's rotation
+    // again; the spinner must stay one element with one animation for the build.
+    check(
+      `${name}: the spinner turns without a restart while units finish`,
+      spins.elements === 1 && spins.animations === 1,
+      JSON.stringify(spins),
+    );
+    await screenshot(page, name);
+    const text = (await toasts(page)).find((t) => t.includes("oxabl build finished")) ?? "";
+    check(
+      `${name}: the notification names the units, the cache share and the time`,
+      /^oxabl build finished in \d+s: 10 of 12 units rebuilt, 60% from cache \(4 local, 2 remote\), 4 compiled$/.test(text),
+      `got "${text}"`,
+    );
+    // The check mark stays for 3 s, then the item hides.
+    await waitFor("the status bar item to hide", async () => (await statusTexts(page)).length === 0, { timeout: 15_000, interval: 100 });
+    await watcher.stop();
+    const seen = watcher.seen;
+    check(`${name}: the status bar says preparing before build-started`, seen.includes("oxabl: preparing"), seen.join(" | "));
+    check(
+      `${name}: the status bar shows done/total and the cache hit rate`,
+      seen.some((t) => /^oxabl \d+\/10 · \d+% cached$/.test(t)),
+      seen.join(" | "),
+    );
+    check(`${name}: the status bar ends with the check mark`, seen.includes("oxabl"), seen.join(" | "));
+
+    const starts = buildStarts(log());
+    check(`${name}: exactly one build at open`, starts.length === 1, `${starts.length}`);
+    const args = starts[0]?.args ?? [];
+    check(
+      `${name}: oxabl build runs with --events --yield --wait-lock 3600 in the root`,
+      args.slice(0, 7).join(" ") === `build --root ${profile.workspace} --events --yield --wait-lock 3600` &&
+        args[7] === "--report" &&
+        path.isAbsolute(args[8] ?? "") &&
+        args.length === 9 &&
+        starts[0].cwd === profile.workspace,
+      `${args.join(" ")} in ${starts[0]?.cwd}`,
+    );
+    const config = log().filter((l) => l.event === "invoke" && l.args.includes("--print-config"));
+    check(
+      `${name}: the build setup was read with --print-config --json first`,
+      config.length >= 1 && config[0].args.join(" ") === `build --root ${profile.workspace} --print-config --json`,
+      JSON.stringify(config[0]?.args),
+    );
+
+    // A save builds again and shows the check mark only: the notification is for the first build.
+    await runCommand(page, "Notifications: Clear All Notifications");
+    await focusEditor(page);
+    await editAndSave(page);
+    await waitForBuilds(`${name}: the build after the save`, log, 2);
+    await waitForExits(`${name}: the build after the save to end`, log, 2);
+    await sleep(1_500);
+    const after = (await toasts(page)).filter((t) => t.includes("oxabl build finished"));
+    check(`${name}: a build after a save shows no notification`, after.length === 0, after.join(" | "));
+  }, async ({ page, log }) => {
+    // A later window of the same workspace has its own first build, and tells nothing of a build that went well.
+    await waitForExits(`${name}: the build of the later window to end`, log, 3);
+    await sleep(2_000);
+    const later = (await toasts(page)).filter((t) => t.includes("oxabl build finished"));
+    check(`${name}: a later window shows no notification for its first build`, later.length === 0, later.join(" | "));
+  });
+}
+
+/** Ten saves while a build runs. */
+export async function buildBurstSave(ctx) {
+  const name = "build-burst-save";
+  await session(ctx, name, { config: { builds: [LONG_BUILD, QUICK_BUILD] } }, async ({ page, log }) => {
+    await waitForBuilds(`${name}: the first build`, log, 1);
+    await focusEditor(page);
+    for (let i = 0; i < 10; i++) {
+      await editAndSave(page);
+      await sleep(60);
+    }
+    await waitForExits(`${name}: the build after the burst to end`, log, 2);
+    await sleep(2_000);
+    burstChecks(name, log());
+  });
+}
+
+/**
+ * The watcher event of a save follows the save. It must neither cancel the build of
+ * that save nor push the build back by its own wait.
+ */
+export async function buildSaveKeepsItsBuild(ctx) {
+  const name = "build-save-keeps-its-build";
+  const slow = { script: [{ event: { ...started, rebuild: 1, units: 1 } }, { wait: 3_000 }] };
+  const settings = { "oxabl.build.debounce": 100 };
+  await session(ctx, name, { config: { builds: [QUICK_BUILD, slow] }, settings }, async ({ page, log }) => {
+    await waitForExits(`${name}: the build at open`, log, 1);
+    await sleep(1_000);
+    await focusEditor(page);
+    const saved = Date.now();
+    await editAndSave(page);
+    await waitForExits(`${name}: the build of the save to end`, log, 2, 30_000);
+    await sleep(2_000);
+    const lag = buildStarts(log())[1].t - saved;
+    check(`${name}: the build starts within 600 ms of a save with a debounce of 100 ms`, lag < 600, `${lag} ms`);
+    const exits = buildExits(log());
+    check(`${name}: the build of the save ran to its end`, exits[1]?.code === 0, JSON.stringify(exits));
+    check(`${name}: no signal was sent and no second build started`, signals(log()).length === 0 && buildStarts(log()).length === 2, `${signals(log()).length} signals, ${buildStarts(log()).length} builds`);
+  });
+}
+
+/** Two hundred files written on disk while a build runs, and writes in the output directory. */
+export async function buildBurstDisk(ctx) {
+  const name = "build-burst-disk";
+  await session(ctx, name, { config: { builds: [LONG_BUILD, QUICK_BUILD] } }, async ({ profile, log }) => {
+    await waitForBuilds(`${name}: the first build`, log, 1);
+    fs.mkdirSync(path.join(profile.workspace, "src"), { recursive: true });
+    for (let i = 0; i < 200; i++) {
+      fs.writeFileSync(path.join(profile.workspace, "src", `agent${i}.p`), `/* ${i} */\n`);
+      await sleep(5);
+    }
+    await waitForExits(`${name}: the build after the burst to end`, log, 2);
+    await sleep(2_000);
+    burstChecks(name, log());
+
+    fs.mkdirSync(path.join(profile.workspace, "out"), { recursive: true });
+    fs.writeFileSync(path.join(profile.workspace, "out", "compiled.p"), "/* output */\n");
+    fs.mkdirSync(path.join(profile.workspace, ".oxabl", "build"), { recursive: true });
+    fs.writeFileSync(path.join(profile.workspace, ".oxabl", "build", "state.p"), "/* state */\n");
+    await sleep(3_000);
+    check(`${name}: files in the output and state directories start no build`, buildStarts(log()).length === 2, `${buildStarts(log()).length} builds`);
+  });
+}
+
+export async function buildBesideSource(ctx) {
+  const name = "build-beside-source";
+  const config = {
+    printConfig: {
+      settings: {
+        "build.rcode": { value: "beside-source", source: "oxabl.toml" },
+        "build.state": { value: ".oxabl/build", source: "default" },
+        "build.workers.command": { value: ["fake-worker", "{program}"], source: "oxabl.toml" },
+      },
+    },
+    builds: [QUICK_BUILD],
+  };
+  await session(ctx, name, { config }, async ({ profile, log }) => {
+    await waitForExits(`${name}: the build at open`, log, 1);
+    check(`${name}: a root with r-code beside the source and no output builds at open`, buildStarts(log()).length >= 1, `${buildStarts(log()).length}`);
+    // A build the extension starts for another reason (a check of the binary) must not count below.
+    await sleep(3_000);
+    const before = buildStarts(log()).length;
+
+    // What a build in place writes: r-code beside each source, in the source directories.
+    const src = path.join(profile.workspace, "src");
+    fs.mkdirSync(path.join(src, "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(profile.workspace, "sample.r"), "r-code\n");
+    fs.writeFileSync(path.join(src, "pkg", "Foo.r"), "r-code\n");
+    fs.writeFileSync(path.join(src, "UPPER.R"), "r-code\n");
+    for (let i = 0; i < 200; i++) {
+      fs.writeFileSync(path.join(src, `unit${i}.r`), `r-code ${i}\n`);
+      await sleep(5);
+    }
+    await sleep(3_000);
+    check(`${name}: r-code written beside the sources starts no build`, buildStarts(log()).length === before, `${buildStarts(log()).length - before} builds`);
+
+    fs.writeFileSync(path.join(src, "edited.p"), "/* edited */\n");
+    await waitForBuilds(`${name}: a source written beside the r-code starts a build`, log, before + 1, 15_000);
+    check(`${name}: a source in the same directories still starts a build`, true);
+  });
+}
+
+export async function buildConfigRefused(ctx) {
+  const name = "build-config-refused";
+  // What a binary from before `build.rcode` says about an oxabl.toml that sets it.
+  const stderr = "error: oxabl.toml: unknown field `rcode`, expected one of `output`, `state`";
+  const config = { printConfig: { exit: 2, stderr }, builds: [QUICK_BUILD] };
+  await session(ctx, name, { config }, async ({ page, log }) => {
+    await waitForText(page, "oxabl build: cannot read the build setup", 60_000);
+    const text = (await toasts(page)).find((t) => t.includes("cannot read the build setup")) ?? "";
+    check(`${name}: the notification gives the binary's reason`, text.includes("unknown field `rcode`"), `got "${text}"`);
+    await screenshot(page, name);
+    await sleep(3_000);
+    const asked = log().filter((l) => l.event === "invoke" && l.args?.includes("--print-config"));
+    check(`${name}: the configuration was asked for`, asked.length >= 1, `${asked.length}`);
+    check(`${name}: a configuration the binary refuses runs no build`, buildStarts(log()).length === 0, `${buildStarts(log()).length} builds`);
+  });
+}
+
+function burstChecks(name, log) {
+  const starts = buildStarts(log);
+  const sigs = signals(log);
+  const exits = buildExits(log);
+  check(`${name}: two builds ran, the one that was running and one after the burst`, starts.length === 2, `${starts.length}`);
+  check(`${name}: the running build got exactly one SIGINT`, sigs.length === 1 && sigs[0].pid === starts[0]?.pid, JSON.stringify(sigs));
+  check(`${name}: the running build exited 130`, exits.find((e) => e.pid === starts[0]?.pid)?.code === 130, JSON.stringify(exits));
+  check(`${name}: the build after the burst completed`, exits.find((e) => e.pid === starts[1]?.pid)?.code === 0, JSON.stringify(exits));
+}
+
+export async function buildDiagnostic(ctx) {
+  const name = "build-diagnostic";
+  const config = {
+    builds: [
+      {
+        script: [
+          { event: { ...started, rebuild: 2, units: 2 } },
+          { event: unitStarted("sample.p") },
+          { wait: 200 },
+          { event: { event: "message", path: "sample.p", file: "sample.p", row: 2, column: 5, number: 247, text: "Unknown field or variable name: zzTotal", type: "error" } },
+          { event: unitFinished("sample.p", "fail") },
+          { event: fetched("other.p") },
+        ],
+        summary: { failed: 1, fetched: 1 },
+        exit: 1,
+      },
+    ],
+  };
+  await session(ctx, name, { config }, async ({ page }) => {
+    await waitForText(page, "oxabl build failed: 1 unit failed", 60_000);
+    check(`${name}: a failed first build shows an error notification with Show Problems`, true);
+    await waitFor("the failure in the status bar", async () => (await statusTexts(page)).includes("oxabl: 1 failed"), { timeout: 10_000, interval: 100 });
+    check(`${name}: the status bar says "oxabl: 1 failed"`, true);
+    await clickButton(page, "Show Problems");
+    await waitForText(page, "Unknown field or variable name: zzTotal", 15_000);
+    check(`${name}: the compiler message is in the Problems panel`, true);
+    await screenshot(page, name);
+    await sleep(4_000);
+    check(`${name}: the failure stays in the status bar`, (await statusTexts(page)).includes("oxabl: 1 failed"), (await statusTexts(page)).join(" | "));
+  });
+}
+
+export async function buildUntrusted(ctx) {
+  const name = "build-untrusted";
+  const settings = {
+    "security.workspace.trust.enabled": true,
+    "security.workspace.trust.startupPrompt": "never",
+    "security.workspace.trust.banner": "never",
+    "security.workspace.trust.emptyWindow": false,
+  };
+  await session(
+    ctx,
+    name,
+    { config: { builds: [QUICK_BUILD] }, settings, launchOptions: { untrusted: true } },
+    async ({ page, log }) => {
+      // The language server is a sign that the extension runs: it starts in a restricted window.
+      await waitFor("the extension to start the language server", () => log().some((l) => l.args?.[0] === "lsp"), { timeout: 60_000, interval: 200 });
+      await sleep(6_000);
+      const touched = log().filter((l) => l.args?.[0] === "build");
+      check(`${name}: an untrusted workspace runs no oxabl build, not even --print-config`, touched.length === 0, JSON.stringify(touched.map((l) => l.args)));
+
+      await runCommand(page, "Workspaces: Manage Workspace Trust");
+      await page.getByRole("button", { name: /^Trust/ }).first().click({ timeout: 15_000 });
+      await waitForBuilds(`${name}: the build after trust is granted`, log, 1, 30_000);
+      check(`${name}: granting trust starts the build`, true);
+    },
+  );
+}
+
+export async function buildExternalPreemption(ctx) {
+  const name = "build-external-preemption";
+  const config = {
+    builds: [
+      { script: [{ event: { ...started, rebuild: 3, units: 3 } }, { wait: 1_500 }], exit: 130 },
+      { script: [{ event: { ...started, rebuild: 0, units: 3 } }] },
+    ],
+  };
+  await session(ctx, name, { config }, async ({ page, log }) => {
+    const watcher = watchStatus(page);
+    await waitForBuilds(`${name}: the second build`, log, 2, 60_000);
+    await waitForExits(`${name}: the second build to end`, log, 2, 30_000);
+    await watcher.stop();
+    check(
+      `${name}: the status bar says the build runs elsewhere`,
+      watcher.seen.some((t) => t.includes("build running elsewhere")),
+      watcher.seen.join(" | "),
+    );
+    check(`${name}: the extension sent no signal`, signals(log()).length === 0);
+    check(`${name}: exactly one more build was started`, buildStarts(log()).length === 2, `${buildStarts(log()).length}`);
+  });
+}
+
+/** Units without a compile key: one warning names the count and the reason, and a later build does not repeat it. */
+export async function buildUnkeyed(ctx) {
+  const name = "build-unkeyed";
+  const dlc = "the PROPATH entry $DLC/tty needs [workspace.sources].dlc";
+  const report = {
+    units: [
+      { path: "src/a.p", reason: `unverified: ${dlc}` },
+      { path: "src/b.p", reason: `unverified: ${dlc}` },
+      { path: "src/c.p", reason: "unkeyable: class-with-two-propaths" },
+    ],
+    notes: [`src/d.p: no key from what the compiler read: ${dlc}; the unit compiles at each build`],
+  };
+  const config = { builds: [{ ...QUICK_BUILD, report }] };
+  await session(ctx, name, { config }, async ({ page, log }) => {
+    await waitForText(page, "4 units have no compile key", 60_000);
+    await screenshot(page, name);
+    const warning = (await toasts(page)).find((t) => t.includes("no compile key")) ?? "";
+    check(`${name}: the warning names the reason and how to finish the setup`, warning.includes(dlc) && warning.includes("OXABL_DLC_SOURCES"), warning);
+    // VS Code folds a notification into an equal one on screen: clear it, so a repeat would show.
+    await runCommand(page, "Notifications: Clear All Notifications");
+    await focusEditor(page);
+    await editAndSave(page);
+    await waitForExits(`${name}: the build after a save`, log, 2);
+    await sleep(2_000);
+    const shown = (await toasts(page)).filter((t) => t.includes("no compile key")).length;
+    check(`${name}: a second build with the same reason shows no second warning`, shown === 0, `${shown} warnings`);
+  }, async ({ page, log }) => {
+    // A later window of the same workspace does not repeat it.
+    await waitForExits(`${name}: the build of the later window to end`, log, 3);
+    await sleep(2_000);
+    const later = (await toasts(page)).filter((t) => t.includes("no compile key")).length;
+    check(`${name}: a later window shows no second warning`, later === 0, `${later} warnings`);
+  });
+}
+
+/** A binary that has no --yield is not used, and not touched when nothing manages it. */
+export async function buildTooOld(ctx) {
+  const name = "build-too-old";
+  await session(ctx, name, { config: { noYield: true } }, async ({ page, log }) => {
+    await waitForText(page, "is too old to build here", 60_000);
+    check(`${name}: one message says that the binary is too old`, true);
+    await screenshot(page, name);
+    await sleep(2_000);
+    check(`${name}: no build ran`, buildStarts(log()).length === 0);
+    check(`${name}: no self-update was tried on a binary that the installer did not record`, !log().some((l) => l.args?.[0] === "self-update"));
+  });
+}
+
+/** Another oxabl replaces the binary (as self-update does): the next build restarts the language server. */
+export async function buildBinaryChanged(ctx) {
+  const name = "build-binary-changed";
+  const config = { builds: [QUICK_BUILD] };
+  await session(ctx, name, { config }, async ({ page, profile, log }) => {
+    const lsp = () => log().filter((l) => l.args?.[0] === "lsp").length;
+    await waitFor(`${name}: the language server`, () => lsp() === 1, { timeout: 60_000, interval: 200 });
+    await waitForExits(`${name}: the build at open`, log, 1);
+    const target = path.join(profile.root, "fake", "oxabl");
+    fs.writeFileSync(`${target}.new`, fakeOxablSource("9.9.10"), { mode: 0o755 });
+    fs.renameSync(`${target}.new`, target);
+    await sleep(1_000);
+    await focusEditor(page);
+    await editAndSave(page);
+    await waitForExits(`${name}: the build after the update`, log, 2);
+    await waitFor(`${name}: the language server restarted`, () => lsp() === 2, { timeout: 30_000, interval: 200 });
+    check(`${name}: a new version restarts the language server once`, true);
+    await sleep(1_500);
+    check(`${name}: and only once`, lsp() === 2, `${lsp()} starts`);
+  });
+}
+
+/** The CLI release the install scenarios serve: the fake itself, which answers --version and builds. */
+const CLI_VERSION = "5.2.0";
+const cliRelease = (digest) => ({ version: CLI_VERSION, binary: Buffer.from(fakeOxablSource(CLI_VERSION)), digest });
+const INSTALL_PROMPT = "The oxabl CLI is not installed. It builds and checks this project.";
+
+export async function buildInstall(ctx) {
+  const name = "build-install";
+  await session(
+    ctx,
+    name,
+    { fake: false, cli: cliRelease("good"), config: { builds: [QUICK_BUILD] } },
+    async ({ page, profile, log }) => {
+      await waitForText(page, INSTALL_PROMPT, 60_000);
+      check(`${name}: the install prompt shows`, true);
+      await screenshot(page, name);
+      await clickButton(page, "Install");
+      await waitForBuilds(`${name}: the build with the installed CLI`, log, 1, 60_000);
+      const binDir = path.join(profile.root, "bin");
+      const target = path.join(binDir, "oxabl");
+      check(`${name}: the CLI is installed in OXABL_INSTALL_DIR, executable`, fs.existsSync(target) && (fs.statSync(target).mode & 0o111) !== 0);
+      const leftovers = fs.readdirSync(binDir).filter((f) => f.startsWith(".oxabl-install-"));
+      check(`${name}: no staged file is left`, leftovers.length === 0, leftovers.join(" "));
+      const recordFile = path.join(profile.root, "data", "oxabl", "install.json");
+      const record = fs.existsSync(recordFile) ? JSON.parse(fs.readFileSync(recordFile, "utf8")) : null;
+      check(
+        `${name}: the install record names the vscode installer, the path and the version`,
+        record?.format === 1 && record.installer === "vscode" && record.version === CLI_VERSION && record.path === fs.realpathSync(target),
+        JSON.stringify(record),
+      );
+      const staged = log().find((l) => l.args?.[0] === "--version" && path.basename(l.script).startsWith(".oxabl-install-"));
+      check(`${name}: the staged file ran --version before it replaced the target`, Boolean(staged));
+      const built = buildStarts(log())[0];
+      check(`${name}: the build ran with the installed binary`, built?.script === fs.realpathSync(target), built?.script);
+    },
+  );
+}
+
+/** A managed binary from before self-update and --yield: the extension installs the newest release over it. */
+export async function buildTooOldManaged(ctx) {
+  const name = "build-too-old-managed";
+  const before = (profile) => {
+    const target = writeFakeOxabl(path.join(profile.root, "bin"), "1.0.0");
+    const data = path.join(profile.root, "data", "oxabl");
+    fs.mkdirSync(data, { recursive: true });
+    const record = { format: 1, installer: "install.sh", path: fs.realpathSync(target), version: "1.0.0" };
+    fs.writeFileSync(path.join(data, "install.json"), JSON.stringify(record));
+  };
+  const config = { noYield: "1.0.0", builds: [QUICK_BUILD] };
+  await session(ctx, name, { fake: false, cli: cliRelease("good"), config, before }, async ({ profile, log }) => {
+    await waitForBuilds(`${name}: the build with the replaced binary`, log, 1, 60_000);
+    const target = fs.realpathSync(path.join(profile.root, "bin", "oxabl"));
+    check(`${name}: the old binary was asked for self-update first`, log().some((l) => l.args?.[0] === "self-update"));
+    const record = JSON.parse(fs.readFileSync(path.join(profile.root, "data", "oxabl", "install.json"), "utf8"));
+    check(`${name}: the record names the new version and the vscode installer`, record.version === CLI_VERSION && record.installer === "vscode", JSON.stringify(record));
+    const built = buildStarts(log())[0];
+    check(`${name}: the build ran with the new binary`, built?.script === target, built?.script);
+    check(`${name}: the install path holds the new release`, fs.readFileSync(target, "utf8").includes(JSON.stringify(CLI_VERSION)));
+  });
+}
+
+export async function buildInstallBadChecksum(ctx) {
+  const name = "build-install-bad-checksum";
+  await session(ctx, name, { fake: false, cli: cliRelease("bad"), config: { builds: [QUICK_BUILD] } }, async ({ page, profile, log }) => {
+    await waitForText(page, INSTALL_PROMPT, 60_000);
+    await clickButton(page, "Install");
+    await waitForText(page, "could not install the CLI: checksum mismatch", 30_000);
+    check(`${name}: the error says the checksum did not match`, true);
+    await screenshot(page, name);
+    const binDir = path.join(profile.root, "bin");
+    const files = fs.existsSync(binDir) ? fs.readdirSync(binDir) : [];
+    check(`${name}: nothing is installed, not even a staged file`, files.length === 0, files.join(" "));
+    check(`${name}: no install record is written`, !fs.existsSync(path.join(profile.root, "data", "oxabl", "install.json")));
+    await sleep(2_000);
+    check(`${name}: no build ran`, buildStarts(log()).length === 0);
+  });
+}
+
+// The CLI half of the update check: the extension's own check (at start, or the
+// command) also asks a managed binary whether a newer release exists.
+
+const CLI_NEXT = "9.9.10";
+const CLI_AVAILABLE = `oxabl CLI v${CLI_NEXT} is available (installed: v9.9.9).`;
+const selfUpdates = (log) => log.filter((l) => l.args?.[0] === "self-update");
+const plainSelfUpdates = (log) => selfUpdates(log).filter((l) => !l.args.includes("--check") && !l.args.includes("--help"));
+const lspStarts = (log) => log.filter((l) => l.args?.[0] === "lsp");
+const fakeVersion = (profile) => /const VERSION = "([^"]+)";/.exec(fs.readFileSync(path.join(profile.root, "fake", "oxabl"), "utf8"))?.[1];
+
+/** Writes the install record that makes the fake binary of the session managed. */
+function manageFake(profile) {
+  const data = path.join(profile.root, "data", "oxabl");
+  fs.mkdirSync(data, { recursive: true });
+  const target = fs.realpathSync(path.join(profile.root, "fake", "oxabl"));
+  fs.writeFileSync(path.join(data, "install.json"), JSON.stringify({ format: 1, installer: "install.sh", path: target, version: "9.9.9" }));
+}
+
+/** A session whose extension is current, so only the CLI can have an update. */
+const cliSession = (ctx, name, { mode, selfUpdate, managed = true }, body) =>
+  session(
+    ctx,
+    name,
+    {
+      config: { builds: [QUICK_BUILD], selfUpdate },
+      settings: { "oxabl.updates": mode },
+      newest: ctx.installed,
+      before: managed ? manageFake : undefined,
+    },
+    body,
+  );
+
+export async function cliUpdateAuto(ctx) {
+  const name = "cli-update-auto";
+  await cliSession(ctx, name, { mode: "auto", selfUpdate: { latest: CLI_NEXT } }, async ({ page, profile, log }) => {
+    await waitForText(page, `oxabl CLI updated to v${CLI_NEXT}`, 60_000);
+    check(`${name}: the status bar says the CLI was updated`, true);
+    const runs = selfUpdates(log()).filter((l) => !l.args.includes("--help")).map((l) => l.args.join(" "));
+    check(`${name}: the binary was asked first, then updated`, runs[0] === "self-update --check --json" && runs.includes("self-update"), runs.join(", "));
+    check(`${name}: the binary is the new version`, fakeVersion(profile) === CLI_NEXT, fakeVersion(profile));
+    await waitFor(`${name}: the language server restarts`, () => lspStarts(log()).length >= 2, { timeout: 30_000 });
+    check(`${name}: the language server restarted on the new binary`, lspStarts(log()).length >= 2);
+    check(`${name}: nothing asked first`, !(await bodyText(page)).includes(CLI_AVAILABLE));
+    await screenshot(page, name);
+  });
+}
+
+export async function cliUpdateNotify(ctx) {
+  const name = "cli-update-notify";
+  await cliSession(ctx, name, { mode: "notify", selfUpdate: { latest: CLI_NEXT } }, async ({ page, profile, log }) => {
+    await waitForText(page, CLI_AVAILABLE, 60_000);
+    for (const label of ["Update", "Release Notes", "Skip This Version"]) {
+      const shown = await page
+        .locator(".notification-toast .monaco-button", { hasText: label })
+        .first()
+        .waitFor({ timeout: 10_000 })
+        .then(() => true, () => false);
+      check(`${name}: the prompt has a "${label}" button`, shown);
+    }
+    check(`${name}: nothing is installed before the answer`, plainSelfUpdates(log()).length === 0 && fakeVersion(profile) === "9.9.9");
+    await screenshot(page, name);
+    await clickButton(page, "Update");
+    await waitForText(page, `oxabl was updated from 9.9.9 to ${CLI_NEXT}`, 30_000);
+    check(`${name}: Update installs the new version`, fakeVersion(profile) === CLI_NEXT, fakeVersion(profile));
+  });
+}
+
+export async function cliUpdateUnmanaged(ctx) {
+  const name = "cli-update-unmanaged";
+  await cliSession(ctx, name, { mode: "auto", selfUpdate: { latest: CLI_NEXT }, managed: false }, async ({ profile, log }) => {
+    await waitForLog(profile, "is not managed by an oxabl installer; the extension does not update it");
+    check(`${name}: the reason is in the output channel`, true);
+    check(`${name}: the binary is not asked to update`, selfUpdates(log()).length === 0, selfUpdates(log()).map((l) => l.args.join(" ")).join(", "));
+    check(`${name}: the binary is unchanged`, fakeVersion(profile) === "9.9.9");
+  });
+}
+
+export async function cliUpdateCheckFails(ctx) {
+  const name = "cli-update-check-fails";
+  await cliSession(ctx, name, { mode: "auto", selfUpdate: { latest: CLI_NEXT, checkExit: 3 } }, async ({ page, profile, log }) => {
+    await waitForLog(profile, "CLI update check failed: error: cannot reach GitHub");
+    check(`${name}: the reason is in the output channel`, true);
+    check(`${name}: nothing is installed`, plainSelfUpdates(log()).length === 0 && fakeVersion(profile) === "9.9.9");
+    check(`${name}: an automatic check shows no error`, !(await bodyText(page)).includes("could not"));
+  });
+}
+
+export async function cliUpdateManualCurrent(ctx) {
+  const name = "cli-update-manual-current";
+  await cliSession(ctx, name, { mode: "off", selfUpdate: { latest: "9.9.9" } }, async ({ page, log }) => {
+    await waitForBuilds(`${name}: the first build`, log, 1);
+    check(`${name}: mode off asks the binary nothing by itself`, selfUpdates(log()).length === 0);
+    await runCommand(page, "oxabl: Check for Updates");
+    await waitForText(page, "oxabl CLI is up to date (v9.9.9).", 30_000);
+    check(`${name}: the manual check says the CLI is up to date`, true);
+    check(`${name}: nothing is installed`, plainSelfUpdates(log()).length === 0);
+  });
+}

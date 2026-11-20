@@ -61,7 +61,7 @@ the installation) after `include_paths`, without listing them
 
 ```toml
 [build]
-output = "build/r"
+output = "build/r"           # or: rcode = "beside-source", and no output
 state = ".oxabl/build"
 store = ""
 exclude = ["**/test-fixtures/**"]
@@ -77,7 +77,8 @@ acme-util = "/opt/libs/acme-util.pl"
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `output` | required for `oxabl build` | r-code output directory. Must be under the root (the workers put it on their PROPATH through the root). Oxabl owns it: it must be empty at the first build, and oxabl deletes files it did not produce ([output ownership](../build-tool.md#output-ownership)). The same holds for the `[build.outputs]` directories. |
+| `output` | required for `oxabl build` when `rcode` is `directory` | r-code output directory. Must be under the root (the workers put it on their PROPATH through the root). Oxabl owns it: it must be empty at the first build, and oxabl deletes files it did not produce ([output ownership](../build-tool.md#output-ownership)). The same holds for the `[build.outputs]` directories. Must be absent when `rcode` is `beside-source`. |
+| `rcode` | `directory` | Where the r-code of a unit goes. `directory`: below `output`. `beside-source`: beside the source of the unit, with no `output` (`a/x.p` gives `a/x.r`, `a/pkg/Foo.cls` gives `a/pkg/Foo.r`). A runtime that searches only the source directories runs that r-code. Both `output` and `beside-source` set is exit code 2, and the message names both keys. See [r-code beside the source](../build-tool.md#r-code-beside-the-source). An overlay may set it. A change of mode deletes the r-code at the place of the other mode and compiles or fetches every unit. |
 | `state` | `.oxabl/build` | State directory. Must be under the root. |
 | `store` | `""` (in `state`) | Host directory for `state.db` only, for a root on a network filesystem. Absolute or relative. |
 | `exclude` | `[]` | Glob patterns (root-relative, `**` allowed) of root files that are not units. |
@@ -94,10 +95,13 @@ debug_list = "build/dbg"
 listing = ""
 ```
 
-Each directory is optional (`""` or absent means off) and must be under the root.
-`xref_format` is `"xml"` (`XREF-XML`) or `"text"` (`XREF`), default `"xml"`. With `"text"`, oxabl
-writes no cache entries, because verification needs the compiler-resolved file names that
-only `XREF-XML` has and one compile gives only one form ([cache.md](cache.md#verification)).
+Each directory is optional (`""` or absent means off) and must be under the root. They
+stay directories that oxabl owns also when `[build].rcode` is `beside-source`. Then the
+path of a file in them is the unit path (`xref/a/pkg/Foo.cls.xref.xml`), so two classes of
+one name in two package roots keep their own files.
+`xref_format` is `"xml"` (`XREF-XML`) or `"text"` (`XREF`), default `"xml"`. Either file serves
+as the private cross-reference that verification reads, so one compile gives both
+([cache.md](cache.md#verification)). The text form is much cheaper for the compiler to write.
 
 ### `[build.compile]`
 
@@ -145,14 +149,20 @@ env = { TERM = "dumb" }
 ```toml
 [build.verify]
 reads = true
-batch_units = 500
-batch_interval = "60s"
+imaging_budget = 30
 ```
 
 `reads` turns on the private XREF and the read check ([cache.md](cache.md#verification)).
-With `reads = false`, no cache write happens. `batch_units` and `batch_interval` decide when
-a schema check (V2) releases the held sets: after that many units, or when the oldest held
-unit has waited that long, and always at the end of the build.
+With `reads = false`, no cache write happens, in every mode. `imaging_budget` paces the
+schema checks (V2): the next one starts no sooner than that many times the duration of the
+last imaging after it ended, so the checks cost about 1 / (`imaging_budget` + 1) of the
+build, and one always runs at the end ([cache.md](cache.md#the-pace-of-v2)). `0` starts one
+whenever a set waits. The cache mode sets the policy that these keys feed
+([cache.md](cache.md#the-verification-policy)); `--print-config` shows it as
+`verification.mode`.
+
+`batch_units` and `batch_interval` are ignored. Old files that set them still load, and the
+build says that they have no effect.
 
 ### `[build.cache]`
 

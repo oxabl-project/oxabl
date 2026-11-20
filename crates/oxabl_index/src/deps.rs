@@ -482,7 +482,17 @@ pub struct DependencyEdges {
     conditional_includes: Vec<ConditionalInclude>,
     conditional_references: Vec<ConditionalReference>,
     conditional_include_closure: Vec<ConditionalIncludeClosure>,
+    include_names: Vec<IncludeName>,
     completeness: Completeness,
+}
+
+/// The name an include reference was written with and the file it resolved
+/// to. One file reached under two names has two.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IncludeName {
+    /// Lexically normalised, as the include edges are.
+    pub path: PathBuf,
+    pub name: String,
 }
 
 impl DependencyEdges {
@@ -556,6 +566,30 @@ impl DependencyEdges {
         closure.sort_by(|a, b| (&a.via, &a.name).cmp(&(&b.via, &b.name)));
         closure.dedup();
         self.conditional_include_closure = closure;
+        self
+    }
+
+    /// The name each resolved include was written with, at any depth, ordered
+    /// by path and name. Empty unless the caller attached the list with
+    /// [`Self::with_include_names`].
+    pub fn include_names(&self) -> &[IncludeName] {
+        &self.include_names
+    }
+
+    /// Attach the names of the resolved includes. The paths are normalised
+    /// and the list deduplicated.
+    #[must_use]
+    pub fn with_include_names(mut self, names: impl IntoIterator<Item = IncludeName>) -> Self {
+        let mut names: Vec<IncludeName> = names
+            .into_iter()
+            .map(|name| IncludeName {
+                path: normalize_lexically(&name.path),
+                name: name.name,
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        self.include_names = names;
         self
     }
 
@@ -731,6 +765,7 @@ pub fn build_edge_set(inputs: &EdgeInputs<'_>) -> DependencyEdges {
         conditional_includes: Vec::new(),
         conditional_references: Vec::new(),
         conditional_include_closure: Vec::new(),
+        include_names: Vec::new(),
         completeness: completeness(inputs),
     }
 }

@@ -3,11 +3,14 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use oxabl_build::cache::{Environment, Mode};
 use oxabl_build::config::{
-    BuildWorkspace, Overlay, OverlayOrigin, Overrides, effective, render_config, render_config_json,
+    BuildWorkspace, Overlay, OverlayOrigin, Overrides, effective, render_config,
+    render_config_json, verification,
 };
 use oxabl_build::error::BuildError;
 use oxabl_build::plan::{PlanRequest, Probe, plan, render, render_json};
+use oxabl_build::verify::policy::Policy;
 
 use crate::{build_probe, build_run};
 
@@ -71,6 +74,7 @@ pub struct Options<'a> {
     pub no_cache: bool,
     pub no_remote_cache: bool,
     pub wait_lock: Option<u64>,
+    pub yield_to_newer: bool,
 }
 
 pub fn run(options: Options<'_>) -> ExitCode {
@@ -91,6 +95,7 @@ pub fn run(options: Options<'_>) -> ExitCode {
         no_cache,
         no_remote_cache,
         wait_lock,
+        yield_to_newer,
     } = options;
     let overlay = overlay_file(config_overlay);
     let workspace = match BuildWorkspace::open_with(root, overlay.as_ref()) {
@@ -105,7 +110,14 @@ pub fn run(options: Options<'_>) -> ExitCode {
             dlc_sources: non_empty_variable("OXABL_DLC_SOURCES"),
             cache_dir: non_empty_variable("OXABL_BUILD_CACHE_DIR"),
         };
-        let entries = effective(&workspace.config, &workspace.layers, &overrides);
+        let mut entries = effective(&workspace.config, &workspace.layers, &overrides);
+        let environment = Environment::from_process();
+        let policy = Mode::resolve(environment.cache_mode.as_deref(), environment.ci.as_deref())
+            .and_then(|mode| Policy::resolve(mode, &workspace.config.build.verify));
+        match policy {
+            Ok(policy) => entries.push(verification(&policy, &environment)),
+            Err(error) => return fail(&error),
+        }
         let render = if json {
             render_config_json
         } else {
@@ -132,6 +144,7 @@ pub fn run(options: Options<'_>) -> ExitCode {
                 no_cache,
                 no_remote_cache,
                 wait_lock,
+                yield_to_newer,
             },
         );
     }

@@ -7,6 +7,28 @@ import fs from "node:fs";
 import { check, failures, total } from "./lib/report.mjs";
 import { manifestVersion, newerVsix, packagedVsix } from "./lib/vsix.mjs";
 import { VSCODE_VERSION, downloadVSCode, leakedProcesses, takeProfiles } from "./lib/vscode.mjs";
+import {
+  buildBesideSource,
+  buildBinaryChanged,
+  buildBurstDisk,
+  buildBurstSave,
+  buildConfigRefused,
+  buildDiagnostic,
+  buildExternalPreemption,
+  buildInstall,
+  buildInstallBadChecksum,
+  buildOpen,
+  buildTooOld,
+  buildUnkeyed,
+  buildTooOldManaged,
+  buildSaveKeepsItsBuild,
+  buildUntrusted,
+  cliUpdateAuto,
+  cliUpdateCheckFails,
+  cliUpdateManualCurrent,
+  cliUpdateNotify,
+  cliUpdateUnmanaged,
+} from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import { outline } from "./scenarios/outline.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
@@ -40,6 +62,26 @@ const SCENARIOS = [
   ["update-installed-reload", updateInstalledReload],
   ["update-manual-no-tags", updateManualNoTags],
   ["update-two-profiles", updateTwoProfiles],
+  ["build-open", buildOpen],
+  ["build-save-keeps-its-build", buildSaveKeepsItsBuild],
+  ["build-burst-save", buildBurstSave],
+  ["build-burst-disk", buildBurstDisk],
+  ["build-beside-source", buildBesideSource],
+  ["build-config-refused", buildConfigRefused],
+  ["build-diagnostic", buildDiagnostic],
+  ["build-untrusted", buildUntrusted],
+  ["build-external-preemption", buildExternalPreemption],
+  ["build-unkeyed", buildUnkeyed],
+  ["build-too-old", buildTooOld],
+  ["build-too-old-managed", buildTooOldManaged],
+  ["build-binary-changed", buildBinaryChanged],
+  ["build-install", buildInstall],
+  ["build-install-bad-checksum", buildInstallBadChecksum],
+  ["cli-update-auto", cliUpdateAuto],
+  ["cli-update-notify", cliUpdateNotify],
+  ["cli-update-unmanaged", cliUpdateUnmanaged],
+  ["cli-update-check-fails", cliUpdateCheckFails],
+  ["cli-update-manual-current", cliUpdateManualCurrent],
 ];
 
 // Measurements, not checks of the product's output: they run only when named in

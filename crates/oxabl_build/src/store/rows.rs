@@ -3,7 +3,8 @@
 use crate::kinds::{EdgeKind, ObservationKind};
 
 /// One edge of an analysed node. `name` is the class name that reached the
-/// target, for class edges.
+/// target, for class edges, and the include name as written, for include
+/// edges, when the analysis knows it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Edge {
     pub kind: EdgeKind,
@@ -101,7 +102,7 @@ pub mod tracked {
     pub const OBSERVED: u8 = 8;
 }
 
-/// The files a compile of a unit read, as its `XREF-XML` named them, the
+/// The files a compile of a unit read, as its cross-reference named them, the
 /// paths that must stay absent so that each include resolves to the same
 /// file, and the class sources the compile could read. Canonical paths,
 /// sorted, without the unit itself.

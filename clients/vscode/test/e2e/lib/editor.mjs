@@ -124,3 +124,76 @@ export async function screenshot(page, name) {
   await page.screenshot({ path: file });
   return file;
 }
+
+/** The text of every status bar item that mentions oxabl. */
+export const statusTexts = (page) =>
+  page.evaluate(() =>
+    [...document.querySelectorAll(".statusbar-item")]
+      .map((e) => e.textContent.replace(/\s+/g, " ").trim())
+      .filter((t) => t.includes("oxabl")),
+  );
+
+/** Samples the oxabl status bar items until `stop()`; `seen` holds every distinct text, in order. */
+export function watchStatus(page, interval = 80) {
+  const seen = [];
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      for (const t of await statusTexts(page).catch(() => [])) if (!seen.includes(t)) seen.push(t);
+      await sleep(interval);
+    }
+  })();
+  return {
+    seen,
+    stop: async () => {
+      running = false;
+      await loop;
+    },
+  };
+}
+
+/** The oxabl notification toasts that are showing. */
+export const toasts = (page) =>
+  page.locator(".notifications-toasts .notification-list-item-message", { hasText: "oxabl" }).allTextContents();
+
+/**
+ * Samples the spinning icons of the oxabl status bar items until `stop()`. Each
+ * icon element and each of its CSS animations gets a tag the first time it is
+ * seen, so `elements` and `animations` count how often the spinner was rebuilt
+ * or its rotation started again.
+ */
+export function watchSpinner(page, interval = 50) {
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      await page
+        .evaluate(() => {
+          const w = (window.__oxablSpin ??= { elements: 0, animations: 0 });
+          for (const item of document.querySelectorAll(".statusbar-item")) {
+            if (!item.id.includes("oxabl")) continue;
+            for (const icon of item.querySelectorAll(".codicon-modifier-spin")) {
+              if (!icon.__oxablSeen) {
+                icon.__oxablSeen = true;
+                w.elements += 1;
+              }
+              for (const a of icon.getAnimations()) {
+                if (!a.__oxablSeen) {
+                  a.__oxablSeen = true;
+                  w.animations += 1;
+                }
+              }
+            }
+          }
+        })
+        .catch(() => {});
+      await sleep(interval);
+    }
+  })();
+  return {
+    stop: async () => {
+      running = false;
+      await loop;
+      return page.evaluate(() => window.__oxablSpin ?? { elements: 0, animations: 0 });
+    },
+  };
+}

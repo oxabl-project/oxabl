@@ -17,8 +17,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildConfig {
-    /// R-code output directory, under the workspace root. Required to compile.
+    /// R-code output directory, under the workspace root. Required to compile
+    /// when `rcode` is `directory`; must be empty when it is `beside-source`.
     pub output: PathBuf,
+
+    /// Where the r-code of a unit goes.
+    pub rcode: RcodePlace,
 
     /// State directory, under the workspace root. Default `.oxabl/build`.
     pub state: PathBuf,
@@ -59,6 +63,7 @@ impl Default for BuildConfig {
     fn default() -> Self {
         BuildConfig {
             output: PathBuf::new(),
+            rcode: RcodePlace::Directory,
             state: PathBuf::from(".oxabl/build"),
             store: PathBuf::new(),
             exclude: Vec::new(),
@@ -81,6 +86,17 @@ impl BuildConfig {
     pub fn directory(path: &Path) -> Option<&Path> {
         (!path.as_os_str().is_empty()).then_some(path)
     }
+}
+
+/// Where `oxabl build` puts the r-code of a unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum RcodePlace {
+    /// Below `[build].output`, a directory that oxabl owns.
+    #[default]
+    Directory,
+    /// Beside the source of the unit: `a/x.p` gives `a/x.r`.
+    BesideSource,
 }
 
 /// The form of the cross-reference output.
@@ -165,20 +181,26 @@ pub struct BuildVerify {
     /// cache write happens.
     pub reads: bool,
 
-    /// Units held for the schema check that release them to a cache. Default
-    /// 500.
-    pub batch_units: u32,
+    /// The next schema check starts no sooner than this many times the
+    /// duration of the last imaging of the databases, so that the checks cost
+    /// about `1 / (budget + 1)` of the build. `0` starts one whenever a set
+    /// waits. Default 30.
+    pub imaging_budget: u32,
 
-    /// Longest time a unit waits for the schema check. Default `60s`.
-    pub batch_interval: TimeSpan,
+    /// Ignored since `imaging_budget`; kept so that old files still load.
+    pub batch_units: Option<u32>,
+
+    /// Ignored since `imaging_budget`; kept so that old files still load.
+    pub batch_interval: Option<TimeSpan>,
 }
 
 impl Default for BuildVerify {
     fn default() -> Self {
         BuildVerify {
             reads: true,
-            batch_units: 500,
-            batch_interval: TimeSpan(Duration::from_secs(60)),
+            imaging_budget: 30,
+            batch_units: None,
+            batch_interval: None,
         }
     }
 }

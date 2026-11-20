@@ -107,17 +107,60 @@ pub fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
-/// The search paths of the file at `file`: each of `root_relative` resolved
-/// against the file's directory, then `include_paths`, each once, in order.
+/// The directory the root-relative paths of the file at `file`, with the text
+/// `source`, are resolved against: the compiler's base directory of the file.
 ///
-/// `include_paths` alone when `root_relative` is empty or `file` has no
-/// directory.
+/// For a procedure it is the file's directory. For a class it is the package
+/// root: the directory minus one component for each package segment of the
+/// name its `CLASS`, `INTERFACE` or `ENUM` statement writes out, as the
+/// compiler searches from there. A class whose name is not written out, or
+/// whose directory does not end with its package path, keeps its own
+/// directory. `None` when `file` has no directory.
+pub fn search_base(file: &Path, source: &str) -> Option<PathBuf> {
+    let dir = normalize_lexically(file.parent()?);
+    if !is_class_file(file) {
+        return Some(dir);
+    }
+    let declared = crate::declared::declared_name(source);
+    let root = declared.name().and_then(|name| package_root(&dir, name));
+    Some(root.unwrap_or(dir))
+}
+
+fn is_class_file(file: &Path) -> bool {
+    file.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(CLASS_EXTENSION))
+}
+
+/// `dir` without the package segments of the class `name`, compared ignoring
+/// ASCII case, or `None` when `dir` does not end with them.
+fn package_root(dir: &Path, name: &str) -> Option<PathBuf> {
+    let packages: Vec<&str> = name.split('.').collect();
+    let packages = &packages[..packages.len() - 1];
+    let components: Vec<Component<'_>> = dir.components().collect();
+    let keep = components.len().checked_sub(packages.len())?;
+    let ends_with_package = components[keep..]
+        .iter()
+        .zip(packages)
+        .all(|(component, package)| match component {
+            Component::Normal(part) => part
+                .to_str()
+                .is_some_and(|part| part.eq_ignore_ascii_case(package)),
+            _ => false,
+        });
+    ends_with_package.then(|| components[..keep].iter().collect())
+}
+
+/// The search paths of a file whose base directory is `base` (see
+/// [`search_base`]): each of `root_relative` resolved against `base`, then
+/// `include_paths`, each once, in order.
+///
+/// `include_paths` alone when `root_relative` is empty or there is no base.
 pub fn root_include_paths(
-    file: &Path,
+    base: Option<&Path>,
     root_relative: &[PathBuf],
     include_paths: &[PathBuf],
 ) -> Vec<PathBuf> {
-    let Some(dir) = file.parent().filter(|_| !root_relative.is_empty()) else {
+    let Some(dir) = base.filter(|_| !root_relative.is_empty()) else {
         return include_paths.to_vec();
     };
     let mut paths: Vec<PathBuf> = Vec::with_capacity(root_relative.len() + include_paths.len());
@@ -212,6 +255,18 @@ pub const BARE_PROGRAM_EXTENSIONS: &[&str] = &["p", "w"];
 /// Whether the last segment of a `RUN` target carries an extension.
 ///
 /// The last segment only, so a directory named `util.d` is not mistaken for one.
+/// Whether a `RUN` target names r-code (`RUN x.r`, ASCII case ignored). Its
+/// source is not searched: the runtime runs the r-code, and a build may write
+/// that file at any time, so it is never read as source and its absence is
+/// never a fact of the workspace.
+fn names_rcode(target: &str) -> bool {
+    target
+        .rsplit(['/', '\\'])
+        .next()
+        .and_then(|last| last.rsplit_once('.'))
+        .is_some_and(|(stem, extension)| !stem.is_empty() && extension.eq_ignore_ascii_case("r"))
+}
+
 fn has_extension(target: &str) -> bool {
     target
         .rsplit(['/', '\\'])
@@ -262,6 +317,9 @@ pub fn find_name_with<E: AsRef<str>>(
     kind: NameKind,
     bare_extensions: &[E],
 ) -> IndexAnswer<PathBuf> {
+    if kind == NameKind::Program && names_rcode(name.as_written()) {
+        return IndexAnswer::Unknowable;
+    }
     if kind == NameKind::Program && !has_extension(name.as_written()) {
         let mut tried: Vec<&str> = Vec::with_capacity(bare_extensions.len());
         for extension in bare_extensions {
@@ -328,6 +386,9 @@ pub fn find_name_ignoring_case<E: AsRef<str>>(
     kind: NameKind,
     bare_extensions: &[E],
 ) -> IndexAnswer<PathBuf> {
+    if kind == NameKind::Program && names_rcode(name.as_written()) {
+        return IndexAnswer::Unknowable;
+    }
     let mut candidates: Vec<(PathBuf, ExtensionPolicy)> = Vec::new();
     match kind {
         NameKind::Class => candidates.push((class_path(name), ExtensionPolicy::WalkRoots)),

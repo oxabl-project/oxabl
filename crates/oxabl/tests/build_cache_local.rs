@@ -109,6 +109,46 @@ fn two_copies_of_a_workspace_share_a_local_cache_and_their_outputs_are_byte_iden
     );
 }
 
+/// Procedures of one name in two directories, each unit searching its own
+/// directory first: a second copy fetches both in one call, and each r-code is
+/// the one of its own source.
+#[test]
+fn procedures_of_one_name_in_two_directories_are_fetched_into_their_own_directories() {
+    let cache = TempDir::new().unwrap();
+    let copy = || {
+        let workspace = Built::with(
+            "directories = [\"a\", \"b\"]\nroot_relative_include_paths = [\".\"]",
+            "[build.outputs]\nxref = \"build/xref\"\n",
+        );
+        workspace.write("a/x.p", "MESSAGE \"a\".\n");
+        workspace.write("b/x.p", "MESSAGE \"b\".\n");
+        cached(&workspace, &cache);
+        workspace
+    };
+    let first = copy();
+    first.build().succeeded();
+    let second = copy();
+
+    let run = second.build();
+
+    run.succeeded();
+    assert!(
+        second.compiled().is_empty(),
+        "the second copy compiled {:?}",
+        second.compiled()
+    );
+    assert!(run.stdout.contains("fetched 2"), "{}", run.stdout);
+    assert_eq!(outputs(&first), outputs(&second));
+    for directory in ["a", "b"] {
+        let rcode = format!("build/r/{directory}/x.r");
+        let source = second.sha256(&format!("{directory}/x.p"));
+        assert!(
+            second.reads(&rcode).iter().any(|(_, sha)| *sha == source),
+            "{rcode} is not the r-code of {directory}/x.p"
+        );
+    }
+}
+
 #[test]
 fn a_flipped_byte_in_a_cached_rcode_is_a_miss_the_entry_is_quarantined_and_the_unit_compiles() {
     let cache = TempDir::new().unwrap();

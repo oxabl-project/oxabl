@@ -41,8 +41,8 @@ use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
-    Preprocessor, SkippedInclude, SkippedText, SpanNode, TextLoss, UnreadableInclude,
-    UnresolvedInclude,
+    Preprocessor, ResolvedInclude, SkippedInclude, SkippedText, SpanNode, TextLoss,
+    UnreadableInclude, UnresolvedInclude,
 };
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -402,6 +402,9 @@ pub struct ExpandedFile {
     /// through the root's own `{&var}` substitutions carries the substitution as
     /// its site.
     unreadable_includes: Vec<UnreadableInclude>,
+    /// Include references, at any depth, that resolved to a file, with the
+    /// name as written.
+    resolved_includes: Vec<ResolvedInclude>,
     /// Include references, at any depth, written in a branch that was not taken.
     /// Never expanded.
     skipped_includes: Vec<SkippedInclude>,
@@ -468,6 +471,12 @@ impl ExpandedFile {
     /// could not be read. The file exists, but what it includes is unknown.
     pub fn unreadable_includes(&self) -> &[UnreadableInclude] {
         &self.unreadable_includes
+    }
+
+    /// Include references, at any depth, that resolved to a file, with the
+    /// name each was written with, in the order they were met.
+    pub fn resolved_includes(&self) -> &[ResolvedInclude] {
+        &self.resolved_includes
     }
 
     /// Include references, at any depth, written in a branch the preprocessor did
@@ -623,6 +632,12 @@ impl ExpandedFile {
             })
             .ok()?;
         self.chunks.get(found)
+    }
+
+    /// The file that wrote a byte of the **expanded** buffer, and its offset
+    /// in that file's own bytes. `None` past the end of the expansion.
+    pub fn resolve_offset(&self, offset: u32) -> Option<(FileId, u32)> {
+        self.resolve(offset)
     }
 
     /// Resolve a virtual (expanded) offset to `(origin file, real offset)`.
@@ -812,6 +827,7 @@ pub fn expand_source_with(
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
+            resolved_includes: Vec::new(),
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
@@ -877,7 +893,11 @@ pub fn expand_source_with(
                 &mut include_origins,
             );
             let mut file_paths = Vec::new();
-            collect_file_paths(&pf.tree, &mut file_paths);
+            collect_file_paths(
+                &pf.tree,
+                &mut std::collections::HashSet::new(),
+                &mut file_paths,
+            );
             let mut substitutions = Vec::new();
             collect_substitution_sites(&pf.tree, &mut substitutions);
             // An include that failed to resolve deeper down is that file's gap to
@@ -936,6 +956,7 @@ pub fn expand_source_with(
                 unresolved_includes,
                 nested_unresolved_includes,
                 unreadable_includes,
+                resolved_includes: pf.resolved_includes.clone(),
                 skipped_includes: pf.skipped_includes.clone(),
                 skipped_text: pf.skipped_text.clone(),
                 skipped_sources,
@@ -1137,7 +1158,11 @@ fn flatten_tree(
 }
 
 /// The file id and path of every resolved include in the tree, at any depth.
-fn collect_file_paths(nodes: &[SpanNode], out: &mut Vec<(u32, PathBuf)>) {
+fn collect_file_paths(
+    nodes: &[SpanNode],
+    seen: &mut std::collections::HashSet<u32>,
+    out: &mut Vec<(u32, PathBuf)>,
+) {
     for node in nodes {
         let SpanNode::Include { path, children, .. } = node else {
             continue;
@@ -1147,11 +1172,11 @@ fn collect_file_paths(nodes: &[SpanNode], out: &mut Vec<(u32, PathBuf)>) {
             SpanNode::Include { .. } => None,
         });
         if let (Some(path), Some(file)) = (path, file)
-            && !out.iter().any(|(known, _)| *known == file)
+            && seen.insert(file)
         {
             out.push((file, path.clone()));
         }
-        collect_file_paths(children, out);
+        collect_file_paths(children, seen, out);
     }
 }
 
@@ -1752,6 +1777,7 @@ mod tests {
             unresolved_includes: Vec::new(),
             nested_unresolved_includes: Vec::new(),
             unreadable_includes: Vec::new(),
+            resolved_includes: Vec::new(),
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
@@ -2501,7 +2527,8 @@ mod tests {
         fn is_depth_limit(kind: TextLossKind) -> bool {
             match kind {
                 TextLossKind::IncludeDepthLimit => true,
-                TextLossKind::UnclosedConditional
+                TextLossKind::ExpansionLimit
+                | TextLossKind::UnclosedConditional
                 | TextLossKind::UnknownPredefinedName
                 | TextLossKind::UnmodelledCondition => false,
                 _ => false,

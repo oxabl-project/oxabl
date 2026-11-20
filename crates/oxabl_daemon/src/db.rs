@@ -744,15 +744,16 @@ fn indexed_defines_shared(db: &dyn AblDatabase, file: IndexedFile, name: IndexNa
 /// Locate `name` on the configured search paths, falling back to a
 /// case-insensitive search when the workspace asked for one.
 ///
-/// A lookup from `analysed` searches its root-relative paths first.
+/// A lookup from a buffer whose base directory is `base` searches its
+/// root-relative paths first.
 fn find_path(
     config: &AnalysisConfig,
-    analysed: Option<&Path>,
+    base: Option<&Path>,
     name: &IndexName,
     kind: NameKind,
 ) -> IndexAnswer<PathBuf> {
     let pipeline = &config.pipeline;
-    let paths = pipeline.include_paths_for(analysed);
+    let paths = pipeline.include_paths_from(base);
     let answer = search::find_name_with(&*config.fs, &paths, name, kind, &pipeline.run_extensions);
     if pipeline.case_insensitive_lookup && answer == IndexAnswer::NotFound {
         return search::find_name_ignoring_case(
@@ -792,13 +793,17 @@ struct SnapshotIndex<'db> {
     /// The analysed buffer's own path, lexically normalized, or `None` when the
     /// document has no `file:` path.
     analysed: Option<PathBuf>,
+    /// The directory the buffer's root-relative paths are resolved against
+    /// ([`Expansion::search_base`]).
+    base: Option<PathBuf>,
 }
 
 impl<'db> SnapshotIndex<'db> {
-    fn new(db: &'db dyn AblDatabase, analysed: Option<&Path>) -> Self {
+    fn new(db: &'db dyn AblDatabase, analysed: Option<&Path>, base: Option<&Path>) -> Self {
         SnapshotIndex {
             db,
             analysed: analysed.map(search::normalize_lexically),
+            base: base.map(Path::to_path_buf),
         }
     }
 
@@ -817,7 +822,7 @@ impl<'db> SnapshotIndex<'db> {
     /// to a producer that is really its own earlier revision.
     fn locate(&self, name: &IndexName, kind: NameKind) -> IndexAnswer<IndexedFile> {
         let config = self.db.config();
-        match find_path(config, self.analysed.as_deref(), name, kind) {
+        match find_path(config, self.base.as_deref(), name, kind) {
             IndexAnswer::Found(path) => {
                 if self.is_analysed(&path) {
                     // `Unusable`, not `NotFound` — the file exists, it just cannot
@@ -895,7 +900,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
             LocateKind::Class => NameKind::Class,
             LocateKind::Program => NameKind::Program,
         };
-        match find_path(config, self.analysed.as_deref(), name, kind) {
+        match find_path(config, self.base.as_deref(), name, kind) {
             IndexAnswer::Found(path) if self.is_analysed(&path) => Located::Itself,
             IndexAnswer::Found(path) => {
                 let file = config.index.file_for(self.db, &path);
@@ -948,7 +953,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
     fn searches_any_path(&self) -> bool {
         let pipeline = &self.db.config().pipeline;
         !pipeline.include_paths.is_empty()
-            || (self.analysed.is_some() && !pipeline.root_relative_include_paths.is_empty())
+            || (self.base.is_some() && !pipeline.root_relative_include_paths.is_empty())
     }
 }
 
@@ -1035,7 +1040,7 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     // (see `SnapshotIndex`). Constructing it reads nothing; every lookup it
     // answers becomes a nested tracked call, which is how this buffer acquires
     // dependency edges on the files it consulted (R8).
-    let index = SnapshotIndex::new(db, buffer.path(db).as_deref());
+    let index = SnapshotIndex::new(db, buffer.path(db).as_deref(), expansion.search_base());
     // The pipeline's fatal-preprocessing arm already yields the preprocessor's
     // own diagnostics under `DiagnosticSource::Preproc`, so there is no second
     // mapping to keep in step here. `into_diagnostics` takes the set rather than
@@ -1151,7 +1156,7 @@ pub(crate) fn indexed_members_for_test(
     db: &AnalysisDatabase,
     class: &str,
 ) -> IndexAnswer<Arc<[MemberDescriptor]>> {
-    SnapshotIndex::new(db, None).class_members(&IndexName::new(class))
+    SnapshotIndex::new(db, None, None).class_members(&IndexName::new(class))
 }
 
 /// The class descriptor lookup, for the same reason as the members one.
@@ -1160,7 +1165,7 @@ pub(crate) fn indexed_class_for_test(
     db: &AnalysisDatabase,
     class: &str,
 ) -> IndexAnswer<Arc<ClassDescriptor>> {
-    SnapshotIndex::new(db, None).class(&IndexName::new(class))
+    SnapshotIndex::new(db, None, None).class(&IndexName::new(class))
 }
 
 #[cfg(test)]

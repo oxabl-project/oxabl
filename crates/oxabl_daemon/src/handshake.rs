@@ -7,7 +7,7 @@ use oxabl_daemon_protocol::{
 };
 
 use crate::session::canonical_root;
-use crate::{DAEMON_VERSION, Dispatch, MethodError, SessionHost};
+use crate::{Dispatch, MethodError, SessionHost};
 
 /// Build the method table every socket daemon starts with.
 ///
@@ -77,7 +77,7 @@ pub fn register_handshake(dispatch: &mut Dispatch) {
             // The resolved root, not the spelling that arrived: the client is told
             // which workspace it was actually attached to.
             workspace_root: root.to_string_lossy().into_owned(),
-            daemon_version: DAEMON_VERSION.to_string(),
+            daemon_version: crate::build_version().to_string(),
             connected_clients: clients,
         })
         .map_err(MethodError::internal)

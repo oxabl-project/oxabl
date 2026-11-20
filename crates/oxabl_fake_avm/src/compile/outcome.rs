@@ -7,6 +7,9 @@ use std::collections::HashSet;
 pub struct Read {
     pub shown: String,
     pub sha256: String,
+    /// Whether the cross-reference names the file. As measured, it names no
+    /// class r-code that a compile binds.
+    pub listed: bool,
 }
 
 /// One compiler message.
@@ -26,8 +29,14 @@ pub struct Outcome {
     pub reads: Vec<Read>,
     /// Each reference the XREF names: its type and identifier, as written.
     pub references: Vec<(&'static str, String)>,
+    /// Bytes that the text XREF ends with, from `FAKE-XREF-RAW`.
+    pub xref_raw: Vec<u8>,
     /// The text of the unit itself.
     pub source: String,
+    /// What the unit and its includes print when it runs (`FAKE-SAY`).
+    pub says: Vec<String>,
+    /// The classes the unit and its includes name, which the runtime loads.
+    pub uses: Vec<String>,
     pub slow: bool,
     /// Report success and write no outputs.
     pub no_output: bool,
@@ -41,7 +50,10 @@ impl Outcome {
             messages: Vec::new(),
             reads: Vec::new(),
             references: Vec::new(),
+            xref_raw: Vec::new(),
             source: String::new(),
+            says: Vec::new(),
+            uses: Vec::new(),
             slow: false,
             no_output: false,
             seen: HashSet::new(),
@@ -82,7 +94,21 @@ impl Outcome {
         });
     }
 
-    /// Takes over what a class compiled on the side read and said.
+    /// A warning that has a number and no file, row or column, like the
+    /// compiler's warning 214.
+    pub fn warn_without_position(&mut self, text: &str) {
+        self.messages.push(Message {
+            kind: "warning",
+            number: 214,
+            file: String::new(),
+            row: 0,
+            column: 0,
+            text: text.to_string(),
+        });
+    }
+
+    /// Takes over what a class compiled on the side read and said. What the
+    /// class prints and uses stays the class's own.
     pub fn merge(&mut self, other: Outcome) {
         self.ok &= other.ok;
         self.messages.extend(other.messages);
@@ -90,5 +116,6 @@ impl Outcome {
             self.record(read);
         }
         self.references.extend(other.references);
+        self.xref_raw.extend(other.xref_raw);
     }
 }

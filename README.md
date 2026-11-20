@@ -28,6 +28,14 @@ Oxabl is a suite of developer tools made of 24 crates. The umbrella crate, `oxab
 
 ## Try it
 
+On Linux x86_64, this installs the release binary in `~/.local/bin`. It updates itself later (`oxabl self-update`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/oxabl-project/oxabl/master/scripts/install.sh | sh
+```
+
+On other systems, or to build from source:
+
 ```sh
 cargo install oxabl
 oxabl check path/to/src     # lint and report formatting drift

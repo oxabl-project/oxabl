@@ -10,10 +10,10 @@ use super::frame::CompileRequest;
 use super::logs::Logs;
 use super::pool::PoolSpec;
 use super::program::Program;
-use super::schema_fetch;
 use super::session::Session;
 use super::start::{SlotFailure, start_slot};
-use crate::key::{FileDigest, Profile, SchemaPart};
+use super::{raw_fetch, schema_fetch};
+use crate::key::{FileDigest, Profile, RawPart, SchemaPart};
 use crate::output::Stage;
 
 /// What a replacement worker is started with and checked against.
@@ -151,6 +151,29 @@ impl Worker {
             .collect()
     }
 
+    /// Makes share `part` of `parts` of the raw digest of every database.
+    pub fn raw_share(
+        &mut self,
+        databases: &[String],
+        part: usize,
+        parts: usize,
+        timeout: Duration,
+    ) -> Result<Vec<RawPart>, WorkerError> {
+        databases
+            .iter()
+            .map(|ldb| {
+                raw_fetch::fetch(
+                    &mut self.session,
+                    ldb,
+                    part,
+                    parts,
+                    crate::key::raw_digest::BUCKETS,
+                    Instant::now() + timeout,
+                )
+            })
+            .collect()
+    }
+
     /// Stops the process of a lost worker and starts another in its place,
     /// with a stage of its own. Fails when the replacement cannot start or
     /// sees another environment.
@@ -201,6 +224,12 @@ impl Worker {
 
     /// `SIGTERM` to the process group, `SIGKILL` later.
     pub fn kill(&mut self) {
+        self.session.kill();
+    }
+
+    /// Stops a worker that is out of step and marks it lost.
+    pub fn retire(&mut self) {
+        self.dead = true;
         self.session.kill();
     }
 

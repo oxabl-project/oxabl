@@ -20,6 +20,8 @@ pub struct Built {
     sources: RefCell<String>,
     build_keys: RefCell<String>,
     output: RefCell<String>,
+    /// `[build].rcode`, unset when `None`.
+    rcode: RefCell<Option<String>>,
     extra: RefCell<String>,
     workers: RefCell<String>,
     /// Environment changes for every `oxabl build` run: `None` removes.
@@ -97,6 +99,7 @@ impl Built {
             sources: RefCell::new(sources.to_string()),
             build_keys: RefCell::new(String::new()),
             output: RefCell::new("build/r".to_string()),
+            rcode: RefCell::new(None),
             extra: RefCell::new(extra.to_string()),
             workers: RefCell::new("count = 1".to_string()),
             per_worker: std::cell::Cell::new(false),
@@ -130,12 +133,18 @@ impl Built {
             true => "",
             false => "directories = [\"src\"]",
         };
+        let mut place = String::new();
+        if !self.output.borrow().is_empty() {
+            place.push_str(&format!("output = {:?}\n", self.output.borrow()));
+        }
+        if let Some(rcode) = self.rcode.borrow().as_deref() {
+            place.push_str(&format!("rcode = {rcode:?}\n"));
+        }
         self.write(
             "oxabl.toml",
             &format!(
-                "[workspace]\nname = \"built\"\n\n[workspace.preprocessor]\nproversion = \"12.8\"\n{}\n\n[workspace.sources]\n{directories}\n{sources}\n\n[build]\noutput = {:?}\n{}\n\n{}\n\n[build.workers]\ncommand = [{}]\n{}\nenv = {{ FAKE_AVM_LOG = {:?}, FAKE_AVM_STATE = {:?}{} }}\n",
+                "[workspace]\nname = \"built\"\n\n[workspace.preprocessor]\nproversion = \"12.8\"\n{}\n\n[workspace.sources]\n{directories}\n{sources}\n\n[build]\n{place}{}\n\n{}\n\n[build.workers]\ncommand = [{}]\n{}\nenv = {{ FAKE_AVM_LOG = {:?}, FAKE_AVM_STATE = {:?}{} }}\n",
                 self.preprocessor.borrow(),
-                self.output.borrow(),
                 self.build_keys.borrow(),
                 self.extra.borrow(),
                 quoted.join(", "),
@@ -164,10 +173,24 @@ impl Built {
         self.write_config();
     }
 
-    /// Replaces the output directory `[build].output`, `build/r` at first.
+    /// Replaces the output directory `[build].output`, `build/r` at first;
+    /// empty leaves the key out.
     pub fn output(&self, directory: &str) {
         *self.output.borrow_mut() = directory.to_string();
         self.write_config();
+    }
+
+    /// Sets `[build].rcode`, unset at first.
+    pub fn rcode(&self, place: &str) {
+        *self.rcode.borrow_mut() = Some(place.to_string());
+        self.write_config();
+    }
+
+    /// The r-code beside the source: `[build].rcode = "beside-source"` and no
+    /// `[build].output`.
+    pub fn beside_source(&self) {
+        *self.output.borrow_mut() = String::new();
+        self.rcode("beside-source");
     }
 
     /// Replaces the keys of `[build]` after `output`.
@@ -317,7 +340,12 @@ impl Built {
         self.log_lines()
             .into_iter()
             .map(|(_, what)| what)
-            .filter(|what| what != "start" && what != "exit" && !what.starts_with("schema "))
+            .filter(|what| {
+                what != "start"
+                    && what != "exit"
+                    && !what.starts_with("schema ")
+                    && !what.starts_with("raw ")
+            })
             .collect()
     }
 

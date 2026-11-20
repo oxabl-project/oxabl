@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.2.8](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.7...oxabl_handles-v0.2.8) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.3.7 to 0.3.8
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+
+## [0.2.7](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.6...oxabl_handles-v0.2.7) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.3.6 to 0.3.7
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+
+## [0.2.6](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.5...oxabl_handles-v0.2.6) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.3.5 to 0.3.6
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+
+## [0.2.5](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.4...oxabl_handles-v0.2.5) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.3.4 to 0.3.5
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+
 ## [0.2.4](https://github.com/oxabl-project/oxabl/compare/oxabl_handles-v0.2.3...oxabl_handles-v0.2.4) (2026-11-11)
 
 

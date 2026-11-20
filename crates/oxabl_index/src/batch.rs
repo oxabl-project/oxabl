@@ -151,10 +151,13 @@ struct Memo {
     classes: FxHashMap<OxablAtom, Observed<IndexAnswer<ClassFacts>>>,
     /// Answers per `RUN` target key, for the same reasons.
     programs: FxHashMap<OxablAtom, Observed<IndexAnswer<IndexedFileId>>>,
-    /// Answers per asking file's directory and class key, when root-relative
-    /// paths are configured: the directory decides which paths come first.
+    /// The base directory of each asking file, by the same key as `facts`.
+    bases: FxHashMap<PathBuf, Option<PathBuf>>,
+    /// Answers per asking file's base directory and class key, when
+    /// root-relative paths are configured: the directory decides which paths
+    /// come first.
     scoped_classes: FxHashMap<(PathBuf, OxablAtom), Observed<IndexAnswer<ClassFacts>>>,
-    /// Answers per asking file's directory and `RUN` target key.
+    /// Answers per asking file's base directory and `RUN` target key.
     scoped_programs: FxHashMap<(PathBuf, OxablAtom), Observed<IndexAnswer<IndexedFileId>>>,
     /// Parameter lists per indexed file, read on the first question about them:
     /// a run that asks none reads nothing.
@@ -202,6 +205,7 @@ impl<'a> BatchIndex<'a> {
                 paths: FxHashMap::default(),
                 classes: FxHashMap::default(),
                 programs: FxHashMap::default(),
+                bases: FxHashMap::default(),
                 scoped_classes: FxHashMap::default(),
                 scoped_programs: FxHashMap::default(),
                 signatures: FxHashMap::default(),
@@ -275,13 +279,31 @@ impl<'a> BatchIndex<'a> {
         }
     }
 
-    /// The directory of `file` and its root-relative paths, or `None` when there
-    /// are none to search.
+    /// The base directory of `file` ([`search::search_base`]) and its
+    /// root-relative paths, or `None` when there are none to search.
     fn scope(&self, file: Option<&Path>) -> Option<(PathBuf, Vec<PathBuf>)> {
         let file = file.filter(|_| !self.root_relative.is_empty())?;
-        let dir = search::normalize_lexically(file.parent()?);
-        let paths = search::root_include_paths(file, self.root_relative, &[]);
-        Some((dir, paths))
+        let base = self.search_base(file)?;
+        let paths = search::root_include_paths(Some(&base), self.root_relative, &[]);
+        Some((base, paths))
+    }
+
+    /// The base directory of the file at `path`, as its text on disk gives it
+    /// ([`search::search_base`]). Only a class file is read.
+    pub fn search_base(&self, path: &Path) -> Option<PathBuf> {
+        let key = search::normalize_lexically(path);
+        if let Some(base) = self.memo_read().bases.get(&key) {
+            return base.clone();
+        }
+        let source = match key
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("cls"))
+        {
+            true => self.fs.read(&key).unwrap_or_default(),
+            false => Arc::from(""),
+        };
+        let base = search::search_base(&key, &source);
+        self.memo().bases.entry(key).or_insert(base).clone()
     }
 
     fn find_path(&self, name: &IndexName, kind: search::NameKind) -> IndexAnswer<PathBuf> {

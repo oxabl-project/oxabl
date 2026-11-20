@@ -69,7 +69,7 @@ fn install(
     arrival: &Arrival,
 ) -> Option<(Hit, Option<(ArtifactSetRef, RemoteOrigin)>)> {
     let info = &ctx.infos[&arrival.unit];
-    let outputs = promote::promote(ctx.root, &plan.stage, &info.expected).ok()?;
+    let outputs = promote::promote(ctx.root, &plan.stage, &info.expected, |e| &e.artifact).ok()?;
     let fill = match &arrival.origin {
         Origin::Remote(remote) => Some((
             ArtifactSetRef {
@@ -79,7 +79,7 @@ fn install(
                     .iter()
                     .zip(&outputs)
                     .map(|(expected, row)| ArtifactFileRef {
-                        path: ArtifactPath(expected.staged.clone()),
+                        path: ArtifactPath(expected.artifact.clone()),
                         disk_path: ctx.root.join(&row.path),
                         size: row.size,
                         blake3: row.hash,

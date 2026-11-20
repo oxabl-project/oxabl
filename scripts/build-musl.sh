@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Builds the static oxabl binary with the remote cache, for x86_64-unknown-linux-musl,
-# in a rust:alpine container. It writes oxabl-x86_64-unknown-linux-musl and its
-# .sha256 file into <out dir>. The binary does not need glibc, so it starts in any
-# Linux image.
+# Builds the static oxabl binary with the remote cache and self-update, for
+# x86_64-unknown-linux-musl, in a rust:alpine container. It writes
+# oxabl-x86_64-unknown-linux-musl and its .sha256 file into <out dir>. The binary
+# does not need glibc, so it starts in any Linux image.
 #
 # OXABL_MUSL_CACHE names a directory for the cargo registry and the target
 # directory between runs. It defaults to <out dir>/.cache.
@@ -32,7 +32,7 @@ docker run --rm \
   rust:1-alpine \
   sh -euc '
     apk add --no-cache musl-dev perl make cmake
-    cargo build --release --locked -p oxabl --features remote-cache
+    cargo build --release --locked -p oxabl --features remote-cache,self-update
     cp /target/release/oxabl "/out/$NAME"
     chown -R "$OWNER" /out /target /usr/local/cargo/registry
   '

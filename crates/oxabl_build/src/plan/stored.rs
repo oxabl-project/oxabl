@@ -191,9 +191,10 @@ impl Stored<'_> {
             .outputs
             .get(&unit)
             .map_or(&[][..], Vec::as_slice);
-        if let (Some(layout), Some(name)) = (self.layout, key.and_then(|k| k.compile_name.as_ref()))
+        let names = key.and_then(|k| k.compile_name.as_deref().zip(k.output_name.as_deref()));
+        if let (Some(layout), Some((name, output))) = (self.layout, names)
             && let Some(missing) = layout
-                .expected(name)
+                .expected(name, output)
                 .into_iter()
                 .find(|file| !rows.iter().any(|row| row.path == file.dest))
         {
