@@ -338,10 +338,18 @@ impl<'a> Walker<'a> {
 
             // ---- Streams / Frames / Events --------------------------------
             StatementKind::DefineStream { name } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Streams, SymbolKind::Stream);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(
+                    stmt,
+                    routine,
+                    name,
+                    NamespaceId::Streams,
+                    SymbolKind::Stream,
+                );
             }
             StatementKind::DefineFrame { name, fields, .. } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(stmt, routine, name, NamespaceId::Frames, SymbolKind::Frame);
                 self.declare_frame_fields(stmt, scope, fields);
             }
             StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
@@ -350,7 +358,8 @@ impl<'a> Walker<'a> {
             }
             StatementKind::Message { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
             StatementKind::DefineWidget { name } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(stmt, routine, name, NamespaceId::Values, SymbolKind::Widget);
             }
             StatementKind::DefineEvent {
                 access,
@@ -432,7 +441,8 @@ impl<'a> Walker<'a> {
                 let like = like_table
                     .as_ref()
                     .and_then(|t| self.record_source_of(t, scope));
-                self.declare_temp_table(stmt, scope, name, fields, like, flags);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_temp_table(stmt, routine, name, fields, like, flags);
             }
 
             // ---- Buffer ---------------------------------------------------
@@ -456,7 +466,8 @@ impl<'a> Walker<'a> {
                         .filter(|s| matches!(s, RecordSource::TempTable(_))),
                 };
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
-                self.declare_buffer(stmt, scope, name, flags, source);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_buffer(stmt, routine, name, flags, source);
             }
 
             // ---- Dataset / Data-source ------------------------------------
@@ -470,7 +481,7 @@ impl<'a> Walker<'a> {
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Values,
                     SymbolKind::Dataset,
@@ -482,7 +493,7 @@ impl<'a> Walker<'a> {
             StatementKind::DefineDataSource { name, .. } => {
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Values,
                     SymbolKind::DataSource,
@@ -499,9 +510,12 @@ impl<'a> Walker<'a> {
                 is_prototype,
                 ..
             } => {
+                // The routine is the external procedure's, also when the
+                // statement sits in a block. The body scope stays a child of
+                // `scope`, where the resolve pass looks for it.
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Procedures,
                     SymbolKind::Procedure,
@@ -530,9 +544,10 @@ impl<'a> Walker<'a> {
                 } else {
                     SymbolFlags::empty()
                 };
+                // Bound like a `PROCEDURE`: to the routine, not the block.
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Functions,
                     SymbolKind::Function,
@@ -917,6 +932,8 @@ impl<'a> Walker<'a> {
             ParameterDirection::InputOutput => SymbolFlags::PARAM_INPUT_OUT,
             ParameterDirection::Return => SymbolFlags::PARAM_RETURN,
         };
+        // A parameter belongs to its routine, also when defined in a block.
+        let routine = self.tree.var_binding_scope(scope);
         match param_type {
             ParameterType::Variable {
                 name,
@@ -930,7 +947,7 @@ impl<'a> Walker<'a> {
                 let flags = dir_flag | flag_if(*no_undo, SymbolFlags::NO_UNDO);
                 self.declare(
                     stmt,
-                    scope,
+                    routine,
                     name,
                     NamespaceId::Values,
                     SymbolKind::Parameter,
@@ -943,7 +960,7 @@ impl<'a> Walker<'a> {
                 // `DEFINE PARAMETER BUFFER b FOR <table>` — link the backing
                 // record like any other buffer-introducing site.
                 let source = self.record_source_of(target, scope);
-                self.declare_buffer(stmt, scope, name, dir_flag, source);
+                self.declare_buffer(stmt, routine, name, dir_flag, source);
             }
             ParameterType::Handle { kind, name, .. } => {
                 // All four handle-ish forms declare the same way — a `HANDLE`
@@ -955,7 +972,7 @@ impl<'a> Walker<'a> {
                 let table_like = matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
                 self.declare(
                     stmt,
-                    scope,
+                    routine,
                     name,
                     NamespaceId::Values,
                     SymbolKind::Parameter,
