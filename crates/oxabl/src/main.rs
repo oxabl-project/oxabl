@@ -621,6 +621,9 @@ fn surface_source_context(sem: &oxabl_semantic::Semantic, output: &mut Output) -
 }
 
 fn main() -> ExitCode {
+    // A daemon and the client that finds it compare this, so a daemon that outlived
+    // an upgrade of the binary is replaced.
+    oxabl_daemon::set_build_version(env!("CARGO_PKG_VERSION"));
     let cli = Cli::parse();
     // The server runs for hours: its check starts first. A command that ends
     // soon schedules its check after it has done its work.
@@ -631,7 +634,8 @@ fn main() -> ExitCode {
     if matches!(cli, Cli::Lsp) {
         self_update::schedule_if_due();
     }
-    let code = dispatch(cli);
+    // Every command may parse ABL: give it a stack of known size, not `ulimit -s`.
+    let code = oxabl_common::stack::run(|| dispatch(cli));
     if after {
         self_update::schedule_if_due();
     }
@@ -2144,17 +2148,19 @@ fn in_task_order<'t, T: Sync, S, R: Send>(
         for _ in 0..jobs {
             let sender = sender.clone();
             let (next, thread_state, work) = (&next, &thread_state, &work);
-            scope.spawn(move || {
-                let mut state = thread_state();
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(task) = tasks.get(i) else { break };
-                    let result = work(&mut state, task);
-                    if sender.send((i, result)).is_err() {
-                        break;
+            oxabl_common::stack::builder()
+                .spawn_scoped(scope, move || {
+                    let mut state = thread_state();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(task) = tasks.get(i) else { break };
+                        let result = work(&mut state, task);
+                        if sender.send((i, result)).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
+                })
+                .expect("failed to spawn a worker thread");
         }
         drop(sender);
         let mut waiting: HashMap<usize, R> = HashMap::new();
@@ -2622,12 +2628,7 @@ fn run_conformance(
     if debug {
         let real_fs = path_config.file_system();
         for file in &files {
-            run_debug_parse(
-                file,
-                preprocess,
-                &real_fs,
-                &path_config.include_paths_for(Some(file)),
-            );
+            run_debug_parse(file, preprocess, &real_fs, &path_config);
         }
         return ExitCode::SUCCESS;
     }
@@ -2658,11 +2659,7 @@ fn run_conformance(
         || (),
         |(), file| {
             if preprocess {
-                parse_file_with_preprocess(
-                    file,
-                    &real_fs,
-                    &path_config.include_paths_for(Some(file)),
-                )
+                parse_file_with_preprocess(file, &real_fs, &path_config)
             } else {
                 (parse_file(file, path_config.decoding), String::new())
             }
@@ -2743,7 +2740,7 @@ fn parse_file(path: &Path, decoding: SourceDecoding) -> FileResult {
 fn parse_file_with_preprocess(
     path: &Path,
     fs: &EncodedFileSystem,
-    include_paths: &[PathBuf],
+    config: &PipelineConfig,
 ) -> (FileResult, String) {
     // Read the file
     let source = match fs.read(path).map(|text| text.to_string()) {
@@ -2758,7 +2755,8 @@ fn parse_file_with_preprocess(
     };
 
     // Preprocess
-    let preprocessor = Preprocessor::new(fs, include_paths);
+    let include_paths = config.include_paths_for(Some(path), &source);
+    let preprocessor = Preprocessor::new(fs, &include_paths);
     let file_id = ROOT_FILE_ID;
     let preprocessed = match preprocessor.process(file_id, &source) {
         Ok(pf) => pf,
@@ -3035,12 +3033,7 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) -> Result<(), E
     }
 }
 
-fn run_debug_parse(
-    path: &Path,
-    preprocess: bool,
-    fs: &EncodedFileSystem,
-    include_paths: &[PathBuf],
-) {
+fn run_debug_parse(path: &Path, preprocess: bool, fs: &EncodedFileSystem, config: &PipelineConfig) {
     let source = match fs.read(path).map(|text| text.to_string()) {
         Ok(s) => s,
         Err(e) => {
@@ -3050,7 +3043,8 @@ fn run_debug_parse(
     };
 
     let parse_source: String = if preprocess {
-        let preprocessor = Preprocessor::new(fs, include_paths);
+        let include_paths = config.include_paths_for(Some(path), &source);
+        let preprocessor = Preprocessor::new(fs, &include_paths);
         let file_id = ROOT_FILE_ID;
         match preprocessor.process(file_id, &source) {
             Ok(pf) => {

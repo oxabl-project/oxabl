@@ -206,8 +206,10 @@ pub struct PipelineConfig {
     pub root_extensions: Vec<String>,
 
     /// Which features the project uses (`[workspace.features]`). Both on
-    /// without an `oxabl.toml`, both off with one that was rejected. Read by
-    /// every client: the CLI, the language server and the daemon.
+    /// without an `oxabl.toml` (off for an editor, see
+    /// [`resolve_for_editor`](Self::resolve_for_editor)), both off with one that
+    /// was rejected. Read by every client: the CLI, the language server and the
+    /// daemon.
     pub features: FeaturesConfig,
 }
 
@@ -247,14 +249,32 @@ impl PipelineConfig {
         EncodedFileSystem::new(self.decoding)
     }
 
-    /// The search paths of the file at `file`: each root-relative path resolved
-    /// against its directory, then [`include_paths`](Self::include_paths), each
-    /// once. The include paths alone with no file or no root-relative path.
-    pub fn include_paths_for(&self, file: Option<&Path>) -> Cow<'_, [PathBuf]> {
-        match file {
-            Some(file) if !self.root_relative_include_paths.is_empty() => {
+    /// The search paths of the file at `file` with the text `source`: each
+    /// root-relative path resolved against its base directory
+    /// ([`search_base`](Self::search_base)), then
+    /// [`include_paths`](Self::include_paths), each once. The include paths
+    /// alone with no file or no root-relative path.
+    pub fn include_paths_for(&self, file: Option<&Path>, source: &str) -> Cow<'_, [PathBuf]> {
+        self.include_paths_from(self.search_base(file, source).as_deref())
+    }
+
+    /// The directory the root-relative paths of the file at `file` with the
+    /// text `source` are resolved against: its own directory, or for a class
+    /// its package root, as the compiler searches
+    /// ([`search_base`](oxabl_index::search::search_base)). `None` with no file
+    /// or no root-relative path.
+    pub fn search_base(&self, file: Option<&Path>, source: &str) -> Option<PathBuf> {
+        let file = file.filter(|_| !self.root_relative_include_paths.is_empty())?;
+        oxabl_index::search::search_base(file, source)
+    }
+
+    /// [`include_paths_for`](Self::include_paths_for) for a file whose base
+    /// directory is `base`.
+    pub fn include_paths_from(&self, base: Option<&Path>) -> Cow<'_, [PathBuf]> {
+        match base {
+            Some(base) if !self.root_relative_include_paths.is_empty() => {
                 Cow::Owned(oxabl_index::search::root_include_paths(
-                    file,
+                    Some(base),
                     &self.root_relative_include_paths,
                     &self.include_paths,
                 ))
@@ -287,7 +307,24 @@ impl PipelineConfig {
     /// Warnings are non-fatal by construction — a malformed `oxabl.toml` yields
     /// defaults plus one [`ConfigWarning::Config`], never an error.
     pub fn resolve(anchor: &Path, overrides: &ConfigOverrides) -> (Self, Vec<ConfigWarning>) {
-        resolve_at(anchor, overrides, SchemaLoading::Load)
+        let (config, warnings, _) = resolve_at(anchor, overrides, SchemaLoading::Load);
+        (config, warnings)
+    }
+
+    /// [`resolve`](Self::resolve) for an editor. With no `oxabl.toml` above the
+    /// anchor, both [`features`](Self::features) are off: an editor offers only
+    /// what needs no setup (the outline) until a project opts in with an
+    /// `oxabl.toml`, so installing the CLI never starts formatting or linting
+    /// code that no project asked for.
+    pub fn resolve_for_editor(
+        anchor: &Path,
+        overrides: &ConfigOverrides,
+    ) -> (Self, Vec<ConfigWarning>) {
+        let (mut config, warnings, found) = resolve_at(anchor, overrides, SchemaLoading::Load);
+        if !found {
+            config.features = FeaturesConfig::OFF;
+        }
+        (config, warnings)
     }
 
     /// Resolve everything except the schema, which stays [`Schema::empty`] with
@@ -309,7 +346,8 @@ impl PipelineConfig {
         anchor: &Path,
         overrides: &ConfigOverrides,
     ) -> (Self, Vec<ConfigWarning>) {
-        resolve_at(anchor, overrides, SchemaLoading::Skip)
+        let (config, warnings, _) = resolve_at(anchor, overrides, SchemaLoading::Skip);
+        (config, warnings)
     }
 }
 
@@ -320,8 +358,9 @@ enum SchemaLoading {
     Skip,
 }
 
-/// The shared body of both public resolvers: find the root once, read the file
-/// once, hand the parsed value to the derivation.
+/// The shared body of the public resolvers: find the root once, read the file
+/// once, hand the parsed value to the derivation. The flag says whether an
+/// `oxabl.toml` was found, readable or not.
 ///
 /// Both entry points funnel through here so the one-parse invariant (KTD3) holds
 /// for every caller — a second resolver with its own discovery-and-read would be
@@ -330,7 +369,7 @@ fn resolve_at(
     anchor: &Path,
     overrides: &ConfigOverrides,
     schema: SchemaLoading,
-) -> (PipelineConfig, Vec<ConfigWarning>) {
+) -> (PipelineConfig, Vec<ConfigWarning>, bool) {
     let start_dir = start_dir(anchor);
 
     let root = find_workspace_root(&start_dir);
@@ -338,7 +377,10 @@ fn resolve_at(
 
     match parsed {
         // A config exists and parsed: derive everything from that one value.
-        Some((root, Ok(config))) => derive(&config, root, overrides, schema),
+        Some((root, Ok(config))) => {
+            let (config, warnings) = derive(&config, root, overrides, schema);
+            (config, warnings, true)
+        }
         // A config exists but is unreadable or malformed. Degrade every
         // configured surface to its default and report once — not once per
         // surface, which is what the three `resolved_*` helpers do today.
@@ -347,10 +389,14 @@ fn resolve_at(
                 derive(&WorkspaceConfig::defaults(), root, overrides, schema);
             config.features = FeaturesConfig::OFF;
             warnings.insert(0, ConfigWarning::Config(message));
-            (config, warnings)
+            (config, warnings, true)
         }
         // No config anywhere above the anchor: overrides only, silently.
-        None => derive(&WorkspaceConfig::defaults(), &start_dir, overrides, schema),
+        None => {
+            let (config, warnings) =
+                derive(&WorkspaceConfig::defaults(), &start_dir, overrides, schema);
+            (config, warnings, false)
+        }
     }
 }
 
@@ -1583,11 +1629,11 @@ mod tests {
 
         let file = root.join("app/main.p");
         assert_eq!(
-            config.include_paths_for(Some(&file)).into_owned(),
+            config.include_paths_for(Some(&file), "").into_owned(),
             [root.join("app"), root.join("app/rf"), root.join("inc")]
         );
         assert_eq!(
-            config.include_paths_for(None).into_owned(),
+            config.include_paths_for(None, "").into_owned(),
             config.include_paths
         );
         assert!(config.searches_any_path());
@@ -1600,7 +1646,7 @@ mod tests {
             ..PipelineConfig::default()
         };
         assert!(matches!(
-            config.include_paths_for(Some(Path::new("/app/main.p"))),
+            config.include_paths_for(Some(Path::new("/app/main.p")), ""),
             Cow::Borrowed(paths) if paths == [PathBuf::from("/inc")]
         ));
         let none = PipelineConfig {

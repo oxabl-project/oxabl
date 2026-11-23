@@ -41,7 +41,7 @@ fn a_class_compiles_before_its_user_and_the_user_reads_the_new_class() {
 }
 
 #[test]
-fn two_classes_in_a_cycle_compile_in_one_request() {
+fn two_classes_in_a_cycle_compile_on_one_worker_in_two_passes() {
     let workspace = Built::new();
     workspace.workers("count = 2");
     workspace.write(
@@ -60,9 +60,9 @@ fn two_classes_in_a_cycle_compile_in_one_request() {
         .into_iter()
         .filter(|(_, what)| what.starts_with("pkg/"))
         .collect();
-    assert_eq!(lines.len(), 2, "{lines:?}");
-    assert_eq!(
-        lines[0].0, lines[1].0,
+    assert_eq!(lines.len(), 4, "two passes over the cycle: {lines:?}");
+    assert!(
+        lines.iter().all(|line| line.0 == lines[0].0),
         "the cycle went to two workers while A was slow: {lines:?}"
     );
     assert!(workspace.exists("build/r/pkg/A.r") && workspace.exists("build/r/pkg/B.r"));
@@ -207,6 +207,42 @@ fn x_p_and_x_w_in_one_directory_compile_one_and_skip_the_other() {
     assert_eq!(skipped["status"], "skipped");
     assert_eq!(skipped["skipped"], "output-collision: src/ar/x.p");
     assert_eq!(workspace.compiled(), ["ar/x.p"]);
+}
+
+#[test]
+fn procedures_of_one_name_in_two_directories_compile_into_their_own_directories() {
+    let workspace = Built::with(
+        "directories = [\"a\", \"b\"]\nroot_relative_include_paths = [\".\"]",
+        "[build.outputs]\nxref = \"build/xref\"\nxref_format = \"text\"\n",
+    );
+    workspace.write("a/x.p", "MESSAGE \"a\".\n");
+    workspace.write("b/x.p", "MESSAGE \"b\".\n");
+
+    let run = workspace.build_with(&["--json"]);
+
+    run.succeeded();
+    let report: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    for path in ["a/x.p", "b/x.p"] {
+        assert_eq!(unit(&report, path)["status"], "ok", "{path}");
+    }
+    assert_eq!(report["summary"]["skipped"], 0);
+    let mut files = walk(&workspace.path("build/r"));
+    files.sort();
+    assert_eq!(files, ["a/x.r", "b/x.r"]);
+    for (directory, other) in [("a", "b"), ("b", "a")] {
+        let read = workspace.reads(&format!("build/r/{directory}/x.r"));
+        let has = |source: &str| read.iter().any(|(_, sha)| *sha == workspace.sha256(source));
+        assert!(
+            has(&format!("{directory}/x.p")),
+            "{directory}/x.r: {read:?}"
+        );
+        assert!(!has(&format!("{other}/x.p")), "{directory}/x.r: {read:?}");
+        assert!(workspace.exists(&format!("build/xref/{directory}/x.p.xref")));
+    }
+
+    workspace.clear_log();
+    workspace.build().succeeded();
+    assert!(workspace.compiled().is_empty(), "both are up to date");
 }
 
 #[test]
@@ -424,7 +460,14 @@ fn the_report_says_where_the_setup_time_went() {
     }));
     workspace.worker_env("FAKE_AVM_START_DELAY", "300");
     workspace.worker_env("FAKE_AVM_SCHEMA_DELAY_MS", "300");
-    workspace.build().succeeded();
+    workspace
+        .build_with(&["--report", "first.json"])
+        .succeeded();
+    let first: serde_json::Value = serde_json::from_str(&workspace.read("first.json")).unwrap();
+    assert!(
+        first["timing"]["setup"]["imaging_ms"].as_u64().unwrap() >= 300,
+        "the first build images the database: {first}"
+    );
     workspace.worker_env("FAKE_AVM_REQUEST_DELAY_MS", "200");
 
     let run = workspace.build_with(&["--report", "report.json"]);
@@ -439,7 +482,12 @@ fn the_report_says_where_the_setup_time_went() {
             .unwrap_or_else(|| panic!("no {field}: {timing}"))
     };
     assert!(ms("workers_ms") >= 300, "{timing}");
-    assert!(ms("imaging_ms") >= 300, "{timing}");
+    assert_eq!(
+        ms("imaging_ms"),
+        0,
+        "the second build reuses the image: {timing}"
+    );
+    assert!(ms("raw_digest_ms") >= 300, "{timing}");
     assert!(ms("dlc_hash_ms") >= 200, "{timing}");
     assert!(ms("keys_ms") >= ms("dlc_hash_ms"), "{timing}");
     for field in ["refresh_ms", "plan_ms", "prune_ms"] {
@@ -447,7 +495,7 @@ fn the_report_says_where_the_setup_time_went() {
     }
     let setup = timing["setup_ms"].as_u64().unwrap();
     assert!(
-        setup >= ms("workers_ms") + ms("imaging_ms") + ms("keys_ms"),
+        setup >= ms("workers_ms") + ms("raw_digest_ms") + ms("keys_ms"),
         "{timing}"
     );
 }

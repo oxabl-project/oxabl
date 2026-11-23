@@ -6,7 +6,7 @@ This page is for people who run `oxabl build` and for tools that read what it pr
 
 | Flag | stdout | stderr |
 | --- | --- | --- |
-| none | The summary text. | Warnings and errors. |
+| none | The summary text. It lists each failed unit, and each compiled unit that has messages, with its messages. | Warnings and errors. |
 | `--json` | The report as one JSON document. | Warnings and errors. |
 | `--events` | One JSON object per line, while the build runs. | The summary text, warnings and errors. |
 | `--report <file>` | No change. | No change. |
@@ -78,8 +78,8 @@ The compiler gave a message for a unit. Oxabl writes the messages of a unit just
 | `path` | The unit that was compiled. |
 | `type` | `warning` or `error`. A warning does not fail the unit. |
 | `number` | The number of the compiler message. `0` when the compiler gave none. |
-| `file` | The file that the message is about. It can be an include file. |
-| `row`, `column` | The position in `file`. `0` when the compiler gave none. |
+| `file` | The file that the message is about. It can be an include file. It is the unit when the compiler names no file. |
+| `row`, `column` | The position in `file`. `0` when the compiler gave none: a message with row `0` and column `0` has no position. The text report prints it with no `:row:column`. |
 | `text` | The text of the message. |
 
 ### `unit-finished`
@@ -164,6 +164,7 @@ The report has more counts (`not_run`, `tainted`, `up_to_date`).
   "exit": 1,
   "format": 1,
   "notes": [],
+  "schema_images": { "imaged": ["ledger"], "reused": [] },
   "store": { "generation": 1 },
   "summary": {
     "compiled": 3,
@@ -176,7 +177,7 @@ The report has more counts (`not_run`, `tainted`, `up_to_date`).
   },
   "timing": {
     "elapsed_ms": 275,
-    "setup": { "dlc_hash_ms": 12, "imaging_ms": 40, "keys_ms": 30, "plan_ms": 5, "prune_ms": 4, "refresh_ms": 120, "workers_ms": 150 },
+    "setup": { "dlc_hash_ms": 12, "imaging_ms": 40, "keys_ms": 30, "plan_ms": 5, "prune_ms": 4, "raw_digest_ms": 9, "refresh_ms": 120, "workers_ms": 150 },
     "setup_ms": 249
   },
   "units": [
@@ -206,7 +207,8 @@ The report has more counts (`not_run`, `tainted`, `up_to_date`).
 | `environment` | The identity of the compile environment (64 hex characters). |
 | `store.generation` | The generation of the graph store after the build. |
 | `summary` | The counts: `compiled`, `fetched`, `failed`, `skipped`, `not_run` (units that did not run because of `--fail-fast` or a cancel), `tainted` (units that compiled after a unit in their closure failed), `up_to_date` (units that needed no work). |
-| `timing` | `setup_ms` is the time before the first compile (refresh, probe, keys). `elapsed_ms` is the total. `setup` splits `setup_ms` into phases, in milliseconds: `refresh_ms` (the refresh of the graph), `workers_ms` (the start and the handshake of the workers) and `imaging_ms` (the schema image of every database), `keys_ms` (the keys, with the `$DLC` hash phase, which `dlc_hash_ms` gives alone), `plan_ms`, and `prune_ms` (the pruning of the output directories). The refresh runs at the same time as the worker start and the imaging, so the phases do not add up to `setup_ms`. |
+| `timing` | `setup_ms` is the time before the first compile (refresh, probe, keys). `elapsed_ms` is the total. `setup` splits `setup_ms` into phases, in milliseconds: `refresh_ms` (the refresh of the graph), `workers_ms` (the start and the handshake of the workers), `raw_digest_ms` (the raw digest passes that tell whether the schema image of the last build still holds) and `imaging_ms` (the schema image of the databases whose stored image did not hold; `0` when every image was reused), `keys_ms` (the keys, with the `$DLC` hash phase, which `dlc_hash_ms` gives alone), `plan_ms`, and `prune_ms` (the pruning of the output directories). The refresh runs at the same time as the worker start and the imaging, so the phases do not add up to `setup_ms`. |
+| `schema_images` | The logical names of the databases whose schema image the build `reused` from the last build (the raw digest was equal) and the ones it `imaged`. |
 | `notes` | Warnings of the build, as text. Oxabl prints the same warnings on stderr. |
 | `cache` | What the caches did (see below). |
 | `units` | One entry for each unit that compiled, was fetched, failed, was skipped or did not run. Units that were up to date are not listed. |
@@ -247,8 +249,8 @@ The `cache` object:
 | --- | --- |
 | 0 | Every unit compiled or came from a cache. A skipped unit is not a failure. |
 | 1 | At least one unit failed to compile after the retry pass. |
-| 2 | A usage or configuration error. For example: no worker command, no `[build].output`, an unknown key in `oxabl.toml` or in the overlay, an output directory that oxabl does not own, or workers that disagree about the environment. Nothing compiled. |
-| 3 | Oxabl could not use something it needs: the store, a lock (another build runs in the workspace, and it does not yield), or the workers (none started, or none was left). |
+| 2 | A usage or configuration error. For example: no worker command, no `[build].output` (and no `[build].rcode = "beside-source"`), both of them, an unknown key in `oxabl.toml` or in the overlay, an output directory that oxabl does not own, or workers that disagree about the environment. Nothing compiled. |
+| 3 | Oxabl could not use something it needs: the store, a lock (another build runs in the workspace, and it does not yield), the workers (none started, or none was left), or, with the r-code beside the source, a source directory it must write or old r-code it must delete, or r-code that it installed and that no unit expects now (in both modes) that it cannot delete. Nothing compiled. |
 | 130 | A `SIGINT` or `SIGTERM` cancelled the build. The store is consistent. The next build compiles what was not recorded. A build that runs with `--yield` also exits with 130 when a newer build stops it (see [The lock and `--yield`](#the-lock-and---yield)). |
 
 `oxabl build --plan` and `oxabl build --print-config` exit with 0 when they printed their answer, with 2 for a usage or configuration error and with 3 when the store cannot be read.

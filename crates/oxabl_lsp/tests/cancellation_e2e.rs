@@ -14,6 +14,8 @@
 //! publishes B on the ordinary path and the test still passes. Only the broken
 //! behavior — a dropped cancelled result — can fail it.
 
+mod support;
+
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
@@ -28,7 +30,8 @@ use lsp_types::{
 
 const WINDOW: Duration = Duration::from_millis(40);
 
-fn handshake(client: &Connection) {
+fn handshake(client: &Connection) -> tempfile::TempDir {
+    let project = support::project();
     let params = InitializeParams {
         capabilities: ClientCapabilities {
             general: Some(GeneralClientCapabilities {
@@ -37,6 +40,7 @@ fn handshake(client: &Connection) {
             }),
             ..Default::default()
         },
+        workspace_folders: support::folders(project.path()),
         ..Default::default()
     };
     client
@@ -53,6 +57,7 @@ fn handshake(client: &Connection) {
         }
     }
     notify(client, "initialized", serde_json::json!({}));
+    project
 }
 
 fn notify(client: &Connection, method: &str, params: serde_json::Value) {
@@ -144,7 +149,7 @@ fn large_body(lines: usize) -> String {
 fn an_edit_in_another_buffer_does_not_leave_this_one_stale() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
-    handshake(&client);
+    let _project = handshake(&client);
 
     let a = Uri::from_str("file:///churn.p").unwrap();
     let b = Uri::from_str("file:///quiet.p").unwrap();

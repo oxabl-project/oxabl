@@ -3,6 +3,7 @@
 mod outcome;
 mod output;
 mod resolve;
+pub mod runtime;
 mod scan;
 mod visit;
 
@@ -14,16 +15,18 @@ use std::time::Instant;
 use crate::faults::Faults;
 use crate::frame::{self, emit};
 use crate::log;
-use outcome::Read;
-use visit::Context;
+use visit::{Bound, Context};
 
 /// The state a worker keeps between requests.
 #[derive(Default)]
 pub struct Compiler {
     propaths: HashMap<String, Vec<String>>,
-    /// Classes read from source, by lower-case class name, with the files each
-    /// one read. A session keeps them for good, as `MULTI-COMPILE` does.
-    classes: HashMap<String, Vec<Read>>,
+    /// The classes the session has bound, by lower-case class name. As
+    /// measured on OpenEdge: a class stays bound to its file while the
+    /// PROPATH stays the same and the file does not change.
+    classes: HashMap<String, Bound>,
+    /// The PROPATH of the last request: another one empties `classes`.
+    current: Option<Vec<String>>,
     /// The units this worker has compiled.
     pub compiled: usize,
 }
@@ -69,6 +72,10 @@ impl Compiler {
         let debug_list = text(line, 5) == "1";
         let listing = text(line, 6) == "1";
         let count: usize = text(line, 7).parse().unwrap_or(0);
+        if self.current.as_ref() != Some(&propath) {
+            self.classes.clear();
+            self.current = Some(propath.clone());
+        }
         let mut units = Vec::with_capacity(count);
         let mut buffer = String::new();
         for _ in 0..count {
@@ -86,8 +93,10 @@ impl Compiler {
             listing,
             dlc,
             faults,
+            save_strays: true,
+            request: &units,
         };
-        for name in units {
+        for name in units.clone() {
             let started = Instant::now();
             log::append(faults.log.as_deref(), &name);
             log::append(faults.xref_log.as_deref(), &format!("{name} {xref}"));
@@ -96,7 +105,12 @@ impl Compiler {
             }
             let result = self.compile_unit(&context, &name)?;
             self.compiled += 1;
-            for message in &result.messages {
+            let sent = if faults.drop_msg {
+                result.messages.len().saturating_sub(1)
+            } else {
+                result.messages.len()
+            };
+            for message in &result.messages[..sent] {
                 emit(
                     out,
                     "MSG",
@@ -114,10 +128,17 @@ impl Compiler {
             }
             let status: &[u8] = if result.ok { b"ok" } else { b"fail" };
             let ms = started.elapsed().as_millis().to_string();
+            let messages = result.messages.len().to_string();
             emit(
                 out,
                 "DONE",
-                &[req.as_bytes(), name.as_bytes(), status, ms.as_bytes()],
+                &[
+                    req.as_bytes(),
+                    name.as_bytes(),
+                    status,
+                    ms.as_bytes(),
+                    messages.as_bytes(),
+                ],
             )?;
         }
         emit(out, "END", &[req.as_bytes()])

@@ -4,8 +4,9 @@
 //! the key material as the specification builds it, in hex. The material is
 //! checked against the files and against an encoder written from the
 //! specification (`common::key_spec`). The key that `oxabl build --plan
-//! --probe --json` prints must equal the key over that material and the hash
-//! of the worker program that ships in `oxabl_build`.
+//! --probe --json` prints must equal the key over that material and the
+//! worker digest that release 5.3.2 put in every key, so no release since has
+//! moved a key.
 
 mod common;
 
@@ -26,12 +27,15 @@ fn document() -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("key_vectors.json")).unwrap()
 }
 
+/// What the worker section of every key of release 5.3.2 held: the BLAKE3
+/// hash of its whole worker program. The vectors pin that release's keys, so
+/// the value is a literal here and not read from the worker program in the
+/// tree: a worker program that moved a key would fail this file.
+const RELEASED_WORKER_DIGEST: &str =
+    "cdd13b1ffca241532b7ab473551f2f6d3b31a9680baf30b7dbd363603bc9f019";
+
 fn worker_program_hash() -> [u8; 32] {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../oxabl_build/resources/oxabl_worker.p"
-    );
-    *blake3::hash(&fs::read(path).expect("the worker program")).as_bytes()
+    unhex(RELEASED_WORKER_DIGEST).try_into().unwrap()
 }
 
 fn schema_identity(records: &Value) -> String {

@@ -1,4 +1,4 @@
-//! The observed closure: the files the compiler read, as its `XREF-XML`
+//! The observed closure: the files the compiler read, as its cross-reference
 //! names them, for a unit whose closure oxabl cannot read from its source,
 //! with every class source the compile could read.
 //!

@@ -178,6 +178,25 @@ pub fn effective(config: &WorkspaceConfig, layers: &Layers, overrides: &Override
     entries
 }
 
+/// The verification that the build would run: not a key of `oxabl.toml`, but
+/// what its `[build.verify]` and the cache mode make of it. The settings it
+/// reads are entries of [`effective`] too.
+pub fn verification(
+    policy: &crate::verify::policy::Policy,
+    environment: &crate::cache::Environment,
+) -> Entry {
+    let source = match (&environment.cache_mode, &environment.ci) {
+        (Some(_), _) => Source::Environment("OXABL_CACHE_MODE"),
+        (None, Some(_)) => Source::Environment("CI"),
+        (None, None) => Source::Default,
+    };
+    Entry {
+        key: "verification.mode".to_string(),
+        value: Value::String(policy.mode.name().to_string()),
+        source,
+    }
+}
+
 /// The entries as one JSON object: the keys are the dotted names and each
 /// value holds `value` and `source`.
 pub fn as_json(entries: &[Entry]) -> Value {

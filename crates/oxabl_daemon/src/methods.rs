@@ -205,6 +205,115 @@ fn symbol_search(
     .map_err(MethodError::internal)
 }
 
+/// What the language server's `workspace/symbol` needs from a search: each
+/// selected row, the text its span counts bytes in, and the count before `limit`.
+pub struct LocatedSymbols {
+    /// A row without a declaring file (a schema table) has no text.
+    pub symbols: Vec<(SymbolRow, Option<Arc<str>>)>,
+    pub total_matches: u32,
+}
+
+/// Search the workspace symbols of `root` for the language server.
+///
+/// The same index and ranking as `oxabl/symbolSearch`. Each declaring file is read
+/// once, through the configured encoding with the open buffers over it, which is
+/// what the pass read when it measured the spans. Blocks until a workspace pass is
+/// current, so callers keep it off the LSP thread.
+pub fn search_symbols_located(
+    host: &SessionHost,
+    root: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<LocatedSymbols, MethodError> {
+    let workspace = ensure_workspace(host, root, false)?;
+    let (rows, total_matches) = select_symbols(&workspace.symbols, query, limit);
+    let fs = OverlayFileSystem {
+        overlay: host.with(|sessions| sessions.for_root(root).buffer_overlay()),
+        disk: workspace.config.file_system(),
+    };
+    let mut texts: HashMap<String, Option<Arc<str>>> = HashMap::new();
+    let symbols = rows
+        .into_iter()
+        .map(|row| {
+            let text = row.file.as_ref().and_then(|file| {
+                texts
+                    .entry(file.clone())
+                    .or_insert_with(|| fs.read(Path::new(file)).ok())
+                    .clone()
+            });
+            (row, text)
+        })
+        .collect();
+    Ok(LocatedSymbols {
+        symbols,
+        total_matches,
+    })
+}
+
+/// The root files that expand one include, for choosing the compilation context
+/// of an open include.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncluderContexts {
+    /// Sorted by path, each once. `direct` when the root writes `{...}` for the
+    /// include itself.
+    pub roots: Vec<(PathBuf, bool)>,
+    /// Why the list can miss a root, when it can. Empty for a complete list.
+    pub gaps: Vec<String>,
+}
+
+/// The roots of `root`'s workspace that expand `include`, directly or through
+/// other includes.
+///
+/// `Ok(Err(reason))` when the workspace cannot know: with no include path
+/// configured, no include resolves and the list would be empty for every file.
+/// Blocks until a workspace pass is current, so callers keep it off the LSP
+/// thread.
+pub fn includer_contexts(
+    host: &SessionHost,
+    root: &Path,
+    include: &Path,
+) -> Result<Result<IncluderContexts, String>, MethodError> {
+    if let Some(reason) = cross_file_refusal(root) {
+        return Ok(Err(reason));
+    }
+    let workspace = ensure_workspace(host, root, false)?;
+    let include = crate::session::canonical_path(include);
+    let dependents = workspace
+        .graph
+        .dependents(&oxabl_pipeline::Subject::file(&include));
+    let mut roots: Vec<(PathBuf, bool)> = Vec::new();
+    for row in dependents.all() {
+        let direct = match row.kind {
+            EdgeKind::DirectInclude => true,
+            EdgeKind::TransitiveInclude => false,
+            _ => continue,
+        };
+        match roots.iter_mut().find(|(path, _)| *path == row.file) {
+            Some((_, seen)) => *seen |= direct,
+            None => roots.push((row.file.clone(), direct)),
+        }
+    }
+    roots.sort();
+    let mut gaps = Vec::new();
+    let unresolved = dependents.unresolved().len();
+    if unresolved > 0 {
+        gaps.push(format!(
+            "{unresolved} include reference(s) that may name this file did not resolve"
+        ));
+    }
+    let unanalysed = workspace.graph.unanalysed().len();
+    if unanalysed > 0 {
+        gaps.push(format!("{unanalysed} file(s) could not be analysed"));
+    }
+    let degraded = workspace.graph.degraded().len();
+    if degraded > 0 {
+        gaps.push(format!(
+            "{degraded} file(s) have an incomplete dependency set"
+        ));
+    }
+    Ok(Ok(IncluderContexts { roots, gaps }))
+}
+
 /// The best `limit` matches for `query`, and how many matched in total (R19).
 ///
 /// Bounded in the work it does, not only in what it returns. A type-ahead query sends
@@ -387,7 +496,7 @@ fn freshness(
     if let Some(progress) = claimed {
         let host = host.clone();
         let root = root.to_path_buf();
-        std::thread::Builder::new()
+        oxabl_common::stack::builder()
             .name("oxabl-workspace-pass".to_string())
             .spawn(move || {
                 if let Err(error) = run_claimed_workspace_pass(&host, &root, progress) {

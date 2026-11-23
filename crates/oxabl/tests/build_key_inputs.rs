@@ -364,6 +364,8 @@ fn a_workspace_copied_to_another_path_keeps_every_key() {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_oxabl"));
     command
         .current_dir(copy.path())
+        .env_remove("OXABL_DLC_SOURCES")
+        .env_remove("OXABL_BUILD_OVERLAY")
         .args(["build", "--plan", "--probe", "--json", "--all"]);
     let output = common::run(command);
     assert_eq!(output.status.code(), Some(0), "{}", common::stderr(&output));

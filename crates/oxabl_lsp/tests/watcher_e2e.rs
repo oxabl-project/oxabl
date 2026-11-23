@@ -189,6 +189,130 @@ fn watcher_registration_covers_the_original_globs_and_every_root_extension() {
     assert!(handle.join().unwrap().unwrap());
 }
 
+/// The globs of the server's watch registration, after opening `main`.
+fn registered_globs(client: &Connection) -> Vec<String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        let Ok(Message::Request(req)) = client
+            .receiver
+            .recv_timeout(deadline - std::time::Instant::now())
+        else {
+            continue;
+        };
+        if req.method == "client/registerCapability" {
+            return req.params["registrations"][0]["registerOptions"]["watchers"]
+                .as_array()
+                .expect("watchers is an array")
+                .iter()
+                .map(|w| w["globPattern"].as_str().unwrap().to_string())
+                .collect();
+        }
+    }
+    panic!("no watch registration arrived");
+}
+
+/// Whether the glob `**/*.<ext>` or `**/<name>` matches `path`. Any other
+/// form fails the test, so a new kind of glob cannot pass unread.
+fn glob_matches(glob: &str, path: &str) -> bool {
+    let file = path.rsplit('/').next().unwrap();
+    if let Some(ext) = glob.strip_prefix("**/*.") {
+        assert!(
+            !ext.contains(['*', '{', '[', '?']),
+            "unknown glob form {glob}"
+        );
+        return file.ends_with(&format!(".{ext}"));
+    }
+    let name = glob
+        .strip_prefix("**/")
+        .unwrap_or_else(|| panic!("unknown glob form {glob}"));
+    assert!(
+        !name.contains(['*', '{', '[', '?']),
+        "unknown glob form {glob}"
+    );
+    file == name
+}
+
+/// r-code that a build writes beside the sources must not reach the server:
+/// no glob of the watch matches a `.r` file, so a build of thousands of units
+/// sends no event. A source beside it is still watched.
+#[test]
+fn the_watch_registers_no_glob_that_matches_rcode() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let main = tmp.path().join("main.p");
+
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+    handshake(&client);
+    open(&client, &file_uri(&main), "MESSAGE \"hi\".\n");
+    let globs = registered_globs(&client);
+
+    for rcode in ["a/x.r", "a/pkg/Foo.r", "a/X.R"] {
+        let matching: Vec<&String> = globs.iter().filter(|g| glob_matches(g, rcode)).collect();
+        assert!(matching.is_empty(), "{rcode} is watched by {matching:?}");
+    }
+    for source in ["a/x.p", "a/pkg/Foo.cls"] {
+        assert!(
+            globs.iter().any(|g| glob_matches(g, source)),
+            "{source} is not watched: {globs:?}"
+        );
+    }
+
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
+}
+
+/// A client that watches every file sends events for r-code too. A `.r`
+/// written beside a program, a `RUN` target and a class that an open buffer
+/// uses recomputes nothing; an include change after it still does.
+#[test]
+fn an_rcode_change_on_disk_recomputes_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path();
+    std::fs::write(
+        root.join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n[workspace.sources]\ninclude_paths = [\".\"]\n",
+    )
+    .unwrap();
+    let dep = root.join("dep.i");
+    std::fs::write(&dep, "DEFINE VARIABLE foo AS INTEGER NO-UNDO.\n").unwrap();
+    std::fs::write(root.join("x.p"), "MESSAGE \"x\".\n").unwrap();
+    std::fs::create_dir_all(root.join("pkg")).unwrap();
+    std::fs::write(root.join("pkg/Foo.cls"), "CLASS pkg.Foo:\nEND CLASS.\n").unwrap();
+    let main = root.join("main.p");
+
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+    handshake(&client);
+
+    let uri = file_uri(&main);
+    open(
+        &client,
+        &uri,
+        "{dep.i}\nMESSAGE foo.\nRUN x.p.\nRUN x.r.\nDEFINE VARIABLE o AS pkg.Foo NO-UNDO.\no = NEW pkg.Foo().\n",
+    );
+    recv_publish(&client, Duration::from_secs(2)).expect("a first publish");
+
+    for rcode in ["main.r", "x.r", "pkg/Foo.r", "dep.r"] {
+        let path = root.join(rcode);
+        std::fs::write(&path, "r-code").unwrap();
+        watched_change(&client, &path);
+    }
+    assert!(
+        recv_publish(&client, WINDOW * 5).is_none(),
+        "an r-code change must not recompute an open buffer"
+    );
+
+    std::fs::write(&dep, "DEFINE VARIABLE bar AS INTEGER NO-UNDO.\n").unwrap();
+    watched_change(&client, &dep);
+    assert!(
+        recv_publish(&client, Duration::from_secs(2)).is_some(),
+        "the include change after it recomputes the buffer"
+    );
+
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
+}
+
 #[test]
 fn oxabl_toml_change_reresolves_lint_config() {
     let tmp = tempfile::TempDir::new().unwrap();

@@ -5,7 +5,7 @@ pub const ENVIRONMENT_CONTEXT: &str = "oxabl 2026-11 compile environment v1";
 /// Context string of the compile key.
 pub const KEY_CONTEXT: &str = "oxabl 2026-11 compile key v1";
 /// Context string of the schema identity.
-pub const SCHEMA_CONTEXT: &str = "oxabl 2026-11 schema image v2";
+pub const SCHEMA_CONTEXT: &str = "oxabl 2026-11 schema image v3";
 
 /// Builds a byte string from length-prefixed primitives.
 #[derive(Default)]

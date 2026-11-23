@@ -9,6 +9,8 @@ fn flag(name: &str) -> bool {
 
 pub struct Faults {
     pub noise: bool,
+    /// One `MSG` line fewer than `DONE` counts (`FAKE_AVM_DROP_MSG`).
+    pub drop_msg: bool,
     pub start_delay: Option<Duration>,
     pub bad_token: bool,
     pub exit_in_handshake: bool,
@@ -27,7 +29,7 @@ pub struct Faults {
     /// Compiles after which a schema answer has a wrong count
     /// (`FAKE_AVM_SCHEMA_ERROR_AFTER`).
     pub schema_error_after: Option<usize>,
-    /// The private `XREF-XML` is not written (`FAKE_AVM_NO_PRIVATE_XREF`).
+    /// The private XREF is not written (`FAKE_AVM_NO_PRIVATE_XREF`).
     pub no_private_xref: bool,
     /// While this file exists the schema image differs (`FAKE_AVM_SCHEMA_CHANGE_FILE`).
     pub schema_change_file: Option<PathBuf>,
@@ -45,6 +47,17 @@ pub struct Faults {
     pub xref_log: Option<PathBuf>,
     /// Time each compile takes (`FAKE_AVM_COMPILE_MS`).
     pub compile_time: Option<Duration>,
+    /// Text that changes the raw digest and not the image (`FAKE_AVM_RAW_SALT`).
+    pub raw_salt: Option<String>,
+    /// While this file exists the raw digest differs (`FAKE_AVM_RAW_CHANGE_FILE`).
+    pub raw_change_file: Option<PathBuf>,
+    /// From this raw request of the process on, the raw digest differs
+    /// (`FAKE_AVM_RAW_CHANGE_FROM`).
+    pub raw_change_from: Option<usize>,
+    /// A broken raw digest answer (`FAKE_AVM_RAW_FAULT`).
+    pub raw_fault: Option<String>,
+    /// The share that `raw_fault` breaks (`FAKE_AVM_RAW_FAULT_SHARE`).
+    pub raw_fault_share: Option<usize>,
 }
 
 impl Faults {
@@ -53,6 +66,7 @@ impl Faults {
         Faults {
             state: state.clone(),
             noise: flag("FAKE_AVM_NOISE"),
+            drop_msg: flag("FAKE_AVM_DROP_MSG"),
             start_delay: std::env::var("FAKE_AVM_START_DELAY")
                 .ok()
                 .and_then(|ms| ms.parse().ok())
@@ -95,6 +109,15 @@ impl Faults {
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map(Duration::from_millis),
+            raw_salt: std::env::var("FAKE_AVM_RAW_SALT").ok(),
+            raw_change_file: std::env::var_os("FAKE_AVM_RAW_CHANGE_FILE").map(PathBuf::from),
+            raw_change_from: std::env::var("FAKE_AVM_RAW_CHANGE_FROM")
+                .ok()
+                .and_then(|n| n.parse().ok()),
+            raw_fault: std::env::var("FAKE_AVM_RAW_FAULT").ok(),
+            raw_fault_share: std::env::var("FAKE_AVM_RAW_FAULT_SHARE")
+                .ok()
+                .and_then(|n| n.parse().ok()),
         }
     }
 }

@@ -6,6 +6,8 @@
 //!
 //! All fixtures are synthetic ABL.
 
+mod support;
+
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
@@ -17,9 +19,19 @@ use lsp_types::{
     TextDocumentIdentifier, TextDocumentItem, TextEdit, Uri,
 };
 
-/// Drive the initialize handshake and return the server's advertised
-/// capabilities, negotiating UTF-8.
-fn handshake(client: &Connection) -> InitializeResult {
+/// Drive the initialize handshake in a project and return the server's
+/// advertised capabilities, negotiating UTF-8.
+fn handshake(client: &Connection) -> (InitializeResult, tempfile::TempDir) {
+    let project = support::project();
+    let result = handshake_with(client, support::folders(project.path()));
+    (result, project)
+}
+
+/// The initialize handshake with `workspace_folders` as declared.
+fn handshake_with(
+    client: &Connection,
+    workspace_folders: Option<Vec<lsp_types::WorkspaceFolder>>,
+) -> InitializeResult {
     let params = InitializeParams {
         capabilities: ClientCapabilities {
             general: Some(GeneralClientCapabilities {
@@ -28,6 +40,7 @@ fn handshake(client: &Connection) -> InitializeResult {
             }),
             ..Default::default()
         },
+        workspace_folders,
         ..Default::default()
     };
     client
@@ -139,7 +152,7 @@ fn shutdown(client: &Connection, id: i32) {
 fn initialize_advertises_document_formatting() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, Duration::from_millis(20)));
-    let result = handshake(&client);
+    let (result, _project) = handshake(&client);
     assert_eq!(
         result.capabilities.document_formatting_provider,
         Some(OneOf::Left(true))
@@ -158,7 +171,7 @@ fn initialize_advertises_document_formatting() {
 fn formatting_roundtrip_is_correct_and_idempotent() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, Duration::from_millis(20)));
-    handshake(&client);
+    let _project = handshake(&client);
 
     let src = "IF TRUE THEN DO:\nMESSAGE \"hi\".\nEND.\n";
     let uri = Uri::from_str("file:///buf.p").unwrap();
@@ -196,7 +209,7 @@ fn formatting_roundtrip_is_correct_and_idempotent() {
 fn formatting_unopened_uri_returns_empty_no_error() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, Duration::from_millis(20)));
-    handshake(&client);
+    let _project = handshake(&client);
 
     let uri = Uri::from_str("file:///never-opened.p").unwrap();
     let edits = format(&client, 2, &uri);
@@ -213,7 +226,7 @@ fn formatting_unopened_uri_returns_empty_no_error() {
 fn bail_buffer_yields_no_edits_and_server_survives() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, Duration::from_millis(20)));
-    handshake(&client);
+    let _project = handshake(&client);
 
     // Unterminated DO → parse errors → the formatter bails → no edits.
     let bad = Uri::from_str("file:///bad.p").unwrap();
@@ -250,7 +263,8 @@ fn formatting_uses_workspace_style() {
 
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, Duration::from_millis(20)));
-    handshake(&client);
+    // No declared root: the configuration is found from the file's directory.
+    handshake_with(&client, None);
 
     let uri = Uri::from_str(&format!("file://{}", file.display())).unwrap();
     did_open(&client, &uri, "IF TRUE THEN DO:\nMESSAGE \"hi\".\nEND.\n");

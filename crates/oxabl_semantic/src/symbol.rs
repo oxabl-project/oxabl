@@ -563,6 +563,48 @@ struct SymbolSideMaps {
     /// may be a class — `NEW x(...)` or a `name:` member access — and the walk
     /// could neither attribute it to a class nor rule it out.
     unattributed_unmodelled_uses: Vec<VirtualSpan>,
+    /// The navigation record, kept only when the context asks for it
+    /// ([`AnalysisContext::record_sites`](crate::AnalysisContext::record_sites)).
+    navigation: Navigation,
+}
+
+/// Where the file names something, and the files behind synthesized symbols.
+/// Read by editor navigation (go to definition, document links).
+#[derive(Debug, Default)]
+struct Navigation {
+    sites: Vec<Site>,
+    class_files: FxHashMap<SymbolId, IndexedFileId>,
+    member_files: FxHashMap<SymbolId, IndexedFileId>,
+    field_tables: FxHashMap<SymbolId, oxabl_schema::TableId>,
+}
+
+/// One place the analysed text names something, in expanded coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Site {
+    pub span: VirtualSpan,
+    pub target: SiteTarget,
+}
+
+/// What a [`Site`] names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SiteTarget {
+    /// A reference; its answer is the entry for this node in
+    /// [`Semantic::references`](crate::Semantic::references), if any.
+    Reference(NodeId),
+    /// A literal `RUN` target, answered like [`Self::Reference`].
+    Run(NodeId),
+    /// A `USING` name, answered like [`Self::Reference`]. A wildcard has no
+    /// answer.
+    Using(NodeId),
+    /// A class name in a type position, and what it resolved to.
+    Type(crate::Resolution),
+    /// A name in a statement position that resolved to this symbol.
+    Symbol(SymbolId),
+    /// A schema table named where no buffer is meant (`DEFINE BUFFER b FOR t`).
+    Table(oxabl_schema::TableId),
+    /// A field of this schema table, named as the site's text, reached through a
+    /// temp-table's `LIKE`.
+    SchemaField(oxabl_schema::TableId),
 }
 
 impl SymbolTable {
@@ -839,6 +881,65 @@ impl SymbolTable {
         self.side
             .as_deref()
             .is_some_and(|side| !side.unattributed_unmodelled_uses.is_empty())
+    }
+
+    /// Record a navigation site. Only the resolve pass calls this, and only when
+    /// the context records sites.
+    pub(crate) fn record_site(&mut self, site: Site) {
+        self.side_mut().navigation.sites.push(site);
+    }
+
+    /// Every navigation site, in walk order. Empty unless the analysis context
+    /// recorded them.
+    pub fn sites(&self) -> &[Site] {
+        self.side
+            .as_deref()
+            .map_or(&[], |side| side.navigation.sites.as_slice())
+    }
+
+    pub(crate) fn record_class_file(&mut self, sym: SymbolId, file: IndexedFileId) {
+        self.side_mut().navigation.class_files.insert(sym, file);
+    }
+
+    /// The indexed file declaring the synthesized class symbol `sym`. Kept only
+    /// when the analysis context recorded sites.
+    pub fn class_file(&self, sym: SymbolId) -> Option<IndexedFileId> {
+        self.side
+            .as_deref()?
+            .navigation
+            .class_files
+            .get(&sym)
+            .copied()
+    }
+
+    pub(crate) fn record_member_file(&mut self, sym: SymbolId, file: IndexedFileId) {
+        self.side_mut().navigation.member_files.insert(sym, file);
+    }
+
+    /// The indexed file of the nearest class that declares the synthesized
+    /// inherited member `sym`. Kept only when the analysis context recorded sites.
+    pub fn member_file(&self, sym: SymbolId) -> Option<IndexedFileId> {
+        self.side
+            .as_deref()?
+            .navigation
+            .member_files
+            .get(&sym)
+            .copied()
+    }
+
+    pub(crate) fn record_field_table(&mut self, sym: SymbolId, table: oxabl_schema::TableId) {
+        self.side_mut().navigation.field_tables.insert(sym, table);
+    }
+
+    /// The schema table of the synthesized schema field symbol `sym`. Kept only
+    /// when the analysis context recorded sites.
+    pub fn field_table(&self, sym: SymbolId) -> Option<oxabl_schema::TableId> {
+        self.side
+            .as_deref()?
+            .navigation
+            .field_tables
+            .get(&sym)
+            .copied()
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

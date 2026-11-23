@@ -8,6 +8,10 @@ use oxabl_workspace::InMemoryFileSystem;
 
 // The whole lint pipeline on one file (preprocess, parse, analyse, every rule) never panics.
 fuzz_target!(|data: &[u8]| {
+    oxabl_fuzz::on_analysis_stack(data, check);
+});
+
+fn check(data: &[u8]) {
     let source = String::from_utf8_lossy(data);
     let config = PipelineConfig::default();
     let mut fs = InMemoryFileSystem::new();
@@ -22,4 +26,4 @@ fuzz_target!(|data: &[u8]| {
         "the pipeline contained a panic: {:?}",
         result.failure()
     );
-});
+}

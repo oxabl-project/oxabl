@@ -198,6 +198,19 @@ pub struct Parser<'a> {
     /// The token kinds of the method names declared in this token stream, built
     /// on first use by [`declares_method_named`](Self::declares_method_named).
     method_name_kinds: Option<Vec<Kind>>,
+    /// Statement and expression levels open at the cursor; see
+    /// [`MAX_NESTING`](Self::MAX_NESTING).
+    nesting: u32,
+    /// Operators in the left-deep chains open at the cursor; see
+    /// [`MAX_CHAIN`](Self::MAX_CHAIN).
+    chain: u32,
+    /// Whether a nesting or chain limit error is recorded: one per file is
+    /// enough, and the rest of a deep nest would fill
+    /// [`MAX_ERRORS`](Self::MAX_ERRORS).
+    too_deep_recorded: bool,
+    /// Whether the cursor is in the body of an INTERFACE, where a METHOD
+    /// signature ends at its period and has no body.
+    in_interface: bool,
     /// Token indexes after a `CREATE` whose parse failed and was skipped. A
     /// failed CREATE is parsed again when a block around it rewinds, and its
     /// trigger blocks hold the CREATEs after it, so without this the work
@@ -226,7 +239,93 @@ impl<'a> Parser<'a> {
             stmt_start_token: current,
             imported_classes: Vec::new(),
             method_name_kinds: None,
+            nesting: 0,
+            chain: 0,
+            too_deep_recorded: false,
+            in_interface: false,
             failed_creates: HashSet::new(),
+        }
+    }
+
+    /// The deepest nest of statements and expressions the parser follows. A
+    /// deeper nest is a parse error, so the tree has a known depth and no
+    /// recursive pass over it can overflow its stack (see
+    /// [`oxabl_common::stack`]).
+    pub const MAX_NESTING: u32 = 256;
+
+    /// Run `parse` one nesting level deeper, or fail when that passes
+    /// [`MAX_NESTING`](Self::MAX_NESTING).
+    #[inline(always)]
+    pub(crate) fn nested<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        if self.nesting >= Self::MAX_NESTING {
+            return Err(self.too_deep());
+        }
+        self.nesting += 1;
+        let result = parse(self);
+        self.nesting -= 1;
+        result
+    }
+
+    /// The most operators the left-deep chains along one path of the tree may
+    /// hold (`a + b + c`, `a:b:c`). The parser builds a chain in a loop, but
+    /// every operator is one more level for the passes over the tree, so a
+    /// chain counts against the stack too. A level of nesting costs much more
+    /// stack than an operator, hence the larger limit; real code stays far
+    /// below it.
+    pub const MAX_CHAIN: u32 = 4096;
+
+    /// Count one more operator of a left-deep chain, or fail when that passes
+    /// [`MAX_CHAIN`](Self::MAX_CHAIN). `links` counts the chain's own
+    /// operators for [`unlink`](Self::unlink); a chain that an error abandons
+    /// stays counted until the next statement resets the count.
+    #[inline(always)]
+    pub(crate) fn link(&mut self, links: &mut u32) -> ParseResult<()> {
+        if self.chain >= Self::MAX_CHAIN {
+            return Err(self.too_long());
+        }
+        self.chain += 1;
+        *links += 1;
+        Ok(())
+    }
+
+    /// Close a chain counted with [`link`](Self::link). A chain with no
+    /// operator touches no memory here.
+    #[inline(always)]
+    pub(crate) fn unlink(&mut self, links: u32) {
+        if links != 0 {
+            self.chain -= links;
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn too_long(&self) -> ParseError {
+        ParseError {
+            message: format!(
+                "{}{} operators; oxabl does not parse this statement",
+                Self::TOO_LONG,
+                Self::MAX_CHAIN
+            ),
+            span: self.current_span(),
+        }
+    }
+
+    const TOO_DEEP: &'static str = "Nesting is deeper than ";
+    const TOO_LONG: &'static str = "An operator chain is longer than ";
+
+    #[cold]
+    #[inline(never)]
+    fn too_deep(&self) -> ParseError {
+        ParseError {
+            message: format!(
+                "{}{} levels; oxabl does not parse this statement",
+                Self::TOO_DEEP,
+                Self::MAX_NESTING
+            ),
+            span: self.current_span(),
         }
     }
 
@@ -388,6 +487,17 @@ impl<'a> Parser<'a> {
     /// assert.
     fn classify_comment(&self, start: usize) -> Option<CommentKind> {
         let bytes = self.source.as_bytes();
+        // The lexer keeps a stray `~` in the token that follows it (`~&x`, `~ //x`),
+        // with the blanks after it, so a comment can lead with tildes and blanks:
+        // classify it by what comes after them.
+        let start = start
+            + match bytes.get(start) {
+                Some(b'~') => bytes[start..]
+                    .iter()
+                    .take_while(|&&b| b == b'~' || b.is_ascii_whitespace())
+                    .count(),
+                _ => 0,
+            };
         match bytes.get(start) {
             Some(b'/') => match bytes.get(start + 1) {
                 Some(b'*') => Some(CommentKind::Block),
@@ -416,6 +526,12 @@ impl<'a> Parser<'a> {
     /// vector without bound. Errors past the cap are dropped (the parse still
     /// terminates because recovery always makes forward progress).
     fn record_error(&mut self, err: ParseError) {
+        if err.message.starts_with(Self::TOO_DEEP) || err.message.starts_with(Self::TOO_LONG) {
+            if self.too_deep_recorded {
+                return;
+            }
+            self.too_deep_recorded = true;
+        }
         if self.errors.len() < Self::MAX_ERRORS {
             self.errors.push(err);
         }
@@ -448,7 +564,17 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_block_statement(&mut self, out: &mut Vec<Statement>) -> bool {
         let pos_before = self.current;
-        match self.parse_statement() {
+        // One nesting level, counted here and not in `parse_statement`: code
+        // after the call there costs a copy of every statement.
+        let parsed = if self.nesting >= Self::MAX_NESTING {
+            Err(self.too_deep())
+        } else {
+            self.nesting += 1;
+            let parsed = self.parse_statement();
+            self.nesting -= 1;
+            parsed
+        };
+        match parsed {
             Ok(stmt) => {
                 out.push(stmt);
                 // Incremental R1.3 check: the just-pushed statement must not
@@ -1863,11 +1989,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A parameter statement that spans from `start` to the last consumed token.
+    fn param_stmt(&mut self, start: u32, kind: StatementKind) -> Statement {
+        let mut statement = self.stmt(kind);
+        statement.span = Span {
+            start,
+            end: self.prev_end(),
+        };
+        statement
+    }
+
     /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR/FUNCTION.
     ///
     /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
     ///
-    /// Each parameter becomes a `self.stmt(StatementKind::DefineParameter)`.
+    /// Each parameter becomes a `DefineParameter` statement that spans the
+    /// parameter, from its direction to its last token.
     fn parse_parenthesized_params(&mut self) -> ParseResult<Vec<Statement>> {
         self.expect_kind(Kind::LeftParen, "Expected '(' for parameter list")?;
         let mut params = Vec::new();
@@ -1885,6 +2022,7 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                let param_start = self.current_span().start;
                 let direction = match self.peek().kind {
                     Kind::Output => {
                         self.advance();
@@ -1927,14 +2065,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::Table,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::Table,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1957,10 +2098,13 @@ impl<'a> Parser<'a> {
                             target = table;
                         }
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Buffer { name, target },
-                    }));
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Buffer { name, target },
+                        },
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1978,14 +2122,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::Dataset,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::Dataset,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2003,14 +2150,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::DatasetHandle,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::DatasetHandle,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2028,14 +2178,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::TableHandle,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::TableHandle,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2072,17 +2225,20 @@ impl<'a> Parser<'a> {
                         name: format!("${}", params.len()),
                         span: Span {
                             start: type_start,
-                            end: self.current_span().start,
+                            end: self.prev_end(),
                         },
                     };
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Variable {
-                            name,
-                            type_source: TypeSource::Explicit(data_type),
-                            no_undo,
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Variable {
+                                name,
+                                type_source: TypeSource::Explicit(data_type),
+                                no_undo,
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2099,14 +2255,17 @@ impl<'a> Parser<'a> {
                     false
                 };
 
-                params.push(self.stmt(StatementKind::DefineParameter {
-                    direction,
-                    param_type: ParameterType::Variable {
-                        name,
-                        type_source,
-                        no_undo,
+                params.push(self.param_stmt(
+                    param_start,
+                    StatementKind::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Variable {
+                            name,
+                            type_source,
+                            no_undo,
+                        },
                     },
-                }));
+                ));
 
                 if !self.check(Kind::Comma) {
                     break;
@@ -2237,17 +2396,30 @@ impl<'a> Parser<'a> {
                 }
                 Kind::LessThan => {
                     // A `<` with no name before it: balance it and drop it.
-                    self.parse_generic_type_args_inner()?;
+                    self.nested_generic_type_args()?;
                 }
                 kind if self.starts_type_argument(kind) => {
                     if let Ok(name) = self.parse_class_qualified_name() {
-                        let arguments = self.parse_generic_type_args_inner()?;
+                        let arguments = self.nested_generic_type_args()?;
                         args.push(TypeArgument { name, arguments });
                     }
                 }
                 _ => {
                     self.advance();
                 }
+            }
+        }
+    }
+
+    /// [`parse_generic_type_args_inner`](Self::parse_generic_type_args_inner)
+    /// one nesting level deeper; `None` with the error recorded past
+    /// [`MAX_NESTING`](Self::MAX_NESTING).
+    fn nested_generic_type_args(&mut self) -> Option<TypeArguments> {
+        match self.nested(|parser| Ok(parser.parse_generic_type_args_inner())) {
+            Ok(arguments) => arguments,
+            Err(err) => {
+                self.record_error(err);
+                None
             }
         }
     }

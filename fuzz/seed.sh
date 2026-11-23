@@ -5,7 +5,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 max=${MAX_LEN:-65536}
-for target in lex preprocess_parse lint format; do
+for target in lex preprocess_parse lint format outline navigate; do
   dest="$here/corpus/$target"
   mkdir -p "$dest"
   find "$root/resources" "$root/crates" -type f \
@@ -31,7 +31,31 @@ shapes = {
     + "".join(f"&SCOPED-DEFINE a{i + 1} {{&a{i}}}{{&a{i}}}\n" for i in range(24))
     + "{&a24}\n",
 }
-for target in ("lex", "preprocess_parse", "lint", "format"):
+for target in ("lex", "preprocess_parse", "lint", "format", "outline"):
     for name, text in shapes.items():
         (Path(sys.argv[1]) / target / f"shape-{name}").write_text(text)
+
+# navigate: `source \0 schema \0 include`. Names a table and its field share,
+# names that are keywords, hyphens, digits, non-ASCII and very long names, a
+# table in two `ADD TABLE`s, abbreviations, and broken `.df` text.
+names = ["company", "warehouse", "cust-num", "for", "each", "Größe", "x" * 300,
+         "a#b", "pct%", "amp&", "_file", "t1", "T1", "name", "nam"]
+df = "".join(f'ADD TABLE "{n}"\n  AREA "Data"\n\n' + "".join(
+    f'ADD FIELD "{f}" OF "{n}" AS character\n  FORMAT "x(8)"\n\n' for f in names[:6] + [n])
+    for n in names)
+uses = "".join(
+    f"FIND FIRST {n} NO-LOCK NO-ERROR.\nDISPLAY {n}.{n} {n}.name {n}.nam.\n"
+    f"DEFINE TEMP-TABLE tt{i} NO-UNDO FIELD {n} LIKE {n}.{n} FIELD y LIKE {n}.nosuch.\n"
+    f"DEFINE BUFFER b{i} FOR {n}.\nFOR EACH {n}: DISPLAY b{i}.{n} tt{i}.{n}. END.\n"
+    for i, n in enumerate(names))
+nav = Path(sys.argv[1]) / "navigate"
+nav.mkdir(parents=True, exist_ok=True)
+(nav / "shape-names").write_text(uses + "\0" + df + "\0" + uses)
+(nav / "shape-calls").write_text(
+    "USING app.*.\nUSING app.C.\n{inc.i}\n{inc.i &a=1 2}\nDEFINE VARIABLE o AS CLASS app.C NO-UNDO.\n"
+    "o = NEW app.C().\no:M().\no:N().\nRUN p.p.\nRUN p.\nRUN two.p.\nRUN \"p.p\".\nRUN VALUE(\"p\").\n"
+    "RUN Local.\nPROCEDURE Local:\nEND PROCEDURE.\n"
+    "\0" + df + "\0DEFINE VARIABLE fromInc AS INTEGER NO-UNDO.\nfromInc = 1.\n")
+(nav / "shape-broken-df").write_text(
+    "FIND FIRST company.\nDISPLAY company.company.\n\0ADD TABLE \"company\nADD FIELD \"company\" OF\n\0")
 PY

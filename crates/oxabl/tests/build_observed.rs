@@ -347,33 +347,30 @@ fn a_file_the_compiler_found_where_the_host_finds_another_gives_no_observed_key(
 }
 
 #[test]
-fn with_a_text_xref_no_compile_is_observed_and_an_observed_key_does_not_stand() {
-    let workspace = Built::new();
-    workspace.write("src/inc/a.i", "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n");
-    workspace.write("src/enc.p", &format!("{UNREADABLE}{{inc/a.i}}\n"));
-    workspace.build().succeeded();
-    let plan = workspace.plan();
-    assert_eq!(unit(&plan, "src/enc.p")["closure"], "observed", "{plan}");
-
-    workspace.reconfigure(
+fn with_a_requested_text_xref_the_unit_is_observed_from_it() {
+    let workspace = Built::with(
         "include_paths = [\"src\"]",
         "[build.outputs]\nxref = \"build/xref\"\nxref_format = \"text\"",
     );
-    workspace.clear_log();
+    workspace.write("src/inc/a.i", "DEFINE VARIABLE a AS INTEGER NO-UNDO.\n");
+    workspace.write("src/enc.p", &format!("{UNREADABLE}{{inc/a.i}}\n"));
+    settle();
+
     let run = workspace.build();
+
     run.succeeded();
-    assert_eq!(workspace.compiled(), ["enc.p"]);
-    assert!(
-        run.stderr.contains("xref_format = \"text\""),
-        "{}",
-        run.stderr
-    );
+    assert!(workspace.exists("build/xref/enc.p.xref"));
+    assert!(!run.stderr.contains("xref_format"), "{}", run.stderr);
+    let plan = workspace.plan();
+    let enc = unit(&plan, "src/enc.p");
+    assert_eq!(enc["closure"], "observed", "{plan}");
+    assert_eq!(enc["action"], "up-to-date", "{plan}");
     workspace.clear_log();
     workspace.build().succeeded();
-    assert_eq!(
-        workspace.compiled(),
-        ["enc.p"],
-        "a compile that no XREF-XML describes leaves the unit without a key"
+    assert!(
+        workspace.compiled().is_empty(),
+        "{:?}",
+        workspace.compiled()
     );
 }
 

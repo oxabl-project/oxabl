@@ -76,22 +76,27 @@ const MD_CHECKS = [
   { line: "More prose after", token: "END", color: C.plain, what: "prose after the block" },
 ];
 
-// Highlighting needs no server, so a missing binary shows no message: only a line in the
-// oxabl output channel.
+// Highlighting needs no server. A missing binary is logged to the oxabl output channel,
+// and the only message is the offer to install the CLI.
+const INSTALL_PROMPT = "The oxabl CLI is not installed.";
+
 async function missingServerQuiet(profile, file, vs) {
   const name = `${file}: missing binary`;
   let logged = true;
   await waitForLog(profile, NO_SERVER_LOG).catch(() => (logged = false));
   check(`${name} is logged to the oxabl output channel`, logged);
-  // Count notification toasts: their text also sits in a screen-reader live region.
+  // Toasts: their text also sits in a screen-reader live region.
   const toasts = vs.page.locator(".notifications-toasts .notification-list-item-message", { hasText: "oxabl" });
-  let seen = 0;
+  const seen = new Set();
   const end = Date.now() + 8_000;
   while (Date.now() < end) {
-    seen = Math.max(seen, await toasts.count());
+    for (const t of await toasts.allTextContents()) seen.add(t);
     await sleep(250);
   }
-  check(`${name} shows no message`, seen === 0, `${seen} oxabl message(s)`);
+  const shown = [...seen];
+  check(`${name} offers the install`, shown.some((t) => t.includes(INSTALL_PROMPT)), shown.join(" | "));
+  const others = shown.filter((t) => !t.includes(INSTALL_PROMPT));
+  check(`${name} shows no other message`, others.length === 0, others.join(" | "));
 }
 
 // The updater is off here and points at a fake API that counts requests: the

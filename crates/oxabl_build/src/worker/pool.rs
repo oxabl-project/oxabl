@@ -14,6 +14,7 @@ use super::error::{PoolError, WorkerError};
 use super::imaging;
 use super::logs::{self, Logs};
 use super::program;
+use super::reuse::{self, Origin, Schemas};
 use super::session::Session;
 use super::slot::{Restart, Worker};
 use super::start::{Slot, SlotFailure, start_slot};
@@ -21,7 +22,8 @@ use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::FileDigest;
 use crate::key::digest::hash_set_digest;
-use crate::key::{Environment, Profile, SchemaImage};
+use crate::key::image_store::Binding;
+use crate::key::{Environment, Profile, RawDigest, SchemaImage};
 
 /// Lines of a worker log shown when no worker starts.
 const LOG_TAIL_LINES: usize = 20;
@@ -43,6 +45,9 @@ pub struct PoolSpec {
     pub preprocessor: PreprocessorConfig,
     /// The logical names the `[workspace.schema]` files stand for.
     pub schema_names: Vec<String>,
+    /// The file where a build keeps its schema images for the next one;
+    /// `None` images every database (the probe).
+    pub images: Option<PathBuf>,
 }
 
 /// The number of workers when none is configured: the CPUs, at most 8.
@@ -108,6 +113,7 @@ impl PoolSpec {
             env: configured.env.clone(),
             preprocessor: workspace.config.workspace.preprocessor.clone(),
             schema_names,
+            images: None,
         })
     }
 }
@@ -128,6 +134,8 @@ pub struct Started {
     pub environment: Environment,
     pub warnings: Vec<String>,
     pub timing: StartTiming,
+    /// Which images were reused and which were made.
+    pub origin: Origin,
 }
 
 /// How long the start took, in milliseconds.
@@ -135,8 +143,10 @@ pub struct Started {
 pub struct StartTiming {
     /// Starting the workers and their handshakes.
     pub workers_ms: u64,
-    /// Imaging every database.
+    /// Imaging the databases whose stored image could not be reused.
     pub imaging_ms: u64,
+    /// The raw digest passes.
+    pub raw_ms: u64,
 }
 
 fn describe_differences(a: &Worker, b: &Worker, left: &Profile, right: &Profile) -> String {
@@ -271,13 +281,54 @@ impl Pool {
             .map(|d| d.ldb.clone())
             .collect();
         let workers_ms = starting.elapsed().as_millis() as u64;
-        let imaging = Instant::now();
+        let numbers: Vec<usize> = started.iter().map(|(worker, _, _)| worker.number).collect();
         let imaged = {
             let mut sessions: Vec<&mut Session> = started
                 .iter_mut()
                 .map(|(worker, _, _)| &mut worker.session)
                 .collect();
-            imaging::image_databases(&mut sessions, &databases, spec.unit_timeout)
+            match &spec.images {
+                None => image_all(&mut sessions, &databases, spec.unit_timeout),
+                Some(store) => {
+                    let worker = program::hash().to_hex().to_string();
+                    let openedge = profile.facts.get("dlc_version");
+                    let binding_of = |ldb: &str, physical: &str| {
+                        let guid = profile
+                            .fingerprints
+                            .iter()
+                            .find(|fingerprint| fingerprint.ldb == ldb)
+                            .map(|fingerprint| fingerprint.guid.as_str())
+                            .unwrap_or("?");
+                        Binding::new(ldb, physical, guid, &worker, openedge)
+                    };
+                    let restart = |place: usize| -> Result<Session, String> {
+                        match start_slot(spec, &program, &logs, cancel, numbers[place]) {
+                            Ok((session, other, _)) => match profile.differences(&other) {
+                                differences if differences.is_empty() => Ok(session),
+                                differences => {
+                                    let mut session = session;
+                                    session.kill();
+                                    Err(format!(
+                                        "the replacement sees another environment: {}",
+                                        differences.join("; ")
+                                    ))
+                                }
+                            },
+                            Err(SlotFailure::Cancelled) => Err("cancelled".into()),
+                            Err(SlotFailure::Config(message)) => Err(message),
+                            Err(SlotFailure::Infra { message, .. }) => Err(message),
+                        }
+                    };
+                    reuse::start(
+                        &mut sessions,
+                        &databases,
+                        &binding_of,
+                        &restart,
+                        store,
+                        spec.unit_timeout,
+                    )
+                }
+            }
         };
         let schemas = match imaged {
             Ok(schemas) => schemas,
@@ -288,8 +339,30 @@ impl Pool {
                 )));
             }
         };
-        let imaging_ms = imaging.elapsed().as_millis() as u64;
-        let environment = Environment::assemble(profile.clone(), schemas);
+        let Schemas {
+            images,
+            origin,
+            raw_ms,
+            imaging_ms,
+            mut lost,
+            warnings: schema_warnings,
+        } = schemas;
+        warnings.extend(schema_warnings);
+        lost.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        for (at, why) in lost {
+            let (mut worker, _, _) = started.remove(at);
+            warnings.push(format!(
+                "worker {} was lost in the raw digest pass: {why}",
+                worker.number
+            ));
+            worker.kill();
+        }
+        if started.is_empty() {
+            return Err(PoolError::Infra(
+                "no worker is left after the raw digest pass".into(),
+            ));
+        }
+        let environment = Environment::assemble(profile.clone(), images);
         let workers = started.into_iter().map(|(worker, _, _)| worker).collect();
         let restart = Arc::new(Restart {
             spec: spec.clone(),
@@ -310,7 +383,9 @@ impl Pool {
             timing: StartTiming {
                 workers_ms,
                 imaging_ms,
+                raw_ms,
             },
+            origin,
         })
     }
 
@@ -447,6 +522,28 @@ impl Pool {
         imaging::image_databases(&mut sessions, databases, self.unit_timeout)
     }
 
+    /// Makes the raw digest of every database across the live workers. A
+    /// worker that fails the pass is out of step and is not used again.
+    pub fn raw_digests(&mut self, databases: &[String]) -> Result<Vec<RawDigest>, String> {
+        let mut live: Vec<&mut Worker> = self
+            .workers
+            .iter_mut()
+            .filter(|worker| !worker.is_dead())
+            .collect();
+        if live.is_empty() {
+            return Err("no worker is left".into());
+        }
+        let (digests, failed) = {
+            let mut sessions: Vec<&mut Session> =
+                live.iter_mut().map(|worker| &mut worker.session).collect();
+            imaging::raw_digests(&mut sessions, databases, self.unit_timeout)
+        };
+        for (at, _) in failed {
+            live[at].retire();
+        }
+        digests
+    }
+
     /// Sends `QUIT` to every worker and stops what does not quit.
     pub fn shutdown(self) {
         let Pool { mut workers, .. } = self;
@@ -456,4 +553,26 @@ impl Pool {
             }
         });
     }
+}
+
+/// Images every database, with no raw pass: the probe.
+fn image_all(
+    sessions: &mut [&mut Session],
+    databases: &[String],
+    timeout: Duration,
+) -> Result<Schemas, WorkerError> {
+    let imaging = Instant::now();
+    let images = imaging::image_databases(sessions, databases, timeout)?;
+    Ok(Schemas {
+        images,
+        origin: Origin {
+            raw: vec![None; databases.len()],
+            reused: Vec::new(),
+            imaged: databases.to_vec(),
+        },
+        raw_ms: 0,
+        imaging_ms: imaging.elapsed().as_millis() as u64,
+        lost: Vec::new(),
+        warnings: Vec::new(),
+    })
 }
