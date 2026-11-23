@@ -695,10 +695,15 @@ impl Session {
                 buffer
             }
             None => {
-                // The same key names the same path, so the input's path holds.
                 let buffer = match self.closed.remove(key) {
                     Some(buffer) => {
                         buffer.set_text(&mut self.db).to(text);
+                        // A reopen may name the path differently, or name one
+                        // where the first open had none. A set always
+                        // invalidates, so set only a change.
+                        if *buffer.path(&self.db) != path {
+                            buffer.set_path(&mut self.db).to(path);
+                        }
                         buffer
                     }
                     None => Buffer::new(&self.db, text, path),

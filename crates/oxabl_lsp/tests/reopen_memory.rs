@@ -7,6 +7,8 @@
 
 #![cfg(target_os = "linux")]
 
+mod support;
+
 use std::fmt::Write as _;
 use std::str::FromStr;
 use std::thread;
@@ -26,7 +28,8 @@ const CYCLES: usize = 120;
 /// Growth allowed over [`CYCLES`]: far below one kept copy per cycle.
 const ALLOWED_GROWTH_KIB: u64 = 16 * 1024;
 
-fn handshake(client: &Connection) {
+fn handshake(client: &Connection) -> tempfile::TempDir {
+    let project = support::project();
     let params = InitializeParams {
         capabilities: ClientCapabilities {
             general: Some(GeneralClientCapabilities {
@@ -35,6 +38,7 @@ fn handshake(client: &Connection) {
             }),
             ..Default::default()
         },
+        workspace_folders: support::folders(project.path()),
         ..Default::default()
     };
     client
@@ -51,6 +55,7 @@ fn handshake(client: &Connection) {
         }
     }
     notify(client, "initialized", serde_json::json!({}));
+    project
 }
 
 fn notify(client: &Connection, method: &str, params: serde_json::Value) {
@@ -161,7 +166,7 @@ fn closing_documents_does_not_grow_memory() {
 
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve(&server));
-    handshake(&client);
+    let _project = handshake(&client);
 
     // One document opened again and again, then many documents opened once.
     let same = growth_kib(&client, &text, |_| {
