@@ -35,6 +35,7 @@ import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import { definition } from "./scenarios/definition.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
 import { includeContext } from "./scenarios/include-context.mjs";
+import { inlayHints } from "./scenarios/inlay-hints.mjs";
 import { outline } from "./scenarios/outline.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
@@ -59,6 +60,7 @@ const SCENARIOS = [
   ["include-context", includeContext],
   ["expanded-unit", expandedUnit],
   ["definition", definition],
+  ["inlay-hints", inlayHints],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],
