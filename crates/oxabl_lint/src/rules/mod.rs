@@ -40,7 +40,7 @@ mod call_support;
 // Wording and anchoring for the handle rules.
 mod handle_support;
 // Shared queries over the scope analysis for the lock and transaction rules.
-mod lock_support;
+pub(crate) mod lock_support;
 // Walk and source helpers for the syntactic strict rules.
 mod syntactic;
 

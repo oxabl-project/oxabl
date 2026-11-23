@@ -197,6 +197,12 @@ impl Expansion {
         self.inner.as_ref().ok()
     }
 
+    /// Equal for two expansions with the same text and the same places where
+    /// text did not arrive; 0 for a failed expansion.
+    pub fn fingerprint(&self) -> u64 {
+        self.expanded().map_or(0, crate::effects::fingerprint)
+    }
+
     /// A fatally-failed expansion, for the test that pins how
     /// [`LintPipeline::collect`] maps that arm.
     ///

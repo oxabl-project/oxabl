@@ -68,6 +68,9 @@ Existing crates also change:
   the daemon show baselined findings. Moving it to a shared crate is open.
 - `oxabl_analyze`: a new summaries section (below), additive with an envelope version bump.
 - `oxabl_lsp`: hover and code lens showing each procedure's summary.
+- `oxabl_lsp`: inlay hints that show the lock, the index, and the raised scopes and implicit
+  transactions that the strict rules report, at the code; see
+  [`inlay-hints.md`](inlay-hints.md).
 
 Any construct the analyses can't resolve (`RUN VALUE`, dynamic buffers, unresolved includes)
 marks the summary **opaque** rather than guessing. This mirrors the conservative-fallback policy

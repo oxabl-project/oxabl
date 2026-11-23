@@ -11,6 +11,9 @@
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
 //! don't have. The handshake adds effect code lenses only for supporting clients
 //! whose workspace enables strict database rules. Dynamic clients register per file.
+//! It adds inlay hints for every client that supports them: a file whose
+//! configuration enables no strict database rule gets an empty list, so a change
+//! of `oxabl.toml` needs no new registration.
 
 use lsp_types::{
     ClientCapabilities, DocumentLinkOptions, OneOf, PositionEncodingKind, ServerCapabilities,
@@ -137,6 +140,8 @@ mod tests {
         assert_eq!(caps.workspace_symbol_provider, Some(OneOf::Left(true)));
         // No other feature is advertised.
         assert!(caps.code_lens_provider.is_none());
+        // Inlay hints are added at the handshake, for a client that supports them.
+        assert!(caps.inlay_hint_provider.is_none());
         assert!(caps.hover_provider.is_none());
         assert!(caps.completion_provider.is_none());
         assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));

@@ -13,7 +13,7 @@ use super::handle_support::quote;
 /// Whether the file is left unjudged: something the analysis cannot see (a
 /// recovered parse, an unexpanded include, the work budget) may change every
 /// answer, and an Unknown answer never makes a finding.
-pub(super) fn not_judged(scopes: &FileScopes) -> bool {
+pub(crate) fn not_judged(scopes: &FileScopes) -> bool {
     !scopes.unknown().is_empty()
 }
 
@@ -32,7 +32,7 @@ pub(super) fn read_form(kind: ReadKind) -> &'static str {
 /// A block, for a sentence: its header quoted (`` `DO TRANSACTION` ``), or
 /// the routine's name. Line numbers are not used: the spans are in the
 /// expanded text, whose lines are not the file's.
-pub(super) fn describe_block(source: &str, unit: &UnitScopes, block: BlockId) -> String {
+pub(crate) fn describe_block(source: &str, unit: &UnitScopes, block: BlockId) -> String {
     let b = unit.block(block);
     if let BlockKind::Routine(kind) = b.kind {
         return match (&unit.name, unit.parent) {
@@ -50,7 +50,7 @@ pub(super) fn describe_block(source: &str, unit: &UnitScopes, block: BlockId) ->
 
 /// The header of the block statement at `span`: the text before the colon
 /// (or the period, which ABL also accepts) that opens its body.
-pub(super) fn header(source: &str, span: Span) -> Span {
+pub(crate) fn header(source: &str, span: Span) -> Span {
     let Some(text) = source.get(span.start as usize..span.end as usize) else {
         return span;
     };

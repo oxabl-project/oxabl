@@ -5,7 +5,8 @@
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
 //! `textDocument/definition` and `textDocument/documentLink` (see
-//! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
+//! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses and
+//! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
 //! `docs/design/include-context.md`.
@@ -30,6 +31,7 @@ mod document_symbol;
 mod expanded_unit;
 pub mod formatting;
 mod includer_context;
+mod inlay_hint;
 mod navigation;
 pub mod position;
 mod workspace_symbol;
@@ -48,8 +50,8 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, Request as _,
-    WorkspaceSymbolRequest,
+    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, InlayHintRequest,
+    Request as _, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -524,6 +526,7 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
 /// What the handshake learned from the client's capabilities.
 struct Negotiated {
     options: code_lens::Options,
+    inlay: inlay_hint::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
 }
@@ -580,6 +583,8 @@ fn finish_handshake(
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
     let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let inlay =
+        inlay_hint::Options::from_client(&init.capabilities, init.initialization_options.as_ref());
     let hierarchical_symbols = init
         .capabilities
         .text_document
@@ -602,6 +607,9 @@ fn finish_handshake(
             resolve_provider: Some(false),
         });
     }
+    if inlay.supported {
+        capabilities.inlay_hint_provider = Some(lsp_types::OneOf::Left(true));
+    }
     let result = InitializeResult {
         capabilities,
         server_info: Some(ServerInfo {
@@ -615,6 +623,7 @@ fn finish_handshake(
     Ok((
         Negotiated {
             options,
+            inlay,
             hierarchical_symbols,
         },
         workspace_root,
@@ -684,6 +693,8 @@ struct Server<'c> {
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
+    /// The client's inlay hint support and the kinds it wants.
+    inlay: inlay_hint::Options,
     /// The last outline of each open buffer, for its version.
     outlines: document_symbol::OutlineCache,
     /// Per-URI debounce timers (R13).
@@ -729,6 +740,7 @@ impl<'c> Server<'c> {
     ) -> Self {
         let Negotiated {
             options,
+            inlay,
             hierarchical_symbols,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
@@ -748,6 +760,7 @@ impl<'c> Server<'c> {
             features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
+            inlay,
             outlines: document_symbol::OutlineCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
             contexts: includer_context::Contexts::default(),
@@ -794,6 +807,8 @@ impl<'c> Server<'c> {
                                 self.respond(Response::new_ok(req.id, serde_json::Value::Null))?;
                             } else if req.method == "textDocument/codeLens" {
                                 self.handle_code_lens(req, &lens_tx)?;
+                            } else if req.method == InlayHintRequest::METHOD {
+                                self.handle_inlay_hint(req)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
@@ -1048,7 +1063,11 @@ impl<'c> Server<'c> {
                     serde_json::from_value::<DidChangeWatchedFilesParams>(not.params)
                 {
                     self.handle_watched_files(params);
+                    self.refresh_inlay_hints();
                 }
+            }
+            "workspace/didChangeConfiguration" => {
+                self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidCloseTextDocumentParams>(not.params)
@@ -1063,6 +1082,7 @@ impl<'c> Server<'c> {
                             .close_buffer(uri.as_str());
                     });
                     self.dependencies.remove(&uri);
+                    self.forget_inlay_hints(&uri);
                     self.debouncer.cancel(&uri);
                     // An include analysed in this root now reads its saved copy.
                     if let Some(path) = uri_to_path(&uri) {
@@ -1724,6 +1744,7 @@ mod tests {
                     dynamic: false,
                     refresh: false,
                 },
+                inlay: inlay_hint::Options::from_client(&Default::default(), None),
                 hierarchical_symbols: false,
             },
             std::time::Duration::from_millis(10),

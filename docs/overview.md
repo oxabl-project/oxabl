@@ -337,7 +337,7 @@ The `[workspace.features]` table in `oxabl.toml` turns oxabl features on or off 
 
 | Key | Covers in the editor | Covers in the CLI |
 |---|---|---|
-| `diagnostics` | Every diagnostic oxabl reports for a source file (parse, preprocessor, semantic and lint findings) and the code lenses of the effect rules. | `oxabl check` does not run or report the diagnostics channel. |
+| `diagnostics` | Every diagnostic oxabl reports for a source file (parse, preprocessor, semantic and lint findings), the code lenses of the effect rules and the database inlay hints. | `oxabl check` does not run or report the diagnostics channel. |
 | `format` | Formatting, and so format on save. | `oxabl check` does not run or report the format-drift channel. `oxabl format` refuses to run. |
 
 With `diagnostics = false`, the language server publishes an empty list for each open document. This clears what it published before. With `format = false`, `textDocument/formatting` returns no edits. The server keeps the formatting capability, because the file can change while the server runs. A change to `oxabl.toml` applies at once, with no reload.

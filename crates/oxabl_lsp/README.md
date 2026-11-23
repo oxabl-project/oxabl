@@ -32,3 +32,16 @@ Static clients receive the capability at initialization when the declared worksp
 After changing this setting, restart a static client to update its capabilities.
 
 The daemon protocol and the existing check and analyze JSON documents are unchanged.
+
+## Database inlay hints
+
+Files whose configuration enables a rule of `strict.locks`, `strict.transactions` or
+`strict.access` get inlay hints: the lock a read takes when it names none, the index oxabl
+expects a search to use, and where a raised buffer scope (TX005) or an implicit transaction
+(TX001, TX002) starts and ends. The hints come from the facts the strict rules read, and a
+fact that is not known gives no hint.
+
+The client must advertise `textDocument.inlayHint` support. It can turn each kind off with the
+`inlayHints` object (`locks`, `index`, `scope`, `transactions`) in its initialization options or
+in `workspace/didChangeConfiguration` (`settings.oxabl.inlayHints`). See
+`docs/design/inlay-hints.md`.

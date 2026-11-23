@@ -84,3 +84,7 @@ harness = false
 [[bench]]
 name = "outline_bench"
 harness = false
+
+[[bench]]
+name = "hints_bench"
+harness = false

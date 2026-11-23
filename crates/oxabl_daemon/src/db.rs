@@ -103,7 +103,7 @@ use std::sync::{Arc, RwLock};
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
-use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
+use oxabl_pipeline::{Expansion, HintKinds, InlayHint, LintPipeline, PipelineConfig};
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, WorkspaceIndex,
@@ -1076,6 +1076,59 @@ pub fn compute_effect_lenses(
     }))
     .ok()
     .flatten()
+}
+
+/// What the database inlay hints of a buffer are computed from, read on a
+/// snapshot. It holds no snapshot, so the analysis it runs never delays a
+/// write: a write waits for every snapshot to drop, and the analysis of a
+/// large file takes tens of milliseconds, longer than a keystroke may wait.
+pub struct HintInput {
+    config: AnalysisConfig,
+    path: PathBuf,
+    expansion: Expansion,
+}
+
+impl HintInput {
+    /// Equal for two inputs whose analysed text is the same.
+    pub fn fingerprint(&self) -> u64 {
+        self.expansion.fingerprint()
+    }
+
+    /// The hints of `kinds` for the whole file. Unguarded: run it inside a
+    /// panic guard.
+    pub fn hints(&self, kinds: HintKinds) -> Vec<InlayHint> {
+        self.config
+            .lint_pipeline()
+            .with_file(&self.path)
+            .database_hints(&self.expansion, kinds)
+    }
+}
+
+/// Read what the database hints of `buffer` are computed from. The
+/// expansion is the memoized one the diagnostics read. `Some(None)` when the
+/// file shows no hints (its configuration enables no strict database rule);
+/// `None` when a concurrent write cancelled the read.
+pub fn database_hint_input(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+) -> Option<Option<HintInput>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let path = buffer.path(snapshot).clone()?;
+        let config = snapshot.config();
+        if !config
+            .lint_pipeline()
+            .with_file(&path)
+            .database_hints_enabled()
+        {
+            return None;
+        }
+        Some(HintInput {
+            config: config.clone(),
+            path,
+            expansion: expanded_text(snapshot, buffer),
+        })
+    }))
+    .ok()
 }
 
 /// Keep the results of at most `buffers` buffers in each query keyed by a buffer

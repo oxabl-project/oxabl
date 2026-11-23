@@ -96,17 +96,8 @@ pub fn check(
     _program: &[Statement],
     ctx: &AnalysisContext,
 ) -> Vec<Diagnostic> {
-    if not_judged(scopes) {
-        return Vec::new();
-    }
     let mut diags = Vec::new();
-    for read in scopes.reads() {
-        if read.lock != Lock::Default
-            || read.kind == ReadKind::Get
-            || !matches!(read.table, Table::Database(_))
-        {
-            continue;
-        }
+    for read in reported_reads(scopes) {
         let wait = if read.kind == ReadKind::CanFind {
             ": it waits while another session holds the record with EXCLUSIVE-LOCK"
         } else {
@@ -125,6 +116,18 @@ pub fn check(
         ));
     }
     diags
+}
+
+/// The reads [`check`] reports: database reads with no lock phrase, `GET`
+/// aside, in a file the scope analysis judges. The inlay hints show the same.
+pub(crate) fn reported_reads(scopes: &FileScopes) -> impl Iterator<Item = &RecordRead> {
+    let judged = !not_judged(scopes);
+    scopes.reads().iter().filter(move |read| {
+        judged
+            && read.lock == Lock::Default
+            && read.kind != ReadKind::Get
+            && matches!(read.table, Table::Database(_))
+    })
 }
 
 fn help(scopes: &FileScopes, read: &RecordRead) -> String {

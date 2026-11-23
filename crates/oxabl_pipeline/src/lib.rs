@@ -77,6 +77,7 @@ mod explain;
 pub use effects::{EffectFile, WorkspaceEffects};
 mod config;
 mod format;
+mod hints;
 mod lint;
 mod navigate;
 mod outline;
@@ -90,6 +91,7 @@ pub use config::{
     resolve_from_config_deferred,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
+pub use hints::{HintKinds, InlayHint, InlayKind};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
 pub use navigate::{Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};

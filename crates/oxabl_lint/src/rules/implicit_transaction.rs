@@ -60,7 +60,7 @@
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_flow::{BlockId, BlockKind, UnitKind};
-use oxabl_scope::{FileScopes, TxKind, UnitScopes};
+use oxabl_scope::{FileScopes, TxKind, UnitScopes, Update};
 use oxabl_semantic::AnalysisContext;
 
 use super::TX001;
@@ -92,11 +92,35 @@ pub fn check(
     _program: &[Statement],
     ctx: &AnalysisContext,
 ) -> Vec<Diagnostic> {
+    let fragment = ctx.source_context.is_include_fragment();
+    reported_blocks(scopes, fragment)
+        .into_iter()
+        .map(|(unit, block, update)| {
+            warning(
+                ctx,
+                TX001,
+                format!(
+                    "{} is a transaction block only because {}",
+                    describe_block(ctx.source, unit, block),
+                    update_phrase(scopes, ctx.source, &update),
+                ),
+                help(ctx.source, unit, block),
+                update.at,
+            )
+        })
+        .collect()
+}
+
+/// The blocks [`check`] reports, each with the update that makes it a
+/// transaction block. The inlay hints show the same.
+pub(crate) fn reported_blocks(
+    scopes: &FileScopes,
+    fragment: bool,
+) -> Vec<(&UnitScopes, BlockId, Update)> {
     if not_judged(scopes) {
         return Vec::new();
     }
-    let fragment = ctx.source_context.is_include_fragment();
-    let mut diags = Vec::new();
+    let mut blocks = Vec::new();
     for unit in scopes.units() {
         if fragment && unit.parent.is_none() {
             continue;
@@ -105,23 +129,12 @@ pub fn check(
             let TxKind::Implicit(update) = b.transaction.kind else {
                 continue;
             };
-            if !reported(scopes, unit, b.id, fragment) {
-                continue;
+            if reported(scopes, unit, b.id, fragment) {
+                blocks.push((unit, b.id, update));
             }
-            diags.push(warning(
-                ctx,
-                TX001,
-                format!(
-                    "{} is a transaction block only because {}",
-                    describe_block(ctx.source, unit, b.id),
-                    update_phrase(scopes, ctx.source, &update),
-                ),
-                help(ctx.source, unit, b.id),
-                update.at,
-            ));
         }
     }
-    diags
+    blocks
 }
 
 fn reported(scopes: &FileScopes, unit: &UnitScopes, block: BlockId, fragment: bool) -> bool {
