@@ -1,5 +1,61 @@
 # Changelog
 
+## [5.9.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.8.0...oxabl-v5.9.0) (2026-11-23)
+
+
+### Features
+
+* **lsp:** answer workspace/symbol from the workspace index ([c7f8f90](https://github.com/oxabl-project/oxabl/commit/c7f8f90b7c6dd18b66fc29a0cd311dfe6181aae5))
+* **lsp:** answer workspace/symbol from the workspace index ([c6680be](https://github.com/oxabl-project/oxabl/commit/c6680bed6ececab2739fbe4e673660fe5953078c)), closes [#406](https://github.com/oxabl-project/oxabl/issues/406)
+* **lsp:** go to definition and document links ([9a89c3d](https://github.com/oxabl-project/oxabl/commit/9a89c3d344cee9ac558d7a9218565496066da4d0))
+* **lsp:** go to definition and document links ([1df981d](https://github.com/oxabl-project/oxabl/commit/1df981dfba85c1ffadd26219b36e402a881ef6ca)), closes [#407](https://github.com/oxabl-project/oxabl/issues/407) [#408](https://github.com/oxabl-project/oxabl/issues/408)
+* **lsp:** inspect the expanded compilation unit of a file ([faa7bf8](https://github.com/oxabl-project/oxabl/commit/faa7bf81431e7bf794510fa1e95c10bfc6d8c985))
+* **lsp:** inspect the expanded compilation unit of a file ([57e65b6](https://github.com/oxabl-project/oxabl/commit/57e65b61801d9a25f57f30c516adf3a0e02f766c)), closes [#169](https://github.com/oxabl-project/oxabl/issues/169)
+* **lsp:** select an includer context for an open include ([18a621e](https://github.com/oxabl-project/oxabl/commit/18a621eca5d4de5eb875f3214ae0f319f06f33cc))
+* **lsp:** select an includer context for an open include ([99a3291](https://github.com/oxabl-project/oxabl/commit/99a3291874d6628bfe9ae96d234fe7f82543dc1f)), closes [#168](https://github.com/oxabl-project/oxabl/issues/168)
+* **navigation:** go to procedures run in a persistent handle ([c401218](https://github.com/oxabl-project/oxabl/commit/c401218d08daa6576d9fbb3b2d31197b1ad8d20f))
+* **navigation:** go to procedures run in a persistent handle ([44a774f](https://github.com/oxabl-project/oxabl/commit/44a774f24e062bab53a27e660b14bbe4a24cc83b))
+
+
+### Bug Fixes
+
+* **lsp:** definition of a LIKE field, and null answers through the proxy ([85351b7](https://github.com/oxabl-project/oxabl/commit/85351b77041175e8e00255116b1a12741d8d6f63))
+* **lsp:** definition of a LIKE field, and null answers through the proxy ([1bfda41](https://github.com/oxabl-project/oxabl/commit/1bfda4148c8a121292be2d763523ac007ea19adb))
+* **preprocessor:** long lines and runs of unclosed braces cost memory and time in line with the input ([322fc7b](https://github.com/oxabl-project/oxabl/commit/322fc7b9e4edfe2601d03060c3508b3b0e0eb81c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.1.0 to 4.1.1
+    * oxabl_lexer bumped from 2.0.2 to 2.0.3
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+    * oxabl_preprocessor bumped from 0.8.2 to 0.8.3
+    * oxabl_semantic bumped from 5.1.0 to 5.2.0
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+    * oxabl_analyze bumped from 4.2.2 to 4.3.0
+    * oxabl_pipeline bumped from 3.7.0 to 3.8.0
+    * oxabl_lint bumped from 5.1.0 to 5.1.1
+    * oxabl_lsp bumped from 3.2.0 to 3.3.0
+    * oxabl_daemon bumped from 0.6.1 to 0.7.0
+    * oxabl_build bumped from 0.8.1 to 0.8.2
+    * oxabl_build_remote bumped from 0.2.11 to 0.2.12
+    * oxabl_formatter bumped from 2.1.0 to 2.1.1
+  * dev-dependencies
+    * oxabl_analyze bumped from 4.2.2 to 4.3.0
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+    * oxabl_pipeline bumped from 3.7.0 to 3.8.0
+    * oxabl_flow bumped from 0.4.0 to 0.4.1
+    * oxabl_handles bumped from 0.2.9 to 0.2.10
+    * oxabl_scope bumped from 0.2.9 to 0.2.10
+    * oxabl_effects bumped from 0.3.7 to 0.3.8
+    * oxabl_nulls bumped from 0.2.9 to 0.2.10
+    * oxabl_index bumped from 5.2.1 to 5.3.0
+
 ## [5.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.7.1...oxabl-v5.8.0) (2026-11-20)
 
 

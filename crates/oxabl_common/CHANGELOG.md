@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.3.0...oxabl_common-v1.3.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **preprocessor:** long lines and runs of unclosed braces cost memory and time in line with the input ([322fc7b](https://github.com/oxabl-project/oxabl/commit/322fc7b9e4edfe2601d03060c3508b3b0e0eb81c))
+
 ## [1.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.2.2...oxabl_common-v1.3.0) (2026-11-20)
 
 

@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.2.2...oxabl_analyze-v4.3.0) (2026-11-23)
+
+
+### Features
+
+* **lsp:** go to definition and document links ([9a89c3d](https://github.com/oxabl-project/oxabl/commit/9a89c3d344cee9ac558d7a9218565496066da4d0))
+* **lsp:** go to definition and document links ([1df981d](https://github.com/oxabl-project/oxabl/commit/1df981dfba85c1ffadd26219b36e402a881ef6ca)), closes [#407](https://github.com/oxabl-project/oxabl/issues/407) [#408](https://github.com/oxabl-project/oxabl/issues/408)
+* **lsp:** inspect the expanded compilation unit of a file ([faa7bf8](https://github.com/oxabl-project/oxabl/commit/faa7bf81431e7bf794510fa1e95c10bfc6d8c985))
+* **lsp:** inspect the expanded compilation unit of a file ([57e65b6](https://github.com/oxabl-project/oxabl/commit/57e65b61801d9a25f57f30c516adf3a0e02f766c)), closes [#169](https://github.com/oxabl-project/oxabl/issues/169)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_lexer bumped from 2.0.2 to 2.0.3
+    * oxabl_lint bumped from 5.1.0 to 5.1.1
+    * oxabl_parser bumped from 4.1.0 to 4.1.1
+    * oxabl_preprocessor bumped from 0.8.2 to 0.8.3
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+    * oxabl_semantic bumped from 5.1.0 to 5.2.0
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+  * dev-dependencies
+    * oxabl_index bumped from 5.2.1 to 5.3.0
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+
 ## [4.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.2.1...oxabl_analyze-v4.2.2) (2026-11-20)
 
 
