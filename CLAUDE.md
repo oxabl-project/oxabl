@@ -154,6 +154,8 @@ Generates:
 
 ## CI & Release Process
 
+Every job in `ci.yml` and `codspeed.yml` has a `timeout-minutes` of about three times its usual run time, so a hung step (such as a toolchain setup that never returns) fails in minutes, not after GitHub's six-hour default. Raise a job's limit when it grows; do not remove it.
+
 ### Automated Releases (`.github/workflows/release.yml`)
 
 Uses [Release Please](https://github.com/googleapis/release-please) for fully automated versioning and changelogs. Use conventional commits.
