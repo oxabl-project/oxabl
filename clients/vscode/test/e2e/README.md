@@ -17,8 +17,12 @@ into `.vscode-test/`.
 
 | Scenario | What it checks |
 | --- | --- |
-| `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that a missing binary shows no message and is logged to the `oxabl` output channel. |
+| `highlight-p`, `highlight-cls` | The language is `ABL`. Token colours equal the Default Dark Modern colours in `lib/colors.mjs`. `highlight-p` also checks that a missing binary is logged to the `oxabl` output channel and that the only message is the offer to install the CLI. |
 | `markdown` | Keywords in a fenced `abl` block get colours. Prose around the block does not. |
+| `outline` | A real `oxabl` (`OXABL_E2E_OXABL`, with a short `OXABL_E2E_RUNTIME` directory) in `outline.p` and `OutlineDemo.cls`. The Outline view lists the symbols in the right tree (fields under the temp-table, parameter under the function, members under the class) and shows a new procedure after an edit. "Go to Symbol in File" lists the symbols, and choosing one puts the cursor on its name. The breadcrumbs show the class and the method at the cursor. "Go to Symbol in Workspace" lists `ArchiveOrders` from `archive.p`, a file that is not open, and choosing it opens that file with the cursor on the name. It fails without the binary. |
+| `include-context` | A real `oxabl` (as `outline`) in a project with `shared.i`, included by `reads.p` and `ignores.p`. The open include shows `oxabl: fragment` in the status bar. **oxabl: Select Include Context** lists fragment mode and both roots. Choosing `ignores.p` shows `oxabl: in ignores.p` and the unused `spare-v` in the Problems panel. Choosing `reads.p` removes it. A root file shows no include context, the selection stays with the include, and fragment mode can be chosen again. |
+| `expanded-unit` | A real `oxabl` (as `outline`) with `nested.p`, which includes `mid.i`, which includes `shared.i`. **oxabl: Show Expanded Compilation Unit** opens `nested (expanded).p` beside the file with both includes folded. Unfold All shows the text between `▼` and `▲` lines for each include. Typing does not change the view. The unused `spare-v` of the same analysis is in the Problems panel. F12 on an expanded line opens `shared.i`. An unsaved edit of `nested.p` that reads `spare-v` removes the finding and leaves the disk unchanged. `missing.p` gives a reduced expansion that names `nope.i`. |
+| `definition` | A real `oxabl` (as `outline`) with `main.p` and `util/recalc.p`. The `RUN util/recalc.p` target shows as a document link. F12 on it opens `recalc.p`. F12 on a use of a local variable puts the cursor on its `DEFINE`. It fails without a binary that answers both requests. |
 | `update-auto` | The extension installs a newer release from the fake API and sends the right headers. |
 | `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |
 | `update-notify` | The `notify` mode shows a message and installs nothing. |
@@ -42,14 +46,24 @@ only; the extension is the program under test.
 | `build-save-keeps-its-build` | The watcher event that follows a save neither cancels the build of that save nor delays it. |
 | `build-burst-save` | Ten saves while a build runs: one `SIGINT` to that build, one new build that completes. |
 | `build-burst-disk` | Two hundred files written on disk while a build runs: the same. Files in the output and state directories start no build. |
+| `build-beside-source` | A root whose configuration has `build.rcode = "beside-source"` and no `build.output` builds at open. Two hundred `.r` files written into the source directories (and `.R`, and below `pkg/`) start no build; a `.p` written beside them starts one. |
+| `build-config-refused` | `--print-config` exits 2 with the error of a binary that does not know `build.rcode`: an error notification gives that reason, and no build runs. |
 | `build-diagnostic` | A compiler message shows in the Problems panel. A failed first build gives an error notification, and `oxabl: 1 failed` stays in the status bar. |
 | `build-untrusted` | An untrusted workspace runs no `oxabl build`, not even `--print-config`. Granting trust starts the build. |
 | `build-external-preemption` | A build that exits 130 without a signal from the extension: the status bar says `running elsewhere` and one more build starts. |
+| `build-unkeyed` | A report with units without a compile key gives one warning with the count, the reason and how to finish the setup; a later build with the same reason gives none. |
 | `build-too-old` | A binary without `--yield` is not used and not updated when it is not managed. |
 | `build-too-old-managed` | A managed binary without `--yield` and without `self-update` is replaced by the newest release, then builds. |
 | `build-binary-changed` | A binary that reports a new version restarts the language server once. |
 | `build-install` | With no binary, the install prompt shows. `Install` puts the release asset into `OXABL_INSTALL_DIR`, writes the install record (`installer: "vscode"`), leaves no staged file, and the build runs with it. |
+| `install-no-project` | No `oxabl.toml` and no binary: the install prompt shows. `Install` starts the language server with the installed CLI. No message is about `oxabl.toml` or a build, and no `oxabl build` runs, not even `--print-config`. |
+| `quiet-no-project` | A binary and no `oxabl.toml`: the language server starts, no oxabl message shows, and no `oxabl build` runs. |
 | `build-install-bad-checksum` | A wrong checksum installs nothing and writes no record. |
+| `cli-update-auto` | In `auto` mode the update check asks a managed binary (`self-update --check --json`), runs `self-update`, says "oxabl CLI updated" in the status bar and restarts the language server. |
+| `cli-update-notify` | In `notify` mode the prompt for the CLI has Update, Release Notes and Skip This Version, installs nothing before the answer, and `Update` installs. |
+| `cli-update-unmanaged` | A binary that the install record does not name is never asked to update; the output channel says why. |
+| `cli-update-check-fails` | A check that fails installs nothing, shows no error on an automatic check, and logs the reason. |
+| `cli-update-manual-current` | In `off` mode nothing is asked by itself; `oxabl: Check for Updates` says the CLI is up to date. |
 
 The highlight and markdown scenarios run with `oxabl.updates` set to `off` and
 assert that the fake API received no request. Every launch needs

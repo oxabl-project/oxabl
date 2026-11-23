@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.2.2...oxabl_common-v1.3.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+* **pipeline:** document outline contract ([8083056](https://github.com/oxabl-project/oxabl/commit/808305661312c226313a005332e67a57159e89a8))
+
+
+### Bug Fixes
+
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([e39f9c0](https://github.com/oxabl-project/oxabl/commit/e39f9c0922816300faf35657e8294cc713410354))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+
 ## [1.2.2](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.2.1...oxabl_common-v1.2.2) (2026-11-06)
 
 

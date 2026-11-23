@@ -94,7 +94,7 @@ service is a separate product (oxabl-cache). This PRD defines the oxabl side of 
 | D7 | The worker protocol is line-based text over the worker's stdin and stdout. | It works through any command (`docker exec -i`, `kubectl exec -i`, a local `_progres`) with no ports and no network setup. End of stdin stops the worker, so a dead oxabl leaves no orphan workers. | TCP: port races, bind addresses, a firewall and an orphan registry. |
 | D8 | Workers live for one build. Classes are keyed only when the build has one PROPATH id; with per-unit PROPATHs, every unit that reaches a class is unkeyable (K9) and still compiles as the AVM resolves it. | No daemon is needed. The shared `$OUT` tree, `MULTI-COMPILE` sessions and in-memory class compiles all resolve classes in ways that per-unit PROPATHs make unsound, and real codebases checked use one global PROPATH. | A persistent pool: it needs a daemon (follow-up). Keying classes under per-unit PROPATHs: each design attempt found a new hole (follow-up with its proof list). An output tree per PROPATH id: one class name with two `.r` files is ambiguous at run time anyway. |
 | D9 | A fake AVM (`oxabl_fake_avm`, a test-only binary) implements the protocol from the document, with no oxabl dependency. | It stands in for Progress, not for oxabl. A shared codec would hide a codec bug on both sides. | A mock inside the tests: it fakes the program under test. |
-| D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema image gives the same identities, and the compiler opened no file outside the closure (from the compiler-resolved `XREF-XML`). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
+| D10 | Each cache write needs verification when its unit completes: the inputs hash again to the same values, a later schema image gives the same identities, and the compiler opened no file outside the closure (from the compiler-resolved cross-reference). Verified sets stream to the cache during the build. | A file edit or a schema change during the build must never put a wrong entry in a cache; streaming bounds memory and overlaps upload with compiling. | Trust the dispatch-time snapshot: an edit between hash and compile gives a wrong entry. One upload after the build: all bytes in memory and no overlap. |
 | D13 | The remote cache's configuration and root of trust (`tenant`, `owner_keys`, `min_roster_version`) live only in the client's committed `.oxabl/cache.toml`. `oxabl.toml` has build-side switches only. | Whoever controls the environment of a build must not be able to replace the pinned owner keys. | Remote settings in `oxabl.toml`: the overlay could replace the root of trust. |
 | D14 | The local cache trusts every process of the OS user, so the shared one is on only in `developer` mode; `ci` and `read-only` use a marked per-job directory or none. | On a shared CI runner, an untrusted job could plant an entry that a trusted job installs without a signature check. | A local cache with signatures: it needs the remote keys on every machine and duplicates the client. |
 | D11 | Store format changes rebuild the store. There are no migrations. | The store is a derived cache. Migrations were the largest source of complexity in the downstream store. | Versioned migrations. |
@@ -145,12 +145,14 @@ Each file holds one responsibility. Target: no file over about 400 lines.
 | `schedule` | `ready.rs`, `priority.rs`, `retry.rs` | Ready queue over the condensation, critical-path priority, retry pass. |
 | `worker` | `program.rs`, `command.rs`, `frame.rs`, `handshake.rs`, `session.rs`, `pool.rs`, `kill.rs` | Worker program, spawn, protocol, crash and cancel. |
 | `output` | `stage.rs`, `promote.rs`, `prune.rs` | Staging, atomic promotion, removal of orphan outputs. |
-| `verify` | `rehash.rs`, `reads.rs` | Verification before a cache write. |
+| `verify` | `policy.rs`, `rehash.rs`, `reads.rs`, `release.rs` | Verification before a cache write, and the policy that the cache mode sets for it. |
 | `cache` | `seam.rs`, `local.rs`, `layered.rs` | The `ArtifactCache` trait, the local cache, the local-then-remote chain. |
 | `lock.rs`, `events.rs`, `run.rs` | | The workspace lock, the event stream, the build orchestration. |
 
-The worker program is `crates/oxabl_build/resources/oxabl_worker.p`, embedded with
-`include_str!`.
+The worker program is two files, `crates/oxabl_build/resources/oxabl_worker_compile.p` and
+`oxabl_worker_driver.p`, embedded with `include_str!` and joined (see
+[worker-protocol.md](build-tool/worker-protocol.md#two-parts)). The compile key hashes only
+the compile part.
 
 ### Why not the daemon
 
@@ -176,7 +178,10 @@ It then calls `oxabl_build` and reads the same store. It does not keep a second 
    ([worker-protocol.md](build-tool/worker-protocol.md#handshake)). Then the workers image
    every database together, each a share of the tables, and oxabl combines the shares into
    the schema identities ([worker-protocol.md](build-tool/worker-protocol.md#schema-image)).
-   Every build images every database. Check the
+   First a raw pass hashes the metaschema records of each database; a database whose raw
+   digest equals the one the last build stored with its image takes that image, and only the
+   others are imaged ([compile-key.md](build-tool/compile-key.md#the-raw-digest)).
+   `--probe` always images. Check the
    predefined names against `[workspace.preprocessor]`. A difference stops the build with
    exit code 2 and names the value on both sides.
 4. **Key and plan.** Compute the closure and keyability of every unit, including the class
@@ -388,8 +393,9 @@ never compiled on its own.
 4. **Priority.** The longest path from the job to a component that nothing depends on,
    weighted by the last compile duration of each unit (`results.duration_ms`, 1 ms when
    unknown). Ties break by path. This starts the long chains first.
-5. **Cycles.** All units of one job go to one worker in one request. The ABL compiler
-   compiles a cycle of classes in one `MULTI-COMPILE` session.
+5. **Cycles.** All units of one job go to one worker. The job compiles in passes, with a
+   rebind of the session before each later pass, so that the last pass reads only this
+   build's r-code of the cycle ([compile-key.md](build-tool/compile-key.md#passes-over-a-cycle)).
 6. **Fetches.** A unit whose key is being fetched is a pending component. A hit finishes
    it; a miss makes it a job. Jobs that wait on no pending component start at once.
 7. **Failure does not block.** A failed job finishes. Its dependents still compile; the
@@ -449,6 +455,10 @@ that the key covers, and the key would be wrong. So:
   another output directory`.
 - In a directory with the marker, the prune step deletes every file that no result owns,
   except oxabl's own files (`.oxabl-output`, `.oxabl-build.lock`).
+- R-code that a result of the store holds at a path that no unit expects now (after a
+  change of `[build].output` or of `[build].rcode`) is deleted before the first compile, when
+  its bytes are still the recorded ones. A directory that this empties is deleted with
+  oxabl's own files in it, and a `.gitignore` that oxabl wrote.
 
 ### Worker PROPATH and the output directory
 
@@ -457,10 +467,86 @@ entries, then `[workspace.sources].include_paths`, then the DLC default entries
 ([compile-key.md](build-tool/compile-key.md#the-unit-propath-and-the-compile-name)). The output directory comes first, so a
 unit that uses a class reads the r-code that this build just made for it. The scheduler
 order makes that r-code current. The prune step and the delete-on-failure rule make sure
-no stale or orphan r-code is there. Because every unit reads the one `$OUT` tree, classes
-are keyed only when the build has one PROPATH id (K9,
-[compile-key.md](build-tool/compile-key.md#per-unit-propath-classes)); with one PROPATH id,
-a K3-accepted external name that a workspace class also has is K8.
+no stale or orphan r-code is there. Because every unit reads the one `$OUT` tree, a unit
+whose PROPATH would find another file for a class than the one `$OUT` holds, or than other
+units find, has no key (K9,
+[compile-key.md](build-tool/compile-key.md#per-unit-propath-classes)); a K3-accepted external
+name that a workspace class also has is K8, and class r-code that oxabl does not hash is K11.
+
+### R-code beside the source
+
+With `[build].rcode = "beside-source"` there is no output directory for the r-code. The
+r-code of each unit is at its unit path with the extension `.r` (`a/x.p` gives `a/x.r`,
+`a/pkg/Foo.cls` gives `a/pkg/Foo.r`, `rf/x.w` gives `rf/x.r`). For a class this is
+`<package root>/<pkg>/<Name>.r`, where the compiler and the runtime look. A runtime whose
+PROPATH holds only the source directories runs it, and so does a program that starts by the
+full path of its source (measured: [compile-key.md](build-tool/compile-key.md#measured-runtime-and-r-code-beside-the-source)).
+
+- **One build tool.** Oxabl owns the r-code beside every unit of the workspace. R-code
+  there before the first build is stale: oxabl replaces it when the unit compiles, and
+  deletes it before the first compile or fetch when the unit is skipped (unless a unit that
+  compiles has the same file) or is a class unit of the build. So no user binds class
+  r-code that is older than its class, also when the analysis misses the edge, and a
+  skipped unit never runs old r-code. A unit that fails loses its r-code.
+- **The worker is unchanged.** It compiles `SAVE INTO` its stage. Oxabl renames the staged
+  file to the path beside the source (one file system: the stage is under the root). A
+  runtime that has the old file open keeps it. Oxabl creates no directory beside the
+  sources. Before the first compile, it checks that it can write each directory it installs
+  into; a directory it cannot write stops the build with exit code 3 and its name. A file it
+  cannot delete stops the build in the same way, because the runtime would run it.
+- **The unit PROPATH has no `$OUT`.** A user binds a class unit from its r-code beside the
+  source, which the scheduler compiles first. This changes the `propath` part of every key
+  once; the keys of `directory` mode do not change.
+- **A cycle starts from the sources.** At each attempt of a job with more than one unit,
+  oxabl deletes the r-code beside each member before the first pass. Stale r-code that does
+  not fit the new sources would fail every compile of the cycle (error 12927).
+- **The analysis does not see r-code.** The digest of a directory listing leaves out names
+  that end in `.r` and the temporary names of an install (`*.oxabl-tmp-*`), in both modes.
+  `RUN x.r` is never searched. So r-code that a build writes starts no analysis.
+- **Version control.** Oxabl writes no `.gitignore` into the source directories. The code
+  base's own `.gitignore` must ignore `*.r`.
+- **The manifest.** `<state>/installed` lists each path beside a source that oxabl wrote,
+  with the BLAKE3 hash and the size it installed. It is a file of its own, not part of the
+  store, so a new store format does not lose it. Before its first delete or rename, a build
+  appends a line with the path alone (an intent) for each unit it builds, and calls `fsync`
+  once. At its end it writes the whole file again (temporary file, `fsync`, `rename`). So a
+  kill at any moment leaves each path that oxabl wrote in the manifest.
+- **Orphans, in both modes.** Before the first compile, a build deletes each manifest path
+  that is not the r-code path of a unit that compiles now (the source is gone, the unit is
+  skipped, or the mode is `directory` now). It deletes the file when its bytes have the
+  recorded hash or its line is an intent: nothing but oxabl writes there. Other bytes stay,
+  with a warning. R-code that is not in the manifest and not beside a unit (r-code shipped
+  without its source) is never touched. A directory that such a delete empties is removed,
+  because `git` cannot remove a directory that holds an ignored file. A delete that fails
+  stops the build with exit code 3.
+- **A change of mode.** A build also deletes the r-code of each result in the store whose
+  path no unit expects now, when the file still has the recorded bytes, and then each
+  directory that this empties, with the marker, the lock and the `.gitignore` that oxabl
+  wrote. So a switch to `beside-source` removes the copy in the old `[build].output`, and a
+  switch back removes the r-code beside the sources (through the manifest). Each switch
+  compiles or fetches every unit. An overlay can set `build.rcode`, so it can cause a
+  switch. When the store is gone (a new store format deletes it), oxabl does not know the
+  old output directory: delete it by hand.
+- **Intact r-code.** Each recorded output is compared with its size, modification time,
+  change time and inode. A row taken less than two seconds after the last change of the
+  file (racy) does not vouch for the bytes, and the file is hashed again. A missing or
+  changed file compiles again, or comes from a cache. The next build hashes once each
+  output that the build before it installed.
+- **Temporary files.** An install across file systems writes `x.r.oxabl-tmp-<pid>` beside
+  the source. A build deletes such files in the directories of the manifest paths before it
+  installs anything.
+- **Caches.** A cache entry holds the r-code by the unit path (`r/<unit stem>.r`), and a
+  fetch installs it beside the source of the workspace that fetches, with the same rename
+  as a compile. So a second copy of a project fetches its r-code into its own source
+  directories. The keys of the two modes differ (no `$OUT` in the unit PROPATH), so a
+  cache never gives r-code of one mode to the other. The keys of `directory` mode are the
+  keys of oxabl 5.6.0. A user that oxabl cannot key compiles after the fetch of each class
+  unit of the build is installed or answered as a miss. On one file system, the local cache
+  stores a reflink or a hard link of the r-code beside the source. On another file system
+  it stores a copy, up to `[build.cache].local_max_size`.
+- **One root for each source file.** Two workspace roots whose sources overlap write the
+  same r-code with different keys, and each build of one root sees the other's r-code as a
+  change. A source file must belong to one root.
 
 ## CLI surface
 
@@ -483,7 +569,7 @@ oxabl build [--plan [--all] [--probe]] [--files <path>... | --since <rev>]
   going, because the full error list is more useful for a large tree.
 
 `oxabl build` leaves hidden `--help` with slice 10: the OpenEdge suite passed on a real AVM,
-so the worker program's `COMPILE` path, class order and cycles, the private `XREF-XML` and
+so the worker program's `COMPILE` path, class order and cycles, the private text `XREF` and
 check V3 on real file names, cache sharing between two roots and the signal handling are
 proven. Unhiding adds `build` to the advertised commands in `docs/overview.md` and needs a
 `feat` commit for release-please. The documentation states the known limits at the same
@@ -608,7 +694,7 @@ These are out of scope. Each needs its own design note before code.
 
 - **A fresh worker session per PROPATH id.** So that per-unit PROPATH layouts compile
   class users correctly, not only without a key (`per_unit_propath_class_binding`).
-- **A V3 source for classes and definitions-only includes.** `XREF-XML` lists neither
+- **A V3 source for classes and definitions-only includes.** the cross-reference lists neither
   ([cache.md](build-tool/cache.md#what-v3-covers)); until another source exists, the plan's
   closure rules are the only guard for those reads.
 - **Parser recoveries in real code.** 225 of 7,678 units of the real-code trial have no key
@@ -630,10 +716,3 @@ These are out of scope. Each needs its own design note before code.
   and a proof that the reset clears the session cache.
 - **Windows workers.** Needs a check that the worker program reads stdin in batch mode on
   Windows.
-- **Cheaper trustworthy schema change test.** Every build images every database (6.2 s with
-  8 workers for 5 real databases, the largest with 1,229 entries). A test that could skip
-  imaging must change for every edit that changes the image. The database's cache stamp
-  does not: it missed a primary-index change, an added sequence and a dropped field
-  ([compile-key.md](build-tool/compile-key.md#database-fingerprints)). Per-table checks
-  (`_File._CRC` plus counts) miss labels and formats. A candidate must pass the same
-  scratch-database edit table, plus every excluded-field case, before it may skip imaging.

@@ -16,6 +16,7 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -41,6 +42,20 @@ jobs:
             echo "oxabl without the remote-cache feature must not depend on an oxabl-cache crate" >&2
             exit 1
           fi
+      # LSP counts only LF, CRLF and CR as line breaks. ropey's unicode_lines
+      # also counts U+2028, NEL and FF, and any crate that enables it turns it
+      # on for the language server too.
+      - name: No build turns on ropey's unicode_lines
+        run: |
+          tree=$(cargo tree --workspace --all-features -e features -i ropey)
+          if ! grep -q '^ropey v' <<<"$tree"; then
+            echo "cargo tree did not list ropey, so the gate checked nothing" >&2
+            exit 1
+          fi
+          if grep unicode_lines <<<"$tree"; then
+            echo "ropey's unicode_lines moves every LSP position after a U+2028, NEL or FF" >&2
+            exit 1
+          fi
       # The self-update feature of the umbrella crate is the only way to the HTTP
       # and TLS stack besides the remote cache, so a plain `cargo install oxabl`
       # carries no network or crypto code.
@@ -61,6 +76,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -71,6 +87,7 @@ jobs:
   remote-cache:
     name: Remote cache
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -97,6 +114,7 @@ jobs:
   self-update:
     name: Self-update
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -110,6 +128,7 @@ jobs:
   install-script:
     name: Install script
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -126,6 +145,7 @@ jobs:
   musl-binary:
     name: Static Linux binary
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
       - uses: actions/cache@v4
@@ -144,6 +164,7 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -156,6 +177,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -167,6 +189,7 @@ jobs:
   fuzz-targets:
     name: Fuzz targets
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -182,6 +205,7 @@ jobs:
   wasm:
     name: WebAssembly client
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -193,6 +217,7 @@ jobs:
   schema-drift:
     name: Schema drift
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -208,6 +233,7 @@ jobs:
   grammar-drift:
     name: Grammar drift
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: moonrepo/setup-rust@v1
@@ -224,6 +250,7 @@ jobs:
   vscode-client:
     name: VS Code client
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: clients/vscode
@@ -257,11 +284,19 @@ jobs:
   vscode-e2e:
     name: VS Code end-to-end
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: clients/vscode
     steps:
       - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      # The outline scenario runs the real language server.
+      - name: Build oxabl
+        working-directory: .
+        run: cargo build -p oxabl --locked
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -275,9 +310,14 @@ jobs:
           path: clients/vscode/.vscode-test
           key: vscode-test-${{ runner.os }}-${{ hashFiles('clients/vscode/test/e2e/lib/vscode.mjs') }}
       # The packaged VSIX in a real VS Code: highlighting, the Markdown
-      # injection, the missing-binary warning and the self-update against a
-      # fake GitHub API.
-      - run: xvfb-run -a pnpm run test:e2e
+      # injection, the missing-binary warning, the self-update against a
+      # fake GitHub API and the outline from the real server.
+      - run: |
+          mkdir -p /tmp/oxrt
+          xvfb-run -a pnpm run test:e2e
+        env:
+          OXABL_E2E_OXABL: ${{ github.workspace }}/target/debug/oxabl
+          OXABL_E2E_RUNTIME: /tmp/oxrt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

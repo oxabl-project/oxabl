@@ -58,8 +58,8 @@ pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
 pub use signature::{Param, ParamMode, ParamShape, ProgramSignatures, Signature};
 pub use symbol::{
-    ClassLookup, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable,
-    UnlinkedRun,
+    ClassLookup, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId,
+    SymbolKind, SymbolTable, UnlinkedRun,
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 
@@ -153,6 +153,9 @@ pub struct AnalysisContext<'a> {
     /// The offsets of [`elided`](Self::elided) where an include did not
     /// arrive, sorted. Statements the include held may sit there.
     pub elided_includes: &'a [u32],
+    /// Whether the resolve pass records where each name is written
+    /// ([`SymbolTable::sites`]), for editor navigation. Off by default.
+    pub record_sites: bool,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -178,7 +181,15 @@ impl<'a> AnalysisContext<'a> {
             tokens: &[],
             elided: &[],
             elided_includes: &[],
+            record_sites: false,
         }
+    }
+
+    /// Record navigation sites (builder-style); see
+    /// [`record_sites`](Self::record_sites).
+    pub fn with_sites(mut self, record: bool) -> Self {
+        self.record_sites = record;
+        self
     }
 
     /// Attach the tokens the source was parsed from (builder-style).

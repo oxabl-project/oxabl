@@ -5,6 +5,7 @@ mod context;
 mod coordinate;
 mod fetch;
 mod finish;
+mod installed;
 mod pass;
 mod prepare;
 mod record;
@@ -19,7 +20,7 @@ mod upload;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use oxabl_common::catch_panic;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -28,7 +29,7 @@ use self::context::{Ctx, FetchPlan, Imaging, State, Verify};
 use self::pass::PassEnd;
 use self::prepare::{Prepared, prepare};
 use self::record::Recorder;
-pub use self::report::{BuildReport, Setup, Summary, UnitReport, UnitStatus};
+pub use self::report::{BuildReport, SchemaImages, Setup, Summary, UnitReport, UnitStatus};
 pub use self::request::BuildRequest;
 use self::types::UnitInfo;
 use self::upload::Upload;
@@ -39,12 +40,13 @@ use crate::events::Event;
 use crate::graph::Scratch;
 use crate::key::compute::{Keyed, UnitKey};
 use crate::observe::{Observer, Places};
-use crate::output::{OutputLayout, prune, stage};
+use crate::output::{OutputLayout, in_place, prune, stage};
 use crate::paths::PathMap;
 use crate::paths::propath::{OUT, library_name};
 use crate::plan::Plan;
 use crate::refresh::Outcome;
 use crate::store::StoredEnvironment;
+use crate::verify::policy::Policy;
 use crate::verify::reads::{Reads, trim_slash};
 use crate::verify::rehash::Rehasher;
 use crate::verify::release::{Releaser, Settings};
@@ -59,6 +61,7 @@ pub fn build(
     let started_at = Instant::now();
     let started_ns = crate::refresh::now_ns();
     let options = compile_options(&workspace.config.build)?;
+    let policy = Policy::resolve(request.mode, &workspace.config.build.verify)?;
     let prepared = prepare(workspace, &request)?;
     let BuildRequest {
         fail_fast,
@@ -86,6 +89,7 @@ pub fn build(
     let crate::worker::Started {
         mut pool,
         environment,
+        origin,
         ..
     } = started;
     let settings = &workspace.settings;
@@ -120,6 +124,15 @@ pub fn build(
         .filter(|unit| !compiling.contains(unit))
         .copied()
         .collect();
+    let installed = match installed::begin(
+        settings, &layout, &plan, &outcome, &results, &compiling, &mut notes,
+    ) {
+        Ok(installed) => installed,
+        Err(error) => {
+            pool.shutdown();
+            return Err(error);
+        }
+    };
     let owned: HashSet<String> = results
         .outputs
         .iter()
@@ -139,6 +152,12 @@ pub fn build(
         let key = keys.get(&entry.path).expect("every unit has a key state");
         infos.insert(unit, info(&layout, &entry.path, key));
     }
+    if layout.beside_source()
+        && let Err(error) = clear_in_place(root, &plan, &outcome, &infos)
+    {
+        pool.shutdown();
+        return Err(error);
+    }
     let propaths: Vec<Vec<String>> = keys
         .keyed
         .propaths
@@ -155,15 +174,24 @@ pub fn build(
         .iter()
         .map(|(unit, row)| (*unit, row.duration_ms.max(1)))
         .collect();
-    let verifying = verification(workspace, &layout, cache.writes(), &mut notes);
+    let verify_config = &workspace.config.build.verify;
+    if verify_config.batch_units.is_some() || verify_config.batch_interval.is_some() {
+        notes.push(
+            "[build.verify] batch_units and batch_interval are ignored; imaging_budget paces the schema checks"
+                .to_string(),
+        );
+    }
+    let verifying = policy.verifies(cache.writes(), &mut notes);
     let baseline: Vec<(String, blake3::Hash)> = environment
         .databases
         .iter()
         .map(|database| (database.info.ldb.clone(), database.schema.identity()))
         .collect();
+    let raw_baseline: Option<Vec<String>> = origin.raw.iter().cloned().collect();
     let imaging = (verifying && !baseline.is_empty()).then(|| Imaging {
         databases: baseline.iter().map(|(ldb, _)| ldb.clone()).collect(),
         timeout: spec.unit_timeout,
+        raw: raw_baseline.is_some(),
     });
     let verify = verifying.then(|| Verify {
         rehasher: Rehasher::new(root, &outcome, &keys.keyed.dlc, spec.unit_timeout),
@@ -171,7 +199,7 @@ pub fn build(
             &outcome.names,
             environment.facts.get("dlc"),
             &spec.worker_root,
-            &layout.rcode,
+            layout.rcode_directory(),
         ),
     });
     let observer = observer(
@@ -185,7 +213,6 @@ pub fn build(
             worker_root: &spec.worker_root,
             started_ns,
         },
-        &mut notes,
     );
     let fetch = fetch_plan(&infos, &settings.state_dir, &spec.build_id);
     let ctx = Ctx {
@@ -207,7 +234,7 @@ pub fn build(
         fetch,
         verify,
         observer,
-        user_xref: layout.xref.is_some(),
+        user_xref: layout.xref.as_ref().map(|(_, format)| *format),
         imaging,
         fail_fast,
         generation: plan.generation,
@@ -220,14 +247,21 @@ pub fn build(
         sink,
         upload: verifying.then(|| Upload::start(cache.uploader())),
         release: verifying.then(|| {
-            let verify = &workspace.config.build.verify;
-            Releaser::new(
+            let check_ms = match raw_baseline {
+                Some(_) => setup.raw_digest_ms,
+                None => setup.imaging_ms,
+            };
+            let releaser = Releaser::new(
                 baseline,
                 Settings {
-                    units: verify.batch_units.max(1) as usize,
-                    interval: verify.batch_interval.0,
+                    budget: policy.imaging_budget,
+                    imaging: Duration::from_millis(check_ms.max(1)),
                 },
-            )
+            );
+            match raw_baseline {
+                Some(raw) => releaser.with_raw(raw),
+                None => releaser,
+            }
         }),
         units: FxHashMap::default(),
         failed: FxHashSet::default(),
@@ -284,8 +318,10 @@ pub fn build(
         uploaded.pushed,
         &uploaded.outcomes,
         release,
+        policy,
         &mut notes,
     );
+    let manifest = installed.finish(&results.outputs, recorder.installed());
     let closed = recorder.close();
     pool.shutdown();
     stage::remove_stale(&settings.state_dir);
@@ -293,6 +329,7 @@ pub fn build(
         return Err(error);
     }
     closed?;
+    manifest?;
     let mut report = finish::report(
         &plan,
         &id_of,
@@ -308,6 +345,10 @@ pub fn build(
         },
     );
     report.cache = cache_report;
+    report.schema_images = SchemaImages {
+        reused: origin.reused,
+        imaged: origin.imaged,
+    };
     if let Some(sink) = &mut sink {
         let summary = &report.summary;
         sink(&Event::Summary {
@@ -351,9 +392,13 @@ fn info(layout: &OutputLayout, path: &str, key: &UnitKey) -> UnitInfo {
         .compile_name
         .clone()
         .expect("a compiling unit has a name");
+    let output = key
+        .output_name
+        .as_deref()
+        .expect("a compiling unit has an output name");
     UnitInfo {
         path: path.to_string(),
-        expected: layout.expected(&name),
+        expected: layout.expected(&name, output),
         name,
         propath: key.propath.expect("a compiling unit has a PROPATH"),
         key: key.key,
@@ -364,14 +409,81 @@ fn info(layout: &OutputLayout, path: &str, key: &UnitKey) -> UnitInfo {
     }
 }
 
+/// Before anything compiles in place: refuses a build that cannot write a
+/// directory it must install into, and deletes the r-code beside each skipped
+/// unit and each class unit of the build. The runtime runs r-code beside a
+/// source before the source, and a user binds class r-code it finds first.
+fn clear_in_place(
+    root: &std::path::Path,
+    plan: &Plan,
+    outcome: &Outcome,
+    infos: &FxHashMap<u32, UnitInfo>,
+) -> Result<(), BuildError> {
+    let installs: Vec<String> = infos
+        .values()
+        .flat_map(|info| &info.expected)
+        .filter(|expected| expected.in_place)
+        .map(|expected| expected.dest.clone())
+        .collect();
+    let unwritable = in_place::unwritable(root, &installs);
+    if !unwritable.is_empty() {
+        return Err(BuildError::Infrastructure(format!(
+            "cannot write r-code beside the source in {}",
+            shown(&unwritable)
+        )));
+    }
+    let skipped: HashSet<&str> = plan.skipped.iter().map(String::as_str).collect();
+    let compiling: Vec<String> = outcome
+        .units
+        .iter()
+        .map(|unit| outcome.name(*unit))
+        .filter(|path| !skipped.contains(path))
+        .map(in_place::rcode_path)
+        .collect();
+    let classes: Vec<String> = infos
+        .values()
+        .filter(|info| crate::paths::propath::is_class_unit(&info.path))
+        .flat_map(|info| &info.expected)
+        .filter(|expected| expected.in_place)
+        .map(|expected| expected.dest.clone())
+        .collect();
+    let clear = in_place::Clear {
+        skipped: &plan.skipped,
+        compiling: &compiling,
+        classes: &classes,
+    };
+    match in_place::clear(root, &clear) {
+        Ok(_) => Ok(()),
+        Err(failed) => Err(BuildError::Infrastructure(format!(
+            "cannot delete the r-code beside the source of {}; the runtime would run it",
+            shown(&failed)
+        ))),
+    }
+}
+
+/// The first items of `items`, and how many more there are.
+fn shown(items: &[String]) -> String {
+    let first: Vec<&str> = items.iter().take(5).map(String::as_str).collect();
+    match items.len() > first.len() {
+        true => format!(
+            "{} and {} more",
+            first.join(", "),
+            items.len() - first.len()
+        ),
+        false => first.join(", "),
+    }
+}
+
 /// A PROPATH entry as the worker sees it.
 fn worker_entry(
     entry: &str,
     layout: &OutputLayout,
     libraries: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    if entry == OUT {
-        return layout.rcode.clone();
+    if entry == OUT
+        && let Some(directory) = layout.rcode_directory()
+    {
+        return directory.to_string();
     }
     match library_name(entry).and_then(|name| libraries.get(name)) {
         Some(path) => path.clone(),
@@ -379,35 +491,7 @@ fn worker_entry(
     }
 }
 
-/// Whether this build verifies its units: a cache stores sets, the read check
-/// is on and the compiler writes the `XREF-XML` that the check reads.
-fn verification(
-    workspace: &BuildWorkspace,
-    layout: &OutputLayout,
-    writes: bool,
-    notes: &mut Vec<String>,
-) -> bool {
-    if !writes {
-        return false;
-    }
-    if matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))) {
-        notes.push(
-            "no cache entries are written: [build.outputs].xref_format = \"text\" gives no compiler-resolved file names to check"
-                .to_string(),
-        );
-        return false;
-    }
-    if !workspace.config.build.verify.reads {
-        notes.push(
-            "no cache entries are written: [build.verify].reads = false turns the read check off"
-                .to_string(),
-        );
-        return false;
-    }
-    true
-}
-
-/// The XREF mode of a request: the user's, or the private `XREF-XML` when
+/// The XREF mode of a request: the user's, or the private text `XREF` when
 /// something reads it and the user asked for none.
 fn private_xref(read: bool, layout: &OutputLayout) -> &'static str {
     match (read, layout.xref.is_some()) {
@@ -438,7 +522,7 @@ struct Facts<'a> {
 }
 
 /// What observes the closure of the units that oxabl cannot read, when the
-/// plan compiles one. A text XREF gives no file names the compiler resolved.
+/// plan compiles one.
 fn observer<'a>(
     plan: &Plan,
     outcome: &'a Outcome,
@@ -446,7 +530,6 @@ fn observer<'a>(
     paths: &'a PathMap,
     keyed: &'a Keyed,
     facts: Facts<'a>,
-    notes: &mut Vec<String>,
 ) -> Option<Observer<'a>> {
     let keys = plan.keys.as_ref()?;
     let observable = plan
@@ -457,18 +540,12 @@ fn observer<'a>(
     if observable == 0 {
         return None;
     }
-    if matches!(layout.xref, Some((_, oxabl_workspace::XrefFormat::Text))) {
-        notes.push(format!(
-            "{observable} units that oxabl cannot read compile at each build: [build.outputs].xref_format = \"text\" gives no file names that the compiler resolved"
-        ));
-        return None;
-    }
     Some(Observer {
         places: Places {
             paths,
             worker_dlc: trim_slash(facts.worker_dlc),
             worker_root: trim_slash(facts.worker_root),
-            rcode: &layout.rcode,
+            rcode: layout.rcode_directory(),
         },
         outcome,
         base: keyed.base.as_ref()?,
@@ -512,7 +589,7 @@ fn fetch_plan(
             expect: info
                 .expected
                 .iter()
-                .map(|expected| ArtifactPath(expected.staged.clone()))
+                .map(|expected| ArtifactPath(expected.artifact.clone()))
                 .collect(),
         });
         unit_of.insert(key, *unit);
@@ -531,12 +608,14 @@ fn cache_report(
     pushed: usize,
     outcomes: &[(CompileKey, StoreOutcome)],
     release: Option<Releaser>,
+    policy: Policy,
     notes: &mut Vec<String>,
 ) -> report::CacheReport {
     let mut cache = report::CacheReport {
         label: label.to_string(),
         writes,
         offered: pushed,
+        policy: Some(policy),
         ..Default::default()
     };
     let mut refused: Vec<(NotStoredReason, usize)> = Vec::new();
@@ -554,6 +633,7 @@ fn cache_report(
     }
     cache.not_stored = refused;
     if let Some(release) = release {
+        cache.imaging_rounds = release.rounds;
         let dropped = release.dropped;
         cache.changed_inputs = dropped.inputs.len();
         cache.schema_dropped = dropped.schema.len();

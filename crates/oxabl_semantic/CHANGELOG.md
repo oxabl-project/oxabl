@@ -1,5 +1,68 @@
 # Changelog
 
+## [5.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.5...oxabl_semantic-v5.1.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+  * dev-dependencies
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+
+## [5.0.5](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.4...oxabl_semantic-v5.0.5) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+
+## [5.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.3...oxabl_semantic-v5.0.4) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+
+## [5.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.2...oxabl_semantic-v5.0.3) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+
+## [5.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.1...oxabl_semantic-v5.0.2) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+
 ## [5.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_semantic-v5.0.0...oxabl_semantic-v5.0.1) (2026-11-11)
 
 

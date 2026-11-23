@@ -9,6 +9,8 @@ import { CliManager, resolveBinary } from "./binary";
 import { BuildController } from "./builds";
 import { binaryVersion, supportsYield } from "./cli";
 import { shouldRestartForConfigChange } from "./config";
+import { ExpandedUnits } from "./expandedUnit";
+import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
 import { registerUpdates } from "./updates";
 
@@ -19,6 +21,8 @@ let context: vscode.ExtensionContext;
 let log: vscode.LogOutputChannel;
 let builds: BuildController;
 let cli: CliManager;
+let includerContexts: IncluderContexts;
+let expandedUnits: ExpandedUnits;
 /** `path@version` of binaries known to support `--yield`. */
 const capable = new Set<string>();
 /** `path@version` of binaries that were too old, for which the message was shown. */
@@ -40,9 +44,20 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
       const found = resolveBinary();
       return found.kind === "found" ? found.command : undefined;
     },
+    storageDir: context.globalStorageUri.fsPath,
+    memory: context.workspaceState,
   });
+  expandedUnits = new ExpandedUnits(() => client);
+  includerContexts = new IncluderContexts(
+    () => client,
+    (uri) => expandedUnits.refreshSource(uri),
+  );
   context.subscriptions.push(
     log,
+    expandedUnits,
+    includerContexts,
+    vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
+    vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
     vscode.commands.registerCommand("oxabl.restartServer", restartServer),
     vscode.commands.registerCommand("oxabl.installCli", () => cli.installOrUpdate()),
     vscode.commands.registerCommand("oxabl.build", () => builds.buildNow()),
@@ -64,7 +79,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
   );
 
   // Not awaited: an update check never delays the language client.
-  registerUpdates(context, log);
+  registerUpdates(context, log, cli);
   applyBuildEnabled();
 
   await startClient();
@@ -177,6 +192,7 @@ async function startClient(): Promise<void> {
     );
     client = undefined;
   }
+  includerContexts.reset();
 }
 
 /** Stop the running client, if any. Safe to call when nothing is running. */
@@ -187,6 +203,7 @@ async function stopClient(): Promise<void> {
   const running = client;
   client = undefined;
   clientVersion = undefined;
+  includerContexts.reset();
   try {
     await running.stop();
   } catch {

@@ -640,7 +640,7 @@ impl Session {
     /// The resolution happened when the buffer was opened, so this is a pure map
     /// over cached values. It has to be: every caller runs it under the sessions
     /// lock, and that lock is shared by every workspace root the daemon serves.
-    pub(crate) fn buffer_overlay(&self) -> HashMap<PathBuf, Arc<str>> {
+    pub fn buffer_overlay(&self) -> HashMap<PathBuf, Arc<str>> {
         self.buffer_paths
             .iter()
             .filter_map(|(key, path)| {

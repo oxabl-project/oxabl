@@ -4,7 +4,7 @@
 //!
 //! | Variable | Meaning |
 //! | --- | --- |
-//! | `OXABL_OPENEDGE_COMMAND` | The worker command as a JSON array, with the placeholders `{program}` and `{root}`, for example `["docker","exec","-i","-w","{root}","abl","_progres","-b","-q","-pf","/work/db.pf","-p","{program}"]`. It must connect the databases and start in `{root}`. |
+//! | `OXABL_OPENEDGE_COMMAND` | The worker command as a JSON array, with the placeholders `{program}` and `{root}`, for example `["docker","exec","-i","-w","{root}","abl","_progres","-b","-q","-pf","/work/db.pf","-p","{program}"]`. It must connect the databases and start in `{root}`, and name the AVM executable (`_progres`, `pro`, `mpro` or `bpro`): the runtime tests put `env PROPATH=...` in front of it. |
 //! | `OXABL_OPENEDGE_WORKSPACE` | A host directory that the worker sees; each test makes and removes a directory in it. |
 //! | `OXABL_OPENEDGE_WORKER_ROOT` | Where the worker sees that directory. |
 //! | `OXABL_OPENEDGE_PROVERSION` | The `PROVERSION` of the AVM, as it prints it, for example `12.8`. |
@@ -16,6 +16,8 @@
 
 mod common;
 
+#[path = "build_openedge/class_binding.rs"]
+mod class_binding;
 #[path = "build_openedge/compile.rs"]
 mod compile;
 #[path = "build_openedge/environment.rs"]
@@ -26,6 +28,8 @@ mod probe;
 mod propath;
 #[path = "build_openedge/rcode.rs"]
 mod rcode;
+#[path = "build_openedge/runtime.rs"]
+mod runtime;
 #[path = "build_openedge/xref.rs"]
 mod xref;
 

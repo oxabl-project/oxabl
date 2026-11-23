@@ -1,6 +1,6 @@
 //! End-to-end: `[workspace.features]` in `oxabl.toml` turns the server's
-//! diagnostics and formatting on and off, and a rejected `oxabl.toml` turns both
-//! off until it is fixed.
+//! diagnostics and formatting on and off, a rejected `oxabl.toml` turns both
+//! off until it is fixed, and with no `oxabl.toml` both are off.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -340,14 +340,42 @@ fn an_oxabl_toml_edited_into_an_error_turns_both_off_until_it_is_fixed() {
 }
 
 #[test]
-fn no_oxabl_toml_keeps_both_on() {
+fn no_oxabl_toml_turns_both_off_and_keeps_the_outline() {
     let root = TempDir::new().unwrap();
     let (mut client, _) = Client::new(root.path(), json!({}));
     let uri = client.open(&root.path().join("main.p"), UNUSED);
 
-    assert!(has_lint(&client.publish()));
-    assert!(!client.format(&uri).is_empty());
+    let published = client.publish();
+    assert!(
+        published.diagnostics.is_empty(),
+        "{:?}",
+        published.diagnostics
+    );
+    assert!(client.format(&uri).is_empty());
+    let symbols = client.request(
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": uri.as_str()}}),
+    );
+    assert!(symbols.to_string().contains(r#""name":"x""#), "{symbols}");
     assert!(client.shown.is_empty(), "{:?}", client.shown);
+    client.close();
+}
+
+#[test]
+fn creating_an_oxabl_toml_turns_both_on() {
+    let root = TempDir::new().unwrap();
+    let (mut client, _) = Client::new(root.path(), json!({}));
+    let main = client.open(&root.path().join("main.p"), UNUSED);
+    assert!(client.publish().diagnostics.is_empty());
+
+    let path = root.path().join("oxabl.toml");
+    std::fs::write(&path, ON).unwrap();
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": uri(&path).as_str(), "type": 1}]}),
+    );
+    assert!(has_lint(&client.publish()));
+    assert!(!client.format(&main).is_empty());
     client.close();
 }
 

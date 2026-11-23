@@ -5,6 +5,7 @@ mod file_span;
 mod lint_severity;
 mod panic_guard;
 mod source_map;
+pub mod stack;
 mod virtual_span;
 
 pub use blank_lines::blank_lines_between;

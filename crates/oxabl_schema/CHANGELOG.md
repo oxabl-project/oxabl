@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.4.7](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.4.6...oxabl_schema-v0.4.7) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+
+## [0.4.6](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.4.5...oxabl_schema-v0.4.6) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+
+## [0.4.5](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.4.4...oxabl_schema-v0.4.5) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+
 ## [0.4.4](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.4.3...oxabl_schema-v0.4.4) (2026-11-11)
 
 

@@ -6,6 +6,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use rustc_hash::FxHashMap;
+
 use crate::error::BuildError;
 use crate::store::{OutputRow, ResultBatch, ResultRow, Store};
 
@@ -32,6 +34,8 @@ pub struct Recorder {
     /// The first error of the writer that this side has seen.
     failed: Option<String>,
     errors: Receiver<String>,
+    /// The outputs of each unit at its last record in this build.
+    installed: FxHashMap<u32, Vec<OutputRow>>,
 }
 
 fn failure(error: impl std::fmt::Display) -> BuildError {
@@ -86,6 +90,7 @@ impl Recorder {
             writer: Some(writer),
             failed: None,
             errors,
+            installed: FxHashMap::default(),
         }
     }
 
@@ -96,7 +101,13 @@ impl Recorder {
     }
 
     pub fn push(&mut self, unit: u32, result: ResultRow, outputs: Vec<OutputRow>) {
+        self.installed.insert(unit, outputs.clone());
         self.batch().upserts.push((unit, result, outputs));
+    }
+
+    /// The outputs of each unit that this build recorded.
+    pub fn installed(&self) -> &FxHashMap<u32, Vec<OutputRow>> {
+        &self.installed
     }
 
     /// The first error the writer met, if any.

@@ -15,7 +15,7 @@ Part of [the oxabl build PRD](../build-tool.md).
 | `<state>/state.db` (and `-wal`, `-shm`) | The SQLite store. |
 | `<state>/build.lock` | The workspace lock. |
 | `<state>/stage/<build-id>/` | Compile and fetch stages of one build. |
-| `<state>/worker/<program-hash>/oxabl_worker.p` | The worker program, written once per hash. |
+| `<state>/worker/<program-hash>/oxabl_worker.p` | The worker program (header, compile part and driver part), written once per hash of the whole program. |
 | `<state>/logs/<build-id>/` | Worker logs of the last five builds. |
 
 `<state>` is `[build].state`, default `.oxabl/build`. It must be under the workspace root,
@@ -45,7 +45,12 @@ Each connection sets, in this order: `busy_timeout = 5000`, `journal_mode = WAL`
 
 `STORE_FORMAT` is one integer in `store/ddl.rs`. Any change to the DDL, a blob encoding or
 the meaning of a column increments it. There are no migrations. Format 2 adds the
-`observed` table: a store of format 1 is replaced by step 3 below.
+`observed` table: a store of format 1 is replaced by step 3 below. Format 3 adds the
+include name as written to the include edges: a store of format 2 is replaced the same
+way, and the next refresh analyses every file again. Format 4 adds `ctime_ns` and
+`observed_ns` to the `outputs` table, for the check of intact outputs. The manifest of the
+r-code beside the sources (`<state>/installed`) is not in the store, so a new store does
+not lose it ([build-tool.md](../build-tool.md#r-code-beside-the-source)).
 
 On open:
 
@@ -138,8 +143,10 @@ CREATE TABLE outputs (
     path     TEXT NOT NULL,
     size     INTEGER NOT NULL,
     mtime_ns INTEGER NOT NULL,
+    ctime_ns INTEGER NOT NULL,
     ino      INTEGER NOT NULL,
     hash     BLOB NOT NULL,
+    observed_ns INTEGER NOT NULL,
     PRIMARY KEY (unit_id, path)
 ) WITHOUT ROWID;
 
@@ -169,7 +176,10 @@ CREATE TABLE environments (
   `tracked_by` is a bit set: `1` a unit found by the walk, `2` a file an analysis read,
   `4` a path an analysis found absent, `8` a file or an absent path of an observed closure.
 - `listings` holds the directories that a case-insensitive lookup listed. `digest` is the
-  BLAKE3 hash of the sorted entry names, each followed by a NUL byte.
+  BLAKE3 hash of the sorted entry names, each followed by a NUL byte. Names that a build
+  writes are left out: names that end in `.r` (ASCII case ignored) and the temporary names
+  of an install (`*.oxabl-tmp-*`). The analysis never resolves a name to either, and r-code
+  that a build writes beside the sources must not start an analysis.
 - `analyses` holds one row per analysed node: every unit and every class source that a
   unit reaches. Include files are not analysed alone; the unit that includes them reports
   their edges.
@@ -187,7 +197,10 @@ CREATE TABLE environments (
   without dropped parameters. The planner compares two records field by field to name an
   `environment-changed` reason. Rows that no result refers to are deleted at commit.
 - `outputs` holds each output file of a result: its root-relative final path, its stat
-  and the BLAKE3 hash of its bytes. The planner skips colliding units before any compile
+  and the BLAKE3 hash of its bytes, with the time the hash was taken (`observed_ns`). The
+  planner trusts an output when `size`, `mtime_ns`, `ctime_ns` and `ino` are equal and the
+  row was not racy (taken two seconds or more after the last change); else it hashes the
+  file, and equal bytes record the new stat. The planner skips colliding units before any compile
   (`output-collision`, [compile-key.md](compile-key.md#the-unit-propath-and-the-compile-name)),
   so two units never reach one output. `outputs_by_path` is the guard behind that rule: an
   insert that breaks it is a bug, and the build stops with exit code 3 and names both units.
@@ -216,8 +229,12 @@ format.
   the previous path id of the same kind (the first of each kind is the id itself). A class
   edge (kinds `3` and `7`) also carries `varint length` and the UTF-8 class name that
   reached the target, because the class-conflict rule compares names
-  ([compile-key.md](compile-key.md#class-conflicts)); class edges sort by `(kind, path_id,
-  name)`, so one target reached by two spellings gives two entries with delta `0`.
+  ([compile-key.md](compile-key.md#class-conflicts)). An include edge (kinds `1`, `2` and
+  `6`) carries the include name as written in the same way, or length `0` when the
+  analysis does not know it, because the planner compares how each PROPATH id resolves it
+  ([compile-key.md](compile-key.md#uniform-resolution)).
+  Named edges sort by `(kind, path_id, name)`, so one target reached by two names gives
+  two entries with delta `0`.
 - `unresolved`: `varint count`, then each entry as `u8 kind`, `u8 reason`, `varint length`
   and the UTF-8 name, sorted by `(kind, name)`.
 - `completeness`: `varint count`, then one `u8` per degraded reason, sorted. Count 0 means
@@ -365,7 +382,9 @@ holds for a deleted include, a new class file and a renamed directory.
 - **One writer.** `oxabl build` takes an exclusive `flock` on `<state>/build.lock` before it
   opens the store for writing, and holds it to the end. The file holds the process id for
   the message. The kernel releases the lock when the process dies, so a stale lock is not
-  possible. A second `oxabl build` stops at once with exit code 3: `another oxabl build
+  possible. A build that ends unlocks the file before it closes it: a child that another
+  thread forked meanwhile holds a copy of the descriptor until it execs, and a close alone
+  would leave the lock taken for that long. A second `oxabl build` stops at once with exit code 3: `another oxabl build
   (pid 4711) holds .oxabl/build/build.lock`. `--wait-lock <seconds>` waits instead.
 - **Readers.** `oxabl build --plan` tries the lock without waiting. With the lock, it runs the
   refresh and commits it, and the next build starts from there. Without the lock, it runs

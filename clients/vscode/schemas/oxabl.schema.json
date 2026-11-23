@@ -180,7 +180,7 @@
         },
         "output": {
           "default": "",
-          "description": "R-code output directory, under the workspace root. Required to compile.",
+          "description": "R-code output directory, under the workspace root. Required to compile when `rcode` is `directory`; must be empty when it is `beside-source`.",
           "type": "string"
         },
         "outputs": {
@@ -196,6 +196,15 @@
             "xref_format": "xml"
           },
           "description": "Directories for the optional compiler outputs."
+        },
+        "rcode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RcodePlace"
+            }
+          ],
+          "default": "directory",
+          "description": "Where the r-code of a unit goes."
         },
         "state": {
           "default": ".oxabl/build",
@@ -214,8 +223,9 @@
             }
           ],
           "default": {
-            "batch_interval": "1m",
-            "batch_units": 500,
+            "batch_interval": null,
+            "batch_units": null,
+            "imaging_budget": 30,
             "reads": true
           },
           "description": "Verification of what a compile read."
@@ -272,17 +282,30 @@
       "description": "The `[build.verify]` table.",
       "properties": {
         "batch_interval": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/TimeSpan"
+            },
+            {
+              "type": "null"
             }
           ],
-          "default": "1m",
-          "description": "Longest time a unit waits for the schema check. Default `60s`."
+          "default": null,
+          "description": "Ignored since `imaging_budget`; kept so that old files still load."
         },
         "batch_units": {
-          "default": 500,
-          "description": "Units held for the schema check that release them to a cache. Default 500.",
+          "default": null,
+          "description": "Ignored since `imaging_budget`; kept so that old files still load.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "imaging_budget": {
+          "default": 30,
+          "description": "The next schema check starts no sooner than this many times the duration of the last imaging of the databases, so that the checks cost about `1 / (budget + 1)` of the build. `0` starts one whenever a set waits. Default 30.",
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"
@@ -583,6 +606,25 @@
         }
       },
       "type": "object"
+    },
+    "RcodePlace": {
+      "description": "Where `oxabl build` puts the r-code of a unit.",
+      "oneOf": [
+        {
+          "description": "Below `[build].output`, a directory that oxabl owns.",
+          "enum": [
+            "directory"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Beside the source of the unit: `a/x.p` gives `a/x.r`.",
+          "enum": [
+            "beside-source"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "SchemaConfig": {
       "additionalProperties": false,
@@ -1264,11 +1306,13 @@
           "xref": "",
           "xref_format": "xml"
         },
+        "rcode": "directory",
         "state": ".oxabl/build",
         "store": "",
         "verify": {
-          "batch_interval": "1m",
-          "batch_units": 500,
+          "batch_interval": null,
+          "batch_units": null,
+          "imaging_budget": 30,
           "reads": true
         },
         "workers": {

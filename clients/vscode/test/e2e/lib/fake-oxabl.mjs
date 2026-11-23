@@ -9,10 +9,15 @@ import path from "node:path";
 //   FAKE_OXABL_LOG     a file that gets one JSON line per invocation, signal and exit
 //   FAKE_OXABL_CONFIG  a JSON file read at each invocation:
 //     builds[n]   what the n-th `build --events` run does (the last one repeats):
-//                 { script: [{ wait: ms } | { event: {...} } | { stderr: "text" }], exit: 0, summary: {...} }
+//                 { script: [{ wait: ms } | { event: {...} } | { stderr: "text" }], exit: 0, summary: {...},
+//                   report: { units, notes } }   written to the file of --report at the exit
 //                 A run that gets SIGINT writes a summary with exit 130 and exits 130.
 //     noYield     `build --help` does not mention --yield (true, or only for this version)
 //     printConfig { exit, stderr, settings } replaces the answer of `build --print-config`
+//     selfUpdate  { latest, checkExit }: the binary has `self-update`. `--check --json` says
+//                 whether `latest` is newer (or exits with checkExit); a plain `self-update`
+//                 rewrites the fake in place with version `latest`. Without it, `self-update`
+//                 is an unknown command, as in a binary from before it.
 //
 // Without a config, a build reports one unit up to date and exits 0.
 
@@ -29,6 +34,26 @@ const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 if (args[0] === "--version") {
   log({ event: "invoke", args });
   console.log("oxabl " + VERSION);
+} else if (args[0] === "self-update" && config.selfUpdate) {
+  log({ event: "invoke", args });
+  const latest = config.selfUpdate.latest;
+  if (args.includes("--help")) {
+    console.log("Usage: oxabl self-update [--check] [--json]");
+  } else if (args.includes("--check")) {
+    if (config.selfUpdate.checkExit) {
+      console.error("error: cannot reach GitHub");
+      process.exit(config.selfUpdate.checkExit);
+    }
+    out({ installed: VERSION, latest, update: latest !== VERSION, managed: true });
+  } else if (latest === VERSION) {
+    console.log("oxabl is up to date (" + VERSION + ")");
+  } else {
+    const file = process.argv[1];
+    const next = fs.readFileSync(file, "utf8").replace("const VERSION = " + JSON.stringify(VERSION) + ";", "const VERSION = " + JSON.stringify(latest) + ";");
+    fs.writeFileSync(file + ".new", next, { mode: 0o755 });
+    fs.renameSync(file + ".new", file);
+    console.log("oxabl was updated from " + VERSION + " to " + latest);
+  }
 } else if (args[0] === "build" && args.includes("--help")) {
   log({ event: "invoke", args });
   console.log("Usage: oxabl build [OPTIONS]\\n" + (config.noYield === true || config.noYield === VERSION ? "" : "      --yield   step aside for a newer build\\n"));
@@ -50,7 +75,12 @@ if (args[0] === "--version") {
   const builds = config.builds || [{ script: [{ event: { event: "build-started", rebuild: 0, units: 1, workers: 1, format: 1 } }] }];
   const run = builds[Math.min(starts, builds.length - 1)];
   log({ event: "build-start", args, cwd: process.cwd(), n: starts });
+  const reportAt = args.indexOf("--report");
   const finish = (code) => {
+    if (reportAt >= 0) {
+      const report = { format: 1, exit: code, units: [], notes: [], ...run.report };
+      fs.writeFileSync(args[reportAt + 1], JSON.stringify(report));
+    }
     log({ event: "build-exit", code });
     process.exit(code);
   };

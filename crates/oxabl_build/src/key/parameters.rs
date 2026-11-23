@@ -10,7 +10,9 @@ pub struct Parameter {
 }
 
 /// Parameters that name a connection, a file of this process, a log or a
-/// secret. They never reach a hash, a store or an output.
+/// secret, or that the compiler never reads (`-trig`: the r-code is the same
+/// with any trigger directory or none). They never reach a hash, a store or an
+/// output.
 const DROPPED: &[&str] = &[
     "-p",
     "-param",
@@ -18,6 +20,7 @@ const DROPPED: &[&str] = &[
     "-b",
     "-q",
     "-T",
+    "-trig",
     "-db",
     "-ld",
     "-H",

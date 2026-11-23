@@ -5,7 +5,9 @@
 pub enum Fault {
     Fail,
     FailOnce,
+    FailTwice,
     Warn,
+    WarnNoPosition,
     Crash,
     CrashOnce,
     Hang,
@@ -25,18 +27,25 @@ pub struct Scan {
     pub classes: Vec<String>,
     /// Paths named by `FAKE-READ`.
     pub reads: Vec<String>,
+    /// Texts named by `FAKE-SAY`: what the program prints when it runs.
+    pub says: Vec<String>,
     /// Each fault with the line it is on, counted from 1.
     pub faults: Vec<(Fault, usize)>,
     /// `FAKE-RESOLVE-OTHER <name> <path>`: the include `name` resolves to `path`.
     pub resolve_other: Vec<(String, String)>,
+    /// `FAKE-XREF-RAW <text>`: bytes for the end of a text XREF, with `\n` for
+    /// a line break and `\xHH` for the byte HH.
+    pub xref_raw: Vec<Vec<u8>>,
 }
 
-const FAULTS: [(&str, Fault); 9] = [
+const FAULTS: [(&str, Fault); 11] = [
     ("FAKE-CRASH-ONCE", Fault::CrashOnce),
     ("FAKE-FAIL-SILENT", Fault::FailSilent),
     ("FAKE-FAIL-ONCE", Fault::FailOnce),
+    ("FAKE-FAIL-TWICE", Fault::FailTwice),
     ("FAKE-CRASH", Fault::Crash),
     ("FAKE-FAIL", Fault::Fail),
+    ("FAKE-WARN-NOPOS", Fault::WarnNoPosition),
     ("FAKE-WARN", Fault::Warn),
     ("FAKE-HANG", Fault::Hang),
     ("FAKE-SLOW", Fault::Slow),
@@ -110,6 +119,16 @@ pub fn scan(text: &str) -> Scan {
             }
             continue;
         }
+        if let Some((_, raw)) = line.split_once("FAKE-XREF-RAW") {
+            let raw = raw.trim().trim_end_matches("*/").trim();
+            found.xref_raw.push(raw_bytes(raw));
+            continue;
+        }
+        if let Some((_, text)) = line.split_once("FAKE-SAY") {
+            let text = text.trim().trim_end_matches("*/").trim();
+            found.says.push(text.to_string());
+            continue;
+        }
         if let Some((_, path)) = line.split_once("FAKE-READ") {
             let path = path.trim().trim_end_matches("*/").trim();
             found.reads.push(path.to_string());
@@ -121,4 +140,33 @@ pub fn scan(text: &str) -> Scan {
         found.classes.extend(classes_of(line));
     }
     found
+}
+
+/// The bytes of a `FAKE-XREF-RAW` text: `\n` is a line break and `\xHH` the
+/// byte HH, so a test can write an XREF that is not UTF-8.
+fn raw_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut rest = text.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        rest = after;
+        if byte == b'\\' {
+            if let Some(after) = rest.strip_prefix(b"n") {
+                bytes.push(b'\n');
+                rest = after;
+                continue;
+            }
+            let hex = rest
+                .strip_prefix(b"x")
+                .and_then(|after| after.get(..2))
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            if let Some(value) = hex {
+                bytes.push(value);
+                rest = &rest[3..];
+                continue;
+            }
+        }
+        bytes.push(byte);
+    }
+    bytes
 }

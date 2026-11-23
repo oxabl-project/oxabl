@@ -8,8 +8,9 @@ use super::{BuildRequest, Setup, ms};
 use crate::config::BuildWorkspace;
 use crate::error::BuildError;
 use crate::key::compute::compute;
+use crate::key::image_store;
 use crate::lock::{LockOutcome, WorkspaceLock, holder, try_acquire_file, try_acquire_marked};
-use crate::output::{OutputLayout, ownership, stage};
+use crate::output::{OutputLayout, ignore, ownership, stage};
 use crate::paths::PathMap;
 use crate::plan::run::{Committed, refresh_and_commit};
 use crate::plan::{Plan, StoredInputs, decide};
@@ -25,8 +26,9 @@ pub struct Prepared {
     pub plan: Plan,
     pub notes: Vec<String>,
     pub setup: Setup,
-    /// The workspace lock and the output lock, held to the end.
-    pub _locks: (WorkspaceLock, WorkspaceLock),
+    /// The workspace lock and the lock of the r-code directory, held to the
+    /// end.
+    pub _locks: (WorkspaceLock, Option<WorkspaceLock>),
 }
 
 /// How long past the cancel grace a build waits for the one it stopped.
@@ -129,7 +131,8 @@ pub fn prepare(
     request: &BuildRequest<'_>,
 ) -> Result<Prepared, BuildError> {
     let settings = &workspace.settings;
-    let spec = PoolSpec::from_config(workspace, request.workers, random::build_id())?;
+    let mut spec = PoolSpec::from_config(workspace, request.workers, random::build_id())?;
+    spec.images = Some(settings.state_dir.join(image_store::FILE));
     let layout = OutputLayout::lower(&workspace.config, &settings.root)?;
     let grace = workspace.config.build.workers.cancel_grace.0;
     let mut stopped = false;
@@ -141,7 +144,6 @@ pub fn prepare(
         &mut |_| stop_yielding_holder(&settings.state_dir, grace, &mut stopped),
     )?;
     ownership::claim(&settings.root, &layout.directories())?;
-    let output_dir = settings.root.join(&layout.rcode);
     // The stopped build frees its locks one after the other: the output lock
     // may stay busy a moment after the workspace lock.
     let output_wait = if stopped {
@@ -152,13 +154,26 @@ pub fn prepare(
     } else {
         request.wait_lock
     };
-    let output_lock = acquire(
-        || try_acquire_file(&output_dir, ownership::LOCK),
-        &format!("{}/{}", layout.rcode, ownership::LOCK),
-        output_wait,
-        &request.cancel,
-    )?;
+    // In place, the workspace lock in the state directory is the only lock.
+    let output_lock = match layout.rcode_directory() {
+        Some(directory) => Some(acquire(
+            || try_acquire_file(&settings.root.join(directory), ownership::LOCK),
+            &format!("{directory}/{}", ownership::LOCK),
+            output_wait,
+            &request.cancel,
+        )?),
+        None => None,
+    };
     stage::remove_stale(&settings.state_dir);
+    let ignored = ignore::write(
+        &settings.root,
+        &[settings.state_dir.clone(), settings.store_dir.clone()],
+        &layout
+            .directories()
+            .iter()
+            .map(|directory| settings.root.join(directory))
+            .collect::<Vec<_>>(),
+    );
 
     let refresh_request = Request {
         need_graph: true,
@@ -185,6 +200,7 @@ pub fn prepare(
     let mut started = started?;
     setup.workers_ms = started.timing.workers_ms;
     setup.imaging_ms = started.timing.imaging_ms;
+    setup.raw_digest_ms = started.timing.raw_ms;
     let keying = Instant::now();
     let keyed = match compute(
         workspace,
@@ -202,6 +218,7 @@ pub fn prepare(
     setup.dlc_hash_ms = started.pool.dlc_hash_ms();
     let planning = Instant::now();
     let mut notes = committed.notes.clone();
+    notes.extend(ignored);
     notes.extend(started.warnings.iter().cloned());
     notes.extend(keyed.warnings.iter().cloned());
     notes.extend(committed.outcome.warnings.iter().cloned());

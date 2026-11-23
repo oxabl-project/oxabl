@@ -217,10 +217,14 @@ async function skipScenario(ctx, name, choose) {
     let vs = await launch(ctx.exe, profile, { open: ["update.p"], env });
     try {
       await waitForText(vs.page, `${AVAILABLE}${ctx.installed}).`);
-      check(`${name}: the prompt for v${NEW} appears with the three buttons`, true);
+      // The buttons can render after the text, so each one is waited for.
       for (const label of ["Update", "Release Notes", "Skip This Version"]) {
-        const n = await vs.page.locator(".notification-toast .monaco-button", { hasText: label }).count();
-        check(`${name}: the prompt has a "${label}" button`, n > 0);
+        const shown = await vs.page
+          .locator(".notification-toast .monaco-button", { hasText: label })
+          .first()
+          .waitFor({ timeout: 10_000 })
+          .then(() => true, () => false);
+        check(`${name}: the prompt for v${NEW} has a "${label}" button`, shown);
       }
       await choose(vs.page);
     } finally {
