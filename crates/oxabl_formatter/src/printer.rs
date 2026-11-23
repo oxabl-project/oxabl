@@ -50,6 +50,12 @@ struct SrcLine {
 
 /// Split `source` into physical lines, measuring each line's leading-indent
 /// width (spaces count 1, tabs count `size`) and stripping the terminator.
+///
+/// Only `\n` ends a line, as in the lexer, which reads `\r` as whitespace. A
+/// run of `\r` before the `\n` is part of the terminator: a `\r` kept at the
+/// end of the content would join the emitted line ending into a new `\r\n`,
+/// and a second pass would read the line differently. A leading `\r` is
+/// leading whitespace of no width, so a line of only whitespace is blank.
 fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
     let bytes = source.as_bytes();
     let n = bytes.len();
@@ -61,7 +67,7 @@ fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
             j += 1;
         }
         let mut end = j;
-        if end > i && bytes[end - 1] == b'\r' {
+        while end > i && bytes[end - 1] == b'\r' {
             end -= 1;
         }
         let mut k = i;
@@ -76,6 +82,7 @@ fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
                     cols += size;
                     k += 1;
                 }
+                b'\r' => k += 1,
                 _ => break,
             }
         }
