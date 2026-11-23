@@ -3,7 +3,9 @@
 //! v1 advertises what the diagnostics skeleton implements — incremental text
 //! sync (with open/close) and push `publishDiagnostics` — plus whole-document
 //! formatting (`document_formatting_provider`, R1), document symbols
-//! (`document_symbol_provider`) and workspace symbols (`workspace_symbol_provider`). Push diagnostics require no
+//! (`document_symbol_provider`), workspace symbols (`workspace_symbol_provider`), go to
+//! definition (`definition_provider`) and document links (`document_link_provider`). Push
+//! diagnostics require no
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (hover, completion, pull
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
@@ -11,7 +13,7 @@
 //! whose workspace enables strict database rules. Dynamic clients register per file.
 
 use lsp_types::{
-    ClientCapabilities, OneOf, PositionEncodingKind, ServerCapabilities,
+    ClientCapabilities, DocumentLinkOptions, OneOf, PositionEncodingKind, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 
@@ -33,8 +35,8 @@ pub fn negotiate_position_encoding(caps: &ClientCapabilities) -> PositionEncodin
 }
 
 /// Build the v1 [`ServerCapabilities`]: incremental sync with open/close, the
-/// negotiated position encoding, whole-document formatting (R1), document symbols and
-/// workspace symbols.
+/// negotiated position encoding, whole-document formatting (R1), document symbols,
+/// workspace symbols, go to definition and document links.
 /// Nothing else is advertised — range formatting in particular stays unset (the engine
 /// only formats whole files; see the plan's Scope Boundaries).
 pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities {
@@ -53,6 +55,12 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         document_formatting_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        // Each link carries its target, so there is nothing to resolve later.
+        document_link_provider: Some(DocumentLinkOptions {
+            resolve_provider: Some(false),
+            work_done_progress_options: Default::default(),
+        }),
         // Explicitly leave every other capability unset so clients don't offer
         // features v1 doesn't implement (R2).
         ..Default::default()
@@ -131,7 +139,12 @@ mod tests {
         assert!(caps.code_lens_provider.is_none());
         assert!(caps.hover_provider.is_none());
         assert!(caps.completion_provider.is_none());
-        assert!(caps.definition_provider.is_none());
+        assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
+        assert_eq!(
+            caps.document_link_provider
+                .and_then(|links| links.resolve_provider),
+            Some(false)
+        );
         assert!(caps.diagnostic_provider.is_none());
     }
 }

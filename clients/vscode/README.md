@@ -64,6 +64,23 @@ you also get, with no setup:
   workspace, so it can take a moment in a large one. A search shows at most 256
   symbols, so type more of the name to narrow it. A declaration inside an
   include file does not show.
+- **Go to Definition** (`F12`). Goes from a name to its declaration: a
+  variable, parameter, buffer, temp-table and its fields, internal procedure,
+  function or method, also when it is declared in an include file. `RUN x.p`
+  and `RUN x` open the program, `{x.i}` opens the include, and a class name
+  (`NEW`, `USING`, `INHERITS`, `IMPLEMENTS`, `AS CLASS`) opens its `.cls`. An
+  inherited method goes to the class that declares it, each overload. A table
+  and `table.field` go to the `.df`. A name that two files on the include path
+  supply shows both. A name that does not resolve, or that is computed at run
+  time (`RUN VALUE(...)`), goes nowhere.
+- **Document links.** Include references, `RUN` targets and `USING` names are
+  links to the file each names (`Ctrl+Click`). A name that resolves to no file,
+  or to more than one, is not a link.
+
+  Local names need no setup. Programs, includes and classes are found through
+  `include_paths` under `[workspace.sources]` in `oxabl.toml`, and tables and
+  fields through `[workspace.schema]`. Text in an `&IF` branch that is not
+  compiled has no definition and no link.
 
 A folder with an `oxabl.toml` is a project. A project also gets:
 

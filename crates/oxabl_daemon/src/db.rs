@@ -1253,6 +1253,108 @@ fn analyse_root(
     })
 }
 
+/// What a navigation request asks of one compilation unit.
+#[derive(Debug, Clone)]
+pub enum NavigationQuery {
+    /// The declarations of the name at byte `offset` of `file`, which is the
+    /// root or an include its expansion reads.
+    Definition { file: PathBuf, offset: u32 },
+    /// The links written in the root itself.
+    Links,
+}
+
+/// The answer to a [`NavigationQuery`], with the text of every file it places a
+/// span in, as the analysis read it, so a client can turn bytes into positions.
+#[derive(Debug, Clone, Default)]
+pub struct NavigationAnswer {
+    pub definitions: Vec<oxabl_pipeline::Target>,
+    pub links: Vec<oxabl_pipeline::Link>,
+    pub texts: HashMap<PathBuf, Arc<str>>,
+}
+
+/// Analyse `root` with `overlay` over the configured file system and answer
+/// `query`. Not memoized: it runs per request, on a worker snapshot.
+/// `Ok(Err(reason))` when the root cannot be read or its preprocessing failed.
+/// `None` when a concurrent write cancelled the read.
+pub fn compute_navigation(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    query: &NavigationQuery,
+) -> Option<Result<NavigationAnswer, String>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let _revision = schema.revision(snapshot);
+        let config = snapshot.config();
+        let fs = OverlayFs {
+            overlay,
+            inner: Arc::clone(&config.fs),
+        };
+        let source = fs
+            .read(root)
+            .map_err(|error| format!("cannot read it: {error}"))?;
+        let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+        let handle = run.with_file(root);
+        let expansion = handle.expand(&source);
+        if expansion.preprocessing_failed() {
+            return Err("its preprocessing failed".to_string());
+        }
+        salsa::Database::unwind_if_revision_cancelled(snapshot);
+        let index = SnapshotIndex::new(snapshot, Some(root), expansion.search_base());
+        let handle = handle.with_index(&index);
+        let file_of = |id: IndexedFileId| {
+            config
+                .index
+                .registered()
+                .into_iter()
+                .find(|(_, known)| *known == id)
+                .map(|(file, _)| file.path(snapshot).clone())
+        };
+        let Some(navigation) = handle.navigation(&expansion, &file_of) else {
+            return Err("its preprocessing failed".to_string());
+        };
+        let mut answer = NavigationAnswer::default();
+        match query {
+            NavigationQuery::Definition { file, offset } => {
+                let file = spelled_as_expanded(&expansion, root, file);
+                answer.definitions = navigation.definitions(&file, *offset);
+            }
+            NavigationQuery::Links => {
+                answer.links = navigation.links();
+                answer
+                    .texts
+                    .insert(search::normalize_lexically(root), Arc::clone(&source));
+            }
+        }
+        for target in &answer.definitions {
+            if target.span.is_some()
+                && !answer.texts.contains_key(&target.path)
+                && let Ok(text) = fs.read(&target.path)
+            {
+                answer.texts.insert(target.path.clone(), text);
+            }
+        }
+        Ok(answer)
+    }))
+    .ok()
+}
+
+/// `file` as the expansion of `root` spells it, so a path that reaches it
+/// through a symbolic link or a `.` segment still names it.
+fn spelled_as_expanded(expansion: &Expansion, root: &Path, file: &Path) -> PathBuf {
+    let wanted = crate::session::canonical_path(file);
+    if crate::session::canonical_path(root) == wanted {
+        return root.to_path_buf();
+    }
+    expansion
+        .expanded()
+        .into_iter()
+        .flat_map(|expanded| expanded.include_expansions())
+        .map(|expansion| expansion.path.to_path_buf())
+        .find(|path| crate::session::canonical_path(path) == wanted)
+        .unwrap_or_else(|| file.to_path_buf())
+}
+
 /// Open buffers over a file system, keyed by canonical path.
 struct OverlayFs {
     overlay: HashMap<PathBuf, Arc<str>>,

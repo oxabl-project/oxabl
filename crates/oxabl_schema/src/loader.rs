@@ -99,6 +99,7 @@ impl SchemaLoader {
             };
 
             ingest(&mut schema, &source, file_id, &mut diagnostics);
+            schema.record_source_file(file_id, path.clone());
         }
 
         // The catalog is enabled for any load that went through this

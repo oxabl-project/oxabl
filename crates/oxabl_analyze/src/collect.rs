@@ -1668,6 +1668,37 @@ pub fn analyze_from_expanded(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
 ) -> (Semantic, bool) {
+    analyze_expanded(
+        expanded,
+        schema,
+        schema_loaded,
+        index,
+        source_context,
+        false,
+    )
+}
+
+/// [`analyze_from_expanded`] with the navigation sites recorded
+/// ([`SymbolTable::sites`](oxabl_semantic::SymbolTable::sites)), for go to
+/// definition and document links.
+pub fn analyze_for_navigation(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+) -> Semantic {
+    analyze_expanded(expanded, schema, schema_loaded, index, source_context, true).0
+}
+
+fn analyze_expanded(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+    record_sites: bool,
+) -> (Semantic, bool) {
     let timing = std::env::var_os("OXABL_EDGE_PROFILE").map(|_| std::time::Instant::now());
     let tokens = tokenize(&expanded.text);
     let lexed = timing.map(|t| t.elapsed());
@@ -1676,7 +1707,8 @@ pub fn analyze_from_expanded(
     let parsed = timing.map(|t| t.elapsed());
     let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
         .with_index(index)
-        .with_source_context(source_context);
+        .with_source_context(source_context)
+        .with_sites(record_sites);
     ctx.schema_loaded = schema_loaded;
     let sem = analyze_file_untyped(&program.statements, &ctx);
     let recovered = !program.errors.is_empty();
