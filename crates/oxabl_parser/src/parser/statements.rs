@@ -3684,13 +3684,20 @@ impl Parser<'_> {
 
         // Dotted version-number procedure names: e.g. config_18.4.2_extra lexes as
         // Identifier("config_18") + DecimalLiteral(".4") + DecimalLiteral(".2") + Identifier("_extra").
-        // Consume the extra tokens to advance past the full name.
+        // The name is the source text through the last of these tokens.
+        let mut dotted = false;
         while self.check(Kind::DecimalLiteral) {
             self.advance(); // consume ".4", ".2", etc.
+            dotted = true;
             // An underscore/alpha-led segment directly following (e.g. "_data") is a separate Identifier.
             if self.check(Kind::Identifier) {
                 self.advance();
             }
+        }
+        if dotted {
+            let end = self.prev_end();
+            name.name = self.source[name.span.start as usize..end as usize].to_string();
+            name.span.end = end;
         }
 
         // Dotted method-name suffix: e.g. "Procedure Dataset.Fill:" where Dataset is a keyword.

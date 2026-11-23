@@ -97,3 +97,18 @@ fn a_variable_defined_twice_in_one_scope_is_still_a_duplicate() {
         vec![sem0001("SEM0001", 2)]
     );
 }
+
+#[test]
+fn internal_procedures_whose_names_hold_periods_are_different_names() {
+    let source = "RUN setup_1.2.1_data.\nRUN setup_1.2.2_data.\nPROCEDURE setup_1.2.1_data:\nEND PROCEDURE.\nPROCEDURE setup_1.2.2_data:\nEND PROCEDURE.\n";
+    assert_eq!(semantic_findings("dots.p", source), vec![]);
+}
+
+#[test]
+fn an_internal_procedure_with_periods_in_its_name_defined_twice_is_still_a_duplicate() {
+    let source = "RUN setup_1.2.1_data.\nPROCEDURE setup_1.2.1_data:\nEND PROCEDURE.\nPROCEDURE setup_1.2.1_data:\nEND PROCEDURE.\n";
+    assert_eq!(
+        semantic_findings("dots-twice.p", source),
+        vec![sem0001("SEM0001", 4)]
+    );
+}
