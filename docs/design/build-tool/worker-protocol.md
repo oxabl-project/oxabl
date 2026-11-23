@@ -110,13 +110,14 @@ Oxabl to the worker:
 | --- | --- | --- |
 | `HELLO` | `version` `token` | Start of the session. `version` is `1`. `token` is 32 random hex digits. |
 | `SCHEMA` | `ldb` `part` `parts` | Image the share `part` (from 0) of `parts` of one database ([Schema image](#schema-image)). |
+| `RAWDIGEST` | `ldb` `part` `parts` `buckets` | Make the share `part` (from 0) of `parts` of the raw digest of one database, in `buckets` pieces ([Raw digest](#raw-digest)). |
 | `FINGERPRINT` | `ldb` | Report the fingerprint of one database. |
 | `HASH` | `id` `path` | Hash one worker-side file ([Hashing worker-side files](#hashing-worker-side-files)). |
 | `HASHSET` | `id` `count` | Hash a set of worker-side files and answer with one digest of the list. `count` `PATH` lines follow. |
 | `PATH` | `id` `path` | One path of a `HASHSET`, in sorted order. |
 | `PROPATH` | `id` `entry`... | Define a PROPATH. Entries are worker-side paths; a `$DLC/...` entry is sent as written and the worker expands it with `OS-GETENV("DLC")`. |
 | `OPTIONS` | `id` `name=value`... | Define a set of compile options. |
-| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref` or `xref-xml` (slice 7 adds `private`, a private `XREF-XML` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. `stage` is relative to the worker root and starts with `./` (see [Compiling](#compiling)). |
+| `COMPILE` | `req` `propath-id` `options-id` `stage` `xref` `debug-list` `listing` `count` | Start a request. `xref` is `none`, `xref` or `xref-xml` (slice 7 adds `private`, a private text `XREF` for verification). `debug-list` and `listing` are `0` or `1`. `count` `UNIT` lines follow. `stage` is relative to the worker root and starts with `./` (see [Compiling](#compiling)). |
 | `UNIT` | `req` `compile-name` | One unit of the request, in compile order. |
 | `PING` | `n` | Liveness. |
 | `QUIT` | | End the session. |
@@ -129,22 +130,31 @@ The worker to oxabl:
 | `ENV` | `name` `value` | One environment field. |
 | `DB` | `number` `ldb` `dbtype` `aliases` | One connected database, in connection order. `aliases` is comma-separated. |
 | `ENV-END` | `count` | End of the environment; `count` is the number of `ENV` and `DB` lines. |
-| `SENT` | `ldb` `kind` `name` `records` `sha256` | One schema image entry: its kind (`db`, `table`, `sequence`), its name (empty for `db`), its record count and the lower-case hex SHA-256 of its canonical text ([compile-key.md](compile-key.md#schema-identity)). |
+| `SENT` | `ldb` `kind` `name` `records` `sha256` | One schema image entry: its kind (`db`, `system`, `table`, `sequence`), its name (empty for `db` and `system`), its record count and the lower-case hex SHA-256 of its canonical text ([compile-key.md](compile-key.md#schema-identity)). |
 | `SCHEMA-END` | `ldb` `entries` `tables` | End of a share: the number of `SENT` lines of this share, and the number of user tables of the whole database as this worker counted them. |
+| `RAW` | `ldb` `piece` `low` `high` `rows` `sha256` | One piece of a raw digest: `head` or its number, the record ids that bound it (`-` for an open end), its row count and the lower-case hex SHA-256 of its records. |
+| `RAW-END` | `ldb` `pieces` `files` `physical` | End of a raw digest share: the number of `RAW` lines, the number of `_File` rows and `PDBNAME` of the database. |
 | `FPRINT` | `ldb` `guid` `stamp` | `_Db._Db-guid` and `_DbStatus._DbStatus-CacheStamp`, each `?` when unavailable. |
 | `HASHED` | `id` `kind` `size` `sha256` | `kind` is `file`, `dir` or `none`; `size` and `sha256` (lower-case hex) are `-` unless `kind` is `file`. |
 | `HASHSET-DONE` | `id` `sha256` | The digest of a `HASHSET` list. |
 | `OK` | `id` | A `PROPATH` or `OPTIONS` is defined. |
-| `MSG` | `req` `compile-name` `type` `number` `file` `row` `column` `text` | One compiler message. `type` is `error` or `warning`. |
-| `DONE` | `req` `compile-name` `status` `ms` | One unit is complete. `status` is `ok` or `fail`. |
+| `MSG` | `req` `compile-name` `type` `number` `file` `row` `column` `text` | One compiler message. `type` is `error` or `warning`. `number`, `row` and `column` are `0` when the compiler gives none (warning 214, for example, has no position). `file` is empty when the compiler names no file; oxabl then uses the unit's path. |
+| `DONE` | `req` `compile-name` `status` `ms` `messages` | One unit is complete. `status` is `ok` or `fail`. `messages` is the number of `MSG` lines sent for the unit. |
 | `END` | `req` | The request is complete. |
 | `PONG` | `n` | Answer to `PING`. |
 | `ERROR` | `text` | A protocol error. The worker quits after it. |
 | `BYE` | | Answer to `QUIT`. The worker quits after it. |
 
 Any line that breaks this table (an unknown type, a wrong field count, a `DONE` for a unit
-that is not in flight, a `count` that does not match) is a **protocol error**. Oxabl treats
-it as a lost worker.
+that is not in flight, a `count` that does not match, a `DONE` whose `messages` differs from
+the number of `MSG` lines that came before it) is a **protocol error**. Oxabl treats it as a
+lost worker.
+
+**No line carries an unknown value.** A line that the worker builds with the unknown value
+(`?`) in a field would reach oxabl as the bare line `?`, which the reader drops as noise.
+`sendLine` therefore refuses it: the worker sends `ERROR` with the text `unknown value in a
+protocol line` and quits. Every family of lines that has a body ends in a count (`ENV-END`,
+`SCHEMA-END`, `RAW-END`, and now `DONE` for `MSG`), so a dropped line cannot go unnoticed.
 
 ## Handshake
 
@@ -225,7 +235,7 @@ For each `UNIT` of a request, the worker:
 2. Computes the output paths under the stage directory of the request:
    - r-code: `COMPILE ... SAVE INTO <stage>/r`, so the `.r` is at `<stage>/r/<compile stem>.r`;
    - XREF: `<stage>/xref/<compile name>.xref` (or `.xref.xml`);
-   - private XREF (slice 7): `<stage>/verify/<compile name>.xref.xml` (always `XREF-XML`);
+   - private XREF (slice 7): `<stage>/verify/<compile name>.xref` (always the text `XREF`);
    - debug list: `<stage>/dbg/<compile name>.dbg`;
    - listing: `<stage>/lst/<compile name>.lst`.
 3. Creates each directory those paths need, with `OS-CREATE-DIR`. `SAVE INTO` creates package
@@ -245,10 +255,14 @@ For each `UNIT` of a request, the worker:
    error (exit code 2).
 5. Emits one `MSG` line for each message from `COMPILER:NUM-MESSAGES`, with
    `COMPILER:GET-MESSAGE-TYPE`, `GET-NUMBER`, `GET-FILE-NAME`, `GET-ROW`, `GET-COLUMN` and
-   `GET-MESSAGE`.
+   `GET-MESSAGE`. The compiler gives some messages no number, file, row or column (those
+   attributes are the unknown value); the worker sends `0` for each unknown number, row and
+   column. A message is an `error` only when its type is 1; any other value, the unknown value
+   included, makes it a `warning`. The unit fails on `COMPILER:ERROR`, not on the type of one message.
 6. Emits `DONE` with `fail` when `COMPILER:ERROR` is true, or when any step before the
    compile raised an error (then with a `MSG` line of number `0` that holds the error
-   text), and `ok` otherwise, plus the elapsed milliseconds from `ETIME`.
+   text), and `ok` otherwise, plus the elapsed milliseconds from `ETIME` and the number of
+   `MSG` lines it sent for the unit.
 
 **The stage path starts with `./`.** Oxabl sends the stage relative to the worker root and
 always with a leading `./` (`./.oxabl/build/stage/<build-id>/w1-1`). OpenEdge 12.8 strips a
@@ -264,15 +278,16 @@ own, so a worker that oxabl gave up on can never write into a stage that oxabl s
 
 ## Schema image
 
-After the handshake, the pool images every database, **split across all workers**. The
+After the handshake, the pool images every database whose stored image the raw digest
+does not confirm ([Raw digest](#raw-digest)), **split across all workers**. The
 entry texts, their order and the excluded fields are defined in
 [compile-key.md](compile-key.md#schema-identity).
 
 - **Shares.** Oxabl sends each worker `p` (from 0) of `N` ready workers
   `SCHEMA <ldb> <p> <N>` for every database. Worker `p` images the user tables whose place
   `i` (from 0) in the list of user tables sorted by `_File-Name` has `i mod N = p`. Share 0
-  also sends the `db` entry and every `sequence` entry. Each worker handles the databases one
-  after the other; the workers run in parallel.
+  also sends the `db` entry, the `system` entry and every `sequence` entry. Each worker
+  handles the databases one after the other; the workers run in parallel.
 - **Answer.** One `SENT` line per entry, then `SCHEMA-END <ldb> <entries> <tables>`. The
   worker builds each entry's canonical text in a `LONGCHAR` and hashes it with
   `MESSAGE-DIGEST("SHA-256", ...)`; it reads the records with dynamic buffers
@@ -282,7 +297,8 @@ entry texts, their order and the excluded fields are defined in
 - **Combine.** Oxabl joins the shares of a database and fails unless all of these hold:
   - every worker reports the same `tables`;
   - no entry occurs in two shares, and no entry repeats in one share;
-  - `db` and `sequence` entries occur only in share 0, and there is exactly one `db` entry;
+  - `db`, `system` and `sequence` entries occur only in share 0, and there is exactly one
+    `db` entry and exactly one `system` entry;
   - the number of `table` entries equals `tables`;
   - each `SCHEMA-END` count equals the `SENT` lines of its share;
   - every `SENT` names the database of the request and carries a 64-digit lower-case hex
@@ -291,8 +307,9 @@ entry texts, their order and the excluded fields are defined in
   A broken line (a bad hash, an entry of another database, a wrong count) is a protocol
   error, and the worker is lost. Shares that do not add up stop the build with exit code 3:
   `cannot image the databases`. The identity does not depend on the split.
-- **Every build images every database.** The fingerprint is never trusted to skip it
-  ([compile-key.md](compile-key.md#database-fingerprints)).
+- **A build images a database only when the raw digest differs** from the one stored with
+  its last image ([Raw digest](#raw-digest)). The fingerprint is never trusted to skip it
+  ([compile-key.md](compile-key.md#database-fingerprints)). The probe always images.
 - **Cost, measured on OpenEdge 12.8.9** with 5 databases, the largest with 1,229 entries
   (starting the workers, the handshake and the imaging together):
 
@@ -305,6 +322,29 @@ entry texts, their order and the excluded fields are defined in
   About 3 s of that is starting the AVM, compiling the worker program and connecting the
   databases; the rest is the largest table's share. More than 8 workers helps little. The
   identity is equal for 1, 4 and 8 workers.
+
+## Raw digest
+
+The raw digest tells whether the image that the last build stored still holds; what it
+hashes and how oxabl uses it are in [compile-key.md](compile-key.md#the-raw-digest).
+
+- **Shares.** Oxabl sends `RAWDIGEST <ldb> <p> <N> 16` to each worker `p` of
+  `N = min(ready workers, 8)`, for every database. The worker reads every row of the eight
+  metaschema tables with `NO-LOCK` through dynamic buffers. Share 0 makes the piece `head`
+  (every `_File`, `_Sequence` and `_Db` row). Each worker makes the numbered pieces `i` with
+  `i mod N = p`; every worker first scans `_File` for the bounds, so it needs no word from
+  the others.
+- **Answer.** One `RAW` line per piece, then `RAW-END <ldb> <pieces> <files> <physical>`.
+  Only digests cross the pipe; the records stay in the worker.
+- **Combine.** Oxabl fails the pass unless `head` and every piece from 0 to 15 are there
+  exactly once, `head` comes from share 0, piece 0 starts and piece 15 ends open and the
+  bounds of neighbours are equal, and every share reports the same `files` and `physical`.
+  A broken line (a bad hash or bound, a piece of another database, a count that differs from
+  `RAW-END`) is a protocol error: the worker is out of step and oxabl starts another in its
+  place. A failed pass is never "unchanged": the databases are imaged.
+- **Cost, measured on OpenEdge 12.8.9** with 5 databases and 59,947 metaschema rows: 372 ms
+  with 1 worker, 245 ms with 2, 152 ms with 8 and 188 ms with 16, against 3.6 s for the
+  imaging with 16 workers. 16 pieces cost less than 32 or 64.
 
 ## Hashing worker-side files
 
@@ -374,13 +414,22 @@ request needs an id that the worker does not know yet, then `COMPILE` and the `U
 
 ### Classes and sessions
 
-`COMPILER:MULTI-COMPILE` keeps each class that a session has compiled, by class name, and
-does not drop it when `PROPATH` changes. All units also share one `$OUT` tree, where one
-class name has one `.r`. With one PROPATH id in the build, every unit resolves a class name
-to the same file, so sessions are shared freely and the keys are sound. With more than one
-PROPATH id, the plan makes every unit that reaches a class unkeyable (K9,
-[compile-key.md](compile-key.md#per-unit-propath-classes)); any worker may compile it, as the
-AVM would. The pool has no session rule of its own.
+`COMPILER:MULTI-COMPILE` keeps each class that a session has compiled, by class name, while
+`PROPATH` stays the same. Measured on OpenEdge 12.8.9: after a change of `PROPATH` the next
+compile binds the class again. All units also share one `$OUT` tree, where one class name
+has one `.r`. The plan keys a unit only when every class name it reaches resolves to the
+same file under every PROPATH id, or to the class unit's r-code in `$OUT` (K9,
+[compile-key.md](compile-key.md#per-unit-propath-classes)). So whichever session compiles a
+keyed unit, it binds the same files. Any worker may compile any unit, as the AVM would.
+
+A session also keeps a class bound to its file while the PROPATH stays the same and the file
+does not change (measured). The one session rule: a job of more than one unit (a cycle)
+compiles in passes, and before each later pass and after the last one oxabl sends a
+**rebind**, a `COMPILE` request with no `UNIT` line on PROPATH id `0`, which is defined with
+no entry. The worker sets PROPATH to `""`, and the next request sets the unit PROPATH again,
+so the session binds every class again
+([compile-key.md](compile-key.md#passes-over-a-cycle)). The worker program has no code of
+its own for it.
 
 ### Timeouts
 
@@ -397,7 +446,8 @@ the protocol. Then oxabl:
 3. puts the unit that was in flight back in the queue, together with the units of the same
    request that had not started, as one job with the lost unit first (a request holds more
    than one unit only for a cycle of classes, which must stay together); only the lost unit
-   counts a loss;
+   counts a loss. A loss in a pass over a cycle that reports nothing puts the whole job back
+   ([compile-key.md](compile-key.md#passes-over-a-cycle));
 4. marks a unit that is lost a second time in one build as failed, with the message
    `worker lost twice while compiling this unit`;
 5. starts a new worker in the slot, with a new stage (`w<n>-<s+1>`). The new worker must
@@ -446,6 +496,27 @@ The program has these parts. Each is one internal procedure.
 | `fingerprint` | Answer `FINGERPRINT` from `_Db` and `_DbStatus`. |
 | `hashFile` | Answer one `HASH`, or one `HASHSET`. |
 | `compileRequest` | Read the `UNIT` lines, compile each unit, emit `MSG` and `DONE`, then `END`. |
+
+### Two parts
+
+The program is two files that oxabl joins into one text: a header line
+(`/* oxabl-worker protocol 1 */`), the **compile part**
+(`resources/oxabl_worker_compile.p`) and the **driver part**
+(`resources/oxabl_worker_driver.p`). The AVM gets the joined text.
+
+| Part | Holds |
+| --- | --- |
+| Compile part | What decides how a unit compiles: the session setup (`COMPILER:MULTI-COMPILE`), the PROPATH and the compile options by id, the generator of the compile procedure and the `COMPILE` itself, and the creation of the output directories. It reads no protocol line. |
+| Driver part | The protocol, the handshake, the schema image, the hashing and the messages. It decodes a request and calls the compile part. |
+
+The compile key hashes the compile part and not the driver part
+([compile-key.md](compile-key.md#worker-program)), so a fix to the driver moves no key. Two
+guards keep that safe. A golden digest of the compile part fails on any edit until the
+digest changes in the same diff. A lint of the driver part, which lexes it with
+`oxabl_lexer`, fails on `COMPILE`, an assignment to `PROPATH`, `SESSION:` or `COMPILER:`
+attributes, `CREATE ALIAS`, `DELETE ALIAS`, `CONNECT`, `DISCONNECT`, `RUN VALUE`,
+`OS-COMMAND`, `&GLOBAL-DEFINE`, `&SCOPED-DEFINE`, and the registration of a super or a
+persistent procedure. A driver that needs one of these moves it into the compile part.
 
 The program reads no file except the files that `HASH` names, and writes no file except the
 compile outputs in the stage and its generated compile procedures under `<stage>/gen/`. It

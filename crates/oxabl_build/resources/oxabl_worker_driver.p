@@ -1,12 +1,12 @@
-/* oxabl-worker protocol 1 */
-/* The oxabl build worker. It reads OXW1 lines on stdin and answers on stdout
-   with PUT UNFORMATTED ... SKIP. It connects no database and runs no other
-   program than the compile procedure it writes. It writes no file except the
-   compile outputs and that procedure, in the stage directory of the request.
-   Start it as: _progres -b -p oxabl_worker.p */
+/* The driver part of the oxabl build worker. It reads OXW1 lines on stdin and
+   answers on stdout with PUT UNFORMATTED ... SKIP. It connects no database
+   and runs no other program than the compile procedure that the compile part
+   writes. It decides nothing about a compile: the compile key does not hash
+   this text, so a test lexes it and refuses the statements that can change a
+   compile. The compile part comes first in the program and defines gcCwd, the
+   PROPATH and options tables and the procedures that the requests call. */
 
 DEFINE VARIABLE gcTab      AS CHARACTER NO-UNDO.
-DEFINE VARIABLE gcCwd      AS CHARACTER NO-UNDO.
 DEFINE VARIABLE gcStartPath AS CHARACTER NO-UNDO.
 DEFINE VARIABLE gcLdb      AS CHARACTER NO-UNDO.
 DEFINE VARIABLE gcSafe     AS CHARACTER NO-UNDO.
@@ -16,6 +16,7 @@ DEFINE VARIABLE giTables   AS INTEGER   NO-UNDO.
 DEFINE VARIABLE giPart     AS INTEGER   NO-UNDO.
 DEFINE VARIABLE giParts    AS INTEGER   NO-UNDO.
 DEFINE VARIABLE glQuit     AS LOGICAL   NO-UNDO.
+DEFINE VARIABLE giMsgs     AS INTEGER   NO-UNDO.
 
 /* The canonical text of the entry being built: gcBuf collects pieces and is
    moved into glcText before it can outgrow a CHARACTER. */
@@ -43,23 +44,24 @@ DEFINE TEMP-TABLE ttMeta NO-UNDO
 DEFINE VARIABLE gcDbRKey   AS CHARACTER NO-UNDO.
 DEFINE VARIABLE gcDbWKey   AS CHARACTER NO-UNDO.
 
+/* The raw digest: records go into gmChunk as they are stored, and the SHA-256
+   of a full chunk starts the next one. ttCut holds the record ids of the
+   _File rows, which give the bounds of the pieces. */
+DEFINE VARIABLE gmChunk    AS MEMPTR    NO-UNDO.
+DEFINE VARIABLE giChunk    AS INTEGER   NO-UNDO INITIAL 1048576.
+DEFINE VARIABLE giUsed     AS INTEGER   NO-UNDO.
+DEFINE VARIABLE grSum      AS RAW       NO-UNDO.
+DEFINE VARIABLE giRawRows  AS INTEGER   NO-UNDO.
+DEFINE VARIABLE ghRawFld   AS HANDLE    NO-UNDO.
+DEFINE TEMP-TABLE ttRaw NO-UNDO
+    FIELD rRec AS RAW.
+DEFINE TEMP-TABLE ttCut NO-UNDO
+    FIELD iRecid AS INT64
+    INDEX ixRecid IS UNIQUE PRIMARY iRecid.
+
 DEFINE STREAM sIn.
 DEFINE STREAM sFile.
 
-/* The PROPATHs and the compile options the requests refer to by id, and the
-   compile procedures written so far, by shape. */
-DEFINE TEMP-TABLE ttPath NO-UNDO
-    FIELD cId   AS CHARACTER
-    FIELD cPath AS CHARACTER
-    INDEX ixId IS UNIQUE PRIMARY cId.
-DEFINE TEMP-TABLE ttOpt NO-UNDO
-    FIELD cId   AS CHARACTER
-    FIELD cHead AS CHARACTER
-    FIELD cTail AS CHARACTER
-    INDEX ixId IS UNIQUE PRIMARY cId.
-DEFINE TEMP-TABLE ttGen NO-UNDO
-    FIELD cKey AS CHARACTER
-    INDEX ixKey IS UNIQUE PRIMARY cKey.
 DEFINE TEMP-TABLE ttUnit NO-UNDO
     FIELD iSeq  AS INTEGER
     FIELD cName AS CHARACTER
@@ -72,6 +74,12 @@ DEFINE TEMP-TABLE ttPtr NO-UNDO
     INDEX ixKey IS UNIQUE PRIMARY cKey.
 
 FUNCTION intText RETURNS CHARACTER (INPUT piValue AS INT64):
+    RETURN STRING(piValue).
+END FUNCTION.
+
+/* A position or number of a MSG line: 0 when the compiler gives none. */
+FUNCTION posText RETURNS CHARACTER (INPUT piValue AS INT64):
+    IF piValue = ? THEN RETURN "0".
     RETURN STRING(piValue).
 END FUNCTION.
 
@@ -205,9 +213,15 @@ FUNCTION skipField RETURNS LOGICAL (INPUT phFld AS HANDLE):
     RETURN FALSE.
 END FUNCTION.
 
+/* A line with an unknown value (it ends in ?) is never sent: the worker
+   answers with an ERROR and quits. */
 PROCEDURE sendLine:
     DEFINE INPUT PARAMETER pcLine AS CHARACTER NO-UNDO.
 
+    IF pcLine = ? THEN DO:
+        RUN failWith("unknown value in a protocol line").
+        RETURN.
+    END.
     PUT UNFORMATTED "OXW1" + gcTab + pcLine SKIP.
 END PROCEDURE.
 
@@ -588,6 +602,27 @@ PROCEDURE closeKinds:
     END.
 END PROCEDURE.
 
+/* Runs the handler of that name. The handlers are the internal procedures
+   that scanKind may call. */
+PROCEDURE runHandler:
+    DEFINE INPUT PARAMETER pcHandler AS CHARACTER NO-UNDO.
+
+    CASE pcHandler:
+        WHEN "ptrField" THEN RUN ptrField.
+        WHEN "ptrIndex" THEN RUN ptrIndex.
+        WHEN "textField" THEN RUN textField.
+        WHEN "textIndex" THEN RUN textIndex.
+        WHEN "textIndexField" THEN RUN textIndexField.
+        WHEN "textTableTrigger" THEN RUN textTableTrigger.
+        WHEN "textFieldTrigger" THEN RUN textFieldTrigger.
+        WHEN "imageDb" THEN RUN imageDb.
+        WHEN "imageTable" THEN RUN imageTable.
+        WHEN "imageSystemTable" THEN RUN imageSystemTable.
+        WHEN "imageSequence" THEN RUN imageSequence.
+        OTHERWISE RUN failWith("unknown handler " + pcHandler).
+    END CASE.
+END PROCEDURE.
+
 /* Runs the internal procedure pcHandler once for each row of the table of
    kind piKind that matches pcWhere, in the order of pcBy. The handler finds
    the row in ghBuf[piKind]. */
@@ -603,7 +638,7 @@ PROCEDURE scanKind:
     REPEAT:
         ghQuery[piKind]:GET-NEXT(NO-LOCK).
         IF ghQuery[piKind]:QUERY-OFF-END THEN LEAVE.
-        RUN VALUE(pcHandler) IN THIS-PROCEDURE NO-ERROR.
+        RUN runHandler(pcHandler) NO-ERROR.
         IF ERROR-STATUS:ERROR THEN DO:
             RUN failWith(pcHandler + ": "
                          + (IF ERROR-STATUS:NUM-MESSAGES > 0 THEN ERROR-STATUS:GET-MESSAGE(1) ELSE "error")).
@@ -700,10 +735,18 @@ PROCEDURE imageDb:
     RUN finishEntry("db", "").
 END PROCEDURE.
 
+/* One line of the `system` entry: the name and CRC of a table that is not a
+   user table. R-code that reads such a table records its CRC. */
+PROCEDURE imageSystemTable:
+    RUN putRecord("system-table", bv(ghBuf[1], "_File-Name") + CHR(1)
+                  + "_crc=" + bv(ghBuf[1], "_CRC"), 0).
+END PROCEDURE.
+
 /* The share of the schema image of one connected database that worker piPart
    of piParts images: one SENT line for each of its entries, then SCHEMA-END
    with the number of entries and the number of user tables in the whole
-   database. Part 0 images the database record and the sequences. */
+   database. Part 0 images the database record, the system tables (virtual
+   system tables, the metaschema and the SQL catalog) and the sequences. */
 PROCEDURE schemaImage:
     DEFINE INPUT PARAMETER pcLdb   AS CHARACTER NO-UNDO.
     DEFINE INPUT PARAMETER piPart  AS INTEGER   NO-UNDO.
@@ -730,11 +773,194 @@ PROCEDURE schemaImage:
     RUN openKinds.
     RUN scanKind(8, "", "", "imageDb").
     RUN scanKind(1, "WHERE bK1._Tbl-Type = 'T'", "BY bK1._File-Name", "imageTable").
-    IF piPart = 0 THEN RUN scanKind(7, "", "BY bK7._Seq-Name", "imageSequence").
+    IF piPart = 0 THEN DO:
+        RUN scanKind(1, "WHERE bK1._Tbl-Type <> 'T'", "BY bK1._File-Name BY bK1._Owner",
+                     "imageSystemTable").
+        IF NOT glQuit THEN RUN finishEntry("system", "").
+        RUN scanKind(7, "", "BY bK7._Seq-Name", "imageSequence").
+    END.
     RUN closeKinds.
     IF NOT glQuit THEN
         RUN sendLine("SCHEMA-END" + gcTab + toWire(pcLdb) + gcTab + intText(giEntries)
                      + gcTab + intText(giTables)).
+END PROCEDURE.
+
+/* Ends a chunk of the raw digest: the SHA-256 of its used bytes becomes the
+   first bytes of the next chunk. */
+PROCEDURE rawFlush:
+    DEFINE VARIABLE mPart AS MEMPTR NO-UNDO.
+
+    IF giUsed = giChunk THEN grSum = MESSAGE-DIGEST("SHA-256", gmChunk).
+    ELSE DO:
+        SET-SIZE(mPart) = MAX(giUsed, 1).
+        IF giUsed > 0 THEN COPY-LOB FROM OBJECT gmChunk FOR giUsed TO OBJECT mPart.
+        ELSE PUT-BYTE(mPart, 1) = 0.
+        grSum = MESSAGE-DIGEST("SHA-256", mPart).
+        SET-SIZE(mPart) = 0.
+    END.
+    PUT-BYTES(gmChunk, 1) = grSum.
+    giUsed = LENGTH(grSum, "RAW").
+END PROCEDURE.
+
+/* Adds every row of the metaschema table of kind piKind that matches pcWhere
+   to the raw digest: the kind (1 byte), the record id (8 bytes), the length
+   (4 bytes) and the bytes of the record as the database stores it, big-endian.
+   With plCut it also notes the record id in ttCut; with plRaw false it only
+   does that. LENGTH(x, "RAW") counts bytes; LENGTH(x) counts characters in a
+   UTF-8 session and would cut records. */
+PROCEDURE rawScan:
+    DEFINE INPUT PARAMETER piKind  AS INTEGER   NO-UNDO.
+    DEFINE INPUT PARAMETER pcWhere AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER plRaw   AS LOGICAL   NO-UNDO.
+    DEFINE INPUT PARAMETER plCut   AS LOGICAL   NO-UNDO.
+
+    DEFINE VARIABLE hBuf AS HANDLE  NO-UNDO.
+    DEFINE VARIABLE rRec AS RAW     NO-UNDO.
+    DEFINE VARIABLE iLen AS INTEGER NO-UNDO.
+    DEFINE VARIABLE lOk  AS LOGICAL NO-UNDO.
+
+    hBuf = ghBuf[piKind].
+    ghQuery[piKind]:QUERY-PREPARE("FOR EACH bK" + STRING(piKind) + " " + pcWhere + " NO-LOCK").
+    ghQuery[piKind]:QUERY-OPEN().
+    REPEAT:
+        ghQuery[piKind]:GET-NEXT(NO-LOCK).
+        IF ghQuery[piKind]:QUERY-OFF-END THEN LEAVE.
+        IF plCut THEN DO:
+            CREATE ttCut.
+            ttCut.iRecid = INT64(hBuf:RECID).
+        END.
+        IF NOT plRaw THEN NEXT.
+        lOk = hBuf:RAW-TRANSFER(TRUE, ghRawFld) NO-ERROR.
+        IF ERROR-STATUS:ERROR OR lOk <> TRUE THEN DO:
+            RUN failWith("cannot read a record of " + hBuf:TABLE + " as raw bytes").
+            LEAVE.
+        END.
+        rRec = ttRaw.rRec.
+        iLen = LENGTH(rRec, "RAW").
+        IF giUsed + iLen + 13 > giChunk THEN RUN rawFlush.
+        PUT-BYTE(gmChunk, giUsed + 1) = piKind.
+        PUT-INT64(gmChunk, giUsed + 2) = INT64(hBuf:RECID).
+        PUT-LONG(gmChunk, giUsed + 10) = iLen.
+        PUT-BYTES(gmChunk, giUsed + 14) = rRec.
+        giUsed = giUsed + 13 + iLen.
+        giRawRows = giRawRows + 1.
+    END.
+    ghQuery[piKind]:QUERY-CLOSE().
+END PROCEDURE.
+
+/* Ends one piece of the raw digest with a RAW line. */
+PROCEDURE rawSend:
+    DEFINE INPUT PARAMETER pcPiece AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcLow   AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcHigh  AS CHARACTER NO-UNDO.
+
+    DEFINE VARIABLE cSha AS CHARACTER NO-UNDO.
+
+    RUN rawFlush.
+    cSha = LOWER(HEX-ENCODE(grSum)).
+    RUN sendLine("RAW" + gcTab + toWire(gcLdb) + gcTab + pcPiece + gcTab + pcLow + gcTab + pcHigh
+                 + gcTab + intText(giRawRows) + gcTab + cSha).
+    giEntries = giEntries + 1.
+    giUsed = 0.
+    giRawRows = 0.
+END PROCEDURE.
+
+/* The share of the raw digest of one connected database that worker piPart of
+   piParts makes. The digest covers every row of the eight metaschema tables
+   of the image, user tables or not, as raw bytes. The rows of _File, _Sequence
+   and _Db are the piece `head`, which part 0 makes. The other rows are split
+   into piBuckets pieces by the record id of the _File or _Index row they
+   belong to; the bounds are record ids of _File rows, so every worker finds
+   the same ones, and a piece does not depend on the number of workers. Worker
+   piPart makes the pieces whose number is piPart modulo piParts. One RAW line
+   for each piece, with its bounds, then RAW-END with the number of pieces,
+   the number of _File rows and the physical name of the database. */
+PROCEDURE rawDigest:
+    DEFINE INPUT PARAMETER pcLdb     AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER piPart    AS INTEGER   NO-UNDO.
+    DEFINE INPUT PARAMETER piParts   AS INTEGER   NO-UNDO.
+    DEFINE INPUT PARAMETER piBuckets AS INTEGER   NO-UNDO.
+
+    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE k      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE iFiles AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE iNext  AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE cCuts  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cLow   AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cHigh  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cName  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cWhere AS CHARACTER NO-UNDO.
+
+    IF NOT CONNECTED(pcLdb) THEN DO:
+        RUN failWith("database " + pcLdb + " is not connected").
+        RETURN.
+    END.
+    IF piParts < 1 OR piPart < 0 OR piPart >= piParts OR piBuckets < 1 THEN DO:
+        RUN failWith("bad share " + intText(piPart) + " of " + intText(piParts)
+                     + " in " + intText(piBuckets) + " pieces").
+        RETURN.
+    END.
+    gcLdb = pcLdb.
+    giEntries = 0.
+    giUsed = 0.
+    giRawRows = 0.
+    IF GET-SIZE(gmChunk) = 0 THEN DO:
+        SET-SIZE(gmChunk) = giChunk.
+        SET-BYTE-ORDER(gmChunk) = BIG-ENDIAN.
+        CREATE ttRaw.
+        ghRawFld = BUFFER ttRaw:BUFFER-FIELD("rRec").
+    END.
+    EMPTY TEMP-TABLE ttCut.
+    RUN openKinds.
+    RUN rawScan(1, "", piPart = 0, TRUE).
+    IF piPart = 0 AND NOT glQuit THEN DO:
+        RUN rawScan(7, "", TRUE, FALSE).
+        IF NOT glQuit THEN RUN rawScan(8, "", TRUE, FALSE).
+        IF NOT glQuit THEN RUN rawSend("head", "-", "-").
+    END.
+    /* Bound i, for i from 1 to piBuckets - 1, is the record id at place
+       i * files / buckets of the sorted record ids; 0 when there are fewer
+       files than buckets. */
+    FOR EACH ttCut:
+        iFiles = iFiles + 1.
+    END.
+    i = 0.
+    iNext = 1.
+    FOR EACH ttCut BY ttCut.iRecid:
+        DO WHILE iNext < piBuckets AND INTEGER(TRUNCATE(iNext * iFiles / piBuckets, 0)) = i:
+            cCuts = cCuts + (IF cCuts = "" THEN "" ELSE ",") + STRING(ttCut.iRecid).
+            iNext = iNext + 1.
+        END.
+        i = i + 1.
+    END.
+    DO WHILE iNext < piBuckets:
+        cCuts = cCuts + (IF cCuts = "" THEN "" ELSE ",") + "0".
+        iNext = iNext + 1.
+    END.
+    DO i = 0 TO piBuckets - 1:
+        IF glQuit THEN LEAVE.
+        IF i MODULO piParts <> piPart THEN NEXT.
+        cLow = (IF i = 0 THEN "-" ELSE ENTRY(i, cCuts)).
+        cHigh = (IF i = piBuckets - 1 THEN "-" ELSE ENTRY(i + 1, cCuts)).
+        DO k = 2 TO 6:
+            IF glQuit THEN LEAVE.
+            cName = "bK" + STRING(k) + (IF k = 4 THEN "._Index-recid" ELSE "._File-recid").
+            IF cLow = "-" AND cHigh = "-" THEN cWhere = "".
+            ELSE cWhere = "WHERE " + (IF cLow = "-" THEN "" ELSE cName + " >= " + cLow)
+                        + (IF cLow <> "-" AND cHigh <> "-" THEN " AND " ELSE "")
+                        + (IF cHigh = "-" THEN " AND " + cName + " <> ?" ELSE cName + " < " + cHigh).
+            RUN rawScan(k, cWhere, TRUE, FALSE).
+            /* A row that names no record is in the first piece. */
+            IF i = 0 AND cWhere <> "" AND NOT glQuit THEN
+                RUN rawScan(k, "WHERE " + cName + " = ?", TRUE, FALSE).
+        END.
+        IF NOT glQuit THEN RUN rawSend(intText(i), cLow, cHigh).
+    END.
+    RUN closeKinds.
+    EMPTY TEMP-TABLE ttCut.
+    IF NOT glQuit THEN
+        RUN sendLine("RAW-END" + gcTab + toWire(pcLdb) + gcTab + intText(giEntries)
+                     + gcTab + intText(iFiles) + gcTab + toWire(PDBNAME(pcLdb))).
 END PROCEDURE.
 
 /* A cheap description of a connected database: its GUID and the stamp of its
@@ -868,164 +1094,55 @@ PROCEDURE hashSet:
     RUN sendLine("HASHSET-DONE" + gcTab + toWire(pcId) + gcTab + cSha).
 END PROCEDURE.
 
-/* The name of a unit without its extension: the path of its r-code. */
-FUNCTION stemOf RETURNS CHARACTER (INPUT pcName AS CHARACTER):
-    DEFINE VARIABLE iSlash AS INTEGER NO-UNDO.
-    DEFINE VARIABLE iDot   AS INTEGER NO-UNDO.
-
-    iSlash = R-INDEX(pcName, "/").
-    iDot = R-INDEX(pcName, ".").
-    IF iDot > iSlash AND iDot > 1 THEN RETURN SUBSTRING(pcName, 1, iDot - 1).
-    RETURN pcName.
-END FUNCTION.
-
-FUNCTION dirOf RETURNS CHARACTER (INPUT pcPath AS CHARACTER):
-    DEFINE VARIABLE iSlash AS INTEGER NO-UNDO.
-
-    iSlash = R-INDEX(pcPath, "/").
-    IF iSlash > 1 THEN RETURN SUBSTRING(pcPath, 1, iSlash - 1).
-    RETURN "".
-END FUNCTION.
-
-/* Creates every missing level of a directory: SAVE INTO makes the package
-   directories of a class but not the directory of a procedure. */
-PROCEDURE ensureDir:
-    DEFINE INPUT PARAMETER pcDir AS CHARACTER NO-UNDO.
-
-    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
-    DEFINE VARIABLE cPart  AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cSoFar AS CHARACTER NO-UNDO.
-
-    IF pcDir = "" THEN RETURN.
-    DO i = 1 TO NUM-ENTRIES(pcDir, "/"):
-        cPart = ENTRY(i, pcDir, "/").
-        cSoFar = cSoFar + (IF i > 1 THEN "/" ELSE "") + cPart.
-        IF cPart <> "" AND cPart <> "." THEN OS-CREATE-DIR VALUE(cSoFar).
-    END.
-END PROCEDURE.
-
-/* PROPATH id entry...: remembers a PROPATH under its id. An entry that starts
-   with $DLC names the installation, so it is written out with the DLC of this
-   process. */
-PROCEDURE definePropath:
+/* PROPATH id entry...: the compile part remembers a PROPATH under its id. */
+PROCEDURE onPropath:
     DEFINE INPUT PARAMETER pcLine AS CHARACTER NO-UNDO.
 
-    DEFINE VARIABLE cWantId   AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cList  AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cEntry AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cDlc   AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
+    DEFINE VARIABLE cList AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE i     AS INTEGER   NO-UNDO.
 
-    cDlc = OS-GETENV("DLC").
-    IF cDlc = ? THEN cDlc = "".
-    cWantId = fromWire(ENTRY(3, pcLine, gcTab)).
     DO i = 4 TO NUM-ENTRIES(pcLine, gcTab):
-        cEntry = fromWire(ENTRY(i, pcLine, gcTab)).
-        IF cEntry = "$DLC" OR cEntry BEGINS "$DLC/" THEN
-            cEntry = RIGHT-TRIM(cDlc, "/") + SUBSTRING(cEntry, 5).
-        cList = cList + (IF cList = "" THEN "" ELSE ",") + cEntry.
+        cList = cList + (IF i > 4 THEN gcTab ELSE "") + fromWire(ENTRY(i, pcLine, gcTab)).
     END.
-    FIND ttPath WHERE ttPath.cId = cWantId NO-ERROR.
-    IF NOT AVAILABLE ttPath THEN CREATE ttPath.
-    ASSIGN ttPath.cId = cWantId
-           ttPath.cPath = cList.
-    RUN sendLine("OK" + gcTab + toWire(cWantId)).
+    RUN definePropath(fromWire(ENTRY(3, pcLine, gcTab)), cList).
+    RUN sendLine("OK" + gcTab + toWire(fromWire(ENTRY(3, pcLine, gcTab)))).
 END PROCEDURE.
 
-/* OPTIONS id name=value...: remembers the compile options under their id as
-   the two halves of the COMPILE phrase. oxabl sends only names made of
-   letters, digits and "-_:,.", so a value needs no quoting. */
-PROCEDURE defineOptions:
+/* OPTIONS id name=value...: the compile part remembers the compile options
+   under their id. */
+PROCEDURE onOptions:
     DEFINE INPUT PARAMETER pcLine AS CHARACTER NO-UNDO.
 
-    DEFINE VARIABLE cWantId    AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cPair  AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cName  AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cValue AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cHeadText  AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cLang  AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cFlags AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cOpts  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cPairs AS CHARACTER NO-UNDO.
     DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
-    DEFINE VARIABLE iAt    AS INTEGER   NO-UNDO.
 
-    cWantId = fromWire(ENTRY(3, pcLine, gcTab)).
     DO i = 4 TO NUM-ENTRIES(pcLine, gcTab):
-        cPair = fromWire(ENTRY(i, pcLine, gcTab)).
-        iAt = INDEX(cPair, "=").
-        cName = SUBSTRING(cPair, 1, iAt - 1).
-        cValue = SUBSTRING(cPair, iAt + 1).
-        CASE cName:
-            WHEN "attr-space" THEN DO:
-                IF cValue = "true" THEN cHeadText = " ATTR-SPACE".
-            END.
-            WHEN "languages" THEN DO:
-                IF cValue <> "" THEN cLang = ' LANGUAGES ("' + REPLACE(cValue, ":", '","') + '")'.
-            END.
-            WHEN "min-size" THEN DO:
-                IF cValue = "true" THEN cFlags = cFlags + " MIN-SIZE".
-            END.
-            WHEN "generate-md5" THEN DO:
-                IF cValue = "true" THEN cFlags = cFlags + " GENERATE-MD5".
-            END.
-            WHEN "stream-io" THEN DO:
-                IF cValue = "true" THEN cFlags = cFlags + " STREAM-IO".
-            END.
-            WHEN "v6frame" THEN DO:
-                IF cValue = "true" THEN cFlags = cFlags + " V6FRAME".
-            END.
-            WHEN "options" THEN DO:
-                IF cValue <> "" THEN cOpts = ' OPTIONS "' + cValue + '"'.
-            END.
-        END CASE.
+        cPairs = cPairs + (IF i > 4 THEN gcTab ELSE "") + fromWire(ENTRY(i, pcLine, gcTab)).
     END.
-    FIND ttOpt WHERE ttOpt.cId = cWantId NO-ERROR.
-    IF NOT AVAILABLE ttOpt THEN CREATE ttOpt.
-    ASSIGN ttOpt.cId = cWantId
-           ttOpt.cHead = cHeadText
-           ttOpt.cTail = cLang + cFlags + cOpts.
-    RUN sendLine("OK" + gcTab + toWire(cWantId)).
+    RUN defineOptions(fromWire(ENTRY(3, pcLine, gcTab)), cPairs).
+    RUN sendLine("OK" + gcTab + toWire(fromWire(ENTRY(3, pcLine, gcTab)))).
 END PROCEDURE.
 
-/* Writes the procedure that holds one shape of COMPILE statement. The
-   statement takes the output files as run-time values, but its phrases
-   (XREF-XML, MIN-SIZE, ...) are keywords, so each shape is its own source. */
-PROCEDURE writeCompiler:
+/* One MSG line. A number, row or column that the compiler does not give is 0. */
+PROCEDURE sendMsg:
+    DEFINE INPUT PARAMETER pcReq  AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER pcType AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER piNum  AS INT64     NO-UNDO.
     DEFINE INPUT PARAMETER pcFile AS CHARACTER NO-UNDO.
-    DEFINE INPUT PARAMETER pcXref AS CHARACTER NO-UNDO.
-    DEFINE INPUT PARAMETER plDebug AS LOGICAL  NO-UNDO.
-    DEFINE INPUT PARAMETER plList AS LOGICAL   NO-UNDO.
-    DEFINE INPUT PARAMETER pcHead AS CHARACTER NO-UNDO.
-    DEFINE INPUT PARAMETER pcTail AS CHARACTER NO-UNDO.
+    DEFINE INPUT PARAMETER piRow  AS INT64     NO-UNDO.
+    DEFINE INPUT PARAMETER piCol  AS INT64     NO-UNDO.
+    DEFINE INPUT PARAMETER pcText AS CHARACTER NO-UNDO.
 
-    DEFINE VARIABLE cStatement AS CHARACTER NO-UNDO.
-
-    cStatement = "COMPILE VALUE(pcName)" + pcHead + " SAVE INTO VALUE(pcInto)".
-    IF plList THEN cStatement = cStatement + " LISTING VALUE(pcLst)".
-    IF pcXref = "xref-xml" OR pcXref = "private" THEN cStatement = cStatement + " XREF-XML VALUE(pcXref)".
-    IF pcXref = "xref" THEN cStatement = cStatement + " XREF VALUE(pcXref)".
-    IF plDebug THEN cStatement = cStatement + " DEBUG-LIST VALUE(pcDbg)".
-    cStatement = cStatement + pcTail + " NO-ERROR.".
-
-    RUN ensureDir(dirOf(pcFile)).
-    OUTPUT STREAM sFile TO VALUE(pcFile).
-    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO." SKIP.
-    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcInto AS CHARACTER NO-UNDO." SKIP.
-    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcXref AS CHARACTER NO-UNDO." SKIP.
-    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcDbg AS CHARACTER NO-UNDO." SKIP.
-    PUT STREAM sFile UNFORMATTED "DEFINE INPUT PARAMETER pcLst AS CHARACTER NO-UNDO." SKIP.
-    PUT STREAM sFile UNFORMATTED "DEFINE OUTPUT PARAMETER pcErr AS CHARACTER NO-UNDO." SKIP.
-    PUT STREAM sFile UNFORMATTED "DEFINE VARIABLE i AS INTEGER NO-UNDO." SKIP.
-    PUT STREAM sFile UNFORMATTED cStatement SKIP.
-    PUT STREAM sFile UNFORMATTED "IF ERROR-STATUS:ERROR THEN DO i = 1 TO ERROR-STATUS:NUM-MESSAGES:" SKIP.
-    PUT STREAM sFile UNFORMATTED "    pcErr = pcErr + (IF pcErr = '' THEN '' ELSE ' ') + ERROR-STATUS:GET-MESSAGE(i)." SKIP.
-    PUT STREAM sFile UNFORMATTED "END." SKIP.
-    OUTPUT STREAM sFile CLOSE.
+    RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + pcType
+                 + gcTab + posText(piNum) + gcTab + toWire(pcFile) + gcTab + posText(piRow)
+                 + gcTab + posText(piCol) + gcTab + toWire(pcText)).
+    giMsgs = giMsgs + 1.
 END PROCEDURE.
 
 /* Compiles one unit into the stage and answers with its messages and DONE.
    A failure before the compile counts as a failed unit with a message of
-   number 0. */
+   number 0. DONE carries the number of MSG lines sent for the unit. */
 PROCEDURE compileUnit:
     DEFINE INPUT PARAMETER pcReq   AS CHARACTER NO-UNDO.
     DEFINE INPUT PARAMETER pcName  AS CHARACTER NO-UNDO.
@@ -1035,79 +1152,43 @@ PROCEDURE compileUnit:
     DEFINE INPUT PARAMETER plDebug AS LOGICAL   NO-UNDO.
     DEFINE INPUT PARAMETER plList  AS LOGICAL   NO-UNDO.
 
-    DEFINE VARIABLE cStem     AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cShape      AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cGen      AS CHARACTER NO-UNDO.
-    DEFINE VARIABLE cXrefFile AS CHARACTER NO-UNDO INITIAL "".
-    DEFINE VARIABLE cDbgFile  AS CHARACTER NO-UNDO INITIAL "".
-    DEFINE VARIABLE cLstFile  AS CHARACTER NO-UNDO INITIAL "".
-    DEFINE VARIABLE cCompErr  AS CHARACTER NO-UNDO INITIAL "".
+    DEFINE VARIABLE cCompErr  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE cRunText  AS CHARACTER NO-UNDO.
+    DEFINE VARIABLE lKnown    AS LOGICAL   NO-UNDO.
+    DEFINE VARIABLE lRunFail  AS LOGICAL   NO-UNDO.
     DEFINE VARIABLE lOk       AS LOGICAL   NO-UNDO INITIAL TRUE.
     DEFINE VARIABLE iMsg      AS INTEGER   NO-UNDO.
     DEFINE VARIABLE iMs       AS INT64     NO-UNDO.
     DEFINE VARIABLE cType     AS CHARACTER NO-UNDO.
 
     ETIME(TRUE).
-    cStem = stemOf(pcName).
-    FIND ttOpt WHERE ttOpt.cId = pcOpt NO-ERROR.
-    IF NOT AVAILABLE ttOpt THEN DO:
+    giMsgs = 0.
+    RUN compileOne(pcName, pcStage, pcOpt, pcXref, plDebug, plList,
+                   OUTPUT lKnown, OUTPUT lRunFail, OUTPUT cRunText, OUTPUT cCompErr).
+    IF NOT lKnown THEN DO:
         RUN failWith("unknown OPTIONS " + pcOpt).
         RETURN.
     END.
-    cShape = pcOpt + "-" + pcXref + "-" + STRING(plDebug, "1/0") + STRING(plList, "1/0").
-    cGen = pcStage + "/gen/c-" + cShape + ".p".
-    FIND ttGen WHERE ttGen.cKey = cShape NO-ERROR.
-    IF NOT AVAILABLE ttGen THEN DO:
-        RUN writeCompiler(cGen, pcXref, plDebug, plList, ttOpt.cHead, ttOpt.cTail).
-        CREATE ttGen.
-        ttGen.cKey = cShape.
-    END.
-
-    RUN ensureDir(pcStage + "/r/" + dirOf(cStem)).
-    IF pcXref = "xref-xml" THEN cXrefFile = pcStage + "/xref/" + pcName + ".xref.xml".
-    IF pcXref = "private" THEN cXrefFile = pcStage + "/verify/" + pcName + ".xref.xml".
-    IF pcXref = "xref" THEN cXrefFile = pcStage + "/xref/" + pcName + ".xref".
-    IF cXrefFile <> "" THEN RUN ensureDir(dirOf(cXrefFile)).
-    IF plDebug THEN DO:
-        cDbgFile = pcStage + "/dbg/" + pcName + ".dbg".
-        RUN ensureDir(dirOf(cDbgFile)).
-    END.
-    IF plList THEN DO:
-        cLstFile = pcStage + "/lst/" + pcName + ".lst".
-        RUN ensureDir(dirOf(cLstFile)).
-    END.
-
-    RUN VALUE(gcCwd + "/" + cGen)
-        (INPUT pcName, INPUT pcStage + "/r", INPUT cXrefFile, INPUT cDbgFile, INPUT cLstFile,
-         OUTPUT cCompErr) NO-ERROR.
-    IF ERROR-STATUS:ERROR THEN DO:
+    IF lRunFail THEN DO:
         lOk = FALSE.
-        RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + "error"
-                     + gcTab + "0" + gcTab + toWire(pcName) + gcTab + "0" + gcTab + "0" + gcTab
-                     + toWire(IF ERROR-STATUS:NUM-MESSAGES > 0 THEN ERROR-STATUS:GET-MESSAGE(1)
-                              ELSE "the compile procedure failed")).
+        RUN sendMsg(pcReq, pcName, "error", 0, pcName, 0, 0, cRunText).
     END.
     ELSE DO:
         IF COMPILER:ERROR THEN lOk = FALSE.
         IF cCompErr <> "" THEN DO:
             lOk = FALSE.
-            RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + "error"
-                         + gcTab + "0" + gcTab + toWire(pcName) + gcTab + "0" + gcTab + "0" + gcTab
-                         + toWire(cCompErr)).
+            RUN sendMsg(pcReq, pcName, "error", 0, pcName, 0, 0, cCompErr).
         END.
         DO iMsg = 1 TO COMPILER:NUM-MESSAGES:
-            cType = IF COMPILER:GET-MESSAGE-TYPE(iMsg) = 2 THEN "warning" ELSE "error".
-            RUN sendLine("MSG" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab + cType
-                         + gcTab + intText(COMPILER:GET-NUMBER(iMsg))
-                         + gcTab + toWire(COMPILER:GET-FILE-NAME(iMsg))
-                         + gcTab + intText(COMPILER:GET-ROW(iMsg))
-                         + gcTab + intText(COMPILER:GET-COLUMN(iMsg))
-                         + gcTab + toWire(COMPILER:GET-MESSAGE(iMsg))).
+            cType = IF COMPILER:GET-MESSAGE-TYPE(iMsg) = 1 THEN "error" ELSE "warning".
+            RUN sendMsg(pcReq, pcName, cType, COMPILER:GET-NUMBER(iMsg),
+                        COMPILER:GET-FILE-NAME(iMsg), COMPILER:GET-ROW(iMsg),
+                        COMPILER:GET-COLUMN(iMsg), COMPILER:GET-MESSAGE(iMsg)).
         END.
     END.
     iMs = ETIME.
     RUN sendLine("DONE" + gcTab + toWire(pcReq) + gcTab + toWire(pcName) + gcTab
-                 + (IF lOk THEN "ok" ELSE "fail") + gcTab + intText(iMs)).
+                 + (IF lOk THEN "ok" ELSE "fail") + gcTab + intText(iMs) + gcTab + intText(giMsgs)).
 END PROCEDURE.
 
 /* COMPILE req propath options stage xref debug-list listing count, then count
@@ -1122,6 +1203,7 @@ PROCEDURE compileRequest:
     DEFINE VARIABLE cXref  AS CHARACTER NO-UNDO.
     DEFINE VARIABLE lDebug AS LOGICAL   NO-UNDO.
     DEFINE VARIABLE lList  AS LOGICAL   NO-UNDO.
+    DEFINE VARIABLE lFound AS LOGICAL   NO-UNDO.
     DEFINE VARIABLE iCount AS INTEGER   NO-UNDO.
     DEFINE VARIABLE cRead  AS CHARACTER NO-UNDO.
     DEFINE VARIABLE i      AS INTEGER   NO-UNDO.
@@ -1147,12 +1229,11 @@ PROCEDURE compileRequest:
         ASSIGN ttUnit.iSeq = i
                ttUnit.cName = fromWire(ENTRY(4, cRead, gcTab)).
     END.
-    FIND ttPath WHERE ttPath.cId = cProp NO-ERROR.
-    IF NOT AVAILABLE ttPath THEN DO:
+    RUN usePropath(cProp, OUTPUT lFound).
+    IF NOT lFound THEN DO:
         RUN failWith("unknown PROPATH " + cProp).
         RETURN.
     END.
-    PROPATH = ttPath.cPath.
     FOR EACH ttUnit BY ttUnit.iSeq:
         RUN compileUnit(cReq, ttUnit.cName, cStage, cOpt, cXref, lDebug, lList).
         IF glQuit THEN RETURN.
@@ -1182,11 +1263,16 @@ PROCEDURE dispatch:
             RUN schemaImage(fromWire(ENTRY(3, pcLine, gcTab)),
                             INTEGER(fromWire(ENTRY(4, pcLine, gcTab))),
                             INTEGER(fromWire(ENTRY(5, pcLine, gcTab)))).
+        WHEN "RAWDIGEST" THEN
+            RUN rawDigest(fromWire(ENTRY(3, pcLine, gcTab)),
+                          INTEGER(fromWire(ENTRY(4, pcLine, gcTab))),
+                          INTEGER(fromWire(ENTRY(5, pcLine, gcTab))),
+                          INTEGER(fromWire(ENTRY(6, pcLine, gcTab)))).
         WHEN "FINGERPRINT" THEN RUN fingerprint(fromWire(ENTRY(3, pcLine, gcTab))).
         WHEN "HASH" THEN RUN hashOne(fromWire(ENTRY(3, pcLine, gcTab)), fromWire(ENTRY(4, pcLine, gcTab))).
         WHEN "HASHSET" THEN RUN hashSet(fromWire(ENTRY(3, pcLine, gcTab)), INTEGER(fromWire(ENTRY(4, pcLine, gcTab)))).
-        WHEN "PROPATH" THEN RUN definePropath(pcLine).
-        WHEN "OPTIONS" THEN RUN defineOptions(pcLine).
+        WHEN "PROPATH" THEN RUN onPropath(pcLine).
+        WHEN "OPTIONS" THEN RUN onOptions(pcLine).
         WHEN "COMPILE" THEN RUN compileRequest(pcLine).
         WHEN "PING" THEN RUN sendLine("PONG" + gcTab + toWire(fromWire(ENTRY(3, pcLine, gcTab)))).
         WHEN "QUIT" THEN DO:
@@ -1207,9 +1293,7 @@ DO iSafe = 32 TO 126:
 END.
 gcTab = CHR(9).
 gcStartPath = PROPATH.
-FILE-INFO:FILE-NAME = ".".
-gcCwd = FILE-INFO:FULL-PATHNAME.
-COMPILER:MULTI-COMPILE = TRUE.
+RUN setupCompile.
 
 INPUT STREAM sIn FROM VALUE("/dev/stdin").
 

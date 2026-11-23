@@ -76,8 +76,8 @@ fn units_without_a_key_are_not_offered_and_the_others_are() {
     assert_eq!(report.exit, 0);
     assert_eq!(
         seen.paths(),
-        ["r/plain.r"],
-        "only the unit with a key is offered"
+        ["r/a/plain.r", "r/a/x.r", "r/pkg/Foo.r"],
+        "only the units with a key are offered: b/y.p binds a/pkg/Foo.cls, which its analysis did not find"
     );
 }
 

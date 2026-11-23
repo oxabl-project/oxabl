@@ -1,5 +1,58 @@
 # Changelog
 
+## [2.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.8...oxabl_formatter-v2.1.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+
+## [2.0.8](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.7...oxabl_formatter-v2.0.8) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+
+## [2.0.7](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.6...oxabl_formatter-v2.0.7) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+
+## [2.0.6](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.5...oxabl_formatter-v2.0.6) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+
+## [2.0.5](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.4...oxabl_formatter-v2.0.5) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+
 ## [2.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.0.3...oxabl_formatter-v2.0.4) (2026-11-11)
 
 

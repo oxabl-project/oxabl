@@ -27,6 +27,8 @@ pub struct Database {
     pub guid: Option<String>,
     /// The `_DbStatus-CacheStamp` the fake reports; default `stamp-1`.
     pub stamp: Option<String>,
+    /// The physical name the raw digest reports; default `/db/<ldb>`.
+    pub physical: Option<String>,
 }
 
 fn progress() -> String {

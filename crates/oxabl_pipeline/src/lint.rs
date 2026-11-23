@@ -83,8 +83,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, UnresolvedInclude, analyze_from_expanded,
-    collect_from_expanded_with_summaries, expand_source_with,
+    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, SkippedText, UnresolvedInclude,
+    analyze_from_expanded, collect_from_expanded_with_summaries, expand_source_with,
 };
 
 use oxabl_common::{
@@ -100,7 +100,8 @@ use oxabl_index::{
 };
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
-    MemberDescriptor, Semantic, Signature, SourceContext, UnresolvedReason, WorkspaceIndex,
+    MemberDescriptor, ScopeId, Semantic, Signature, SourceContext, SymbolKind, UnresolvedReason,
+    WorkspaceIndex,
 };
 use oxabl_workspace::{FileSystem, Observations, Observed, is_include_fragment};
 
@@ -121,9 +122,19 @@ use crate::{PipelineConfig, ROOT_FILE_ID};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expansion {
     inner: Result<ExpandedFile, Vec<Diagnostic>>,
+    /// The directory the root-relative paths were resolved against; see
+    /// [`PipelineConfig::search_base`].
+    search_base: Option<PathBuf>,
 }
 
 impl Expansion {
+    /// The directory the root-relative paths were resolved against: the
+    /// file's own directory, or for a class its package root. `None` with no
+    /// file or no root-relative path.
+    pub fn search_base(&self) -> Option<&Path> {
+        self.search_base.as_deref()
+    }
+
     /// Absolute paths of every include file this expansion read — the watcher's
     /// changed-file → buffer matching input (R17). Empty when preprocessing was
     /// off or failed fatally.
@@ -199,6 +210,7 @@ impl Expansion {
     fn fatally_failed(diagnostics: Vec<Diagnostic>) -> Self {
         Expansion {
             inner: Err(diagnostics),
+            search_base: None,
         }
     }
 }
@@ -1239,7 +1251,7 @@ impl<'a> LintPipeline<'a> {
                 computed_name: skipped.computed_name,
             })
             .collect();
-        let references = self.conditional_references(expanded);
+        let references = self.conditional_references(expanded, semantic);
         let closure = self.conditional_closure.then(|| {
             let names: Vec<ConditionalIncludeName<'_>> = conditional
                 .iter()
@@ -1249,14 +1261,15 @@ impl<'a> LintPipeline<'a> {
                 })
                 .collect();
             let includes = self.index_includes();
-            let paths = self.config.include_paths_for(self.file());
+            let base = expansion.search_base();
+            let paths = self.config.include_paths_from(base);
             let includes = oxabl_index::IncludeContext {
                 include_paths: &paths,
                 root_relative_paths: &[],
                 ..includes
             };
             let mut references =
-                |target: ClosureTarget<'_>| self.closure_references_cached(target, &paths);
+                |target: ClosureTarget<'_>| self.closure_references_cached(target, &paths, base);
             match self.closures {
                 Some(cache) => conditional_include_closure_cached(
                     &names,
@@ -1284,7 +1297,13 @@ impl<'a> LintPipeline<'a> {
         });
         let edges = edges
             .with_conditional_includes(conditional)
-            .with_conditional_references(references);
+            .with_conditional_references(references)
+            .with_include_names(expanded.resolved_includes().iter().map(|include| {
+                oxabl_index::IncludeName {
+                    path: include.path.clone(),
+                    name: include.name.clone(),
+                }
+            }));
         Ok(match closure {
             Some(closure) => edges.with_conditional_include_closure(closure),
             None => edges,
@@ -1293,11 +1312,15 @@ impl<'a> LintPipeline<'a> {
 
     /// The class and program names written in the branches the expansion did not
     /// take, resolved through this handle's index.
-    fn conditional_references(&self, expanded: &ExpandedFile) -> Vec<ConditionalReference> {
+    fn conditional_references(
+        &self,
+        expanded: &ExpandedFile,
+        semantic: &Semantic,
+    ) -> Vec<ConditionalReference> {
         if expanded.skipped_text().is_empty() {
             return Vec::new();
         }
-        self.with_run_index(|index| conditional_references_in(expanded, index))
+        self.with_run_index(|index| conditional_references_in(expanded, semantic, index))
     }
 
     /// The class and program names a conditional include's target writes, from
@@ -1327,6 +1350,7 @@ impl<'a> LintPipeline<'a> {
         &self,
         target: ClosureTarget<'_>,
         include_paths: &[PathBuf],
+        base: Option<&Path>,
     ) -> Vec<ClosureReference> {
         let (Some(cache), RunIndex::Shared(index)) = (self.closures, &self.index) else {
             return self.closure_references(target, include_paths);
@@ -1335,11 +1359,7 @@ impl<'a> LintPipeline<'a> {
             path: oxabl_index::search::normalize_lexically(target.path),
             name: target.name.to_string(),
             include_paths: include_paths.to_vec(),
-            directory: self
-                .file()
-                .filter(|_| !self.config.root_relative_include_paths.is_empty())
-                .and_then(Path::parent)
-                .map(Path::to_path_buf),
+            directory: base.map(Path::to_path_buf),
         };
         let slot = Arc::clone(
             cache
@@ -1455,7 +1475,7 @@ impl<'a> LintPipeline<'a> {
                 .map(|row| ClosureReference::new(row.kind, false, row.name.clone(), None)),
         );
         out.extend(
-            conditional_references_in(&expanded, skipped)
+            conditional_references_in(&expanded, &semantic, skipped)
                 .into_iter()
                 .map(|r| ClosureReference::new(r.kind, true, r.name, r.target)),
         );
@@ -1470,7 +1490,7 @@ impl<'a> LintPipeline<'a> {
     /// three ways rather than three copies of the collect call, so a change to
     /// what `collect` passes cannot be made in two arms and forgotten in the
     /// third.
-    fn with_run_index<T>(&self, with: impl FnOnce(&dyn WorkspaceIndex) -> T) -> T {
+    pub(crate) fn with_run_index<T>(&self, with: impl FnOnce(&dyn WorkspaceIndex) -> T) -> T {
         match &self.index {
             // The exclusion is applied here, per handle, while the memo behind it
             // stays the run's. With no identity nothing is excluded, which is the
@@ -1494,16 +1514,18 @@ impl<'a> LintPipeline<'a> {
         // through `run` must be contained, and the same panic through `expand`
         // must escape.
         panic_if_injected(panic_sites::ANALYZE, source);
+        let search_base = self.config.search_base(self.file(), source);
         Expansion {
             inner: expand_source_with(
                 ROOT_FILE_ID,
                 self.file().and_then(Path::to_str),
                 source,
                 self.fs,
-                &self.config.include_paths_for(self.file()),
+                &self.config.include_paths_from(search_base.as_deref()),
                 &self.config.preprocessor,
                 self.preprocess,
             ),
+            search_base,
         }
     }
 
@@ -1686,13 +1708,85 @@ impl<'a> LintPipeline<'a> {
 
 /// The class and program names written in the branches `expanded` did not
 /// take, resolved through `index`.
+/// A variable or parameter of the main block of a compile unit: where its
+/// name is written, in the file that wrote it, and the place in the root
+/// file's own bytes where it arrived.
+struct DeclaredValue {
+    name: String,
+    file: FileId,
+    offset: u32,
+    /// The root `{...}` site of the include that wrote it; `None` in the root.
+    root_site: Option<oxabl_ast::Span>,
+    /// Its offset in the root, or the start of `root_site`.
+    root_at: u32,
+}
+
+fn declared_values(expanded: &ExpandedFile, semantic: &Semantic) -> Vec<DeclaredValue> {
+    semantic
+        .symbols
+        .iter()
+        .filter(|(_, symbol)| {
+            symbol.declared_in == ScopeId::ROOT
+                && matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Parameter)
+        })
+        .filter_map(|(_, symbol)| {
+            let span = oxabl_ast::Span {
+                start: symbol.name_span.start,
+                end: symbol.name_span.end,
+            };
+            let (file, offset) = expanded.resolve_offset(span.start)?;
+            let root_site = expanded.resolve_include_site(span);
+            let root_at = match root_site {
+                Some(site) => site.start,
+                None if file == ROOT_FILE_ID => offset,
+                None => return None,
+            };
+            Some(DeclaredValue {
+                name: symbol.name.as_ref().to_ascii_lowercase(),
+                file,
+                offset,
+                root_site,
+                root_at,
+            })
+        })
+        .collect()
+}
+
+/// Whether `name:member`, written at `at` in the file of `skipped`, names a
+/// variable or parameter of the main block that comes before it: the compiler
+/// resolves the name to that value, not to a class.
+fn names_a_value(values: &[DeclaredValue], skipped: &SkippedText, name: &str, at: u32) -> bool {
+    if name.contains('.') {
+        return false;
+    }
+    let in_root = skipped.site.file == ROOT_FILE_ID;
+    let root_site = match in_root {
+        true => None,
+        false => match skipped.via.first().filter(|site| site.file == ROOT_FILE_ID) {
+            Some(site) => Some(site.span),
+            None => return false,
+        },
+    };
+    let root_at = root_site.map_or(at, |site| site.start);
+    let name = name.to_ascii_lowercase();
+    values.iter().any(|value| {
+        value.name == name
+            && ((value.file == skipped.site.file
+                && value.root_site == root_site
+                && value.offset < at)
+                || value.root_at < root_at)
+    })
+}
+
 fn conditional_references_in(
     expanded: &ExpandedFile,
+    semantic: &Semantic,
     index: &dyn WorkspaceIndex,
 ) -> Vec<ConditionalReference> {
     if expanded.skipped_text().is_empty() {
         return Vec::new();
     }
+    let mut values: Option<Vec<DeclaredValue>> = None;
     let mut imports: Option<Vec<String>> = None;
     let mut out = Vec::new();
     for skipped in expanded.skipped_text() {
@@ -1711,6 +1805,13 @@ fn conditional_references_in(
         };
         let mut branches = None;
         for written in written_references(text) {
+            let at = skipped.site.span.start + written.span.start;
+            if written.syntax == ReferenceSyntax::StaticAccess {
+                let values = values.get_or_insert_with(|| declared_values(expanded, semantic));
+                if names_a_value(values, skipped, &written.name, at) {
+                    continue;
+                }
+            }
             let target = match written.kind {
                 EdgeKind::ProgramReference => resolve_program(index, &written.name),
                 _ => {

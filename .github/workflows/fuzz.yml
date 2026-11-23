@@ -1,0 +1,91 @@
+# Runs the fuzz harnesses on a schedule: every cargo-fuzz target in fuzz/ and
+# the TextMate grammar fuzz of the VS Code client. CI only keeps them compiling
+# (the `Fuzz targets` job); this is where they look for findings. A finding
+# fails the job and is uploaded as an artifact; see fuzz/README.md.
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  # A change to a harness runs it briefly, so the workflow is tested before it
+  # runs on a schedule.
+  pull_request:
+    paths:
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: "900"
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [lex, preprocess_parse, lint, format, outline, navigate]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: nightly
+          bins: cargo-fuzz
+      # The corpus a run grew is the start of the next one.
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - run: fuzz/seed.sh
+      - run: fuzz/run.sh ${{ matrix.target }} ${{ inputs.seconds || (github.event_name == 'pull_request' && '60') || '900' }}
+      # run.sh keeps going after a crash, a timeout or an out-of-memory input,
+      # so the artifacts are the verdict.
+      - name: No finding
+        run: |
+          dir=fuzz/artifacts/${{ matrix.target }}
+          if [ -d "$dir" ] && [ -n "$(ls -A "$dir")" ]; then
+            ls -la "$dir"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+
+  grammar:
+    name: Fuzz the VS Code grammar
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: clients/vscode
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - run: pnpm install --frozen-lockfile
+      # A new seed each night; a failure prints it for a replay.
+      - run: pnpm vitest run test/grammar/fuzz.test.ts
+        env:
+          OXABL_FUZZ_SEED: ${{ github.run_id }}
+          OXABL_FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '10' || '120' }}
+          OXABL_FUZZ_OUT: ${{ runner.temp }}/grammar-fuzz
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings-grammar
+          path: ${{ runner.temp }}/grammar-fuzz
+          if-no-files-found: ignore

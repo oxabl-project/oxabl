@@ -4,6 +4,7 @@ use super::decide::Plan;
 use super::reasons::Reason;
 use super::time::now_rfc3339;
 use crate::key::compute::UnitKey;
+use crate::key::resolution::ClassResolution;
 
 /// The `format` number of the plan document.
 pub const FORMAT: u32 = 1;
@@ -76,8 +77,28 @@ fn unit(plan: &Plan, path: &str, action: &str, reasons: Vec<Value>) -> Value {
             true => "observed",
             false => "parsed",
         }));
+        if let Some(resolution) = state.and_then(|s| s.class_resolution.as_ref()) {
+            unit["class_resolution"] = class_resolution(resolution);
+        }
     }
     unit
+}
+
+fn class_resolution(resolution: &ClassResolution) -> Value {
+    let differing: Vec<Value> = resolution
+        .differing
+        .iter()
+        .map(|edge| {
+            json!({
+                "kind": edge.kind,
+                "name": edge.name,
+                "via": edge.via,
+                "files": edge.files,
+                "failed": edge.failed.iter().map(|f| f.as_str()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    json!({ "uniform": resolution.uniform, "differing": differing })
 }
 
 fn environment(plan: &Plan) -> Value {
@@ -172,8 +193,15 @@ pub fn render_json(plan: &Plan, committed: bool, all: bool) -> String {
             "skipped": plan.skipped.len(),
         },
     });
-    if plan.keys.is_some() {
+    if let Some(keys) = &plan.keys {
         document["propaths"] = Value::Array(propaths(plan));
+        if let Some(summary) = &keys.keyed.class_resolution {
+            document["class_resolution"] = json!({
+                "units": summary.units,
+                "uniform": summary.uniform,
+                "released": summary.released,
+            });
+        }
     }
     let mut text = serde_json::to_string_pretty(&document).expect("a plan is valid JSON");
     text.push('\n');

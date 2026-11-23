@@ -1,6 +1,8 @@
 //! U5 end-to-end: an LSP client opens a known-bad file and receives
 //! `publishDiagnostics` at the expected range; closing clears them.
 
+mod support;
+
 use std::thread;
 
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
@@ -11,7 +13,8 @@ use lsp_types::{
 };
 use std::str::FromStr;
 
-fn handshake(client: &Connection) {
+fn handshake(client: &Connection) -> tempfile::TempDir {
+    let project = support::project();
     let params = InitializeParams {
         capabilities: ClientCapabilities {
             general: Some(GeneralClientCapabilities {
@@ -20,6 +23,7 @@ fn handshake(client: &Connection) {
             }),
             ..Default::default()
         },
+        workspace_folders: support::folders(project.path()),
         ..Default::default()
     };
     client
@@ -42,6 +46,7 @@ fn handshake(client: &Connection) {
             params: serde_json::json!({}),
         }))
         .unwrap();
+    project
 }
 
 fn notify(client: &Connection, method: &str, params: serde_json::Value) {
@@ -87,7 +92,7 @@ fn open_known_bad_file_publishes_diagnostics_then_close_clears() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve(&server));
 
-    handshake(&client);
+    let _project = handshake(&client);
 
     let uri = Uri::from_str("file:///unused.p").unwrap();
     // An unused variable → LINT0002 (warning) on line 0.

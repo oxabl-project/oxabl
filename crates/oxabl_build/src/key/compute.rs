@@ -13,9 +13,11 @@ use super::environment::Environment;
 use super::keyability::{ExternalPackage, Resolved, Rules, Verdict};
 use super::layout::{Layout, Placed, lay_out, search};
 use super::options::CompileSettings;
+use super::resolution::{ClassResolution, InPlace, ResolutionSummary, Resolver, Units};
 use crate::config::BuildWorkspace;
 use crate::graph::Scratch;
 use crate::observe::class_listing;
+use crate::output::in_place::rcode_path;
 use crate::paths::propath::{OUT, Placement, is_class_unit, library_name};
 use crate::paths::{Declared, PathMap};
 use crate::refresh::{Content, Observed, Outcome, parallel};
@@ -27,10 +29,12 @@ use crate::worker::{Pool, PoolError, program};
 pub struct UnitKey {
     /// The name the worker compiles; `None` for a skipped unit.
     pub compile_name: Option<String>,
+    /// The name of the unit's output files ([`Placement::Compiles`]).
+    pub output_name: Option<String>,
     pub key: Option<[u8; 32]>,
     /// The digest of each section of the key, when there is a key.
     pub components: Option<Components>,
-    /// Why there is no key: the rules K1 to K9, or the reason the unit is
+    /// Why there is no key: the rules K1 to K11, or the reason the unit is
     /// skipped. Empty when there is a key.
     pub unkeyable: Vec<String>,
     pub skipped: bool,
@@ -44,6 +48,9 @@ pub struct UnitKey {
     /// With `observed`: the files of that closure, the listed classes and
     /// their closures included.
     pub observed_closure: Vec<u32>,
+    /// How the class names the unit reaches resolve under every PROPATH id;
+    /// only when K9 applies to it.
+    pub class_resolution: Option<ClassResolution>,
 }
 
 /// The class sources that a compile of a unit that oxabl cannot read could
@@ -112,6 +119,8 @@ pub struct Keyed {
     pub base: Option<KeyBase>,
     /// The class part of each unit PROPATH that a unit oxabl cannot read uses.
     pub classes: FxHashMap<usize, ClassPart>,
+    /// The counts of the class resolutions; only with more than one PROPATH id.
+    pub class_resolution: Option<ResolutionSummary>,
 }
 
 fn config_error(message: String) -> PoolError {
@@ -335,7 +344,6 @@ pub fn compute(
         digests: &hashed.entries,
         mirror_mismatch: &mirror_mismatch,
         class_sources: &class_sources,
-        several_propaths: layout.propaths.len() > 1,
     };
     let positions: Vec<usize> = (0..active.len()).collect();
     let mut verdicts = parallel::map(&positions, |k| {
@@ -343,18 +351,61 @@ pub fn compute(
         let propath = &layout.propaths[placed.propath.expect("an active unit has a PROPATH")];
         rules.check(active_ids[*k], &closures[*k], propath)
     });
+    let units = resolver_units(
+        outcome,
+        (&layout, search.beside_source()),
+        (&active, &active_ids),
+        &closures,
+        &class_sources,
+    );
+    let mut resolver = Resolver::new(&paths, &layout.propaths, units);
+    if search.has_root_relative() {
+        let written = class_units_with_written_names(&layout, (&active, &active_ids));
+        misread_classes(
+            outcome,
+            (&active_ids, &closures),
+            (&class_sources, &written),
+            &mut resolver,
+            &mut verdicts,
+        );
+        inherit_misread(
+            (&active_ids, &closures),
+            &class_sources,
+            &resolver,
+            &mut verdicts,
+        );
+    }
+
+    let resolutions = resolve(
+        outcome,
+        &mut resolver,
+        &layout,
+        (&active, &active_ids),
+        &closures,
+        &mut verdicts,
+    );
 
     let mut warnings = Vec::new();
     let classes = workspace_classes(outcome, &layout);
     let mut conflicts: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
     let mut without_key = 0;
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut rcode: BTreeSet<String> = BTreeSet::new();
+    let mut rcode_units = 0;
     for (k, verdict) in verdicts.iter_mut().enumerate() {
         let placed = &layout.units[active[k]];
         if placed.class {
             let path = outcome.name(active_ids[k]);
+            // The analysis searches from the class's own directory when its
+            // text does not give its name, so a derived package root
+            // elsewhere would search other root-relative entries.
+            let derived_here = placed
+                .derived
+                .as_deref()
+                .is_some_and(|name| !(search.has_root_relative() && name.contains('.')));
             match placed.declared {
                 Declared::Name(_) => {}
-                _ if placed.derived.is_some() => {}
+                _ if derived_here => {}
                 Declared::Conditional => {
                     verdict.add_reason(4, format!("conditional-name: class statement in {path}"));
                 }
@@ -384,7 +435,11 @@ pub fn compute(
         .filter(|k| is_observable(&verdicts[*k], &layout.units[active[*k]]))
         .filter_map(|k| layout.units[active[k]].propath)
         .collect();
-    let class_parts = class_parts(outcome, &paths, &layout, &rules, &classes, &wanted);
+    let mut class_parts = class_parts(outcome, &paths, &layout, &rules, &classes, &wanted);
+    if search.has_root_relative() {
+        misread_listed(outcome, &mut class_parts, &mut resolver);
+    }
+    rcode_listed(outcome, &mut class_parts, &mut resolver);
     let unhashed: BTreeSet<String> = class_parts
         .values()
         .flat_map(|part| &part.files)
@@ -416,7 +471,7 @@ pub fn compute(
     let base = KeyBase {
         environment: environment.identity(),
         settings: CompileSettings::lower(build),
-        worker: program::hash(),
+        worker: program::key_digest(),
         propaths: propath_digests,
     };
 
@@ -424,7 +479,7 @@ pub fn compute(
         let verdict = &verdicts[*k];
         let at = active[*k];
         let unit = active_ids[*k];
-        let Placement::Compiles { name } = &layout.units[at].placement else {
+        let Placement::Compiles { name, .. } = &layout.units[at].placement else {
             return Err(Vec::new());
         };
         let Content::Hash(unit_content) = outcome.content_of(unit) else {
@@ -480,15 +535,19 @@ pub fn compute(
                 propath: placed.propath,
                 ..UnitKey::default()
             },
-            Placement::Compiles { name } => UnitKey {
+            Placement::Compiles { name, output } => UnitKey {
                 compile_name: Some(name.clone()),
+                output_name: Some(output.clone()),
                 propath: placed.propath,
                 ..UnitKey::default()
             },
         })
         .collect();
-    for ((k, verdict), key) in verdicts.into_iter().enumerate().zip(keys) {
+    for (((k, verdict), key), resolution) in
+        verdicts.into_iter().enumerate().zip(keys).zip(resolutions)
+    {
         let unit = &mut units[active[k]];
+        unit.class_resolution = resolution;
         unit.observable = is_observable(&verdict, &layout.units[active[k]]);
         let reasons = verdict.into_reasons();
         match key {
@@ -499,7 +558,18 @@ pub fn compute(
                 unit.observed_closure = closure;
             }
             Err(extra) => {
-                without_key += usize::from(reasons.iter().any(|r| r == "per-unit-propath-classes"));
+                let differing: Vec<&str> = reasons
+                    .iter()
+                    .filter_map(|r| r.strip_prefix("per-unit-propath-classes: "))
+                    .collect();
+                without_key += usize::from(!differing.is_empty());
+                names.extend(differing.into_iter().map(str::to_string));
+                let bound: Vec<&str> = reasons
+                    .iter()
+                    .filter_map(|r| r.strip_prefix("class-rcode: "))
+                    .collect();
+                rcode_units += usize::from(!bound.is_empty());
+                rcode.extend(bound.into_iter().map(str::to_string));
                 unit.unkeyable = match reasons.is_empty() {
                     true => vec!["unreadable: the unit's own bytes".to_string()],
                     false => reasons.into_iter().chain(extra).collect(),
@@ -508,10 +578,28 @@ pub fn compute(
         }
     }
     if without_key > 0 {
+        let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+        let more = match names.len() > shown.len() {
+            true => format!(" and {} more", names.len() - shown.len()),
+            false => String::new(),
+        };
         warnings.push(format!(
-            "{without_key} units that use classes are compiled without a key: the units have different PROPATHs"
+            "{without_key} units that use classes are compiled without a key: their PROPATHs resolve a name to different files ({}{more})",
+            shown.join("; ")
         ));
     }
+    if !rcode.is_empty() {
+        let shown: Vec<&str> = rcode.iter().take(3).map(String::as_str).collect();
+        let more = match rcode.len() > shown.len() {
+            true => format!(" and {} more", rcode.len() - shown.len()),
+            false => String::new(),
+        };
+        warnings.push(format!(
+            "{rcode_units} units that use classes are compiled without a key: the compiler binds class r-code that oxabl does not hash ({}{more})",
+            shown.join(", ")
+        ));
+    }
+    let class_resolution = (layout.propaths.len() > 1).then(|| summarise(&units));
     let propaths = base
         .propaths
         .iter()
@@ -526,7 +614,283 @@ pub fn compute(
         dlc: dlc_sha,
         base: Some(base),
         classes: class_parts,
+        class_resolution,
     })
+}
+
+/// What the resolver needs to know about the units that compile: their
+/// PROPATH ids and closures, the class units whose r-code `$OUT` holds, and
+/// with the r-code beside the source, the r-code of every unit.
+fn resolver_units<'a>(
+    outcome: &Outcome,
+    (layout, beside_source): (&Layout, bool),
+    (active, active_ids): (&[usize], &[u32]),
+    closures: &'a [Vec<u32>],
+    class_sources: &'a FxHashSet<u32>,
+) -> Units<'a> {
+    let mut units = Units {
+        propath: FxHashMap::default(),
+        closure: FxHashMap::default(),
+        out: FxHashMap::default(),
+        compiles: FxHashSet::default(),
+        class_sources,
+        in_place: FxHashMap::default(),
+    };
+    for ((at, id), closure) in active.iter().zip(active_ids).zip(closures) {
+        let placed = &layout.units[*at];
+        if let Some(propath) = placed.propath {
+            units.propath.insert(*id, propath);
+        }
+        units.closure.insert(*id, closure.as_slice());
+        let Placement::Compiles { output, .. } = &placed.placement else {
+            continue;
+        };
+        let Some(stem) = output.strip_suffix(".cls").filter(|_| placed.class) else {
+            continue;
+        };
+        if !beside_source {
+            units.out.insert(stem.to_string(), *id);
+        }
+        units.compiles.insert(*id);
+    }
+    if beside_source {
+        units.in_place = in_place_rcode(outcome, layout);
+    }
+    units
+}
+
+/// The r-code beside each unit below the root, as a compile of this build
+/// finds it: the unit's own class or r-code when it compiles, the winner's
+/// when a collision skips it, else absent.
+fn in_place_rcode(outcome: &Outcome, layout: &Layout) -> FxHashMap<String, InPlace> {
+    let mut by_unit: FxHashMap<&str, InPlace> = FxHashMap::default();
+    for (id, placed) in outcome.units.iter().zip(&layout.units) {
+        let path = outcome.name(*id);
+        if path.starts_with(['$', '/']) {
+            continue;
+        }
+        if let Placement::Compiles { .. } = placed.placement {
+            let found = match placed.class {
+                true => InPlace::Class(path.to_string()),
+                false => InPlace::Rcode,
+            };
+            by_unit.insert(path, found);
+        }
+    }
+    let mut in_place = FxHashMap::default();
+    for (id, placed) in outcome.units.iter().zip(&layout.units) {
+        let path = outcome.name(*id);
+        if path.starts_with(['$', '/']) {
+            continue;
+        }
+        let found = match &placed.placement {
+            Placement::Compiles { .. } => by_unit[path].clone(),
+            Placement::Skipped(reason) => reason
+                .strip_prefix("output-collision: ")
+                .and_then(|winner| by_unit.get(winner))
+                .cloned()
+                .unwrap_or(InPlace::Absent),
+        };
+        in_place.insert(rcode_path(path), found);
+    }
+    in_place
+}
+
+/// The class resolution of each active unit that is a class or reaches one,
+/// by position in `active`, with its K9 and K11 reasons added to its
+/// verdict. Kept for the plan only with more than one PROPATH id.
+fn resolve(
+    outcome: &Outcome,
+    resolver: &mut Resolver<'_>,
+    layout: &Layout,
+    (active, active_ids): (&[usize], &[u32]),
+    closures: &[Vec<u32>],
+    verdicts: &mut [Verdict],
+) -> Vec<Option<ClassResolution>> {
+    let several = layout.propaths.len() > 1;
+    let mut resolutions = Vec::with_capacity(active.len());
+    for (k, (unit, closure)) in active_ids.iter().zip(closures).enumerate() {
+        let class_sources = resolver.units().class_sources;
+        let reaches_class =
+            class_sources.contains(unit) || closure.iter().any(|node| class_sources.contains(node));
+        if !reaches_class || layout.units[active[k]].propath.is_none() {
+            resolutions.push(None);
+            continue;
+        }
+        let resolution = resolver.unit(outcome, *unit);
+        for reason in resolution.rcode_reasons() {
+            verdicts[k].add_reason(11, reason);
+        }
+        for reason in resolution.propath_reasons() {
+            verdicts[k].add_reason(9, reason);
+        }
+        resolutions.push(several.then_some(resolution));
+    }
+    resolutions
+}
+
+/// The class units whose analysis searched what their own compile does.
+fn class_units_with_written_names(
+    layout: &Layout,
+    (active, active_ids): (&[usize], &[u32]),
+) -> FxHashSet<u32> {
+    active
+        .iter()
+        .zip(active_ids)
+        .filter(|(at, _)| {
+            let placed = &layout.units[**at];
+            placed.class
+                && (placed.declared.name().is_some()
+                    || placed
+                        .derived
+                        .as_deref()
+                        .is_some_and(|name| !name.contains('.')))
+        })
+        .map(|(_, id)| *id)
+        .collect()
+}
+
+/// K10: a class source in a unit's closure that its compile does not read
+/// from `$OUT` is compiled in memory under the unit's PROPATH, while the
+/// analysis searched from the class's own package root. Each name of the
+/// class that the unit's PROPATH resolves to another file than the analysis
+/// did makes the unit unkeyable. A class unit whose analysis did not search
+/// what its compile does (`written`) is searched on the unit's PROPATH too.
+fn misread_classes(
+    outcome: &Outcome,
+    (active_ids, closures): (&[u32], &[Vec<u32>]),
+    (class_sources, written): (&FxHashSet<u32>, &FxHashSet<u32>),
+    resolver: &mut Resolver<'_>,
+    verdicts: &mut [Verdict],
+) {
+    for (k, verdict) in verdicts.iter_mut().enumerate() {
+        let unit = active_ids[k];
+        let Some(propath) = resolver.units().propath.get(&unit).copied() else {
+            continue;
+        };
+        for source in closures[k]
+            .iter()
+            .filter(|node| class_sources.contains(node))
+        {
+            if written.contains(source) && resolver.units().binds_out(*source) {
+                continue;
+            }
+            for misread in resolver.misread(outcome, *source, propath).iter() {
+                verdict.add_reason(10, misread.reason());
+            }
+        }
+    }
+}
+
+/// K10 of a class unit that a user reads from `$OUT`: the r-code there holds
+/// what the class's own compile read in place of the analysed file, and the
+/// user's key does not hold it.
+fn inherit_misread(
+    (active_ids, closures): (&[u32], &[Vec<u32>]),
+    class_sources: &FxHashSet<u32>,
+    resolver: &Resolver<'_>,
+    verdicts: &mut [Verdict],
+) {
+    let own: FxHashMap<u32, Vec<String>> = active_ids
+        .iter()
+        .zip(verdicts.iter())
+        .filter(|(id, verdict)| {
+            resolver.units().compiles.contains(id) && !verdict.reasons(10).is_empty()
+        })
+        .map(|(id, verdict)| (*id, verdict.reasons(10).to_vec()))
+        .collect();
+    if own.is_empty() {
+        return;
+    }
+    for (k, verdict) in verdicts.iter_mut().enumerate() {
+        for source in closures[k]
+            .iter()
+            .filter(|node| class_sources.contains(node))
+        {
+            if !resolver.units().binds_out(*source) {
+                continue;
+            }
+            for reason in own.get(source).into_iter().flatten() {
+                verdict.add_reason(10, reason.clone());
+            }
+        }
+    }
+}
+
+/// K10 for the classes listed in the class part of each PROPATH id. The
+/// units that use a class part compile after every class unit, so a class
+/// unit that compiles is read from `$OUT`.
+fn misread_listed(
+    outcome: &Outcome,
+    parts: &mut FxHashMap<usize, ClassPart>,
+    resolver: &mut Resolver<'_>,
+) {
+    let ids: FxHashMap<&str, u32> = outcome
+        .names
+        .iter()
+        .enumerate()
+        .map(|(id, name)| (name.as_str(), id as u32))
+        .collect();
+    for (propath, part) in parts.iter_mut() {
+        for class in &part.listing {
+            let Some(id) = ids.get(class.as_str()).copied() else {
+                continue;
+            };
+            if resolver.units().compiles.contains(&id) {
+                continue;
+            }
+            for misread in resolver.misread(outcome, id, *propath).iter() {
+                part.reasons
+                    .push(format!("observed-class: {class}: {}", misread.reason()));
+            }
+        }
+    }
+}
+
+/// K11 for the classes listed in the class part of each PROPATH id: a
+/// listed class that is not a unit that compiles, and whose r-code the
+/// PROPATH finds before its source.
+fn rcode_listed(
+    outcome: &Outcome,
+    parts: &mut FxHashMap<usize, ClassPart>,
+    resolver: &mut Resolver<'_>,
+) {
+    let ids: FxHashMap<&str, u32> = outcome
+        .names
+        .iter()
+        .enumerate()
+        .map(|(id, name)| (name.as_str(), id as u32))
+        .collect();
+    for (propath, part) in parts.iter_mut() {
+        for class in &part.listing {
+            let id = ids.get(class.as_str()).copied();
+            if id.is_some_and(|id| resolver.units().compiles.contains(&id)) {
+                continue;
+            }
+            if let Some(file) = resolver.rcode_before(*propath, class) {
+                part.reasons
+                    .push(format!("observed-class: {class}: class-rcode: {file}"));
+            }
+        }
+    }
+}
+
+/// The counts over the units that have a class resolution.
+fn summarise(units: &[UnitKey]) -> ResolutionSummary {
+    let mut summary = ResolutionSummary::default();
+    for unit in units {
+        let Some(resolution) = &unit.class_resolution else {
+            continue;
+        };
+        summary.units += 1;
+        if resolution.uniform {
+            summary.uniform += 1;
+        }
+        if unit.key.is_some() {
+            summary.released += 1;
+        }
+    }
+    summary
 }
 
 /// The class part of each unit PROPATH of `wanted`.

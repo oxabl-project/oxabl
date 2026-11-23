@@ -744,15 +744,16 @@ fn indexed_defines_shared(db: &dyn AblDatabase, file: IndexedFile, name: IndexNa
 /// Locate `name` on the configured search paths, falling back to a
 /// case-insensitive search when the workspace asked for one.
 ///
-/// A lookup from `analysed` searches its root-relative paths first.
+/// A lookup from a buffer whose base directory is `base` searches its
+/// root-relative paths first.
 fn find_path(
     config: &AnalysisConfig,
-    analysed: Option<&Path>,
+    base: Option<&Path>,
     name: &IndexName,
     kind: NameKind,
 ) -> IndexAnswer<PathBuf> {
     let pipeline = &config.pipeline;
-    let paths = pipeline.include_paths_for(analysed);
+    let paths = pipeline.include_paths_from(base);
     let answer = search::find_name_with(&*config.fs, &paths, name, kind, &pipeline.run_extensions);
     if pipeline.case_insensitive_lookup && answer == IndexAnswer::NotFound {
         return search::find_name_ignoring_case(
@@ -792,13 +793,17 @@ struct SnapshotIndex<'db> {
     /// The analysed buffer's own path, lexically normalized, or `None` when the
     /// document has no `file:` path.
     analysed: Option<PathBuf>,
+    /// The directory the buffer's root-relative paths are resolved against
+    /// ([`Expansion::search_base`]).
+    base: Option<PathBuf>,
 }
 
 impl<'db> SnapshotIndex<'db> {
-    fn new(db: &'db dyn AblDatabase, analysed: Option<&Path>) -> Self {
+    fn new(db: &'db dyn AblDatabase, analysed: Option<&Path>, base: Option<&Path>) -> Self {
         SnapshotIndex {
             db,
             analysed: analysed.map(search::normalize_lexically),
+            base: base.map(Path::to_path_buf),
         }
     }
 
@@ -817,7 +822,7 @@ impl<'db> SnapshotIndex<'db> {
     /// to a producer that is really its own earlier revision.
     fn locate(&self, name: &IndexName, kind: NameKind) -> IndexAnswer<IndexedFile> {
         let config = self.db.config();
-        match find_path(config, self.analysed.as_deref(), name, kind) {
+        match find_path(config, self.base.as_deref(), name, kind) {
             IndexAnswer::Found(path) => {
                 if self.is_analysed(&path) {
                     // `Unusable`, not `NotFound` — the file exists, it just cannot
@@ -895,7 +900,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
             LocateKind::Class => NameKind::Class,
             LocateKind::Program => NameKind::Program,
         };
-        match find_path(config, self.analysed.as_deref(), name, kind) {
+        match find_path(config, self.base.as_deref(), name, kind) {
             IndexAnswer::Found(path) if self.is_analysed(&path) => Located::Itself,
             IndexAnswer::Found(path) => {
                 let file = config.index.file_for(self.db, &path);
@@ -948,7 +953,7 @@ impl WorkspaceIndex for SnapshotIndex<'_> {
     fn searches_any_path(&self) -> bool {
         let pipeline = &self.db.config().pipeline;
         !pipeline.include_paths.is_empty()
-            || (self.analysed.is_some() && !pipeline.root_relative_include_paths.is_empty())
+            || (self.base.is_some() && !pipeline.root_relative_include_paths.is_empty())
     }
 }
 
@@ -1035,7 +1040,7 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     // (see `SnapshotIndex`). Constructing it reads nothing; every lookup it
     // answers becomes a nested tracked call, which is how this buffer acquires
     // dependency edges on the files it consulted (R8).
-    let index = SnapshotIndex::new(db, buffer.path(db).as_deref());
+    let index = SnapshotIndex::new(db, buffer.path(db).as_deref(), expansion.search_base());
     // The pipeline's fatal-preprocessing arm already yields the preprocessor's
     // own diagnostics under `DiagnosticSource::Preproc`, so there is no second
     // mapping to keep in step here. `into_diagnostics` takes the set rather than
@@ -1101,6 +1106,278 @@ pub fn compute_diagnostics(
     .ok()
 }
 
+/// What one root's compilation unit says about one include it expands.
+#[derive(Debug, Clone)]
+pub struct ContextDiagnostics {
+    /// The semantic and lint findings in the include, with spans in its own bytes.
+    pub findings: Vec<oxabl_analyze::IncludeOriginDiagnostic>,
+    /// Why the root gives no answer for the include, when it gives none.
+    pub failure: Option<String>,
+    /// The root and every include its expansion read, for the watcher.
+    pub dependencies: Vec<PathBuf>,
+}
+
+/// Analyse `root` with `overlay` (the open buffers, by path) over the configured
+/// file system, and keep the findings that sit in `include`.
+///
+/// Not memoized: it runs when the include or the root changes, on a worker
+/// snapshot. The cross-file index is the snapshot's, as for any buffer. Returns
+/// `None` when a concurrent write cancelled the read.
+pub fn compute_context_diagnostics(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    include: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+) -> Option<ContextDiagnostics> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let target = crate::session::canonical_path(include);
+        let analysed = analyse_root(snapshot, schema, root, overlay, |expansion| {
+            let included = expansion
+                .dependency_paths()
+                .iter()
+                .any(|path| crate::session::canonical_path(path) == target);
+            (!included).then(|| "it no longer includes this file".to_string())
+        });
+        match analysed {
+            Ok(unit) => {
+                let dependencies = unit.dependencies();
+                let findings = unit
+                    .diagnostics
+                    .include_origin
+                    .into_iter()
+                    .filter(|finding| crate::session::canonical_path(&finding.path) == target)
+                    .collect();
+                ContextDiagnostics {
+                    findings,
+                    failure: None,
+                    dependencies,
+                }
+            }
+            Err((reason, dependencies)) => ContextDiagnostics {
+                findings: Vec::new(),
+                failure: Some(reason),
+                dependencies,
+            },
+        }
+    }))
+    .ok()
+}
+
+/// One root's expanded compilation unit, analysed, with the text of every file
+/// it read.
+#[derive(Debug, Clone)]
+pub struct ExpandedUnit {
+    pub root: PathBuf,
+    pub expansion: Expansion,
+    /// Every finding of the root's analysis: root-origin ones in `diagnostics`,
+    /// ones in includes in `include_origin`.
+    pub diagnostics: CollectedDiagnostics,
+    /// The text of the root and of each include the expansion read, as the
+    /// expansion read it (open buffers over the disk).
+    pub sources: HashMap<PathBuf, Arc<str>>,
+}
+
+impl ExpandedUnit {
+    /// The root and every include its expansion read.
+    pub fn dependencies(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.root.clone()];
+        paths.extend(self.expansion.dependency_paths().iter().cloned());
+        paths
+    }
+}
+
+/// Expand and analyse `root` with `overlay` over the configured file system,
+/// for inspection. `Ok(Err(reason))` when the root cannot be read or its
+/// preprocessing failed. `None` when a concurrent write cancelled the read.
+pub fn compute_expanded_unit(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+) -> Option<Result<ExpandedUnit, String>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        analyse_root(snapshot, schema, root, overlay, |_| None).map_err(|(reason, _)| reason)
+    }))
+    .ok()
+}
+
+/// The shared run of [`compute_context_diagnostics`] and
+/// [`compute_expanded_unit`]. `refuse` can stop it after the expansion. A
+/// failure carries its reason and the paths read so far.
+fn analyse_root(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    refuse: impl FnOnce(&Expansion) -> Option<String>,
+) -> Result<ExpandedUnit, (String, Vec<PathBuf>)> {
+    let _revision = schema.revision(snapshot);
+    let config = snapshot.config();
+    let fs = OverlayFs {
+        overlay,
+        inner: Arc::clone(&config.fs),
+    };
+    let mut dependencies = vec![root.to_path_buf()];
+    let source = fs
+        .read(root)
+        .map_err(|error| (format!("cannot read it: {error}"), dependencies.clone()))?;
+    let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+    let handle = run.with_file(root);
+    let expansion = handle.expand(&source);
+    dependencies.extend(expansion.dependency_paths().iter().cloned());
+    if expansion.preprocessing_failed() {
+        return Err(("its preprocessing failed".to_string(), dependencies));
+    }
+    if let Some(reason) = refuse(&expansion) {
+        return Err((reason, dependencies));
+    }
+    salsa::Database::unwind_if_revision_cancelled(snapshot);
+    let index = SnapshotIndex::new(snapshot, Some(root), expansion.search_base());
+    let diagnostics = handle
+        .with_index(&index)
+        .collect(&expansion)
+        .into_diagnostics();
+    let mut sources = HashMap::new();
+    sources.insert(root.to_path_buf(), source);
+    for path in expansion.dependency_paths() {
+        if let Ok(text) = fs.read(path) {
+            sources.insert(path.clone(), text);
+        }
+    }
+    Ok(ExpandedUnit {
+        root: root.to_path_buf(),
+        expansion,
+        diagnostics,
+        sources,
+    })
+}
+
+/// What a navigation request asks of one compilation unit.
+#[derive(Debug, Clone)]
+pub enum NavigationQuery {
+    /// The declarations of the name at byte `offset` of `file`, which is the
+    /// root or an include its expansion reads.
+    Definition { file: PathBuf, offset: u32 },
+    /// The links written in the root itself.
+    Links,
+}
+
+/// The answer to a [`NavigationQuery`], with the text of every file it places a
+/// span in, as the analysis read it, so a client can turn bytes into positions.
+#[derive(Debug, Clone, Default)]
+pub struct NavigationAnswer {
+    pub definitions: Vec<oxabl_pipeline::Target>,
+    pub links: Vec<oxabl_pipeline::Link>,
+    pub texts: HashMap<PathBuf, Arc<str>>,
+}
+
+/// Analyse `root` with `overlay` over the configured file system and answer
+/// `query`. Not memoized: it runs per request, on a worker snapshot.
+/// `Ok(Err(reason))` when the root cannot be read or its preprocessing failed.
+/// `None` when a concurrent write cancelled the read.
+pub fn compute_navigation(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    query: &NavigationQuery,
+) -> Option<Result<NavigationAnswer, String>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let _revision = schema.revision(snapshot);
+        let config = snapshot.config();
+        let fs = OverlayFs {
+            overlay,
+            inner: Arc::clone(&config.fs),
+        };
+        let source = fs
+            .read(root)
+            .map_err(|error| format!("cannot read it: {error}"))?;
+        let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+        let handle = run.with_file(root);
+        let expansion = handle.expand(&source);
+        if expansion.preprocessing_failed() {
+            return Err("its preprocessing failed".to_string());
+        }
+        salsa::Database::unwind_if_revision_cancelled(snapshot);
+        let index = SnapshotIndex::new(snapshot, Some(root), expansion.search_base());
+        let handle = handle.with_index(&index);
+        let file_of = |id: IndexedFileId| {
+            config
+                .index
+                .registered()
+                .into_iter()
+                .find(|(_, known)| *known == id)
+                .map(|(file, _)| file.path(snapshot).clone())
+        };
+        let Some(navigation) = handle.navigation(&expansion, &file_of) else {
+            return Err("its preprocessing failed".to_string());
+        };
+        let mut answer = NavigationAnswer::default();
+        match query {
+            NavigationQuery::Definition { file, offset } => {
+                let file = spelled_as_expanded(&expansion, root, file);
+                answer.definitions = navigation.definitions(&file, *offset);
+            }
+            NavigationQuery::Links => {
+                answer.links = navigation.links();
+                answer
+                    .texts
+                    .insert(search::normalize_lexically(root), Arc::clone(&source));
+            }
+        }
+        for target in &answer.definitions {
+            if target.span.is_some()
+                && !answer.texts.contains_key(&target.path)
+                && let Ok(text) = fs.read(&target.path)
+            {
+                answer.texts.insert(target.path.clone(), text);
+            }
+        }
+        Ok(answer)
+    }))
+    .ok()
+}
+
+/// `file` as the expansion of `root` spells it, so a path that reaches it
+/// through a symbolic link or a `.` segment still names it.
+fn spelled_as_expanded(expansion: &Expansion, root: &Path, file: &Path) -> PathBuf {
+    let wanted = crate::session::canonical_path(file);
+    if crate::session::canonical_path(root) == wanted {
+        return root.to_path_buf();
+    }
+    expansion
+        .expanded()
+        .into_iter()
+        .flat_map(|expanded| expanded.include_expansions())
+        .map(|expansion| expansion.path.to_path_buf())
+        .find(|path| crate::session::canonical_path(path) == wanted)
+        .unwrap_or_else(|| file.to_path_buf())
+}
+
+/// Open buffers over a file system, keyed by canonical path.
+struct OverlayFs {
+    overlay: HashMap<PathBuf, Arc<str>>,
+    inner: Arc<dyn FileSystem>,
+}
+
+impl FileSystem for OverlayFs {
+    fn read(&self, path: &Path) -> Result<Arc<str>, std::io::Error> {
+        let text = self
+            .overlay
+            .get(path)
+            .or_else(|| self.overlay.get(&crate::session::canonical_path(path)));
+        match text {
+            Some(text) => Ok(Arc::clone(text)),
+            None => self.inner.read(path),
+        }
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.overlay.contains_key(path) || self.inner.exists(path)
+    }
+}
+
 /// The include file paths a buffer transitively depends on, for the watcher's
 /// `*.i` → buffer matching (R17). Computed via the memoized expansion query, so
 /// this is cheap on an unchanged buffer. Empty on a fatal preprocessing error.
@@ -1151,7 +1428,7 @@ pub(crate) fn indexed_members_for_test(
     db: &AnalysisDatabase,
     class: &str,
 ) -> IndexAnswer<Arc<[MemberDescriptor]>> {
-    SnapshotIndex::new(db, None).class_members(&IndexName::new(class))
+    SnapshotIndex::new(db, None, None).class_members(&IndexName::new(class))
 }
 
 /// The class descriptor lookup, for the same reason as the members one.
@@ -1160,7 +1437,7 @@ pub(crate) fn indexed_class_for_test(
     db: &AnalysisDatabase,
     class: &str,
 ) -> IndexAnswer<Arc<ClassDescriptor>> {
-    SnapshotIndex::new(db, None).class(&IndexName::new(class))
+    SnapshotIndex::new(db, None, None).class(&IndexName::new(class))
 }
 
 #[cfg(test)]

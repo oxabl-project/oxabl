@@ -18,6 +18,7 @@ oxabl_parser = { path = "../crates/oxabl_parser" }
 oxabl_preprocessor = { path = "../crates/oxabl_preprocessor" }
 oxabl_workspace = { path = "../crates/oxabl_workspace" }
 oxabl_pipeline = { path = "../crates/oxabl_pipeline" }
+oxabl_schema = { path = "../crates/oxabl_schema" }
 oxabl_formatter = { path = "../crates/oxabl_formatter" }
 oxabl_style = { path = "../crates/oxabl_style" }
 
@@ -48,6 +49,20 @@ bench = false
 [[bin]]
 name = "format"
 path = "fuzz_targets/format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outline"
+path = "fuzz_targets/outline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "navigate"
+path = "fuzz_targets/navigate.rs"
 test = false
 doc = false
 bench = false

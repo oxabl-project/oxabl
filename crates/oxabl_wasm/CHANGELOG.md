@@ -1,5 +1,113 @@
 # Changelog
 
+## [1.0.20](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.19...oxabl_wasm-v1.0.20) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.7.1 to 5.8.0
+    * oxabl_pipeline bumped from 3.6.1 to 3.7.0
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.6.1 to 3.7.0
+
+## [1.0.19](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.18...oxabl_wasm-v1.0.19) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.7.0 to 5.7.1
+
+## [1.0.18](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.17...oxabl_wasm-v1.0.18) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.6.0 to 5.7.0
+    * oxabl_pipeline bumped from 3.6.0 to 3.6.1
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.6.0 to 3.6.1
+
+## [1.0.17](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.16...oxabl_wasm-v1.0.17) (2026-11-17)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.5.0 to 5.6.0
+    * oxabl_pipeline bumped from 3.5.0 to 3.6.0
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.5.0 to 3.6.0
+
+## [1.0.16](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.15...oxabl_wasm-v1.0.16) (2026-11-17)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.4.0 to 5.5.0
+
+## [1.0.15](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.14...oxabl_wasm-v1.0.15) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.3.2 to 5.4.0
+    * oxabl_pipeline bumped from 3.4.2 to 3.5.0
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.4.2 to 3.5.0
+
+## [1.0.14](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.13...oxabl_wasm-v1.0.14) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.3.1 to 5.3.2
+
+## [1.0.13](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.12...oxabl_wasm-v1.0.13) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.3.0 to 5.3.1
+
+## [1.0.12](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.11...oxabl_wasm-v1.0.12) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.2.0 to 5.3.0
+    * oxabl_pipeline bumped from 3.4.1 to 3.4.2
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.4.1 to 3.4.2
+
+## [1.0.11](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.10...oxabl_wasm-v1.0.11) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl bumped from 5.1.0 to 5.2.0
+    * oxabl_pipeline bumped from 3.4.0 to 3.4.1
+  * dev-dependencies
+    * oxabl_pipeline bumped from 3.4.0 to 3.4.1
+
 ## [1.0.10](https://github.com/oxabl-project/oxabl/compare/oxabl_wasm-v1.0.9...oxabl_wasm-v1.0.10) (2026-11-11)
 
 

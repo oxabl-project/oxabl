@@ -5,10 +5,11 @@ use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::context::{Imaging, Verify};
 use super::types::{Msg, UnitDone, UnitInfo};
+use crate::observe::xref::Format;
 use crate::refresh::Outcome;
 use crate::schedule::Queue;
 use crate::worker::compile::Limits;
@@ -33,11 +34,12 @@ pub struct Shared<'a> {
     pub limits: Limits,
     pub cancel: &'a Cancel,
     pub verify: Option<&'a Verify<'a>>,
-    /// The compiler writes an `XREF-XML` for the units whose closure is
+    /// The compiler writes a cross-reference for the units whose closure is
     /// observed.
     pub observing: bool,
-    /// The user asked for `XREF-XML`: it serves as the private one.
-    pub user_xref: bool,
+    /// The form of the cross-reference the user asked for: it serves as the
+    /// private one.
+    pub user_xref: Option<Format>,
     pub imaging: Option<&'a Imaging>,
     /// Stop handing out jobs at the first failed unit.
     pub fail_fast: bool,
@@ -47,6 +49,9 @@ pub struct Shared<'a> {
     /// The units of each job that no worker has finished or lost yet.
     pub remaining: Mutex<Vec<Vec<u32>>>,
     pub next_request: &'a AtomicU64,
+    /// The units of a cycle that a lost worker left in a final pass that was
+    /// not settled: their results have no key.
+    pub unsettled: Mutex<FxHashSet<u32>>,
 }
 
 impl Shared<'_> {

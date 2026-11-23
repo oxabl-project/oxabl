@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 
 use crate::cache::{NotStoredReason, Origin};
+use crate::verify::policy::Policy;
 use crate::worker::compile::CompilerMessage;
 
 /// The `format` number of the report document.
@@ -74,6 +75,18 @@ pub struct CacheReport {
     pub changed_inputs: usize,
     /// Units whose set was not offered: the schema check failed.
     pub schema_dropped: usize,
+    /// The verification of the build.
+    pub policy: Option<Policy>,
+    /// Schema checks that ended while the build compiled, the final one not
+    /// counted.
+    pub imaging_rounds: usize,
+}
+
+/// How the schema images of a build came about, by logical database name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SchemaImages {
+    pub reused: Vec<String>,
+    pub imaged: Vec<String>,
 }
 
 /// Where the setup time went, each phase in milliseconds. The refresh runs at
@@ -83,8 +96,10 @@ pub struct Setup {
     pub refresh_ms: u64,
     /// Starting the workers and their handshakes.
     pub workers_ms: u64,
-    /// Imaging every database.
+    /// Imaging the databases whose stored image could not be reused.
     pub imaging_ms: u64,
+    /// The raw digest passes that tell whether a stored image holds.
+    pub raw_digest_ms: u64,
     /// The keys, the `$DLC` hash phase included.
     pub keys_ms: u64,
     /// The `$DLC` hash phase alone.
@@ -110,6 +125,9 @@ pub struct BuildReport {
     pub setup_ms: u64,
     pub setup: Setup,
     pub elapsed_ms: u64,
+    /// The databases whose schema image the build reused, and the ones it
+    /// imaged.
+    pub schema_images: SchemaImages,
 }
 
 impl CacheReport {
@@ -141,6 +159,7 @@ impl CacheReport {
     }
 }
 
+/// A message with row 0 and column 0 has no position.
 fn message(message: &CompilerMessage) -> Value {
     json!({
         "type": message.kind,
@@ -213,6 +232,16 @@ impl BuildReport {
                 }).collect::<Vec<_>>(),
                 "changed_inputs": self.cache.changed_inputs,
                 "schema_dropped": self.cache.schema_dropped,
+                "verification": self.cache.policy.map(|policy| {
+                    Value::Object(
+                        policy
+                            .entries()
+                            .into_iter()
+                            .map(|(name, value)| (name.to_string(), value))
+                            .collect(),
+                    )
+                }),
+                "imaging_rounds": self.cache.imaging_rounds,
             },
             "timing": {
                 "setup_ms": self.setup_ms,
@@ -221,38 +250,46 @@ impl BuildReport {
                     "refresh_ms": self.setup.refresh_ms,
                     "workers_ms": self.setup.workers_ms,
                     "imaging_ms": self.setup.imaging_ms,
+                    "raw_digest_ms": self.setup.raw_digest_ms,
                     "keys_ms": self.setup.keys_ms,
                     "dlc_hash_ms": self.setup.dlc_hash_ms,
                     "plan_ms": self.setup.plan_ms,
                     "prune_ms": self.setup.prune_ms,
                 },
             },
+            "schema_images": {
+                "reused": self.schema_images.reused,
+                "imaged": self.schema_images.imaged,
+            },
             "notes": self.notes,
             "units": units,
         })
     }
 
-    /// The report as text: each failed unit with its messages, then the counts.
+    /// The report as text: each failed unit and each compiled unit with
+    /// messages, with its messages, then the counts.
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         for unit in &self.units {
             match &unit.status {
                 UnitStatus::Failed => out.push_str(&format!("failed    {}\n", unit.path)),
                 UnitStatus::NotRun => out.push_str(&format!("not run   {}\n", unit.path)),
+                UnitStatus::Compiled if !unit.messages.is_empty() => {
+                    out.push_str(&format!("compiled  {}\n", unit.path))
+                }
                 _ => continue,
             }
             if let Some(note) = &unit.note {
                 out.push_str(&format!("  {note}\n"));
             }
             for message in &unit.messages {
+                let at = match (message.row.as_str(), message.column.as_str()) {
+                    ("0", "0") => String::new(),
+                    (row, column) => format!(":{row}:{column}"),
+                };
                 out.push_str(&format!(
-                    "  {} {} {}:{}:{}: {}\n",
-                    message.kind,
-                    message.number,
-                    message.file,
-                    message.row,
-                    message.column,
-                    message.text
+                    "  {} {} {}{at}: {}\n",
+                    message.kind, message.number, message.file, message.text
                 ));
             }
         }

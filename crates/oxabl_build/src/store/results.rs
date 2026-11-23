@@ -57,8 +57,12 @@ pub struct OutputRow {
     pub path: String,
     pub size: u64,
     pub mtime_ns: i64,
+    pub ctime_ns: i64,
     pub ino: u64,
     pub hash: [u8; 32],
+    /// When the hash was taken: a stat younger than the racy window then does
+    /// not vouch for the bytes.
+    pub observed_ns: i64,
 }
 
 /// The results of one snapshot of the store.
@@ -158,8 +162,9 @@ impl Reading<'_> {
                 },
             );
         }
-        let mut statement =
-            tx.prepare("SELECT unit_id, path, size, mtime_ns, ino, hash FROM outputs")?;
+        let mut statement = tx.prepare(
+            "SELECT unit_id, path, size, mtime_ns, ctime_ns, ino, hash, observed_ns FROM outputs",
+        )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             results
@@ -170,8 +175,10 @@ impl Reading<'_> {
                     path: row.get(1)?,
                     size: row.get::<_, i64>(2)? as u64,
                     mtime_ns: row.get(3)?,
-                    ino: row.get::<_, i64>(4)? as u64,
-                    hash: hash_of(row.get(5)?)?,
+                    ctime_ns: row.get(4)?,
+                    ino: row.get::<_, i64>(5)? as u64,
+                    hash: hash_of(row.get(6)?)?,
+                    observed_ns: row.get(7)?,
                 });
         }
         let mut statement = tx.prepare("SELECT identity, record FROM environments")?;
@@ -207,15 +214,18 @@ impl Reading<'_> {
 
 fn put_output(tx: &Transaction<'_>, unit: u32, output: &OutputRow) -> Result<(), StoreError> {
     let written = tx.execute(
-        "INSERT OR REPLACE INTO outputs (unit_id, path, size, mtime_ns, ino, hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO outputs (unit_id, path, size, mtime_ns, ctime_ns, ino, hash,
+             observed_ns)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             unit,
             output.path,
             output.size as i64,
             output.mtime_ns,
+            output.ctime_ns,
             output.ino as i64,
-            output.hash.as_slice()
+            output.hash.as_slice(),
+            output.observed_ns
         ],
     );
     match written {

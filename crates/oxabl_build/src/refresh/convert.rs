@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use rustc_hash::FxHashMap;
+
 use oxabl_pipeline::{
     ClosureReference, DegradedReason, DependencyEdges, EdgeKind as IndexEdgeKind, EdgeTarget,
     SharedRun,
@@ -71,11 +73,38 @@ impl Converter<'_> {
             .iter()
             .map(|reason| degraded_code(*reason))
             .collect();
+        let mut include_names: FxHashMap<&Path, Vec<&str>> = FxHashMap::default();
+        for include in edges.include_names() {
+            include_names
+                .entry(include.path.as_path())
+                .or_default()
+                .push(include.name.as_str());
+        }
         for edge in edges.edges() {
             let Some(kind) = edge_kind(edge.kind) else {
                 continue;
             };
             match self.target_path(&edge.target) {
+                Some(path) if kind.is_include() => {
+                    let target = self.id_of(&path);
+                    let names = include_names
+                        .get(path.as_path())
+                        .map_or(&[][..], Vec::as_slice);
+                    if names.is_empty() {
+                        analysis.edges.push(Edge {
+                            kind,
+                            target,
+                            name: None,
+                        });
+                    }
+                    for name in names {
+                        analysis.edges.push(Edge {
+                            kind,
+                            target,
+                            name: Some((*name).to_string()),
+                        });
+                    }
+                }
                 Some(path) => analysis.edges.push(Edge {
                     kind,
                     target: self.id_of(&path),
@@ -104,8 +133,14 @@ impl Converter<'_> {
     /// take, which the compile may take.
     fn conditional(&self, analysis: &mut Analysis, edges: &DependencyEdges) {
         for closure in edges.conditional_include_closure() {
-            let reached = closure.path.iter().chain(&closure.reaches);
-            for path in reached {
+            if let Some(path) = &closure.path {
+                analysis.edges.push(Edge {
+                    kind: EdgeKind::ConditionalInclude,
+                    target: self.id_of(path),
+                    name: Some(closure.name.clone()),
+                });
+            }
+            for path in &closure.reaches {
                 analysis.edges.push(Edge {
                     kind: EdgeKind::ConditionalInclude,
                     target: self.id_of(path),

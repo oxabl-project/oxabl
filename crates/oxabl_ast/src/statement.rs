@@ -1263,6 +1263,9 @@ pub struct TempTableField {
     pub initial_value: Option<Vec<Expression>>,
     /// Extent/array size. None for scalar, Some(0) for dynamic extent.
     pub extent: Option<u32>,
+    /// The whole definition, from `FIELD` to its last option. Defaults to
+    /// [`Span::DUMMY`] on hand-constructed nodes.
+    pub span: Span,
 }
 
 /// A USE-INDEX clause in a DEFINE TEMP-TABLE LIKE statement.

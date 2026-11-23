@@ -18,11 +18,15 @@
 //! other, and the refusal names both numbers so the mismatch is diagnosable from
 //! one message. Bump it whenever a type here changes shape.
 //!
-//! The current contract is 4. It is not compatible with 3: there is no
+//! The current contract is 5. It is not compatible with 4: there is no
 //! negotiation step and no window in which the two interoperate, so a client and
 //! a daemon have to be built from the same contract and deployed together. A
 //! client that finds a daemon speaking another contract is refused at the
 //! handshake rather than allowed to proceed on a guess.
+//!
+//! One contract spans many builds, and a daemon answers with its own code, so a
+//! registration also names the build ([`Registration::daemon_version`]): a daemon
+//! that outlived an upgrade reads `oxabl.toml` with the older rules.
 //!
 //! # Unsourceable values
 //!
@@ -50,7 +54,7 @@ use serde::{Deserialize, Serialize};
 /// Bump on any shape change to a type in this crate. There is no negotiation and
 /// no compatibility window: both products are pre-1.0 and are built together, so a
 /// mismatch means one side is stale and should be told so rather than accommodated.
-pub const CONTRACT_VERSION: u32 = 4;
+pub const CONTRACT_VERSION: u32 = 5;
 
 /// The `oxabl/*` method names, as they travel.
 pub mod method {
@@ -365,7 +369,8 @@ pub struct HandshakeResponse {
     /// and must not read that as a different workspace: it is the same tree, named
     /// the way every later answer from this daemon names it.
     pub workspace_root: String,
-    /// The daemon's own version string, for a human reading a mismatch report.
+    /// The version of the binary that runs the daemon, for a human reading a
+    /// mismatch report.
     pub daemon_version: String,
     /// How many clients this session now serves, so "two clients, one index" is
     /// demonstrable rather than asserted.
@@ -586,6 +591,11 @@ pub struct Registration {
     /// before it connects rather than after.
     pub contract_version: u32,
     pub workspace_root: String,
+    /// The version of the binary that runs the daemon. Empty in a registration
+    /// written before contract 5, so an older daemon still parses and is seen as
+    /// another build.
+    #[serde(default)]
+    pub daemon_version: String,
 }
 
 /// The directory the daemon's registration, socket and lock live in.
@@ -1179,6 +1189,7 @@ mod tests {
             socket_path: "/run/oxabl.sock".to_string(),
             contract_version: CONTRACT_VERSION,
             workspace_root: "/proj".to_string(),
+            daemon_version: "0.5.11".to_string(),
         };
         assert_eq!(roundtrip(&registration), registration);
     }

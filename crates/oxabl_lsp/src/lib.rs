@@ -1,9 +1,14 @@
 //! `oxabl lsp` — a stdio LSP server that surfaces oxabl's parse + lint +
 //! loud-preprocessor diagnostics live in an editor (Track A).
 //!
-//! v1 is a diagnostics-and-formatting server: it completes the LSP handshake,
+//! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`. Strict database rules can also enable effect code lenses.
+//! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
+//! `textDocument/definition` and `textDocument/documentLink` (see
+//! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
+//! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
+//! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
+//! `docs/design/include-context.md`.
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -21,8 +26,13 @@ mod code_lens;
 pub mod debounce;
 pub mod diagnostics;
 pub mod document;
+mod document_symbol;
+mod expanded_unit;
 pub mod formatting;
+mod includer_context;
+mod navigation;
 pub mod position;
+mod workspace_symbol;
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -37,12 +47,15 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{Formatting, Request as _};
+use lsp_types::request::{
+    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, Request as _,
+    WorkspaceSymbolRequest,
+};
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams, ServerInfo,
-    TextEdit, Uri,
+    DocumentSymbolParams, InitializeParams, InitializeResult, PositionEncodingKind,
+    PublishDiagnosticsParams, ServerInfo, TextEdit, Uri,
 };
 use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
 use oxabl_workspace::FeaturesConfig;
@@ -119,7 +132,7 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 
 /// Find the daemon serving `root`, starting one if discovery says there is none.
 ///
-/// One loop, not a check followed by a loop, because discovery has three answers and
+/// One loop, not a check followed by a loop, because discovery has four answers and
 /// only one of them may start a daemon:
 ///
 /// * `Absent` — nothing is registered. Start a daemon, once, and keep polling.
@@ -127,25 +140,68 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 ///   probed. Neither starting a daemon nor connecting is defensible on that answer, so
 ///   the loop waits. The reason is kept, because a client that runs out of attempts
 ///   over a refused directory must say *that* and not "timed out".
-/// * `Live` / `VersionMismatch` — decided; return or refuse.
+/// * `VersionMismatch` — a daemon of another build serves the root. An older one,
+///   typically one that outlived an upgrade, is stopped (`SIGTERM`, then `SIGKILL`
+///   after [`STOP_GRACE`]) and the loop starts a daemon of this build once it is
+///   gone. A newer one is an error: replacing it would let two builds that both stay
+///   in use stop each other's daemon on every restart of their editors. So is a
+///   second daemon of another build, which means another build keeps starting them.
+/// * `Live` — decided; return it.
 #[cfg(unix)]
 fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registration> {
-    // Every 20ms for two seconds. A cold start is far quicker; the budget is for a
-    // machine under load.
-    const ATTEMPTS: u32 = 100;
-    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+    use std::time::{Duration, Instant};
 
+    // Polled every 20ms for two seconds. A cold start is far quicker; the budget is
+    // for a machine under load.
+    const BUDGET: Duration = Duration::from_secs(2);
+    const INTERVAL: Duration = Duration::from_millis(20);
+
+    let mut deadline = Instant::now() + BUDGET;
     let mut started = false;
+    let mut stopping: Option<StaleDaemon> = None;
+    // A daemon of another build too busy to be named on its socket: that can clear,
+    // so the loop keeps polling and reports it only at the deadline.
+    let mut busy: Option<String> = None;
     let mut refusal: Option<String> = None;
-    for attempt in 0..=ATTEMPTS {
+    loop {
         match oxabl_daemon::discover(root) {
             oxabl_daemon::Discovery::Live(registration) => return Ok(registration),
-            oxabl_daemon::Discovery::VersionMismatch(registration) => anyhow::bail!(
-                "the {} oxabl daemon uses contract {}, but this client uses {}",
-                if started { "started" } else { "running" },
-                registration.contract_version,
-                oxabl_daemon_protocol::CONTRACT_VERSION,
-            ),
+            oxabl_daemon::Discovery::VersionMismatch(registration) => match &mut stopping {
+                // The daemon this client stopped, not gone yet.
+                Some(stale) if stale.registration.pid == registration.pid => {
+                    if !stale.killed && stale.since.elapsed() >= STOP_GRACE {
+                        stop(&registration, root, true)?;
+                        stale.killed = true;
+                    }
+                }
+                // Another daemon of another build after this client stopped one or
+                // started its own.
+                Some(_) => anyhow::bail!(keeps_starting(&registration, root)),
+                None if started => anyhow::bail!(keeps_starting(&registration, root)),
+                None if !older_than_this_build(&registration) => anyhow::bail!(
+                    "{}. That daemon is not older than this client: update this oxabl, or \
+                     stop it with `kill {}`",
+                    mismatch_message(&registration, root),
+                    registration.pid
+                ),
+                None => match oxabl_daemon::stop_daemon(&registration, false) {
+                    Ok(()) => {
+                        busy = None;
+                        stopping = Some(StaleDaemon {
+                            registration,
+                            since: Instant::now(),
+                            killed: false,
+                        });
+                        // The old daemon's exit is not this client's start: both get
+                        // time.
+                        deadline = Instant::now() + STOP_GRACE + BUDGET;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        busy = Some(not_stopped(&registration, root, &error));
+                    }
+                    Err(error) => anyhow::bail!(not_stopped(&registration, root, &error)),
+                },
+            },
             // Keep the latest reason rather than the first: a cause that has cleared
             // should not be the one reported, and one that has not will be read again
             // on the next pass.
@@ -168,20 +224,120 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
         }
         // Nothing changes between the last poll and the give-up, so it is not waited
         // for.
-        if attempt < ATTEMPTS {
-            std::thread::sleep(INTERVAL);
+        if Instant::now() >= deadline {
+            break;
         }
+        std::thread::sleep(INTERVAL);
     }
 
-    match refusal {
-        // The timeout is the symptom; the refusal is the cause, and a message that
-        // reports only the symptom sends its reader looking for a slow machine when the
-        // answer is a directory mode.
-        Some(reason) => {
-            anyhow::bail!("the oxabl daemon did not become ready within two seconds: {reason}")
-        }
-        None => anyhow::bail!("the oxabl daemon did not become ready within two seconds"),
+    // The timeout is the symptom; the refusal, or a daemon that would not stop, is the
+    // cause, and a message that reports only the symptom sends its reader looking for
+    // a slow machine when the answer is a directory mode.
+    if let Some(stale) = stopping.filter(|_| !started) {
+        anyhow::bail!(
+            "{}, and it did not stop. Stop it with `kill -9 {}`",
+            mismatch_message(&stale.registration, root),
+            stale.registration.pid
+        );
     }
+    if let Some(busy) = busy {
+        anyhow::bail!(busy);
+    }
+    match refusal {
+        Some(reason) => {
+            anyhow::bail!("the oxabl daemon did not become ready in time: {reason}")
+        }
+        None => anyhow::bail!("the oxabl daemon did not become ready in time"),
+    }
+}
+
+/// How long a daemon of another build has to exit on `SIGTERM` before `SIGKILL`.
+#[cfg(unix)]
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A daemon of another build this client has signalled to exit.
+#[cfg(unix)]
+struct StaleDaemon {
+    registration: oxabl_daemon_protocol::Registration,
+    since: std::time::Instant,
+    killed: bool,
+}
+
+/// Signal a daemon of another build to exit, or fail naming both builds.
+#[cfg(unix)]
+fn stop(
+    registration: &oxabl_daemon_protocol::Registration,
+    root: &Path,
+    force: bool,
+) -> Result<()> {
+    oxabl_daemon::stop_daemon(registration, force)
+        .map_err(|error| anyhow::anyhow!(not_stopped(registration, root, &error)))
+}
+
+/// A daemon of another build that could not be signalled, with the way to stop it.
+#[cfg(unix)]
+fn not_stopped(
+    registration: &oxabl_daemon_protocol::Registration,
+    root: &Path,
+    error: &std::io::Error,
+) -> String {
+    format!(
+        "{}, and it could not be stopped: {error}. Stop it with `kill {}`",
+        mismatch_message(registration, root),
+        registration.pid
+    )
+}
+
+/// Whether the daemon a registration names is of an older build than this client.
+///
+/// Versions compare by their numbers; a registration without one predates the field
+/// and is older. At an equal version the contract decides.
+#[cfg(unix)]
+fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> bool {
+    fn numbers(version: &str) -> Option<(u64, u64, u64)> {
+        let core = version.split(['-', '+']).next()?;
+        let mut parts = core.split('.').map(|part| part.parse::<u64>().ok());
+        Some((parts.next()??, parts.next()??, parts.next()??))
+    }
+    if registration.daemon_version.is_empty() {
+        return true;
+    }
+    match (
+        numbers(&registration.daemon_version),
+        numbers(oxabl_daemon::build_version()),
+    ) {
+        (Some(theirs), Some(ours)) if theirs != ours => theirs < ours,
+        _ => registration.contract_version < oxabl_daemon_protocol::CONTRACT_VERSION,
+    }
+}
+
+/// A daemon of another build that appeared after this client stopped one or
+/// started its own.
+#[cfg(unix)]
+fn keeps_starting(registration: &oxabl_daemon_protocol::Registration, root: &Path) -> String {
+    format!(
+        "{}; another oxabl of that build keeps starting a daemon for this root",
+        mismatch_message(registration, root)
+    )
+}
+
+/// A daemon of another build, with both builds named.
+#[cfg(unix)]
+fn mismatch_message(registration: &oxabl_daemon_protocol::Registration, root: &Path) -> String {
+    let version = if registration.daemon_version.is_empty() {
+        "an older version"
+    } else {
+        registration.daemon_version.as_str()
+    };
+    format!(
+        "the oxabl daemon for {} (pid {}) is {version} with contract {}, but this client \
+         is {} with contract {}",
+        root.display(),
+        registration.pid,
+        registration.contract_version,
+        oxabl_daemon::build_version(),
+        oxabl_daemon_protocol::CONTRACT_VERSION,
+    )
 }
 
 #[cfg(unix)]
@@ -198,9 +354,26 @@ fn proxy_messages(editor: &Connection, daemon: &Connection) -> Result<()> {
             }
             recv(daemon.receiver) -> message => {
                 let message = message.context("the daemon exited during the editor session")?;
-                editor.sender.send(message).context("the editor connection closed")?;
+                editor.sender.send(with_null_result(message)).context("the editor connection closed")?;
             }
         }
+    }
+}
+
+/// A response read back from the daemon with its `null` result restored.
+///
+/// `lsp_server` reads `"result": null` as no result and then writes the response
+/// with neither `result` nor `error`, which a client rejects. A response without
+/// an error always had a result, so the missing one was `null`.
+fn with_null_result(message: Message) -> Message {
+    match message {
+        Message::Response(mut response)
+            if response.result.is_none() && response.error.is_none() =>
+        {
+            response.result = Some(serde_json::Value::Null);
+            Message::Response(response)
+        }
+        message => message,
     }
 }
 
@@ -348,10 +521,17 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
     declared.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// What the handshake learned from the client's capabilities.
+struct Negotiated {
+    options: code_lens::Options,
+    /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
+    hierarchical_symbols: bool,
+}
+
 fn serve_initialized(
     connection: &Connection,
     debounce_window: std::time::Duration,
-    options: code_lens::Options,
+    options: Negotiated,
     workspace_root: Option<PathBuf>,
     session_root: PathBuf,
     host: SessionHost,
@@ -382,7 +562,7 @@ fn serve_initialized(
 /// Also returns the client's declared **workspace root**, when it declared one.
 /// That is what lets the server's watch and its configuration cover a *project*
 /// rather than whichever directory happened to hold the first opened document.
-fn handshake(connection: &Connection) -> Result<(code_lens::Options, Option<PathBuf>)> {
+fn handshake(connection: &Connection) -> Result<(Negotiated, Option<PathBuf>)> {
     let (id, params) = connection
         .initialize_start()
         .context("LSP initialize_start")?;
@@ -393,18 +573,25 @@ fn finish_handshake(
     connection: &Connection,
     id: RequestId,
     params: serde_json::Value,
-) -> Result<(code_lens::Options, Option<PathBuf>)> {
+) -> Result<(Negotiated, Option<PathBuf>)> {
     let init: InitializeParams =
         serde_json::from_value(params).context("deserializing InitializeParams")?;
 
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
     let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let hierarchical_symbols = init
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|c| c.document_symbol.as_ref())
+        .and_then(|c| c.hierarchical_document_symbol_support)
+        .unwrap_or(false);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
         && workspace_root.as_ref().is_some_and(|root| {
-            let (config, _) = PipelineConfig::resolve(root, &ConfigOverrides::default());
+            let (config, _) = PipelineConfig::resolve_for_editor(root, &ConfigOverrides::default());
             let fs = oxabl_workspace::RealFileSystem;
             oxabl_pipeline::LintPipeline::new(&config, &fs)
                 .with_file(root)
@@ -425,7 +612,13 @@ fn finish_handshake(
     connection
         .initialize_finish(id, serde_json::to_value(result)?)
         .context("LSP initialize_finish")?;
-    Ok((options, workspace_root))
+    Ok((
+        Negotiated {
+            options,
+            hierarchical_symbols,
+        },
+        workspace_root,
+    ))
 }
 
 /// The workspace root the client declared, if any.
@@ -457,6 +650,8 @@ struct Server<'c> {
     connection: &'c Connection,
     /// Negotiated position encoding, applied at every span→Range mapping (KTD4).
     encoding: PositionEncodingKind,
+    /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
+    hierarchical_symbols: bool,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
     /// The daemon's one session map. No analysis state lives in this client.
@@ -483,14 +678,21 @@ struct Server<'c> {
     /// formatting request costs no style resolution and no `StyleGuide` clone.
     formatter: FormatPipeline,
     /// The `[workspace.features]` of the installed configuration, which counts
-    /// as both off while `oxabl.toml` cannot be read. Both on until a
-    /// configuration is resolved.
+    /// as both off while `oxabl.toml` cannot be read and when there is none.
+    /// Both off until a configuration is resolved.
     features: FeaturesConfig,
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
+    /// The last outline of each open buffer, for its version.
+    outlines: document_symbol::OutlineCache,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
+    /// The selected compilation context of each open include.
+    contexts: includer_context::Contexts,
+    /// Where context workers report, and where the main loop reads them.
+    context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
+    context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -519,16 +721,22 @@ struct ComputeResult {
 impl<'c> Server<'c> {
     fn new(
         connection: &'c Connection,
-        options: code_lens::Options,
+        negotiated: Negotiated,
         debounce_window: std::time::Duration,
         workspace_root: Option<PathBuf>,
         session_root: PathBuf,
         host: SessionHost,
     ) -> Self {
+        let Negotiated {
+            options,
+            hierarchical_symbols,
+        } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
+        let (context_events, context_results) = crossbeam_channel::unbounded();
         Server {
             connection,
             encoding: options.encoding.clone(),
+            hierarchical_symbols,
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -536,10 +744,15 @@ impl<'c> Server<'c> {
             workspace_anchor: None,
             workspace_root,
             formatter,
-            features: FeaturesConfig::default(),
+            // Off until a resolved configuration says otherwise.
+            features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
+            outlines: document_symbol::OutlineCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
+            contexts: includer_context::Contexts::default(),
+            context_events,
+            context_results,
         }
     }
 
@@ -560,6 +773,7 @@ impl<'c> Server<'c> {
         let (result_tx, result_rx) = crossbeam_channel::unbounded::<ComputeResult>();
 
         let (lens_tx, lens_rx) = crossbeam_channel::unbounded();
+        let context_rx = self.context_results.clone();
         let mut shutdown_received = false;
         loop {
             // Size the timeout to the nearest pending debounce deadline.
@@ -582,6 +796,26 @@ impl<'c> Server<'c> {
                                 self.handle_code_lens(req, &lens_tx)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
+                            } else if req.method == DocumentSymbolRequest::METHOD {
+                                self.handle_document_symbol(req)?;
+                            } else if req.method == GotoDefinition::METHOD {
+                                self.handle_definition(req)?;
+                            } else if req.method == DocumentLinkRequest::METHOD {
+                                self.handle_document_link(req)?;
+                            } else if req.method == expanded_unit::METHOD {
+                                self.handle_expanded_unit(req)?;
+                            } else if req.method == includer_context::LIST_METHOD {
+                                self.handle_includer_contexts(req)?;
+                            } else if req.method == includer_context::SELECT_METHOD {
+                                self.handle_select_includer_context(req)?;
+                            } else if req.method == WorkspaceSymbolRequest::METHOD {
+                                workspace_symbol::spawn(
+                                    req,
+                                    self.host.clone(),
+                                    self.session_root.clone(),
+                                    self.encoding.clone(),
+                                    self.connection.sender.clone(),
+                                );
                             } else {
                                 self.respond(Response::new_err(
                                     req.id,
@@ -605,6 +839,11 @@ impl<'c> Server<'c> {
                             self.lenses.request_id(),
                             "workspace/codeLens/refresh".into(), serde_json::Value::Null,
                         )))?;
+                    }
+                }
+                recv(context_rx) -> event => {
+                    if let Ok(event) = event {
+                        self.handle_context_event(event)?;
                     }
                 }
                 recv(result_rx) -> res => {
@@ -634,6 +873,10 @@ impl<'c> Server<'c> {
                 self.publish(uri, Vec::new(), Some(version));
                 continue;
             }
+            if let Some(root) = self.contexts.selected(&uri).cloned() {
+                self.spawn_context_analysis(uri, version, root);
+                continue;
+            }
             let Some((buffer, snapshot, schema, config_generation)) = self.host.with(|sessions| {
                 let session = sessions.get(&self.session_root)?;
                 Some((
@@ -646,20 +889,22 @@ impl<'c> Server<'c> {
                 continue;
             };
             let tx = result_tx.clone();
-            std::thread::spawn(move || {
-                // The guard is inside `analyze_guarded`, so the send below is
-                // reached on every path — a panic must not leave this buffer
-                // waiting forever on a result that never arrives (R8).
-                let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
-                let _ = tx.send(ComputeResult {
-                    uri,
-                    version,
-                    diagnostics: analysis.diagnostics,
-                    dependencies: analysis.dependencies,
-                    panicked: analysis.panicked,
-                    config_generation,
-                });
-            });
+            oxabl_common::stack::builder()
+                .spawn(move || {
+                    // The guard is inside `analyze_guarded`, so the send below is
+                    // reached on every path — a panic must not leave this buffer
+                    // waiting forever on a result that never arrives (R8).
+                    let analysis = analyze_guarded(&snapshot, buffer, schema, uri.as_str());
+                    let _ = tx.send(ComputeResult {
+                        uri,
+                        version,
+                        diagnostics: analysis.diagnostics,
+                        dependencies: analysis.dependencies,
+                        panicked: analysis.panicked,
+                        config_generation,
+                    });
+                })
+                .expect("failed to spawn an analysis thread");
         }
     }
 
@@ -678,6 +923,11 @@ impl<'c> Server<'c> {
     /// as an empty set. An empty set for a buffer that does have includes would stop
     /// the watcher from ever re-triggering it.
     fn handle_result(&mut self, res: ComputeResult) {
+        // An include analysed in a selected root publishes that root's answer
+        // only; its fragment analysis must not replace it.
+        if self.contexts.has_selection(&res.uri) {
+            return;
+        }
         let work = CompletedWork {
             read_version: res.version,
             current_version: self.documents.get(&res.uri).map(|doc| doc.version),
@@ -730,6 +980,7 @@ impl<'c> Server<'c> {
                 {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
+                    self.outlines.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
                     // it: cross-file resolution must exclude this file from its
@@ -743,6 +994,10 @@ impl<'c> Server<'c> {
                             path,
                         );
                     });
+                    // An include analysed in this root now reads the buffer.
+                    if let Some(path) = uri_to_path(&doc.uri) {
+                        self.schedule_context_users(&path);
+                    }
                     // Open shows diagnostics right away (no debounce).
                     self.compute_and_publish(&doc.uri);
                 }
@@ -753,6 +1008,7 @@ impl<'c> Server<'c> {
                 {
                     let uri = params.text_document.uri;
                     let encoding = self.encoding.clone();
+                    self.outlines.invalidate(&uri);
                     self.documents.change(
                         &uri,
                         params.text_document.version,
@@ -773,6 +1029,9 @@ impl<'c> Server<'c> {
                         });
                     }
                     // Collapse the edit burst to a single debounced recompute.
+                    if let Some(path) = uri_to_path(&uri) {
+                        self.schedule_context_users(&path);
+                    }
                     self.debouncer.schedule(uri, std::time::Instant::now());
                 }
             }
@@ -796,6 +1055,8 @@ impl<'c> Server<'c> {
                 {
                     let uri = params.text_document.uri;
                     self.documents.close(&uri);
+                    self.contexts.forget(&uri);
+                    self.outlines.invalidate(&uri);
                     self.host.with(|sessions| {
                         sessions
                             .for_root(&self.session_root)
@@ -803,6 +1064,10 @@ impl<'c> Server<'c> {
                     });
                     self.dependencies.remove(&uri);
                     self.debouncer.cancel(&uri);
+                    // An include analysed in this root now reads its saved copy.
+                    if let Some(path) = uri_to_path(&uri) {
+                        self.schedule_context_users(&path);
+                    }
                     // Clear the client's diagnostics for the closed buffer.
                     self.publish(uri, Vec::new(), None);
                 }
@@ -926,7 +1191,8 @@ impl<'c> Server<'c> {
     /// editor's diagnostics *silently* while the CLI printed a `warning:` line
     /// for the same file.
     fn resolve_config_from(&mut self, path: &Path) {
-        let (resolved, warnings) = PipelineConfig::resolve(path, &ConfigOverrides::default());
+        let (resolved, warnings) =
+            PipelineConfig::resolve_for_editor(path, &ConfigOverrides::default());
         self.report_config_warnings(&warnings);
         self.install_config(resolved);
     }
@@ -1015,6 +1281,11 @@ impl<'c> Server<'c> {
         };
         if !self.features.diagnostics {
             self.publish(uri.clone(), Vec::new(), Some(version));
+            return;
+        }
+        if self.contexts.has_selection(uri) {
+            self.debouncer
+                .schedule(uri.clone(), std::time::Instant::now());
             return;
         }
         let Some((buffer, snapshot, schema)) = self.host.with(|sessions| {
@@ -1119,6 +1390,13 @@ impl<'c> Server<'c> {
                 for uri in self.buffers_depending_on(inc) {
                     self.retrigger(&uri, now);
                 }
+            }
+        }
+
+        // A root changed on disk changes the includes analysed in it.
+        for source in &changed_sources {
+            for uri in self.buffers_depending_on(source) {
+                self.debouncer.schedule(uri, now);
             }
         }
 
@@ -1309,6 +1587,47 @@ impl<'c> Server<'c> {
         self.respond(Response::new_ok(req.id, edits))
     }
 
+    /// `textDocument/documentSymbol`: the outline of the open buffer's raw
+    /// text, from the cache when the version matches. An unopened URI gives
+    /// `null`; a contained panic is a request failure, never an empty list.
+    fn handle_document_symbol(&mut self, req: Request) -> Result<()> {
+        let params = match serde_json::from_value::<DocumentSymbolParams>(req.params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.respond(Response::new_err(
+                    req.id,
+                    ErrorCode::InvalidParams as i32,
+                    format!("oxabl-lsp: invalid documentSymbol params: {error}"),
+                ));
+            }
+        };
+        let uri = params.text_document.uri;
+        let Some(doc) = self.documents.get(&uri) else {
+            return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
+        };
+        let outline = self
+            .outlines
+            .get_or_compute(&uri, doc.version, || oxabl_pipeline::outline(&doc.text()));
+        let response = match outline {
+            Ok(symbols) => Response::new_ok(
+                req.id,
+                document_symbol::to_response(
+                    symbols,
+                    &uri,
+                    &doc.rope,
+                    &self.encoding,
+                    self.hierarchical_symbols,
+                ),
+            ),
+            Err(panic) => Response::new_err(
+                req.id,
+                ErrorCode::RequestFailed as i32,
+                format!("oxabl-lsp: the outline failed: {panic}"),
+            ),
+        };
+        self.respond(response)
+    }
+
     fn respond(&self, response: Response) -> Result<()> {
         self.connection
             .sender
@@ -1335,6 +1654,26 @@ pub(crate) fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let rest = s.strip_prefix("file://")?;
     // `file:///abs/path` → the authority is empty, leaving a leading `/abs`.
     Some(PathBuf::from(percent_decode(rest)?))
+}
+
+/// A `file:` URI for an absolute path, percent-encoding every byte a URI path
+/// cannot hold. The inverse of [`uri_to_path`].
+pub(crate) fn path_to_uri(path: &Path) -> Option<Uri> {
+    let path = path.to_str()?.replace('\\', "/");
+    let mut uri = String::with_capacity(path.len() + 8);
+    uri.push_str("file://");
+    if !path.starts_with('/') {
+        uri.push('/');
+    }
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                uri.push(byte as char)
+            }
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    uri.parse().ok()
 }
 
 /// Percent-decode a URI path component.
@@ -1378,11 +1717,14 @@ mod tests {
     fn server(connection: &Connection) -> Server<'_> {
         Server::new(
             connection,
-            code_lens::Options {
-                encoding: PositionEncodingKind::UTF8,
-                supported: false,
-                dynamic: false,
-                refresh: false,
+            Negotiated {
+                options: code_lens::Options {
+                    encoding: PositionEncodingKind::UTF8,
+                    supported: false,
+                    dynamic: false,
+                    refresh: false,
+                },
+                hierarchical_symbols: false,
             },
             std::time::Duration::from_millis(10),
             None,

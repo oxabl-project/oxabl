@@ -4,6 +4,7 @@
 // processes, the watchers and the UI.
 
 import * as cp from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
@@ -15,9 +16,13 @@ import {
   MessageStore,
   finishedText,
   renderStatus,
+  shouldWarnUnkeyed,
+  unkeyedFromReport,
+  unkeyedText,
   type BuildMessage,
   type RootStatus,
 } from "./progress";
+import { Memory, Once } from "./once";
 import { isBuildInput, isConfigFile, isIgnored, ownerRoot } from "./roots";
 import { Scheduler } from "./scheduler";
 
@@ -36,6 +41,10 @@ export interface BuildDeps {
   prepare(): Promise<string | undefined>;
   /** The binary to read the configuration with, without the checks of `prepare`. */
   binary(): string | undefined;
+  /** A directory of the extension's own, for the build reports. */
+  storageDir: string;
+  /** What the workspace remembers between two windows. */
+  memory: Memory;
 }
 
 class Root {
@@ -46,6 +55,8 @@ class Root {
   child: cp.ChildProcess | undefined;
   /** Set when the extension asked the running build to stop. */
   cancelRequested = false;
+  /** Units without a compile key in the last report. */
+  unkeyed = 0;
   constructor(
     readonly dir: string,
     hooks: ConstructorParameters<typeof Scheduler>[0],
@@ -59,8 +70,13 @@ export class BuildController implements vscode.Disposable {
   private readonly output = vscode.window.createOutputChannel("oxabl build");
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("oxabl build");
   private readonly item = vscode.window.createStatusBarItem("oxabl.build", vscode.StatusBarAlignment.Left, 0);
+  // VS Code restarts an icon's animation each time an item's text changes, so
+  // the spinner has an item of its own whose text never changes.
+  private readonly spinner = vscode.window.createStatusBarItem("oxabl.build.spinner", vscode.StatusBarAlignment.Left, 0.001);
   private readonly subscriptions: vscode.Disposable[] = [];
   private readonly shownErrors = new Set<string>();
+  private readonly unkeyedNotices: Once;
+  private readonly finishedNotices: Once;
   private started = false;
   private discovering: Promise<void> = Promise.resolve();
   /** Modification time and size of each input file at its last event. */
@@ -69,7 +85,12 @@ export class BuildController implements vscode.Disposable {
   private statusTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly deps: BuildDeps) {
+    this.unkeyedNotices = new Once(deps.memory, "unkeyed");
+    this.finishedNotices = new Once(deps.memory, "finished");
     this.item.name = "oxabl build";
+    this.spinner.name = "oxabl build progress";
+    this.spinner.text = "$(sync~spin)";
+    this.spinner.tooltip = "oxabl build is running";
   }
 
   private enabled(): boolean {
@@ -139,7 +160,7 @@ export class BuildController implements vscode.Disposable {
     await this.discover();
     if (this.roots.size === 0) {
       void vscode.window.showInformationMessage(
-        "oxabl: no project to build. A build needs an oxabl.toml with [build].output and [build.workers].command.",
+        "oxabl: no project to build. A build needs an oxabl.toml with [build.workers].command and [build].output or [build].rcode = \"beside-source\".",
       );
       return;
     }
@@ -178,9 +199,9 @@ export class BuildController implements vscode.Disposable {
     const binary = this.deps.binary();
     const dirs = binary ? await this.candidates() : [];
     const found = await Promise.all(
-      dirs.map(async (dir) => [dir, binary ? await readRootConfig(binary, dir, this.extraArgs()) : undefined] as const),
+      dirs.map(async (dir) => [dir, binary ? await readRootConfig(binary, dir, this.extraArgs()) : {}] as const),
     );
-    for (const [dir, config] of found) {
+    for (const [dir, { config, error }] of found) {
       const existing = this.roots.get(dir);
       if (config && existing) {
         existing.config = config;
@@ -197,7 +218,19 @@ export class BuildController implements vscode.Disposable {
         existing.scheduler.cancelAll();
         this.roots.delete(dir);
         this.deps.log.info(`${dir} does not build any more`);
-      } else {
+      }
+      if (config) {
+        continue;
+      }
+      if (error) {
+        this.deps.log.warn(`cannot read the build setup of ${dir}: ${error}; not building it`);
+        this.output.appendLine(`${dir}: cannot read the build setup: ${error}`);
+        const reason = `cannot read the build setup: ${error}`;
+        if (!this.shownErrors.has(reason)) {
+          this.shownErrors.add(reason);
+          void vscode.window.showErrorMessage(`oxabl build: ${reason}`, "Show Build Log").then((choice) => choice && this.showLog());
+        }
+      } else if (!existing) {
         this.deps.log.info(`${dir} has an oxabl.toml but no build setup; not building it`);
       }
     }
@@ -265,7 +298,22 @@ export class BuildController implements vscode.Disposable {
       return;
     }
 
-    const args = ["build", "--root", root.dir, "--events", "--yield", "--wait-lock", "3600", ...this.extraArgs()];
+    const extra = this.extraArgs();
+    // The report says which units have no compile key. A report the person asks
+    // for in `oxabl.build.args` serves as well.
+    const asked = extra.indexOf("--report");
+    const report = asked >= 0 ? extra[asked + 1] : this.reportPath(root);
+    const own = asked >= 0 ? [] : ["--report", report];
+    if (report) {
+      const file = path.resolve(root.dir, report);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true }).catch(() => undefined);
+      await fs.promises.rm(file, { force: true }).catch(() => undefined);
+    }
+    if (root.cancelRequested) {
+      root.scheduler.exited();
+      return;
+    }
+    const args = ["build", "--root", root.dir, "--events", "--yield", "--wait-lock", "3600", ...own, ...extra];
     this.deps.log.info(`build: ${binary} ${args.join(" ")}`);
     this.output.appendLine(`$ oxabl ${args.join(" ")}`);
     const progress = new BuildProgress();
@@ -288,7 +336,7 @@ export class BuildController implements vscode.Disposable {
         this.applyMessages(root, effect.unit, effect.kind === "messages" ? effect.messages : []);
       }
       if (progress.total !== undefined) {
-        root.status = { phase: "building", progress };
+        root.status = { phase: "building", progress, unkeyed: root.unkeyed };
       }
       this.refreshStatus();
     });
@@ -305,7 +353,40 @@ export class BuildController implements vscode.Disposable {
       const exit = code ?? progress.summary?.exit ?? -1;
       this.deps.log.info(`build: ${root.dir} exited ${exit}${root.cancelRequested ? " (cancelled)" : ""}`);
       this.finish(root, progress, exit, Date.now() - started, spawnError ?? firstError);
+      if (report && (exit === 0 || exit === 1)) {
+        void this.readReport(root, path.resolve(root.dir, report), progress.units);
+      }
     });
+  }
+
+  private reportPath(root: Root): string {
+    const id = crypto.createHash("sha256").update(root.dir).digest("hex").slice(0, 16);
+    return path.join(this.deps.storageDir, "reports", `${id}.json`);
+  }
+
+  /** Warn once per workspace for each reason that units have no compile key: the project's setup is not complete. */
+  private async readReport(root: Root, file: string, units: number): Promise<void> {
+    let text: string;
+    try {
+      text = await fs.promises.readFile(file, "utf8");
+    } catch (err) {
+      this.deps.log.warn(`build: cannot read the report ${file}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const unkeyed = unkeyedFromReport(text);
+    root.unkeyed = unkeyed?.count ?? 0;
+    if (!unkeyed) {
+      return;
+    }
+    this.deps.log.warn(`build: ${unkeyed.count} units have no compile key; most often: ${unkeyed.reason}`);
+    if (!shouldWarnUnkeyed(unkeyed, units) || this.unkeyedNotices.shown(root.dir, unkeyed.reason)) {
+      return;
+    }
+    await this.unkeyedNotices.mark(root.dir, unkeyed.reason);
+    const choice = await vscode.window.showWarningMessage(unkeyedText(unkeyed), "Show Build Log");
+    if (choice) {
+      this.showLog();
+    }
   }
 
   private finish(root: Root, progress: BuildProgress, exit: number, elapsedMs: number, reason: string | undefined): void {
@@ -325,11 +406,11 @@ export class BuildController implements vscode.Disposable {
           this.refreshStatus();
         }
       }, OK_VISIBLE_MS);
-      this.reportFirst(progress, exit, elapsedMs);
+      this.reportFirst(root, progress, exit, elapsedMs);
       root.scheduler.exited();
     } else if (exit === 1) {
       root.status = { phase: "idle", last: { failed: progress.summary?.failed ?? progress.failedNow } };
-      this.reportFirst(progress, exit, elapsedMs);
+      this.reportFirst(root, progress, exit, elapsedMs);
       root.scheduler.exited();
     } else {
       root.status = { phase: "idle", last: { warning: reason ?? `oxabl build exited with code ${exit}` } };
@@ -344,14 +425,21 @@ export class BuildController implements vscode.Disposable {
     this.refreshStatus();
   }
 
-  /** The notification of the first build that ends in this window. Later builds show the status bar only. */
-  private reportFirst(progress: BuildProgress, exit: number, elapsedMs: number): void {
+  /**
+   * The notification of the first build that ends in this window. Later builds
+   * show the status bar only. A success is told once per workspace; a failure
+   * is told in every window.
+   */
+  private reportFirst(root: Root, progress: BuildProgress, exit: number, elapsedMs: number): void {
     if (this.firstReported) {
       return;
     }
     this.firstReported = true;
     if (exit === 0) {
-      void vscode.window.showInformationMessage(finishedText(progress, elapsedMs));
+      if (!this.finishedNotices.shown(root.dir, "")) {
+        void this.finishedNotices.mark(root.dir, "");
+        void vscode.window.showInformationMessage(finishedText(progress, elapsedMs));
+      }
     } else {
       const n = progress.summary?.failed ?? progress.failedNow;
       void vscode.window
@@ -393,7 +481,13 @@ export class BuildController implements vscode.Disposable {
       const view = renderStatus([...this.roots.values()].map((r) => r.status));
       if (!view) {
         this.item.hide();
+        this.spinner.hide();
         return;
+      }
+      if (view.busy) {
+        this.spinner.show();
+      } else {
+        this.spinner.hide();
       }
       this.item.text = view.text;
       this.item.tooltip = view.tooltip;
@@ -432,6 +526,7 @@ export class BuildController implements vscode.Disposable {
       ),
     );
     this.item.dispose();
+    this.spinner.dispose();
     this.diagnostics.dispose();
     this.output.dispose();
   }
