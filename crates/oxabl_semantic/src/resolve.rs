@@ -970,6 +970,12 @@ impl<'a> Walker<'a> {
                 // can tell them from the `*-HANDLE` forms, whose names really
                 // are handle values. See `SymbolFlags::PARAM_TABLE_LIKE`.
                 let table_like = matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
+                // `INPUT` and `OUTPUT TABLE FOR t` in one procedure name the
+                // same table twice: the second declares nothing new.
+                if table_like && self.repeats_table_param_in_other_direction(scope, name, dir_flag)
+                {
+                    return;
+                }
                 self.declare(
                     stmt,
                     routine,
@@ -982,6 +988,29 @@ impl<'a> Walker<'a> {
                 );
             }
         }
+    }
+
+    /// True when `scope` already holds a `TABLE FOR` / `DATASET FOR` parameter
+    /// of this name with another direction.
+    fn repeats_table_param_in_other_direction(
+        &self,
+        scope: ScopeId,
+        name: &Identifier,
+        dir_flag: SymbolFlags,
+    ) -> bool {
+        const DIRECTIONS: SymbolFlags = SymbolFlags::PARAM_INPUT
+            .union(SymbolFlags::PARAM_OUTPUT)
+            .union(SymbolFlags::PARAM_INPUT_OUT)
+            .union(SymbolFlags::PARAM_RETURN);
+        let atom = fold_atom(&name.name);
+        self.tree
+            .get(scope)
+            .get_in(NamespaceId::Values, &atom)
+            .map(|prior| self.symbols.get(prior))
+            .is_some_and(|prior| {
+                prior.flags.contains(SymbolFlags::PARAM_TABLE_LIKE)
+                    && prior.flags.intersection(DIRECTIONS) != dir_flag
+            })
     }
 
     fn declare_temp_table(
