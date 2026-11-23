@@ -6604,7 +6604,9 @@ impl Parser<'_> {
     fn parse_create_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CREATE
         let resume = (self.current, self.errors.len(), self.stmt_start_token);
-        // The same tokens fail the same way again.
+        // The same tokens fail the same way again. Only a CREATE that met the
+        // nesting limit can parse when tried again less deep, and the file
+        // reports that limit (`limit_error`).
         if self.failed_creates.contains(&resume.0) {
             return Ok(self.recover_create_as_skipped(resume));
         }

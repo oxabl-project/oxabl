@@ -23,7 +23,7 @@ use std::collections::HashSet;
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
@@ -208,6 +208,10 @@ pub struct Parser<'a> {
     /// enough, and the rest of a deep nest would fill
     /// [`MAX_ERRORS`](Self::MAX_ERRORS).
     too_deep_recorded: bool,
+    /// The first nesting or chain limit error the parse met. A rewind can drop
+    /// the error it recorded, so [`parse_program`](Self::parse_program) reports
+    /// this one when no limit error is left.
+    limit_error: Option<ParseError>,
     /// Whether the cursor is in the body of an INTERFACE, where a METHOD
     /// signature ends at its period and has no body.
     in_interface: bool,
@@ -242,6 +246,7 @@ impl<'a> Parser<'a> {
             nesting: 0,
             chain: 0,
             too_deep_recorded: false,
+            limit_error: None,
             in_interface: false,
             failed_creates: HashSet::new(),
         }
@@ -302,15 +307,17 @@ impl<'a> Parser<'a> {
 
     #[cold]
     #[inline(never)]
-    fn too_long(&self) -> ParseError {
-        ParseError {
+    fn too_long(&mut self) -> ParseError {
+        let err = ParseError {
             message: format!(
                 "{}{} operators; oxabl does not parse this statement",
                 Self::TOO_LONG,
                 Self::MAX_CHAIN
             ),
             span: self.current_span(),
-        }
+        };
+        self.limit_error.get_or_insert_with(|| err.clone());
+        err
     }
 
     const TOO_DEEP: &'static str = "Nesting is deeper than ";
@@ -318,15 +325,17 @@ impl<'a> Parser<'a> {
 
     #[cold]
     #[inline(never)]
-    fn too_deep(&self) -> ParseError {
-        ParseError {
+    fn too_deep(&mut self) -> ParseError {
+        let err = ParseError {
             message: format!(
                 "{}{} levels; oxabl does not parse this statement",
                 Self::TOO_DEEP,
                 Self::MAX_NESTING
             ),
             span: self.current_span(),
-        }
+        };
+        self.limit_error.get_or_insert_with(|| err.clone());
+        err
     }
 
     /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap a
@@ -435,6 +444,11 @@ impl<'a> Parser<'a> {
             }
         }
 
+        if let Some(err) = self.limit_error.take()
+            && !self.errors.iter().any(Self::is_limit_error)
+        {
+            self.errors.push(err);
+        }
         // Drain the accumulator: it holds both top-level errors recorded above
         // and any per-statement errors recovered inside block bodies during the
         // parse_statement calls. This preserves the aggregate error-reporting
@@ -521,12 +535,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn is_limit_error(err: &ParseError) -> bool {
+        err.message.starts_with(Self::TOO_DEEP) || err.message.starts_with(Self::TOO_LONG)
+    }
+
     /// Record a recovered parse error in the accumulator, capping the total at
     /// [`MAX_ERRORS`](Self::MAX_ERRORS) so pathological input cannot grow the
     /// vector without bound. Errors past the cap are dropped (the parse still
     /// terminates because recovery always makes forward progress).
     fn record_error(&mut self, err: ParseError) {
-        if err.message.starts_with(Self::TOO_DEEP) || err.message.starts_with(Self::TOO_LONG) {
+        if Self::is_limit_error(&err) {
             if self.too_deep_recorded {
                 return;
             }

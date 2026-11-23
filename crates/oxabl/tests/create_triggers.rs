@@ -5,6 +5,10 @@
 //! block around it, and once took time that doubled with each CREATE in a row:
 //! a 1.3 KB file took 21 s. The skipped CREATE also lost the names in it, so its
 //! widget handle read as an unused variable.
+//!
+//! Near the nesting limit a CREATE skipped this way can parse at a shallower
+//! depth, so a file whose parse met the limit must say so, even when the
+//! statement that met it was skipped.
 
 #![cfg(unix)]
 
@@ -49,6 +53,50 @@ fn creates_with_unclosed_trigger_blocks_in_a_row() {
         output.status,
         text(&output)
     );
+}
+
+#[test]
+fn a_skipped_create_that_met_the_nesting_limit_leaves_a_parse_error() {
+    let unclosed = "CREATE BUTTON h TRIGGERS: ON CHOOSE DO: END TRIGGERS.\n";
+    let nest = |n: usize, inner: &str| {
+        format!(
+            "DEFINE VARIABLE hx AS HANDLE NO-UNDO.\n{unclosed}{}{inner}\n{}",
+            "DO:\n".repeat(n),
+            "END.\n".repeat(n)
+        )
+    };
+    let files = [
+        // Met the limit in its ASSIGN inside the unclosed block, parses one
+        // level up, and holds a syntax error.
+        (
+            "assign.p",
+            nest(
+                255,
+                "CREATE BUTTON hx ASSIGN LABEL = \"a\" \
+                 TRIGGERS: ON CHOOSE DO: x = . END. END TRIGGERS.",
+            ),
+        ),
+        // Each CREATE opens a block the next one sits in.
+        ("rows.p", unclosed.repeat(400)),
+        // A nest too deep after a CREATE that failed for another reason.
+        ("after.p", nest(300, "")),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    for (name, source) in files {
+        let path = dir.path().join(name);
+        std::fs::write(&path, source).unwrap();
+        let output = check(&path);
+        let text = text(&output);
+        assert_eq!(
+            text.matches("Nesting is deeper than").count(),
+            1,
+            "{name}: expected one nesting error:\n{text}"
+        );
+        assert!(
+            text.contains("file has parse errors"),
+            "{name}: a file with a parse error is not formatted:\n{text}"
+        );
+    }
 }
 
 #[test]
