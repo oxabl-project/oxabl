@@ -3,8 +3,9 @@
 //!
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`, `textDocument/documentSymbol` and `workspace/symbol`. Strict
-//! database rules can also enable effect code lenses. An open include can be analysed in a
+//! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
+//! `textDocument/definition` and `textDocument/documentLink` (see
+//! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
 //! `docs/design/include-context.md`.
@@ -29,6 +30,7 @@ mod document_symbol;
 mod expanded_unit;
 pub mod formatting;
 mod includer_context;
+mod navigation;
 pub mod position;
 mod workspace_symbol;
 
@@ -45,7 +47,10 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{DocumentSymbolRequest, Formatting, Request as _, WorkspaceSymbolRequest};
+use lsp_types::request::{
+    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, Request as _,
+    WorkspaceSymbolRequest,
+};
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
@@ -776,6 +781,10 @@ impl<'c> Server<'c> {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
                                 self.handle_document_symbol(req)?;
+                            } else if req.method == GotoDefinition::METHOD {
+                                self.handle_definition(req)?;
+                            } else if req.method == DocumentLinkRequest::METHOD {
+                                self.handle_document_link(req)?;
                             } else if req.method == expanded_unit::METHOD {
                                 self.handle_expanded_unit(req)?;
                             } else if req.method == includer_context::LIST_METHOD {

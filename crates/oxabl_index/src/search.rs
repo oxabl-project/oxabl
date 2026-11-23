@@ -371,6 +371,80 @@ pub fn find_name_with<E: AsRef<str>>(
     find_spellings(fs, include_paths, &written, &folded, policy)
 }
 
+/// Every file [`find_name_with`] would choose among for `name`, each once.
+///
+/// For a caller that shows the user the candidates of an ambiguous name, such
+/// as go to definition, rather than declining. The same candidate paths in the
+/// same order, the same extension policy and the same refusal to leave the
+/// include paths; for an extensionless program target, the files of the first
+/// extension that matches anything. Empty for r-code and for no match.
+pub fn find_candidates_with<E: AsRef<str>>(
+    fs: &dyn FileSystem,
+    include_paths: &[PathBuf],
+    name: &IndexName,
+    kind: NameKind,
+    bare_extensions: &[E],
+) -> Vec<PathBuf> {
+    if kind == NameKind::Program && names_rcode(name.as_written()) {
+        return Vec::new();
+    }
+    let mut groups: Vec<(Vec<PathBuf>, ExtensionPolicy)> = Vec::new();
+    match kind {
+        NameKind::Class => groups.push((
+            vec![class_path(name), folded_class_path(name)],
+            ExtensionPolicy::WalkRoots,
+        )),
+        NameKind::Program if has_extension(name.as_written()) => groups.push((
+            vec![program_path(name), folded_program_path(name)],
+            ExtensionPolicy::AnyButInclude,
+        )),
+        NameKind::Program => {
+            let mut tried: Vec<&str> = Vec::new();
+            for extension in bare_extensions {
+                let Some(extension) = normalize_run_extension(extension.as_ref()) else {
+                    continue;
+                };
+                if tried.contains(&extension) {
+                    continue;
+                }
+                tried.push(extension);
+                let lower = extension.to_ascii_lowercase();
+                groups.push((
+                    vec![
+                        with_extension(name.as_written(), extension),
+                        with_extension(name.as_str(), &lower),
+                        with_extension(name.as_written(), &lower),
+                        with_extension(name.as_str(), extension),
+                    ],
+                    ExtensionPolicy::AnyButInclude,
+                ));
+            }
+        }
+    }
+    for (relatives, policy) in groups {
+        let mut found: Vec<PathBuf> = Vec::new();
+        for relative in &relatives {
+            if !policy.admits(relative)
+                || relative.is_absolute()
+                || relative.has_root()
+                || normalize_lexically(relative).starts_with("..")
+            {
+                continue;
+            }
+            for dir in include_paths {
+                let candidate = normalize_lexically(&dir.join(relative));
+                if !found.contains(&candidate) && fs.exists(&candidate) {
+                    found.push(candidate);
+                }
+            }
+        }
+        if !found.is_empty() {
+            return found;
+        }
+    }
+    Vec::new()
+}
+
 /// [`find_name_with`]'s fallback for a workspace that opted into case-insensitive
 /// lookup: match the relative path against the real directory contents ignoring
 /// ASCII case, via [`FileSystem::find_ignoring_case`].

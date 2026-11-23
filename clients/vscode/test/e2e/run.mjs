@@ -32,6 +32,7 @@ import {
   cliUpdateUnmanaged,
 } from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
+import { definition } from "./scenarios/definition.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
 import { includeContext } from "./scenarios/include-context.mjs";
 import { outline } from "./scenarios/outline.mjs";
@@ -57,6 +58,7 @@ const SCENARIOS = [
   ["outline", outline],
   ["include-context", includeContext],
   ["expanded-unit", expandedUnit],
+  ["definition", definition],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],

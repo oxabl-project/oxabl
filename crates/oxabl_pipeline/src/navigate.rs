@@ -1,0 +1,493 @@
+//! Go to definition and document links: what a name in a file refers to, and
+//! the file and bytes that declare it.
+//!
+//! A [`Navigation`] holds one analysis of a compilation unit with its navigation
+//! sites recorded ([`SymbolTable::sites`](oxabl_semantic::SymbolTable::sites)).
+//! Every answer is in the bytes of a physical file: a declaration written in an
+//! include is placed in that include, never in the expanded text.
+//!
+//! An answer never guesses. A name that does not resolve, or that is computed at
+//! run time (`RUN VALUE(...)`, `DYNAMIC-NEW`), has no target. A `RUN` target or
+//! a class name that more than one file on the search path supplies has each of
+//! them as a target. A link is only made to a file that the name resolves to
+//! alone.
+
+use std::path::{Path, PathBuf};
+
+use oxabl_analyze::{ExpandedFile, analyze_for_navigation};
+use oxabl_ast::{NodeId, Span};
+use oxabl_common::{FileId, VirtualSpan};
+use oxabl_index::search::{self, NameKind};
+use oxabl_semantic::{
+    IndexName, IndexedFileId, Resolution, Semantic, SiteTarget, SourceContext, SymbolId,
+    SymbolKind, UnresolvedReason,
+};
+use oxabl_workspace::is_include_fragment;
+
+use crate::{Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
+
+/// Where a name is declared: a file, and the declaring name's bytes in it.
+/// `span` is `None` when the target is the file itself (a program, an include).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub path: PathBuf,
+    pub span: Option<Span>,
+}
+
+/// A part of the analysed file that names another file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    /// The bytes of the reference, in the analysed file.
+    pub span: Span,
+    pub target: PathBuf,
+}
+
+/// One compilation unit analysed for navigation. See the module docs.
+pub struct Navigation<'s, 'a> {
+    run: &'s LintPipeline<'a>,
+    expanded: &'s ExpandedFile,
+    search_base: Option<PathBuf>,
+    semantic: Semantic,
+    file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
+}
+
+impl<'a> LintPipeline<'a> {
+    /// Analyse `expansion` for navigation. `None` when its preprocessing failed.
+    ///
+    /// `file_of` names the file behind an index id when the handle's index is
+    /// one the caller supplied ([`with_index`](Self::with_index)); a handle with
+    /// its own index answers that itself.
+    ///
+    /// **Unguarded** like [`collect`](Self::collect): the caller contains a panic.
+    pub fn navigation<'s>(
+        &'s self,
+        expansion: &'s Expansion,
+        file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
+    ) -> Option<Navigation<'s, 'a>> {
+        let expanded = expansion.expanded()?;
+        let source_context = if self.file().is_some_and(is_include_fragment) {
+            SourceContext::IncludeFragment
+        } else {
+            SourceContext::CompilationUnit
+        };
+        let semantic = self.with_run_index(|index| {
+            analyze_for_navigation(
+                expanded,
+                &self.config().schema,
+                self.config().schema_loaded,
+                index,
+                source_context,
+            )
+        });
+        Some(Navigation {
+            run: self,
+            expanded,
+            search_base: expansion.search_base().map(Path::to_path_buf),
+            semantic,
+            file_of,
+        })
+    }
+}
+
+impl Navigation<'_, '_> {
+    /// The declarations the name at byte `offset` of `file` refers to. `file`
+    /// is the analysed file or an include its expansion read. Empty when the
+    /// name has none, or the offset is on no name.
+    pub fn definitions(&self, file: &Path, offset: u32) -> Vec<Target> {
+        let file = search::normalize_lexically(file);
+        if let Some(target) = self.include_at(&file, offset) {
+            return vec![target];
+        }
+        let ids = self.file_ids(&file);
+        // A cursor just after a name, as a click at its end gives, still means it.
+        for at in [Some(offset), offset.checked_sub(1)].into_iter().flatten() {
+            let virt = ids
+                .iter()
+                .find_map(|id| self.expanded.expanded_offset(*id, at));
+            if let Some(virt) = virt
+                && let Some(targets) = self.answer_at(virt)
+            {
+                return dedupe(targets);
+            }
+        }
+        Vec::new()
+    }
+
+    /// The include references, literal `RUN` targets and `USING` names written
+    /// in the analysed file itself that name exactly one file. Text in a branch
+    /// of `&IF` the preprocessor did not take is not analysed, so it has none.
+    pub fn links(&self) -> Vec<Link> {
+        let mut links: Vec<Link> = Vec::new();
+        for expansion in self.expanded.include_expansions() {
+            if expansion.parent.is_some() {
+                continue;
+            }
+            if let Some(site) = expansion.site {
+                links.push(Link {
+                    span: site,
+                    target: search::normalize_lexically(expansion.path),
+                });
+            }
+        }
+        let symbols = &self.semantic.symbols;
+        for site in symbols.sites() {
+            let (SiteTarget::Run(node) | SiteTarget::Using(node)) = site.target else {
+                continue;
+            };
+            let Some(Resolution::Resolved(sym)) = self.semantic.references.get(node) else {
+                continue;
+            };
+            let file = symbols
+                .program_file(*sym)
+                .or_else(|| symbols.class_file(*sym));
+            let Some(target) = file.and_then(|file| self.path_of(file)) else {
+                continue;
+            };
+            let Some(span) = self.expanded.resolve_root_span(to_span(site.span)) else {
+                continue;
+            };
+            links.push(Link { span, target });
+        }
+        links.sort_by_key(|link| (link.span.start, link.span.end));
+        links.dedup();
+        links
+    }
+
+    /// The include whose `{...}` reference in `file` holds `offset`.
+    fn include_at(&self, file: &Path, offset: u32) -> Option<Target> {
+        let expansions = self.expanded.include_expansions();
+        expansions.iter().find_map(|expansion| {
+            let site = expansion.site?;
+            if offset < site.start || offset >= site.end {
+                return None;
+            }
+            let parent = match expansion.parent {
+                None => self.root_path()?,
+                Some(at) => search::normalize_lexically(expansions.get(at)?.path),
+            };
+            (parent == file).then(|| Target {
+                path: search::normalize_lexically(expansion.path),
+                span: None,
+            })
+        })
+    }
+
+    /// The file ids under which the expansion holds the bytes of `file`: the
+    /// root, or each expansion of an include.
+    fn file_ids(&self, file: &Path) -> Vec<FileId> {
+        if self.root_path().as_deref() == Some(file) {
+            return vec![self.expanded.root_file()];
+        }
+        self.expanded
+            .include_expansions()
+            .iter()
+            .filter(|expansion| search::normalize_lexically(expansion.path) == file)
+            .filter_map(|expansion| expansion.file)
+            .collect()
+    }
+
+    fn root_path(&self) -> Option<PathBuf> {
+        self.run.file().map(search::normalize_lexically)
+    }
+
+    /// The targets of the innermost name at expanded offset `virt`. `None` when
+    /// no name there has an answer, `Some(empty)` when the name has no target.
+    fn answer_at(&self, virt: u32) -> Option<Vec<Target>> {
+        let symbols = &self.semantic.symbols;
+        let mut sites: Vec<_> = symbols
+            .sites()
+            .iter()
+            .filter(|site| contains(site.span, virt))
+            .collect();
+        sites.sort_by_key(|site| site.span.end - site.span.start);
+        let declaration = symbols
+            .iter()
+            .filter(|(_, symbol)| {
+                symbol.declaration != NodeId::DUMMY && contains(symbol.name_span, virt)
+            })
+            .min_by_key(|(_, symbol)| symbol.name_span.end - symbol.name_span.start);
+        // Sites of one length name one thing; the first with a target wins, and
+        // one that answers "nothing" only stops the search when none has one.
+        let mut at = 0;
+        while at < sites.len() {
+            let length = sites[at].span.end - sites[at].span.start;
+            if let Some((sym, symbol)) = declaration
+                && symbol.name_span.end - symbol.name_span.start <= length
+            {
+                return Some(self.symbol_targets(sym));
+            }
+            let mut answered = false;
+            while at < sites.len() && sites[at].span.end - sites[at].span.start == length {
+                match self.site_targets(&sites[at].target, sites[at].span) {
+                    Some(targets) if !targets.is_empty() => return Some(targets),
+                    Some(_) => answered = true,
+                    None => {}
+                }
+                at += 1;
+            }
+            if answered {
+                return Some(Vec::new());
+            }
+        }
+        declaration.map(|(sym, _)| self.symbol_targets(sym))
+    }
+
+    fn site_targets(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Vec<Target>> {
+        match target {
+            SiteTarget::Reference(node) => match self.semantic.references.get(*node)? {
+                Resolution::Resolved(sym) => Some(self.symbol_targets(*sym)),
+                Resolution::Unresolved { .. } => Some(Vec::new()),
+            },
+            SiteTarget::Run(node) => match self.semantic.references.get(*node)? {
+                Resolution::Resolved(sym) => Some(self.symbol_targets(*sym)),
+                Resolution::Unresolved {
+                    reason: UnresolvedReason::Unknowable,
+                    ..
+                } => Some(self.candidates(span, NameKind::Program)),
+                Resolution::Unresolved { .. } => Some(Vec::new()),
+            },
+            SiteTarget::Using(node) => {
+                self.type_targets(self.semantic.references.get(*node)?, span)
+            }
+            SiteTarget::Type(resolution) => self.type_targets(resolution, span),
+            SiteTarget::Symbol(sym) => Some(self.symbol_targets(*sym)),
+            SiteTarget::Table(table) => Some(self.table_target(*table).into_iter().collect()),
+            SiteTarget::SchemaField(table) => {
+                let name = self.text(span)?;
+                Some(self.field_target(*table, name))
+            }
+        }
+    }
+
+    fn type_targets(&self, resolution: &Resolution, span: VirtualSpan) -> Option<Vec<Target>> {
+        Some(match resolution {
+            Resolution::Resolved(sym) => self.symbol_targets(*sym),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::Unknowable,
+                ..
+            } => self.candidates(span, NameKind::Class),
+            Resolution::Unresolved { .. } => Vec::new(),
+        })
+    }
+
+    /// Every file on the search path that the name written at `span` could
+    /// mean, for a name the index declined to choose for.
+    fn candidates(&self, span: VirtualSpan, kind: NameKind) -> Vec<Target> {
+        let Some(raw) = self.text(span) else {
+            return Vec::new();
+        };
+        let raw = raw.trim().trim_matches(['"', '\'']);
+        if raw.is_empty() {
+            return Vec::new();
+        }
+        let config = self.run.config();
+        let paths = config.include_paths_from(self.search_base.as_deref());
+        search::find_candidates_with(
+            self.run.file_system(),
+            &paths,
+            &IndexName::new(raw),
+            kind,
+            &config.run_extensions,
+        )
+        .into_iter()
+        .map(|path| {
+            let span = match kind {
+                NameKind::Class => self.class_span(&path),
+                NameKind::Program => None,
+            };
+            Target { path, span }
+        })
+        .collect()
+    }
+
+    /// The expanded text at `span`.
+    fn text(&self, span: VirtualSpan) -> Option<&str> {
+        self.expanded
+            .text
+            .get(span.start as usize..span.end as usize)
+    }
+
+    /// Where `sym` is declared. A buffer named like the table it reads (the
+    /// buffer `FOR EACH customer` declares) means the table.
+    fn symbol_targets(&self, sym: SymbolId) -> Vec<Target> {
+        let symbols = &self.semantic.symbols;
+        let symbol = symbols.get(sym);
+        if let Some(file) = symbols.program_file(sym) {
+            return self.file_target(file, |_| None);
+        }
+        if let Some(file) = symbols.class_file(sym) {
+            return self.file_target(file, |path| self.class_span(path));
+        }
+        if let Some(file) = symbols.member_file(sym) {
+            let Some(path) = self.path_of(file) else {
+                return Vec::new();
+            };
+            let spans = self.member_spans(&path, symbol.name.as_ref());
+            if spans.is_empty() {
+                return vec![Target { path, span: None }];
+            }
+            return spans
+                .into_iter()
+                .map(|span| Target {
+                    path: path.clone(),
+                    span: Some(span),
+                })
+                .collect();
+        }
+        if let Some(table) = symbols.field_table(sym) {
+            return self.field_target(table, symbol.name.as_ref());
+        }
+        let table_named = matches!(symbol.kind, SymbolKind::Buffer | SymbolKind::TempTable)
+            && symbol.table_id.is_some()
+            && (symbol.declaration == NodeId::DUMMY || self.names_its_table(symbol));
+        if table_named {
+            return symbol
+                .table_id
+                .and_then(|table| self.table_target(table))
+                .into_iter()
+                .collect();
+        }
+        if symbol.declaration == NodeId::DUMMY {
+            return Vec::new();
+        }
+        self.place(symbol.name_span).into_iter().collect()
+    }
+
+    /// Whether a buffer's name is the name of the table it reads, so the name at
+    /// its declaration names the table.
+    fn names_its_table(&self, symbol: &oxabl_semantic::Symbol) -> bool {
+        let Some(table) = symbol
+            .table_id
+            .and_then(|id| self.run.config().schema.get_by_id(id))
+        else {
+            return false;
+        };
+        let written = self.text(symbol.name_span).unwrap_or_default();
+        let unqualified = written.rsplit('.').next().unwrap_or(written);
+        unqualified.eq_ignore_ascii_case(table.name.as_ref())
+    }
+
+    fn file_target(
+        &self,
+        file: IndexedFileId,
+        span: impl FnOnce(&Path) -> Option<Span>,
+    ) -> Vec<Target> {
+        let Some(path) = self.path_of(file) else {
+            return Vec::new();
+        };
+        let span = span(&path);
+        vec![Target { path, span }]
+    }
+
+    fn path_of(&self, file: IndexedFileId) -> Option<PathBuf> {
+        self.run
+            .indexed_path(file)
+            .or_else(|| (self.file_of)(file))
+            .map(|path| search::normalize_lexically(&path))
+    }
+
+    fn table_target(&self, table: oxabl_schema::TableId) -> Option<Target> {
+        let (path, table) = self.run.config().schema.table_source(table)?;
+        Some(Target {
+            path: path.to_path_buf(),
+            span: Some(table.source.span),
+        })
+    }
+
+    fn field_target(&self, table: oxabl_schema::TableId, name: &str) -> Vec<Target> {
+        let Some((path, table)) = self.run.config().schema.table_source(table) else {
+            return Vec::new();
+        };
+        match table.resolve_field_by_name(name) {
+            oxabl_schema::FieldResolution::Unique(field) => vec![Target {
+                path: path.to_path_buf(),
+                span: Some(field.source.span),
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// A span of the expanded text in the file that wrote it.
+    fn place(&self, span: VirtualSpan) -> Option<Target> {
+        let span = to_span(span);
+        if let Some(root) = self.expanded.resolve_root_span(span) {
+            return Some(Target {
+                path: self.root_path()?,
+                span: Some(root),
+            });
+        }
+        let (path, span, _) = self.expanded.resolve_include_span(span)?;
+        Some(Target {
+            path: search::normalize_lexically(path),
+            span: Some(span),
+        })
+    }
+
+    /// The name of the class, interface or enum a `.cls` file declares.
+    fn class_span(&self, path: &Path) -> Option<Span> {
+        let symbols = self.outline_of(path)?;
+        symbols
+            .iter()
+            .find(|symbol| {
+                matches!(
+                    symbol.kind,
+                    OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum
+                )
+            })
+            .map(|symbol| symbol.selection_span)
+    }
+
+    /// Each declaration of member `name` in the class of a `.cls` file: one per
+    /// overload of a method.
+    fn member_spans(&self, path: &Path, name: &str) -> Vec<Span> {
+        let Some(symbols) = self.outline_of(path) else {
+            return Vec::new();
+        };
+        let mut spans = Vec::new();
+        for class in &symbols {
+            for member in &class.children {
+                let is_member = matches!(
+                    member.kind,
+                    OutlineKind::Method
+                        | OutlineKind::Property
+                        | OutlineKind::Event
+                        | OutlineKind::Variable
+                        | OutlineKind::Buffer
+                        | OutlineKind::TempTable
+                        | OutlineKind::Dataset
+                        | OutlineKind::DataSource
+                );
+                if is_member && member.name.eq_ignore_ascii_case(name) {
+                    spans.push(member.selection_span);
+                }
+            }
+        }
+        spans
+    }
+
+    fn outline_of(&self, path: &Path) -> Option<Vec<OutlineSymbol>> {
+        let text = self.run.file_system().read(path).ok()?;
+        outline(&text).ok()
+    }
+}
+
+fn contains(span: VirtualSpan, at: u32) -> bool {
+    span.start <= at && at < span.end
+}
+
+fn to_span(span: VirtualSpan) -> Span {
+    Span {
+        start: span.start,
+        end: span.end,
+    }
+}
+
+fn dedupe(targets: Vec<Target>) -> Vec<Target> {
+    let mut kept: Vec<Target> = Vec::with_capacity(targets.len());
+    for target in targets {
+        if !kept.contains(&target) {
+            kept.push(target);
+        }
+    }
+    kept
+}

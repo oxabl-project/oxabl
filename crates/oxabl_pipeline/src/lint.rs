@@ -1490,7 +1490,7 @@ impl<'a> LintPipeline<'a> {
     /// three ways rather than three copies of the collect call, so a change to
     /// what `collect` passes cannot be made in two arms and forgotten in the
     /// third.
-    fn with_run_index<T>(&self, with: impl FnOnce(&dyn WorkspaceIndex) -> T) -> T {
+    pub(crate) fn with_run_index<T>(&self, with: impl FnOnce(&dyn WorkspaceIndex) -> T) -> T {
         match &self.index {
             // The exclusion is applied here, per handle, while the memo behind it
             // stays the run's. With no identity nothing is excluded, which is the

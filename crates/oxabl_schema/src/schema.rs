@@ -1,4 +1,6 @@
-use oxabl_common::FileSpan;
+use std::path::{Path, PathBuf};
+
+use oxabl_common::{FileId, FileSpan};
 use oxabl_lexer::oxabl_atom::OxablAtom;
 use rustc_hash::FxHashMap;
 
@@ -322,6 +324,8 @@ pub struct Schema {
     /// Off by default, and turned on by the loader only once a `.df` has
     /// actually contributed tables — see [`Schema::enable_metaschema`].
     metaschema: bool,
+    /// The `.df` file behind each [`FileId`] a `source` span carries.
+    source_files: Vec<(FileId, PathBuf)>,
 }
 
 impl Schema {
@@ -337,7 +341,28 @@ impl Schema {
             sequences: Vec::new(),
             sequence_index: FxHashMap::default(),
             metaschema: false,
+            source_files: Vec::new(),
         }
+    }
+
+    /// Record that `file` is the `.df` at `path`. The loader calls this.
+    pub fn record_source_file(&mut self, file: FileId, path: PathBuf) {
+        self.source_files.push((file, path));
+    }
+
+    /// The `.df` file that declares table `id`, and the table. `None` for a
+    /// table of the built-in metaschema and for a schema built in memory.
+    pub fn table_source(&self, id: TableId) -> Option<(&Path, &Table)> {
+        if id.is_builtin() {
+            return None;
+        }
+        let table = self.arena.get(id.index())?;
+        let path = self
+            .source_files
+            .iter()
+            .find(|(known, _)| *known == table.source.file)
+            .map(|(_, path)| path.as_path())?;
+        Some((path, table))
     }
 
     /// Make the built-in OpenEdge metaschema visible to this schema's lookups.
