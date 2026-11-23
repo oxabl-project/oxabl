@@ -281,6 +281,43 @@ pub(crate) fn print(
         }
     }
 
+    // Protected lines: physical lines that *begin inside* a multi-line token
+    // whose interior bytes are significant — a string literal or an
+    // `{include}`/preprocessor reference. The line-based reindent would rewrite
+    // their leading whitespace, which lands inside the token and trips the
+    // semantic guard (#95). Leave them verbatim. A line `l` begins inside token
+    // `t` iff `t.start < line_starts[l] < t.end`, i.e. `l` is strictly after the
+    // token's first line and no later than its last. Comments are trivia (the
+    // guard ignores them), so they keep their existing delta-preserving reindent.
+    //
+    // Line endings are still normalized to the file's dominant ending at flush, so
+    // a multi-line token whose interior newline differs from that dominant ending
+    // (e.g. an interior `\r\n` in a mostly-`\n` file) trips the guard and bails —
+    // fails safe (file returned unchanged), not corrupted.
+    //
+    // Fast path: only a token that actually spans a newline can protect a line,
+    // and single-line tokens are the overwhelming majority — so gate the two
+    // line-index binary searches behind a cheap newline scan of the token's
+    // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
+    let src_bytes = source.as_bytes();
+    let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
+    for t in toks {
+        if t.kind == Kind::Eof {
+            break;
+        }
+        if t.kind == Kind::Comment || t.end <= t.start {
+            continue;
+        }
+        if !src_bytes[t.start..t.end].contains(&b'\n') {
+            continue;
+        }
+        let sl = line_index(&line_starts, t.start);
+        let el = line_index(&line_starts, t.end - 1);
+        for slot in protected[(sl + 1).min(n)..(el + 1).min(n)].iter_mut() {
+            *slot = true;
+        }
+    }
+
     // Absolute indent per line from the structural walk. Start-lines snap to
     // their depth; continuation lines delta-preserve the innermost covering
     // statement's alignment.
@@ -293,8 +330,9 @@ pub(crate) fn print(
             // That line sits at the shallowest depth of any statement starting
             // on it, which is shallower than the statement's own depth when it
             // follows `IF … THEN` or `ELSE` on the same line.
-            // A tab-sensitive first line keeps its indent, so it moves by nothing.
-            let first = if tab_at[fl].is_some() {
+            // A protected first line (tab-sensitive, or starting inside a
+            // multi-line string) keeps its indent, so it moves by nothing.
+            let first = if protected[fl] {
                 leadings[fl]
             } else {
                 starter[fl].unwrap_or(0) * size
@@ -387,46 +425,9 @@ pub(crate) fn print(
 
     // `toks` is the caller's single tokenization of `source`, shared with the
     // semantic guard so the file is lexed once, not twice (the protected-line
-    // scan below and the keyword transform both consume it). A single pass keeps
+    // scan above and the keyword transform both consume it). A single pass keeps
     // multi-line tokens (strings, includes, block comments) intact as one token
     // each.
-
-    // Protected lines: physical lines that *begin inside* a multi-line token
-    // whose interior bytes are significant — a string literal or an
-    // `{include}`/preprocessor reference. The line-based reindent would rewrite
-    // their leading whitespace, which lands inside the token and trips the
-    // semantic guard (#95). Leave them verbatim. A line `l` begins inside token
-    // `t` iff `t.start < line_starts[l] < t.end`, i.e. `l` is strictly after the
-    // token's first line and no later than its last. Comments are trivia (the
-    // guard ignores them), so they keep their existing delta-preserving reindent.
-    //
-    // Line endings are still normalized to the file's dominant ending at flush, so
-    // a multi-line token whose interior newline differs from that dominant ending
-    // (e.g. an interior `\r\n` in a mostly-`\n` file) trips the guard and bails —
-    // fails safe (file returned unchanged), not corrupted.
-    //
-    // Fast path: only a token that actually spans a newline can protect a line,
-    // and single-line tokens are the overwhelming majority — so gate the two
-    // line-index binary searches behind a cheap newline scan of the token's
-    // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
-    let src_bytes = source.as_bytes();
-    let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
-    for t in toks {
-        if t.kind == Kind::Eof {
-            break;
-        }
-        if t.kind == Kind::Comment || t.end <= t.start {
-            continue;
-        }
-        if !src_bytes[t.start..t.end].contains(&b'\n') {
-            continue;
-        }
-        let sl = line_index(&line_starts, t.start);
-        let el = line_index(&line_starts, t.end - 1);
-        for slot in protected[(sl + 1).min(n)..(el + 1).min(n)].iter_mut() {
-            *slot = true;
-        }
-    }
 
     // Keyword recasing/abbreviation (U5) — driven by the whole-source
     // tokenization so multi-line block comments stay a single comment token and

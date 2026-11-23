@@ -79,3 +79,30 @@ fn every_format_fuzz_finding_is_stable() {
         );
     }
 }
+
+// --- a statement that starts on a line inside a multi-line string ----------
+
+#[test]
+fn a_statement_after_a_multi_line_string_keeps_its_continuation_line() {
+    assert_formats("lone-period.p", b"\"\n \".F\n  .", b"\"\n \".F\n  .\n");
+}
+
+#[test]
+fn a_continuation_line_in_a_block_does_not_move_on_each_pass() {
+    // The second line begins inside the string, so it keeps its bytes, and
+    // `x = 1` starts on it: its continuation line moves by nothing.
+    assert_formats(
+        "in-block.p",
+        b"DO:\nMESSAGE \"a\nb\". x = 1\n    + 2.\nEND.\n",
+        b"DO:\n    MESSAGE \"a\nb\". x = 1\n    + 2.\nEND.\n",
+    );
+}
+
+#[test]
+fn a_statement_that_starts_before_the_string_still_aligns_its_continuation() {
+    assert_formats(
+        "message.p",
+        b"DO:\nMESSAGE \"one\n two\"\n    VIEW-AS ALERT-BOX.\nEND.\n",
+        b"DO:\n    MESSAGE \"one\n two\"\n        VIEW-AS ALERT-BOX.\nEND.\n",
+    );
+}
