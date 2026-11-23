@@ -25,7 +25,11 @@ fn format_once(dir: &Path, name: &str, bytes: &[u8]) -> Vec<u8> {
 
 /// `input` formats to `expected`, and formatting `expected` changes nothing.
 fn assert_formats(name: &str, input: &[u8], expected: &[u8]) {
-    let tmp = TempDir::new().unwrap();
+    assert_formats_in(&TempDir::new().unwrap(), name, input, expected);
+}
+
+/// [`assert_formats`] in `tmp`, which can hold an `oxabl.toml`.
+fn assert_formats_in(tmp: &TempDir, name: &str, input: &[u8], expected: &[u8]) {
     let once = format_once(tmp.path(), name, input);
     assert_eq!(
         String::from_utf8_lossy(&once),
@@ -104,5 +108,101 @@ fn a_statement_that_starts_before_the_string_still_aligns_its_continuation() {
         "message.p",
         b"DO:\nMESSAGE \"one\n two\"\n    VIEW-AS ALERT-BOX.\nEND.\n",
         b"DO:\n    MESSAGE \"one\n two\"\n        VIEW-AS ALERT-BOX.\nEND.\n",
+    );
+}
+
+// --- property accessors -----------------------------------------------------
+
+/// A directory whose `oxabl.toml` sets an indent of 3, as in the inputs below.
+fn indent_3() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"t\"\n[workspace.style]\nindent_size = 3\n",
+    )
+    .unwrap();
+    tmp
+}
+
+const GET_AND_SET: &str = "\
+class Probe:
+   define public property Size as integer no-undo
+      get():
+         return 1.
+      end get.
+      set(input arg as integer):
+         arg = arg + 1.
+      end set.
+end class.
+";
+
+const GETTER_ONLY: &str = "\
+class Probe:
+   define public property Size as integer no-undo
+      get():
+         def var n as integer no-undo.
+         n = 1.
+         return n.
+      end get.
+end class.
+";
+
+const STATIC: &str = "\
+class Probe:
+   define public static property Size as integer no-undo
+      get():
+         return 1.
+      end get.
+      set(input arg as integer):
+         arg = arg + 1.
+      end set.
+end class.
+";
+
+#[test]
+fn accessor_bodies_are_one_level_below_their_head() {
+    let tmp = indent_3();
+    for (name, src) in [
+        ("GetAndSet.cls", GET_AND_SET),
+        ("GetterOnly.cls", GETTER_ONLY),
+        ("Static.cls", STATIC),
+    ] {
+        assert_formats_in(&tmp, name, src.as_bytes(), src.as_bytes());
+    }
+}
+
+#[test]
+fn accessor_bodies_and_ends_move_back_under_their_head() {
+    let tmp = indent_3();
+    assert_formats_in(
+        &tmp,
+        "GetAndSet.cls",
+        b"\
+class Probe:
+   define public property Size as integer no-undo
+      get():
+      return 1.
+      end get.
+      set(input arg as integer):
+      arg = arg + 1.
+   end set.
+end class.
+",
+        GET_AND_SET.as_bytes(),
+    );
+    assert_formats_in(
+        &tmp,
+        "GetterOnly.cls",
+        b"\
+class Probe:
+   define public property Size as integer no-undo
+      get():
+      def var n as integer no-undo.
+      n = 1.
+      return n.
+   end get.
+end class.
+",
+        GETTER_ONLY.as_bytes(),
     );
 }

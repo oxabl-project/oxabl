@@ -20,6 +20,11 @@
 //! - an **own-line comment** line takes the depth attachment assigned it
 //!   (leading → the led node's depth; dangling → the block's body depth).
 //!
+//! A property's `GET():` / `SET(...):` head is a continuation line of the
+//! `DEFINE PROPERTY`, so it keeps the author's alignment. The accessor's body
+//! goes one level below the column of that head, and its `END GET.` /
+//! `END SET.` to the column of the head.
+//!
 //! This is generic over *every* `StatementKind` with no per-construct emitter,
 //! preserves existing intra-statement line breaks by construction (the
 //! no-movement boundary), and makes interior/trailing comments a non-event —
@@ -36,7 +41,7 @@ use oxabl_style::StyleGuide;
 use crate::attach::CommentMap;
 use crate::ir::LineBuf;
 use crate::keywords;
-use crate::tree::{children_with_deltas, is_prefix_wrapper, typed_end_keyword};
+use crate::tree::{children_with_deltas, is_prefix_wrapper, property_accessors, typed_end_keyword};
 
 /// A physical source line with its measured leading indent and content
 /// (leading whitespace and line terminator stripped).
@@ -97,6 +102,16 @@ fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
     lines
 }
 
+/// A computed property accessor by line, with the depth the printer's walk
+/// gives its body statements.
+struct AccessorLines {
+    head: usize,
+    head_line: usize,
+    colon_line: usize,
+    end_line: usize,
+    body_depth: usize,
+}
+
 fn line_index(line_starts: &[usize], offset: usize) -> usize {
     if line_starts.is_empty() {
         return 0;
@@ -122,6 +137,7 @@ fn collect(
     typed_ends: &mut Vec<(usize, &'static str)>,
     block_ends: &mut Vec<(usize, usize)>,
     head_depth: &mut HashMap<NodeId, usize>,
+    accessors: &mut Vec<AccessorLines>,
     toks: &[Token],
 ) {
     let fl = line_index(line_starts, stmt.span.start as usize);
@@ -136,6 +152,15 @@ fn collect(
     }
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
         typed_ends.push((ll, ty));
+    }
+    for a in property_accessors(stmt, toks) {
+        accessors.push(AccessorLines {
+            head: a.head,
+            head_line: line_index(line_starts, a.head),
+            colon_line: line_index(line_starts, a.colon),
+            end_line: line_index(line_starts, a.end),
+            body_depth: depth + 1,
+        });
     }
     // A statement starts its own line when the token before it (comments aside)
     // ends on an earlier line, e.g. the `THEN` of a `WHEN` branch.
@@ -158,7 +183,9 @@ fn collect(
         // is just their branch's last physical line — which, for a wrapped
         // multi-line non-block branch, must keep its continuation indent rather
         // than be snapped to the wrapper's depth (issue #98).
-        if !is_prefix_wrapper(&stmt.kind) {
+        // A property has no closer of its own either: each computed accessor
+        // owns an `END`, which the accessor pass in `print` places.
+        if !is_prefix_wrapper(&stmt.kind) && !matches!(stmt.kind, StatementKind::Property { .. }) {
             block_ends.push((ll, depth));
         }
         // Each child nests by its own delta: normally +1, but a prefix wrapper
@@ -181,6 +208,7 @@ fn collect(
                 typed_ends,
                 block_ends,
                 head_depth,
+                accessors,
                 toks,
             );
         }
@@ -243,6 +271,7 @@ pub(crate) fn print(
     let mut typed_ends: Vec<(usize, &'static str)> = Vec::new();
     let mut block_ends: Vec<(usize, usize)> = Vec::new();
     let mut head_depth: HashMap<NodeId, usize> = HashMap::new();
+    let mut accessors: Vec<AccessorLines> = Vec::new();
 
     for stmt in &program.statements {
         collect(
@@ -255,6 +284,7 @@ pub(crate) fn print(
             &mut typed_ends,
             &mut block_ends,
             &mut head_depth,
+            &mut accessors,
             toks,
         );
     }
@@ -376,13 +406,13 @@ pub(crate) fn print(
                     == line_index(&line_starts, span_start)
             })
     };
-    let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, depth: usize| {
+    let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, col: usize| {
         let cfl = line_index(&line_starts, span_start);
         if code_before_on_line(span_start) {
             return;
         }
         let cll = line_index(&line_starts, span_end.saturating_sub(1));
-        let delta = depth as isize * size as isize - leadings[cfl] as isize;
+        let delta = col as isize - leadings[cfl] as isize;
         for l in cfl..=cll {
             if starter[l].is_some() {
                 continue;
@@ -405,19 +435,56 @@ pub(crate) fn print(
                     .is_some_and(|t| matches!(t.kind, Kind::When | Kind::Otherwise))
             });
             let depth = before_branch_head.copied().unwrap_or(d);
-            set_comment(&mut indent, c.span.start as usize, end, depth);
+            set_comment(&mut indent, c.span.start as usize, end, depth * size);
         }
         for c in &nc.dangling {
             set_comment(
                 &mut indent,
                 c.span.start as usize,
                 c.span.end as usize,
-                d + 1,
+                (d + 1) * size,
             );
         }
     }
     for c in cmap.file_trailing() {
         set_comment(&mut indent, c.span.start as usize, c.span.end as usize, 0);
+    }
+
+    // Property accessors: the walk puts the body one level below the property,
+    // but `GET():` / `SET(...):` is a continuation line that keeps the author's
+    // alignment. Move each body to one level below the column of its head,
+    // put its `END` at that column, and own-line comments just before the head
+    // at that column too. Source order matters: an `END GET.` line that a
+    // `SET(...):` shares is placed before the `SET` reads its column.
+    for a in &accessors {
+        let col = if protected[a.head_line] {
+            leadings[a.head_line]
+        } else {
+            indent[a.head_line]
+        };
+        let shift = (col + size) as isize - (a.body_depth * size) as isize;
+        if a.end_line > a.colon_line {
+            for slot in &mut indent[a.colon_line + 1..a.end_line] {
+                *slot = (*slot as isize + shift).max(0) as usize;
+            }
+            indent[a.end_line] = if starter[a.end_line].is_some() {
+                (indent[a.end_line] as isize + shift).max(0) as usize
+            } else {
+                col
+            };
+        }
+        let first = program
+            .comments
+            .partition_point(|c| (c.span.end as usize) <= a.head);
+        for c in program.comments[..first].iter().rev() {
+            let end = c.span.end as usize;
+            let at = toks.partition_point(|t| t.start < end);
+            let next_code = toks[at..].iter().find(|t| t.kind != Kind::Comment);
+            if next_code.is_none_or(|t| t.start != a.head) {
+                break;
+            }
+            set_comment(&mut indent, c.span.start as usize, end, col);
+        }
     }
 
     let content_starts: Vec<usize> = lines.iter().map(|l| l.content_start).collect();
