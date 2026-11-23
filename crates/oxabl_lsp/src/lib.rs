@@ -3,8 +3,8 @@
 //!
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting` and `textDocument/documentSymbol`. Strict database rules can also
-//! enable effect code lenses.
+//! `textDocument/formatting`, `textDocument/documentSymbol` and `workspace/symbol`. Strict
+//! database rules can also enable effect code lenses.
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -25,6 +25,7 @@ pub mod document;
 mod document_symbol;
 pub mod formatting;
 pub mod position;
+mod workspace_symbol;
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -39,7 +40,7 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{DocumentSymbolRequest, Formatting, Request as _};
+use lsp_types::request::{DocumentSymbolRequest, Formatting, Request as _, WorkspaceSymbolRequest};
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
@@ -760,6 +761,14 @@ impl<'c> Server<'c> {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
                                 self.handle_document_symbol(req)?;
+                            } else if req.method == WorkspaceSymbolRequest::METHOD {
+                                workspace_symbol::spawn(
+                                    req,
+                                    self.host.clone(),
+                                    self.session_root.clone(),
+                                    self.encoding.clone(),
+                                    self.connection.sender.clone(),
+                                );
                             } else {
                                 self.respond(Response::new_err(
                                     req.id,
@@ -1560,6 +1569,26 @@ pub(crate) fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let rest = s.strip_prefix("file://")?;
     // `file:///abs/path` → the authority is empty, leaving a leading `/abs`.
     Some(PathBuf::from(percent_decode(rest)?))
+}
+
+/// A `file:` URI for an absolute path, percent-encoding every byte a URI path
+/// cannot hold. The inverse of [`uri_to_path`].
+pub(crate) fn path_to_uri(path: &Path) -> Option<Uri> {
+    let path = path.to_str()?.replace('\\', "/");
+    let mut uri = String::with_capacity(path.len() + 8);
+    uri.push_str("file://");
+    if !path.starts_with('/') {
+        uri.push('/');
+    }
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                uri.push(byte as char)
+            }
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    uri.parse().ok()
 }
 
 /// Percent-decode a URI path component.

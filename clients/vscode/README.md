@@ -57,6 +57,13 @@ you also get, with no setup:
   classes and their members, procedures, functions, temp-tables with their
   fields, variables, buffers and `ON` triggers. The outline reads the file as
   written, so declarations in an include file do not show.
+- **Go to Symbol in Workspace** (`Ctrl+T`). Finds classes, interfaces,
+  procedures, functions, shared variables and files in every ABL file of the
+  workspace, also files that are not open, and opens the declaration. An open
+  file counts with its unsaved text. The first search reads the whole
+  workspace, so it can take a moment in a large one. A search shows at most 256
+  symbols, so type more of the name to narrow it. A declaration inside an
+  include file does not show.
 
 A folder with an `oxabl.toml` is a project. A project also gets:
 
