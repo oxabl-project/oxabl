@@ -5,8 +5,9 @@
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol` and `workspace/symbol`. Strict
 //! database rules can also enable effect code lenses. An open include can be analysed in a
-//! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`; see
-//! `docs/design/include-context.md`).
+//! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
+//! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
+//! `docs/design/include-context.md`.
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -25,6 +26,7 @@ pub mod debounce;
 pub mod diagnostics;
 pub mod document;
 mod document_symbol;
+mod expanded_unit;
 pub mod formatting;
 mod includer_context;
 pub mod position;
@@ -774,6 +776,8 @@ impl<'c> Server<'c> {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
                                 self.handle_document_symbol(req)?;
+                            } else if req.method == expanded_unit::METHOD {
+                                self.handle_expanded_unit(req)?;
                             } else if req.method == includer_context::LIST_METHOD {
                                 self.handle_includer_contexts(req)?;
                             } else if req.method == includer_context::SELECT_METHOD {

@@ -265,6 +265,26 @@ struct IncludedFile {
     /// The reference that brought it in, in its parent's own bytes. `None` when
     /// the reference sits in substitution text.
     site: Option<Span>,
+    /// The expanded text it and everything it includes became.
+    virt: Span,
+}
+
+/// One expansion of an include file, as [`ExpandedFile::include_expansions`]
+/// lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IncludeExpansion<'a> {
+    pub path: &'a Path,
+    /// The preprocessor's id for this expansion's own text. `None` when it
+    /// expanded to no text of its own.
+    pub file: Option<FileId>,
+    /// The enclosing expansion, `None` for an include the root writes.
+    pub parent: Option<usize>,
+    /// The `{...}` reference, in the parent's own bytes (the root's for a
+    /// top-level include). `None` when it sits in substitution text.
+    pub site: Option<Span>,
+    /// The expanded text this expansion and its own includes became. Empty for
+    /// an include that expanded to nothing.
+    pub expanded: Span,
 }
 
 /// One step of an include chain.
@@ -367,6 +387,9 @@ pub struct ExpandedFile {
     included: Vec<IncludedFile>,
     /// Loud, root-origin preprocessor diagnostics (already in real coords).
     preproc: Vec<Diagnostic>,
+    /// Loud preprocessor diagnostics written in an include, in the coordinates
+    /// of the expansion that wrote them.
+    nested_preproc: Vec<Diagnostic>,
     /// Transitively included files (for change-tracking / invalidation).
     dependencies: Vec<FileId>,
     /// Absolute paths of every include file read during expansion — the
@@ -521,6 +544,62 @@ impl ExpandedFile {
     /// arrive. Sorted. Statements the include held may sit there.
     pub fn elided_include_offsets(&self) -> &[u32] {
         &self.elided_include_offsets
+    }
+
+    /// The root file's id. A span or offset in this id is in the root's own bytes.
+    pub fn root_file(&self) -> FileId {
+        self.root
+    }
+
+    /// Every resolved include expansion, at any depth, in expansion order. An
+    /// expansion's `parent` indexes this list.
+    pub fn include_expansions(&self) -> Vec<IncludeExpansion<'_>> {
+        self.included
+            .iter()
+            .map(|included| IncludeExpansion {
+                path: &included.path,
+                file: included.file,
+                parent: included.parent.map(|parent| parent as usize),
+                site: included.site,
+                expanded: included.virt,
+            })
+            .collect()
+    }
+
+    /// Where a byte of file `file` (the root, or one include expansion) lies in
+    /// the **expanded** buffer. `None` for a byte the expansion did not keep.
+    pub fn expanded_offset(&self, file: FileId, real: u32) -> Option<u32> {
+        if self.chunks.is_empty() {
+            return (file == self.root).then_some(real);
+        }
+        self.chunks
+            .iter()
+            .find(|chunk| {
+                chunk.file == file.raw()
+                    && real >= chunk.real_start
+                    && real < chunk.real_start + chunk.len
+            })
+            .map(|chunk| chunk.virt_start + (real - chunk.real_start))
+    }
+
+    /// The path of an include expansion's file id. `None` for the root and for
+    /// an id this expansion did not read.
+    pub fn file_path(&self, file: FileId) -> Option<&Path> {
+        self.file_paths
+            .iter()
+            .find(|(known, _)| *known == file.raw())
+            .map(|(_, path)| path.as_path())
+    }
+
+    /// The loud preprocessor diagnostics written in includes, such as a cyclic
+    /// include or the depth limit, each in the id of the expansion that wrote it.
+    pub fn nested_preprocessor_diagnostics(&self) -> &[Diagnostic] {
+        &self.nested_preproc
+    }
+
+    /// The loud preprocessor diagnostics written in the root, in its own bytes.
+    pub fn preprocessor_diagnostics(&self) -> &[Diagnostic] {
+        &self.preproc
     }
 
     /// Map a span in the **expanded** buffer back to the root file's own bytes.
@@ -819,6 +898,7 @@ pub fn expand_source_with(
             include_regions: Vec::new(),
             included: Vec::new(),
             preproc: Vec::new(),
+            nested_preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
@@ -882,6 +962,12 @@ pub fn expand_source_with(
                 &pf.unresolved_includes,
                 root,
             ));
+            let nested_preproc = pf
+                .diagnostics
+                .iter()
+                .filter(|d| is_loud(d) && d.span.file != root)
+                .cloned()
+                .collect();
             let mut direct_includes = Vec::new();
             collect_direct_includes(&pf.tree, root, None, &mut direct_includes);
             let mut include_origins = Vec::new();
@@ -948,6 +1034,7 @@ pub fn expand_source_with(
                 include_regions,
                 included,
                 preproc,
+                nested_preproc,
                 dependencies: pf.dependencies.clone(),
                 dependency_paths: recorder.into_reads(),
                 direct_includes,
@@ -1117,32 +1204,42 @@ fn flatten_tree(
                 children,
             } => {
                 let (saved_current, saved_substituted) = (regions.current, regions.substituted);
-                match path {
+                let virt_start = *cursor;
+                let expansion = match path {
                     Some(path) => {
                         regions.files.push(IncludedFile {
                             path: path.clone(),
                             file: None,
                             parent: regions.current,
                             site: (!regions.substituted).then_some(site.span),
+                            virt: Span {
+                                start: virt_start,
+                                end: virt_start,
+                            },
                         });
                         regions.current = Some(regions.files.len() as u32 - 1);
                         regions.substituted = false;
+                        regions.current
                     }
-                    None => regions.substituted = true,
-                }
+                    None => {
+                        regions.substituted = true;
+                        None
+                    }
+                };
                 let opens = !regions.inside && site.file == regions.root;
-                if !opens {
-                    flatten_tree(children, cursor, out, regions);
-                    regions.current = saved_current;
-                    regions.substituted = saved_substituted;
-                    continue;
+                if opens {
+                    regions.inside = true;
                 }
-                let virt_start = *cursor;
-                regions.inside = true;
                 flatten_tree(children, cursor, out, regions);
-                regions.inside = false;
+                if let Some(expansion) = expansion {
+                    regions.files[expansion as usize].virt.end = *cursor;
+                }
                 regions.current = saved_current;
                 regions.substituted = saved_substituted;
+                if !opens {
+                    continue;
+                }
+                regions.inside = false;
                 // An include that expanded to nothing covers no span, and an empty
                 // region would break the search's ordering for nothing.
                 if *cursor > virt_start {
@@ -1769,6 +1866,7 @@ mod tests {
             include_regions: Vec::new(),
             included: Vec::new(),
             preproc: Vec::new(),
+            nested_preproc: Vec::new(),
             dependencies: Vec::new(),
             dependency_paths: Vec::new(),
             direct_includes: Vec::new(),
@@ -1808,6 +1906,7 @@ mod tests {
                 file: None,
                 parent: None,
                 site: None,
+                virt: Span { start: 0, end: 0 },
             })
             .collect();
         assert_eq!(

@@ -82,6 +82,17 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   `oxabl: in <root>`. The list needs include paths under `[workspace.sources]`
   in `oxabl.toml`, and says so when there are none. The choice lasts until you
   close the file or the language server restarts.
+- **Expanded compilation unit.** **oxabl: Show Expanded Compilation Unit**
+  opens a read-only view beside the file: the source oxabl parsed after
+  preprocessing. For an include it uses the selected include context, or the
+  include alone in fragment mode. Each include sits between a `▼` line and a
+  `▲` line and starts folded; unfold each one on its own. The `▼` line links to
+  the include file and to each `{...}` that brought it in. **Go to Definition**
+  (`F12`) on any line opens the line that wrote it. The findings of the same
+  analysis show in the view and point to the file that holds them. Unsaved
+  edits of the file and of its includes, and a change of `oxabl.toml`, refresh
+  the view. The top of the view says when the expansion is reduced (an include
+  that was not found, a cyclic include, the depth limit) or failed.
 
 Without an `oxabl.toml`, the language server does not format and does not
 report diagnostics, and it shows no message about it. Add an `oxabl.toml` to

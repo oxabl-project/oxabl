@@ -39,6 +39,7 @@
     "onCommand:oxabl.installCli",
     "onCommand:oxabl.build",
     "onCommand:oxabl.selectIncluderContext",
+    "onCommand:oxabl.showExpandedUnit",
     "onCommand:oxabl.cancelBuild",
     "onCommand:oxabl.showBuildLog"
   ],
@@ -71,6 +72,10 @@
       {
         "command": "oxabl.selectIncluderContext",
         "title": "oxabl: Select Include Context"
+      },
+      {
+        "command": "oxabl.showExpandedUnit",
+        "title": "oxabl: Show Expanded Compilation Unit"
       }
     ],
     "languages": [
