@@ -276,16 +276,41 @@ fn a_later_selection_wins_over_an_earlier_one() {
         "jsonrpc": "2.0", "id": 9002, "method": "oxabl/selectIncluderContext",
         "params": {"textDocument": {"uri": file_uri(&shared)}, "root": reads},
     }));
-    let first = session.wait_for(|m| m["id"] == json!(9001));
+    // The two answers can come in either order, and the publish follows the
+    // second, so every message is read in one loop.
+    let (mut first, mut second, mut settled) = (None, None, false);
+    let uri = json!(file_uri(&shared));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while first.is_none() || second.is_none() || !settled {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .expect("both answers and a publish within 60 s");
+        let Some(message) = session.try_next(left) else {
+            continue;
+        };
+        if message["id"] == json!(9001) {
+            first = Some(message);
+        } else if message["id"] == json!(9002) {
+            second = Some(message);
+        } else if second.is_some()
+            && message["method"] == json!("textDocument/publishDiagnostics")
+            && message["params"]["uri"] == uri
+        {
+            let diagnostics = message["params"]["diagnostics"].as_array().unwrap();
+            assert!(
+                !unused(diagnostics, "spare-v"),
+                "a stale publish: {message}"
+            );
+            settled = true;
+        }
+    }
+    let (first, second) = (first.unwrap(), second.unwrap());
     assert_eq!(first["error"]["code"], json!(-32801), "{first}");
-    let second = session.wait_for(|m| m["id"] == json!(9002));
     assert_eq!(
         second["result"]["selected"],
         json!(canonical(&reads)),
         "{second}"
     );
-
-    diagnostics_where(&session, &shared, |d| !unused(d, "spare-v"));
     assert_no_publish(&session, &shared, Duration::from_secs(2), |d| {
         unused(d, "spare-v")
     });
