@@ -337,6 +337,11 @@ impl Server<'_> {
                 };
                 let diagnostics =
                     context_to_lsp_diagnostics(&outcome, &res.root, &doc.rope, &self.encoding);
+                let regions = outcome
+                    .inactive_regions
+                    .iter()
+                    .map(|span| (span.start, span.end));
+                self.publish_inactive_regions(&res.uri, res.version, regions);
                 self.publish(res.uri, diagnostics, Some(res.version));
             }
         }

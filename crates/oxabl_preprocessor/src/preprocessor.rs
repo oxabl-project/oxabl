@@ -10,11 +10,11 @@ use oxabl_workspace::{FileSystem, PreprocessorConfig};
 use crate::PreprocVarTable;
 use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment};
 use crate::span_tree::{
-    BranchDirective, ElidedKind, ElidedReference, PreprocessedFile, ResolvedInclude, SkippedBranch,
-    SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind, UnreadableInclude,
-    UnresolvedInclude,
+    BranchDirective, BranchState, ConditionalBranch, ElidedKind, ElidedReference, PreprocessedFile,
+    ResolvedInclude, SkippedBranch, SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind,
+    UnreadableInclude, UnresolvedInclude,
 };
-use crate::var_table::BaseVars;
+use crate::var_table::{BaseVars, Origin};
 
 /// Preprocessor for ABL source code.
 ///
@@ -29,6 +29,8 @@ pub struct Preprocessor<'fs> {
     include_paths: &'fs [PathBuf],
     /// `None` is the default [`PreprocessorConfig`], which is built once.
     predefined: Option<Predefined>,
+    /// See [`Self::with_includer_unknown`].
+    includer_unknown: bool,
 }
 
 /// A [`PreprocessorConfig`] with the names it defines, which every run starts
@@ -117,7 +119,21 @@ impl<'fs> Preprocessor<'fs> {
             fs,
             include_paths,
             predefined: None,
+            includer_unknown: false,
         }
+    }
+
+    /// Say whether the file is processed without its includer, as an include
+    /// opened by itself is.
+    ///
+    /// Then a name the run did not set itself, include arguments and the
+    /// predefined names read with `{&name}` are not known, as an includer can
+    /// set them, and a condition that reads one is [`BranchState::Undecided`].
+    /// Only [`PreprocessedFile::branches`] changes: the text is expanded as
+    /// before.
+    pub fn with_includer_unknown(mut self, unknown: bool) -> Self {
+        self.includer_unknown = unknown;
+        self
     }
 
     /// Describe the compile environment behind `{&OPSYS}`, `{&WINDOW-SYSTEM}`,
@@ -174,6 +190,14 @@ impl<'fs> Preprocessor<'fs> {
             resolved_includes: Vec::new(),
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
+            branches: Vec::new(),
+            include_files: Vec::new(),
+            knowledge: Knowledge {
+                includer_unknown: self.includer_unknown,
+                ..Knowledge::default()
+            },
+            region_decided: true,
+            args_uncertain: self.includer_unknown,
             text_losses: Vec::new(),
             elided: Vec::new(),
             line_starts: HashMap::new(),
@@ -211,6 +235,8 @@ impl<'fs> Preprocessor<'fs> {
         processed.resolved_includes = ctx.resolved_includes;
         processed.skipped_includes = ctx.skipped_includes;
         processed.skipped_text = ctx.skipped_text;
+        processed.branches = ctx.branches;
+        processed.include_files = ctx.include_files;
         processed.text_losses = ctx.text_losses;
         processed.elided = ctx.elided;
         Ok(processed)
@@ -280,6 +306,17 @@ struct ProcessContext<'a> {
     skipped_includes: Vec<SkippedInclude>,
     /// Stretches of text in branches that were not taken.
     skipped_text: Vec<SkippedText>,
+    /// Every branch of every `&IF` chain, with what is known of it.
+    branches: Vec<ConditionalBranch>,
+    /// The path of each include expansion, by the file id of its text.
+    include_files: Vec<(FileId, PathBuf)>,
+    /// Which names have a value the run knows.
+    knowledge: Knowledge,
+    /// Whether every enclosing branch, through the include sites, is decided.
+    region_decided: bool,
+    /// Whether the arguments of the include being expanded read a name that is
+    /// not known.
+    args_uncertain: bool,
     /// Places where text was dropped or a branch was decided on a guess.
     text_losses: Vec<TextLoss>,
     /// References replaced with no text.
@@ -348,6 +385,7 @@ impl ProcessContext<'_> {
                 ),
             );
         }
+        self.knowledge.all_uncertain = true;
         self.text_losses.push(TextLoss {
             kind: TextLossKind::ExpansionLimit,
             site,
@@ -441,6 +479,10 @@ impl ProcessContext<'_> {
         // Start of the current stretch of text in a branch that is not taken.
         let mut skipped_from: usize = 0;
 
+        // Whether the include site, or the substitution, that brought this
+        // source in sits in a decided region.
+        let base_decided = self.region_decided;
+
         while i < len {
             // Inside a block comment: only track `/*` / `*/` to keep depth.
             if comment_depth > 0 {
@@ -489,6 +531,7 @@ impl ProcessContext<'_> {
                                         end: i as u32,
                                     });
                                 }
+                                self.note_define(&name, &value, emitting, DefineKind::Scoped);
                                 if emitting {
                                     let expanded = self.define_value(
                                         value,
@@ -512,6 +555,7 @@ impl ProcessContext<'_> {
                                         end: i as u32,
                                     });
                                 }
+                                self.note_define(&name, &value, emitting, DefineKind::Global);
                                 if emitting {
                                     let expanded = self.define_value(
                                         value,
@@ -535,6 +579,7 @@ impl ProcessContext<'_> {
                                         end: i as u32,
                                     });
                                 }
+                                self.note_define(name, "", emitting, DefineKind::Undefine);
                                 if emitting {
                                     self.vars.undefine(name);
                                 }
@@ -559,7 +604,7 @@ impl ProcessContext<'_> {
                                         end: i as u32,
                                     });
                                 }
-                                let cond_result = if emitting {
+                                let (cond_result, cond_decided) = if emitting {
                                     let site = FileSpan {
                                         file,
                                         span: Span {
@@ -575,16 +620,26 @@ impl ProcessContext<'_> {
                                         site,
                                     )
                                 } else {
-                                    false
+                                    (false, true)
                                 };
+                                let parent_decided = self.region_decided;
+                                let chain_decided = parent_decided && cond_decided;
                                 if_stack.push(IfState {
                                     parent_emitting: emitting,
                                     any_branch_taken: cond_result,
                                     emitting: emitting && cond_result,
                                     directive: BranchDirective::If,
                                     condition,
+                                    chain_decided,
+                                    state: match (chain_decided, cond_result) {
+                                        (false, _) => BranchState::Undecided,
+                                        (true, true) => BranchState::Taken,
+                                        (true, false) => BranchState::NotTaken,
+                                    },
+                                    body_start: directive.end,
                                 });
                                 emitting = emitting && cond_result;
+                                self.region_decided = region_decided(base_decided, &if_stack);
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -608,6 +663,9 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if let Some(state) = if_stack.last_mut() {
+                                    self.close_branch(file, state, i);
+                                    let was_taken = state.any_branch_taken;
+                                    let mut cond_decided = true;
                                     if state.parent_emitting && !state.any_branch_taken {
                                         let site = FileSpan {
                                             file,
@@ -616,13 +674,14 @@ impl ProcessContext<'_> {
                                                 end: directive.end as u32,
                                             },
                                         };
-                                        let cond_result = self.evaluate_condition(
+                                        let (cond_result, decided) = self.evaluate_condition(
                                             &condition,
                                             positional_args,
                                             source,
                                             i,
                                             site,
                                         );
+                                        cond_decided = decided;
                                         state.emitting = cond_result;
                                         if cond_result {
                                             state.any_branch_taken = true;
@@ -630,10 +689,24 @@ impl ProcessContext<'_> {
                                     } else {
                                         state.emitting = false;
                                     }
+                                    state.state = if !state.chain_decided {
+                                        BranchState::Undecided
+                                    } else if !state.parent_emitting || was_taken {
+                                        BranchState::NotTaken
+                                    } else if !cond_decided {
+                                        BranchState::Undecided
+                                    } else if state.emitting {
+                                        BranchState::Taken
+                                    } else {
+                                        BranchState::NotTaken
+                                    };
+                                    state.chain_decided &= cond_decided;
+                                    state.body_start = directive.end;
                                     state.directive = BranchDirective::ElseIf;
                                     state.condition = condition;
                                 }
                                 emitting = if_stack.iter().all(|s| s.emitting);
+                                self.region_decided = region_decided(base_decided, &if_stack);
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -657,11 +730,19 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if let Some(state) = if_stack.last_mut() {
+                                    self.close_branch(file, state, i);
                                     state.emitting =
                                         state.parent_emitting && !state.any_branch_taken;
+                                    state.state = match (state.chain_decided, state.emitting) {
+                                        (false, _) => BranchState::Undecided,
+                                        (true, true) => BranchState::Taken,
+                                        (true, false) => BranchState::NotTaken,
+                                    };
+                                    state.body_start = directive.end;
                                     state.directive = BranchDirective::Else;
                                 }
                                 emitting = if_stack.iter().all(|s| s.emitting);
+                                self.region_decided = region_decided(base_decided, &if_stack);
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -688,8 +769,11 @@ impl ProcessContext<'_> {
                                         end: i as u32,
                                     });
                                 }
-                                if_stack.pop();
+                                if let Some(state) = if_stack.pop() {
+                                    self.close_branch(file, &state, i);
+                                }
                                 emitting = if_stack.iter().all(|s| s.emitting);
+                                self.region_decided = region_decided(base_decided, &if_stack);
                                 i = directive.end;
                                 skipped_from = i;
                                 chunk_start = i as u32;
@@ -798,6 +882,7 @@ impl ProcessContext<'_> {
                                         kind: TextLossKind::IncludeDepthLimit,
                                         site: include_site,
                                     });
+                                    self.knowledge.all_uncertain = true;
                                     self.elide(ElidedKind::Include, include_site);
                                     i = ref_end;
                                     chunk_start = i as u32;
@@ -809,9 +894,19 @@ impl ProcessContext<'_> {
                                 // "this file includes that one" is a fact about
                                 // the source, not about how much text arrived.
                                 let unresolved_before = self.unresolved_includes.len();
-                                if let Some((path, children)) =
-                                    self.expand_include(&include_name, include_site, inner, depth)
-                                {
+                                let site_unknown = self.reads_unknown(raw_inner);
+                                let expanded = self.expand_include(
+                                    &include_name,
+                                    include_site,
+                                    inner,
+                                    depth,
+                                    site_unknown,
+                                );
+                                if expanded.is_none() {
+                                    // Text the run never read may define any name.
+                                    self.knowledge.all_uncertain = true;
+                                }
+                                if let Some((path, children)) = expanded {
                                     nodes.push(SpanNode::Include {
                                         site: include_site,
                                         path: Some(path),
@@ -952,8 +1047,12 @@ impl ProcessContext<'_> {
             });
         }
 
-        // Warn about unclosed &IF
-        for _ in &if_stack {
+        // Warn about unclosed &IF. Its branches end with the file, which no
+        // compiler accepts, so none of them is decided.
+        for state in if_stack.iter_mut().rev() {
+            state.state = BranchState::Undecided;
+            self.close_branch(file, state, len);
+            self.knowledge.all_uncertain = true;
             let site = FileSpan {
                 file,
                 span: Span {
@@ -971,8 +1070,74 @@ impl ProcessContext<'_> {
                 site,
             });
         }
+        self.region_decided = base_decided;
 
         nodes
+    }
+
+    /// Record the branch `state` opened, which ends at byte `end` of `file`.
+    fn close_branch(&mut self, file: FileId, state: &IfState, end: usize) {
+        self.branches.push(ConditionalBranch {
+            directive: state.directive,
+            body: FileSpan {
+                file,
+                span: Span {
+                    start: state.body_start as u32,
+                    end: end as u32,
+                },
+            },
+            via: self.site_stack.clone(),
+            state: state.state,
+        });
+    }
+
+    /// Whether `text` reads a name whose value is not known, or an include
+    /// argument the run does not know.
+    fn reads_unknown(&self, text: &str) -> bool {
+        if self.args_uncertain && has_positional_ref(text) {
+            return true;
+        }
+        let mut rest = text;
+        while let Some(open) = find_var_ref(rest) {
+            let Some(close) = rest[open..].find('}') else {
+                break;
+            };
+            let name = rest[open + 2..open + close].trim_ascii_end();
+            if !self.knowledge.is_known(name) {
+                return true;
+            }
+            rest = &rest[open + close + 1..];
+        }
+        false
+    }
+
+    /// Update what is known of `name` for a define or undefine whose value is
+    /// `value`, met while the branch is `emitting` or not.
+    fn note_define(&mut self, name: &str, value: &str, emitting: bool, kind: DefineKind) {
+        let scoped = kind == DefineKind::Scoped;
+        if !self.region_decided {
+            // It may or may not have happened.
+            self.knowledge.learn(name, false, scoped);
+            return;
+        }
+        if !emitting {
+            return;
+        }
+        match kind {
+            DefineKind::Undefine => self.knowledge.undefine(name),
+            DefineKind::Global
+                if matches!(
+                    self.vars.origin(name),
+                    Some(Origin::Scoped | Origin::Argument)
+                ) =>
+            {
+                // Ignored, as the AVM rejects it.
+            }
+            DefineKind::Global | DefineKind::Scoped => {
+                let known = !self.reads_unknown(value);
+                self.knowledge.learn(name, known, scoped);
+            }
+        }
     }
 
     /// List the text in `[start, end)` of `source`, inside a branch that is not
@@ -985,11 +1150,15 @@ impl ProcessContext<'_> {
         end: usize,
         if_stack: &[IfState],
     ) {
-        if source
+        let Some(text) = source
             .get(start..end)
-            .is_none_or(|text| text.trim_ascii().is_empty())
-        {
+            .filter(|text| !text.trim_ascii().is_empty())
+        else {
             return;
+        };
+        if !self.region_decided && contains_ignore_case(text, "{&sequence") {
+            // A guessed branch may count one more `{&SEQUENCE}`.
+            self.knowledge.forget("SEQUENCE");
         }
         self.skipped_text.push(SkippedText {
             site: FileSpan {
@@ -1023,6 +1192,10 @@ impl ProcessContext<'_> {
         let inner = source[open + 1..close].trim();
         let name = written_include_name(inner);
         let computed_name = name.contains('{');
+        if !self.region_decided {
+            // Text the run never read may define any name.
+            self.knowledge.all_uncertain = true;
+        }
         self.skipped_includes.push(SkippedInclude {
             name,
             site: FileSpan {
@@ -1075,6 +1248,9 @@ impl ProcessContext<'_> {
                 Some(Arc::from(line.to_string()))
             }
             ComputedName::Sequence => {
+                if !self.region_decided {
+                    self.knowledge.forget("SEQUENCE");
+                }
                 let next = self.sequence;
                 self.sequence += 1;
                 Some(Arc::from(next.to_string()))
@@ -1091,6 +1267,9 @@ impl ProcessContext<'_> {
     /// otherwise decide the branch as an empty string, so each one raises
     /// PREPROC009. A part of the condition the evaluator does not model raises
     /// PREPROC010.
+    ///
+    /// Returns the branch taken and whether it is decided: no gap, and every
+    /// name the condition reads is known.
     fn evaluate_condition(
         &mut self,
         condition: &str,
@@ -1098,7 +1277,9 @@ impl ProcessContext<'_> {
         source: &str,
         at: usize,
         site: FileSpan,
-    ) -> bool {
+    ) -> (bool, bool) {
+        let losses = self.text_losses.len();
+        let reads_unknown = self.reads_unknown(condition);
         let args = if self.admit(positional_expansion_len(condition, positional_args), site) {
             positional_args
         } else {
@@ -1123,7 +1304,13 @@ impl ProcessContext<'_> {
         if !unmodelled.is_empty() {
             self.report_unmodelled_condition(&unmodelled.join(", "), site);
         }
-        evaluation.value
+        let decided = !reads_unknown
+            && self.text_losses.len() == losses
+            && evaluation
+                .defined_names
+                .iter()
+                .all(|name| self.knowledge.is_known(name));
+        (evaluation.value, decided)
     }
 
     fn substitute_computed_names<'t>(
@@ -1248,6 +1435,7 @@ impl ProcessContext<'_> {
         // the whole rest of the line, and memory and time grew with the square
         // of the run.
         let name = parse_include_name(&rest[..rest.find(['{', '}', '\n']).unwrap_or(rest.len())]);
+        self.knowledge.all_uncertain = true;
         let site = FileSpan {
             file,
             span: Span {
@@ -1736,6 +1924,7 @@ impl ProcessContext<'_> {
         site: FileSpan,
         inner: &str,
         depth: usize,
+        site_unknown: bool,
     ) -> Option<(PathBuf, Vec<SpanNode>)> {
         // Parse include arguments
         let args = parse_include_args(inner, include_name);
@@ -1822,9 +2011,14 @@ impl ProcessContext<'_> {
 
         // Scope isolation: open a variable scope, inject named args
         let scope = self.vars.begin_scope();
+        self.knowledge.begin_scope();
+        let args_known = self.region_decided && !site_unknown;
         for (name, value) in &args.named {
             self.vars.define_argument(name, value);
+            self.knowledge.learn(name, args_known, true);
         }
+        let outer_args = std::mem::replace(&mut self.args_uncertain, !args_known);
+        self.include_files.push((include_file_id, path.clone()));
 
         // Process recursively with positional args scoped to this include.
         // The site is on the stack for the duration, so anything unresolvable
@@ -1838,6 +2032,8 @@ impl ProcessContext<'_> {
         // Restore vars (named args don't leak to parent), but keep what the
         // include defined or undefined with `&GLOBAL-DEFINE` and `&UNDEFINE`
         self.vars.end_scope(scope);
+        self.knowledge.end_scope();
+        self.args_uncertain = outer_args;
 
         self.include_stack.remove(&path);
 
@@ -1857,6 +2053,167 @@ struct IfState {
     directive: BranchDirective,
     /// The condition of the last `&IF`/`&ELSEIF` of the chain, as written.
     condition: String,
+    /// Whether the region is decided and every condition of the chain
+    /// evaluated so far was decided.
+    chain_decided: bool,
+    /// What is known of the current branch.
+    state: BranchState,
+    /// Where the text of the current branch starts.
+    body_start: usize,
+}
+
+/// Whether the region inside `if_stack` is decided, in a source whose site is
+/// decided or not (`base`).
+fn region_decided(base: bool, if_stack: &[IfState]) -> bool {
+    base && if_stack.iter().all(|s| s.state != BranchState::Undecided)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DefineKind {
+    Scoped,
+    Global,
+    Undefine,
+}
+
+/// Which preprocessor names have a value the run knows. Names are kept
+/// lowercase.
+#[derive(Default)]
+struct Knowledge {
+    /// Names the run set itself in a decided region. Kept only with
+    /// [`Preprocessor::with_includer_unknown`].
+    set: HashSet<String>,
+    /// Names whose value the run does not know.
+    uncertain: HashSet<String>,
+    /// Names that were ever in `uncertain`: a definition of them that an
+    /// undefine can reveal again may not be known.
+    ever_uncertain: HashSet<String>,
+    /// Text the run did not read may have defined any name.
+    all_uncertain: bool,
+    /// See [`Preprocessor::with_includer_unknown`].
+    includer_unknown: bool,
+    /// One frame per include being expanded: what was known of each name
+    /// before the include first changed it with a scoped define or an
+    /// argument, restored when the include ends.
+    frames: Vec<Vec<Saved>>,
+}
+
+struct Saved {
+    name: String,
+    before: (bool, bool),
+    /// A global define or an undefine of the name met inside the include.
+    touched: bool,
+}
+
+impl Knowledge {
+    fn is_known(&self, name: &str) -> bool {
+        if self.all_uncertain {
+            return false;
+        }
+        if !self.includer_unknown && self.uncertain.is_empty() {
+            return true;
+        }
+        let name = name.to_ascii_lowercase();
+        !self.uncertain.contains(&name) && (!self.includer_unknown || self.set.contains(&name))
+    }
+
+    /// `name` was defined, as a scoped name or an argument when `scoped`, to
+    /// a value that is `known` or not.
+    fn learn(&mut self, name: &str, known: bool, scoped: bool) {
+        if known
+            && !self.includer_unknown
+            && self.uncertain.is_empty()
+            && self.frames.iter().all(Vec::is_empty)
+        {
+            // Nothing is uncertain and nothing would change.
+            return;
+        }
+        let name = name.to_ascii_lowercase();
+        let set = known && self.includer_unknown;
+        self.change(&name, (set, !known), scoped);
+    }
+
+    /// `name` was undefined in a decided region: the definition it hid shows
+    /// again.
+    fn undefine(&mut self, name: &str) {
+        let name = name.to_ascii_lowercase();
+        // The hidden definition may be the includer's, or one that was not
+        // known.
+        let uncertain = self.ever_uncertain.contains(&name);
+        self.change(&name, (false, uncertain), false);
+    }
+
+    fn forget(&mut self, name: &str) {
+        let name = name.to_ascii_lowercase();
+        let set = self.set.contains(&name);
+        self.change(&name, (set, true), false);
+    }
+
+    fn state(&self, name: &str) -> (bool, bool) {
+        (
+            self.includer_unknown && self.set.contains(name),
+            self.uncertain.contains(name),
+        )
+    }
+
+    fn change(&mut self, name: &str, after: (bool, bool), scoped: bool) {
+        if !scoped {
+            for saved in self.frames.iter_mut().flatten() {
+                if saved.name == name {
+                    saved.touched = true;
+                }
+            }
+        }
+        let before = self.state(name);
+        if before == after {
+            return;
+        }
+        if scoped
+            && let Some(frame) = self.frames.last_mut()
+            && !frame.iter().any(|saved| saved.name == name)
+        {
+            frame.push(Saved {
+                name: name.to_string(),
+                before,
+                touched: false,
+            });
+        }
+        self.apply(name, after);
+    }
+
+    fn apply(&mut self, name: &str, (set, uncertain): (bool, bool)) {
+        if set {
+            self.set.insert(name.to_string());
+        } else {
+            self.set.remove(name);
+        }
+        if uncertain {
+            self.uncertain.insert(name.to_string());
+            self.ever_uncertain.insert(name.to_string());
+        } else {
+            self.uncertain.remove(name);
+        }
+    }
+
+    fn begin_scope(&mut self) {
+        self.frames.push(Vec::new());
+    }
+
+    fn end_scope(&mut self) {
+        for saved in self.frames.pop().unwrap_or_default() {
+            if saved.touched {
+                let set = self.set.contains(&saved.name);
+                self.apply(&saved.name, (set, true));
+            } else {
+                self.apply(&saved.name, saved.before);
+            }
+        }
+    }
+}
+
+fn contains_ignore_case(text: &str, lower_needle: &str) -> bool {
+    text.as_bytes()
+        .windows(lower_needle.len())
+        .any(|window| window.eq_ignore_ascii_case(lower_needle.as_bytes()))
 }
 
 struct Directive {

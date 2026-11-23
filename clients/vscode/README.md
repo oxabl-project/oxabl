@@ -99,6 +99,16 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   `oxabl: in <root>`. The list needs include paths under `[workspace.sources]`
   in `oxabl.toml`, and says so when there are none. The choice lasts until you
   close the file or the language server restarts.
+- **Inactive branches.** The `&IF`, `&ELSEIF` and `&ELSE` branches that the
+  preprocessor does not compile are dimmed. The colours of the text stay. The
+  compile environment comes from `[workspace.preprocessor]` in `oxabl.toml`
+  (for example `opsys` and `proversion`). In an include, the selected include
+  context decides. In fragment mode, a condition on a name that the includer
+  can set is not decided. A branch whose condition oxabl cannot decide is never
+  dimmed: a function that it does not model (such as `SEARCH`), `PROVERSION`
+  with no `proversion` set, or a name that an include it cannot read can
+  define. Set `oxabl.inactiveRegions.enable` to `false` to turn the dimming
+  off.
 - **Expanded compilation unit.** **oxabl: Show Expanded Compilation Unit**
   opens a read-only view beside the file: the source oxabl parsed after
   preprocessing. For an include it uses the selected include context, or the
@@ -123,7 +133,7 @@ order: the `oxabl.server.path` setting, `~/.local/bin/oxabl` (the directory in
 then run **oxabl: Restart Server**.
 
 In a project, these features follow `[workspace.features]` in `oxabl.toml`:
-`diagnostics = false` stops the diagnostics and the code lenses, and `format = false` stops formatting, so format on save does
+`diagnostics = false` stops the diagnostics, the dimming of inactive branches and the code lenses, and `format = false` stops formatting, so format on save does
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
 it.
 

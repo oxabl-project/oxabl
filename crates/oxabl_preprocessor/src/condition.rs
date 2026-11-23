@@ -32,6 +32,8 @@ pub enum Gap {
 pub struct Evaluation {
     pub value: bool,
     pub gaps: Vec<Gap>,
+    /// The names the condition asks `DEFINED` about, after `{&name}` expansion.
+    pub defined_names: Vec<String>,
 }
 
 /// Evaluate a preprocessor `&IF` condition.
@@ -78,12 +80,20 @@ pub struct Evaluation {
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
+    let defined_names = tokens
+        .iter()
+        .filter_map(|token| match token {
+            CondToken::Defined(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
     // A condition with nothing in it is false, as in the AVM; an empty operand
     // inside one is a syntax error.
     if tokens.is_empty() {
         return Evaluation {
             value: false,
             gaps: Vec::new(),
+            defined_names,
         };
     }
     let mut parser = CondParser {
@@ -101,6 +111,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     Evaluation {
         value,
         gaps: parser.gaps,
+        defined_names,
     }
 }
 

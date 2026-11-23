@@ -8,7 +8,9 @@
 //! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
-//! `docs/design/include-context.md`.
+//! `docs/design/include-context.md`. With each diagnostics publish the server sends
+//! `textDocument/inactiveRegions`, the `&IF` branches that are not compiled, to a
+//! client that asks for them (`docs/design/inactive-regions.md`).
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -29,6 +31,7 @@ pub mod document;
 mod document_symbol;
 mod expanded_unit;
 pub mod formatting;
+mod inactive_regions;
 mod includer_context;
 mod navigation;
 pub mod position;
@@ -526,6 +529,8 @@ struct Negotiated {
     options: code_lens::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `textDocument/inactiveRegions`.
+    inactive_regions: bool,
 }
 
 fn serve_initialized(
@@ -574,6 +579,7 @@ fn finish_handshake(
     id: RequestId,
     params: serde_json::Value,
 ) -> Result<(Negotiated, Option<PathBuf>)> {
+    let inactive_regions = inactive_regions::client_supports(&params);
     let init: InitializeParams =
         serde_json::from_value(params).context("deserializing InitializeParams")?;
 
@@ -609,13 +615,17 @@ fn finish_handshake(
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
     };
+    let mut result = serde_json::to_value(result)?;
+    // Not a field of the LSP types: the name clangd gives the capability.
+    result["capabilities"]["inactiveRegionsProvider"] = serde_json::Value::Bool(true);
     connection
-        .initialize_finish(id, serde_json::to_value(result)?)
+        .initialize_finish(id, result)
         .context("LSP initialize_finish")?;
     Ok((
         Negotiated {
             options,
             hierarchical_symbols,
+            inactive_regions,
         },
         workspace_root,
     ))
@@ -652,6 +662,8 @@ struct Server<'c> {
     encoding: PositionEncodingKind,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `textDocument/inactiveRegions`.
+    inactive_regions: bool,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
     /// The daemon's one session map. No analysis state lives in this client.
@@ -705,6 +717,9 @@ struct ComputeResult {
     /// `None` when the computation produced no trustworthy set (cancelled, or a
     /// contained panic) — see [`analyze_guarded`].
     dependencies: Option<Vec<PathBuf>>,
+    /// The `&IF` branches the buffer does not compile, from the same analysis.
+    /// `(start, end)` byte offsets.
+    inactive_regions: Option<Vec<(u32, u32)>>,
     /// Whether the absent halves above come from a **contained panic** rather
     /// than a cancellation. The two are otherwise indistinguishable at the
     /// receiving end, and they want opposite handling: a cancellation is a race
@@ -730,6 +745,7 @@ impl<'c> Server<'c> {
         let Negotiated {
             options,
             hierarchical_symbols,
+            inactive_regions,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -737,6 +753,7 @@ impl<'c> Server<'c> {
             connection,
             encoding: options.encoding.clone(),
             hierarchical_symbols,
+            inactive_regions,
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -870,6 +887,7 @@ impl<'c> Server<'c> {
             };
             let version = doc.version;
             if !self.features.diagnostics {
+                self.publish_inactive_regions(&uri, version, []);
                 self.publish(uri, Vec::new(), Some(version));
                 continue;
             }
@@ -900,6 +918,9 @@ impl<'c> Server<'c> {
                         version,
                         diagnostics: analysis.diagnostics,
                         dependencies: analysis.dependencies,
+                        inactive_regions: analysis.inactive_regions.map(|regions| {
+                            regions.iter().map(|span| (span.start, span.end)).collect()
+                        }),
                         panicked: analysis.panicked,
                         config_generation,
                     });
@@ -954,6 +975,9 @@ impl<'c> Server<'c> {
                     return;
                 };
                 let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
+                if let Some(regions) = res.inactive_regions {
+                    self.publish_inactive_regions(&res.uri, res.version, regions);
+                }
                 self.publish(res.uri.clone(), lsp_diags, Some(res.version));
             }
         }
@@ -1280,6 +1304,7 @@ impl<'c> Server<'c> {
             return;
         };
         if !self.features.diagnostics {
+            self.publish_inactive_regions(uri, version, []);
             self.publish(uri.clone(), Vec::new(), Some(version));
             return;
         }
@@ -1315,6 +1340,10 @@ impl<'c> Server<'c> {
         };
         if let Some(doc) = self.documents.get(uri) {
             let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
+            if let Some(regions) = &analysis.inactive_regions {
+                let regions = regions.iter().map(|span| (span.start, span.end));
+                self.publish_inactive_regions(uri, version, regions);
+            }
             self.publish(uri.clone(), lsp_diags, Some(version));
         }
     }
@@ -1725,6 +1754,7 @@ mod tests {
                     refresh: false,
                 },
                 hierarchical_symbols: false,
+                inactive_regions: false,
             },
             std::time::Duration::from_millis(10),
             None,
@@ -1757,6 +1787,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: 0, // no configuration is resolved in this test
         });
@@ -1813,6 +1844,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: 0, // no configuration is resolved in this test
         });
@@ -1839,6 +1871,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: true,
             config_generation: 0, // no configuration is resolved in this test
         });
@@ -1874,6 +1907,7 @@ mod tests {
             version: 1,
             diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: stale,
         });
@@ -1909,6 +1943,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: true,
             config_generation: stale,
         });
@@ -1937,6 +1972,7 @@ mod tests {
             version: 1,
             diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: server.config_generation(),
         });
@@ -2003,6 +2039,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: 0, // no configuration is resolved in this test
         });

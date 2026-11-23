@@ -41,15 +41,15 @@ use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
-    Preprocessor, ResolvedInclude, SkippedInclude, SkippedText, SpanNode, TextLoss,
-    UnreadableInclude, UnresolvedInclude,
+    BranchState, ConditionalBranch, Preprocessor, ResolvedInclude, SkippedInclude, SkippedText,
+    SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude,
 };
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, NullIndex, Semantic, SourceContext, WorkspaceIndex, analyze_file,
     analyze_file_untyped,
 };
-use oxabl_workspace::{FileSystem, PreprocessorConfig};
+use oxabl_workspace::{FileSystem, PreprocessorConfig, is_include_fragment};
 
 /// Which pipeline stage produced a diagnostic. Lets the CLI route preprocessor
 /// diagnostics to its own JSON channel while parse/semantic/lint feed the
@@ -435,6 +435,10 @@ pub struct ExpandedFile {
     skipped_text: Vec<SkippedText>,
     /// The text of each file that holds a stretch of `skipped_text`.
     skipped_sources: Vec<(FileId, Arc<str>)>,
+    /// Every branch of every `&IF` chain, at any depth.
+    branches: Vec<ConditionalBranch>,
+    /// The path of each include expansion, by the file id of its text.
+    include_files: Vec<(FileId, PathBuf)>,
     /// Places, at any depth, where the preprocessor dropped text or decided a
     /// branch without the facts to decide it.
     text_losses: Vec<TextLoss>,
@@ -522,6 +526,34 @@ impl ExpandedFile {
             .iter()
             .find(|(file, _)| *file == skipped.site.file)?;
         source.get(skipped.site.span.start as usize..skipped.site.span.end as usize)
+    }
+
+    /// The text of the `&IF` branches that are not compiled, in the root's own
+    /// bytes. Only a branch the preprocessor decided is listed; see
+    /// [`oxabl_preprocessor::BranchState`]. Sorted, with overlaps merged.
+    pub fn inactive_regions(&self) -> Vec<Span> {
+        inactive_regions(
+            self.branches
+                .iter()
+                .filter(|branch| branch.body.file == self.root),
+        )
+    }
+
+    /// [`Self::inactive_regions`] in the bytes of the include files whose path
+    /// `is_file` accepts. A branch is listed only when it is not compiled, as a
+    /// decided fact, in every expansion of the include.
+    pub fn inactive_regions_in(&self, is_file: impl Fn(&Path) -> bool) -> Vec<Span> {
+        let files: Vec<FileId> = self
+            .include_files
+            .iter()
+            .filter(|(_, path)| is_file(path))
+            .map(|(file, _)| *file)
+            .collect();
+        inactive_regions(
+            self.branches
+                .iter()
+                .filter(|branch| files.contains(&branch.body.file)),
+        )
     }
 
     /// Where the preprocessor dropped text or chose a branch on a guess: an
@@ -911,6 +943,8 @@ pub fn expand_source_with(
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
+            branches: Vec::new(),
+            include_files: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
@@ -921,7 +955,10 @@ pub fn expand_source_with(
     // Wrap the filesystem to record every include path read during expansion,
     // giving the LSP watcher a precise `*.i` → buffer dependency set (R17).
     let recorder = RecordingFileSystem::new(fs);
-    let pp = Preprocessor::new(&recorder, include_paths).with_predefined(predefined);
+    // An include opened by itself has no includer to set its names.
+    let pp = Preprocessor::new(&recorder, include_paths)
+        .with_predefined(predefined)
+        .with_includer_unknown(name.is_some_and(|name| is_include_fragment(Path::new(name))));
     let processed = match name {
         Some(name) => pp.process_named(root, name, source),
         None => pp.process(root, source),
@@ -1047,6 +1084,8 @@ pub fn expand_source_with(
                 skipped_includes: pf.skipped_includes.clone(),
                 skipped_text: pf.skipped_text.clone(),
                 skipped_sources,
+                branches: pf.branches.clone(),
+                include_files: pf.include_files.clone(),
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
@@ -1058,6 +1097,34 @@ pub fn expand_source_with(
             .filter(|d| is_loud(d) && d.span.file == root)
             .collect()),
     }
+}
+
+/// The bodies of `branches` that are not taken in every branch listed with the
+/// same body, sorted and merged.
+fn inactive_regions<'a>(branches: impl Iterator<Item = &'a ConditionalBranch>) -> Vec<Span> {
+    let mut bodies: Vec<(u32, u32, bool)> = branches
+        .filter(|branch| branch.body.span.start < branch.body.span.end)
+        .map(|branch| {
+            (
+                branch.body.span.start,
+                branch.body.span.end,
+                branch.state == BranchState::NotTaken,
+            )
+        })
+        .collect();
+    bodies.sort_unstable();
+    let mut out: Vec<Span> = Vec::new();
+    for same in bodies.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+        if !same.iter().all(|(_, _, not_taken)| *not_taken) {
+            continue;
+        }
+        let (start, end, _) = same[0];
+        match out.last_mut() {
+            Some(last) if start <= last.end => last.end = last.end.max(end),
+            _ => out.push(Span { start, end }),
+        }
+    }
+    out
 }
 
 /// Re-anchored `PREPROC007`s for unresolvable includes found below the root.
@@ -1911,6 +1978,8 @@ mod tests {
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
+            branches: Vec::new(),
+            include_files: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),

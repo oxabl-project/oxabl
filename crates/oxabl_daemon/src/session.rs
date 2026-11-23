@@ -72,7 +72,7 @@ use salsa::Setter;
 
 use crate::db::{
     AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, buffer_dependencies,
-    compute_diagnostics, set_buffer_capacity,
+    buffer_inactive_regions, compute_diagnostics, set_buffer_capacity,
 };
 
 /// How many closed buffers may keep their analysis results, beyond the open ones.
@@ -995,6 +995,9 @@ impl SessionHost {
 pub struct Analysis {
     pub diagnostics: Option<CollectedDiagnostics>,
     pub dependencies: Option<Vec<PathBuf>>,
+    /// The `&IF` branches the buffer does not compile, from the same
+    /// expansion as `diagnostics`; see [`crate::db::buffer_inactive_regions`].
+    pub inactive_regions: Option<Vec<oxabl_ast::Span>>,
     pub panicked: bool,
 }
 
@@ -1024,12 +1027,14 @@ pub fn analyze_guarded(
         let diagnostics = compute_diagnostics(snapshot, buffer, schema);
         // Dependency paths come from the (now-warm) expansion memo.
         let dependencies = buffer_dependencies(snapshot, buffer);
-        (diagnostics, dependencies)
+        let inactive_regions = buffer_inactive_regions(snapshot, buffer);
+        (diagnostics, dependencies, inactive_regions)
     });
     match computed {
-        Ok((diagnostics, dependencies)) => Analysis {
+        Ok((diagnostics, dependencies, inactive_regions)) => Analysis {
             diagnostics,
             dependencies,
+            inactive_regions,
             panicked: false,
         },
         Err(panic) => {
@@ -1037,6 +1042,7 @@ pub fn analyze_guarded(
             Analysis {
                 diagnostics: None,
                 dependencies: None,
+                inactive_regions: None,
                 panicked: true,
             }
         }

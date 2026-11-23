@@ -1126,6 +1126,9 @@ pub struct ContextDiagnostics {
     pub findings: Vec<oxabl_analyze::IncludeOriginDiagnostic>,
     /// Why the root gives no answer for the include, when it gives none.
     pub failure: Option<String>,
+    /// The `&IF` branches the root does not compile in the include, in the
+    /// include's own bytes. Empty when the root gives no answer.
+    pub inactive_regions: Vec<oxabl_ast::Span>,
     /// The root and every include its expansion read, for the watcher.
     pub dependencies: Vec<PathBuf>,
 }
@@ -1155,6 +1158,15 @@ pub fn compute_context_diagnostics(
         match analysed {
             Ok(unit) => {
                 let dependencies = unit.dependencies();
+                let inactive_regions = unit
+                    .expansion
+                    .expanded()
+                    .map(|expanded| {
+                        expanded.inactive_regions_in(|path| {
+                            crate::session::canonical_path(path) == target
+                        })
+                    })
+                    .unwrap_or_default();
                 let findings = unit
                     .diagnostics
                     .include_origin
@@ -1164,12 +1176,14 @@ pub fn compute_context_diagnostics(
                 ContextDiagnostics {
                     findings,
                     failure: None,
+                    inactive_regions,
                     dependencies,
                 }
             }
             Err((reason, dependencies)) => ContextDiagnostics {
                 findings: Vec::new(),
                 failure: Some(reason),
+                inactive_regions: Vec::new(),
                 dependencies,
             },
         }
@@ -1418,6 +1432,24 @@ pub fn buffer_dependencies(snapshot: &AnalysisDatabase, buffer: Buffer) -> Optio
     // one — see the fuller note there.
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
         expanded_text(snapshot, buffer).dependency_paths().to_vec()
+    }))
+    .ok()
+}
+
+/// The text of the `&IF` branches a buffer does not compile, in its own bytes,
+/// from the memoized expansion its diagnostics read
+/// ([`oxabl_analyze::ExpandedFile::inactive_regions`]). Empty on a fatal
+/// preprocessing error. `None` when a concurrent write cancelled the read, as
+/// in [`buffer_dependencies`].
+pub fn buffer_inactive_regions(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+) -> Option<Vec<oxabl_ast::Span>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        expanded_text(snapshot, buffer)
+            .expanded()
+            .map(|expanded| expanded.inactive_regions())
+            .unwrap_or_default()
     }))
     .ok()
 }
