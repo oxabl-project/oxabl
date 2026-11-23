@@ -1131,55 +1131,126 @@ pub fn compute_context_diagnostics(
     overlay: HashMap<PathBuf, Arc<str>>,
 ) -> Option<ContextDiagnostics> {
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-        let _revision = schema.revision(snapshot);
-        let config = snapshot.config();
-        let fs = OverlayFs {
-            overlay,
-            inner: Arc::clone(&config.fs),
-        };
-        let mut dependencies = vec![root.to_path_buf()];
-        let failed = |reason: String, dependencies: Vec<PathBuf>| ContextDiagnostics {
-            findings: Vec::new(),
-            failure: Some(reason),
-            dependencies,
-        };
-        let source = match fs.read(root) {
-            Ok(source) => source,
-            Err(error) => return failed(format!("cannot read it: {error}"), dependencies),
-        };
-        let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
-        let handle = run.with_file(root);
-        let expansion = handle.expand(&source);
-        dependencies.extend(expansion.dependency_paths().iter().cloned());
-        if expansion.preprocessing_failed() {
-            return failed("its preprocessing failed".to_string(), dependencies);
-        }
         let target = crate::session::canonical_path(include);
-        if !expansion
-            .dependency_paths()
-            .iter()
-            .any(|path| crate::session::canonical_path(path) == target)
-        {
-            return failed("it no longer includes this file".to_string(), dependencies);
-        }
-        salsa::Database::unwind_if_revision_cancelled(snapshot);
-        let index = SnapshotIndex::new(snapshot, Some(root), expansion.search_base());
-        let collected = handle
-            .with_index(&index)
-            .collect(&expansion)
-            .into_diagnostics();
-        let findings = collected
-            .include_origin
-            .into_iter()
-            .filter(|finding| crate::session::canonical_path(&finding.path) == target)
-            .collect();
-        ContextDiagnostics {
-            findings,
-            failure: None,
-            dependencies,
+        let analysed = analyse_root(snapshot, schema, root, overlay, |expansion| {
+            let included = expansion
+                .dependency_paths()
+                .iter()
+                .any(|path| crate::session::canonical_path(path) == target);
+            (!included).then(|| "it no longer includes this file".to_string())
+        });
+        match analysed {
+            Ok(unit) => {
+                let dependencies = unit.dependencies();
+                let findings = unit
+                    .diagnostics
+                    .include_origin
+                    .into_iter()
+                    .filter(|finding| crate::session::canonical_path(&finding.path) == target)
+                    .collect();
+                ContextDiagnostics {
+                    findings,
+                    failure: None,
+                    dependencies,
+                }
+            }
+            Err((reason, dependencies)) => ContextDiagnostics {
+                findings: Vec::new(),
+                failure: Some(reason),
+                dependencies,
+            },
         }
     }))
     .ok()
+}
+
+/// One root's expanded compilation unit, analysed, with the text of every file
+/// it read.
+#[derive(Debug, Clone)]
+pub struct ExpandedUnit {
+    pub root: PathBuf,
+    pub expansion: Expansion,
+    /// Every finding of the root's analysis: root-origin ones in `diagnostics`,
+    /// ones in includes in `include_origin`.
+    pub diagnostics: CollectedDiagnostics,
+    /// The text of the root and of each include the expansion read, as the
+    /// expansion read it (open buffers over the disk).
+    pub sources: HashMap<PathBuf, Arc<str>>,
+}
+
+impl ExpandedUnit {
+    /// The root and every include its expansion read.
+    pub fn dependencies(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.root.clone()];
+        paths.extend(self.expansion.dependency_paths().iter().cloned());
+        paths
+    }
+}
+
+/// Expand and analyse `root` with `overlay` over the configured file system,
+/// for inspection. `Ok(Err(reason))` when the root cannot be read or its
+/// preprocessing failed. `None` when a concurrent write cancelled the read.
+pub fn compute_expanded_unit(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+) -> Option<Result<ExpandedUnit, String>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        analyse_root(snapshot, schema, root, overlay, |_| None).map_err(|(reason, _)| reason)
+    }))
+    .ok()
+}
+
+/// The shared run of [`compute_context_diagnostics`] and
+/// [`compute_expanded_unit`]. `refuse` can stop it after the expansion. A
+/// failure carries its reason and the paths read so far.
+fn analyse_root(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    refuse: impl FnOnce(&Expansion) -> Option<String>,
+) -> Result<ExpandedUnit, (String, Vec<PathBuf>)> {
+    let _revision = schema.revision(snapshot);
+    let config = snapshot.config();
+    let fs = OverlayFs {
+        overlay,
+        inner: Arc::clone(&config.fs),
+    };
+    let mut dependencies = vec![root.to_path_buf()];
+    let source = fs
+        .read(root)
+        .map_err(|error| (format!("cannot read it: {error}"), dependencies.clone()))?;
+    let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+    let handle = run.with_file(root);
+    let expansion = handle.expand(&source);
+    dependencies.extend(expansion.dependency_paths().iter().cloned());
+    if expansion.preprocessing_failed() {
+        return Err(("its preprocessing failed".to_string(), dependencies));
+    }
+    if let Some(reason) = refuse(&expansion) {
+        return Err((reason, dependencies));
+    }
+    salsa::Database::unwind_if_revision_cancelled(snapshot);
+    let index = SnapshotIndex::new(snapshot, Some(root), expansion.search_base());
+    let diagnostics = handle
+        .with_index(&index)
+        .collect(&expansion)
+        .into_diagnostics();
+    let mut sources = HashMap::new();
+    sources.insert(root.to_path_buf(), source);
+    for path in expansion.dependency_paths() {
+        if let Ok(text) = fs.read(path) {
+            sources.insert(path.clone(), text);
+        }
+    }
+    Ok(ExpandedUnit {
+        root: root.to_path_buf(),
+        expansion,
+        diagnostics,
+        sources,
+    })
 }
 
 /// Open buffers over a file system, keyed by canonical path.

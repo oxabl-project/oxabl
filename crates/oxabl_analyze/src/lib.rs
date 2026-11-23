@@ -65,8 +65,8 @@ mod collect;
 
 pub use collect::{
     CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude, ExpandedFile,
-    IncludeFinding, IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic, IncludeStep,
-    RuleSelection, analyze_from_expanded, collect_diagnostics, collect_from_expanded,
+    IncludeExpansion, IncludeFinding, IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic,
+    IncludeStep, RuleSelection, analyze_from_expanded, collect_diagnostics, collect_from_expanded,
     collect_from_expanded_selecting, collect_from_expanded_with_source_context,
     collect_from_expanded_with_summaries, collect_with_model, expand_source, expand_source_with,
     is_loud,
@@ -74,7 +74,7 @@ pub use collect::{
 // Re-exported so a consumer of an expansion need not also depend on the
 // preprocessor just to name the unresolved-include rows the expansion carries.
 pub use oxabl_preprocessor::{
-    BranchDirective, SkippedBranch, SkippedInclude, SkippedText, UnresolvedInclude,
+    BranchDirective, SkippedBranch, SkippedInclude, SkippedText, TextLossKind, UnresolvedInclude,
 };
 
 use oxabl_ast::{NodeId, Statement};

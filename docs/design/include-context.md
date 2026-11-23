@@ -77,9 +77,55 @@ result for the file is dropped.
 - This is one compilation unit's answer. It never says that a declaration is
   unused in the whole workspace.
 
+## The expanded compilation unit
+
+`oxabl/expandedUnit` takes `{ textDocument: { uri } }` and answers with the
+source oxabl parsed for that file, after preprocessing: for a root file, the
+root; for an include, its selected root, or the include alone in fragment mode.
+It reads through the open buffers, like the root context, and runs
+`oxabl_daemon::db::compute_expanded_unit` on a worker snapshot.
+
+- `text`: a header comment (the root, `complete`, `reduced` or `failed`, and
+  each problem), then the expanded text. A marker line `/* ▼ name path (from
+  root:line → include:line) */` comes before each include expansion and
+  `/* ▲ name */` after it, nested as the includes nest. An include that did not
+  arrive gets a `/* ✖ ... */` line where it would be.
+- `regions`: the marker lines of each expansion, its path, its depth and the
+  chain of `{...}` sites from the root down to it, each a physical location.
+- `lines`, `files`: the physical file and line of each output line.
+- `diagnostics`: the findings of the same analysis (root findings, findings
+  in includes, preprocessor errors in includes), placed in `text`, each with
+  its physical `source` location. A finding whose text the expansion did not
+  keep sits on the first line.
+- `problems`: what makes the expansion reduced: an include that was not found
+  or could not be read, a lost stretch of text (the depth limit, an unclosed
+  `&IF`, a condition oxabl cannot decide), and preprocessor errors in includes
+  such as a cyclic include. `status` is `reduced` when there is any, and
+  `failed` when the root cannot be read or its preprocessing failed.
+- `dependencies`: the root and every include read, for the client's refresh.
+
+The markers are lines of their own, so an include that starts mid-line breaks
+that line in the view. The view is for inspection, not for editing.
+
+`oxabl_analyze::ExpandedFile` gives what the rendering needs:
+`include_expansions` (every expansion with its parent, site and expanded
+span), `expanded_offset` (a physical byte to its place in the expansion),
+`file_path` and `nested_preprocessor_diagnostics`.
+
 ## VS Code
 
 The status bar shows `oxabl: fragment` or `oxabl: in <root>` for the active
 include, and the command `oxabl.selectIncluderContext` (**oxabl: Select Include
 Context**) shows the list as a quick pick. The e2e scenario `include-context`
 tests it with the real server.
+
+The command `oxabl.showExpandedUnit` (**oxabl: Show Expanded Compilation
+Unit**) shows the answer of `oxabl/expandedUnit` as a read-only document with
+the scheme `oxabl-expanded`, named `<root> (expanded).p`. Its folding ranges
+are the regions, and every region starts folded. Document links on each `▼`
+line open the include and each `{...}` site of its chain. Go to Definition on
+any line opens the physical line. Its diagnostics carry the physical location
+as related information. An edit or save of any file in `dependencies`, a
+change of `oxabl.toml` and a new include context ask again. Each view counts
+its requests and drops an answer that a newer request replaced. The e2e
+scenario `expanded-unit` tests it with the real server.

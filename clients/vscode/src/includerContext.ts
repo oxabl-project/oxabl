@@ -30,7 +30,10 @@ export class IncluderContexts implements vscode.Disposable {
   private readonly selected = new Map<string, string>();
   private readonly subscriptions: vscode.Disposable[];
 
-  constructor(private readonly client: () => LanguageClient | undefined) {
+  constructor(
+    private readonly client: () => LanguageClient | undefined,
+    private readonly selectedChanged: (uri: vscode.Uri) => void = () => {},
+  ) {
     this.item.name = "oxabl include context";
     this.item.command = "oxabl.selectIncluderContext";
     this.subscriptions = [
@@ -120,6 +123,7 @@ export class IncluderContexts implements vscode.Disposable {
       } else {
         this.selected.delete(textDocument.uri);
       }
+      this.selectedChanged(document.uri);
     } catch (err) {
       void vscode.window.showErrorMessage(`oxabl: cannot select ${picked.root ?? "fragment mode"}: ${message(err)}`);
     }
