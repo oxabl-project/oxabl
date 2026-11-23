@@ -19,7 +19,20 @@ const CONFIG: &str = "[workspace]\nname = \"navigation\"\n\
 
 const SCHEMA: &str = "ADD TABLE \"Customer\"\n  AREA \"Data\"\n\n\
     ADD FIELD \"CustNum\" OF \"Customer\" AS integer\n  FORMAT \">>>>9\"\n\n\
-    ADD FIELD \"Name\" OF \"Customer\" AS character\n  FORMAT \"x(30)\"\n\n";
+    ADD FIELD \"Name\" OF \"Customer\" AS character\n  FORMAT \"x(30)\"\n\n\
+    ADD TABLE \"company\"\n\n\
+    ADD FIELD \"company\" OF \"company\" AS character\n\n\
+    ADD TABLE \"warehouse\"\n\n\
+    ADD FIELD \"warehouse\" OF \"warehouse\" AS character\n\n";
+
+/// Temp-table fields that copy a schema field whose name is its table's name.
+const TT_INCLUDE: &str = "def {&DefType} temp-table ttDeco no-undo\n\
+    \x20  field company     like company.company\n\
+    \x20  field warehouse   like warehouse.warehouse\n\
+    \x20  field custName    like Customer.Name\n\
+    \x20  field orphan      like company.nosuch\n\
+    \x20  index iMain is primary unique company warehouse\n\
+    .\n";
 
 const DEFS: &str = "/* shared definitions */\n\
     DEFINE VARIABLE gcFromInclude AS CHARACTER NO-UNDO.\n";
@@ -96,6 +109,7 @@ impl Workspace {
             ("oxabl.toml", CONFIG),
             ("db/sports.df", SCHEMA),
             ("defs.i", DEFS),
+            ("deco_tt.i", TT_INCLUDE),
             ("main.p", MAIN),
             ("factory.p", FACTORY),
             ("util/helper.p", "MESSAGE \"helper\".\n"),
@@ -416,4 +430,36 @@ fn positions_follow_the_negotiated_utf8_encoding() {
         utf16_at(MAIN, declared).1,
         "the fixture must tell the encodings apart"
     );
+}
+
+#[test]
+fn like_fields_go_to_the_schema_field_also_when_it_is_named_like_its_table() {
+    let ws = Workspace::new();
+    let include = ws.path("deco_tt.i");
+    let df = ws.path("db/sports.df");
+    let mut session = Session::start(&ws.root);
+    // Opened alone, as an editor does: fragment mode.
+    session.open(&include, TT_INCLUDE);
+
+    let line_of =
+        |needle: &str| SCHEMA[..SCHEMA.find(needle).unwrap()].matches('\n').count() as u64;
+    let cases = [
+        ("company.company", 0, "ADD TABLE \"company\""),
+        ("company\n", 0, "ADD FIELD \"company\""),
+        ("warehouse.warehouse", 0, "ADD TABLE \"warehouse\""),
+        ("warehouse\n", 0, "ADD FIELD \"warehouse\""),
+        ("Name\n", 0, "ADD FIELD \"Name\""),
+    ];
+    for (needle, occurrence, declared) in cases {
+        let found = definition(&mut session, &include, TT_INCLUDE, needle, occurrence);
+        assert_eq!(
+            found.len(),
+            1,
+            "definition of `{needle}` ({occurrence}): {found:?}"
+        );
+        starts_on_line(&found[0], &df, line_of(declared));
+    }
+    // A field the table does not have: no location, and a well-formed answer.
+    let found = definition(&mut session, &include, TT_INCLUDE, "nosuch", 0);
+    assert_eq!(found, Vec::<Value>::new());
 }

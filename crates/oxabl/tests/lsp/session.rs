@@ -140,12 +140,49 @@ impl Session {
         self.messages.recv_timeout(timeout).ok()
     }
 
+    /// The answers to `method` with each of `params`, in order. All requests
+    /// are sent before the first answer is read, so the server works on them
+    /// together.
+    pub fn request_all(&mut self, method: &str, params: Vec<Value>) -> Vec<Value> {
+        let first = self.next_id;
+        for params in params {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        }
+        let mut answers = vec![Value::Null; (self.next_id - first) as usize];
+        let mut left = answers.len();
+        while left > 0 {
+            let answer = self.wait_for(|m| {
+                m["id"]
+                    .as_u64()
+                    .is_some_and(|id| id >= first && id < self.next_id)
+                    && m.get("method").is_none()
+            });
+            assert!(
+                answer.get("result").is_some() != answer.get("error").is_some(),
+                "an answer to `{method}` must hold a result or an error: {answer}"
+            );
+            let at = (answer["id"].as_u64().unwrap() - first) as usize;
+            answers[at] = answer;
+            left -= 1;
+        }
+        answers
+    }
+
     /// The answer to the request `method` with `params`.
     pub fn request(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
         self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
-        self.wait_for(|m| m["id"] == json!(id))
+        let answer = self.wait_for(|m| m["id"] == json!(id));
+        // JSON-RPC: a response holds exactly one of the two. A client rejects
+        // one with neither, and indexing `answer["result"]` would read it as null.
+        assert!(
+            answer.get("result").is_some() != answer.get("error").is_some(),
+            "the answer to `{method}` must hold a result or an error: {answer}"
+        );
+        answer
     }
 }
 

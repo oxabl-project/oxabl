@@ -354,9 +354,26 @@ fn proxy_messages(editor: &Connection, daemon: &Connection) -> Result<()> {
             }
             recv(daemon.receiver) -> message => {
                 let message = message.context("the daemon exited during the editor session")?;
-                editor.sender.send(message).context("the editor connection closed")?;
+                editor.sender.send(with_null_result(message)).context("the editor connection closed")?;
             }
         }
+    }
+}
+
+/// A response read back from the daemon with its `null` result restored.
+///
+/// `lsp_server` reads `"result": null` as no result and then writes the response
+/// with neither `result` nor `error`, which a client rejects. A response without
+/// an error always had a result, so the missing one was `null`.
+fn with_null_result(message: Message) -> Message {
+    match message {
+        Message::Response(mut response)
+            if response.result.is_none() && response.error.is_none() =>
+        {
+            response.result = Some(serde_json::Value::Null);
+            Message::Response(response)
+        }
+        message => message,
     }
 }
 

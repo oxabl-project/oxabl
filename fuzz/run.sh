@@ -3,7 +3,7 @@
 # after a finding. Needs cargo-fuzz and the nightly toolchain.
 #   fuzz/run.sh <target> [seconds]   artifacts land in fuzz/artifacts/<target>
 set -euo pipefail
-target=${1:?target: lex | preprocess_parse | lint | format | outline}
+target=${1:?target: lex | preprocess_parse | lint | format | outline | navigate}
 seconds=${2:-600}
 cd "$(dirname "$0")"
 # A main thread of the analysis stack size (64 MiB): the targets then run each
