@@ -2833,6 +2833,7 @@ dependencies = [
  "oxabl_style",
  "oxabl_workspace",
  "ropey",
+ "serde",
  "serde_json",
  "tempfile",
 ]

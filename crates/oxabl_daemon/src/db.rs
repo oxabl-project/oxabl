@@ -1106,6 +1106,105 @@ pub fn compute_diagnostics(
     .ok()
 }
 
+/// What one root's compilation unit says about one include it expands.
+#[derive(Debug, Clone)]
+pub struct ContextDiagnostics {
+    /// The semantic and lint findings in the include, with spans in its own bytes.
+    pub findings: Vec<oxabl_analyze::IncludeOriginDiagnostic>,
+    /// Why the root gives no answer for the include, when it gives none.
+    pub failure: Option<String>,
+    /// The root and every include its expansion read, for the watcher.
+    pub dependencies: Vec<PathBuf>,
+}
+
+/// Analyse `root` with `overlay` (the open buffers, by path) over the configured
+/// file system, and keep the findings that sit in `include`.
+///
+/// Not memoized: it runs when the include or the root changes, on a worker
+/// snapshot. The cross-file index is the snapshot's, as for any buffer. Returns
+/// `None` when a concurrent write cancelled the read.
+pub fn compute_context_diagnostics(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    include: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+) -> Option<ContextDiagnostics> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let _revision = schema.revision(snapshot);
+        let config = snapshot.config();
+        let fs = OverlayFs {
+            overlay,
+            inner: Arc::clone(&config.fs),
+        };
+        let mut dependencies = vec![root.to_path_buf()];
+        let failed = |reason: String, dependencies: Vec<PathBuf>| ContextDiagnostics {
+            findings: Vec::new(),
+            failure: Some(reason),
+            dependencies,
+        };
+        let source = match fs.read(root) {
+            Ok(source) => source,
+            Err(error) => return failed(format!("cannot read it: {error}"), dependencies),
+        };
+        let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+        let handle = run.with_file(root);
+        let expansion = handle.expand(&source);
+        dependencies.extend(expansion.dependency_paths().iter().cloned());
+        if expansion.preprocessing_failed() {
+            return failed("its preprocessing failed".to_string(), dependencies);
+        }
+        let target = crate::session::canonical_path(include);
+        if !expansion
+            .dependency_paths()
+            .iter()
+            .any(|path| crate::session::canonical_path(path) == target)
+        {
+            return failed("it no longer includes this file".to_string(), dependencies);
+        }
+        salsa::Database::unwind_if_revision_cancelled(snapshot);
+        let index = SnapshotIndex::new(snapshot, Some(root), expansion.search_base());
+        let collected = handle
+            .with_index(&index)
+            .collect(&expansion)
+            .into_diagnostics();
+        let findings = collected
+            .include_origin
+            .into_iter()
+            .filter(|finding| crate::session::canonical_path(&finding.path) == target)
+            .collect();
+        ContextDiagnostics {
+            findings,
+            failure: None,
+            dependencies,
+        }
+    }))
+    .ok()
+}
+
+/// Open buffers over a file system, keyed by canonical path.
+struct OverlayFs {
+    overlay: HashMap<PathBuf, Arc<str>>,
+    inner: Arc<dyn FileSystem>,
+}
+
+impl FileSystem for OverlayFs {
+    fn read(&self, path: &Path) -> Result<Arc<str>, std::io::Error> {
+        let text = self
+            .overlay
+            .get(path)
+            .or_else(|| self.overlay.get(&crate::session::canonical_path(path)));
+        match text {
+            Some(text) => Ok(Arc::clone(text)),
+            None => self.inner.read(path),
+        }
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.overlay.contains_key(path) || self.inner.exists(path)
+    }
+}
+
 /// The include file paths a buffer transitively depends on, for the watcher's
 /// `*.i` → buffer matching (R17). Computed via the memoized expansion query, so
 /// this is cheap on an unchanged buffer. Empty on a fatal preprocessing error.
