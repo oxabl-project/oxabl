@@ -1,10 +1,18 @@
 # Fuzz targets
 
 `cargo-fuzz` targets for the lexer, the preprocessor and parser, the lint
-pipeline, the formatter and the document outline. The crate is outside the workspace, so
+pipeline, the formatter, the document outline and navigation (go to definition
+and document links). The crate is outside the workspace, so
 `cargo build --workspace` needs no nightly toolchain. The CI job `Fuzz targets`
 formats and lints the crate on stable, so the targets keep compiling; it does
 not run them.
+
+The workflow `.github/workflows/fuzz.yml` runs them: every night at 03:17 UTC,
+15 minutes per target, each target starting from the corpus the previous night
+grew, plus the grammar fuzz of the VS Code client with a new seed. Any artifact
+(a crash, a timeout, an out-of-memory input) fails the job and is uploaded as
+`fuzz-findings-<target>`. A pull request that changes `fuzz/` or the workflow
+runs it for 60 seconds per target; `workflow_dispatch` takes the seconds.
 
 | Target | What it checks |
 | --- | --- |
@@ -13,6 +21,7 @@ not run them.
 | `lint` | `LintPipeline::run` on one file (preprocess, parse, analyse, every rule) never panics. |
 | `format` | `try_format_source` never panics, and formatting its own output changes nothing. |
 | `outline` | `outline` never panics, its spans and names obey the rules of `docs/design/document-outline.md`, and a second run gives the same outline. |
+| `navigate` | On a fuzzed file, `.df` and include (`source \0 schema \0 include`) in a small workspace, go to definition at every offset and the document links never panic, every target is a file of the workspace, and every span is inside its file and on character boundaries. |
 
 Each target runs its input with a stack of at least the analysis stack
 (`oxabl_common::stack`, 64 MiB), as the CLI and the daemon do: on a smaller

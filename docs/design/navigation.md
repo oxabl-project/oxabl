@@ -18,7 +18,7 @@ span of the expanded text and what is written there
 | `Run(node)`, `Using(node)` | A literal `RUN` target and a `USING` name. |
 | `Type(resolution)` | A class name in a type position: `NEW`, `CAST`, `INHERITS`, `IMPLEMENTS`, and the type of a `DEFINE`, parameter, property or function. A declared type has no span in the AST, so the pass finds the name after the declared name in the text. |
 | `Symbol(sym)` | A name in a statement position (`FIND b`, `CREATE tt`) and a temp-table field named through its qualifier. |
-| `Table(id)`, `SchemaField(id)` | The table of `DEFINE BUFFER b FOR t`, and a schema field that a temp-table copies with `LIKE`. |
+| `Table(id)`, `SchemaField(id)` | The table of `DEFINE BUFFER b FOR t`; the field of `LIKE table.field` (also when the field has its table's name), and a schema field that a temp-table copies with `LIKE`. |
 
 The same run also keeps the file behind each synthesized symbol: the class file
 of a class, the file of the nearest class that declares an inherited member, and
@@ -70,6 +70,19 @@ Local names need no setup. `RUN` targets, include files, classes and inherited
 members are found through `[workspace.sources].include_paths`, and tables and
 fields through `[workspace.schema]`. Neither request depends on
 `[workspace.features]`.
+
+## Tests
+
+`crates/oxabl/tests/definition_lsp.rs` and `document_link_lsp.rs` pin the
+targets. `navigation_sweep_lsp.rs` asks for a definition at every position of
+files full of awkward names (a table and field of one name, keywords, hyphens,
+non-ASCII, a 200-character name, a `.df` that breaks off) and wants a
+well-formed answer with no error each time, with every range inside its file.
+The `navigate` fuzz target (`fuzz/README.md`) does the same on fuzzed input.
+
+Every answer goes through the `oxabl lsp` proxy, which restores a `null`
+result: `lsp_server` reads `"result": null` back as no result and would write
+a response with neither `result` nor `error`, which a client rejects.
 
 ## Cost
 

@@ -5165,12 +5165,48 @@ impl<'a> ResolveWalker<'a> {
                 name: qualifier.to_string(),
             }
         };
-        if self
-            .lookup_statement_ident(&table, scope, &[NamespaceId::Buffers, NamespaceId::Tables])
-            .is_none()
+        let local = self.lookup_statement_ident(
+            &table,
+            scope,
+            &[NamespaceId::Buffers, NamespaceId::Tables],
+        );
+        let record = match local {
+            Some(sym) => {
+                self.note_site(table.span, SiteTarget::Symbol(sym));
+                Some(sym)
+            }
+            None => self.schema_default_buffer(&table),
+        };
+        if !whole_table
+            && self.ctx.record_sites
+            && let Some(record) = record
         {
-            self.schema_default_buffer(&table);
+            self.note_like_field_site(record, source, &table);
         }
+    }
+
+    /// Record the field of `LIKE record.field`, for navigation: the declaration
+    /// copies it, so no reference names it.
+    fn note_like_field_site(&mut self, record: SymbolId, source: &Identifier, table: &Identifier) {
+        let Some(name) = source.name.get(table.name.len() + 1..) else {
+            return;
+        };
+        let span = Span {
+            start: table.span.end + 1,
+            end: source.span.end,
+        };
+        let target = match self.symbols.record_source(record) {
+            Some(RecordSource::Schema(tid)) => SiteTarget::SchemaField(tid),
+            Some(RecordSource::TempTable(tt)) => {
+                match self.temp_table_field(tt, &fold_atom(name), 0) {
+                    Some(FieldHit::Declared(sym)) => SiteTarget::Symbol(sym),
+                    Some(FieldHit::Schema(tid, _)) => SiteTarget::SchemaField(tid),
+                    None => return,
+                }
+            }
+            None => return,
+        };
+        self.note_site(span, target);
     }
 
     /// Note the tables the `LIKE` frame fields copy.
