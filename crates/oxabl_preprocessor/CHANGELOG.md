@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.3](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.2...oxabl_preprocessor-v0.8.3) (2026-11-23)
+
+
+### Bug Fixes
+
+* **preprocessor:** long lines and runs of unclosed braces cost memory and time in line with the input ([322fc7b](https://github.com/oxabl-project/oxabl/commit/322fc7b9e4edfe2601d03060c3508b3b0e0eb81c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+
 ## [0.8.2](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.1...oxabl_preprocessor-v0.8.2) (2026-11-20)
 
 

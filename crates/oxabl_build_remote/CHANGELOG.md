@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.12](https://github.com/oxabl-project/oxabl/compare/oxabl_build_remote-v0.2.11...oxabl_build_remote-v0.2.12) (2026-11-23)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_build bumped from 0.8.1 to 0.8.2
+
 ## [0.2.11](https://github.com/oxabl-project/oxabl/compare/oxabl_build_remote-v0.2.10...oxabl_build_remote-v0.2.11) (2026-11-20)
 
 

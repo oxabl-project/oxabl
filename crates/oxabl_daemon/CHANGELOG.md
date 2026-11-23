@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.6.1...oxabl_daemon-v0.7.0) (2026-11-23)
+
+
+### Features
+
+* **lsp:** answer workspace/symbol from the workspace index ([c7f8f90](https://github.com/oxabl-project/oxabl/commit/c7f8f90b7c6dd18b66fc29a0cd311dfe6181aae5))
+* **lsp:** answer workspace/symbol from the workspace index ([c6680be](https://github.com/oxabl-project/oxabl/commit/c6680bed6ececab2739fbe4e673660fe5953078c)), closes [#406](https://github.com/oxabl-project/oxabl/issues/406)
+* **lsp:** go to definition and document links ([9a89c3d](https://github.com/oxabl-project/oxabl/commit/9a89c3d344cee9ac558d7a9218565496066da4d0))
+* **lsp:** go to definition and document links ([1df981d](https://github.com/oxabl-project/oxabl/commit/1df981dfba85c1ffadd26219b36e402a881ef6ca)), closes [#407](https://github.com/oxabl-project/oxabl/issues/407) [#408](https://github.com/oxabl-project/oxabl/issues/408)
+* **lsp:** inspect the expanded compilation unit of a file ([faa7bf8](https://github.com/oxabl-project/oxabl/commit/faa7bf81431e7bf794510fa1e95c10bfc6d8c985))
+* **lsp:** inspect the expanded compilation unit of a file ([57e65b6](https://github.com/oxabl-project/oxabl/commit/57e65b61801d9a25f57f30c516adf3a0e02f766c)), closes [#169](https://github.com/oxabl-project/oxabl/issues/169)
+* **lsp:** select an includer context for an open include ([18a621e](https://github.com/oxabl-project/oxabl/commit/18a621eca5d4de5eb875f3214ae0f319f06f33cc))
+* **lsp:** select an includer context for an open include ([99a3291](https://github.com/oxabl-project/oxabl/commit/99a3291874d6628bfe9ae96d234fe7f82543dc1f)), closes [#168](https://github.com/oxabl-project/oxabl/issues/168)
+
+
+### Bug Fixes
+
+* **daemon:** a reopened buffer takes the path of its new open ([f8bc8b6](https://github.com/oxabl-project/oxabl/commit/f8bc8b62945f6d4144869f2d89652dd11533deed))
+* **daemon:** free the analysis of closed buffers ([180f330](https://github.com/oxabl-project/oxabl/commit/180f3301f3e1d556d751aa62390a56f1da5b3400))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.2.2 to 4.3.0
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_index bumped from 5.2.1 to 5.3.0
+    * oxabl_pipeline bumped from 3.7.0 to 3.8.0
+    * oxabl_semantic bumped from 5.1.0 to 5.2.0
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_pipeline bumped from 3.7.0 to 3.8.0
+
 ## [0.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.6.0...oxabl_daemon-v0.6.1) (2026-11-20)
 
 

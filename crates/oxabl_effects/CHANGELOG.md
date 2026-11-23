@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.8](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.7...oxabl_effects-v0.3.8) (2026-11-23)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_flow bumped from 0.4.0 to 0.4.1
+    * oxabl_index bumped from 5.2.1 to 5.3.0
+    * oxabl_lexer bumped from 2.0.2 to 2.0.3
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+    * oxabl_scope bumped from 0.2.9 to 0.2.10
+  * dev-dependencies
+    * oxabl_parser bumped from 4.1.0 to 4.1.1
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+
 ## [0.3.7](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.6...oxabl_effects-v0.3.7) (2026-11-20)
 
 
