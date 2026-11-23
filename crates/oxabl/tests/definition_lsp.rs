@@ -96,6 +96,47 @@ const FACTORY: &str = "DEFINE VARIABLE oAny AS Progress.Lang.Object NO-UNDO.\n\
     DEFINE VARIABLE cName AS CHARACTER NO-UNDO.\n\
     oAny = DYNAMIC-NEW cName ().\n";
 
+/// Internal procedures reached through a handle that `RUN ... PERSISTENT SET`
+/// sets.
+const SCHED: &str = "DEFINE VARIABLE hsched AS HANDLE NO-UNDO.\n\
+    DEFINE VARIABLE hTwo AS HANDLE NO-UNDO.\n\
+    DEFINE VARIABLE hAssigned AS HANDLE NO-UNDO.\n\
+    DEFINE VARIABLE hUnset AS HANDLE NO-UNDO.\n\
+    DEFINE VARIABLE hDup AS HANDLE NO-UNDO.\n\
+    DEFINE VARIABLE cGlobal AS CHARACTER NO-UNDO.\n\
+    DEFINE VARIABLE cKind AS CHARACTER NO-UNDO.\n\
+    run jobs/scheduler.p persistent set hsched({shared/out-args.i}).\n\
+    run checkStepKind in hsched(\n\
+    \x20input  false          ,\n\
+    \x20output cKind ).\n\
+    RUN CHECKSTEPKIND IN hsched (INPUT TRUE, OUTPUT cKind).\n\
+    RUN sharedName IN hsched.\n\
+    RUN notInSchedule IN hsched.\n\
+    RUN jobs/scheduler.p PERSISTENT SET hTwo.\n\
+    RUN helper2.p PERSISTENT SET hTwo.\n\
+    RUN checkStepKind IN hTwo.\n\
+    RUN jobs/scheduler.p PERSISTENT SET hAssigned.\n\
+    hAssigned = SESSION:FIRST-PROCEDURE.\n\
+    RUN checkStepKind IN hAssigned.\n\
+    RUN helper2 IN hUnset.\n\
+    RUN sharedName IN hUnset.\n\
+    RUN dup.p PERSISTENT SET hDup.\n\
+    RUN dupProc IN hDup.\n\
+    RUN sharedName IN THIS-PROCEDURE.\n\
+    PROCEDURE sharedName:\n\
+    END PROCEDURE.\n";
+
+const SCHEDULE: &str = "DEFINE OUTPUT PARAMETER pcGlobal AS CHARACTER NO-UNDO.\n\
+    PROCEDURE checkStepKind:\n\
+    \x20   DEFINE INPUT  PARAMETER plFlag AS LOGICAL   NO-UNDO.\n\
+    \x20   DEFINE OUTPUT PARAMETER pcType AS CHARACTER NO-UNDO.\n\
+    END PROCEDURE.\n\
+    PROCEDURE sharedName:\n\
+    END PROCEDURE.\n";
+
+const DUP_ONE: &str = "PROCEDURE dupProc:\nEND PROCEDURE.\n";
+const DUP_TWO: &str = "MESSAGE \"two\".\nPROCEDURE dupProc:\nEND PROCEDURE.\n";
+
 struct Workspace {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -114,8 +155,11 @@ impl Workspace {
             ("factory.p", FACTORY),
             ("util/helper.p", "MESSAGE \"helper\".\n"),
             ("helper2.p", "MESSAGE \"helper2\".\n"),
-            ("dup.p", "MESSAGE \"one\".\n"),
-            ("lib/dup.p", "MESSAGE \"two\".\n"),
+            ("dup.p", DUP_ONE),
+            ("lib/dup.p", DUP_TWO),
+            ("sched.p", SCHED),
+            ("jobs/scheduler.p", SCHEDULE),
+            ("shared/out-args.i", "OUTPUT cGlobal"),
             ("app/Greeter.cls", GREETER),
             ("app/Base.cls", BASE),
             ("app/IGreeter.cls", IGREETER),
@@ -462,4 +506,68 @@ fn like_fields_go_to_the_schema_field_also_when_it_is_named_like_its_table() {
     // A field the table does not have: no location, and a well-formed answer.
     let found = definition(&mut session, &include, TT_INCLUDE, "nosuch", 0);
     assert_eq!(found, Vec::<Value>::new());
+}
+
+#[test]
+fn procedures_run_in_a_persistent_handle_go_to_the_program_that_set_it() {
+    let ws = Workspace::new();
+    let sched = ws.path("sched.p");
+    let schedule = ws.path("jobs/scheduler.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&sched, SCHED);
+
+    let check = at(&schedule, SCHEDULE, "checkStepKind", 0);
+    let found = definition(&mut session, &sched, SCHED, "checkStepKind in", 0);
+    assert_eq!(found, vec![check.clone()], "the call as written");
+    let found = definition(&mut session, &sched, SCHED, "CHECKSTEPKIND", 0);
+    assert_eq!(found, vec![check], "names are case-insensitive");
+
+    // A local procedure of the same name is not the one the handle runs.
+    let found = definition(&mut session, &sched, SCHED, "sharedName IN hsched", 0);
+    assert_eq!(found, vec![at(&schedule, SCHEDULE, "sharedName", 0)]);
+    let found = definition(&mut session, &sched, SCHED, "sharedName IN THIS", 0);
+    assert_eq!(
+        found,
+        vec![at(
+            &sched,
+            SCHED,
+            "sharedName",
+            nth_of(SCHED, "sharedName:", 0, "sharedName")
+        )]
+    );
+
+    // The program defines no such procedure: a super procedure of it may.
+    let found = definition(&mut session, &sched, SCHED, "notInSchedule", 0);
+    assert_eq!(found, vec![file(&schedule)]);
+
+    // Two path entries supply the program: the procedure in each.
+    let mut found = definition(&mut session, &sched, SCHED, "dupProc", 0);
+    found.sort_by_key(|location| location["uri"].to_string());
+    assert_eq!(
+        found,
+        vec![
+            at(&ws.path("dup.p"), DUP_ONE, "dupProc", 0),
+            at(&ws.path("lib/dup.p"), DUP_TWO, "dupProc", 0),
+        ]
+    );
+}
+
+#[test]
+fn procedures_run_in_a_handle_of_no_single_program_have_no_location() {
+    let ws = Workspace::new();
+    let sched = ws.path("sched.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&sched, SCHED);
+
+    for (needle, why) in [
+        ("checkStepKind IN hTwo", "two programs set the handle"),
+        ("checkStepKind IN hAssigned", "an assignment also sets it"),
+        // `helper2.p` is on the path, but the call names a procedure, not it.
+        ("helper2 IN hUnset", "nothing in the file sets it"),
+        // The handle, not this unit, supplies the procedure.
+        ("sharedName IN hUnset", "a local procedure of the name"),
+    ] {
+        let found = definition(&mut session, &sched, SCHED, needle, 0);
+        assert_eq!(found, Vec::<Value>::new(), "{why}: `{needle}`");
+    }
 }

@@ -11,12 +11,20 @@
 //! a class name that more than one file on the search path supplies has each of
 //! them as a target. A link is only made to a file that the name resolves to
 //! alone.
+//!
+//! `RUN p IN h` goes to `p` in the program the handle runs when the static call
+//! graph knows it ([`CallTarget::InProgram`]): every `RUN ... PERSISTENT SET h`
+//! of the file runs one program and nothing else writes `h`.
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{ExpandedFile, analyze_for_navigation};
 use oxabl_ast::{NodeId, Span};
 use oxabl_common::{FileId, VirtualSpan};
+use oxabl_index::calls::{
+    CallKind, CallTarget, FileCalls, ProgramAnswer, UnknownCall, resolve_program,
+};
 use oxabl_index::search::{self, NameKind};
 use oxabl_semantic::{
     IndexName, IndexedFileId, Resolution, Semantic, SiteTarget, SourceContext, SymbolId,
@@ -49,6 +57,8 @@ pub struct Navigation<'s, 'a> {
     search_base: Option<PathBuf>,
     semantic: Semantic,
     file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
+    /// The unit's calls, extracted on the first `RUN` site asked about.
+    calls: OnceCell<FileCalls>,
 }
 
 impl<'a> LintPipeline<'a> {
@@ -85,6 +95,7 @@ impl<'a> LintPipeline<'a> {
             search_base: expansion.search_base().map(Path::to_path_buf),
             semantic,
             file_of,
+            calls: OnceCell::new(),
         })
     }
 }
@@ -239,6 +250,11 @@ impl Navigation<'_, '_> {
                 Resolution::Unresolved { .. } => Some(Vec::new()),
             },
             SiteTarget::Run(node) => match self.semantic.references.get(*node)? {
+                // A program is never run through a handle.
+                Resolution::Resolved(sym) if self.semantic.symbols.program_file(*sym).is_some() => {
+                    Some(self.symbol_targets(*sym))
+                }
+                _ if let Some(targets) = self.handle_call_targets(span) => Some(targets),
                 Resolution::Resolved(sym) => Some(self.symbol_targets(*sym)),
                 Resolution::Unresolved {
                     reason: UnresolvedReason::Unknowable,
@@ -270,12 +286,86 @@ impl Navigation<'_, '_> {
         })
     }
 
+    /// The targets of a `RUN p IN h` whose name is at `span`. `None` when the
+    /// `RUN` there names no handle, or names `THIS-PROCEDURE`.
+    fn handle_call_targets(&self, span: VirtualSpan) -> Option<Vec<Target>> {
+        let calls = self.calls.get_or_init(|| {
+            let text = &self.expanded.text;
+            let tokens = oxabl_lexer::tokenize(text);
+            let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
+            FileCalls::extract(&program.statements, text, &tokens)
+        });
+        let site = calls.sites.iter().find(|site| {
+            matches!(
+                site.kind,
+                CallKind::Run | CallKind::Persistent | CallKind::Remote
+            ) && site.at.start <= span.start
+                && span.end <= site.at.end
+        })?;
+        match &site.target {
+            CallTarget::InProgram { program, procedure } => {
+                Some(self.procedure_targets(program, procedure))
+            }
+            CallTarget::Unknown {
+                reason: UnknownCall::Handle,
+                ..
+            } => Some(Vec::new()),
+            _ => None,
+        }
+    }
+
+    /// Internal procedure `procedure` in each file that supplies `program`, or
+    /// the file when its text declares no such procedure.
+    fn procedure_targets(&self, program: &str, procedure: &str) -> Vec<Target> {
+        let paths = match self
+            .run
+            .with_run_index(|index| resolve_program(index, program))
+        {
+            ProgramAnswer::Found(file) => self.path_of(file).into_iter().collect(),
+            ProgramAnswer::Unknown(UnknownCall::Ambiguous) => self
+                .candidates_named(program, NameKind::Program)
+                .into_iter()
+                .map(|target| target.path)
+                .collect(),
+            ProgramAnswer::Unknown(_) => Vec::new(),
+        };
+        let procedure = procedure.trim_matches(['"', '\'']);
+        let mut targets = Vec::new();
+        for path in paths {
+            let spans: Vec<Span> = self
+                .outline_of(&path)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|symbol| {
+                    symbol.kind == OutlineKind::Procedure
+                        && symbol.name.eq_ignore_ascii_case(procedure)
+                })
+                .map(|symbol| symbol.selection_span)
+                .collect();
+            if spans.is_empty() {
+                targets.push(Target { path, span: None });
+                continue;
+            }
+            for span in spans {
+                targets.push(Target {
+                    path: path.clone(),
+                    span: Some(span),
+                });
+            }
+        }
+        targets
+    }
+
     /// Every file on the search path that the name written at `span` could
     /// mean, for a name the index declined to choose for.
     fn candidates(&self, span: VirtualSpan, kind: NameKind) -> Vec<Target> {
-        let Some(raw) = self.text(span) else {
-            return Vec::new();
-        };
+        match self.text(span) {
+            Some(raw) => self.candidates_named(raw, kind),
+            None => Vec::new(),
+        }
+    }
+
+    fn candidates_named(&self, raw: &str, kind: NameKind) -> Vec<Target> {
         let raw = raw.trim().trim_matches(['"', '\'']);
         if raw.is_empty() {
             return Vec::new();

@@ -35,6 +35,7 @@ with the call around it.
 | --- | --- |
 | A declaration in the unit | Its name, in the root or in the include that wrote it |
 | A program (`RUN x.p`, `RUN x`) | The file |
+| An internal procedure run through a handle (`RUN p IN h`) | `PROCEDURE p` in the program that `RUN ... PERSISTENT SET h` runs, or that file when its text declares no `p` (a super procedure of it can supply `p`) |
 | A class | The class name in its `.cls` |
 | An inherited member | Each declaration of the name in the class that declares it, so each overload |
 | A buffer named like its table (`FOR EACH customer`), a table | The `ADD TABLE` in the `.df` |
@@ -45,6 +46,13 @@ with the call around it.
 
 - **Guess.** A name that does not resolve has no target. A computed target
   (`RUN VALUE(...)`, `DYNAMIC-NEW`) has none.
+- **Follow a handle it cannot see.** `RUN p IN h` has a target only when every
+  `RUN ... PERSISTENT SET h` of the unit runs one program and nothing else
+  writes `h` (`oxabl_index::calls`, `CallTarget::InProgram`). A handle that two
+  programs set, that an assignment or an `OUTPUT` argument writes, or that
+  comes from another file (a parameter, a shared variable) gives none. So does
+  `RUN p IN h` with a local `p`: the handle, not the unit, supplies it.
+  `IN THIS-PROCEDURE` goes to the local procedure.
 - **Pick one of several.** A `RUN` target or a class name that two entries of the
   include path supply (the index answers `Unknowable`) has each file as a target
   (`oxabl_index::search::find_candidates_with`). The candidates are the files for
@@ -87,6 +95,9 @@ a response with neither `result` nor `error`, which a client rejects.
 ## Cost
 
 Each request expands, parses and resolves the unit again (no type check), with
-the open buffers over the disk, on a worker thread. Nothing is memoized. The
+the open buffers over the disk, on a worker thread. Nothing is memoized. A
+request on a `RUN` target that is not a program also lexes and parses the
+expanded unit once more for its call sites (`FileCalls::extract`), and reads
+the outline of each program a handle runs. The
 resolve pass of every other run records no site: the check of the flag is its
 whole cost.
