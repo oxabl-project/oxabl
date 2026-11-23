@@ -6,7 +6,8 @@ import { check, sleep, waitFor } from "../lib/report.mjs";
 import { installVsix, launch, makeProfile } from "../lib/vscode.mjs";
 
 // A real `oxabl` (OXABL_E2E_OXABL) in a real VS Code: the Outline view, the breadcrumbs and
-// "Go to Symbol in File" show the symbols of the open file.
+// "Go to Symbol in File" show the symbols of the open file, and "Go to Symbol in Workspace"
+// finds a procedure in a file that is not open.
 // OXABL_E2E_RUNTIME names a short directory: VS Code's own socket must fit in 107 characters.
 
 const rows = (page, selector) =>
@@ -68,7 +69,7 @@ export async function outline(ctx) {
   const runtimeDir = path.resolve(process.env.OXABL_E2E_RUNTIME);
   fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
   const profile = makeProfile(name, {
-    files: ["outline.p", "OutlineDemo.cls"],
+    files: ["outline.p", "OutlineDemo.cls", "archive.p"],
     settings: {
       "oxabl.updates": "off",
       "oxabl.server.path": path.resolve(oxabl),
@@ -194,6 +195,38 @@ export async function outline(ctx) {
     check(`${name}: the breadcrumbs show the class`, trail.some((t) => t.includes("acme.OutlineDemo")), `crumbs: ${trail.join(" > ")}`);
     check(`${name}: the breadcrumbs show the method`, trail.some((t) => t.includes("Render")), `crumbs: ${trail.join(" > ")}`);
     await screenshot(page, `${name}-cls`);
+
+    // 6. Go to Symbol in Workspace finds a procedure in a file that is not open.
+    await focusEditor(page);
+    await page.keyboard.press("Control+T");
+    await page.locator(".quick-input-widget input").first().waitFor({ state: "visible", timeout: 15_000 });
+    await page.keyboard.type("ArchiveOrders");
+    let found = [];
+    await waitFor(
+      "Go to Symbol in Workspace to list ArchiveOrders",
+      async () => {
+        found = await rows(page, ".quick-input-list .monaco-list-row");
+        return found.some((t) => t.includes("ArchiveOrders"));
+      },
+      { timeout: 60_000, interval: 300 },
+    ).catch(() => {});
+    check(`${name}: Go to Symbol in Workspace lists ArchiveOrders`, found.some((t) => t.includes("ArchiveOrders")), `rows: ${found.join(" | ")}`);
+    check(`${name}: the row names the file`, found.some((t) => t.includes("ArchiveOrders") && t.includes("archive.p")), `rows: ${found.join(" | ")}`);
+    await page.keyboard.press("Enter");
+    let tabs = [];
+    await waitFor("archive.p open", async () => (tabs = await rows(page, ".tab.active")).some((t) => t.includes("archive.p")), { timeout: 15_000 }).catch(() => {});
+    check(`${name}: choosing ArchiveOrders opens archive.p`, tabs.some((t) => t.includes("archive.p")), `active tab: ${tabs.join(" | ")}`);
+    const archive = fs.readFileSync(path.join(profile.workspace, "archive.p"), "utf8").split("\n");
+    const wantLine = archive.findIndex((l) => l.startsWith("PROCEDURE ArchiveOrders")) + 1;
+    const wantArchiveCol = archive[wantLine - 1].indexOf("ArchiveOrders") + 1;
+    let landed = null;
+    await waitFor("the cursor on ArchiveOrders", async () => ((landed = await cursor(page)), landed && landed.line === wantLine), { timeout: 10_000, interval: 200 }).catch(() => {});
+    check(
+      `${name}: choosing ArchiveOrders puts the cursor on its name`,
+      !!landed && landed.line === wantLine && landed.col === wantArchiveCol,
+      `cursor ${JSON.stringify(landed)}, want line ${wantLine} col ${wantArchiveCol}`,
+    );
+    await screenshot(page, `${name}-workspace-symbol`);
   } finally {
     await vs.close();
     await sleep(1500);

@@ -205,6 +205,51 @@ fn symbol_search(
     .map_err(MethodError::internal)
 }
 
+/// What the language server's `workspace/symbol` needs from a search: each
+/// selected row, the text its span counts bytes in, and the count before `limit`.
+pub struct LocatedSymbols {
+    /// A row without a declaring file (a schema table) has no text.
+    pub symbols: Vec<(SymbolRow, Option<Arc<str>>)>,
+    pub total_matches: u32,
+}
+
+/// Search the workspace symbols of `root` for the language server.
+///
+/// The same index and ranking as `oxabl/symbolSearch`. Each declaring file is read
+/// once, through the configured encoding with the open buffers over it, which is
+/// what the pass read when it measured the spans. Blocks until a workspace pass is
+/// current, so callers keep it off the LSP thread.
+pub fn search_symbols_located(
+    host: &SessionHost,
+    root: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<LocatedSymbols, MethodError> {
+    let workspace = ensure_workspace(host, root, false)?;
+    let (rows, total_matches) = select_symbols(&workspace.symbols, query, limit);
+    let fs = OverlayFileSystem {
+        overlay: host.with(|sessions| sessions.for_root(root).buffer_overlay()),
+        disk: workspace.config.file_system(),
+    };
+    let mut texts: HashMap<String, Option<Arc<str>>> = HashMap::new();
+    let symbols = rows
+        .into_iter()
+        .map(|row| {
+            let text = row.file.as_ref().and_then(|file| {
+                texts
+                    .entry(file.clone())
+                    .or_insert_with(|| fs.read(Path::new(file)).ok())
+                    .clone()
+            });
+            (row, text)
+        })
+        .collect();
+    Ok(LocatedSymbols {
+        symbols,
+        total_matches,
+    })
+}
+
 /// The best `limit` matches for `query`, and how many matched in total (R19).
 ///
 /// Bounded in the work it does, not only in what it returns. A type-ahead query sends
