@@ -135,6 +135,11 @@ impl Session {
         }
     }
 
+    /// The next message within `timeout`, or `None` when none came.
+    pub fn try_next(&self, timeout: Duration) -> Option<Value> {
+        self.messages.recv_timeout(timeout).ok()
+    }
+
     /// The answer to the request `method` with `params`.
     pub fn request(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;

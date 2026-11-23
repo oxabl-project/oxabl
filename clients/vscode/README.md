@@ -72,6 +72,16 @@ A folder with an `oxabl.toml` is a project. A project also gets:
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
   applies at once, with no reload.
+- **Include context.** An include file (`.i`) has no meaning alone: a
+  variable it declares is used or unused only in a file that includes it. An
+  open include starts in fragment mode, and the status bar says
+  `oxabl: fragment`. Click it, or run **oxabl: Select Include Context**, to
+  pick a root file that includes it, directly or through another include.
+  Then the diagnostics of the include are the findings of that root with the
+  include expanded in it, unsaved edits included, and the status bar says
+  `oxabl: in <root>`. The list needs include paths under `[workspace.sources]`
+  in `oxabl.toml`, and says so when there are none. The choice lasts until you
+  close the file or the language server restarts.
 
 Without an `oxabl.toml`, the language server does not format and does not
 report diagnostics, and it shows no message about it. Add an `oxabl.toml` to

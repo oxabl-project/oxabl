@@ -4,7 +4,9 @@
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol` and `workspace/symbol`. Strict
-//! database rules can also enable effect code lenses.
+//! database rules can also enable effect code lenses. An open include can be analysed in a
+//! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`; see
+//! `docs/design/include-context.md`).
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -24,6 +26,7 @@ pub mod diagnostics;
 pub mod document;
 mod document_symbol;
 pub mod formatting;
+mod includer_context;
 pub mod position;
 mod workspace_symbol;
 
@@ -661,6 +664,11 @@ struct Server<'c> {
     outlines: document_symbol::OutlineCache,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
+    /// The selected compilation context of each open include.
+    contexts: includer_context::Contexts,
+    /// Where context workers report, and where the main loop reads them.
+    context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
+    context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -700,6 +708,7 @@ impl<'c> Server<'c> {
             hierarchical_symbols,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
+        let (context_events, context_results) = crossbeam_channel::unbounded();
         Server {
             connection,
             encoding: options.encoding.clone(),
@@ -717,6 +726,9 @@ impl<'c> Server<'c> {
             lenses: code_lens::LensCache::new(options),
             outlines: document_symbol::OutlineCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
+            contexts: includer_context::Contexts::default(),
+            context_events,
+            context_results,
         }
     }
 
@@ -737,6 +749,7 @@ impl<'c> Server<'c> {
         let (result_tx, result_rx) = crossbeam_channel::unbounded::<ComputeResult>();
 
         let (lens_tx, lens_rx) = crossbeam_channel::unbounded();
+        let context_rx = self.context_results.clone();
         let mut shutdown_received = false;
         loop {
             // Size the timeout to the nearest pending debounce deadline.
@@ -761,6 +774,10 @@ impl<'c> Server<'c> {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
                                 self.handle_document_symbol(req)?;
+                            } else if req.method == includer_context::LIST_METHOD {
+                                self.handle_includer_contexts(req)?;
+                            } else if req.method == includer_context::SELECT_METHOD {
+                                self.handle_select_includer_context(req)?;
                             } else if req.method == WorkspaceSymbolRequest::METHOD {
                                 workspace_symbol::spawn(
                                     req,
@@ -794,6 +811,11 @@ impl<'c> Server<'c> {
                         )))?;
                     }
                 }
+                recv(context_rx) -> event => {
+                    if let Ok(event) = event {
+                        self.handle_context_event(event)?;
+                    }
+                }
                 recv(result_rx) -> res => {
                     if let Ok(res) = res {
                         self.handle_result(res);
@@ -819,6 +841,10 @@ impl<'c> Server<'c> {
             let version = doc.version;
             if !self.features.diagnostics {
                 self.publish(uri, Vec::new(), Some(version));
+                continue;
+            }
+            if let Some(root) = self.contexts.selected(&uri).cloned() {
+                self.spawn_context_analysis(uri, version, root);
                 continue;
             }
             let Some((buffer, snapshot, schema, config_generation)) = self.host.with(|sessions| {
@@ -867,6 +893,11 @@ impl<'c> Server<'c> {
     /// as an empty set. An empty set for a buffer that does have includes would stop
     /// the watcher from ever re-triggering it.
     fn handle_result(&mut self, res: ComputeResult) {
+        // An include analysed in a selected root publishes that root's answer
+        // only; its fragment analysis must not replace it.
+        if self.contexts.has_selection(&res.uri) {
+            return;
+        }
         let work = CompletedWork {
             read_version: res.version,
             current_version: self.documents.get(&res.uri).map(|doc| doc.version),
@@ -933,6 +964,10 @@ impl<'c> Server<'c> {
                             path,
                         );
                     });
+                    // An include analysed in this root now reads the buffer.
+                    if let Some(path) = uri_to_path(&doc.uri) {
+                        self.schedule_context_users(&path);
+                    }
                     // Open shows diagnostics right away (no debounce).
                     self.compute_and_publish(&doc.uri);
                 }
@@ -964,6 +999,9 @@ impl<'c> Server<'c> {
                         });
                     }
                     // Collapse the edit burst to a single debounced recompute.
+                    if let Some(path) = uri_to_path(&uri) {
+                        self.schedule_context_users(&path);
+                    }
                     self.debouncer.schedule(uri, std::time::Instant::now());
                 }
             }
@@ -987,6 +1025,7 @@ impl<'c> Server<'c> {
                 {
                     let uri = params.text_document.uri;
                     self.documents.close(&uri);
+                    self.contexts.forget(&uri);
                     self.outlines.invalidate(&uri);
                     self.host.with(|sessions| {
                         sessions
@@ -995,6 +1034,10 @@ impl<'c> Server<'c> {
                     });
                     self.dependencies.remove(&uri);
                     self.debouncer.cancel(&uri);
+                    // An include analysed in this root now reads its saved copy.
+                    if let Some(path) = uri_to_path(&uri) {
+                        self.schedule_context_users(&path);
+                    }
                     // Clear the client's diagnostics for the closed buffer.
                     self.publish(uri, Vec::new(), None);
                 }
@@ -1210,6 +1253,11 @@ impl<'c> Server<'c> {
             self.publish(uri.clone(), Vec::new(), Some(version));
             return;
         }
+        if self.contexts.has_selection(uri) {
+            self.debouncer
+                .schedule(uri.clone(), std::time::Instant::now());
+            return;
+        }
         let Some((buffer, snapshot, schema)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
             Some((
@@ -1312,6 +1360,13 @@ impl<'c> Server<'c> {
                 for uri in self.buffers_depending_on(inc) {
                     self.retrigger(&uri, now);
                 }
+            }
+        }
+
+        // A root changed on disk changes the includes analysed in it.
+        for source in &changed_sources {
+            for uri in self.buffers_depending_on(source) {
+                self.debouncer.schedule(uri, now);
             }
         }
 

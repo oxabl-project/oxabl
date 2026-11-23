@@ -250,6 +250,70 @@ pub fn search_symbols_located(
     })
 }
 
+/// The root files that expand one include, for choosing the compilation context
+/// of an open include.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncluderContexts {
+    /// Sorted by path, each once. `direct` when the root writes `{...}` for the
+    /// include itself.
+    pub roots: Vec<(PathBuf, bool)>,
+    /// Why the list can miss a root, when it can. Empty for a complete list.
+    pub gaps: Vec<String>,
+}
+
+/// The roots of `root`'s workspace that expand `include`, directly or through
+/// other includes.
+///
+/// `Ok(Err(reason))` when the workspace cannot know: with no include path
+/// configured, no include resolves and the list would be empty for every file.
+/// Blocks until a workspace pass is current, so callers keep it off the LSP
+/// thread.
+pub fn includer_contexts(
+    host: &SessionHost,
+    root: &Path,
+    include: &Path,
+) -> Result<Result<IncluderContexts, String>, MethodError> {
+    if let Some(reason) = cross_file_refusal(root) {
+        return Ok(Err(reason));
+    }
+    let workspace = ensure_workspace(host, root, false)?;
+    let include = crate::session::canonical_path(include);
+    let dependents = workspace
+        .graph
+        .dependents(&oxabl_pipeline::Subject::file(&include));
+    let mut roots: Vec<(PathBuf, bool)> = Vec::new();
+    for row in dependents.all() {
+        let direct = match row.kind {
+            EdgeKind::DirectInclude => true,
+            EdgeKind::TransitiveInclude => false,
+            _ => continue,
+        };
+        match roots.iter_mut().find(|(path, _)| *path == row.file) {
+            Some((_, seen)) => *seen |= direct,
+            None => roots.push((row.file.clone(), direct)),
+        }
+    }
+    roots.sort();
+    let mut gaps = Vec::new();
+    let unresolved = dependents.unresolved().len();
+    if unresolved > 0 {
+        gaps.push(format!(
+            "{unresolved} include reference(s) that may name this file did not resolve"
+        ));
+    }
+    let unanalysed = workspace.graph.unanalysed().len();
+    if unanalysed > 0 {
+        gaps.push(format!("{unanalysed} file(s) could not be analysed"));
+    }
+    let degraded = workspace.graph.degraded().len();
+    if degraded > 0 {
+        gaps.push(format!(
+            "{degraded} file(s) have an incomplete dependency set"
+        ));
+    }
+    Ok(Ok(IncluderContexts { roots, gaps }))
+}
+
 /// The best `limit` matches for `query`, and how many matched in total (R19).
 ///
 /// Bounded in the work it does, not only in what it returns. A type-ahead query sends

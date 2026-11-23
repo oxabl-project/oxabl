@@ -38,6 +38,7 @@
     "onCommand:oxabl.checkForUpdates",
     "onCommand:oxabl.installCli",
     "onCommand:oxabl.build",
+    "onCommand:oxabl.selectIncluderContext",
     "onCommand:oxabl.cancelBuild",
     "onCommand:oxabl.showBuildLog"
   ],
@@ -66,6 +67,10 @@
       {
         "command": "oxabl.showBuildLog",
         "title": "oxabl: Show Build Log"
+      },
+      {
+        "command": "oxabl.selectIncluderContext",
+        "title": "oxabl: Select Include Context"
       }
     ],
     "languages": [
