@@ -81,3 +81,19 @@ fn a_variable_named_like_a_table_parameter_is_still_a_duplicate() {
         vec![sem0001("SEM0001", 3)]
     );
 }
+
+#[test]
+fn a_stream_defined_twice_in_one_scope_is_accepted() {
+    let source = "DEFINE STREAM s.\nDEFINE STREAM s.\nOUTPUT STREAM s TO \"/dev/null\".\nOUTPUT STREAM s CLOSE.\n";
+    assert_eq!(semantic_findings("stream.p", source), vec![]);
+}
+
+#[test]
+fn a_variable_defined_twice_in_one_scope_is_still_a_duplicate() {
+    let source =
+        "DEFINE VARIABLE v AS INTEGER NO-UNDO.\nDEFINE VARIABLE v AS INTEGER NO-UNDO.\nv = 1.\n";
+    assert_eq!(
+        semantic_findings("var.p", source),
+        vec![sem0001("SEM0001", 2)]
+    );
+}

@@ -339,13 +339,23 @@ impl<'a> Walker<'a> {
             // ---- Streams / Frames / Events --------------------------------
             StatementKind::DefineStream { name } => {
                 let routine = self.tree.var_binding_scope(scope);
-                self.declare_simple(
-                    stmt,
-                    routine,
-                    name,
-                    NamespaceId::Streams,
-                    SymbolKind::Stream,
-                );
+                // The compiler accepts a stream defined twice in one scope, as
+                // when the file and an include both define it.
+                let atom = fold_atom(&name.name);
+                if self
+                    .tree
+                    .get(routine)
+                    .get_in(NamespaceId::Streams, &atom)
+                    .is_none()
+                {
+                    self.declare_simple(
+                        stmt,
+                        routine,
+                        name,
+                        NamespaceId::Streams,
+                        SymbolKind::Stream,
+                    );
+                }
             }
             StatementKind::DefineFrame { name, fields, .. } => {
                 let routine = self.tree.var_binding_scope(scope);
