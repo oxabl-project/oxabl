@@ -865,11 +865,9 @@ impl Parser<'_> {
             }
         }
 
-        // REPOSITION query-name TO ... — query cursor repositioning, skip to statement end.
-        // Uses skip_to_statement_end() to skip over ROWID(...) and NO-ERROR properly.
+        // REPOSITION query-name TO ... — head-parsed; the operands are modelled.
         if self.check(Kind::Reposition) && Self::can_be_identifier(self.peek_at(1).kind) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_reposition_statement();
         }
 
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
@@ -4528,6 +4526,54 @@ impl Parser<'_> {
                 target,
                 status,
                 handle,
+            },
+            tail,
+        ))
+    }
+
+    /// `REPOSITION query {TO ROW n | TO ROWID r[, r]... | TO RECID n | ROW n |
+    /// FORWARD n | BACKWARD n} [NO-ERROR]`. A query that is not an expression
+    /// leaves the statement skipped.
+    fn parse_reposition_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume REPOSITION
+        let Some(query) = self.parse_head_item(|k| matches!(k, Kind::To | Kind::Row)) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut operands = Vec::new();
+        loop {
+            let keyword = self.peek();
+            let direction = keyword.kind == Kind::Identifier
+                && ["forward", "backward"]
+                    .iter()
+                    .any(|w| self.source[keyword.start..keyword.end].eq_ignore_ascii_case(w));
+            if matches!(
+                keyword.kind,
+                Kind::To | Kind::Row | Kind::Rowid | Kind::Recid
+            ) || direction
+            {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        while let Some(e) = self.parse_head_item(|k| k == Kind::NoError) {
+            operands.push(e);
+            if !self.check(Kind::Comma) {
+                break;
+            }
+            self.advance();
+        }
+        let no_error = self.check(Kind::NoError);
+        if no_error {
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(
+            StatementKind::Reposition {
+                query,
+                operands,
+                no_error,
             },
             tail,
         ))

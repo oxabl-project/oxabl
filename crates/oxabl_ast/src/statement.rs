@@ -371,6 +371,17 @@ pub enum StatementKind {
         handle: Option<Expression>,
     },
 
+    /// REPOSITION statement — moves a query to a row or a record.
+    ///
+    /// `query` is a static query name or a handle expression. The operands are
+    /// the row number, the `ROWID` or `RECID` expressions, or the `FORWARD` and
+    /// `BACKWARD` count, in source order; the keywords are not modelled.
+    Reposition {
+        query: Expression,
+        operands: Vec<Expression>,
+        no_error: bool,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an

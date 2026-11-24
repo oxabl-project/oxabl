@@ -573,6 +573,13 @@ mod paths {
                 }
                 SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
                 SK::Get { query, .. } => read(self, query),
+                SK::Reposition {
+                    query, operands, ..
+                } => {
+                    for e in std::iter::once(query).chain(operands) {
+                        read(self, e);
+                    }
+                }
                 SK::Close {
                     target,
                     status,

@@ -15130,3 +15130,28 @@ fn close_of_something_else_stays_skipped() {
     let stmts = assert_parses_clean("CLOSE DATASET ds.");
     assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
 }
+
+#[test]
+fn reposition_is_head_parsed_with_query_and_operands() {
+    for (source, operands, no_error) in [
+        ("REPOSITION q-detail TO ROW 3.", 1, false),
+        ("REPOSITION q-detail TO ROW v-row NO-ERROR.", 1, true),
+        ("REPOSITION q TO ROWID rid1, rid2.", 2, false),
+        ("REPOSITION q TO ROWID ROWID(cust) NO-ERROR.", 1, true),
+        ("REPOSITION q FORWARD v-n.", 1, false),
+        ("REPOSITION q BACKWARD 2.", 1, false),
+        ("REPOSITION hq TO RECID v-r.", 1, false),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Reposition {
+            operands: o,
+            no_error: n,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Reposition, got {:?}", stmts[0].kind);
+        };
+        assert_eq!((o.len(), *n), (operands, no_error), "{source}: {o:?}");
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}

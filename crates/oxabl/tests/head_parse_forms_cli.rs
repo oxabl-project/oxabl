@@ -31,6 +31,7 @@ struct Form {
 const DECL_X: &str = "DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\n";
 const DECL_STORED: &str =
     "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nDEFINE VARIABLE v-st AS INTEGER NO-UNDO.\n";
+const DECL_INT: &str = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n";
 const DECL_HANDLE: &str = "DEFINE VARIABLE v-x AS HANDLE NO-UNDO.\n";
 
 const FORMS: &[Form] = &[
@@ -63,6 +64,13 @@ const FORMS: &[Form] = &[
             "CLOSE STORED-PROC sp-detail v-st = PROC-STATUS WHERE PROC-HANDLE = v-nope.",
         ),
         bare: Some("CLOSE STORED-PROCEDURE sp-detail."),
+    },
+    Form {
+        name: "REPOSITION",
+        decls: DECL_INT,
+        statement: "REPOSITION q-detail TO ROW v-x NO-ERROR.",
+        undefined: Some("REPOSITION q-detail TO ROW v-nope NO-ERROR."),
+        bare: Some("REPOSITION q-detail FORWARD 2."),
     },
 ];
 

@@ -255,6 +255,13 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
             }
         }
         StatementKind::Get { query, .. } => walk_expression(v, query),
+        StatementKind::Reposition {
+            query, operands, ..
+        } => {
+            for e in std::iter::once(query).chain(operands) {
+                walk_expression(v, e);
+            }
+        }
         StatementKind::Close {
             target,
             status,

@@ -334,6 +334,17 @@ impl Visitor<'_> {
                     self.walk_expression(query);
                 }
             }
+            // A bare name may be a static query, which is not a symbol.
+            StatementKind::Reposition {
+                query, operands, ..
+            } => {
+                if !matches!(query.kind, ExpressionKind::Identifier(_)) {
+                    self.walk_expression(query);
+                }
+                for e in operands {
+                    self.walk_expression(e);
+                }
+            }
             // The target may be a static query or stored procedure name.
             StatementKind::Close {
                 target,

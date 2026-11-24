@@ -509,6 +509,7 @@ impl<'a> Collector<'a> {
             | SK::PromptFor { .. }
             | SK::Get { .. }
             | SK::Close { .. }
+            | SK::Reposition { .. }
             | SK::Import { .. }
             | SK::Export { .. }
             | SK::Put { .. }

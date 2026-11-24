@@ -1509,6 +1509,7 @@ impl<'a> Builder<'a> {
             | SK::Apply { .. }
             | SK::Get { .. }
             | SK::Close { .. }
+            | SK::Reposition { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }
