@@ -328,6 +328,12 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
+            // A bare name may be a static query, which is not a symbol.
+            StatementKind::Get { query, .. } => {
+                if !matches!(query.kind, ExpressionKind::Identifier(_)) {
+                    self.walk_expression(query);
+                }
+            }
             // A bare name may be a static widget or frame, which is not a symbol.
             StatementKind::Apply { event, target } => {
                 for e in event.iter().chain(target) {

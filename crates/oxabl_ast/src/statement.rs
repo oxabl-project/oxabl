@@ -347,6 +347,18 @@ pub enum StatementKind {
         fields: Vec<FrameField>,
     },
 
+    /// GET statement — moves a query to a record.
+    ///
+    /// `get_type` is never [`FindType::Unique`]. The query is a static query
+    /// name or a handle expression.
+    Get {
+        get_type: FindType,
+        query: Expression,
+        /// The lock phrase, when written.
+        lock: Option<LockType>,
+        no_wait: bool,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an

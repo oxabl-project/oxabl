@@ -572,6 +572,7 @@ mod paths {
                     }
                 }
                 SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
+                SK::Get { query, .. } => read(self, query),
                 SK::Update {
                     targets, options, ..
                 }

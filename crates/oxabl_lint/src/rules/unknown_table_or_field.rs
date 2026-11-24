@@ -277,6 +277,7 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
+            StatementKind::Get { query, .. } => self.walk_expression(query),
             StatementKind::Run {
                 arguments, target, ..
             } => {

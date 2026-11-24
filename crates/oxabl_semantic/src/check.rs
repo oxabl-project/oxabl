@@ -380,6 +380,9 @@ impl<'a> CheckWalker<'a> {
                     self.check_expression(e, scope);
                 }
             }
+            StatementKind::Get { query, .. } => {
+                self.check_expression(query, scope);
+            }
 
             // ---- RUN / buffer ops ---------------------------------------
             StatementKind::Run {

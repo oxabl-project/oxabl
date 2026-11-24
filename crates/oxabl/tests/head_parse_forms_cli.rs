@@ -21,18 +21,32 @@ struct Form {
     /// A statement that names `v-x` and nothing else undeclared.
     statement: &'static str,
     /// The same statement with the undefined name `v-nope` where `v-x` was.
-    /// `None` when the form has no operand that is a symbol.
+    /// `None` when the form has no operand that must be a declared symbol.
     undefined: Option<&'static str>,
+    /// A statement with a bare name that is not a symbol (a static query, a
+    /// frame). It must not be reported as undefined.
+    bare: Option<&'static str>,
 }
 
 const DECL_X: &str = "DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\n";
+const DECL_HANDLE: &str = "DEFINE VARIABLE v-x AS HANDLE NO-UNDO.\n";
 
-const FORMS: &[Form] = &[Form {
-    name: "PROMPT-FOR",
-    decls: DECL_X,
-    statement: "PROMPT-FOR v-x FORMAT \"x(10)\" WITH FRAME f-main.",
-    undefined: Some("PROMPT-FOR v-nope FORMAT \"x(10)\" WITH FRAME f-main."),
-}];
+const FORMS: &[Form] = &[
+    Form {
+        name: "PROMPT-FOR",
+        decls: DECL_X,
+        statement: "PROMPT-FOR v-x FORMAT \"x(10)\" WITH FRAME f-main.",
+        undefined: Some("PROMPT-FOR v-nope FORMAT \"x(10)\" WITH FRAME f-main."),
+        bare: None,
+    },
+    Form {
+        name: "GET",
+        decls: DECL_HANDLE,
+        statement: "GET FIRST v-x NO-LOCK.",
+        undefined: None,
+        bare: Some("GET NEXT q-detail NO-LOCK."),
+    },
+];
 
 fn oxabl() -> Command {
     Command::new(env!("CARGO_BIN_EXE_oxabl"))
@@ -92,6 +106,23 @@ fn an_undefined_name_in_the_form_is_reported() {
         assert!(
             text.contains("LINT0001") && text.contains("v-nope"),
             "{}: expected an undefined-symbol finding for v-nope:\n{text}",
+            f.name
+        );
+    }
+}
+
+#[test]
+fn a_bare_name_that_is_not_a_symbol_is_not_reported() {
+    for f in FORMS {
+        let Some(bare) = f.bare else {
+            continue;
+        };
+        let source = format!("{}{}\n", f.decls, bare);
+        let (_tmp, file) = project(&source);
+        let (text, _) = check(&file, false);
+        assert!(
+            !text.contains("LINT0001"),
+            "{}: a bare query or frame name reads as undefined:\n{text}",
             f.name
         );
     }

@@ -3383,6 +3383,8 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_lenient_operand(e, scope);
                 }
             }
+            // A bare query name is not a declared symbol.
+            StatementKind::Get { query, .. } => self.walk_lenient_operand(query, scope),
             StatementKind::Delete { buffer, .. }
             | StatementKind::Release { buffer, .. }
             | StatementKind::Validate { buffer, .. } => {

@@ -254,6 +254,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
                 walk_expression(v, e);
             }
         }
+        StatementKind::Get { query, .. } => walk_expression(v, query),
         StatementKind::Run {
             target,
             arguments,

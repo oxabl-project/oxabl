@@ -796,6 +796,16 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
+        // GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT] — head-parsed.
+        if self.check(Kind::Get)
+            && matches!(
+                self.peek_at(1).kind,
+                Kind::First | Kind::Next | Kind::Prev | Kind::Last | Kind::Current
+            )
+        {
+            return self.parse_get_statement();
+        }
+
         if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
@@ -803,7 +813,7 @@ impl Parser<'_> {
             || self.check(Kind::Accum) // abbreviation of ACCUMULATE
             || self.check(Kind::Open)
             || self.check(Kind::Status)
-            || self.check(Kind::Get)
+            || self.check(Kind::Get) // GET with no query position
             || self.check(Kind::Clear)
             // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             || self.check(Kind::Format)
@@ -4451,6 +4461,51 @@ impl Parser<'_> {
             }
         };
         Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query
+    /// that is not an expression leaves the statement skipped.
+    fn parse_get_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume GET
+        let get_type = match self.advance().kind {
+            Kind::First => FindType::First,
+            Kind::Next => FindType::Next,
+            Kind::Prev => FindType::Prev,
+            Kind::Last => FindType::Last,
+            _ => FindType::Current,
+        };
+        let lock_start = |k: Kind| {
+            matches!(
+                k,
+                Kind::NoLock | Kind::ShareLock | Kind::ExclusiveLock | Kind::NoWait
+            )
+        };
+        let Some(query) = self.parse_head_item(lock_start) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut lock = None;
+        let mut no_wait = false;
+        loop {
+            match self.peek().kind {
+                Kind::NoLock => lock = Some(LockType::NoLock),
+                Kind::ShareLock => lock = Some(LockType::ShareLock),
+                Kind::ExclusiveLock => lock = Some(LockType::ExclusiveLock),
+                Kind::NoWait => no_wait = true,
+                _ => break,
+            }
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(
+            StatementKind::Get {
+                get_type,
+                query,
+                lock,
+                no_wait,
+            },
+            tail,
+        ))
     }
 
     /// `PROMPT-FOR [STREAM s] [UNLESS-HIDDEN] {field [format-phrase] | name AS type |

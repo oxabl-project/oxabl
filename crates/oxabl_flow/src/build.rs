@@ -1507,6 +1507,7 @@ impl<'a> Builder<'a> {
             | SK::Down { .. }
             | SK::Form { .. }
             | SK::Apply { .. }
+            | SK::Get { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }

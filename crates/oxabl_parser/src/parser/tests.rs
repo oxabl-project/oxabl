@@ -15047,3 +15047,42 @@ fn prompt_for_is_head_parsed_with_stream_and_targets() {
         assert_eq!(f.len(), fields, "{source}");
     }
 }
+
+#[test]
+fn get_is_head_parsed_with_position_query_and_lock() {
+    for (source, get_type, lock, no_wait) in [
+        ("GET FIRST q-detail.", FindType::First, None, false),
+        (
+            "GET NEXT q-detail NO-LOCK.",
+            FindType::Next,
+            Some(LockType::NoLock),
+            false,
+        ),
+        (
+            "GET LAST hq EXCLUSIVE-LOCK NO-WAIT.",
+            FindType::Last,
+            Some(LockType::ExclusiveLock),
+            true,
+        ),
+        (
+            "GET CURRENT q SHARE-LOCK.",
+            FindType::Current,
+            Some(LockType::ShareLock),
+            false,
+        ),
+        ("GET PREV q-detail.", FindType::Prev, None, false),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Get {
+            get_type: t,
+            lock: l,
+            no_wait: w,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Get, got {:?}", stmts[0].kind);
+        };
+        assert_eq!((t, l, w), (&get_type, &lock, &no_wait), "{source}");
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
