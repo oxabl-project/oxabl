@@ -817,6 +817,64 @@ fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
                 walk_expression(v, expression);
             }
         }
+        StatementKind::PromptFor {
+            targets,
+            options,
+            fields,
+            ..
+        } => {
+            for expression in targets.iter().chain(options) {
+                walk_expression(v, expression);
+            }
+            for field in fields {
+                walk_type_source(v, &field.type_source);
+            }
+        }
+        StatementKind::Get { query, .. } => walk_expression(v, query),
+        StatementKind::Close {
+            target,
+            status,
+            handle,
+            ..
+        } => {
+            walk_expression(v, target);
+            walk_opt(v, status.as_ref());
+            walk_opt(v, handle.as_ref());
+        }
+        StatementKind::Reposition {
+            query, operands, ..
+        } => {
+            walk_expression(v, query);
+            for expression in operands {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Accumulate {
+            expression, breaks, ..
+        } => {
+            walk_expression(v, expression);
+            for expression in breaks {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Color { items, .. } => {
+            for expression in items {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::CopyLob {
+            source,
+            target,
+            options,
+            ..
+        } => {
+            walk_expression(v, source);
+            walk_expression(v, target);
+            for expression in options {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Clear { .. } => {}
         StatementKind::Pause {
             duration: first,
             message: second,
