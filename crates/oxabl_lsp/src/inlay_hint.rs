@@ -49,6 +49,9 @@ pub(crate) struct Options {
     /// Refresh requests sent, for their ids.
     refreshes: u64,
     shared: Arc<Shared>,
+    /// The canonical path of each open file, resolved once when it opens:
+    /// resolving is a file system call, and an edit asks for it on every key.
+    canonical: HashMap<Uri, PathBuf>,
     /// The worker's queue, once started.
     jobs: Option<crossbeam_channel::Sender<Job>>,
 }
@@ -74,6 +77,7 @@ impl Options {
                 .map_or(HintKinds::ALL, |v| kinds_from(v, HintKinds::ALL)),
             refreshes: 0,
             shared: Arc::default(),
+            canonical: HashMap::new(),
             jobs: None,
         }
     }
@@ -209,15 +213,18 @@ impl Server<'_> {
 
     /// Record the version of an open file, or forget a closed one.
     pub(crate) fn note_inlay_version(&mut self, uri: &Uri, version: Option<i32>) {
-        self.schedule_inlay_readers(uri);
-        if let Some(path) = crate::uri_to_path(uri) {
+        let path = match version {
+            Some(_) => self.inlay_path(uri),
+            None => self.inlay.canonical.remove(uri),
+        };
+        if let Some(path) = path {
+            self.schedule_inlay_readers(uri, &path);
             let mut paths = self
                 .inlay
                 .shared
                 .paths
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let path = oxabl_daemon::canonical_path(&path);
             match version {
                 Some(version) => paths.insert(path, version),
                 None => paths.remove(&path),
@@ -245,15 +252,21 @@ impl Server<'_> {
         }
     }
 
+    /// The canonical path of an open file, resolved on its first use.
+    fn inlay_path(&mut self, uri: &Uri) -> Option<PathBuf> {
+        if let Some(path) = self.inlay.canonical.get(uri) {
+            return Some(path.clone());
+        }
+        let path = oxabl_daemon::canonical_path(&crate::uri_to_path(uri)?);
+        self.inlay.canonical.insert(uri.clone(), path.clone());
+        Some(path)
+    }
+
     /// Schedule the debounced analysis of each include whose cached hints
     /// were read in a root that reads `uri`'s file (a nested or sibling
     /// include, or the root). Its due analysis then asks the client again
     /// (see `fire_due_debounces`), as an edit of the root does.
-    fn schedule_inlay_readers(&mut self, uri: &Uri) {
-        let Some(path) = crate::uri_to_path(uri) else {
-            return;
-        };
-        let path = oxabl_daemon::canonical_path(&path);
+    fn schedule_inlay_readers(&mut self, uri: &Uri, path: &std::path::Path) {
         let readers: Vec<Uri> = self
             .inlay
             .shared
@@ -262,7 +275,7 @@ impl Server<'_> {
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|(reader, c)| {
-                *reader != uri && c.key.context.is_some() && c.read.contains(&path)
+                *reader != uri && c.key.context.is_some() && c.read.iter().any(|p| p == path)
             })
             .map(|(reader, _)| reader.clone())
             .collect();

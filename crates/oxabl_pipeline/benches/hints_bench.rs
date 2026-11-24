@@ -5,7 +5,9 @@
 //!
 //! `hints/all` is every kind; `hints/scopes` leaves out the index, which is
 //! the only kind that needs the effects analysis; `hints/index` is the index
-//! alone, which a project with no strict rule gets.
+//! alone, which a project with no strict rule gets. `hints/many_procedures` is
+//! a file of thousands of procedures with many reads each (about 53,000
+//! lines), for the index alone: the cost must grow in step with the size.
 
 use std::fmt::Write;
 use std::hint::black_box;
@@ -64,6 +66,61 @@ fn procedure_file() -> String {
     s
 }
 
+const MANY_PROCEDURES: usize = 2400;
+
+fn many_procedures_file() -> String {
+    let mut s = String::from("DEFINE VARIABLE total AS INTEGER NO-UNDO.\n");
+    for k in 0..MANY_PROCEDURES {
+        writeln!(s, "PROCEDURE p{k}:").unwrap();
+        for j in 0..10 {
+            writeln!(
+                s,
+                "FIND FIRST Customer WHERE Customer.CustNum = {j} NO-ERROR."
+            )
+            .unwrap();
+        }
+        for j in 0..10 {
+            writeln!(
+                s,
+                "FOR EACH Customer WHERE Customer.CustNum > {j} NO-LOCK:\n    \
+                 total = total + 1.\nEND."
+            )
+            .unwrap();
+        }
+        s.push_str("END PROCEDURE.\n");
+    }
+    s
+}
+
+fn bench_many_procedures(c: &mut Criterion) {
+    let source = many_procedures_file();
+    let fs = InMemoryFileSystem::new();
+    let config = PipelineConfig {
+        schema: schema_from_df(SCHEMA),
+        schema_loaded: true,
+        ..PipelineConfig::default()
+    };
+    let path = PathBuf::from("/ws/many.p");
+    let run = LintPipeline::new(&config, &fs);
+    let handle = run.with_file(&path);
+    let expansion = handle.expand(&source);
+    let index = HintKinds {
+        locks: false,
+        scope: false,
+        transactions: false,
+        ..HintKinds::ALL
+    };
+    let all = handle.database_hints(&source, &expansion, index);
+    assert!(all.len() >= 20 * MANY_PROCEDURES, "{} hints", all.len());
+
+    let mut group = c.benchmark_group("hints");
+    group.sample_size(10);
+    group.bench_function("many_procedures", |b| {
+        b.iter(|| black_box(handle.database_hints(&source, &expansion, index).len()))
+    });
+    group.finish();
+}
+
 fn bench_hints(c: &mut Criterion) {
     let source = procedure_file();
     let fs = InMemoryFileSystem::new();
@@ -115,5 +172,5 @@ fn bench_hints(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_hints);
+criterion_group!(benches, bench_hints, bench_many_procedures);
 criterion_main!(benches);

@@ -120,14 +120,16 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   after a read that names no lock, and `transaction starts` / `transaction ends`
   and `<buffer> scope starts` / `<buffer> scope ends` around a transaction or a
   buffer scope that the compiler makes wider than the code shows. Hover a hint
-  to see why and which rule reports it. Each of these kinds shows only where
+  to see why and which rule reports it (the index hint has no rule). Each of
+  these kinds shows only where
   its rule is on: lock hints need `default-lock` (LK001), scope hints
   `scope-widened` (TX005), transaction hints `implicit-transaction` (TX001) or
   `procedure-wide-transaction` (TX002). In an include, the hints come from the
   selected include context; without one, a hint that depends on the including
   file is left out, and the others say that an includer can change them. A
   fact that oxabl does not know gives no hint, for example in a file with an
-  include that was not found, or a table that the schema does not have. Turn
+  include that was not found (for the index hint, a read after that include),
+  or a table that the schema does not have. Turn
   each kind off with the `oxabl.inlayHints.*` settings, or all hints with VS
   Code's `editor.inlayHints.enabled`. The hints need the schema under
   `[workspace.schema]`. The index hint costs one analysis of the file for each

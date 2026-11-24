@@ -283,6 +283,7 @@ impl LintPipeline<'_> {
                              (WHOLE-INDEX).",
                         );
                     }
+                    tooltip.push_str(" No lint rule reports this choice; it is an estimate.");
                     let label = if whole {
                         format!("index {name}, WHOLE-INDEX")
                     } else {

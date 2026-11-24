@@ -36,10 +36,11 @@ query, as LK001 says.
 
 ## The hints are the rules' findings
 
-The hints must never say something that the strict rules do not. So the hints
-do not compute the facts again, and they do not select them again. The index
-hint is the exception in one way: no rule reports index choices alone, so it
-comes from the effects analysis, and needs no rule. The tests compare it with
+The lock, scope and transaction hints must never say something that the strict
+rules do not. So the hints do not compute the facts again, and they do not
+select them again. The index hint has no rule to agree with: no rule reports
+index choices alone, so it comes from the effects analysis, and needs no rule.
+Its tooltip says that no lint rule reports it. The tests compare it with
 `oxabl explain --json`, which names the same index.
 
 - Each rule that a kind follows has a selection function: `reported_reads`
@@ -65,6 +66,10 @@ index choices of `oxabl explain --json`.
 - A search for which the effects analysis names no index (no schema, a table
   the schema does not have, several indexes, text that did not expand) gives
   no index hint.
+- A read that follows an include that did not arrive gives no index hint. The
+  missing include can define a temp-table or a buffer of the same name, so the
+  table of the read is not known. A read that comes before the include keeps
+  its hint, and so does a read in a file where every include arrived.
 - A temp-table and a table the schema does not have give no lock, scope or
   transaction hint.
 - A hint whose place is in an include gives no hint in the file that includes
@@ -188,7 +193,14 @@ procedure file of about 5,400 lines. On a loaded development machine it took
 about 16 ms for all kinds, 13 ms without the index (`hints/scopes`) and 15 ms
 for the index alone (`hints/index`, what a project with no strict rule gets).
 That is in the 50 ms interactive budget, and it does not run on the server's
-main loop. Over `oxabl lsp` (release build, a file of 5,400 lines), the first
+main loop. The cost grows in step with the size of the file:
+`hints/many_procedures` (2,400 procedures, about 53,000 lines, the index
+alone) takes about 0.4 s in a release build. It took 4.2 s
+there before the scope analysis stopped to compare each reference with every block of its
+buffer. A file of that size is still analysed whole once for each version of
+its text, so its hints come late; the worker never blocks the main loop.
+
+Over `oxabl lsp` (release build, a file of 5,400 lines), the first
 request for a text took about 35 ms in a project with no strict rule, against
 about 15 ms before, when it answered an empty list with no analysis. Each
 later range answered in under 1 ms.

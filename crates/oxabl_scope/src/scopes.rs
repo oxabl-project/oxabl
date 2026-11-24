@@ -139,21 +139,16 @@ fn buffer_scopes(
             into: None,
         });
     }
-    let held: Vec<usize> = (0..cands.len()).collect();
     for &i in refs {
         let r = &res.refs[i];
         if r.role != Role::Free {
             continue;
         }
-        // The innermost strong or weak block of the buffer around it.
-        let cover = held
-            .iter()
-            .copied()
-            .filter(|&c| cands[c].role != Role::Free)
-            .filter(|&c| {
-                cands[c].unit == r.unit && flow.unit(r.unit).block_contains(cands[c].block, r.block)
-            })
-            .max_by_key(|&c| block_depth(flow, r.unit, cands[c].block));
+        // The innermost strong or weak block of the buffer around it: the
+        // nearest block, from the reference up, that holds such a candidate.
+        let cfg = flow.unit(r.unit);
+        let cover = std::iter::successors(Some(r.block), |b| cfg.block(*b).parent)
+            .find_map(|b| index.get(&(r.unit, b, true)).copied());
         if let Some(c) = cover {
             cands[c].refs.push(i);
             continue;

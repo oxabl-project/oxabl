@@ -11,7 +11,9 @@
 //!   `find-in-loop` (DB001) reads.
 //!
 //! A file the scope analysis cannot judge gives no hint, and a fact that is
-//! Unknown gives no hint. Spans are in the analysed (expanded) text.
+//! Unknown gives no hint. An index hint is also left out for a read that
+//! follows an include that did not arrive. Spans are in the analysed
+//! (expanded) text.
 
 use oxabl_ast::{Span, Statement};
 use oxabl_effects::{Access, IndexReason};
@@ -108,8 +110,11 @@ pub fn database_hints(
     }
     if kinds.index {
         for e in shared.effects(program, ctx).effects() {
+            // An include that did not arrive may hold a temp-table or buffer
+            // of the same name, so the table of a later read is a guess.
             if let Some(Access::Index(choice)) = &e.access
                 && matches!(e.table, Table::Database(_) | Table::TempTable { .. })
+                && ctx.elided_includes.first().is_none_or(|&o| o >= e.at.start)
             {
                 hints.push(DatabaseHint::Index {
                     at: e.at,

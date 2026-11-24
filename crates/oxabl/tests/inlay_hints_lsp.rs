@@ -485,22 +485,32 @@ fn the_index_hint_needs_a_file_the_analysis_can_judge() {
 }
 
 #[test]
-fn a_table_without_a_loaded_schema_gives_no_index_hint() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(
-        root.path().join("oxabl.toml"),
-        "[workspace]\nname = \"hints\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.path().join("a.p"),
-        "FIND FIRST customer WHERE customer.custnum = 1 NO-ERROR.\n",
-    )
-    .unwrap();
+fn a_read_after_an_include_that_did_not_arrive_gives_no_index_hint() {
+    let find = "FIND FIRST customer WHERE customer.custnum = 1 NO-ERROR.\n";
+    let root = workspace_with(
+        "[workspace.sources]\ninclude_paths = [\".\"]",
+        &[
+            // The missing include may define a temp-table named `customer`.
+            ("before.p", &format!("{{missing.i}}\n{find}")),
+            ("after.p", &format!("{find}{{missing.i}}\n")),
+            ("present.p", &format!("{{defs.i}}\n{find}")),
+            ("defs.i", "DEFINE VARIABLE n AS INTEGER NO-UNDO.\n"),
+        ],
+    );
     let mut session = Session::start_with(root.path(), capabilities());
-    open(&mut session, root.path(), "a.p");
-    let hints = hints(&mut session, root.path(), "a.p");
-    assert!(hints.is_empty(), "{hints:?}");
+    for name in ["before.p", "after.p", "present.p"] {
+        open(&mut session, root.path(), name);
+    }
+    let before = hints(&mut session, root.path(), "before.p");
+    assert!(before.is_empty(), "{before:?}");
+    // The same read with the include found, and with the missing include
+    // after the read, shows its hint: the empty answer above comes from the
+    // missing include before the read.
+    for name in ["present.p", "after.p"] {
+        let hints = hints(&mut session, root.path(), name);
+        let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
+        assert_eq!(labels, ["index custnum"], "{name}");
+    }
 }
 
 #[test]
