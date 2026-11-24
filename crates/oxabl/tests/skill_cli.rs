@@ -110,7 +110,7 @@ fn check_on_an_empty_directory_fails_and_writes_nothing() {
 fn check_names_an_edited_file() {
     let dir = TempDir::new().unwrap();
     install(dir.path(), &[]);
-    let edited = agents(dir.path()).join("references/commands.md");
+    let edited = agents(dir.path()).join("references/check.md");
     let mut changed = fs::read_to_string(&edited).unwrap();
     changed.push_str("edited\n");
     fs::write(&edited, changed).unwrap();
@@ -122,7 +122,7 @@ fn check_names_an_edited_file() {
     assert!(
         out.contains(&agents(dir.path()).display().to_string())
             && out.contains("stale")
-            && out.contains("references/commands.md differs"),
+            && out.contains("references/check.md differs"),
         "{out}"
     );
     assert!(

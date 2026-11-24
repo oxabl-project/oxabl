@@ -17,8 +17,20 @@ use clap::{Args, Subcommand, ValueEnum};
 const FILES: &[(&str, &str)] = &[
     ("SKILL.md", include_str!("../skill/SKILL.md")),
     (
-        "references/commands.md",
-        include_str!("../skill/references/commands.md"),
+        "references/build.md",
+        include_str!("../skill/references/build.md"),
+    ),
+    (
+        "references/check.md",
+        include_str!("../skill/references/check.md"),
+    ),
+    (
+        "references/explain.md",
+        include_str!("../skill/references/explain.md"),
+    ),
+    (
+        "references/rules.md",
+        include_str!("../skill/references/rules.md"),
     ),
 ];
 
