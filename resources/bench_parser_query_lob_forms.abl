@@ -1,0 +1,79 @@
+/* Benchmark fixture: PROMPT-FOR, COPY-LOB, REPOSITION, CLEAR, ACCUMULATE,
+   COLOR, GET and CLOSE. The parser reads the head of each statement and skips
+   the options. Synthetic ABL: no other bench_parser_* fixture holds these forms. */
+
+define variable lv-total as integer no-undo.
+define variable lv-count as integer no-undo.
+define variable lv-name as character no-undo.
+define variable lv-city as character no-undo.
+define variable lv-key as character no-undo.
+define variable lv-text as longchar no-undo.
+define variable lv-copy as longchar no-undo.
+define variable lv-mem as memptr no-undo.
+define variable lv-path as character no-undo.
+define variable lv-row as integer no-undo.
+define variable lv-query as handle no-undo.
+define variable lv-color as character no-undo.
+
+define query q-detail for tt-detail.
+
+prompt-for lv-key with frame f-prompt.
+prompt-for lv-name lv-city format "x(20)" with frame f-detail.
+prompt-for lv-key label "Key" validate(lv-key <> "", "Key needed") with frame f-prompt.
+prompt-for stream str-in lv-name.
+prompt-for lv-name with frame f-detail editing:
+    readkey.
+    apply lastkey.
+end.
+
+copy-lob from lv-text to lv-copy.
+copy-lob from object lv-text starting at 1 for 100 to object lv-copy no-error.
+copy-lob from file lv-path to lv-text convert target codepage "utf-8".
+copy-lob lv-text to file lv-path append.
+copy-lob from lv-text to lv-mem.
+copy-lob from lv-text to object lv-copy overlay at lv-row trim no-convert.
+
+open query q-detail for each tt-detail.
+reposition q-detail to row lv-row.
+reposition q-detail to rowid rowid(tt-detail).
+reposition q-detail forward lv-count.
+reposition q-detail backward 2 no-error.
+reposition lv-query to row 1.
+
+clear frame f-detail.
+clear frame f-detail all no-pause.
+clear all.
+clear.
+
+accumulate lv-total (total).
+accumulate lv-count (average count maximum).
+accumulate lv-total (total by lv-name).
+accumulate tt-detail.amount (total count by tt-detail.group).
+
+color display normal lv-name lv-city with frame f-detail.
+color prompt input lv-key.
+color display messages.
+color display blue/white lv-name.
+color display value(lv-color) lv-name lv-city with frame f-detail.
+color stream str-out display normal lv-name.
+
+get first q-detail.
+get next q-detail no-lock.
+get prev q-detail share-lock.
+get last q-detail exclusive-lock no-wait.
+get current q-detail no-lock.
+get first lv-query no-lock.
+
+close query q-detail.
+close query lv-query.
+close stored-procedure sp-detail.
+close stored-proc sp-detail lv-total = proc-status.
+
+prompt-for lv-name lv-city with frame f-detail.
+copy-lob from lv-text to lv-copy.
+reposition q-detail to row lv-row.
+accumulate lv-total (total).
+color display normal lv-name with frame f-detail.
+get next q-detail no-lock.
+close query q-detail.
+clear frame f-detail.

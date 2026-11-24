@@ -15317,3 +15317,23 @@ fn a_copy_lob_without_to_stays_skipped() {
     let stmts = assert_parses_clean("COPY-LOB FROM v-a.");
     assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
 }
+
+/// The `query_lob_forms` bench fixture exists to time the head parse of these
+/// forms; a statement that fell back to `Skipped` would time the wrong path.
+#[test]
+fn the_query_lob_bench_fixture_holds_no_skipped_statement() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../resources/bench_parser_query_lob_forms.abl");
+    let source = std::fs::read_to_string(path).unwrap();
+    let program = Parser::new(&tokenize(&source), &source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let skipped: Vec<_> = program
+        .statements
+        .iter()
+        .filter(|s| matches!(s.kind, StatementKind::Skipped { .. }))
+        .map(|s| &source[s.span.start as usize..s.span.end as usize])
+        // The query set-up (`DEFINE QUERY`, `OPEN QUERY`) is not under test.
+        .filter(|text| !text.starts_with("define query") && !text.starts_with("open query"))
+        .collect();
+    assert!(skipped.is_empty(), "{skipped:#?}");
+}
