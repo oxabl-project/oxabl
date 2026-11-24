@@ -576,6 +576,7 @@ struct Navigation {
     class_files: FxHashMap<SymbolId, IndexedFileId>,
     member_files: FxHashMap<SymbolId, IndexedFileId>,
     field_tables: FxHashMap<SymbolId, oxabl_schema::TableId>,
+    like_field_owners: FxHashMap<VirtualSpan, SymbolId>,
 }
 
 /// One place the analysed text names something, in expanded coordinates.
@@ -939,6 +940,25 @@ impl SymbolTable {
             .navigation
             .field_tables
             .get(&sym)
+            .copied()
+    }
+
+    pub(crate) fn record_like_field_owner(&mut self, span: VirtualSpan, temp_table: SymbolId) {
+        self.side_mut()
+            .navigation
+            .like_field_owners
+            .insert(span, temp_table);
+    }
+
+    /// The temp-table whose copy of a database field the unqualified name at
+    /// `span` is, when the name resolved to one. Kept only when the analysis
+    /// context recorded sites.
+    pub fn like_field_owner(&self, span: VirtualSpan) -> Option<SymbolId> {
+        self.side
+            .as_deref()?
+            .navigation
+            .like_field_owners
+            .get(&span)
             .copied()
     }
 

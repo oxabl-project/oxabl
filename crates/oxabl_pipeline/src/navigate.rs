@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use oxabl_analyze::{ExpandedFile, analyze_for_navigation};
+use oxabl_analyze::{ExpandedFile, analyze_for_navigation_checked};
 use oxabl_ast::{NodeId, Span};
 use oxabl_common::{FileId, VirtualSpan};
 use oxabl_index::calls::{
@@ -94,6 +94,8 @@ pub struct Navigation<'s, 'a> {
     pub(crate) expanded: &'s ExpandedFile,
     search_base: Option<PathBuf>,
     pub(crate) semantic: Semantic,
+    /// Whether the parser recovered from an error in the expanded text.
+    pub(crate) recovered: bool,
     file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
     /// The unit's calls, extracted on the first `RUN` site asked about.
     calls: OnceCell<FileCalls>,
@@ -189,8 +191,8 @@ impl<'a> LintPipeline<'a> {
         } else {
             SourceContext::CompilationUnit
         };
-        let semantic = self.with_run_index(|index| {
-            analyze_for_navigation(
+        let (semantic, recovered) = self.with_run_index(|index| {
+            analyze_for_navigation_checked(
                 expanded,
                 &self.config().schema,
                 self.config().schema_loaded,
@@ -203,6 +205,7 @@ impl<'a> LintPipeline<'a> {
             expanded,
             search_base: expansion.search_base().map(Path::to_path_buf),
             semantic,
+            recovered,
             file_of,
             calls: OnceCell::new(),
             outlines: RefCell::new(HashMap::new()),
@@ -428,7 +431,7 @@ impl Navigation<'_, '_> {
         self.symbol_targets(sym).into_iter().map(Key::At).collect()
     }
 
-    fn symbol_keys(&self, sym: SymbolId) -> Vec<Key> {
+    pub(crate) fn symbol_keys(&self, sym: SymbolId) -> Vec<Key> {
         let symbols = &self.semantic.symbols;
         if let Some(file) = symbols.member_file(sym)
             && let Some(path) = self.path_of(file)
@@ -515,7 +518,10 @@ impl Navigation<'_, '_> {
         let at = |targets: Vec<Target>| targets.into_iter().map(Key::At).collect();
         match target {
             SiteTarget::Reference(node) => match self.semantic.references.get(*node)? {
-                Resolution::Resolved(sym) => Some(self.symbol_keys(*sym)),
+                Resolution::Resolved(sym) => Some(
+                    self.bare_like_field_key(*sym, span)
+                        .unwrap_or_else(|| self.symbol_keys(*sym)),
+                ),
                 Resolution::Unresolved { .. } => Some(Vec::new()),
             },
             SiteTarget::Run(node) => match self.semantic.references.get(*node)? {
@@ -539,22 +545,41 @@ impl Navigation<'_, '_> {
             SiteTarget::Table(table) => Some(at(self.table_target(*table).into_iter().collect())),
             SiteTarget::SchemaField(table) => {
                 let name = self.text(span)?;
-                let targets = self.field_target(*table, name);
-                // `tt.field` of a temp-table `LIKE` a database table is the
-                // temp-table's own field, not the database field.
                 if let Some(temp_table) = self.qualifier_temp_table(span)
-                    && let Some(field) = self.schema_field_name(*table, name)
-                    && let Some(place) = self.place(self.semantic.symbols.get(temp_table).name_span)
+                    && let Some(key) = self.like_field_key(temp_table, *table, name)
                 {
-                    return Some(vec![Key::TableField {
-                        table: place,
-                        name: field,
-                        schema: targets.into_iter().next(),
-                    }]);
+                    return Some(vec![key]);
                 }
+                let targets = self.field_target(*table, name);
                 Some(at(targets))
             }
         }
+    }
+
+    /// `tt.field` and a bare `field` of a temp-table `LIKE` a database table
+    /// are the temp-table's own field, not the database field.
+    fn like_field_key(
+        &self,
+        temp_table: SymbolId,
+        table: oxabl_schema::TableId,
+        name: &str,
+    ) -> Option<Key> {
+        let field = self.schema_field_name(table, name)?;
+        let place = self.place(self.semantic.symbols.get(temp_table).name_span)?;
+        Some(Key::TableField {
+            table: place,
+            name: field,
+            schema: self.field_target(table, name).into_iter().next(),
+        })
+    }
+
+    /// The key of the unqualified field at `span`, when `sym` is the database
+    /// field that a temp-table copies.
+    fn bare_like_field_key(&self, sym: SymbolId, span: VirtualSpan) -> Option<Vec<Key>> {
+        let temp_table = self.semantic.symbols.like_field_owner(span)?;
+        let table = self.semantic.symbols.field_table(sym)?;
+        self.like_field_key(temp_table, table, self.text(span)?)
+            .map(|key| vec![key])
     }
 
     fn type_targets(&self, resolution: &Resolution, span: VirtualSpan) -> Option<Vec<Target>> {

@@ -1688,7 +1688,19 @@ pub fn analyze_for_navigation(
     index: &dyn WorkspaceIndex,
     source_context: SourceContext,
 ) -> Semantic {
-    analyze_expanded(expanded, schema, schema_loaded, index, source_context, true).0
+    analyze_for_navigation_checked(expanded, schema, schema_loaded, index, source_context).0
+}
+
+/// [`analyze_for_navigation`] and whether the parser recovered from an error:
+/// the sites of a damaged statement can be missing.
+pub fn analyze_for_navigation_checked(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    index: &dyn WorkspaceIndex,
+    source_context: SourceContext,
+) -> (Semantic, bool) {
+    analyze_expanded(expanded, schema, schema_loaded, index, source_context, true)
 }
 
 fn analyze_expanded(

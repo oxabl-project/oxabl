@@ -4745,13 +4745,13 @@ impl<'a> ResolveWalker<'a> {
                     None => opaque = true,
                 }
             }
-            let mut exact: SmallVec<[FieldHit; 1]> = SmallVec::new();
-            let mut prefix: SmallVec<[FieldHit; 1]> = SmallVec::new();
+            let mut exact: SmallVec<[(RecordSource, FieldHit); 1]> = SmallVec::new();
+            let mut prefix: SmallVec<[(RecordSource, FieldHit); 1]> = SmallVec::new();
             let mut ambiguous = false;
             for r in records {
                 match self.record_field(r, atom) {
-                    RecordField::Exact(hit) => exact.push(hit),
-                    RecordField::Prefix(hit) => prefix.push(hit),
+                    RecordField::Exact(hit) => exact.push((r, hit)),
+                    RecordField::Prefix(hit) => prefix.push((r, hit)),
                     RecordField::Ambiguous => ambiguous = true,
                     RecordField::NotFound => {}
                 }
@@ -4768,7 +4768,18 @@ impl<'a> ResolveWalker<'a> {
                 return BareField::Unknown;
             }
             return match (hits.as_slice(), ambiguous) {
-                ([hit], false) => BareField::Field(self.field_hit_symbol(hit.clone(), atom, id)),
+                ([(record, hit)], false) => {
+                    let sym = self.field_hit_symbol(hit.clone(), atom, id);
+                    // A temp-table's copy of a database field is not the
+                    // database field: navigation needs the temp-table.
+                    if let (RecordSource::TempTable(tt), FieldHit::Schema(..)) = (record, hit)
+                        && self.ctx.record_sites
+                    {
+                        self.symbols
+                            .record_like_field_owner(identifier_span(id), *tt);
+                    }
+                    BareField::Field(sym)
+                }
                 _ => BareField::Ambiguous,
             };
         }

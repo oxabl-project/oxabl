@@ -1558,6 +1558,108 @@ fn a_field_of_a_like_temp_table_is_not_the_database_field() {
     );
 }
 
+const BARE_FORMS: &str = "DEFINE TEMP-TABLE ttL NO-UNDO LIKE Item.\n\
+    DEFINE TEMP-TABLE ttM NO-UNDO LIKE ttL.\n\
+    DEFINE BUFFER bL FOR ttL.\n\
+    FOR EACH ttL:\n    DISPLAY ItemNum.\nEND.\n\
+    FOR EACH bL WHERE ItemNum = 2:\n    DISPLAY bL.ItemNum.\nEND.\n\
+    FOR EACH ttM:\n    DISPLAY ItemNum.\nEND.\n";
+
+#[test]
+fn an_unqualified_field_of_a_like_temp_table_is_not_the_database_field() {
+    let config = "[workspace]\nname = \"references\"\n\
+        [workspace.sources]\ninclude_paths = [\".\"]\n\
+        [workspace.schema]\nfiles = [\"db/shop.df\"]\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", config),
+        ("db/shop.df", SHOP),
+        ("bare.p", BARE_FORMS),
+        ("reads.p", READS),
+    ]);
+    let bare = ws.path("bare.p");
+    let reads = ws.path("reads.p");
+    let mut session = Session::start(&ws.root);
+
+    // The bare name in a loop over `ttL`: the uses of `ttL`'s field, through
+    // its buffer too, and none of `ttM`'s copy or of the database field.
+    session.open(&bare, BARE_FORMS);
+    let (found, shown, _) = references_logged(&mut session, &bare, BARE_FORMS, "ItemNum", 0);
+    assert_eq!(
+        found,
+        sorted(vec![
+            location(&bare, BARE_FORMS, "ItemNum", 0),
+            location(&bare, BARE_FORMS, "ItemNum", 1),
+            location(&bare, BARE_FORMS, "ItemNum", 2),
+        ])
+    );
+    assert_eq!(shown, Vec::<String>::new());
+    // The copy in `ttM` is a field of its own.
+    let (found, _, _) = references_logged(&mut session, &bare, BARE_FORMS, "ItemNum", 3);
+    assert_eq!(found, vec![location(&bare, BARE_FORMS, "ItemNum", 3)]);
+    // Go to definition still goes to the database field.
+    let (definition, _) = ask(
+        &mut session,
+        "textDocument/definition",
+        position(&bare, BARE_FORMS, "ItemNum", 0),
+    );
+    assert_eq!(
+        definition[0]["uri"],
+        json!(file_uri(&ws.path("db/shop.df"))),
+        "{definition}"
+    );
+
+    // From the database field: nothing of the temp-tables' fields.
+    session.open(&reads, READS);
+    let (found, _, _) = references_logged(&mut session, &reads, READS, "ItemNum", 0);
+    let in_bare: Vec<&Value> = found
+        .iter()
+        .filter(|place| place["uri"] == json!(file_uri(&bare)))
+        .collect();
+    assert_eq!(in_bare, Vec::<&Value>::new());
+}
+
+const UNMODELLED: &str = "DEFINE VARIABLE gcName AS CHARACTER NO-UNDO.\ngcName = \"a\".\n\
+    FOO BAR ((( gcName +++ .\ngcName = \"b\".\nDISPLAY gcName.\n";
+const DAMAGED: &str = "DEFINE VARIABLE gcName AS CHARACTER NO-UNDO.\n\
+    FIND FIRST Item. Item.ItemNum = 2. gcName = \"a\".\nDISPLAY gcName.\n";
+
+#[test]
+fn a_unit_the_search_cannot_read_whole_says_it_can_miss_uses() {
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("u.p", UNMODELLED),
+        ("d.p", DAMAGED),
+        ("ok.p", VARS),
+    ]);
+    let unmodelled = ws.path("u.p");
+    let damaged = ws.path("d.p");
+    let ok = ws.path("ok.p");
+    let mut session = Session::start(&ws.root);
+
+    // A name in a statement form that oxabl does not model.
+    session.open(&unmodelled, UNMODELLED);
+    let (_, shown, _) = references_logged(&mut session, &unmodelled, UNMODELLED, "gcName", 0);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(
+        shown[0].contains("`gcName` is named in a statement of u.p that oxabl does not model"),
+        "{shown:?}"
+    );
+
+    // A file with a parse error.
+    session.open(&damaged, DAMAGED);
+    let (_, shown, _) = references_logged(&mut session, &damaged, DAMAGED, "gcName", 0);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(
+        shown[0].contains("d.p has parse errors") && shown[0].contains("can be missed"),
+        "{shown:?}"
+    );
+
+    // A whole unit gives no warning.
+    session.open(&ok, VARS);
+    let (_, shown, _) = references_logged(&mut session, &ok, VARS, "gcName", 0);
+    assert_eq!(shown, Vec::<String>::new());
+}
+
 /// A program that calls a method of each of `classes` classes, each class
 /// with `lines` lines of body and no include, and one of the same size that
 /// calls nothing.

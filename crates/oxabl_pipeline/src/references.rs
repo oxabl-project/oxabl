@@ -717,6 +717,16 @@ impl Navigation<'_, '_> {
                 referent.name
             )));
         }
+        if let Some(gap) = self.recovered_gap() {
+            gaps.push(gap);
+        }
+        if self.named_by_unmodelled_statement(referent) {
+            gaps.push(Gap::of_referent(format!(
+                "`{}` is named in a statement of {root} that oxabl does not model: uses there \
+                 can be missed",
+                referent.name
+            )));
+        }
         if referent.reach.iter().any(through_handles) && self.calls().truncated {
             gaps.push(Gap::of_referent(format!(
                 "{root} has more than {} calls: a call through a handle after that is not \
@@ -729,6 +739,34 @@ impl Navigation<'_, '_> {
             gaps,
             unresolved_calls,
         }
+    }
+
+    /// The gap of a unit whose parse had errors: the sites of a damaged
+    /// statement are not known.
+    fn recovered_gap(&self) -> Option<Gap> {
+        self.recovered.then(|| {
+            Gap::of_referent(format!(
+                "{} has parse errors: uses in the damaged statements can be missed",
+                self.root_path()
+                    .map(|root| file_name(&root))
+                    .unwrap_or_default()
+            ))
+        })
+    }
+
+    /// Whether a statement form that oxabl recognizes but does not model names
+    /// the referent: its names are not sites, so the search misses them.
+    fn named_by_unmodelled_statement(&self, referent: &Referent) -> bool {
+        let symbols = &self.semantic.symbols;
+        symbols.iter().any(|(id, symbol)| {
+            symbol
+                .flags
+                .contains(SymbolFlags::TOUCHED_BY_UNMODELLED_STATEMENT)
+                && self
+                    .symbol_keys(id)
+                    .iter()
+                    .any(|key| referent.keys.contains(key))
+        })
     }
 
     /// The occurrences of `referent`, how many sites named it in text that
@@ -1107,7 +1145,7 @@ impl Navigation<'_, '_> {
         for call in &mut out {
             dedupe_spans(&mut call.spans);
         }
-        let mut gaps = Vec::new();
+        let mut gaps: Vec<Gap> = self.recovered_gap().into_iter().collect();
         if unplaced > 0 {
             gaps.push(Gap::of_referent(format!(
                 "{unplaced} call(s) of `{}` could not be placed in {}",
