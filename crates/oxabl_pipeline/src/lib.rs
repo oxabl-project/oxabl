@@ -99,7 +99,10 @@ pub use config::{
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use includers::{IncluderPools, PoolVerdict};
-pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
+pub use lint::{
+    Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun,
+    encrypted_root_diagnostics,
+};
 pub use navigate::{Hover, Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 pub use schema_view::{

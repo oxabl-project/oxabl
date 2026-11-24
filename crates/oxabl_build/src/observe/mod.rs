@@ -25,14 +25,14 @@ use crate::key::compute::{ClassPart, KeyBase};
 use crate::refresh::{Content, Outcome, RACY_NS};
 use crate::store::{Components, ObservedClosure};
 
-/// Whether the source at `host` looks XCODE-encrypted, by the detector every
-/// client shares ([`oxabl_workspace::looks_encrypted`]). The compiler reports no
-/// `INCLUDE` for an include made inside encrypted source, so a closure that
-/// holds such a file cannot be observed. A file that cannot be read counts as
-/// encrypted.
+/// Whether the source at `host` may be XCODE-encrypted, by the lenient rule of
+/// the shared detector ([`oxabl_workspace::may_be_encrypted`]). The compiler
+/// reports no `INCLUDE` for an include made inside encrypted source, so a
+/// closure that holds such a file cannot be observed, and a miss would give a
+/// wrong key. A file that cannot be read counts as encrypted.
 pub fn looks_encrypted(host: &Path) -> bool {
     oxabl_workspace::read_encrypted_head(host)
-        .map_or(true, |head| oxabl_workspace::looks_encrypted(&head))
+        .map_or(true, |head| oxabl_workspace::may_be_encrypted(&head))
 }
 
 /// What the build needs to observe the units it compiles.

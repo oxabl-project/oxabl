@@ -229,6 +229,39 @@ fn encrypted_diagnostic() -> Diagnostic {
     .with_help("the XCODE key is needed to read this file".to_string())
 }
 
+/// Whether an include of `expanded`, at any depth, is encrypted.
+fn has_encrypted_include(expanded: &ExpandedFile) -> bool {
+    expanded
+        .preprocessor_diagnostics()
+        .iter()
+        .chain(expanded.nested_preprocessor_diagnostics())
+        .any(|d| d.code.0 == oxabl_workspace::ENCRYPTED_CODE)
+}
+
+/// `diagnostics` without the `undefined-symbol` findings. An encrypted include
+/// may declare any name, so a name that nothing else declares is not known to
+/// be undefined, and the `SOURCE001` warning already says it was not checked.
+fn without_undefined_symbols(mut diagnostics: CollectedDiagnostics) -> CollectedDiagnostics {
+    const UNDEFINED_SYMBOL: &str = "LINT0001";
+    diagnostics
+        .diagnostics
+        .retain(|d| d.diagnostic.code.0 != UNDEFINED_SYMBOL);
+    diagnostics
+        .include_origin
+        .retain(|d| d.diagnostic.code.0 != UNDEFINED_SYMBOL);
+    diagnostics
+}
+
+/// What a run reports for a root that is encrypted: the one `SOURCE001`
+/// finding, as [`LintPipeline::run`] gives it. A client that already knows the
+/// file is encrypted, from its bytes, reports this without a second detection.
+pub fn encrypted_root_diagnostics() -> CollectedDiagnostics {
+    CollectedDiagnostics::new(vec![CollectedDiagnostic {
+        diagnostic: encrypted_diagnostic(),
+        source: DiagnosticSource::Preproc,
+    }])
+}
+
 /// One lint run's outcome, kept private so a [`LintResult`] cannot be built into
 /// a contradictory state (diagnostics *and* a panic).
 enum Outcome {
@@ -1694,6 +1727,11 @@ impl<'a> LintPipeline<'a> {
                         provider,
                     )
                 });
+                let diagnostics = if has_encrypted_include(expanded) {
+                    without_undefined_symbols(diagnostics)
+                } else {
+                    diagnostics
+                };
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)
             }
             // Fatal preprocessing failure: no model, and the preprocessor's own

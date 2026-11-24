@@ -166,6 +166,14 @@ enum Cli {
         #[arg(long, conflicts_with = "baseline")]
         include_findings: bool,
 
+        /// Fail (exit 1) when a root is encrypted (XCODE) and so not checked.
+        ///
+        /// Off by default: an encrypted file is reported with the warning
+        /// `SOURCE001` and the run passes. With the flag, a run that skipped a
+        /// file cannot look like a run that checked it.
+        #[arg(long)]
+        fail_on_encrypted: bool,
+
         /// Number of files analysed at once. Defaults to the available cores;
         /// `1` analyses one file at a time.
         ///
@@ -666,6 +674,7 @@ fn dispatch(cli: Cli) -> ExitCode {
             baseline,
             update_baseline,
             include_findings,
+            fail_on_encrypted,
             jobs,
             watch,
         } => {
@@ -679,6 +688,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                     no_lint,
                     no_format,
                     include_findings,
+                    fail_on_encrypted,
                     jobs,
                 });
             }
@@ -695,6 +705,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                 no_format,
                 baseline.as_deref().map(|file| (file, update_baseline)),
                 include_findings,
+                fail_on_encrypted,
                 jobs,
             )
         }
@@ -1276,8 +1287,8 @@ struct CheckJsonReport {
     /// was, so ordinary walks keep their JSON.
     #[serde(skip_serializing_if = "is_zero")]
     include_files_checked: usize,
-    /// How many of `files_checked` were encrypted and so not checked. Omitted
-    /// when none was.
+    /// How many roots were encrypted and so not checked; they are not in
+    /// `files_checked`. Omitted when none was.
     #[serde(skip_serializing_if = "is_zero")]
     encrypted_files: usize,
     /// Whether lint findings are reported (`false` under `--no-lint`), so an
@@ -1551,6 +1562,7 @@ fn run_check(
     no_format: bool,
     baseline_file: Option<(&Path, bool)>,
     include_findings: bool,
+    fail_on_encrypted: bool,
     jobs: usize,
 ) -> ExitCode {
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
@@ -1729,6 +1741,7 @@ fn run_check(
         no_format: !channels.format,
         include_findings,
         pools: Some(&judge),
+        fail_on_encrypted,
         baseline: baseline.as_ref(),
         format: &format,
         decoding: config.decoding,
@@ -1814,7 +1827,7 @@ fn run_check(
             // 3: a diagnostic row carries its `help` line when it has one.
             // 4: a diagnostic row carries its `related` locations.
             version: 4,
-            files_checked: files.len(),
+            files_checked: files.len() - encrypted_files,
             include_files_checked,
             encrypted_files,
             lint_enabled: channels.diagnostics && !no_lint,
@@ -1874,7 +1887,8 @@ fn run_check(
         && drifted.is_empty()
         && failures.is_empty()
     {
-        let plural = if files.len() == 1 { "file" } else { "files" };
+        let checked = files.len() - encrypted_files;
+        let plural = if checked == 1 { "file" } else { "files" };
         let includes = match include_files_checked {
             0 => String::new(),
             1 => " and 1 include file".to_string(),
@@ -1899,8 +1913,7 @@ fn run_check(
             "no drift"
         };
         println!(
-            "checked {} {plural}{includes}{encrypted}: {lint_channel}, {format_channel}",
-            files.len()
+            "checked {checked} {plural}{includes}{encrypted}: {lint_channel}, {format_channel}"
         );
     }
 
@@ -2076,6 +2089,7 @@ struct CheckPass<'a> {
     /// What the roots of the walk say about the widget pools of its include
     /// fragments. `None` leaves each fragment judged alone.
     pools: Option<&'a Judge<'a>>,
+    fail_on_encrypted: bool,
     baseline: Option<&'a baseline::Run>,
     format: &'a FormatPipeline,
     decoding: SourceDecoding,
@@ -2102,7 +2116,7 @@ impl CheckPass<'_> {
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
             Err(e) if oxabl_workspace::is_encrypted(&e) => {
-                self.report_encrypted(lint, file, indexed_path, &mut unit);
+                self.report_encrypted(file, &mut unit);
                 return unit;
             }
             Err(e) => {
@@ -2153,30 +2167,29 @@ impl CheckPass<'_> {
     }
 
     /// An encrypted file: its one `SOURCE001` warning, in the channel of the
-    /// preprocessor warnings, so it never moves the exit code. No other finding
-    /// is reported and the file is not format-checked.
-    fn report_encrypted(
-        &self,
-        lint: &LintPipeline<'_>,
-        file: &Path,
-        indexed_path: &Path,
-        unit: &mut Unit,
-    ) {
-        let Ok(head) = oxabl_workspace::read_encrypted_head(file) else {
-            return;
-        };
+    /// preprocessor warnings. No other finding is reported and the file is not
+    /// format-checked. The bytes were detected by the read, so nothing is read
+    /// or detected again. The warning does not depend on `--no-preprocess`: the
+    /// file is skipped either way.
+    fn report_encrypted(&self, file: &Path, unit: &mut Unit) {
         unit.encrypted = true;
-        // The pipeline names the file from its first bytes alone. They are not
-        // shown: the warning has no position in text.
-        let result = lint
-            .with_file(indexed_path)
-            .run(&String::from_utf8_lossy(&head));
-        surface_collected_preproc(file, "", result.diagnostics(), &mut unit.output);
+        let display = file.display().to_string();
+        if self.fail_on_encrypted {
+            unit.output.err(format!(
+                "error: {display}: encrypted, not checked (--fail-on-encrypted)\n"
+            ));
+            unit.failures.push(CheckJsonFailure {
+                path: display.clone(),
+                reason: "encrypted, not checked".to_string(),
+            });
+        }
+        let encrypted = oxabl_pipeline::encrypted_root_diagnostics();
+        // The warning has no position in the text, so no text is shown.
+        surface_collected_preproc(file, "", &encrypted, &mut unit.output);
         if self.json_output {
-            let display = file.display().to_string();
             let map = SourceMap::new("");
             unit.preproc.extend(
-                result
+                encrypted
                     .by_source(oxabl_analyze::DiagnosticSource::Preproc)
                     .map(|c| check_json_diagnostic(&display, &map, c)),
             );
@@ -2289,7 +2302,7 @@ impl CheckPass<'_> {
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
             Err(e) if oxabl_workspace::is_encrypted(&e) => {
-                self.report_encrypted(lint, file, indexed_path, &mut unit);
+                self.report_encrypted(file, &mut unit);
                 return unit;
             }
             Err(e) => {

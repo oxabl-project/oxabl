@@ -31,6 +31,8 @@ fn editor_text() -> String {
     String::from_utf8_lossy(&encrypted_bytes()).into_owned()
 }
 
+const HEADER: [u8; 10] = [0x13, 0x59, 0x2f, 0x25, 0x07, 0x09, 0x31, 0x49, 0x3b, 0x25];
+
 const CONFIG: &str = "[workspace]\nname = \"t\"\n[workspace.sources]\ninclude_paths = [\".\"]\n";
 
 fn tree() -> tempfile::TempDir {
@@ -114,8 +116,8 @@ fn an_encrypted_include_gives_the_includer_buffer_one_warning() {
     );
 }
 
-/// Text that parses and would be reformatted, but for the control byte in its
-/// comment, which makes the detector name it encrypted.
+/// Text that parses and would be reformatted, but for the header bytes in its
+/// comment, which make the detector name it encrypted.
 #[test]
 fn formatting_leaves_alone_text_that_is_named_encrypted() {
     let dir = tree();
@@ -141,10 +143,40 @@ fn formatting_leaves_alone_text_that_is_named_encrypted() {
     );
 
     let marked = dir.path().join("marked.p");
-    session.open(&marked, &format!("/* \u{7} */\n{body}"));
+    session.open(
+        &marked,
+        &format!("{}\n{body}", String::from_utf8(HEADER.to_vec()).unwrap()),
+    );
     let edits = format(&mut session, &marked);
     assert!(
         edits["result"].is_null() || edits["result"] == json!([]),
         "{edits}"
     );
+}
+
+/// One escape byte in a string of an open buffer does not turn its findings
+/// into a skip.
+#[test]
+fn a_stray_control_byte_in_a_buffer_keeps_its_diagnostics_and_formatting() {
+    let dir = tree();
+    let mut session = Session::start(dir.path());
+    let path = dir.path().join("esc.p");
+    session.open(
+        &path,
+        "DEFINE VARIABLE x AS CHARACTER NO-UNDO.\nx = \"\u{1b}E\".\nIF TRUE THEN DO:\nMESSAGE x.\nEND.\nDISPLAY y.\n",
+    );
+    let diagnostics = published(&session, &path);
+    assert!(
+        diagnostics.iter().any(|d| d["code"] == "LINT0001"),
+        "{diagnostics:?}"
+    );
+    assert!(diagnostics.iter().all(|d| d["code"] != "SOURCE001"));
+    let edits = session.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": {"uri": file_uri(&path)},
+            "options": {"tabSize": 4, "insertSpaces": true}
+        }),
+    );
+    assert_eq!(edits["result"].as_array().map(Vec::len), Some(1), "{edits}");
 }
