@@ -209,6 +209,7 @@ impl Server<'_> {
 
     /// Record the version of an open file, or forget a closed one.
     pub(crate) fn note_inlay_version(&mut self, uri: &Uri, version: Option<i32>) {
+        self.schedule_inlay_readers(uri);
         if let Some(path) = crate::uri_to_path(uri) {
             let mut paths = self
                 .inlay
@@ -244,6 +245,35 @@ impl Server<'_> {
         }
     }
 
+    /// Schedule the debounced analysis of each include whose cached hints
+    /// were read in a root that reads `uri`'s file (a nested or sibling
+    /// include, or the root). Its due analysis then asks the client again
+    /// (see `fire_due_debounces`), as an edit of the root does.
+    fn schedule_inlay_readers(&mut self, uri: &Uri) {
+        let Some(path) = crate::uri_to_path(uri) else {
+            return;
+        };
+        let path = oxabl_daemon::canonical_path(&path);
+        let readers: Vec<Uri> = self
+            .inlay
+            .shared
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(reader, c)| {
+                *reader != uri && c.key.context.is_some() && c.read.contains(&path)
+            })
+            .map(|(reader, _)| reader.clone())
+            .collect();
+        let now = std::time::Instant::now();
+        for reader in readers {
+            if self.contexts.selected(&reader).is_some() {
+                self.debouncer.schedule(reader, now);
+            }
+        }
+    }
+
     /// A file on disk changed: an include may now expand to other text.
     pub(crate) fn inlay_disk_changed(&mut self) {
         self.inlay.shared.disk.fetch_add(1, Ordering::SeqCst);
@@ -271,8 +301,8 @@ type Hints = Arc<Vec<oxabl_pipeline::InlayHint>>;
 /// One file's cached hints.
 struct Cached {
     key: Key,
-    /// The files a context's analysis read, and the fingerprint of their
-    /// open-buffer text then.
+    /// The files a context's analysis read (canonical), and the fingerprint
+    /// of their open-buffer text then.
     read: Vec<PathBuf>,
     overlay: u64,
     hints: Hints,
@@ -381,6 +411,10 @@ fn answer(shared: &Shared, job: Job) -> Response {
             .map(|c| Arc::clone(&c.hints));
         let hints = cached.unwrap_or_else(|| {
             let (hints, read) = job.source.hints(key.kinds);
+            let read: Vec<PathBuf> = read
+                .iter()
+                .map(|p| oxabl_daemon::canonical_path(p))
+                .collect();
             let hints = Arc::new(hints);
             let overlay = job.source.overlay_fingerprint(&read);
             shared

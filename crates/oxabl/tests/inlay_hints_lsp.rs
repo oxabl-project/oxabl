@@ -996,9 +996,80 @@ fn a_reference_after_a_qualified_name_in_an_include_gives_no_hint() {
     let toml = format!("[workspace.lint]\n{STRICT}");
     let qualified = "FOR EACH customer NO-LOCK WHERE customer.region = \"n\" {&extra}:\n    \
                      DISPLAY customer.name.\nEND.\n";
-    let root = workspace_with(&toml, &[("w1.i", qualified)]);
+    let plain = qualified.replace(" {&extra}", "");
+    let root = workspace_with(&toml, &[("w1.i", qualified), ("w0.i", &plain)]);
     let mut session = Session::start_with(root.path(), capabilities());
     open(&mut session, root.path(), "w1.i");
-    let hints = hints(&mut session, root.path(), "w1.i");
-    assert!(hints.is_empty(), "{hints:?}");
+    let found = hints(&mut session, root.path(), "w1.i");
+    assert!(found.is_empty(), "{found:?}");
+    // The same read with no reference shows its hint: the empty answer
+    // above comes from the reference, not from a fragment that shows none.
+    open(&mut session, root.path(), "w0.i");
+    let control = hints(&mut session, root.path(), "w0.i");
+    let labels: Vec<_> = control.iter().map(|h| h.label.as_str()).collect();
+    assert_eq!(labels, ["index region-name"]);
+}
+
+#[test]
+fn an_edit_of_another_file_the_root_reads_refreshes_the_include() {
+    let toml = format!("[workspace.sources]\ninclude_paths = [\".\"]\n[workspace.lint]\n{STRICT}");
+    let reads = "FIND FIRST customer WHERE customer.custnum = 1.\n";
+    let root = workspace_with(
+        &toml,
+        &[
+            ("defs.i", "/* definitions */\n"),
+            ("reads.i", reads),
+            ("main.p", "{defs.i}\n{reads.i}\n"),
+            ("z.p", "MESSAGE 1.\n"),
+        ],
+    );
+    let mut session = Session::start_with(root.path(), capabilities());
+    for name in ["defs.i", "reads.i", "main.p"] {
+        open(&mut session, root.path(), name);
+    }
+    let include = root.path().join("reads.i");
+    let main = std::fs::canonicalize(root.path().join("main.p")).unwrap();
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": session::file_uri(&include)}, "root": main}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+    let before = hints(&mut session, root.path(), "reads.i");
+    assert_eq!(
+        placed(&before, reads),
+        [
+            "1|FIND FIRST customer|SHARE-LOCK",
+            "1|FIND FIRST customer|index custnum"
+        ]
+    );
+    // Wait out the refresh of the selection itself.
+    while session.try_next(Duration::from_millis(600)).is_some() {}
+
+    // A file the root does not read changes: no refresh.
+    let z = root.path().join("z.p");
+    session.open(&z, "MESSAGE 1.\n");
+    edit(&mut session, &z, 2, "MESSAGE 2.\n");
+    let refreshes = |session: &Session| {
+        let mut count = 0;
+        while let Some(m) = session.try_next(Duration::from_millis(800)) {
+            if m["method"] == json!("workspace/inlayHint/refresh") {
+                count += 1;
+            }
+        }
+        count
+    };
+    assert_eq!(refreshes(&session), 0);
+
+    // A sibling include that the root reads now makes `customer` a
+    // temp-table: the client is asked again, and the answer changes.
+    let defs = root.path().join("defs.i");
+    edit(
+        &mut session,
+        &defs,
+        2,
+        "DEFINE TEMP-TABLE customer NO-UNDO\n    FIELD custnum AS INTEGER\n    INDEX k custnum.\n",
+    );
+    assert_eq!(refreshes(&session), 1);
+    let after = hints(&mut session, root.path(), "reads.i");
+    assert_eq!(placed(&after, reads), ["1|FIND FIRST customer|index k"]);
 }

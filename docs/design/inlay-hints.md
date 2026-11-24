@@ -77,9 +77,14 @@ An include has no meaning alone (`docs/design/include-context.md`).
   hints of the include come from the analysis of the selected root, as its
   diagnostics do. The root is read with the open buffers over the disk. A
   hint is shown when its place is in the include's own text. The tooltip names
-  the root. An edit of the root makes the server ask the client again
-  (`workspace/inlayHint/refresh`) once the edits settle, after the same
-  debounce as the include's diagnostics, not on each keystroke. The root's configuration decides whether hints show. When the root
+  the root. An edit, an open or a close of the root, or of another file that
+  the root's analysis read (a sibling or nested include), makes the server
+  ask the client again (`workspace/inlayHint/refresh`) once the edits settle,
+  after the same debounce as the include's diagnostics, not on each
+  keystroke. The include's context diagnostics are analysed again then too.
+  The server knows which files the root read from the last hints it
+  computed, so before the first hint request of the include only an edit of
+  the root itself does this. The root's configuration decides whether hints show. When the root
   expands the include more than once, or no longer includes it, the include
   gets no hint: one place cannot hold two answers.
 - **In fragment mode** (no context), the include is analysed alone. A hint
