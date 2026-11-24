@@ -8,7 +8,7 @@
 
 use oxabl_ast::{
     AccessModifier, Annotation, AnnotationAttribute, AnnotationValue, AssignPair, BufferTarget,
-    CreateAssignment, CreateConnect, CreateTarget, CreateTargetKind, DataRelation,
+    CloseKind, CreateAssignment, CreateConnect, CreateTarget, CreateTargetKind, DataRelation,
     DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DeleteObjectKind, DisplayItem, Expression,
     ExpressionKind, FileName, FindType, FrameField, HandleParamKind, HandlePassingOptions,
     Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
@@ -806,6 +806,18 @@ impl Parser<'_> {
             return self.parse_get_statement();
         }
 
+        // CLOSE QUERY q / CLOSE STORED-PROCEDURE p — head-parsed.
+        if self.check(Kind::Close) {
+            let next = self.peek_at(1);
+            let stored = next.kind == Kind::Identifier
+                && self.source[next.start..next.end]
+                    .get(..11)
+                    .is_some_and(|w| w.eq_ignore_ascii_case("stored-proc"));
+            if next.kind == Kind::Query || stored {
+                return self.parse_close_statement(stored);
+            }
+        }
+
         if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
@@ -818,7 +830,7 @@ impl Parser<'_> {
             // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             || self.check(Kind::Format)
             || self.check(Kind::Form)
-            // CLOSE QUERY/DATASET/BROWSING name. — close a query, dataset, or browse widget.
+            // CLOSE DATASET/BROWSE and any other form that is not QUERY or STORED-PROCEDURE.
             || self.check(Kind::Close)
             // CONNECT/DISCONNECT — database connection management statements.
             || self.check(Kind::Connect)
@@ -4461,6 +4473,64 @@ impl Parser<'_> {
             }
         };
         Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// `CLOSE QUERY query` and `CLOSE STORED-PROCEDURE proc [field = PROC-STATUS]
+    /// [WHERE PROC-HANDLE = field]`. A target that is not an expression leaves
+    /// the statement skipped.
+    fn parse_close_statement(&mut self, stored: bool) -> ParseResult<Statement> {
+        self.advance(); // consume CLOSE
+        self.advance(); // consume QUERY / STORED-PROCEDURE
+        let Some(target) = self.parse_head_item(|k| k == Kind::KwWhere) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut status = None;
+        let mut handle = None;
+        if stored {
+            if Self::can_be_identifier(self.peek().kind)
+                && self.check_at(1, Kind::Equals)
+                && self.check_at(2, Kind::ProcStatus)
+            {
+                let mark = self.current;
+                match self.parse_postfix() {
+                    Ok(e) if self.check(Kind::Equals) => {
+                        status = Some(e);
+                        self.advance(); // =
+                        self.advance(); // PROC-STATUS
+                    }
+                    _ => self.current = mark,
+                }
+            }
+            if self.check(Kind::KwWhere)
+                && self.check_at(1, Kind::ProcHandle)
+                && self.check_at(2, Kind::Equals)
+            {
+                let mark = self.current;
+                self.advance();
+                self.advance();
+                self.advance();
+                handle = self.parse_head_item(|_| false);
+                if handle.is_none() {
+                    self.current = mark;
+                }
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        let kind = if stored {
+            CloseKind::StoredProcedure
+        } else {
+            CloseKind::Query
+        };
+        Ok(self.stmt_with_tail(
+            StatementKind::Close {
+                kind,
+                target,
+                status,
+                handle,
+            },
+            tail,
+        ))
     }
 
     /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query

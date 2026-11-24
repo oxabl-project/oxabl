@@ -278,6 +278,16 @@ impl Visitor<'_> {
                 }
             }
             StatementKind::Get { query, .. } => self.walk_expression(query),
+            StatementKind::Close {
+                target,
+                status,
+                handle,
+                ..
+            } => {
+                for e in std::iter::once(target).chain(status).chain(handle) {
+                    self.walk_expression(e);
+                }
+            }
             StatementKind::Run {
                 arguments, target, ..
             } => {

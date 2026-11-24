@@ -573,6 +573,20 @@ mod paths {
                 }
                 SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
                 SK::Get { query, .. } => read(self, query),
+                SK::Close {
+                    target,
+                    status,
+                    handle,
+                    ..
+                } => {
+                    read(self, target);
+                    if let Some(e) = status {
+                        self.target(e, id);
+                    }
+                    if let Some(e) = handle {
+                        read(self, e);
+                    }
+                }
                 SK::Update {
                     targets, options, ..
                 }

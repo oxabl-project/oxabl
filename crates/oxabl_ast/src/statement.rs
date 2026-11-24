@@ -359,6 +359,18 @@ pub enum StatementKind {
         no_wait: bool,
     },
 
+    /// CLOSE QUERY and CLOSE STORED-PROCEDURE statements.
+    ///
+    /// `target` is a static query or stored procedure name, or a handle
+    /// expression. `status` (`field = PROC-STATUS`, written) and `handle`
+    /// (`WHERE PROC-HANDLE = field`, read) are set only for a stored procedure.
+    Close {
+        kind: CloseKind,
+        target: Expression,
+        status: Option<Expression>,
+        handle: Option<Expression>,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an
@@ -1158,6 +1170,13 @@ pub enum LockType {
     NoLock,
     ShareLock,
     ExclusiveLock,
+}
+
+/// What a CLOSE statement closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseKind {
+    Query,
+    StoredProcedure,
 }
 
 /// ABL Find Type

@@ -1508,6 +1508,7 @@ impl<'a> Builder<'a> {
             | SK::Form { .. }
             | SK::Apply { .. }
             | SK::Get { .. }
+            | SK::Close { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }

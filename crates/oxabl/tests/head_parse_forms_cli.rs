@@ -29,6 +29,8 @@ struct Form {
 }
 
 const DECL_X: &str = "DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\n";
+const DECL_STORED: &str =
+    "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nDEFINE VARIABLE v-st AS INTEGER NO-UNDO.\n";
 const DECL_HANDLE: &str = "DEFINE VARIABLE v-x AS HANDLE NO-UNDO.\n";
 
 const FORMS: &[Form] = &[
@@ -45,6 +47,22 @@ const FORMS: &[Form] = &[
         statement: "GET FIRST v-x NO-LOCK.",
         undefined: None,
         bare: Some("GET NEXT q-detail NO-LOCK."),
+    },
+    Form {
+        name: "CLOSE QUERY",
+        decls: DECL_HANDLE,
+        statement: "CLOSE QUERY v-x.",
+        undefined: None,
+        bare: Some("CLOSE QUERY q-detail."),
+    },
+    Form {
+        name: "CLOSE STORED-PROC",
+        decls: DECL_STORED,
+        statement: "CLOSE STORED-PROC sp-detail v-st = PROC-STATUS WHERE PROC-HANDLE = v-x.",
+        undefined: Some(
+            "CLOSE STORED-PROC sp-detail v-st = PROC-STATUS WHERE PROC-HANDLE = v-nope.",
+        ),
+        bare: Some("CLOSE STORED-PROCEDURE sp-detail."),
     },
 ];
 

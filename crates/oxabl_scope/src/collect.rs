@@ -508,6 +508,7 @@ impl<'a> Collector<'a> {
             | SK::Set { .. }
             | SK::PromptFor { .. }
             | SK::Get { .. }
+            | SK::Close { .. }
             | SK::Import { .. }
             | SK::Export { .. }
             | SK::Put { .. }

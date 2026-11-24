@@ -334,6 +334,20 @@ impl Visitor<'_> {
                     self.walk_expression(query);
                 }
             }
+            // The target may be a static query or stored procedure name.
+            StatementKind::Close {
+                target,
+                status,
+                handle,
+                ..
+            } => {
+                if !matches!(target.kind, ExpressionKind::Identifier(_)) {
+                    self.walk_expression(target);
+                }
+                for e in status.iter().chain(handle) {
+                    self.walk_expression(e);
+                }
+            }
             // A bare name may be a static widget or frame, which is not a symbol.
             StatementKind::Apply { event, target } => {
                 for e in event.iter().chain(target) {

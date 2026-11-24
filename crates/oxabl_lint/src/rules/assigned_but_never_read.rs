@@ -227,6 +227,10 @@ impl Visitor<'_> {
                     self.record_target(target);
                 }
             }
+            StatementKind::Close {
+                status: Some(status),
+                ..
+            } => self.record_target(status),
             StatementKind::Run {
                 persistent_handle,
                 async_handle,

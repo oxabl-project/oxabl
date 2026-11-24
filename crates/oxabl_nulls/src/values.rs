@@ -1210,6 +1210,14 @@ impl Problem<'_> {
                     }
                 }
             }
+            S::Close {
+                status: Some(target),
+                ..
+            } => {
+                if let Some(i) = self.variable(target) {
+                    f.forget(i, UNKNOWN);
+                }
+            }
             // These run triggers, which may write the locals other units write.
             S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } | S::PromptFor { .. } => {
                 self.forget_call_writes(f)
@@ -1741,6 +1749,9 @@ fn analyze_inspect(
                     write(t);
                 }
             }
+            S::Close {
+                status: Some(t), ..
+            } => write(t),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
@@ -1832,6 +1843,9 @@ fn analyze_inspect(
                     record(t);
                 }
             }
+            S::Close {
+                status: Some(t), ..
+            } => record(t),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {

@@ -383,6 +383,16 @@ impl<'a> CheckWalker<'a> {
             StatementKind::Get { query, .. } => {
                 self.check_expression(query, scope);
             }
+            StatementKind::Close {
+                target,
+                status,
+                handle,
+                ..
+            } => {
+                for e in std::iter::once(target).chain(status).chain(handle) {
+                    self.check_expression(e, scope);
+                }
+            }
 
             // ---- RUN / buffer ops ---------------------------------------
             StatementKind::Run {

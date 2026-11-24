@@ -1,11 +1,12 @@
 use super::*;
 use oxabl_ast::{
-    AccessModifier, BooleanLiteral, BufferTarget, CommentKind, CreateTarget, CreateTargetKind,
-    DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind, ExpressionKind,
-    FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId,
-    OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, SortDirection, Span,
-    StatementKind, StreamDirection, StreamOperation, StreamTarget, StringLiteral, SubscribeTarget,
-    TypeSource, UnknownLiteral, UsingSource, WhenBranch, WidgetQualifier,
+    AccessModifier, BooleanLiteral, BufferTarget, CloseKind, CommentKind, CreateTarget,
+    CreateTargetKind, DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind,
+    ExpressionKind, FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal,
+    LockType, NodeId, OnAction, OnKind, ParameterDirection, ParameterType, RunTarget,
+    SortDirection, Span, StatementKind, StreamDirection, StreamOperation, StreamTarget,
+    StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral, UsingSource, WhenBranch,
+    WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -15085,4 +15086,47 @@ fn get_is_head_parsed_with_position_query_and_lock() {
         assert_eq!((t, l, w), (&get_type, &lock, &no_wait), "{source}");
         assert!(tail_names(&stmts[0]).is_empty(), "{source}");
     }
+}
+
+#[test]
+fn close_is_head_parsed_for_a_query_and_a_stored_procedure() {
+    for (source, kind, status, handle) in [
+        ("CLOSE QUERY q-detail.", CloseKind::Query, false, false),
+        ("CLOSE QUERY hq.", CloseKind::Query, false, false),
+        (
+            "CLOSE STORED-PROCEDURE sp-detail.",
+            CloseKind::StoredProcedure,
+            false,
+            false,
+        ),
+        (
+            "CLOSE STORED-PROC sp v-st = PROC-STATUS WHERE PROC-HANDLE = v-h.",
+            CloseKind::StoredProcedure,
+            true,
+            true,
+        ),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Close {
+            kind: k,
+            status: s,
+            handle: h,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Close, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(
+            (*k, s.is_some(), h.is_some()),
+            (kind, status, handle),
+            "{source}"
+        );
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn close_of_something_else_stays_skipped() {
+    let stmts = assert_parses_clean("CLOSE DATASET ds.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
 }
