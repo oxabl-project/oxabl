@@ -5,7 +5,10 @@
 //! by [`is_narrowing_warning`]. Covers:
 //! - `target = value` (`StatementKind::Assignment`)
 //! - `ASSIGN target = value ...` (`StatementKind::Assign`)
-//! - `DEFINE VARIABLE ... INITIAL expr` (initial value vs declared type)
+//! - `DEFINE VARIABLE ... INITIAL expr` (initial value vs declared type). An
+//!   `INITIAL` constant that the compiler converts from its text (a character
+//!   constant for a LOGICAL, any constant for a CHARACTER) is not judged: see
+//!   [`converted_from_text`].
 //!
 //! A finding sits on the assignment target (`iQty[1]`) or on the `INITIAL`
 //! value. An expression with no span gives its statement's span, never an
@@ -22,11 +25,13 @@
 //!   symbol behind it, so no verdict is possible. A cross-file reference that
 //!   *resolved* is judged like any other now: its type is on the symbol.
 
-use oxabl_ast::{AssignPair, Expression, ExpressionKind, Statement, StatementKind, TypeSource};
+use oxabl_ast::{
+    AssignPair, Expression, ExpressionKind, Literal, Statement, StatementKind, TypeSource,
+};
 use oxabl_common::{Diagnostic, FileSpan, Severity};
 use oxabl_semantic::{
-    AnalysisContext, ClassLattice, Resolution, ResolvedType, Semantic, UnresolvedReason,
-    assignable, is_narrowing_warning,
+    AnalysisContext, ClassLattice, PrimitiveTy, Resolution, ResolvedType, Semantic,
+    UnresolvedReason, assignable, is_narrowing_warning,
 };
 
 use super::LINT0004;
@@ -68,7 +73,9 @@ impl<'a> Visitor<'a> {
                 // stmt.id slot of the types side table).
                 let target_ty = self.sem.types.get(stmt.id).cloned();
                 let value_ty = self.sem.types.get(init.id).cloned();
-                if let (Some(to), Some(from)) = (target_ty, value_ty) {
+                if let (Some(to), Some(from)) = (target_ty, value_ty)
+                    && !converted_from_text(init, &to)
+                {
                     self.check_pair(&from, &to, init.id, &anchor(init, stmt.span));
                 }
             }
@@ -278,6 +285,38 @@ impl<'a> Visitor<'a> {
         'a: 't,
     {
         ty.display_abl(&self.sem.symbols, self.ctx.schema)
+    }
+}
+
+/// Whether the compiler converts the `INITIAL` constant `init` from its text to
+/// `to`, so the constant's own type is not what is assigned. A character
+/// constant converts to every type below (`INITIAL "yes"` for a LOGICAL, `"5"`
+/// for an INTEGER), and every constant converts to CHARACTER and LONGCHAR.
+/// Whether the text converts depends on it, on `FORMAT` and on the `-d` and
+/// `-numsep` startup parameters, so no verdict is given.
+fn converted_from_text(init: &Expression, to: &ResolvedType) -> bool {
+    use PrimitiveTy::*;
+    let literal = match &init.kind {
+        ExpressionKind::Literal(literal) => literal,
+        // A signed numeric constant (`INITIAL -5`); a unary plus leaves the literal.
+        ExpressionKind::Negate(inner) => match &inner.kind {
+            ExpressionKind::Literal(l @ (Literal::Integer(_) | Literal::Decimal(_))) => l,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let to = match to {
+        ResolvedType::Array { element, .. } => element,
+        _ => to,
+    };
+    let ResolvedType::Primitive(to) = to else {
+        return false;
+    };
+    match to {
+        Character | Longchar => true,
+        Logical | Integer | Int64 | Decimal | Date | Datetime | DatetimeTz | Handle | ComHandle
+        | Recid => matches!(literal, Literal::String(_)),
+        Rowid | Raw | Memptr | Clob | Blob => false,
     }
 }
 
