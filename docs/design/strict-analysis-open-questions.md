@@ -255,6 +255,8 @@ Limits of the shipped form:
   is not checked. Neither is any include when `check` is given one file instead of a directory.
 - Only the `.i` extension counts. Include files with another extension are not found.
 - An include that no program includes is checked all the same.
+  Its findings carry `includers` with a `count` of `0`. An include that programs include carries
+  their number and the first three sites (see "Include files" in `docs/overview.md`).
 - `files_checked` in the JSON report still counts roots. `include_files_checked` counts the
   include files, and is omitted when it is zero.
 

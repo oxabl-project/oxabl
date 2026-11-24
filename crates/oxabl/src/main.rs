@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -175,6 +175,26 @@ enum Cli {
         /// look like a run that checked it.
         #[arg(long)]
         fail_on_encrypted: bool,
+        /// Print counts per rule and per file, and not each finding.
+        ///
+        /// The text output lists the rules by count, then the files with the most
+        /// findings (`--summary-top` of them). It counts the findings that the
+        /// run reports: with `--baseline`, the new ones; with
+        /// `--include-findings`, those too, by the include file. The exit code
+        /// does not change. `--json` keeps `diagnostics` and adds a `summary`
+        /// object. Not combinable with `--watch`.
+        #[arg(long, conflicts_with = "watch")]
+        summary: bool,
+
+        /// How many files `--summary` lists.
+        #[arg(
+            long,
+            requires = "summary",
+            value_name = "N",
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
+        summary_top: u32,
 
         /// Number of files analysed at once. Defaults to the available cores;
         /// `1` analyses one file at a time.
@@ -677,6 +697,8 @@ fn dispatch(cli: Cli) -> ExitCode {
             update_baseline,
             include_findings,
             fail_on_encrypted,
+            summary,
+            summary_top,
             jobs,
             watch,
         } => {
@@ -708,6 +730,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                 baseline.as_deref().map(|file| (file, update_baseline)),
                 include_findings,
                 fail_on_encrypted,
+                summary.then_some(summary_top as usize),
                 jobs,
             )
         }
@@ -1321,6 +1344,9 @@ struct CheckJsonReport {
     /// only.
     #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<baseline::Report>,
+    /// Present only with `--summary`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<CheckJsonSummary>,
 }
 
 /// One lint finding, carrying the pipeline's **byte** span and, when the span is
@@ -1355,6 +1381,10 @@ struct CheckJsonDiagnostic {
     /// give a variable `?`. Present since version 4, when there are any.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     related: Vec<CheckJsonRelated>,
+    /// The checked files that include this file, for a finding in an include.
+    /// Present since version 5. The baseline key does not read it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    includers: Option<CheckJsonIncluders>,
 }
 
 /// A related location of a finding, in the file that holds it: the checked
@@ -1431,6 +1461,38 @@ impl LabelPlaces {
             })
             .collect()
     }
+}
+
+/// The programs of the run that include a file: how many, and the first few as
+/// `path:line` of the `{...}` site that brings the include in, sorted by path
+/// then line. The count is of the files that this run checked, so a program
+/// outside the checked tree is not in it.
+#[derive(Serialize, Clone, Default)]
+struct CheckJsonIncluders {
+    count: usize,
+    first: Vec<String>,
+}
+
+/// Counts of a run's findings, for `--summary`.
+#[derive(Serialize)]
+struct CheckJsonSummary {
+    findings: usize,
+    /// How many files have a finding. `by_file` lists only the first few.
+    files: usize,
+    by_rule: Vec<CheckJsonRuleCount>,
+    by_file: Vec<CheckJsonFileCount>,
+}
+
+#[derive(Serialize)]
+struct CheckJsonRuleCount {
+    code: String,
+    count: usize,
+}
+
+#[derive(Serialize)]
+struct CheckJsonFileCount {
+    path: String,
+    count: usize,
 }
 
 /// One finding in an include, as a result for one root's compilation unit.
@@ -1569,6 +1631,7 @@ fn run_check(
     baseline_file: Option<(&Path, bool)>,
     include_findings: bool,
     fail_on_encrypted: bool,
+    summary: Option<usize>,
     jobs: usize,
 ) -> ExitCode {
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
@@ -1742,6 +1805,7 @@ fn run_check(
     let judge = |include: &Path, result: oxabl_pipeline::LintResult| pools.judge(include, result);
     let pass = CheckPass {
         json_output,
+        summary: summary.is_some(),
         diagnostics: channels.diagnostics,
         no_lint,
         no_format: !channels.format,
@@ -1751,10 +1815,13 @@ fn run_check(
         baseline: baseline.as_ref(),
         format: &format,
         decoding: config.decoding,
+        collect_includers: !fragments.is_empty(),
+        includers: std::sync::OnceLock::new(),
     };
     // Files first, then include fragments, so the output order is the serial
-    // order whatever the thread count.
-    let tasks: Vec<Task<'_>> = files
+    // order whatever the thread count. The fragments run as a second batch:
+    // they need the roots' include lists.
+    let root_tasks: Vec<Task<'_>> = files
         .iter()
         .zip(&indexed)
         .map(|(file, indexed_path)| Task {
@@ -1762,11 +1829,14 @@ fn run_check(
             indexed_path,
             fragment: false,
         })
-        .chain(fragments.iter().map(|(file, indexed_path)| Task {
+        .collect();
+    let fragment_tasks: Vec<Task<'_>> = fragments
+        .iter()
+        .map(|(file, indexed_path)| Task {
             file,
             indexed_path,
             fragment: true,
-        }))
+        })
         .collect();
 
     // TX004 asks for the summaries of its callees. Built once over the walk and
@@ -1780,24 +1850,38 @@ fn run_check(
         None => lint,
     };
 
-    let mut totals = Totals::default();
-    run_ordered(
-        jobs.min(tasks.len()),
-        config.decoding,
-        &lint,
-        || {
-            let handle = LintPipeline::new(&config, &fs)
-                .with_preprocess(preprocess)
-                .with_shared_producers(&producers);
-            match &summaries {
-                Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
-                None => handle,
-            }
-        },
-        &tasks,
-        |lint, texts, task| pass.run(lint, texts, task),
-        |unit| totals.absorb(unit),
-    );
+    let mut totals = Totals {
+        includers: pass.collect_includers.then(|| {
+            IncludersBuilder::new(
+                fragments
+                    .iter()
+                    .map(|(_, indexed_path)| indexed_path.as_path()),
+            )
+        }),
+        ..Totals::default()
+    };
+    for (tasks, last) in [(&root_tasks, false), (&fragment_tasks, true)] {
+        if last && let Some(builder) = totals.includers.take() {
+            let _ = pass.includers.set(builder.finish());
+        }
+        run_ordered(
+            jobs.min(tasks.len()),
+            config.decoding,
+            &lint,
+            || {
+                let handle = LintPipeline::new(&config, &fs)
+                    .with_preprocess(preprocess)
+                    .with_shared_producers(&producers);
+                match &summaries {
+                    Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
+                    None => handle,
+                }
+            },
+            tasks,
+            |lint, texts, task| pass.run(lint, texts, task),
+            |unit| totals.absorb(unit),
+        );
+    }
     let Totals {
         diagnostics,
         preproc,
@@ -1809,8 +1893,11 @@ fn run_check(
         include_files_checked,
         encrypted_files,
         withheld_files,
+        includers: _,
     } = totals;
     let not_checked = encrypted_files + withheld_files;
+
+    let summary = summary.map(|top| summarize(&diagnostics, &include_diagnostics, top));
 
     let baseline = match baseline.map(|run| run.finish(channels.diagnostics && !no_lint)) {
         None => None,
@@ -1834,7 +1921,9 @@ fn run_check(
             // envelope, and its rows gained a `path` (D1).
             // 3: a diagnostic row carries its `help` line when it has one.
             // 4: a diagnostic row carries its `related` locations.
-            version: 4,
+            // 5: a finding in an include carries its `includers`, and `summary`
+            // is there with `--summary`.
+            version: 5,
             files_checked: files.len() - not_checked,
             include_files_checked,
             encrypted_files,
@@ -1852,6 +1941,7 @@ fn run_check(
             include_diagnostics,
             failures,
             baseline,
+            summary,
         };
         match serde_json::to_string_pretty(&report) {
             Ok(s) => println!("{s}"),
@@ -1866,6 +1956,10 @@ fn run_check(
             report.format.drifted_count,
             report.failures.len(),
         );
+    }
+
+    if let Some(summary) = &summary {
+        print!("{}", render_summary(summary));
     }
 
     // The drift channel: the paths first, the count as a trailing total (R14),
@@ -2050,6 +2144,10 @@ struct Unit {
     encrypted: bool,
     /// The unit reaches encrypted source, so its findings are withheld.
     withheld: bool,
+    /// The root's display path and, for each include it read, the include's
+    /// path and the line of the root's `{...}` site. Only when the run looks
+    /// for includers.
+    includes: Option<(String, Vec<(PathBuf, usize)>)>,
 }
 
 /// The run's report, built from its units in file order.
@@ -2065,11 +2163,15 @@ struct Totals {
     include_files_checked: usize,
     encrypted_files: usize,
     withheld_files: usize,
+    includers: Option<IncludersBuilder>,
 }
 
 impl Totals {
     fn absorb(&mut self, unit: Unit) {
         unit.output.flush();
+        if let (Some(builder), Some((root, includes))) = (&mut self.includers, unit.includes) {
+            builder.add(&root, includes);
+        }
         self.diagnostics.extend(unit.diagnostics);
         self.preproc.extend(unit.preproc);
         self.failures.extend(unit.failures);
@@ -2098,6 +2200,8 @@ type Judge<'a> =
 /// The settings of one `check` run, read by every worker.
 struct CheckPass<'a> {
     json_output: bool,
+    /// `--summary`: the findings are counted, not printed.
+    summary: bool,
     /// Whether the diagnostics channel runs at all (`[workspace.features]`).
     diagnostics: bool,
     no_lint: bool,
@@ -2110,9 +2214,20 @@ struct CheckPass<'a> {
     baseline: Option<&'a baseline::Run>,
     format: &'a FormatPipeline,
     decoding: SourceDecoding,
+    /// Whether the roots note their includes, because an include file is
+    /// checked too.
+    collect_includers: bool,
+    /// Set once every root has run; the include files read it.
+    includers: std::sync::OnceLock<Includers>,
 }
 
 impl CheckPass<'_> {
+    /// Whether the findings stay off stdout: `--json` and `--summary` print a
+    /// document of their own.
+    fn quiet(&self) -> bool {
+        self.json_output || self.summary
+    }
+
     fn run(&self, lint: &LintPipeline<'_>, texts: &mut IncludeTexts, task: &Task<'_>) -> Unit {
         if task.fragment {
             self.fragment(lint, task.file, task.indexed_path)
@@ -2250,7 +2365,20 @@ impl CheckPass<'_> {
         // the bytes just read are what is being analysed, and resolving a name
         // to the same file on disk would attribute it to itself as a foreign
         // dependency.
-        let result = lint.with_file(indexed_path).run(source);
+        let (result, origins) = if self.collect_includers {
+            lint.with_file(indexed_path)
+                .run_with_include_origins(source)
+        } else {
+            (lint.with_file(indexed_path).run(source), Vec::new())
+        };
+        if !origins.is_empty() {
+            let map = SourceMap::new(source);
+            let lines = origins
+                .into_iter()
+                .map(|origin| (origin.path, map.lookup(origin.site.start as usize).0))
+                .collect();
+            unit.includes = Some((display.clone(), lines));
+        }
         if let Some(panic) = result.failure() {
             unit.output
                 .err(format!("error: analysis failed on {display}: {panic}\n"));
@@ -2301,7 +2429,7 @@ impl CheckPass<'_> {
             } else {
                 reported
             };
-            report_findings(self, &display, indexed_path, source, reported, unit);
+            report_findings(self, &display, indexed_path, source, reported, None, unit);
 
             if self.include_findings {
                 let mut shown = result.include_origin().to_vec();
@@ -2314,7 +2442,7 @@ impl CheckPass<'_> {
                     &shown,
                     &result.diagnostics().label_files,
                     texts,
-                    self.json_output,
+                    self.quiet(),
                     unit,
                 );
             }
@@ -2386,12 +2514,14 @@ impl CheckPass<'_> {
             return unit;
         }
         unit.include_file_checked = true;
+        let includers = self.includers.get().map(|found| found.of(indexed_path));
         report_findings(
             self,
             &display,
             indexed_path,
             &source,
             result.into_diagnostics(),
+            includers.as_ref(),
             &mut unit,
         );
         unit
@@ -2499,9 +2629,10 @@ fn report_findings(
     indexed_path: &Path,
     source: &str,
     reported: CollectedDiagnostics,
+    includers: Option<&CheckJsonIncluders>,
     unit: &mut Unit,
 ) {
-    let json_output = pass.json_output;
+    let quiet = pass.quiet();
     let reported = match pass.baseline {
         Some(run) => run.filter(indexed_path, source, reported),
         None => reported,
@@ -2514,20 +2645,216 @@ fn report_findings(
         display,
         &reported.label_files,
     );
-    if !json_output {
+    if !quiet {
         let resolver = places.resolver(source);
-        let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
-        unit.output.out(render_diagnostics(&rendered, &resolver));
+        match includers.filter(|found| found.count > 0) {
+            // The note follows its own finding, so each one renders alone.
+            Some(found) => {
+                for collected in reported.all() {
+                    let one = std::slice::from_ref(&collected.diagnostic);
+                    unit.output.out(render_diagnostics(one, &resolver));
+                    unit.output.out(includers_note(found));
+                }
+            }
+            None => {
+                let rendered: Vec<Diagnostic> =
+                    reported.all().map(|c| c.diagnostic.clone()).collect();
+                unit.output.out(render_diagnostics(&rendered, &resolver));
+            }
+        }
     }
     let map = SourceMap::new(source);
     for collected in reported.all() {
-        unit.diagnostics.push(check_json_diagnostic(
-            display,
-            &map,
-            collected,
-            Some(&places),
-        ));
+        let mut row = check_json_diagnostic(display, &map, collected, Some(&places));
+        row.includers = includers.cloned();
+        unit.diagnostics.push(row);
     }
+}
+
+/// The text line for a finding in an include that others include.
+fn includers_note(found: &CheckJsonIncluders) -> String {
+    let files = if found.count == 1 { "file" } else { "files" };
+    format!(
+        "  note: included by {} {files}, e.g. {}\n",
+        found.count,
+        found.first.join(", ")
+    )
+}
+
+/// How many includer sites a finding lists.
+const INCLUDERS_SHOWN: usize = 3;
+
+/// A `{...}` site in a program that includes a file.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct IncluderSite {
+    path: String,
+    line: usize,
+}
+
+#[derive(Default)]
+struct Found {
+    count: usize,
+    first: Vec<IncluderSite>,
+}
+
+impl Found {
+    /// Keep the `INCLUDERS_SHOWN` smallest sites, whatever the order of `add`.
+    fn add(&mut self, site: IncluderSite) {
+        self.count += 1;
+        let at = self.first.partition_point(|shown| shown < &site);
+        if at < INCLUDERS_SHOWN {
+            self.first.insert(at, site);
+            self.first.truncate(INCLUDERS_SHOWN);
+        }
+    }
+}
+
+fn canonical_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The programs that include each include file of the walk, by canonical path.
+#[derive(Default)]
+struct Includers(HashMap<PathBuf, Found>);
+
+impl Includers {
+    /// What `file` has: no includer among the checked files gives a count of 0.
+    fn of(&self, file: &Path) -> CheckJsonIncluders {
+        let Some(found) = self.0.get(&canonical_or_self(file)) else {
+            return CheckJsonIncluders::default();
+        };
+        CheckJsonIncluders {
+            count: found.count,
+            first: found
+                .first
+                .iter()
+                .map(|site| format!("{}:{}", site.path, site.line))
+                .collect(),
+        }
+    }
+}
+
+/// Collects, root by root, which of the walk's include files each one reads.
+struct IncludersBuilder {
+    wanted: HashSet<PathBuf>,
+    canonical: HashMap<PathBuf, PathBuf>,
+    found: Includers,
+}
+
+impl IncludersBuilder {
+    fn new<'p>(include_files: impl Iterator<Item = &'p Path>) -> Self {
+        IncludersBuilder {
+            wanted: include_files.map(canonical_or_self).collect(),
+            canonical: HashMap::new(),
+            found: Includers::default(),
+        }
+    }
+
+    /// Add a root and the includes it read, each with the line of its site. A
+    /// root counts once for a file, with its first site.
+    fn add(&mut self, root: &str, includes: Vec<(PathBuf, usize)>) {
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for (path, line) in includes {
+            let key = self
+                .canonical
+                .entry(path)
+                .or_insert_with_key(|path| canonical_or_self(path));
+            if !self.wanted.contains(key) || !seen.insert(key.clone()) {
+                continue;
+            }
+            self.found
+                .0
+                .entry(key.clone())
+                .or_default()
+                .add(IncluderSite {
+                    path: root.to_string(),
+                    line,
+                });
+        }
+    }
+
+    fn finish(self) -> Includers {
+        self.found
+    }
+}
+
+/// Count `diagnostics` and `include_diagnostics` per rule and per file. Rules
+/// and files go by count, then by name; `top` files are listed.
+fn summarize(
+    diagnostics: &[CheckJsonDiagnostic],
+    include_diagnostics: &[CheckJsonIncludeFinding],
+    top: usize,
+) -> CheckJsonSummary {
+    let mut rules: HashMap<&str, usize> = HashMap::new();
+    let mut files: HashMap<&str, usize> = HashMap::new();
+    let rows = diagnostics
+        .iter()
+        .map(|d| (d.code.as_str(), d.path.as_str()))
+        .chain(
+            include_diagnostics
+                .iter()
+                .map(|d| (d.code.as_str(), d.path.as_str())),
+        );
+    let mut findings = 0;
+    for (code, path) in rows {
+        findings += 1;
+        *rules.entry(code).or_default() += 1;
+        *files.entry(path).or_default() += 1;
+    }
+    fn ranked(counts: HashMap<&str, usize>) -> Vec<(String, usize)> {
+        let mut rows: Vec<(String, usize)> = counts
+            .into_iter()
+            .map(|(name, count)| (name.to_string(), count))
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        rows
+    }
+    let file_total = files.len();
+    CheckJsonSummary {
+        findings,
+        files: file_total,
+        by_rule: ranked(rules)
+            .into_iter()
+            .map(|(code, count)| CheckJsonRuleCount { code, count })
+            .collect(),
+        by_file: ranked(files)
+            .into_iter()
+            .take(top)
+            .map(|(path, count)| CheckJsonFileCount { path, count })
+            .collect(),
+    }
+}
+
+/// The text of `--summary`. A run with no finding prints nothing: the run's
+/// "no findings" line says so.
+fn render_summary(summary: &CheckJsonSummary) -> String {
+    if summary.findings == 0 {
+        return String::new();
+    }
+    let mut out = format!(
+        "{} {} in {} {}\n\nby rule:\n",
+        summary.findings,
+        if summary.findings == 1 {
+            "finding"
+        } else {
+            "findings"
+        },
+        summary.files,
+        if summary.files == 1 { "file" } else { "files" },
+    );
+    for rule in &summary.by_rule {
+        out.push_str(&format!("  {:>7}  {}\n", rule.count, rule.code));
+    }
+    let shown = summary.by_file.len();
+    if shown < summary.files {
+        out.push_str(&format!("\nby file (top {shown} of {}):\n", summary.files));
+    } else {
+        out.push_str("\nby file:\n");
+    }
+    for file in &summary.by_file {
+        out.push_str(&format!("  {:>7}  {}\n", file.count, file.path));
+    }
+    out
 }
 
 /// Include files read for `--include-findings`, each at most once per worker.
@@ -2727,6 +3054,7 @@ fn check_json_diagnostic(
         start: resolved.map(|r| r.start.into()),
         end: resolved.map(|r| r.end.into()),
         related: places.map(|p| p.rows(d)).unwrap_or_default(),
+        includers: None,
     }
 }
 
