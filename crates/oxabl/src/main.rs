@@ -453,9 +453,7 @@ fn surface_collected_preproc(
     if loud.is_empty() {
         return;
     }
-    let secrets = baseline::secrets(source, collected.secrets_in(None, source));
-    let shown = baseline::masked(source, &secrets);
-    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), &shown);
+    let resolver = SourceResolver::new(ROOT_FILE_ID, path.display().to_string(), source);
     output.err(render_diagnostics(&loud, &resolver));
 }
 
@@ -1565,16 +1563,6 @@ fn surface_baseline(report: &baseline::Report) {
             "baseline: updated {} ({} added, {stale} removed)",
             report.path, report.new
         );
-        if let Some(v) = report.old_version {
-            eprintln!("baseline: rewrote version {v} as version 3");
-        }
-        if report.legacy > 0 {
-            eprintln!(
-                "baseline: {} entries of files this run did not check stay at version 2 until \
-                 an update checks them",
-                report.legacy
-            );
-        }
         if report.outside_root > 0 {
             eprintln!("{}", outside_root_note(report));
         }
@@ -1589,19 +1577,6 @@ fn surface_baseline(report: &baseline::Report) {
         "baseline: {} new, {} baselined, {stale_note}",
         report.new, report.baselined
     );
-    if let Some(v) = report.old_version {
-        eprintln!(
-            "baseline: {} is version {v}; run --update-baseline over the whole tree to rewrite \
-             it as version 3",
-            report.path
-        );
-    } else if report.legacy > 0 {
-        eprintln!(
-            "baseline: {} entries of {} are version 2; run --update-baseline over the whole \
-             tree to rewrite them as version 3",
-            report.legacy, report.path
-        );
-    }
     if report.outside_root > 0 {
         eprintln!("{}", outside_root_note(report));
     }
@@ -1849,15 +1824,7 @@ impl CheckPass<'_> {
                 if self.no_lint {
                     shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
                 }
-                report_include_findings(
-                    &display,
-                    &source,
-                    &shown,
-                    result.diagnostics(),
-                    texts,
-                    self,
-                    &mut unit,
-                );
+                report_include_findings(&display, &source, &shown, texts, self, &mut unit);
             }
 
             // The unjudged-symbol note is a statement about the *count-gated lint
@@ -2053,9 +2020,6 @@ fn report_findings(
         apply_suppressions(source, reported, indexed_path, pass, context_free_only)
     };
     unit.suppressed += suppressed.len();
-    // Every hard-coded secret of the file, so no shown line and no hash holds
-    // one, whatever finding covers it.
-    let secrets = baseline::secrets(source, reported.secrets_in(None, source));
     let has_baseline = pass.baseline.is_some();
     let (reported, covered) = match pass.baseline {
         Some(run) => run.split(indexed_path, source, reported),
@@ -2065,8 +2029,7 @@ fn report_findings(
         return;
     }
     if pass.output == CheckFormat::Text && !reported.diagnostics.is_empty() {
-        let shown = baseline::masked(source, &secrets);
-        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), &shown);
+        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), source);
         let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
         unit.output.out(render_diagnostics(&rendered, &resolver));
     }
@@ -2092,12 +2055,7 @@ fn report_findings(
     );
     let path = baseline::relative_path(&pass.root, indexed_path);
     let key = path.clone().unwrap_or_else(|| display.to_string());
-    let entries = baseline::fingerprint(
-        &key,
-        source,
-        all.iter().map(|(c, _, _)| &c.diagnostic),
-        &secrets,
-    );
+    let entries = baseline::fingerprint(&key, source, all.iter().map(|(c, _, _)| &c.diagnostic));
     let uri = sarif::uri(&key);
     for ((c, baseline_state, reason), entry) in all.into_iter().zip(&entries) {
         let d = &c.diagnostic;
@@ -2336,14 +2294,11 @@ fn site_label(path: &str, text: Option<&str>, at: Option<oxabl_ast::Span>) -> St
 /// `root`'s expansion produced.
 ///
 /// Positions come from the physical include file, read from disk. A file that
-/// cannot be read keeps its byte span and loses line and column. Every
-/// hard-coded secret of an include (`collected.secrets_in`) is masked in its
-/// shown lines and in its hashes, whatever finding covers it.
+/// cannot be read keeps its byte span and loses line and column.
 fn report_include_findings(
     root: &str,
     root_source: &str,
     found: &[oxabl_analyze::IncludeOriginDiagnostic],
-    collected: &CollectedDiagnostics,
     texts: &mut IncludeTexts,
     pass: &CheckPass,
     unit: &mut Unit,
@@ -2353,9 +2308,6 @@ fn report_include_findings(
         let mut diagnostic = finding.diagnostic.clone();
         diagnostic.span.file = ROOT_FILE_ID;
         let text = texts.get(&finding.path).map(str::to_owned);
-        let secrets = text.as_deref().map_or_else(Vec::new, |text| {
-            baseline::secrets(text, collected.secrets_in(Some(&finding.path), text))
-        });
         if pass.output == CheckFormat::Sarif {
             let key = baseline::relative_path(&pass.root, &finding.path)
                 .unwrap_or_else(|| display.clone());
@@ -2365,8 +2317,7 @@ fn report_include_findings(
             // The root is part of the identity: one include reached from two
             // roots is two findings.
             let text = text.as_deref().unwrap_or("");
-            let entries =
-                baseline::fingerprint(&format!("{key}\0{root}"), text, [&diagnostic], &secrets);
+            let entries = baseline::fingerprint(&format!("{key}\0{root}"), text, [&diagnostic]);
             unit.sarif_results.push(sarif::Finding {
                 rule_id: diagnostic.code.0.to_string(),
                 severity: sarif::level(diagnostic.severity.as_str()),
@@ -2386,7 +2337,6 @@ fn report_include_findings(
             });
         }
         if pass.output == CheckFormat::Text {
-            let shown = baseline::masked(text.as_deref().unwrap_or(""), &secrets);
             let resolver = SourceResolver::new(
                 if text.is_some() {
                     ROOT_FILE_ID
@@ -2394,7 +2344,7 @@ fn report_include_findings(
                     FileId::UNKNOWN
                 },
                 display.clone(),
-                &shown,
+                text.as_deref().unwrap_or(""),
             );
             unit.output
                 .out(render_diagnostics(&[diagnostic.clone()], &resolver));
