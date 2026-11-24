@@ -58,8 +58,8 @@ pub use scope::{BindingMap, Scope, ScopeId, ScopeKind, ScopeTree};
 pub use sequence::{SequenceOperand, sequence_operand};
 pub use signature::{Param, ParamMode, ParamShape, ProgramSignatures, Signature};
 pub use symbol::{
-    ClassLookup, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId,
-    SymbolKind, SymbolTable, UnlinkedRun,
+    ClassLookup, RecordSource, Site, SiteTarget, SupertypeRef, Supertypes, Symbol, SymbolFlags,
+    SymbolId, SymbolKind, SymbolTable, UnlinkedRun,
 };
 pub use types::{AblType, PrimitiveTy, ResolvedType};
 

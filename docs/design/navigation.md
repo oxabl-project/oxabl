@@ -72,7 +72,8 @@ name is declared when that helps.
 | The name is | Hover |
 | --- | --- |
 | A variable, parameter or property | `DEFINE ... VARIABLE x AS t EXTENT n INITIAL v NO-UNDO`; a parameter also names its procedure, function or method; a table or dataset parameter keeps `APPEND`, `BIND`, `BY-VALUE` and `BY-REFERENCE`; a property gives its `GET` and `SET` with their access modifier; a `LIKE` type also gives the type it resolves to |
-| A temp-table field | `FIELD f AS t ...` and its temp-table |
+| A temp-table field | `FIELD f AS t ...` and its temp-table; a field that `LIKE` inherited shows the table that declares it |
+| A temp-table | `DEFINE TEMP-TABLE t ...`, the number of fields and indexes it has (inherited and own), and its indexes with the primary one named (see below) |
 | An internal procedure, function or method | Its signature with each parameter (a method always with its `()`); a declaration without a body keeps what follows its parameters (`IN SUPER`, `IN h`, `FORWARD`, `MAP TO`, `EXTERNAL`); an inherited method gives each overload and the class that declares it |
 | `RUN p IN h` | The signature of `p` in the program the handle runs, when its text declares `p` once |
 | A program (`RUN x.p`) | `RUN x.p`, the path relative to its include path entry |
@@ -88,6 +89,28 @@ or a procedure in it. `EXTENT` and `INITIAL` are read from the tokens of the
 declaration, as written. The hover is a summary of the declaration, not a copy
 of it: options that do not change what a name holds or what a call does
 (`FORMAT`, `LABEL`, `VIEW-AS`, `SERIALIZE-NAME`, ...) are left out.
+
+A temp-table that is defined `LIKE` another table has the fields and indexes of
+that table (`navigate/hover/like.rs`). The source is the record that the
+analysis resolved for the `LIKE` clause (`SymbolTable::temp_table_like`): a
+temp-table of the file, followed through a chain, or a table of the loaded
+schema. The rules are the ones that OpenEdge 12.8.9 applies:
+
+- `LIKE t` takes all fields and all indexes of `t`, with their primary and
+  unique flags. `LIKE-SEQUENTIAL` takes the same.
+- `USE-INDEX` takes only the indexes it names. The one marked `AS PRIMARY` is
+  the primary one. When none is marked, the inherited primary index stays
+  primary if it is taken, and the first one taken is primary if not.
+- Own `FIELD` and `INDEX` definitions come after the inherited ones. An own
+  primary index replaces the inherited primary index. When no index is
+  primary, the first index is.
+
+When the source is a table that the loaded schema does not have, when no schema
+is loaded, or when the chain does not end, the hover does not count the
+inherited part as zero. It says `Fields: 1 own + those of `Customer` (not in
+the loaded schema)`, gives the same for the indexes, and lists only the own
+indexes, as "Own indexes". A temp-table member that a class file declares has
+no resolved source in that file, so its `LIKE` is shown the same way.
 
 A type that an `&IF` chooses has no one name, so the hover writes no `AS`
 part and says "An `&IF` chooses the type." A schema field whose type the

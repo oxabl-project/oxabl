@@ -25,6 +25,8 @@ use oxabl_semantic::{
 
 use oxabl_workspace::is_include_fragment;
 
+mod like;
+
 use super::{Navigation, Parsed, Target, search};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
 use crate::outline::{access_name, children, data_type_name, direction_name};
@@ -186,6 +188,13 @@ impl Navigation<'_, '_> {
         let source = Source::new(&self.expanded.text, &parsed.tokens);
         let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
         let mut out = source.declaration(&found)?;
+        if found.field.is_none()
+            && symbol.kind == SymbolKind::TempTable
+            && let Some(shape) = self.temp_table_shape(found.statement, Some(sym))
+        {
+            out.push_str("\n\n");
+            out.push_str(&shape);
+        }
         if let Some(note) = self.like_note(&found, symbol.data_type.as_ref()) {
             out.push_str("\n\n");
             out.push_str(&note);
@@ -396,11 +405,16 @@ impl Navigation<'_, '_> {
             .iter()
             .filter(|member| member_named(member, kind, name))
             .filter_map(|member| {
-                source.declaration(&Declaration {
+                let mut text = source.declaration(&Declaration {
                     statement: member,
                     routine: None,
                     field: None,
-                })
+                })?;
+                if let Some(shape) = self.temp_table_shape(member, None) {
+                    text.push_str("\n\n");
+                    text.push_str(&shape);
+                }
+                Some(text)
             })
             .collect();
         if lines.is_empty() {
@@ -943,8 +957,6 @@ impl<'t> Source<'t> {
                 name,
                 like_table,
                 no_undo,
-                fields,
-                indexes,
                 ..
             } => {
                 let mut line = format!("DEFINE TEMP-TABLE {}", name.name);
@@ -954,12 +966,7 @@ impl<'t> Source<'t> {
                 if *no_undo {
                     line.push_str(" NO-UNDO");
                 }
-                format!(
-                    "{}\n\nFields: {} · Indexes: {}",
-                    code(&line),
-                    fields.len(),
-                    indexes.len()
-                )
+                code(&line)
             }
             StatementKind::DefineBuffer { name, target, .. } => code(&match target {
                 BufferTarget::Table(table) => {

@@ -464,7 +464,7 @@ pub struct SymbolTable {
 /// The record a buffer reads from: a schema table, or a temp-table this file
 /// declares (identified by its `TempTable` symbol).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum RecordSource {
+pub enum RecordSource {
     Schema(oxabl_schema::TableId),
     TempTable(SymbolId),
 }
@@ -1003,7 +1003,7 @@ impl SymbolTable {
     }
 
     /// The record `temp_table`'s `LIKE` clause copies, when it names one.
-    pub(crate) fn temp_table_like(&self, temp_table: SymbolId) -> Option<RecordSource> {
+    pub fn temp_table_like(&self, temp_table: SymbolId) -> Option<RecordSource> {
         self.records.as_deref()?.like.get(&temp_table).copied()
     }
 }
