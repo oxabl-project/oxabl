@@ -102,9 +102,10 @@ handle with its title and URL, and each abbreviation of a function. The index
 holds no descriptions, so a keyword hover gives the title, the kind and the
 link. A built-in function shows its page when the cursor is on the name of a
 call the analysis left to the runtime (an unresolved name of the built-in
-function registry). In an include analysed alone the analysis leaves every name
-of the includer unresolved, so there the name must be written as a call
-(`name(`): a bare `interval` may be a variable of the includer. A statement keyword shows its page when it is one of the
+function registry), written as a call (`name(`). The analysis also leaves a
+name unresolved when it cannot see where it is declared (an include analysed
+alone, a class whose ancestor oxabl did not read), so a bare `interval` may be
+a variable or a property, and gives no hover. A statement keyword shows its page when it is one of the
 first words of a statement: the longest documented head wins, and the words
 between `DEFINE` and what it defines (`NEW`, `SHARED`, `PRIVATE`, `INPUT`, ...)
 are passed over, so `DEFINE INPUT PARAMETER` is the `DEFINE PARAMETER` page.
@@ -168,6 +169,11 @@ Hover requests run one at a time (`HoverGate` in
 of the pointer, and only the last one counts: a hover that a newer one replaced
 before it started, or that the client cancelled with `$/cancelRequest`, answers
 `RequestCanceled` (-32800) and computes nothing. A hover that has started runs
-to its end. `crates/oxabl/tests/hover_cancel_lsp.rs` tests both. The
+to its end. A ticket that never started (no session, no thread) is withdrawn
+and cancels nothing. `crates/oxabl/tests/hover_cancel_lsp.rs` tests both
+through the server: a source with the marker `OXABL-TEST-HOLD:hover` makes its
+hover wait three seconds before it computes, in test builds only
+(`oxabl_common::hold_if_injected`), so the order of events does not depend on
+the speed of the machine. The
 resolve pass of every other run records no site: the check of the flag is its
 whole cost.

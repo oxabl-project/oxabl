@@ -2,26 +2,34 @@
 //! that a newer one replaced before it started, or that the client cancelled,
 //! answers `RequestCanceled` (-32800) and computes nothing. The last hover
 //! always gets its answer.
+//!
+//! A hover on `held.p` waits three seconds before it computes
+//! (`OXABL-TEST-HOLD:hover`, `oxabl_common::HOLD_TIME`, armed only in test
+//! builds), so the hovers sent after it are still waiting for the gate when the
+//! next message arrives.
 
 #![cfg(unix)]
 
 #[path = "lsp/session.rs"]
 mod session;
 
+use std::path::Path;
+use std::thread::sleep;
+use std::time::Duration;
+
 use serde_json::{Value, json};
 use session::{Session, file_uri};
 
 const REQUEST_CANCELED: i64 = -32800;
 
-/// A file large enough that one hover takes a while to analyse.
-fn large() -> String {
-    let mut text = String::new();
-    for n in 0..40_000 {
-        text.push_str(&format!("DEFINE VARIABLE v{n} AS INTEGER NO-UNDO.\n"));
-    }
-    text.push_str("v1 = v2 + 1.\n");
-    text
-}
+/// Long enough for the server to start the hover just sent, far shorter than
+/// the hold.
+const SETTLE: Duration = Duration::from_millis(300);
+
+const HELD: &str = "/* OXABL-TEST-HOLD:hover */\n\
+    DEFINE VARIABLE v0 AS INTEGER NO-UNDO.\n\
+    DEFINE VARIABLE v1 AS INTEGER NO-UNDO.\n\
+    DEFINE VARIABLE v2 AS INTEGER NO-UNDO.\n";
 
 fn hover_params(uri: &str, line: usize) -> Value {
     json!({
@@ -30,86 +38,74 @@ fn hover_params(uri: &str, line: usize) -> Value {
     })
 }
 
+fn hover(session: &mut Session, id: u64, uri: &str, line: usize) {
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "textDocument/hover",
+        "params": hover_params(uri, line)
+    }));
+}
+
+/// The answers to `ids`, in that order, whatever order they come in.
+fn answers(session: &Session, ids: &[u64]) -> Vec<Value> {
+    let mut found: Vec<Option<Value>> = vec![None; ids.len()];
+    while found.iter().any(Option::is_none) {
+        let answer = session.wait_for(|m| ids.iter().any(|id| m["id"] == json!(id)));
+        let at = ids.iter().position(|id| answer["id"] == json!(id)).unwrap();
+        found[at] = Some(answer);
+    }
+    found.into_iter().map(Option::unwrap).collect()
+}
+
+fn answered(answer: &Value, variable: &str) -> bool {
+    answer["result"]["contents"]["value"]
+        .as_str()
+        .is_some_and(|v| v.contains(&format!("DEFINE VARIABLE {variable} ")))
+}
+
+fn cancelled(answer: &Value) -> bool {
+    answer["error"]["code"].as_i64() == Some(REQUEST_CANCELED)
+}
+
+fn open_held(dir: &Path) -> (Session, String) {
+    let path = dir.join("held.p");
+    std::fs::write(&path, HELD).unwrap();
+    let mut session = Session::start(dir);
+    session.open(&path, HELD);
+    (session, file_uri(&path))
+}
+
 #[test]
 fn a_hover_replaced_before_it_started_is_cancelled() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("large.p");
-    let text = large();
-    std::fs::write(&path, &text).unwrap();
-    let mut session = Session::start(dir.path());
-    session.open(&path, &text);
-    let uri = file_uri(&path);
+    let (mut session, uri) = open_held(dir.path());
 
-    let params = (0..10).map(|line| hover_params(&uri, line)).collect();
-    let answers = session.request_all("textDocument/hover", params);
-    let (last, earlier) = answers.split_last().unwrap();
-    assert!(
-        last["result"]["contents"]["value"]
-            .as_str()
-            .is_some_and(|v| v.contains("DEFINE VARIABLE v9 ")),
-        "the last hover must be answered: {last}"
-    );
-    let cancelled = earlier
-        .iter()
-        .filter(|a| a["error"]["code"].as_i64() == Some(REQUEST_CANCELED))
-        .count();
-    assert!(
-        cancelled > 0,
-        "hovers replaced while another ran must be cancelled: {earlier:?}"
-    );
-    for answer in earlier {
-        let answered = answer["result"]["contents"]["value"].is_string();
-        let cancelled = answer["error"]["code"].as_i64() == Some(REQUEST_CANCELED);
-        assert!(answered || cancelled, "{answer}");
+    // The first hover holds the gate; the next three queue behind it.
+    hover(&mut session, 9001, &uri, 1);
+    sleep(SETTLE);
+    for (id, line) in [(9002, 2), (9003, 3), (9004, 1)] {
+        hover(&mut session, id, &uri, line);
     }
+    let found = answers(&session, &[9001, 9002, 9003, 9004]);
+    assert!(answered(&found[0], "v0"), "the running hover: {}", found[0]);
+    assert!(cancelled(&found[1]), "a replaced hover: {}", found[1]);
+    assert!(cancelled(&found[2]), "a replaced hover: {}", found[2]);
+    assert!(answered(&found[3], "v0"), "the newest hover: {}", found[3]);
 }
 
 #[test]
 fn a_hover_the_client_cancels_is_not_computed() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("large.p");
-    let text = large();
-    std::fs::write(&path, &text).unwrap();
-    let mut session = Session::start(dir.path());
-    session.open(&path, &text);
-    let uri = file_uri(&path);
+    let (mut session, uri) = open_held(dir.path());
 
-    // The server has read the document once this answer is in.
-    let warm = session.request("textDocument/hover", hover_params(&uri, 2));
-    assert!(warm["result"]["contents"]["value"].is_string(), "{warm}");
-
-    // The first hover starts and runs; the second waits for it and is
+    // The first hover holds the gate; the second waits for it and is
     // cancelled while it waits.
-    for (id, line) in [(9001, 0), (9002, 1)] {
-        session.send(json!({
-            "jsonrpc": "2.0", "id": id, "method": "textDocument/hover",
-            "params": hover_params(&uri, line)
-        }));
-        if id == 9001 {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-        }
-    }
+    hover(&mut session, 9001, &uri, 1);
+    sleep(SETTLE);
+    hover(&mut session, 9002, &uri, 2);
     session.send(json!({
         "jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 9002}
     }));
-    // Either answer can come first; `wait_for` drops what it does not want.
-    let (mut first, mut second) = (None, None);
-    while first.is_none() || second.is_none() {
-        let answer = session.wait_for(|m| m["id"] == json!(9001) || m["id"] == json!(9002));
-        if answer["id"] == json!(9001) {
-            first = Some(answer);
-        } else {
-            second = Some(answer);
-        }
-    }
-    let (first, second) = (first.unwrap(), second.unwrap());
-    assert!(
-        first["result"]["contents"]["value"].is_string(),
-        "the running hover is answered: {first}"
-    );
-    assert_eq!(
-        second["error"]["code"].as_i64(),
-        Some(REQUEST_CANCELED),
-        "the cancelled hover: {second}"
-    );
+    let found = answers(&session, &[9001, 9002]);
+    assert!(answered(&found[0], "v0"), "the running hover: {}", found[0]);
+    assert!(cancelled(&found[1]), "the cancelled hover: {}", found[1]);
 }

@@ -221,6 +221,8 @@ pub(crate) struct HoverTicket {
     inner: Arc<GateInner>,
     id: RequestId,
     number: u64,
+    /// Whether [`HoverTicket::start`] ran.
+    started: std::sync::atomic::AtomicBool,
 }
 
 impl HoverGate {
@@ -231,6 +233,7 @@ impl HoverGate {
             inner: Arc::clone(&self.inner),
             id: id.clone(),
             number,
+            started: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -247,9 +250,28 @@ impl HoverTicket {
     /// `None` when a newer hover came or the client cancelled this one.
     fn start(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
         let guard = lock(&self.inner.running);
+        self.started.store(true, Ordering::SeqCst);
         let cancelled = lock(&self.inner.pending).remove(&self.id).unwrap_or(false);
         let newest = self.inner.latest.load(Ordering::SeqCst) == self.number;
         (newest && !cancelled).then_some(guard)
+    }
+}
+
+impl Drop for HoverTicket {
+    /// A ticket that never started (no session, no thread) leaves no trace: it
+    /// is no longer pending, and no longer the newest, so it cancels no hover
+    /// queued before it.
+    fn drop(&mut self) {
+        if self.started.load(Ordering::SeqCst) {
+            return;
+        }
+        lock(&self.inner.pending).remove(&self.id);
+        let _ = self.inner.latest.compare_exchange(
+            self.number,
+            self.number - 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
     }
 }
 
@@ -347,5 +369,32 @@ impl<'t> Ropes<'t> {
             byte_to_position(rope, start as usize, encoding),
             byte_to_position(rope, end as usize, encoding),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ticket_that_never_starts_does_not_replace_an_older_one() {
+        let gate = HoverGate::default();
+        let older = gate.ticket(&RequestId::from(1));
+        let failed = gate.ticket(&RequestId::from(2));
+        drop(failed);
+        assert!(older.start().is_some(), "the older hover must still run");
+        assert!(lock(&gate.inner.pending).is_empty());
+    }
+
+    #[test]
+    fn a_newer_ticket_and_a_cancel_stop_a_waiting_one() {
+        let gate = HoverGate::default();
+        let replaced = gate.ticket(&RequestId::from(1));
+        let cancelled = gate.ticket(&RequestId::from(2));
+        let newest = gate.ticket(&RequestId::from(3));
+        gate.cancel(&RequestId::from(2));
+        assert!(replaced.start().is_none());
+        assert!(cancelled.start().is_none());
+        assert!(newest.start().is_some());
     }
 }

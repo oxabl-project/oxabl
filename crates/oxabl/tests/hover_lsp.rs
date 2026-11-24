@@ -114,6 +114,16 @@ const CIRCLE: &str = "CLASS app.Circle INHERITS app.Base:\n\
 /// An include opened alone that uses names of its includer.
 const FRAG: &str = "interval = 1.\ncompare = 2.\ncText = SUBSTRING(cText, 1, 2).\n";
 
+/// A class whose ancestor no file supplies, using names that the ancestor may
+/// declare.
+const OPAQUE: &str = "CLASS app.Opaque INHERITS app.Missing:\n\
+    \x20   METHOD PUBLIC VOID M():\n\
+    \x20       interval = 1.\n\
+    \x20       compare = 2.\n\
+    \x20       interval = SUBSTRING(\"ab\", 1, 1).\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
 /// A root that declares a name an include then uses.
 const CTX: &str = "DEFINE VARIABLE iBefore AS INTEGER NO-UNDO.\n{uses.i}\n";
 const USES: &str = "iBefore = 1.\n";
@@ -618,6 +628,26 @@ fn an_include_alone_does_not_guess_built_in_functions() {
     }
     // A call is still the built-in function.
     let found = markdown(&mut session, &frag, FRAG, "SUBSTRING(", 0);
+    assert!(found.starts_with("**SUBSTRING function**"), "{found}");
+}
+
+#[test]
+fn a_class_with_an_unread_ancestor_does_not_guess_built_in_functions() {
+    let ws = Workspace::new();
+    let opaque = ws.path("app/Opaque.cls");
+    std::fs::write(&opaque, OPAQUE).unwrap();
+    let mut session = Session::start(&ws.root);
+    session.open(&opaque, OPAQUE);
+
+    // Names an ancestor that no file supplies may declare.
+    for needle in ["interval =", "compare ="] {
+        assert_eq!(
+            hover(&mut session, &opaque, OPAQUE, needle, 0),
+            None,
+            "`{needle}` may be a property of the unread ancestor"
+        );
+    }
+    let found = markdown(&mut session, &opaque, OPAQUE, "SUBSTRING(", 0);
     assert!(found.starts_with("**SUBSTRING function**"), "{found}");
 }
 

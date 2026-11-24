@@ -23,8 +23,6 @@ use oxabl_semantic::{
     IndexedFileId, Resolution, ResolvedType, SiteTarget, SymbolId, SymbolKind, UnresolvedReason,
 };
 
-use oxabl_workspace::is_include_fragment;
-
 use super::{Navigation, Parsed, Target, search};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
 use crate::outline::{access_name, children, data_type_name, direction_name};
@@ -75,6 +73,7 @@ impl Navigation<'_, '_> {
     /// nothing to say: no name there, a name that does not resolve, or one
     /// that resolves to several things.
     pub fn hover(&self, file: &Path, offset: u32) -> Option<Hover> {
+        oxabl_common::hold_if_injected(oxabl_common::panic_sites::HOVER, &self.expanded.text);
         let file = search::normalize_lexically(file);
         if self.include_at(&file, offset).is_some() {
             return None;
@@ -257,9 +256,10 @@ impl Navigation<'_, '_> {
 
     /// A built-in function, when the cursor is on its name.
     ///
-    /// The name must be written as a call (`name(`), or the unit must be a
-    /// compilation unit: an include analysed alone leaves every name of its
-    /// includer unresolved, so a bare `interval` there may be a variable.
+    /// The name must be written as a call (`name(`). The analysis leaves a
+    /// name unresolved when it cannot see where it is declared (an include
+    /// analysed alone, a class whose ancestor oxabl did not read), so a bare
+    /// `interval` may be a variable or a property.
     fn builtin_function_hover(&self, name: &str, span: VirtualSpan, virt: u32) -> Option<String> {
         let token = self.token_at(virt)?;
         if token.start != span.start as usize {
@@ -271,8 +271,7 @@ impl Navigation<'_, '_> {
             .iter()
             .find(|t| t.kind != Kind::Comment)
             .is_some_and(|t| t.kind == Kind::LeftParen);
-        let alone = self.run.file().is_some_and(is_include_fragment);
-        if !called && alone {
+        if !called {
             return None;
         }
         let name = full_function_name(name);
