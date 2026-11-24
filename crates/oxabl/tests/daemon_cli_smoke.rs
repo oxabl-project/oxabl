@@ -352,7 +352,7 @@ fn a_daemon_exit_mid_session_is_reported_by_the_editor_shim() {
 /// knows.
 #[test]
 fn an_editor_replaces_a_daemon_of_an_older_version() {
-    editor_replaces_an_older_daemon(|registration| {
+    editor_replaces_an_older_daemon("0.0.1", |registration| {
         registration["daemon_version"] = serde_json::json!("0.0.1");
     });
 }
@@ -361,7 +361,7 @@ fn an_editor_replaces_a_daemon_of_an_older_version() {
 /// registration has no `daemon_version`, and it speaks contract 4.
 #[test]
 fn an_editor_replaces_a_daemon_older_than_the_build_field() {
-    editor_replaces_an_older_daemon(|registration| {
+    editor_replaces_an_older_daemon("unknown, older version", |registration| {
         let fields = registration.as_object_mut().expect("a registration object");
         fields.remove("daemon_version");
         fields.insert("contract_version".to_string(), serde_json::json!(4));
@@ -372,7 +372,10 @@ fn an_editor_replaces_a_daemon_older_than_the_build_field() {
 /// then start `oxabl lsp` on the root as an editor does after an upgrade. The old
 /// daemon stays unreaped until the editor is answered, as under a parent that does
 /// not wait for it.
-fn editor_replaces_an_older_daemon(as_older_build: impl FnOnce(&mut serde_json::Value)) {
+fn editor_replaces_an_older_daemon(
+    old_version: &str,
+    as_older_build: impl FnOnce(&mut serde_json::Value),
+) {
     let root = tempfile::tempdir().expect("a workspace root");
     let cache = tempfile::tempdir().expect("a cache root");
     let registration_path = registration_path_in(root.path(), cache.path());
@@ -382,8 +385,22 @@ fn editor_replaces_an_older_daemon(as_older_build: impl FnOnce(&mut serde_json::
     rewrite_registration(&registration_path, as_older_build);
 
     let editor = Editor::start(root.path(), cache.path());
-    let response = editor.initialize_response(&registration_path, old_pid);
+    let (notifications, response) =
+        editor.initialize_with_notifications(&registration_path, old_pid);
     assert_eq!(response["id"], 10);
+    assert!(
+        notifications.iter().any(|notification| {
+            notification["method"] == "window/logMessage"
+                && notification["params"]["message"]
+                    .as_str()
+                    .is_some_and(|message| {
+                        message.contains(old_version)
+                            && message.contains(env!("CARGO_PKG_VERSION"))
+                            && message.contains("Stopped it")
+                    })
+        }),
+        "the editor's log names the replaced daemon and both versions: {notifications:?}"
+    );
 
     let replacement = wait_for_registration(&registration_path);
     let _replacement = (replacement.pid != old_pid).then(|| PidGuard(replacement.pid));
@@ -400,6 +417,214 @@ fn editor_replaces_an_older_daemon(as_older_build: impl FnOnce(&mut serde_json::
         replacement.daemon_version,
         env!("CARGO_PKG_VERSION"),
         "the replacement names the binary's version"
+    );
+}
+
+/// A copy of the `oxabl` binary under `dir`, written `age` ago, with `padding`
+/// appended. The padding changes the bytes and so the build; an executable ignores
+/// bytes after its last segment, so every copy runs as `oxabl` does.
+fn binary_copy(
+    dir: &std::path::Path,
+    name: &str,
+    padding: &[u8],
+    age: Duration,
+) -> std::path::PathBuf {
+    binary_copy_at(dir, name, padding, std::time::SystemTime::now() - age)
+}
+
+/// As `binary_copy`, written at the given time.
+fn binary_copy_at(
+    dir: &std::path::Path,
+    name: &str,
+    padding: &[u8],
+    written: std::time::SystemTime,
+) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::copy(OXABL_BIN, &path).expect("copy the oxabl binary");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open the copy");
+    file.write_all(padding).expect("pad the copy");
+    file.set_modified(written).expect("date the copy");
+    path
+}
+
+/// The notifications of an editor's log that name the replaced daemon's build, the
+/// client's build and that the daemon was stopped.
+fn log_names_both_builds(
+    notifications: &[serde_json::Value],
+    old_build: &str,
+    new_build: &str,
+) -> bool {
+    notifications.iter().any(|notification| {
+        notification["method"] == "window/logMessage"
+            && notification["params"]["message"]
+                .as_str()
+                .is_some_and(|message| {
+                    message.contains(&format!("(build {old_build})"))
+                        && message.contains(&format!("(build {new_build})"))
+                        && message.contains("Stopped it")
+                })
+    })
+}
+
+/// An upgrade that keeps the version number, as every development build does: the
+/// editor's new language server must stop the daemon of the old build. A second
+/// editor still on the old build then leaves the new daemon alone, so two editors on
+/// two builds do not replace each other's daemon in turn.
+#[test]
+fn an_editor_replaces_a_daemon_of_another_build_of_the_same_version() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let binaries = tempfile::tempdir().expect("a directory for the binaries");
+    let old_binary = binary_copy(
+        binaries.path(),
+        "oxabl-old",
+        b"old",
+        Duration::from_secs(7200),
+    );
+    let new_binary = binary_copy(
+        binaries.path(),
+        "oxabl-new",
+        b"new",
+        Duration::from_secs(60),
+    );
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let mut old = ChildGuard(launch_daemon_from(&old_binary, root.path(), cache.path()));
+    let old_pid = old.0.id();
+    let old_registration = wait_for_registration(&registration_path);
+    assert_eq!(old_registration.pid, old_pid);
+    assert_eq!(old_registration.daemon_version, env!("CARGO_PKG_VERSION"));
+    assert!(
+        !old_registration.build.is_empty(),
+        "a daemon names its build"
+    );
+
+    let editor = Editor::start_binary(&new_binary, root.path(), cache.path(), &[]);
+    let (notifications, response) =
+        editor.initialize_with_notifications(&registration_path, old_pid);
+    assert_eq!(response["id"], 10);
+    let replacement = wait_for_registration(&registration_path);
+    let _replacement = (replacement.pid != old_pid).then(|| PidGuard(replacement.pid));
+    assert_ne!(
+        replacement.pid, old_pid,
+        "a daemon of the new build serves the root"
+    );
+    assert_ne!(replacement.build, old_registration.build);
+    assert_eq!(replacement.daemon_version, old_registration.daemon_version);
+    assert!(
+        log_names_both_builds(&notifications, &old_registration.build, &replacement.build),
+        "the editor's log names both builds: {notifications:?}"
+    );
+    assert!(
+        exits_within(&mut old.0, Duration::from_secs(5)).is_some(),
+        "the daemon of the old build must be stopped"
+    );
+
+    let mut stale_editor = Editor::start_binary(&old_binary, root.path(), cache.path(), &[]);
+    let status = exits_within(&mut stale_editor.child.0, Duration::from_secs(15))
+        .expect("an editor on the old build gives up");
+    assert!(!status.success());
+    let stderr = stale_editor.stderr(Duration::from_secs(5));
+    assert!(
+        stderr.contains("not older") && stderr.contains(&replacement.build),
+        "the refusal names the newer build: {stderr}"
+    );
+    assert_eq!(
+        wait_for_registration(&registration_path).pid,
+        replacement.pid,
+        "the daemon of the newer build stays"
+    );
+}
+
+/// Two builds whose executables carry the same time do not say which is older, so an
+/// editor leaves the other build's daemon alone, in both directions: they must not
+/// stop each other's daemon in turn.
+#[test]
+fn an_editor_leaves_a_daemon_of_another_build_with_the_same_time_alone() {
+    let binaries = tempfile::tempdir().expect("a directory for the binaries");
+    let written = std::time::SystemTime::now() - Duration::from_secs(3600);
+    let first = binary_copy_at(binaries.path(), "oxabl-first", b"first", written);
+    let second = binary_copy_at(binaries.path(), "oxabl-second", b"second", written);
+
+    for (daemon_binary, editor_binary) in [(&first, &second), (&second, &first)] {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let cache = tempfile::tempdir().expect("a cache root");
+        let registration_path = registration_path_in(root.path(), cache.path());
+        let mut daemon = ChildGuard(launch_daemon_from(daemon_binary, root.path(), cache.path()));
+        let daemon_pid = daemon.0.id();
+        assert_eq!(wait_for_registration(&registration_path).pid, daemon_pid);
+
+        let mut editor = Editor::start_binary(editor_binary, root.path(), cache.path(), &[]);
+        let status = exits_within(&mut editor.child.0, Duration::from_secs(15))
+            .expect("an editor on a build with the same time gives up");
+        assert!(!status.success());
+        let stderr = editor.stderr(Duration::from_secs(5));
+        assert!(
+            stderr.contains("not older"),
+            "the refusal says the daemon is not older: {stderr}"
+        );
+        assert_eq!(
+            wait_for_registration(&registration_path).pid,
+            daemon_pid,
+            "the daemon of the other build stays"
+        );
+        assert!(
+            daemon.0.try_wait().expect("poll the daemon").is_none(),
+            "the daemon is still running"
+        );
+    }
+}
+
+/// A daemon whose executable was replaced on disk is another build, even when the
+/// new file holds the same bytes and is dated before the daemon's.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_editor_replaces_a_daemon_whose_executable_was_replaced_on_disk() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let binaries = tempfile::tempdir().expect("a directory for the binaries");
+    let binary = binary_copy(binaries.path(), "oxabl", b"", Duration::from_secs(60));
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let mut old = ChildGuard(launch_daemon_from(&binary, root.path(), cache.path()));
+    let old_pid = old.0.id();
+    let old_registration = wait_for_registration(&registration_path);
+    assert_eq!(old_registration.pid, old_pid);
+
+    let replacement_file = binary_copy(
+        binaries.path(),
+        "oxabl.next",
+        b"",
+        Duration::from_secs(7200),
+    );
+    std::fs::rename(&replacement_file, &binary).expect("replace the executable on disk");
+
+    let editor = Editor::start_binary(&binary, root.path(), cache.path(), &[]);
+    let (notifications, response) =
+        editor.initialize_with_notifications(&registration_path, old_pid);
+    assert_eq!(response["id"], 10);
+    let replacement = wait_for_registration(&registration_path);
+    let _replacement = (replacement.pid != old_pid).then(|| PidGuard(replacement.pid));
+    assert_ne!(replacement.pid, old_pid, "a new daemon serves the root");
+    assert_eq!(
+        replacement.build, old_registration.build,
+        "the bytes did not change: only the replacement on disk tells the builds apart"
+    );
+    assert!(
+        notifications.iter().any(|notification| {
+            notification["method"] == "window/logMessage"
+                && notification["params"]["message"]
+                    .as_str()
+                    .is_some_and(|message| {
+                        message.contains("replaced on disk") && message.contains("Stopped it")
+                    })
+        }),
+        "the editor's log says the executable was replaced: {notifications:?}"
+    );
+    assert!(
+        exits_within(&mut old.0, Duration::from_secs(5)).is_some(),
+        "the daemon of the replaced executable must be stopped"
     );
 }
 
@@ -422,6 +647,21 @@ fn an_editor_leaves_a_newer_daemon_alone() {
     let registered = wait_for_registration(&registration_path);
     let _started = (registered.pid != newer_pid).then(|| PidGuard(registered.pid));
     let status = exited.expect("the editor shim must give up");
+    let (notifications, response) = editor.frames(Duration::from_secs(5));
+    assert!(response.is_none(), "the shim does not answer: {response:?}");
+    let shown = notifications
+        .iter()
+        .find(|notification| notification["method"] == "window/showMessage")
+        .unwrap_or_else(|| panic!("the editor is shown the mismatch: {notifications:?}"));
+    assert_eq!(shown["params"]["type"], 2, "a warning: {shown}");
+    let shown = shown["params"]["message"].as_str().expect("a message");
+    for part in [
+        "999.0.0",
+        env!("CARGO_PKG_VERSION"),
+        &format!("kill {newer_pid}"),
+    ] {
+        assert!(shown.contains(part), "the warning names `{part}`: {shown}");
+    }
     let stderr = editor.stderr(Duration::from_secs(5));
     assert!(!status.success());
     assert!(
@@ -533,6 +773,271 @@ fn a_busy_socket_never_lends_its_registration_a_signal() {
     );
 }
 
+/// A daemon exits once it has had no client for its idle timeout, and removes its
+/// registration, its socket and its lock file. A connected client keeps it, however
+/// long the client stays.
+#[test]
+fn an_idle_daemon_exits_and_removes_its_registration() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let mut daemon = ChildGuard(
+        Command::new(OXABL_BIN)
+            .arg("daemon")
+            .arg(root.path())
+            .args(["--idle-timeout", "2s"])
+            .envs(isolated_base(cache.path()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("launch the daemon"),
+    );
+    let registration = wait_for_registration(&registration_path);
+    let mut client = UnixStream::connect(&registration.socket_path).expect("connect a client");
+    client
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("bound the reads");
+    send_handshake(&mut client, 1, root.path());
+    let response: serde_json::Value =
+        serde_json::from_str(&read_frame(&mut client)).expect("a handshake response");
+    assert_eq!(response["result"]["connected_clients"], 1);
+
+    assert!(
+        exits_within(&mut daemon.0, Duration::from_secs(4)).is_none(),
+        "a daemon with a connected client is not idle"
+    );
+    let mut second = UnixStream::connect(&registration.socket_path).expect("connect again");
+    second
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("bound the reads");
+    send_handshake(&mut second, 2, root.path());
+    let response: serde_json::Value =
+        serde_json::from_str(&read_frame(&mut second)).expect("a second handshake response");
+    assert_eq!(
+        response["result"]["connected_clients"], 2,
+        "a daemon with a connected client still takes new clients"
+    );
+    drop(second);
+    drop(client);
+
+    let status = exits_within(&mut daemon.0, Duration::from_secs(15))
+        .expect("the daemon exits after its idle timeout");
+    assert!(status.success(), "an idle exit is a clean exit: {status}");
+    for artifact in registration_artifacts(&registration_path) {
+        assert!(
+            !artifact.exists(),
+            "the idle daemon left {} behind",
+            artifact.display()
+        );
+    }
+}
+
+/// The daemon an editor starts inherits the idle timeout from the environment, and
+/// exits after the editor has gone.
+#[test]
+fn a_daemon_started_by_an_editor_exits_after_the_editor_leaves() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+
+    let editor = Editor::start_with(
+        root.path(),
+        cache.path(),
+        &[("OXABL_DAEMON_IDLE_TIMEOUT", "1s")],
+    );
+    let response = editor.answer();
+    assert_eq!(response["id"], 10);
+    let registration = wait_for_registration(&registration_path);
+    let _daemon = PidGuard(registration.pid);
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        registration_path.exists() && process_exists(registration.pid),
+        "the daemon serves its editor past the idle timeout"
+    );
+
+    editor.leave();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while process_exists(registration.pid) || registration_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon must exit after its editor left"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for artifact in registration_artifacts(&registration_path) {
+        assert!(
+            !artifact.exists(),
+            "the idle daemon left {} behind",
+            artifact.display()
+        );
+    }
+}
+
+/// An idle timeout that does not parse is not replaced by the default: the daemon
+/// refuses to start and names the variable.
+#[test]
+fn an_idle_timeout_that_does_not_parse_refuses_the_start() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let mut daemon = ChildGuard(
+        Command::new(OXABL_BIN)
+            .arg("daemon")
+            .arg(root.path())
+            .envs(isolated_base(cache.path()))
+            .env("OXABL_DAEMON_IDLE_TIMEOUT", "soon")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run the daemon"),
+    );
+    let status = exits_within(&mut daemon.0, Duration::from_secs(10))
+        .expect("a daemon with an idle timeout that does not parse must not start");
+    let mut stderr = String::new();
+    daemon
+        .0
+        .stderr
+        .take()
+        .expect("the daemon's stderr")
+        .read_to_string(&mut stderr)
+        .expect("read the daemon's stderr");
+    assert!(!status.success());
+    assert!(
+        stderr.contains("OXABL_DAEMON_IDLE_TIMEOUT") && stderr.contains("`soon`"),
+        "the refusal names the variable and its value: {stderr}"
+    );
+    assert!(
+        !registration_path_in(root.path(), cache.path()).exists(),
+        "a daemon that refused to start registers nothing"
+    );
+}
+
+/// A daemon that decided to exit closes a client's connection before it answers. The
+/// editor reads that as "no daemon here", starts one and is served by it.
+#[test]
+fn an_editor_refused_by_an_exiting_daemon_starts_another() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let (registration_path, socket) = registration_left_behind(root.path(), cache.path());
+    let exiting = StandIn::start(&socket, StandInMode::RefuseAndExit);
+    let exiting_pid = exiting.0.0.id();
+    rewrite_registration(&registration_path, |registration| {
+        registration["pid"] = serde_json::json!(exiting_pid);
+    });
+
+    let editor = Editor::start(root.path(), cache.path());
+    let response = editor.initialize_response(&registration_path, exiting_pid);
+    assert_eq!(response["id"], 10);
+    let replacement = wait_for_registration(&registration_path);
+    let _replacement = PidGuard(replacement.pid);
+    assert_ne!(
+        replacement.pid, exiting_pid,
+        "a daemon the editor started serves the root"
+    );
+}
+
+/// A daemon an editor starts while another daemon of the root is still exiting loses
+/// the start lock and exits. The editor starts another once the lock is free.
+#[test]
+fn an_editor_starts_another_daemon_when_its_first_loses_the_start_lock() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let lock_path = registration_path.with_extension("lock");
+    let directory = lock_path.parent().expect("a registration directory");
+    std::fs::create_dir_all(directory).expect("the registration directory");
+    for level in [directory.parent().expect("the oxabl directory"), directory] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(level, std::fs::Permissions::from_mode(0o700))
+            .expect("a private directory");
+    }
+    // An exiting daemon holds the lock for a moment after its registration is gone.
+    let mut holder = StandIn::start(&lock_path, StandInMode::HoldLock);
+
+    let editor = Editor::start(root.path(), cache.path());
+    let response = editor.initialize_response(&registration_path, 0);
+    assert_eq!(response["id"], 10);
+    let registration = wait_for_registration(&registration_path);
+    let _daemon = PidGuard(registration.pid);
+    assert!(
+        exits_within(&mut holder.0.0, Duration::from_secs(5)).is_some(),
+        "the lock was held while the editor started"
+    );
+}
+
+/// A daemon that fails to start for a reason that repeats is started once, and the
+/// editor is told at once rather than after five starts.
+#[test]
+fn an_editor_starts_a_daemon_that_cannot_start_only_once() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let mut editor = Editor::start_with(
+        root.path(),
+        cache.path(),
+        &[("OXABL_DAEMON_IDLE_TIMEOUT", "soon")],
+    );
+    let status = exits_within(&mut editor.child.0, Duration::from_secs(10))
+        .expect("the editor shim gives up");
+    let stderr = editor.stderr(Duration::from_secs(5));
+    assert!(!status.success());
+    assert_eq!(
+        stderr.matches("is not an idle timeout").count(),
+        1,
+        "one daemon was started, and its error is shown: {stderr}"
+    );
+    assert!(
+        stderr.contains("exited") && !stderr.contains("did not become ready"),
+        "the editor names the exit, not a timeout: {stderr}"
+    );
+}
+
+/// A daemon that closes the editor's connection and stays is not exiting. The editor
+/// says so at once instead of asking it again.
+#[test]
+fn an_editor_refused_by_a_daemon_that_stays_fails_at_once() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let (registration_path, socket) = registration_left_behind(root.path(), cache.path());
+    let refusing = StandIn::start(&socket, StandInMode::Refuse);
+    let refusing_pid = refusing.0.0.id();
+    rewrite_registration(&registration_path, |registration| {
+        registration["pid"] = serde_json::json!(refusing_pid);
+    });
+
+    let mut editor = Editor::start(root.path(), cache.path());
+    let status = exits_within(&mut editor.child.0, Duration::from_secs(15))
+        .expect("the editor shim gives up");
+    let stderr = editor.stderr(Duration::from_secs(5));
+    assert!(!status.success());
+    assert!(
+        stderr.contains("not exiting") && stderr.contains(&format!("kill {refusing_pid}")),
+        "the editor names the daemon that stays: {stderr}"
+    );
+    assert!(
+        !stderr.contains("attempt 2"),
+        "a daemon that stays is not asked again: {stderr}"
+    );
+}
+
+/// The registration file and the two files beside it.
+fn registration_artifacts(registration_path: &std::path::Path) -> [std::path::PathBuf; 3] {
+    [
+        registration_path.to_path_buf(),
+        registration_path.with_extension("sock"),
+        registration_path.with_extension("lock"),
+    ]
+}
+
+fn process_exists(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// What the stand-in daemon does on its socket.
 #[derive(Clone, Copy)]
 enum StandInMode {
@@ -542,6 +1047,14 @@ enum StandInMode {
     IgnoreTerm,
     /// Takes no connection, with a full queue, so a connect is refused as busy.
     Busy,
+    /// Lets liveness probes go; closes the first connection that sends a frame without
+    /// an answer, removes its socket and exits, as a daemon that decided to exit idle.
+    RefuseAndExit,
+    /// The same without the exit: closes every connection that sends a frame.
+    Refuse,
+    /// Takes the start lock at the path given in place of the socket, holds it for half
+    /// a second and exits, as a daemon that is still exiting.
+    HoldLock,
 }
 
 /// Stands in for a daemon in another process, on `OXABL_STAND_IN_SOCKET`, in the
@@ -562,6 +1075,25 @@ fn stand_in_daemon() {
         fn signal(signum: i32, handler: usize) -> usize;
         fn listen(fd: i32, backlog: i32) -> i32;
     }
+    if mode == "hold-lock" {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        unsafe extern "C" {
+            fn flock(fd: i32, operation: i32) -> i32;
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&socket)
+            .expect("open the lock file");
+        // SAFETY: a valid descriptor this function owns; LOCK_EX is 2.
+        assert_eq!(unsafe { flock(file.as_raw_fd(), 2) }, 0, "take the lock");
+        println!("stand-in ready");
+        std::thread::sleep(Duration::from_millis(500));
+        std::process::exit(0);
+    }
     if mode == "ignore-term" {
         // SAFETY: SIG_IGN (1) for SIGTERM (15) installs no handler code.
         unsafe { signal(15, 1) };
@@ -577,6 +1109,17 @@ fn stand_in_daemon() {
         println!("stand-in ready");
         loop {
             std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    if mode == "refuse-and-exit" || mode == "refuse" {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+            if stream.read(&mut [0; 1]).is_ok_and(|read| read > 0) && mode != "refuse" {
+                drop(stream);
+                let _ = std::fs::remove_file(&socket);
+                std::process::exit(0);
+            }
         }
     }
     for stream in listener.incoming() {
@@ -604,11 +1147,14 @@ impl StandIn {
                     StandInMode::Listen => "listen",
                     StandInMode::IgnoreTerm => "ignore-term",
                     StandInMode::Busy => "busy",
+                    StandInMode::RefuseAndExit => "refuse-and-exit",
+                    StandInMode::Refuse => "refuse",
+                    StandInMode::HoldLock => "hold-lock",
                 },
             )
             .stdin(Stdio::null())
             .stdout(match mode {
-                StandInMode::Busy => Stdio::piped(),
+                StandInMode::Busy | StandInMode::HoldLock => Stdio::piped(),
                 _ => Stdio::null(),
             })
             .stderr(Stdio::null());
@@ -616,7 +1162,8 @@ impl StandIn {
         let output = child.stdout.take();
         let stand_in = StandIn(ChildGuard(child));
         if let Some(output) = output {
-            // A connect would wait on the full queue, so the stand-in says when it is.
+            // A connect would wait on the full queue, and a lock has no connect, so the
+            // stand-in says when it is ready.
             let (ready, wait) = mpsc::channel();
             std::thread::spawn(move || {
                 for line in BufReader::new(output).lines() {
@@ -627,7 +1174,7 @@ impl StandIn {
                 }
             });
             wait.recv_timeout(Duration::from_secs(10))
-                .expect("the stand-in must fill its queue");
+                .expect("the stand-in must get ready");
             return stand_in;
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -655,7 +1202,15 @@ fn registration_left_behind(
 }
 
 fn launch_daemon(root: &std::path::Path, base: &std::path::Path) -> Child {
-    Command::new(OXABL_BIN)
+    launch_daemon_from(std::path::Path::new(OXABL_BIN), root, base)
+}
+
+fn launch_daemon_from(
+    binary: &std::path::Path,
+    root: &std::path::Path,
+    base: &std::path::Path,
+) -> Child {
+    Command::new(binary)
         .arg("daemon")
         .arg(root)
         .envs(isolated_base(base))
@@ -699,9 +1254,27 @@ struct Editor {
 
 impl Editor {
     fn start(root: &std::path::Path, base: &std::path::Path) -> Self {
-        let mut child = Command::new(OXABL_BIN)
+        Editor::start_with(root, base, &[])
+    }
+
+    fn start_with(
+        root: &std::path::Path,
+        base: &std::path::Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
+        Editor::start_binary(std::path::Path::new(OXABL_BIN), root, base, environment)
+    }
+
+    fn start_binary(
+        binary: &std::path::Path,
+        root: &std::path::Path,
+        base: &std::path::Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
+        let mut child = Command::new(binary)
             .arg("lsp")
             .envs(isolated_base(base))
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -727,9 +1300,21 @@ impl Editor {
             }
         });
         write_frame(&mut input, &initialize.to_string());
+        // Every frame up to and including the first response: the notifications the
+        // shim sends before it answers come first.
         let (answered, answer) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = answered.send(read_frame(&mut output));
+            let mut reader = BufReader::new(&mut output);
+            loop {
+                let Some(frame) = try_read_frame(&mut reader) else {
+                    return;
+                };
+                let response = serde_json::from_str::<serde_json::Value>(&frame)
+                    .is_ok_and(|frame| frame.get("id").is_some());
+                if answered.send(frame).is_err() || response {
+                    return;
+                }
+            }
         });
         Editor {
             child: ChildGuard(child),
@@ -739,6 +1324,20 @@ impl Editor {
         }
     }
 
+    /// The notifications the shim sent before the frame that ends the wait, and that
+    /// frame: the response, or `None` when the shim closed its output first.
+    fn frames(&self, limit: Duration) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
+        let mut notifications = Vec::new();
+        while let Ok(frame) = self.answer.recv_timeout(limit) {
+            let frame: serde_json::Value = serde_json::from_str(&frame).expect("a JSON frame");
+            if frame.get("id").is_some() {
+                return (notifications, Some(frame));
+            }
+            notifications.push(frame);
+        }
+        (notifications, None)
+    }
+
     /// The answer to `initialize`, or a failure with the shim's stderr. On failure the
     /// daemon the shim registered is stopped first: it inherits the shim's stderr.
     fn initialize_response(
@@ -746,9 +1345,19 @@ impl Editor {
         registration_path: &std::path::Path,
         old_pid: u32,
     ) -> serde_json::Value {
-        match self.answer.recv_timeout(Duration::from_secs(15)) {
-            Ok(response) => serde_json::from_str(&response).expect("LSP initialize response"),
-            Err(_) => {
+        self.initialize_with_notifications(registration_path, old_pid)
+            .1
+    }
+
+    /// [`Editor::initialize_response`] with the notifications sent before it.
+    fn initialize_with_notifications(
+        self,
+        registration_path: &std::path::Path,
+        old_pid: u32,
+    ) -> (Vec<serde_json::Value>, serde_json::Value) {
+        match self.frames(Duration::from_secs(15)) {
+            (notifications, Some(response)) => (notifications, response),
+            (_, None) => {
                 let started = std::fs::read(registration_path)
                     .ok()
                     .and_then(|body| serde_json::from_slice::<Registration>(&body).ok())
@@ -762,6 +1371,27 @@ impl Editor {
                 panic!("the editor shim did not answer initialize: {stderr}");
             }
         }
+    }
+
+    /// The answer to `initialize`, for an editor that stays.
+    fn answer(&self) -> serde_json::Value {
+        let response = self
+            .answer
+            .recv_timeout(Duration::from_secs(15))
+            .unwrap_or_else(|_| panic!("the editor shim did not answer initialize"));
+        serde_json::from_str(&response).expect("LSP initialize response")
+    }
+
+    /// Close the editor's side, as a closed window does, and wait for the shim to end.
+    fn leave(self) {
+        let Editor {
+            mut child, _input, ..
+        } = self;
+        drop(_input);
+        assert!(
+            exits_within(&mut child.0, Duration::from_secs(10)).is_some(),
+            "the editor shim ends when the editor leaves"
+        );
     }
 
     fn stderr(&self, limit: Duration) -> String {
@@ -819,6 +1449,26 @@ fn send_handshake(stream: &mut UnixStream, id: u32, root: &std::path::Path) {
 fn write_frame(stream: &mut impl Write, body: &str) {
     write!(stream, "Content-Length: {}\r\n\r\n{body}", body.len()).expect("write request");
     stream.flush().expect("flush request");
+}
+
+/// One frame, or `None` when the stream ends before a frame starts.
+fn try_read_frame(reader: &mut impl BufRead) -> Option<String> {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Content-Length:") {
+            content_length = Some(value.trim().parse::<usize>().ok()?);
+        }
+    }
+    let mut body = vec![0; content_length?];
+    reader.read_exact(&mut body).ok()?;
+    String::from_utf8(body).ok()
 }
 
 fn read_frame(stream: &mut impl Read) -> String {

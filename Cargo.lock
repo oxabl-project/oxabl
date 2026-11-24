@@ -2678,6 +2678,7 @@ name = "oxabl_daemon"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "codspeed-criterion-compat",
  "crossbeam-channel",
  "lsp-server",
@@ -2879,6 +2880,7 @@ dependencies = [
  "oxabl_effects",
  "oxabl_flow",
  "oxabl_formatter",
+ "oxabl_handles",
  "oxabl_index",
  "oxabl_lexer",
  "oxabl_lint",

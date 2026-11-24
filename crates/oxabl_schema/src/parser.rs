@@ -5,8 +5,9 @@
 //! §`oxabl_schema`. The v1 scope covers `ADD TABLE`, `ADD FIELD`, and
 //! `ADD INDEX` with their attributes; other directives (`ADD SEQUENCE`,
 //! `ADD DATABASE`, `ADD CONSTRAINT`, `UPDATE`, `DROP`, `RENAME`,
-//! `@annotations`, and the `PSC` trailer) are accepted and silently skipped
-//! so that format drift never hard-errors the loader.
+//! `@annotations`, and the `PSC` trailer) are accepted and skipped so that
+//! format drift never hard-errors the loader. The skipped `UPDATE`, `CHANGE`,
+//! `DROP` and `RENAME` directives are listed in [`ParseOutcome::skipped`].
 //!
 //! Unknown attributes on a recognised directive are captured in
 //! `Field::extras` as opaque `(name, value)` pairs so they round-trip into
@@ -49,7 +50,20 @@ pub struct ParseOutcome {
     pub fields: Vec<PendingField>,
     pub indexes: Vec<PendingIndex>,
     pub sequences: Vec<Sequence>,
+    /// The `UPDATE`, `CHANGE`, `DROP` and `RENAME` directives the parser read
+    /// past without applying. A file that has one describes a schema the
+    /// records above do not.
+    pub skipped: Vec<SkippedDirective>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A directive of a `.df` that the parser does not apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedDirective {
+    /// The directive keyword in upper case: `UPDATE`, `CHANGE`, `DROP` or `RENAME`.
+    pub keyword: String,
+    /// The whole directive, from its keyword to its last token.
+    pub source: FileSpan,
 }
 
 #[derive(Debug)]
@@ -345,10 +359,22 @@ impl<'a> Parser<'a> {
             match word.as_str() {
                 "ADD" => self.parse_add(),
                 "UPDATE" | "CHANGE" | "DROP" | "RENAME" => {
+                    let start = self.idx;
                     // Consume the starting keyword so skip doesn't immediately
                     // re-match on its own `line_start` and stall.
                     self.idx += 1;
                     self.skip_to_next_directive();
+                    let end = self.tokens[self.idx - 1].end;
+                    self.outcome.skipped.push(SkippedDirective {
+                        keyword: word,
+                        source: FileSpan {
+                            file: self.file_id,
+                            span: Span {
+                                start: self.tokens[start].start,
+                                end,
+                            },
+                        },
+                    });
                 }
                 _ => {
                     self.emit_unexpected();

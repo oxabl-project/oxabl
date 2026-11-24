@@ -237,6 +237,7 @@ mod tests {
                 name: id(n),
                 type_source: TypeSource::Explicit(DataType::Integer),
                 no_undo: false,
+                extent: None,
             },
         })
     }

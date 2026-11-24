@@ -5,7 +5,7 @@ use oxabl_lint::field_after_failed_find::run;
 use oxabl_lint::groups;
 
 use super::registry_run::codes_of;
-use super::{check, check_fragment, check_no_schema, check_recovered, help, lines};
+use super::{check, check_fragment, check_no_schema, check_recovered, help, labels, lines};
 
 #[test]
 fn a_field_after_a_failed_find_is_reported_once_per_path() {
@@ -131,4 +131,21 @@ c = Customer.Name.
     let mut map = LintSeverityMap::new();
     map.base_mut().enable_group(groups::STRICT_NULLS);
     assert_eq!(codes_of(src, map, "NL"), ["NL003"]);
+}
+
+#[test]
+fn a_finding_relates_each_find_that_may_have_failed() {
+    let src = "\
+DEFINE VARIABLE c AS CHARACTER NO-UNDO.
+DEFINE VARIABLE n AS INTEGER NO-UNDO.
+IF n > 0 THEN
+    FIND FIRST Customer WHERE Customer.CustNum = 1 NO-LOCK NO-ERROR.
+ELSE
+    FIND LAST Customer NO-LOCK NO-ERROR.
+c = Customer.Name.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [7]);
+    let message = "this may find no record and leave `Customer` empty".to_string();
+    assert_eq!(labels(src, &diags[0]), [(4, message.clone()), (6, message)]);
 }

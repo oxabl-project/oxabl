@@ -145,6 +145,9 @@ pub struct SourceResolver<'a> {
     path: String,
     source: &'a str,
     map: SourceMap,
+    /// Other files that labels may point into: id, display path, and the line
+    /// table of the text when it is known.
+    others: Vec<(FileId, String, Option<SourceMap>)>,
 }
 
 impl<'a> SourceResolver<'a> {
@@ -155,7 +158,39 @@ impl<'a> SourceResolver<'a> {
             path: path.into(),
             source,
             map: SourceMap::new(source),
+            others: Vec::new(),
         }
+    }
+
+    /// Name another file, so a label in it renders with its path, and with a
+    /// line and column when its `source` is known.
+    pub fn with_file(
+        mut self,
+        file: FileId,
+        path: impl Into<String>,
+        source: Option<&str>,
+    ) -> Self {
+        self.others
+            .push((file, path.into(), source.map(SourceMap::new)));
+        self
+    }
+
+    /// Where `span` is, as `path:line:col`, `path`, or `None` for a file the
+    /// resolver does not know.
+    fn place(&self, span: &FileSpan) -> Option<String> {
+        let at = span.span.start as usize;
+        if span.file == self.file {
+            let (line, col) = self.map.lookup(at);
+            return Some(format!("{}:{line}:{col}", self.path));
+        }
+        let (_, path, map) = self.others.iter().find(|(file, ..)| *file == span.file)?;
+        Some(match map {
+            Some(map) => {
+                let (line, col) = map.lookup(at);
+                format!("{path}:{line}:{col}")
+            }
+            None => path.clone(),
+        })
     }
 
     /// The root file this resolver renders positions for.
@@ -200,8 +235,9 @@ fn snippet(line: &str, at: usize) -> std::borrow::Cow<'_, str> {
 ///
 /// Root-file diagnostics get a resolved position and a snippet line; diagnostics
 /// from other files render without a root-relative position (see
-/// [`SourceResolver`]). Diagnostics are rendered in the given order; a `help`
-/// string, when present, is appended on its own line.
+/// [`SourceResolver`]). Diagnostics are rendered in the given order. Each
+/// label follows on a `note:` line with its place, and a `help` string, when
+/// present, on its own line after them.
 pub fn render_diagnostics(diagnostics: &[Diagnostic], resolver: &SourceResolver) -> String {
     let mut out = String::new();
     for d in diagnostics {
@@ -213,6 +249,12 @@ pub fn render_diagnostics(diagnostics: &[Diagnostic], resolver: &SourceResolver)
             }
         } else {
             out.push_str(&format!("{}: {} (in included file)\n", resolver.path, d));
+        }
+        for label in &d.labels {
+            match resolver.place(&label.span) {
+                Some(place) => out.push_str(&format!("  note: {place}: {}\n", label.message)),
+                None => out.push_str(&format!("  note: {} (in included file)\n", label.message)),
+            }
         }
         if let Some(help) = &d.help {
             out.push_str(&format!("  help: {help}\n"));
@@ -315,6 +357,34 @@ mod tests {
         assert!(
             !out.contains("foo.p:1:"),
             "should not have root line/col: {out}"
+        );
+    }
+
+    #[test]
+    fn render_labels_as_notes_before_help() {
+        let source = "AAA\nBBB\n";
+        let root = FileId::new(1);
+        let include = FileId::new(2);
+        let span = |file, start| FileSpan {
+            file,
+            span: Span {
+                start,
+                end: start + 1,
+            },
+        };
+        let diag = Diagnostic::warning("X", "here".to_string(), span(root, 0))
+            .with_label(span(root, 4), "in the root".to_string())
+            .with_label(span(include, 2), "in the include".to_string())
+            .with_label(span(FileId::new(3), 0), "nowhere known".to_string())
+            .with_help("fix it".to_string());
+        let resolver =
+            SourceResolver::new(root, "f.p", source).with_file(include, "inc.i", Some("x\nyz"));
+        let out = render_diagnostics(std::slice::from_ref(&diag), &resolver);
+        assert_eq!(
+            out,
+            "f.p:1:1: warning[X]: here\n    1 | AAA\n  note: f.p:2:1: in the root\n  \
+             note: inc.i:2:1: in the include\n  note: nowhere known (in included file)\n  \
+             help: fix it\n"
         );
     }
 

@@ -2,7 +2,7 @@
 
 use oxabl_lint::persistent_procedure_leak::run;
 
-use super::{check, check_fragment, help, lines};
+use super::{check, check_fragment, help, labels, lines};
 
 #[test]
 fn reports_a_persistent_procedure_that_is_never_deleted() {
@@ -137,4 +137,21 @@ RUN lib.p PERSISTENT SET hLib.
 RUN dispatch IN hLib ('initialize').
 ";
     assert_eq!(check(run, src).len(), 1);
+}
+
+#[test]
+fn a_finding_relates_the_statement_before_the_exit() {
+    let src = "\
+PROCEDURE p:
+    DEFINE VARIABLE hLib AS HANDLE NO-UNDO.
+    RUN lib.p PERSISTENT SET hLib.
+    MESSAGE \"started\".
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(4, "path ends after `MESSAGE \"started\"`".to_string())]
+    );
 }

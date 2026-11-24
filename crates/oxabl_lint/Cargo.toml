@@ -35,3 +35,7 @@ smallvec = { version = "1", features = ["union"] }
 [[bench]]
 name = "lint_bench"
 harness = false
+
+[[bench]]
+name = "nulls_bench"
+harness = false

@@ -41,6 +41,8 @@ mod call_support;
 mod handle_support;
 // Shared queries over the scope analysis for the lock and transaction rules.
 mod lock_support;
+// Related locations for the unknown-value rules.
+mod null_support;
 // Walk and source helpers for the syntactic strict rules.
 mod syntactic;
 
