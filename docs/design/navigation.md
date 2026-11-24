@@ -1,6 +1,8 @@
 # Navigation: go to definition and document links
 
 `oxabl lsp` answers `textDocument/definition` and `textDocument/documentLink`.
+Find references and the call hierarchy use the same resolution; see
+`docs/design/references.md`.
 Both analyse one compilation unit per request and give answers in the bytes of
 physical files: a declaration written in an include is placed in the include,
 never in the expanded text.

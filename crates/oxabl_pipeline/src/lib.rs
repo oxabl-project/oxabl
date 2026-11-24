@@ -83,6 +83,7 @@ mod outline;
 #[cfg(test)]
 mod parity;
 pub mod position;
+mod references;
 mod reverse;
 
 pub use config::{
@@ -93,6 +94,13 @@ pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
 pub use navigate::{Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
+// Re-exported so a client of navigation and the call hierarchy can name the
+// byte spans their answers carry.
+pub use oxabl_ast::Span;
+pub use references::{
+    CallItem, CallItemKind, IncomingCall, Occurrence, Outgoing, OutgoingCall, Reach, Referent,
+    Search, UnitIncoming, UnitReferences,
+};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{

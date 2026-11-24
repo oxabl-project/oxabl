@@ -5,7 +5,8 @@
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
 //! `textDocument/definition` and `textDocument/documentLink` (see
-//! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
+//! `docs/design/navigation.md`), and `textDocument/references` and the call
+//! hierarchy (see `docs/design/references.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
 //! `docs/design/include-context.md`.
@@ -32,6 +33,7 @@ pub mod formatting;
 mod includer_context;
 mod navigation;
 pub mod position;
+mod references;
 mod workspace_symbol;
 
 use std::collections::HashMap;
@@ -48,8 +50,9 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, Request as _,
-    WorkspaceSymbolRequest,
+    CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
+    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, References,
+    Request as _, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -802,6 +805,14 @@ impl<'c> Server<'c> {
                                 self.handle_definition(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
                                 self.handle_document_link(req)?;
+                            } else if req.method == References::METHOD {
+                                self.handle_references(req)?;
+                            } else if req.method == CallHierarchyPrepare::METHOD {
+                                self.handle_prepare_call_hierarchy(req)?;
+                            } else if req.method == CallHierarchyIncomingCalls::METHOD {
+                                self.handle_incoming_calls(req)?;
+                            } else if req.method == CallHierarchyOutgoingCalls::METHOD {
+                                self.handle_outgoing_calls(req)?;
                             } else if req.method == expanded_unit::METHOD {
                                 self.handle_expanded_unit(req)?;
                             } else if req.method == includer_context::LIST_METHOD {

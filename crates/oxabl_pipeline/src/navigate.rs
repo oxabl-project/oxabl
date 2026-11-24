@@ -16,8 +16,10 @@
 //! graph knows it ([`CallTarget::InProgram`]): every `RUN ... PERSISTENT SET h`
 //! of the file runs one program and nothing else writes `h`.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use oxabl_analyze::{ExpandedFile, analyze_for_navigation};
 use oxabl_ast::{NodeId, Span};
@@ -42,6 +44,31 @@ pub struct Target {
     pub span: Option<Span>,
 }
 
+/// What a name refers to, as navigation finds it. Two names refer to one
+/// thing when they have one key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Key {
+    /// A declaration, a file, or a place in a file.
+    At(Target),
+    /// Internal procedure `procedure` (folded) of `program`, whose text does
+    /// not declare it: a super procedure of the program can supply it.
+    Undeclared { program: PathBuf, procedure: String },
+}
+
+impl Key {
+    /// The place go to definition shows: the program for an undeclared
+    /// procedure.
+    pub(crate) fn into_target(self) -> Target {
+        match self {
+            Key::At(target) => target,
+            Key::Undeclared { program, .. } => Target {
+                path: program,
+                span: None,
+            },
+        }
+    }
+}
+
 /// A part of the analysed file that names another file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
@@ -52,13 +79,18 @@ pub struct Link {
 
 /// One compilation unit analysed for navigation. See the module docs.
 pub struct Navigation<'s, 'a> {
-    run: &'s LintPipeline<'a>,
-    expanded: &'s ExpandedFile,
+    pub(crate) run: &'s LintPipeline<'a>,
+    pub(crate) expanded: &'s ExpandedFile,
     search_base: Option<PathBuf>,
-    semantic: Semantic,
+    pub(crate) semantic: Semantic,
     file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
     /// The unit's calls, extracted on the first `RUN` site asked about.
     calls: OnceCell<FileCalls>,
+    /// The outline of each file read for an answer, by path. `None` when the
+    /// file cannot be read or outlined.
+    outlines: RefCell<HashMap<PathBuf, Option<Rc<[OutlineSymbol]>>>>,
+    /// The routines of the expanded text, outlined on first use.
+    pub(crate) routines: OnceCell<Vec<OutlineSymbol>>,
 }
 
 impl<'a> LintPipeline<'a> {
@@ -96,6 +128,8 @@ impl<'a> LintPipeline<'a> {
             semantic,
             file_of,
             calls: OnceCell::new(),
+            outlines: RefCell::new(HashMap::new()),
+            routines: OnceCell::new(),
         })
     }
 }
@@ -105,23 +139,43 @@ impl Navigation<'_, '_> {
     /// is the analysed file or an include its expansion read. Empty when the
     /// name has none, or the offset is on no name.
     pub fn definitions(&self, file: &Path, offset: u32) -> Vec<Target> {
+        dedupe(
+            self.keys_at(file, offset)
+                .into_iter()
+                .map(Key::into_target)
+                .collect(),
+        )
+    }
+
+    /// What the name at byte `offset` of `file` refers to, as
+    /// [`definitions`](Self::definitions) finds it.
+    pub(crate) fn keys_at(&self, file: &Path, offset: u32) -> Vec<Key> {
         let file = search::normalize_lexically(file);
         if let Some(target) = self.include_at(&file, offset) {
-            return vec![target];
+            return vec![Key::At(target)];
         }
-        let ids = self.file_ids(&file);
         // A cursor just after a name, as a click at its end gives, still means it.
         for at in [Some(offset), offset.checked_sub(1)].into_iter().flatten() {
-            let virt = ids
-                .iter()
-                .find_map(|id| self.expanded.expanded_offset(*id, at));
-            if let Some(virt) = virt
-                && let Some(targets) = self.answer_at(virt)
+            if let Some(virt) = self.expanded_at(&file, at)
+                && let Some(keys) = self.answer_at(virt)
             {
-                return dedupe(targets);
+                return dedupe(keys);
             }
         }
         Vec::new()
+    }
+
+    /// What the innermost name at expanded offset `virt` refers to.
+    pub(crate) fn keys_in_expanded(&self, virt: u32) -> Vec<Key> {
+        self.answer_at(virt).map(dedupe).unwrap_or_default()
+    }
+
+    /// Where byte `offset` of `file` (the root or an include the expansion
+    /// read) lies in the expanded text.
+    pub(crate) fn expanded_at(&self, file: &Path, offset: u32) -> Option<u32> {
+        self.file_ids(file)
+            .iter()
+            .find_map(|id| self.expanded.expanded_offset(*id, offset))
     }
 
     /// The include references, literal `RUN` targets and `USING` names written
@@ -197,13 +251,13 @@ impl Navigation<'_, '_> {
             .collect()
     }
 
-    fn root_path(&self) -> Option<PathBuf> {
+    pub(crate) fn root_path(&self) -> Option<PathBuf> {
         self.run.file().map(search::normalize_lexically)
     }
 
     /// The targets of the innermost name at expanded offset `virt`. `None` when
     /// no name there has an answer, `Some(empty)` when the name has no target.
-    fn answer_at(&self, virt: u32) -> Option<Vec<Target>> {
+    fn answer_at(&self, virt: u32) -> Option<Vec<Key>> {
         let symbols = &self.semantic.symbols;
         let mut sites: Vec<_> = symbols
             .sites()
@@ -225,12 +279,12 @@ impl Navigation<'_, '_> {
             if let Some((sym, symbol)) = declaration
                 && symbol.name_span.end - symbol.name_span.start <= length
             {
-                return Some(self.symbol_targets(sym));
+                return Some(self.symbol_keys(sym));
             }
             let mut answered = false;
             while at < sites.len() && sites[at].span.end - sites[at].span.start == length {
-                match self.site_targets(&sites[at].target, sites[at].span) {
-                    Some(targets) if !targets.is_empty() => return Some(targets),
+                match self.site_keys(&sites[at].target, sites[at].span) {
+                    Some(keys) if !keys.is_empty() => return Some(keys),
                     Some(_) => answered = true,
                     None => {}
                 }
@@ -240,37 +294,44 @@ impl Navigation<'_, '_> {
                 return Some(Vec::new());
             }
         }
-        declaration.map(|(sym, _)| self.symbol_targets(sym))
+        declaration.map(|(sym, _)| self.symbol_keys(sym))
     }
 
-    fn site_targets(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Vec<Target>> {
+    fn symbol_keys(&self, sym: SymbolId) -> Vec<Key> {
+        self.symbol_targets(sym).into_iter().map(Key::At).collect()
+    }
+
+    /// What the name at a site refers to. `None` when the site has no answer,
+    /// `Some(empty)` when its name has no target.
+    pub(crate) fn site_keys(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Vec<Key>> {
+        let at = |targets: Vec<Target>| targets.into_iter().map(Key::At).collect();
         match target {
             SiteTarget::Reference(node) => match self.semantic.references.get(*node)? {
-                Resolution::Resolved(sym) => Some(self.symbol_targets(*sym)),
+                Resolution::Resolved(sym) => Some(self.symbol_keys(*sym)),
                 Resolution::Unresolved { .. } => Some(Vec::new()),
             },
             SiteTarget::Run(node) => match self.semantic.references.get(*node)? {
                 // A program is never run through a handle.
                 Resolution::Resolved(sym) if self.semantic.symbols.program_file(*sym).is_some() => {
-                    Some(self.symbol_targets(*sym))
+                    Some(self.symbol_keys(*sym))
                 }
-                _ if let Some(targets) = self.handle_call_targets(span) => Some(targets),
-                Resolution::Resolved(sym) => Some(self.symbol_targets(*sym)),
+                _ if let Some(keys) = self.handle_call_keys(span) => Some(keys),
+                Resolution::Resolved(sym) => Some(self.symbol_keys(*sym)),
                 Resolution::Unresolved {
                     reason: UnresolvedReason::Unknowable,
                     ..
-                } => Some(self.candidates(span, NameKind::Program)),
+                } => Some(at(self.candidates(span, NameKind::Program))),
                 Resolution::Unresolved { .. } => Some(Vec::new()),
             },
-            SiteTarget::Using(node) => {
-                self.type_targets(self.semantic.references.get(*node)?, span)
-            }
-            SiteTarget::Type(resolution) => self.type_targets(resolution, span),
-            SiteTarget::Symbol(sym) => Some(self.symbol_targets(*sym)),
-            SiteTarget::Table(table) => Some(self.table_target(*table).into_iter().collect()),
+            SiteTarget::Using(node) => self
+                .type_targets(self.semantic.references.get(*node)?, span)
+                .map(at),
+            SiteTarget::Type(resolution) => self.type_targets(resolution, span).map(at),
+            SiteTarget::Symbol(sym) => Some(self.symbol_keys(*sym)),
+            SiteTarget::Table(table) => Some(at(self.table_target(*table).into_iter().collect())),
             SiteTarget::SchemaField(table) => {
                 let name = self.text(span)?;
-                Some(self.field_target(*table, name))
+                Some(at(self.field_target(*table, name)))
             }
         }
     }
@@ -288,13 +349,8 @@ impl Navigation<'_, '_> {
 
     /// The targets of a `RUN p IN h` whose name is at `span`. `None` when the
     /// `RUN` there names no handle, or names `THIS-PROCEDURE`.
-    fn handle_call_targets(&self, span: VirtualSpan) -> Option<Vec<Target>> {
-        let calls = self.calls.get_or_init(|| {
-            let text = &self.expanded.text;
-            let tokens = oxabl_lexer::tokenize(text);
-            let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
-            FileCalls::extract(&program.statements, text, &tokens)
-        });
+    fn handle_call_keys(&self, span: VirtualSpan) -> Option<Vec<Key>> {
+        let calls = self.calls();
         let site = calls.sites.iter().find(|site| {
             matches!(
                 site.kind,
@@ -304,7 +360,7 @@ impl Navigation<'_, '_> {
         })?;
         match &site.target {
             CallTarget::InProgram { program, procedure } => {
-                Some(self.procedure_targets(program, procedure))
+                Some(self.procedure_keys(program, procedure))
             }
             CallTarget::Unknown {
                 reason: UnknownCall::Handle,
@@ -314,9 +370,19 @@ impl Navigation<'_, '_> {
         }
     }
 
+    /// The calls of the expanded unit, extracted once.
+    pub(crate) fn calls(&self) -> &FileCalls {
+        self.calls.get_or_init(|| {
+            let text = &self.expanded.text;
+            let tokens = oxabl_lexer::tokenize(text);
+            let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
+            FileCalls::extract(&program.statements, text, &tokens)
+        })
+    }
+
     /// Internal procedure `procedure` in each file that supplies `program`, or
-    /// the file when its text declares no such procedure.
-    fn procedure_targets(&self, program: &str, procedure: &str) -> Vec<Target> {
+    /// the program when its text declares no such procedure.
+    fn procedure_keys(&self, program: &str, procedure: &str) -> Vec<Key> {
         let paths = match self
             .run
             .with_run_index(|index| resolve_program(index, program))
@@ -330,12 +396,13 @@ impl Navigation<'_, '_> {
             ProgramAnswer::Unknown(_) => Vec::new(),
         };
         let procedure = procedure.trim_matches(['"', '\'']);
-        let mut targets = Vec::new();
+        let mut keys = Vec::new();
         for path in paths {
             let spans: Vec<Span> = self
                 .outline_of(&path)
+                .as_deref()
                 .unwrap_or_default()
-                .into_iter()
+                .iter()
                 .filter(|symbol| {
                     symbol.kind == OutlineKind::Procedure
                         && symbol.name.eq_ignore_ascii_case(procedure)
@@ -343,17 +410,20 @@ impl Navigation<'_, '_> {
                 .map(|symbol| symbol.selection_span)
                 .collect();
             if spans.is_empty() {
-                targets.push(Target { path, span: None });
+                keys.push(Key::Undeclared {
+                    program: path,
+                    procedure: procedure.to_ascii_lowercase(),
+                });
                 continue;
             }
             for span in spans {
-                targets.push(Target {
+                keys.push(Key::At(Target {
                     path: path.clone(),
                     span: Some(span),
-                });
+                }));
             }
         }
-        targets
+        keys
     }
 
     /// Every file on the search path that the name written at `span` could
@@ -391,7 +461,7 @@ impl Navigation<'_, '_> {
     }
 
     /// The expanded text at `span`.
-    fn text(&self, span: VirtualSpan) -> Option<&str> {
+    pub(crate) fn text(&self, span: VirtualSpan) -> Option<&str> {
         self.expanded
             .text
             .get(span.start as usize..span.end as usize)
@@ -469,7 +539,7 @@ impl Navigation<'_, '_> {
         vec![Target { path, span }]
     }
 
-    fn path_of(&self, file: IndexedFileId) -> Option<PathBuf> {
+    pub(crate) fn path_of(&self, file: IndexedFileId) -> Option<PathBuf> {
         self.run
             .indexed_path(file)
             .or_else(|| (self.file_of)(file))
@@ -498,7 +568,7 @@ impl Navigation<'_, '_> {
     }
 
     /// A span of the expanded text in the file that wrote it.
-    fn place(&self, span: VirtualSpan) -> Option<Target> {
+    pub(crate) fn place(&self, span: VirtualSpan) -> Option<Target> {
         let span = to_span(span);
         if let Some(root) = self.expanded.resolve_root_span(span) {
             return Some(Target {
@@ -534,7 +604,7 @@ impl Navigation<'_, '_> {
             return Vec::new();
         };
         let mut spans = Vec::new();
-        for class in &symbols {
+        for class in symbols.iter() {
             for member in &class.children {
                 let is_member = matches!(
                     member.kind,
@@ -555,9 +625,22 @@ impl Navigation<'_, '_> {
         spans
     }
 
-    fn outline_of(&self, path: &Path) -> Option<Vec<OutlineSymbol>> {
-        let text = self.run.file_system().read(path).ok()?;
-        outline(&text).ok()
+    /// The outline of a file, read and outlined once per analysis.
+    pub(crate) fn outline_of(&self, path: &Path) -> Option<Rc<[OutlineSymbol]>> {
+        if let Some(known) = self.outlines.borrow().get(path) {
+            return known.clone();
+        }
+        let outlined = self
+            .run
+            .file_system()
+            .read(path)
+            .ok()
+            .and_then(|text| outline(&text).ok())
+            .map(Rc::from);
+        self.outlines
+            .borrow_mut()
+            .insert(path.to_path_buf(), outlined.clone());
+        outlined
     }
 }
 
@@ -572,8 +655,8 @@ fn to_span(span: VirtualSpan) -> Span {
     }
 }
 
-fn dedupe(targets: Vec<Target>) -> Vec<Target> {
-    let mut kept: Vec<Target> = Vec::with_capacity(targets.len());
+fn dedupe<T: PartialEq>(targets: Vec<T>) -> Vec<T> {
+    let mut kept: Vec<T> = Vec::with_capacity(targets.len());
     for target in targets {
         if !kept.contains(&target) {
             kept.push(target);

@@ -1296,6 +1296,68 @@ pub fn compute_navigation(
     overlay: HashMap<PathBuf, Arc<str>>,
     query: &NavigationQuery,
 ) -> Option<Result<NavigationAnswer, String>> {
+    with_navigation(snapshot, schema, root, overlay, |unit| {
+        let mut answer = NavigationAnswer::default();
+        match query {
+            NavigationQuery::Definition { file, offset } => {
+                let file = unit.spelled(file);
+                answer.definitions = unit.navigation.definitions(&file, *offset);
+            }
+            NavigationQuery::Links => {
+                answer.links = unit.navigation.links();
+                answer
+                    .texts
+                    .insert(search::normalize_lexically(root), Arc::clone(&unit.source));
+            }
+        }
+        for target in &answer.definitions {
+            if target.span.is_some()
+                && !answer.texts.contains_key(&target.path)
+                && let Some(text) = unit.read(&target.path)
+            {
+                answer.texts.insert(target.path.clone(), text);
+            }
+        }
+        answer
+    })
+}
+
+/// One compilation unit analysed for navigation, as [`with_navigation`] hands
+/// it to its caller.
+pub struct NavigationUnit<'n, 's, 'a> {
+    pub navigation: &'n oxabl_pipeline::Navigation<'s, 'a>,
+    /// The root's text, as the analysis read it.
+    pub source: Arc<str>,
+    root: &'n Path,
+    expansion: &'n Expansion,
+    fs: &'n dyn FileSystem,
+}
+
+impl NavigationUnit<'_, '_, '_> {
+    /// `file` as the expansion spells it, so a path that reaches it through a
+    /// symbolic link or a `.` segment still names it.
+    pub fn spelled(&self, file: &Path) -> PathBuf {
+        spelled_as_expanded(self.expansion, self.root, file)
+    }
+
+    /// A file's text through the open buffers over the disk.
+    pub fn read(&self, path: &Path) -> Option<Arc<str>> {
+        self.fs.read(path).ok()
+    }
+}
+
+/// Analyse `root` with `overlay` over the configured file system for
+/// navigation and hand the analysis to `answer`. Not memoized: it runs per
+/// request, on a worker snapshot. `Ok(Err(reason))` when the root cannot be
+/// read or its preprocessing failed. `None` when a concurrent write cancelled
+/// the read.
+pub fn with_navigation<T>(
+    snapshot: &AnalysisDatabase,
+    schema: SchemaHandle,
+    root: &Path,
+    overlay: HashMap<PathBuf, Arc<str>>,
+    answer: impl FnOnce(&NavigationUnit<'_, '_, '_>) -> T,
+) -> Option<Result<T, String>> {
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
         let _revision = schema.revision(snapshot);
         let config = snapshot.config();
@@ -1326,28 +1388,13 @@ pub fn compute_navigation(
         let Some(navigation) = handle.navigation(&expansion, &file_of) else {
             return Err("its preprocessing failed".to_string());
         };
-        let mut answer = NavigationAnswer::default();
-        match query {
-            NavigationQuery::Definition { file, offset } => {
-                let file = spelled_as_expanded(&expansion, root, file);
-                answer.definitions = navigation.definitions(&file, *offset);
-            }
-            NavigationQuery::Links => {
-                answer.links = navigation.links();
-                answer
-                    .texts
-                    .insert(search::normalize_lexically(root), Arc::clone(&source));
-            }
-        }
-        for target in &answer.definitions {
-            if target.span.is_some()
-                && !answer.texts.contains_key(&target.path)
-                && let Ok(text) = fs.read(&target.path)
-            {
-                answer.texts.insert(target.path.clone(), text);
-            }
-        }
-        Ok(answer)
+        Ok(answer(&NavigationUnit {
+            navigation: &navigation,
+            source: Arc::clone(&source),
+            root,
+            expansion: &expansion,
+            fs: &fs,
+        }))
     }))
     .ok()
 }

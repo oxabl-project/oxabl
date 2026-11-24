@@ -314,6 +314,53 @@ pub fn includer_contexts(
     Ok(Ok(IncluderContexts { roots, gaps }))
 }
 
+/// The workspace dependency graph for a references search, and why it can be
+/// short.
+pub struct ReferenceGraph {
+    pub graph: Arc<ReverseGraph>,
+    /// Why the graph may not describe the workspace as it is now. Empty when
+    /// the pass is current.
+    pub gaps: Vec<String>,
+}
+
+/// The dependency graph of `root`'s workspace, for finding the files that can
+/// name a program, a routine, a class or a member.
+///
+/// `Ok(Err(reason))` when the workspace cannot know, as for
+/// [`includer_contexts`]. A pass whose files changed after it ran is run again
+/// once. Blocks until a workspace pass is current, so callers keep it off the
+/// LSP thread.
+pub fn reference_graph(
+    host: &SessionHost,
+    root: &Path,
+) -> Result<Result<ReferenceGraph, String>, MethodError> {
+    if let Some(reason) = cross_file_refusal(root) {
+        return Ok(Err(reason));
+    }
+    let mut workspace = ensure_workspace(host, root, false)?;
+    let mut freshness = workspace_freshness(&workspace);
+    if matches!(freshness.state, IndexState::Stale { .. }) {
+        workspace = ensure_workspace(host, root, true)?;
+        freshness = workspace_freshness(&workspace);
+    }
+    let gaps = match freshness.state {
+        IndexState::Ready => Vec::new(),
+        IndexState::Indexing { indexed, total } => vec![format!(
+            "the workspace index is not ready: {indexed} of {total} files are indexed"
+        )],
+        IndexState::Stale { changed_files } => vec![format!(
+            "the workspace index is out of date: {changed_files} file(s) changed after it was built"
+        )],
+        IndexState::Superseded { attempts, .. } => vec![format!(
+            "the workspace index is out of date: edits replaced each of {attempts} passes"
+        )],
+    };
+    Ok(Ok(ReferenceGraph {
+        graph: Arc::clone(&workspace.graph),
+        gaps,
+    }))
+}
+
 /// The best `limit` matches for `query`, and how many matched in total (R19).
 ///
 /// Bounded in the work it does, not only in what it returns. A type-ahead query sends
