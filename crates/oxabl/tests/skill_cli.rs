@@ -335,20 +335,23 @@ fn a_manifest_cannot_name_a_file_outside_the_copy() {
 
 #[test]
 fn a_failed_install_leaves_the_old_skill_md_whole() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = TempDir::new().unwrap();
     install(dir.path(), &["--agent", "agents"]);
     let target = agents(dir.path());
     stale_the_copy(&target);
     let old = fs::read_to_string(target.join("SKILL.md")).unwrap();
-    fs::remove_dir_all(target.join("references")).unwrap();
-    fs::write(
-        target.join("references"),
-        "a file where a directory belongs",
-    )
-    .unwrap();
+    fs::write(target.join("references/check.md"), "edited").unwrap();
+    let references = target.join("references");
+    fs::set_permissions(&references, fs::Permissions::from_mode(0o500)).unwrap();
+    if fs::File::create(references.join("probe")).is_ok() {
+        // Running as a user that ignores permissions (root).
+        return;
+    }
 
     let output = install(dir.path(), &["--agent", "agents"]);
 
+    fs::set_permissions(&references, fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(code(&output), 2);
     assert!(text(&output.stderr).starts_with("error:"));
     assert_eq!(fs::read_to_string(target.join("SKILL.md")).unwrap(), old);
