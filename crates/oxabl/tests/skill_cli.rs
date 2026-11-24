@@ -289,7 +289,36 @@ fn a_user_file_survives_install_refresh_and_a_second_install() {
 }
 
 #[test]
-fn a_copy_from_before_manifests_upgrades_and_keeps_every_other_file() {
+fn a_current_copy_without_a_manifest_is_current_and_an_install_writes_the_manifest() {
+    let dir = TempDir::new().unwrap();
+    install(dir.path(), &[]);
+    let target = agents(dir.path());
+    fs::remove_file(target.join(".oxabl-skill.json")).unwrap();
+    fs::write(target.join("notes.md"), "mine").unwrap();
+
+    let check = install(dir.path(), &["--agent", "agents", "--check"]);
+    assert_eq!(code(&check), 0, "{}", text(&check.stdout));
+    assert!(text(&check.stdout).contains("current"));
+    assert!(text(&check.stdout).contains(".oxabl-skill.json is missing"));
+    assert!(!target.join(".oxabl-skill.json").exists());
+
+    let refresh = install(dir.path(), &["--agent", "agents", "--refresh"]);
+
+    assert_eq!(code(&refresh), 0, "{}", text(&refresh.stderr));
+    assert!(target.join(".oxabl-skill.json").exists());
+    assert_eq!(fs::read_to_string(target.join("notes.md")).unwrap(), "mine");
+    let check = install(dir.path(), &["--agent", "agents", "--check"]);
+    assert_eq!(code(&check), 0);
+    assert!(!text(&check.stdout).contains("is missing"));
+
+    fs::remove_file(target.join(".oxabl-skill.json")).unwrap();
+    let output = install(dir.path(), &["--agent", "agents"]);
+    assert_eq!(code(&output), 0, "{}", text(&output.stderr));
+    assert!(target.join(".oxabl-skill.json").exists());
+}
+
+#[test]
+fn a_stale_copy_without_a_manifest_is_stale_and_upgrades_keeping_every_other_file() {
     let dir = TempDir::new().unwrap();
     install(dir.path(), &[]);
     let target = agents(dir.path());
@@ -300,7 +329,7 @@ fn a_copy_from_before_manifests_upgrades_and_keeps_every_other_file() {
 
     let check = install(dir.path(), &["--agent", "agents", "--check"]);
     assert_eq!(code(&check), 1);
-    assert!(text(&check.stdout).contains(".oxabl-skill.json is missing"));
+    assert!(text(&check.stdout).contains("SKILL.md differs"));
 
     let output = install(dir.path(), &["--agent", "agents"]);
 
@@ -390,6 +419,57 @@ fn a_symlinked_target_is_written_through_and_becomes_current() {
     let check = install(dir.path(), &["--agent", "agents", "--check"]);
     assert_eq!(code(&check), 0, "{}", text(&check.stdout));
     assert_eq!(fs::read_to_string(real.join("notes.md")).unwrap(), "mine");
+}
+
+#[test]
+fn a_symlink_inside_a_target_fails_with_two_and_writes_nothing_anywhere() {
+    use std::os::unix::fs::symlink;
+    for extra in [&[][..], &["--refresh"][..], &["--force"][..]] {
+        let dir = TempDir::new().unwrap();
+        let out = dir.path().join("out");
+        fs::create_dir(&out).unwrap();
+        install(dir.path(), &["--agent", "agents"]);
+        let target = agents(dir.path());
+        stale_the_copy(&target);
+        fs::remove_dir_all(target.join("references")).unwrap();
+        symlink(&out, target.join("references")).unwrap();
+        let before = fs::read_to_string(target.join("SKILL.md")).unwrap();
+
+        let output = install(dir.path(), extra);
+
+        assert_eq!(code(&output), 2, "{extra:?}");
+        assert!(text(&output.stderr).contains("references"), "{extra:?}");
+        assert!(tree(&out).is_empty(), "{extra:?}: {:?}", tree(&out));
+        assert!(!claude(dir.path()).exists(), "{extra:?}");
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            before,
+            "{extra:?}"
+        );
+    }
+}
+
+#[test]
+fn a_dangling_symlink_or_a_file_as_references_fails_with_two() {
+    use std::os::unix::fs::symlink;
+    for dangling in [true, false] {
+        let dir = TempDir::new().unwrap();
+        install(dir.path(), &["--agent", "claude"]);
+        let target = claude(dir.path());
+        stale_the_copy(&target);
+        fs::remove_dir_all(target.join("references")).unwrap();
+        if dangling {
+            symlink(dir.path().join("gone"), target.join("references")).unwrap();
+        } else {
+            fs::write(target.join("references"), "a file").unwrap();
+        }
+
+        let output = install(dir.path(), &[]);
+
+        assert_eq!(code(&output), 2, "dangling {dangling}");
+        assert!(!dir.path().join("gone").exists());
+        assert!(!agents(dir.path()).exists());
+    }
 }
 
 #[test]
