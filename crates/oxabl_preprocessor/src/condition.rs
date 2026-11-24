@@ -11,6 +11,9 @@ pub struct Environment<'a> {
     /// The compile environment behind `OPSYS`, `PROVERSION` and the database
     /// functions. Unlike `{&OPSYS}`, a `&SCOPED-DEFINE` cannot shadow them.
     pub config: &'a PreprocessorConfig,
+    /// Whether the value of a name is known, for
+    /// [`Evaluation::reads_unknown_name`]. `None` knows every name.
+    pub known: Option<&'a dyn Fn(&str) -> bool>,
 }
 
 /// A part of a condition that was not decided from facts.
@@ -32,8 +35,9 @@ pub enum Gap {
 pub struct Evaluation {
     pub value: bool,
     pub gaps: Vec<Gap>,
-    /// The names the condition asks `DEFINED` about, after `{&name}` expansion.
-    pub defined_names: Vec<String>,
+    /// Whether the condition asks `DEFINED` about a name that
+    /// [`Environment::known`] does not know, after `{&name}` expansion.
+    pub reads_unknown_name: bool,
 }
 
 /// Evaluate a preprocessor `&IF` condition.
@@ -80,20 +84,18 @@ pub struct Evaluation {
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
-    let defined_names = tokens
-        .iter()
-        .filter_map(|token| match token {
-            CondToken::Defined(name) => Some(name.clone()),
-            _ => None,
-        })
-        .collect();
+    let reads_unknown_name = env.known.is_some_and(|known| {
+        tokens
+            .iter()
+            .any(|token| matches!(token, CondToken::Defined(name) if !known(name)))
+    });
     // A condition with nothing in it is false, as in the AVM; an empty operand
     // inside one is a syntax error.
     if tokens.is_empty() {
         return Evaluation {
             value: false,
             gaps: Vec::new(),
-            defined_names,
+            reads_unknown_name,
         };
     }
     let mut parser = CondParser {
@@ -111,7 +113,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     Evaluation {
         value,
         gaps: parser.gaps,
-        defined_names,
+        reads_unknown_name,
     }
 }
 
@@ -1273,6 +1275,7 @@ mod tests {
             &Environment {
                 vars,
                 config: &config,
+                known: None,
             },
         )
     }
@@ -1554,6 +1557,7 @@ mod tests {
             let env = Environment {
                 vars: &vars,
                 config: &config,
+                known: None,
             };
             let e = super::evaluate(c, &env);
             assert!(e.gaps.is_empty(), "{c}: {:?}", e.gaps);
@@ -2015,6 +2019,7 @@ mod tests {
             &Environment {
                 vars: &vars,
                 config: &config,
+                known: None,
             },
         )
     }
@@ -2068,6 +2073,7 @@ mod tests {
             &Environment {
                 vars: &vars,
                 config: &config,
+                known: None,
             },
         )
     }

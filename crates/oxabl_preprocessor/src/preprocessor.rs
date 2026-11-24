@@ -1097,6 +1097,9 @@ impl ProcessContext<'_> {
         if self.args_uncertain && has_positional_ref(text) {
             return true;
         }
+        if self.knowledge.knows_all() {
+            return false;
+        }
         let mut rest = text;
         while let Some(open) = find_var_ref(rest) {
             let Some(close) = rest[open..].find('}') else {
@@ -1287,11 +1290,14 @@ impl ProcessContext<'_> {
         };
         let condition = expand_positional_refs(condition, args);
         let condition = self.substitute_computed_names(&condition, source, at, site);
+        let knowledge = &self.knowledge;
+        let known = |name: &str| knowledge.is_known(name);
         let evaluation = evaluate(
             &condition,
             &Environment {
                 vars: &self.vars,
                 config: self.predefined,
+                known: (!knowledge.knows_all()).then_some(&known as &dyn Fn(&str) -> bool),
             },
         );
         let mut unmodelled = Vec::new();
@@ -1304,12 +1310,8 @@ impl ProcessContext<'_> {
         if !unmodelled.is_empty() {
             self.report_unmodelled_condition(&unmodelled.join(", "), site);
         }
-        let decided = !reads_unknown
-            && self.text_losses.len() == losses
-            && evaluation
-                .defined_names
-                .iter()
-                .all(|name| self.knowledge.is_known(name));
+        let decided =
+            !reads_unknown && self.text_losses.len() == losses && !evaluation.reads_unknown_name;
         (evaluation.value, decided)
     }
 
@@ -2105,6 +2107,12 @@ struct Saved {
 }
 
 impl Knowledge {
+    /// Whether every name is known, as in a root whose branches are all
+    /// decided.
+    fn knows_all(&self) -> bool {
+        !self.all_uncertain && !self.includer_unknown && self.uncertain.is_empty()
+    }
+
     fn is_known(&self, name: &str) -> bool {
         if self.all_uncertain {
             return false;
