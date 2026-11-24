@@ -174,25 +174,29 @@ fn finish(fields: usize, mut inherited: Vec<IndexView>, own: Vec<IndexView>) -> 
     }
 }
 
-/// The inherited indexes that `USE-INDEX` names, in the order written. The
-/// one marked `AS PRIMARY` is the primary one; [`finish`] makes the first one
-/// primary when none is.
+/// The inherited indexes that `USE-INDEX` names, in the order of the source
+/// table. The one marked `AS PRIMARY` is the primary one. Without one, the
+/// inherited primary index stays primary when it is taken; [`finish`] makes the
+/// first index primary when none is.
 fn used_indexes(inherited: Vec<IndexView>, used: &[UseIndex]) -> Vec<IndexView> {
-    let mut taken: Vec<(IndexView, bool)> = used
-        .iter()
-        .filter_map(|wanted| {
-            inherited
-                .iter()
-                .find(|index| index.name.eq_ignore_ascii_case(&wanted.name.name))
-                .map(|index| (index.clone(), wanted.as_primary))
+    let named = |index: &IndexView, only_primary: bool| {
+        used.iter().any(|wanted| {
+            index.name.eq_ignore_ascii_case(&wanted.name.name)
+                && (!only_primary || wanted.as_primary)
         })
-        .collect();
-    if let Some(chosen) = taken.iter().position(|(_, as_primary)| *as_primary) {
-        for (at, (index, _)) in taken.iter_mut().enumerate() {
-            index.primary = at == chosen;
-        }
-    }
-    taken.into_iter().map(|(index, _)| index).collect()
+    };
+    let chosen = inherited.iter().position(|index| named(index, true));
+    inherited
+        .into_iter()
+        .enumerate()
+        .filter(|(_, index)| named(index, false))
+        .map(|(at, mut index)| {
+            if chosen.is_some() {
+                index.primary = Some(at) == chosen;
+            }
+            index
+        })
+        .collect()
 }
 
 fn own_index(index: &TempTableIndex) -> IndexView {

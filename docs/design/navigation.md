@@ -94,13 +94,19 @@ A temp-table that is defined `LIKE` another table has the fields and indexes of
 that table (`navigate/hover/like.rs`). The source is the record that the
 analysis resolved for the `LIKE` clause (`SymbolTable::temp_table_like`): a
 temp-table of the file, followed through a chain, or a table of the loaded
-schema. The rules are the ones that OpenEdge 12.8.9 applies:
+schema. The rules are the ones that OpenEdge 12.8.9 applies, as its
+`INDEX-INFORMATION` reports them for a probe program (`LIKE`, `USE-INDEX` with
+one and several indexes, `AS PRIMARY`, `LIKE-SEQUENTIAL`, own primary index,
+chains):
 
 - `LIKE t` takes all fields and all indexes of `t`, with their primary and
   unique flags. `LIKE-SEQUENTIAL` takes the same.
-- `USE-INDEX` takes only the indexes it names. The one marked `AS PRIMARY` is
-  the primary one. When none is marked, the inherited primary index stays
-  primary if it is taken, and the first one taken is primary if not.
+- `USE-INDEX` takes only the indexes it names, listed in the order of the
+  source table, not the order written. The one marked `AS PRIMARY` is the
+  primary one. When none is marked, the inherited primary index stays primary
+  if it is taken (`USE-INDEX ia USE-INDEX ib` and `USE-INDEX ib USE-INDEX ia`
+  both keep `ia`), and a single non-primary index that is taken becomes
+  primary.
 - Own `FIELD` and `INDEX` definitions come after the inherited ones. An own
   primary index replaces the inherited primary index. When no index is
   primary, the first index is.

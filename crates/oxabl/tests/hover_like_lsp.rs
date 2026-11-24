@@ -32,7 +32,11 @@ DEFINE TEMP-TABLE ttOwn NO-UNDO FIELD a AS INTEGER FIELD b AS CHARACTER\n\
 DEFINE TEMP-TABLE ttBare NO-UNDO FIELD q AS INTEGER.\n\
 DEFINE TEMP-TABLE ttFlat NO-UNDO FIELD x AS INTEGER INDEX i1 x INDEX i2 x.\n\
 DEFINE TEMP-TABLE ttCopy NO-UNDO LIKE ttOwn.\n\
-DEFINE TEMP-TABLE ttTwo NO-UNDO LIKE ttOwn USE-INDEX IA USE-INDEX Ib AS PRIMARY.\n\
+DEFINE TEMP-TABLE ttTwo NO-UNDO LIKE ttOwn USE-INDEX Ib AS PRIMARY USE-INDEX IA.\n\
+DEFINE TEMP-TABLE ttLate NO-UNDO FIELD x AS INTEGER INDEX x1 x INDEX x2 IS PRIMARY x.\n\
+DEFINE TEMP-TABLE ttLateBoth NO-UNDO LIKE ttLate USE-INDEX x2 USE-INDEX x1.\n\
+DEFINE TEMP-TABLE ttBoth NO-UNDO LIKE ttOwn USE-INDEX ia USE-INDEX ib.\n\
+DEFINE TEMP-TABLE ttBothBack NO-UNDO LIKE ttOwn USE-INDEX ib USE-INDEX ia.\n\
 DEFINE TEMP-TABLE ttNewPrimary NO-UNDO LIKE ttOwn INDEX ic IS PRIMARY b.\n\
 DEFINE TEMP-TABLE ttUse NO-UNDO LIKE ttOwn USE-INDEX ib.\n\
 DEFINE TEMP-TABLE ttMore NO-UNDO LIKE ttOwn FIELD c AS LOGICAL INDEX ic c.\n\
@@ -173,6 +177,20 @@ fn use_index_takes_only_that_index_and_makes_it_primary() {
     assert_eq!(
         shape(&mut session, &main, "ttTwo"),
         "Fields: 2 · Indexes: 2\n\nIndexes:\n- `ia` (unique): a\n- `ib` (primary): b"
+    );
+    // Several, none marked: the inherited primary stays primary and the order
+    // is the source table's, whatever the order written.
+    for name in ["ttBoth", "ttBothBack"] {
+        assert_eq!(
+            shape(&mut session, &main, name),
+            "Fields: 2 · Indexes: 2\n\nIndexes:\n- `ia` (primary, unique): a\n- `ib`: b",
+            "{name}"
+        );
+    }
+    // The inherited primary index need not be the first one.
+    assert_eq!(
+        shape(&mut session, &main, "ttLateBoth"),
+        "Fields: 1 · Indexes: 2\n\nIndexes:\n- `x1`: x\n- `x2` (primary): x"
     );
     assert_eq!(
         shape(&mut session, &main, "ttPrimary"),
