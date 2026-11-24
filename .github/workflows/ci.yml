@@ -1,5 +1,11 @@
 name: CI
 
+
+# When master or a PR branch gets a new push, cancel the CI run of the earlier push.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [master]
