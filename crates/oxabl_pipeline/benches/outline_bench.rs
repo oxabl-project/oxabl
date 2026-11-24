@@ -1,6 +1,7 @@
-//! The document outline of a large file: a class and a procedure file of several
-//! thousand lines each. `parse/*` lex and parse the same text and stop, so the
-//! cost of the walk shows as the gap to `outline/*`.
+//! The document outline and the folding and selection syntax of a large file: a
+//! class and a procedure file of several thousand lines each. `parse/*` lex and
+//! parse the same text and stop, so the cost of each walk shows as the gap to
+//! `outline/*` and `syntax/*`.
 
 use std::fmt::Write;
 use std::hint::black_box;
@@ -8,7 +9,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
-use oxabl_pipeline::outline;
+use oxabl_pipeline::{document_syntax, outline};
 
 const MEMBERS: usize = 300;
 
@@ -93,6 +94,9 @@ fn bench_outline(c: &mut Criterion) {
         });
         c.bench_function(&format!("outline/{name}"), |b| {
             b.iter(|| black_box(outline(black_box(&source))))
+        });
+        c.bench_function(&format!("syntax/{name}"), |b| {
+            b.iter(|| black_box(document_syntax(black_box(&source))))
         });
     }
 }
