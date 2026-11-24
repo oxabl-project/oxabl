@@ -3782,7 +3782,7 @@ impl<'a> ResolveWalker<'a> {
     // ------------------------------------------------------------------
 
     fn walk_expression(&mut self, expr: &Expression, scope: ScopeId, mode: AccessMode) {
-        self.note_site(expr.span, SiteTarget::Reference(expr.id));
+        self.note_site_as(expr.span, SiteTarget::Reference(expr.id), mode);
         match &expr.kind {
             ExpressionKind::Literal(_) => {}
 
@@ -3827,6 +3827,7 @@ impl<'a> ResolveWalker<'a> {
             }
 
             ExpressionKind::FunctionCall { name, arguments } => {
+                self.note_site(name.span, SiteTarget::Reference(expr.id));
                 // Functions and Procedures share a call surface in expression
                 // position (internal procedure calls surface as function
                 // calls syntactically).
@@ -3930,6 +3931,7 @@ impl<'a> ResolveWalker<'a> {
                 // softened to External so LINT0001 does not fire on type
                 // references the single-file model cannot see (#58 D/C).
                 self.walk_receiver(object, scope);
+                self.note_site(method.span, SiteTarget::Reference(expr.id));
                 // A method is a cross-class member: with no index it stays
                 // unrecorded, as it always has been; with one, it resolves
                 // against the receiver's class. `Functions` only, so `obj:foo()`
@@ -3947,6 +3949,7 @@ impl<'a> ResolveWalker<'a> {
             }
             ExpressionKind::MemberAccess { object, member } => {
                 self.walk_receiver(object, scope);
+                self.note_site_as(member.span, SiteTarget::Reference(expr.id), mode);
                 // `Values` only, mirroring where the declare pass binds a
                 // locally declared property: `obj:foo` cannot land on a method.
                 // The access mode is the enclosing one, so `obj:prop = 1` credits
@@ -3983,6 +3986,13 @@ impl<'a> ResolveWalker<'a> {
                 // fact about the workspace rather than a shrug.
                 let lookup = self.resolve_type_name(class_name, scope, span);
                 self.note_class_site(class_name, lookup, span);
+                if self.ctx.record_sites {
+                    // The class name after `NEW`, apart from the whole expression.
+                    let keyword = VirtualSpan::new(expr.span.start, expr.span.start + 3);
+                    if let Some(name) = self.type_name_after(class_name, keyword) {
+                        self.note_type_site(class_name, lookup, name);
+                    }
+                }
                 match lookup {
                     TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => {
                         self.references.insert(expr.id, Resolution::Resolved(sym));
@@ -5144,21 +5154,33 @@ impl<'a> ResolveWalker<'a> {
 
     /// Record where a name is written, when the context asks for navigation sites.
     fn note_site(&mut self, span: Span, target: SiteTarget) {
+        self.note_site_as(span, target, AccessMode::Read);
+    }
+
+    /// [`Self::note_site`] with the access the statement makes.
+    fn note_site_as(&mut self, span: Span, target: SiteTarget, mode: AccessMode) {
         if self.ctx.record_sites {
             self.symbols.record_site(Site {
                 span: VirtualSpan::new(span.start, span.end),
                 target,
+                write: mode != AccessMode::Read,
             });
         }
     }
 
     /// The sites of a field access that the walk does not reach as expressions:
     /// the field name, and each qualifier of a `db.table.field` chain.
-    fn note_field_sites(&mut self, qualifier: &Expression, field: &Identifier, expr_id: NodeId) {
+    fn note_field_sites(
+        &mut self,
+        qualifier: &Expression,
+        field: &Identifier,
+        expr_id: NodeId,
+        mode: AccessMode,
+    ) {
         if !self.ctx.record_sites {
             return;
         }
-        self.note_site(field.span, SiteTarget::Reference(expr_id));
+        self.note_site_as(field.span, SiteTarget::Reference(expr_id), mode);
         let mut next = Some(qualifier);
         while let Some(expr) = next {
             self.note_site(expr.span, SiteTarget::Reference(expr.id));
@@ -5199,6 +5221,7 @@ impl<'a> ResolveWalker<'a> {
         self.symbols.record_site(Site {
             span: site,
             target: SiteTarget::Type(resolution),
+            write: false,
         });
     }
 
@@ -5306,7 +5329,7 @@ impl<'a> ResolveWalker<'a> {
             Some(sym) => sym,
             None => self.lookup_inherited_ident(id, namespaces)?,
         };
-        self.note_site(id.span, SiteTarget::Symbol(sym));
+        self.note_site_as(id.span, SiteTarget::Symbol(sym), mode);
         self.bump_count(sym, mode);
         if self.track_block_vars {
             self.note_block_var_use(sym, scope, mode);
@@ -5370,7 +5393,7 @@ impl<'a> ResolveWalker<'a> {
         if self
             .resolve_statement_ident(id, scope, namespaces, mode)
             .is_none()
-            && let Some(sym) = self.schema_default_buffer(id)
+            && let Some(sym) = self.schema_default_buffer_as(id, mode)
         {
             self.bump_count(sym, mode);
         }
@@ -5381,6 +5404,11 @@ impl<'a> ResolveWalker<'a> {
     ///
     /// The caller has already found no local buffer or table of that name.
     fn schema_default_buffer(&mut self, id: &Identifier) -> Option<SymbolId> {
+        self.schema_default_buffer_as(id, AccessMode::Read)
+    }
+
+    /// [`Self::schema_default_buffer`] with the access of the statement that names it.
+    fn schema_default_buffer_as(&mut self, id: &Identifier, mode: AccessMode) -> Option<SymbolId> {
         if !self.ctx.schema_loaded {
             return None;
         }
@@ -5391,7 +5419,7 @@ impl<'a> ResolveWalker<'a> {
             .map(fold_atom)
             .find_map(|atom| Some((schema.resolve_table(&atom)?, atom)))?;
         let sym = self.synth_table_buffer_symbol(tid, &atom, id);
-        self.note_site(id.span, SiteTarget::Symbol(sym));
+        self.note_site_as(id.span, SiteTarget::Symbol(sym), mode);
         Some(sym)
     }
 
@@ -5715,7 +5743,7 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         mode: AccessMode,
     ) {
-        self.note_field_sites(qualifier, field, expr_id);
+        self.note_field_sites(qualifier, field, expr_id, mode);
         // The qualifier is typically an Identifier (table/buffer name).
         // Non-identifier qualifiers (e.g. `foo():bar.baz`) are walked
         // normally; field is External and not recorded. A three-part
@@ -5973,14 +6001,14 @@ impl<'a> ResolveWalker<'a> {
     ) -> Resolution {
         let resolution = self.record_field_resolution(qsym, field, mode);
         if self.ctx.record_sites && matches!(resolution, Resolution::Unresolved { .. }) {
-            self.note_temp_table_field_site(qsym, field);
+            self.note_temp_table_field_site(qsym, field, mode);
         }
         resolution
     }
 
     /// Record where a field of a temp-table is named through a qualifier. The
     /// resolution leaves such a field unresolved, so navigation needs the site.
-    fn note_temp_table_field_site(&mut self, qsym: SymbolId, field: &Identifier) {
+    fn note_temp_table_field_site(&mut self, qsym: SymbolId, field: &Identifier, mode: AccessMode) {
         let Some(RecordSource::TempTable(tt)) = self.symbols.record_source(qsym) else {
             return;
         };
@@ -5989,7 +6017,7 @@ impl<'a> ResolveWalker<'a> {
             Some(FieldHit::Schema(tid, _)) => SiteTarget::SchemaField(tid),
             None => return,
         };
-        self.note_site(field.span, target);
+        self.note_site_as(field.span, target, mode);
     }
 
     fn record_field_resolution(

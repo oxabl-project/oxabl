@@ -1326,6 +1326,8 @@ pub enum NavigationQuery {
         offset: u32,
         buffer: Option<Buffer>,
     },
+    /// The uses, in `file`, of the name at byte `offset` of `file`.
+    Highlights { file: PathBuf, offset: u32 },
     /// The links written in the root itself.
     Links,
 }
@@ -1338,6 +1340,9 @@ pub struct NavigationAnswer {
     pub links: Vec<oxabl_pipeline::Link>,
     /// The hover, and the file its span is in.
     pub hover: Option<(PathBuf, oxabl_pipeline::Hover)>,
+    /// The uses of a [`NavigationQuery::Highlights`] name; the text of the
+    /// file is the only entry of `texts`.
+    pub highlights: Vec<oxabl_pipeline::Highlight>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -1424,6 +1429,16 @@ pub fn compute_navigation(
                     }
                     answer.hover = Some((path, hover));
                 }
+            }
+            NavigationQuery::Highlights { file, offset } => {
+                let file = spelled_as_expanded(&expansion, root, file);
+                answer.highlights = navigation.highlights(&file, *offset);
+                let text = fs
+                    .read(&file)
+                    .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+                answer
+                    .texts
+                    .insert(search::normalize_lexically(&file), text);
             }
             NavigationQuery::Links => {
                 answer.links = navigation.links();
