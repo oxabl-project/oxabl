@@ -174,22 +174,22 @@
         "oxabl.inlayHints.locks": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show the lock a database read takes when it names none (`SHARE-LOCK`, the default). Shown for files whose `oxabl.toml` enables a rule of `strict.locks`, `strict.transactions` or `strict.access`."
+          "markdownDescription": "Show the lock a database read takes when it names none (`SHARE-LOCK`, the default). Shown where `oxabl.toml` turns on the rule `default-lock` (LK001)."
         },
         "oxabl.inlayHints.index": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show the index oxabl expects a database search to use, and `WHOLE-INDEX` when no condition brackets it. Shown for files whose `oxabl.toml` enables a rule of `strict.locks`, `strict.transactions` or `strict.access`."
+          "markdownDescription": "Show the index oxabl expects a database search to use, and `WHOLE-INDEX` when no condition brackets it. Shown where `oxabl.toml` turns on a rule of `strict.locks`, `strict.transactions` or `strict.access`."
         },
         "oxabl.inlayHints.scope": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show where a buffer scope starts and ends when a reference outside a `FOR` block raises it to the procedure (`scope-widened`, TX005). Shown for files whose `oxabl.toml` enables a rule of `strict.locks`, `strict.transactions` or `strict.access`."
+          "markdownDescription": "Show where a buffer scope starts and ends when a reference outside a `FOR` block raises it to the procedure (`scope-widened`, TX005). Shown where `oxabl.toml` turns on the rule `scope-widened` (TX005)."
         },
         "oxabl.inlayHints.transactions": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show where a transaction starts and ends when a block becomes a transaction only because it updates the database (`implicit-transaction`, TX001, and `procedure-wide-transaction`, TX002). Shown for files whose `oxabl.toml` enables a rule of `strict.locks`, `strict.transactions` or `strict.access`."
+          "markdownDescription": "Show where a transaction starts and ends when a block becomes a transaction only because it updates the database (`implicit-transaction`, TX001, and `procedure-wide-transaction`, TX002). Shown where `oxabl.toml` turns on the rule that reports the block."
         }
       }
     },
