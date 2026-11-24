@@ -276,6 +276,9 @@ impl Visitor<'_> {
             }
             | StatementKind::Set {
                 targets, options, ..
+            }
+            | StatementKind::PromptFor {
+                targets, options, ..
             } => {
                 for e in targets.iter().chain(options) {
                     self.walk_expression(e);

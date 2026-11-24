@@ -328,6 +328,25 @@ pub enum StatementKind {
         fields: Vec<FrameField>,
     },
 
+    /// PROMPT-FOR statement — prompts for input into the screen buffer of fields
+    /// and variables, without assigning it.
+    ///
+    /// Same shape as [`StatementKind::Update`], with an optional stream. The
+    /// targets are read, not written. The list ends at the first token that is
+    /// not a target or an option the parser models, and the rest, the frame
+    /// phrase and any `EDITING` block stay in [`Statement::skipped_tail`].
+    PromptFor {
+        /// Optional named stream (`PROMPT-FOR STREAM s ...`).
+        stream_name: Option<Identifier>,
+        /// Fields, variables or records named, in source order.
+        targets: Vec<Expression>,
+        /// Non-literal expressions of the format options, read, in source order.
+        options: Vec<Expression>,
+        /// The `name AS type` / `name LIKE field` items, which declare a
+        /// variable rather than read one. They are not in `targets`.
+        fields: Vec<FrameField>,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an

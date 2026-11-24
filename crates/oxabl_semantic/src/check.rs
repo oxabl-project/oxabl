@@ -355,6 +355,9 @@ impl<'a> CheckWalker<'a> {
             }
             | StatementKind::Set {
                 targets, options, ..
+            }
+            | StatementKind::PromptFor {
+                targets, options, ..
             } => {
                 for e in targets.iter().chain(options) {
                     self.check_expression(e, scope);

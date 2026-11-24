@@ -229,6 +229,9 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         }
         | StatementKind::Set {
             targets, options, ..
+        }
+        | StatementKind::PromptFor {
+            targets, options, ..
         } => {
             for e in targets.iter().chain(options) {
                 walk_expression(v, e);

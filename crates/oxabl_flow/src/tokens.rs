@@ -448,7 +448,7 @@ pub(crate) enum Input {
 pub(crate) fn skipped_input(src: Src<'_>, span: Span) -> Input {
     let t = Toks::new(src, span, 2);
     match t.kind(0) {
-        Some(Kind::PromptFor | Kind::Readkey | Kind::Choose) => Input::Blocking,
+        Some(Kind::Readkey | Kind::Choose) => Input::Blocking,
         Some(Kind::Insert) if t.kind(1) != Some(Kind::Into) => Input::Blocking,
         _ => Input::None,
     }
@@ -678,7 +678,7 @@ mod tests {
             assert_eq!(i, skipped_input(parsed, span(s)));
             i
         };
-        assert_eq!(i("PROMPT-FOR x."), Input::Blocking);
+        assert_eq!(i("READKEY."), Input::Blocking);
         assert_eq!(i("INSERT Customer."), Input::Blocking);
         assert_eq!(i("INSERT INTO t VALUES (1)."), Input::None);
         assert_eq!(i("PUT x."), Input::None);

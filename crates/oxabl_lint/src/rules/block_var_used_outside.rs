@@ -585,6 +585,13 @@ mod paths {
                         read(self, e);
                     }
                 }
+                SK::PromptFor {
+                    targets, options, ..
+                } => {
+                    for e in targets.iter().chain(options) {
+                        read(self, e);
+                    }
+                }
                 SK::Import {
                     delimiter, targets, ..
                 } => {

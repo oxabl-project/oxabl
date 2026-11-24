@@ -506,6 +506,7 @@ impl<'a> Collector<'a> {
             SK::Skipped { .. }
             | SK::Update { .. }
             | SK::Set { .. }
+            | SK::PromptFor { .. }
             | SK::Import { .. }
             | SK::Export { .. }
             | SK::Put { .. }

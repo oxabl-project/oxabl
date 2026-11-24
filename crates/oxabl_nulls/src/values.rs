@@ -1211,7 +1211,9 @@ impl Problem<'_> {
                 }
             }
             // These run triggers, which may write the locals other units write.
-            S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } => self.forget_call_writes(f),
+            S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } | S::PromptFor { .. } => {
+                self.forget_call_writes(f)
+            }
             S::Publish { arguments, .. } => {
                 self.forget_call_writes(f);
                 for a in arguments {

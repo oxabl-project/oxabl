@@ -156,6 +156,7 @@ fn candidates(program: &[Statement]) -> Vec<(Span, Candidate)> {
                 StatementKind::Skipped { .. }
                 | StatementKind::Update { .. }
                 | StatementKind::Set { .. }
+                | StatementKind::PromptFor { .. }
                 | StatementKind::WaitFor { .. }
                 | StatementKind::Pause { .. } => Candidate::Skipped,
                 StatementKind::Message {

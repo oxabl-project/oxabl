@@ -11882,28 +11882,36 @@ fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
 }
 
 /// `skip_to_statement_end_editing_aware` parses the `EDITING:` body and throws
-/// it away, but the cursor still advances past it, so the harvest reaches those
-/// tokens. A statement-leading name inside the block follows a terminating
-/// period *and a space*, so the adjacency filter does not eat it.
+/// it away, but the cursor still advances past it, so the tail harvest reaches
+/// those tokens. A statement-leading name inside the block follows a
+/// terminating period *and a space*, so the adjacency filter does not eat it.
 #[test]
-fn skipped_editing_block_names_survive_the_harvest() {
-    let names = harvest("PROMPT-FOR v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
-    assert!(names.contains(&"v-name".to_string()), "got {names:?}");
-    assert!(names.contains(&"v-x".to_string()), "got {names:?}");
-    assert!(names.contains(&"v-y".to_string()), "got {names:?}");
+fn an_editing_block_names_survive_in_the_tail_of_a_head_parsed_statement() {
+    let source = "PROMPT-FOR v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.";
+    let stmts = assert_parses_clean(source);
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    assert!(
+        matches!(stmts[0].kind, StatementKind::PromptFor { .. }),
+        "{:?}",
+        stmts[0].kind
+    );
+    let names = tail_names(&stmts[0]);
+    assert!(
+        names.contains(&"v-x") && names.contains(&"v-y"),
+        "{names:?}"
+    );
 }
 
-/// The nested-statement save/restore in the `parse_statement` funnel: an
-/// `EDITING:` body recurses through `parse_statement`, and without restoring the
-/// anchor the outer harvest range would start at the last inner statement.
+/// An `EDITING:` body recurses through `parse_statement`; the head targets
+/// must still be the ones before it.
 #[test]
-fn skipped_editing_block_does_not_clobber_the_outer_harvest_anchor() {
-    let names = harvest("PROMPT-FOR v-first WITH FRAME f-main EDITING: v-x = 1. END.");
-    assert_eq!(
-        names.first().map(String::as_str),
-        Some("v-first"),
-        "outer anchor lost — got {names:?}"
-    );
+fn an_editing_block_does_not_disturb_the_head_of_the_statement() {
+    let source = "PROMPT-FOR v-first WITH FRAME f-main EDITING: v-x = 1. END.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::PromptFor { targets, .. } = &stmts[0].kind else {
+        panic!("expected PromptFor, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1, "{targets:?}");
 }
 
 /// The thirteen non-dispatch skip-helper callers keep their real statement node
@@ -15002,5 +15010,40 @@ fn abstract_class_method_does_not_swallow_the_next_method() {
             }
         }
         other => panic!("Expected Class statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn prompt_for_is_head_parsed_with_stream_and_targets() {
+    for (source, stream, targets, fields) in [
+        ("PROMPT-FOR v-key.", false, 1, 0),
+        (
+            "PROMPT-FOR v-a v-b FORMAT \"x(5)\" WITH FRAME f.",
+            false,
+            2,
+            0,
+        ),
+        ("PROMPT-FOR STREAM s1 v-a.", true, 1, 0),
+        (
+            "PROMPT-FOR v-a LABEL v-lbl VALIDATE(v-a > v-min, \"low\").",
+            false,
+            1,
+            0,
+        ),
+        ("PROMPT-FOR v-new AS INTEGER v-b.", false, 1, 1),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::PromptFor {
+            stream_name,
+            targets: t,
+            fields: f,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected PromptFor, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(stream_name.is_some(), stream, "{source}");
+        assert_eq!(t.len(), targets, "{source}: {t:?}");
+        assert_eq!(f.len(), fields, "{source}");
     }
 }

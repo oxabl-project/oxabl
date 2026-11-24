@@ -345,7 +345,9 @@ impl<'a> Walker<'a> {
                 self.declare_frame_fields(stmt, scope, fields);
             }
             StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
-            StatementKind::Update { fields, .. } | StatementKind::Set { fields, .. } => {
+            StatementKind::Update { fields, .. }
+            | StatementKind::Set { fields, .. }
+            | StatementKind::PromptFor { fields, .. } => {
                 self.declare_frame_fields(stmt, scope, fields)
             }
             StatementKind::Message { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
@@ -3225,6 +3227,25 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Write);
                 }
                 for e in options {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+                self.note_frame_field_sources(fields, scope);
+            }
+            StatementKind::PromptFor {
+                stream_name,
+                targets,
+                options,
+                fields,
+            } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in targets.iter().chain(options) {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
                 self.note_frame_field_sources(fields, scope);

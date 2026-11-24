@@ -723,12 +723,10 @@ impl Parser<'_> {
             return self.parse_update_set_statement();
         }
 
-        // PROMPT-FOR — may contain an EDITING: ... END. sub-block.
-        // Skip tokens until a statement-ending period, but if we encounter EDITING:
-        // along the way, parse the editing block body before consuming the outer END.
+        // PROMPT-FOR — head-parsed; the frame phrase and EDITING block stay a
+        // skipped tail.
         if self.check(Kind::PromptFor) {
-            let (_, hi) = self.skip_to_statement_end_editing_aware();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_prompt_for_statement();
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
@@ -4453,6 +4451,35 @@ impl Parser<'_> {
             }
         };
         Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// `PROMPT-FOR [STREAM s] [UNLESS-HIDDEN] {field [format-phrase] | name AS type |
+    /// name LIKE field | constant}... [frame-phrase] [EDITING: ... END]`. The
+    /// editing block is part of the skipped tail.
+    fn parse_prompt_for_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume PROMPT-FOR
+        let mut stream_name = None;
+        let mut targets = Vec::new();
+        let mut options = Vec::new();
+        let mut fields = Vec::new();
+        if let Ok(stream) = self.parse_stream_head() {
+            stream_name = stream;
+            if self.check(Kind::UnlessHidden) {
+                self.advance();
+            }
+            (targets, options) = self.parse_frame_items(true, Some(&mut fields));
+        }
+        let range = self.skip_to_statement_end_editing_aware();
+        let tail = self.skipped_tail(range);
+        Ok(self.stmt_with_tail(
+            StatementKind::PromptFor {
+                stream_name,
+                targets,
+                options,
+                fields,
+            },
+            tail,
+        ))
     }
 
     /// The items of a FORM, UPDATE or SET list, each with its format options.
