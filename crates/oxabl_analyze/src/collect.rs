@@ -1715,16 +1715,17 @@ pub fn collect_from_expanded_with_summaries(
     // directly: `new` infers it from an empty schema, and this path is handed the
     // caller's explicit answer, which is the whole point of the flag.
     let include_spans = expanded.include_spans();
-    let mut ctx = AnalysisContext::new(root, &expanded.text, schema)
-        .with_include_regions(&include_spans)
-        .with_lint_severities(lint_severities.clone())
-        .with_index(index)
-        .with_source_context(source_context)
-        .with_parse_recovered(out.parse_recovered)
-        .with_tokens(&tokens)
-        .with_elided(expanded.elided_offsets())
-        .with_elided_includes(expanded.elided_include_offsets());
-    ctx.schema_loaded = schema_loaded;
+    let ctx = lint_context(
+        expanded,
+        &tokens,
+        &include_spans,
+        schema,
+        schema_loaded,
+        source_context,
+        out.parse_recovered,
+    )
+    .with_lint_severities(lint_severities.clone())
+    .with_index(index);
     let sem = analyze_file(&program.statements, &ctx);
 
     let mut include_rows = IncludeRows::default();
@@ -1840,6 +1841,58 @@ fn without_findings_of_encrypted_reach(
         }]),
         None => found,
     }
+}
+
+/// The context the lint rules read for an expanded file. The inlay hints
+/// build theirs here too, so the strict rules and the hints analyse the same
+/// input.
+fn lint_context<'a>(
+    expanded: &'a ExpandedFile,
+    tokens: &'a [oxabl_lexer::Token],
+    include_spans: &'a [Span],
+    schema: &'a Schema,
+    schema_loaded: bool,
+    source_context: SourceContext,
+    parse_recovered: bool,
+) -> AnalysisContext<'a> {
+    let mut ctx = AnalysisContext::new(expanded.root, &expanded.text, schema)
+        .with_include_regions(include_spans)
+        .with_source_context(source_context)
+        .with_parse_recovered(parse_recovered)
+        .with_tokens(tokens)
+        .with_elided(expanded.elided_offsets())
+        .with_elided_includes(expanded.elided_include_offsets());
+    ctx.schema_loaded = schema_loaded;
+    ctx
+}
+
+/// The database inlay hints of an expanded file, in its expanded coordinates:
+/// the facts the strict database rules read, selected as they select them
+/// ([`oxabl_lint::hints`]). No lint rule runs.
+pub fn database_hints_from_expanded(
+    expanded: &ExpandedFile,
+    schema: &Schema,
+    schema_loaded: bool,
+    source_context: SourceContext,
+    kinds: oxabl_lint::hints::HintKinds,
+) -> Vec<oxabl_lint::hints::DatabaseHint> {
+    if kinds.none() {
+        return Vec::new();
+    }
+    let tokens = tokenize(&expanded.text);
+    let program = Parser::new(&tokens, &expanded.text).parse_program();
+    let include_spans = expanded.include_spans();
+    let ctx = lint_context(
+        expanded,
+        &tokens,
+        &include_spans,
+        schema,
+        schema_loaded,
+        source_context,
+        !program.errors.is_empty(),
+    );
+    let shared = oxabl_lint::RunShared::default();
+    oxabl_lint::hints::database_hints(&program.statements, &ctx, &shared, kinds)
 }
 
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree

@@ -165,6 +165,29 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   the view. The top of the view says when the expansion is reduced (an include
   that was not found, a cyclic include, the depth limit) or failed.
 
+- **Database inlay hints.** Short labels in the code show the database facts
+  that ABL does not show. `index <name>` after a search (with `WHOLE-INDEX` when
+  no condition brackets the index) shows in every project, with no strict rule.
+  A project whose `oxabl.toml` enables a rule of `strict.locks`,
+  `strict.transactions` or `strict.access` (for example
+  `enable = ["strict.locks"]` under `[workspace.lint]`) also gets `SHARE-LOCK`
+  after a read that names no lock, and `transaction starts` / `transaction ends`
+  and `<buffer> scope starts` / `<buffer> scope ends` around a transaction or a
+  buffer scope that the compiler makes wider than the code shows. Hover a hint
+  to see why and which rule reports it (the index hint has no rule). Each of
+  these kinds shows only where
+  its rule is on: lock hints need `default-lock` (LK001), scope hints
+  `scope-widened` (TX005), transaction hints `implicit-transaction` (TX001) or
+  `procedure-wide-transaction` (TX002). In an include, the hints come from the
+  selected include context; without one, a hint that depends on the including
+  file is left out, and the others say that an includer can change them. A
+  fact that oxabl does not know gives no hint, for example in a file with an
+  include that was not found (for the index hint, a read after that include),
+  or a table that the schema does not have. Turn
+  each kind off with the `oxabl.inlayHints.*` settings, or all hints with VS
+  Code's `editor.inlayHints.enabled`. The hints need the schema under
+  `[workspace.schema]`. The index hint costs one analysis of the file for each
+  version of its text, also in a project with no strict rule.
 - **ABL Schema view.** The Explorer has an **ABL Schema** view of the `.df`
   files that `[workspace.schema]` in `oxabl.toml` names, with no database
   connection: each file is a database, with its tables, their fields and
@@ -192,7 +215,7 @@ order: the `oxabl.server.path` setting, `~/.local/bin/oxabl` (the directory in
 then run **oxabl: Restart Server**.
 
 In a project, these features follow `[workspace.features]` in `oxabl.toml`:
-`diagnostics = false` stops the diagnostics, the dimming of inactive branches and the code lenses, and `format = false` stops formatting, so format on save does
+`diagnostics = false` stops the diagnostics, the dimming of inactive branches, the code lenses and the inlay hints, and `format = false` stops formatting, so format on save does
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
 it.
 
@@ -402,6 +425,10 @@ itself once a day when you run it.
 | `oxabl.build.args` | `[]` | Arguments added to `oxabl build`, for example `["--config-overlay", "/path/overlay.toml"]`. They also go to the call that reads the build setup. |
 | `oxabl.updates` | `auto` | `auto`, `notify` or `off`. See [Updates](#updates). |
 | `oxabl.trace.server` | `off` | Trace the JSON-RPC traffic with the server, for debugging. |
+| `oxabl.inlayHints.locks` | `true` | Show the lock a read takes when it names none. A change applies at once. |
+| `oxabl.inlayHints.index` | `true` | Show the index oxabl expects a search to use. Needs no strict rule. |
+| `oxabl.inlayHints.scope` | `true` | Show where a raised buffer scope starts and ends. |
+| `oxabl.inlayHints.transactions` | `true` | Show where an implicit transaction starts and ends. |
 
 Lint and style rules are not VS Code settings. They live in `oxabl.toml`.
 

@@ -85,6 +85,7 @@ mod explain;
 pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
 mod config;
 mod format;
+mod hints;
 mod includers;
 mod keyword_docs;
 mod lint;
@@ -94,8 +95,8 @@ mod outline;
 mod parity;
 pub mod position;
 mod reverse;
-mod schema_view;
 pub mod schema_hover;
+mod schema_view;
 mod syntax;
 
 pub use config::{
@@ -103,6 +104,7 @@ pub use config::{
     resolve_from_config_deferred,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
+pub use hints::{HintKinds, InlayHint, InlayKind};
 pub use includers::{IncluderPools, PoolVerdict};
 pub use lint::{
     Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun,

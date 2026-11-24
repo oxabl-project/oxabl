@@ -19,3 +19,23 @@ export function shouldRestartForConfigChange(
 ): boolean {
   return RESTART_CONFIG_KEYS.some((key) => affectsConfiguration(key));
 }
+
+/** The inlay hint kinds, each turned off on its own by `oxabl.inlayHints.<kind>`. */
+export const INLAY_HINT_KINDS = ["locks", "index", "scope", "transactions"] as const;
+
+export type InlayHintKind = (typeof INLAY_HINT_KINDS)[number];
+
+/**
+ * The `inlayHints` object the server reads from its initialization options and
+ * from `workspace/didChangeConfiguration`. `get` reads one
+ * `oxabl.inlayHints.<kind>` setting; a kind that is not set is on.
+ */
+export function inlayHintSettings(
+  get: (kind: InlayHintKind) => boolean | undefined,
+): Record<InlayHintKind, boolean> {
+  const settings = {} as Record<InlayHintKind, boolean>;
+  for (const kind of INLAY_HINT_KINDS) {
+    settings[kind] = get(kind) ?? true;
+  }
+  return settings;
+}

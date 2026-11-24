@@ -104,11 +104,34 @@ pub fn run(
 
 /// The findings over an analysed file.
 pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) -> Vec<Diagnostic> {
+    reported_scopes(scopes, program, ctx)
+        .iter()
+        .map(|w| finding(scopes, ctx, w))
+        .collect()
+}
+
+/// A raised scope that [`check`] reports.
+pub(crate) struct Widened<'s> {
+    pub buffer: &'s Buffer,
+    pub scope: &'s Scope,
+    /// The unit of the reference that raises the scope.
+    raiser: &'s UnitScopes,
+    /// The `FOR` and `PRESELECT` phrases whose scope it raises, in source order.
+    pub widened: Vec<&'s RecordRead>,
+}
+
+/// The raised scopes [`check`] reports, in the order of the references that
+/// raise them. The inlay hints show the same.
+pub(crate) fn reported_scopes<'s>(
+    scopes: &'s FileScopes,
+    program: &[Statement],
+    ctx: &AnalysisContext,
+) -> Vec<Widened<'s>> {
     if not_judged(scopes) || is_class(scopes) {
         return Vec::new();
     }
     let skipped = skipped_statements(program);
-    let mut diags = Vec::new();
+    let mut found = Vec::new();
     for buffer in scopes.buffers() {
         let Some(seen) = buffer.scopes().filter(|_| judged_buffer(buffer)) else {
             continue;
@@ -117,13 +140,13 @@ pub fn check(scopes: &FileScopes, program: &[Statement], ctx: &AnalysisContext) 
             if in_skipped(&skipped, scope) {
                 continue;
             }
-            if let Some(d) = finding(scopes, ctx, buffer, scope) {
-                diags.push(d);
+            if let Some(w) = widening(scopes, ctx, buffer, scope) {
+                found.push(w);
             }
         }
     }
-    diags.sort_by_key(|d| d.span.span.start);
-    diags
+    found.sort_by_key(|w| w.scope.at.start);
+    found
 }
 
 /// Whether [`check`] reports `scope` of `buffer`, in a file it judges.
@@ -137,7 +160,7 @@ pub(crate) fn reports(
     scope.kind == ScopeKind::Raised
         && judged_buffer(buffer)
         && !in_skipped(skipped, scope)
-        && finding(scopes, ctx, buffer, scope).is_some()
+        && widening(scopes, ctx, buffer, scope).is_some()
 }
 
 fn judged_buffer(buffer: &Buffer) -> bool {
@@ -151,12 +174,12 @@ fn in_skipped(skipped: &[Span], scope: &Scope) -> bool {
         .any(|s| s.start <= scope.at.start && scope.at.end <= s.end)
 }
 
-fn finding(
-    scopes: &FileScopes,
+fn widening<'s>(
+    scopes: &'s FileScopes,
     ctx: &AnalysisContext,
-    buffer: &Buffer,
-    scope: &Scope,
-) -> Option<Diagnostic> {
+    buffer: &'s Buffer,
+    scope: &'s Scope,
+) -> Option<Widened<'s>> {
     if scope.kind != ScopeKind::Raised || scope.block != BlockId::ROUTINE {
         return None;
     }
@@ -170,7 +193,23 @@ fn finding(
         .filter_map(|a| weak_read(scopes, buffer, *a))
         .filter(|r| documented(scopes, scope.unit, raiser.unit, r))
         .collect();
-    let first = widened.first()?;
+    widened.first()?;
+    Some(Widened {
+        buffer,
+        scope,
+        raiser,
+        widened,
+    })
+}
+
+fn finding(scopes: &FileScopes, ctx: &AnalysisContext, w: &Widened) -> Diagnostic {
+    let Widened {
+        buffer,
+        scope,
+        raiser,
+        widened,
+    } = w;
+    let first = widened[0];
     let scope_unit = scopes.unit(scope.unit);
     let for_unit = scopes.unit(first.unit);
     let more = match widened.len() {
@@ -194,7 +233,7 @@ fn finding(
             describe_block(ctx.source, for_unit, BlockId::ROUTINE)
         )
     };
-    Some(warning(
+    warning(
         ctx,
         TX005,
         format!(
@@ -215,7 +254,7 @@ fn finding(
             end = describe_block(ctx.source, scope_unit, scope.block),
         ),
         scope.at,
-    ))
+    )
 }
 
 /// The `FOR` or `PRESELECT` phrase of `buffer` at `at`: an absorbed weak scope.

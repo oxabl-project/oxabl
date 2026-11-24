@@ -6,7 +6,8 @@
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
 //! `textDocument/selectionRange`, `workspace/symbol`,
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
-//! `textDocument/documentLink` (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
+//! `textDocument/documentLink` (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses and
+//! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
 //! `docs/design/include-context.md`. `oxabl/schema` and `oxabl/schemaTable`
@@ -37,6 +38,7 @@ mod expanded_unit;
 pub mod formatting;
 mod inactive_regions;
 mod includer_context;
+mod inlay_hint;
 mod navigation;
 pub mod position;
 mod schema;
@@ -57,8 +59,8 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
-    Formatting, GotoDefinition, HoverRequest, Request as _, SelectionRangeRequest,
-    WorkspaceSymbolRequest,
+    Formatting, GotoDefinition, HoverRequest, InlayHintRequest, Request as _,
+    SelectionRangeRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -776,6 +778,7 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
 /// What the handshake learned from the client's capabilities.
 struct Negotiated {
     options: code_lens::Options,
+    inlay: inlay_hint::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
     /// Whether the client takes `textDocument/inactiveRegions`.
@@ -839,6 +842,8 @@ fn finish_handshake(
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
     let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let inlay =
+        inlay_hint::Options::from_client(&init.capabilities, init.initialization_options.as_ref());
     let hierarchical_symbols = init
         .capabilities
         .text_document
@@ -875,6 +880,9 @@ fn finish_handshake(
             resolve_provider: Some(false),
         });
     }
+    if inlay.supported {
+        capabilities.inlay_hint_provider = Some(lsp_types::OneOf::Left(true));
+    }
     let result = InitializeResult {
         capabilities,
         server_info: Some(ServerInfo {
@@ -891,6 +899,7 @@ fn finish_handshake(
     Ok((
         Negotiated {
             options,
+            inlay,
             hierarchical_symbols,
             inactive_regions,
             related_information,
@@ -969,6 +978,8 @@ struct Server<'c> {
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
+    /// The client's inlay hint support and the kinds it wants.
+    inlay: inlay_hint::Options,
     /// The last outline of each open buffer, for its version.
     outlines: document_symbol::OutlineCache,
     /// The folding and selection facts of each open buffer, for its version.
@@ -1025,6 +1036,7 @@ impl<'c> Server<'c> {
     ) -> Self {
         let Negotiated {
             options,
+            inlay,
             hierarchical_symbols,
             inactive_regions,
             related_information,
@@ -1050,6 +1062,7 @@ impl<'c> Server<'c> {
             features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
+            inlay,
             outlines: document_symbol::OutlineCache::default(),
             syntax: editor_syntax::SyntaxCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
@@ -1100,6 +1113,8 @@ impl<'c> Server<'c> {
                                 self.respond(Response::new_ok(req.id, serde_json::Value::Null))?;
                             } else if req.method == "textDocument/codeLens" {
                                 self.handle_code_lens(req, &lens_tx)?;
+                            } else if req.method == InlayHintRequest::METHOD {
+                                self.handle_inlay_hint(req)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
@@ -1182,6 +1197,7 @@ impl<'c> Server<'c> {
     /// version it read so a superseded computation is dropped on completion.
     fn fire_due_debounces(&mut self, result_tx: &crossbeam_channel::Sender<ComputeResult>) {
         let now = std::time::Instant::now();
+        let mut context_due = false;
         for uri in self.debouncer.take_due(now) {
             let Some(doc) = self.documents.get(&uri) else {
                 continue;
@@ -1193,6 +1209,7 @@ impl<'c> Server<'c> {
                 continue;
             }
             if let Some(root) = self.contexts.selected(&uri).cloned() {
+                context_due = true;
                 self.spawn_context_analysis(uri, version, root);
                 continue;
             }
@@ -1227,6 +1244,11 @@ impl<'c> Server<'c> {
                     });
                 })
                 .expect("failed to spawn an analysis thread");
+        }
+        // The hints of an include read in a root change with the root: ask
+        // the client again once the edits settle, not on every keystroke.
+        if context_due {
+            self.refresh_inlay_hints();
         }
     }
 
@@ -1324,6 +1346,7 @@ impl<'c> Server<'c> {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
                     self.outlines.invalidate(&doc.uri);
+                    self.note_inlay_version(&doc.uri, Some(doc.version));
                     self.syntax.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
@@ -1360,6 +1383,7 @@ impl<'c> Server<'c> {
                         &params.content_changes,
                         &encoding,
                     );
+                    self.note_inlay_version(&uri, Some(params.text_document.version));
                     // Mirror the new text into the salsa input (write on main).
                     // This cancels any in-flight snapshot read for a superseded
                     // version via salsa's `Cancelled` unwind (KTD7).
@@ -1393,7 +1417,11 @@ impl<'c> Server<'c> {
                     serde_json::from_value::<DidChangeWatchedFilesParams>(not.params)
                 {
                     self.handle_watched_files(params);
+                    self.inlay_disk_changed();
                 }
+            }
+            "workspace/didChangeConfiguration" => {
+                self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidCloseTextDocumentParams>(not.params)
@@ -1410,6 +1438,7 @@ impl<'c> Server<'c> {
                             .close_buffer(uri.as_str());
                     });
                     self.dependencies.remove(&uri);
+                    self.note_inlay_version(&uri, None);
                     self.debouncer.cancel(&uri);
                     // An include analysed in this root now reads its saved copy.
                     if let Some(path) = uri_to_path(&uri) {
@@ -2158,6 +2187,7 @@ mod tests {
                     dynamic: false,
                     refresh: false,
                 },
+                inlay: inlay_hint::Options::from_client(&Default::default(), None),
                 hierarchical_symbols: false,
                 inactive_regions: false,
                 related_information: false,

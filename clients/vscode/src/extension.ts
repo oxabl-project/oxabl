@@ -8,7 +8,7 @@ import {
 import { CliManager, resolveBinary } from "./binary";
 import { BuildController } from "./builds";
 import { binaryVersion, supportsYield } from "./cli";
-import { shouldRestartForConfigChange } from "./config";
+import { inlayHintSettings, shouldRestartForConfigChange } from "./config";
 import { ExpandedUnits } from "./expandedUnit";
 import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
@@ -76,6 +76,11 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
       // reload (#105) — restart the client to pick it up.
       if (shouldRestartForConfigChange((section) => event.affectsConfiguration(section))) {
         void restartServer();
+      }
+      if (event.affectsConfiguration("oxabl.inlayHints")) {
+        void client?.sendNotification("workspace/didChangeConfiguration", {
+          settings: { oxabl: { inlayHints: readInlayHints() } },
+        });
       }
       if (event.affectsConfiguration("oxabl.build.enable")) {
         applyBuildEnabled();
@@ -146,6 +151,12 @@ async function prepareBinary(): Promise<string | undefined> {
   return command;
 }
 
+/** The inlay hint kinds the `oxabl.inlayHints.*` settings turn on, for the server. */
+function readInlayHints(): Record<string, boolean> {
+  const config = vscode.workspace.getConfiguration("oxabl.inlayHints");
+  return inlayHintSettings((kind) => config.get<boolean>(kind));
+}
+
 /** Start the client if enabled; a no-op (silent) when `oxabl.enable` is false. */
 async function startClient(): Promise<void> {
   const config = vscode.workspace.getConfiguration("oxabl");
@@ -176,6 +187,7 @@ async function startClient(): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "abl" }],
     outputChannel: log,
+    initializationOptions: { inlayHints: readInlayHints() },
     synchronize: {
       // The server watches these itself, but forwarding the events lets live
       // reload work even when the client owns the file watcher (#90 / U2).

@@ -1080,6 +1080,11 @@ What the later slices need:
   become ready. Other clients see them on their next request. Edits, closes and watched-file
   changes discard rendered lenses and obsolete worker results. No `oxabl/*` method or JSON
   envelope changed; the daemon protocol version is unchanged.
+- **Built: LSP inlay hints.** `textDocument/inlayHint` shows the lock of a read that names
+  none (LK001), the index the effects analysis names, and where a scope that TX005 reports
+  and a transaction that TX001 or TX002 reports start and end. The hints come from the
+  rules' own selection functions over the same facts. See
+  [`inlay-hints.md`](inlay-hints.md).
 
 ## 9. Unknown values and records that may be missing
 

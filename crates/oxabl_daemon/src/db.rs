@@ -103,7 +103,9 @@ use std::sync::{Arc, RwLock};
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
-use oxabl_pipeline::{Expansion, LintPipeline, NavigationModel, PipelineConfig};
+use oxabl_pipeline::{
+    Expansion, HintKinds, InlayHint, LintPipeline, NavigationModel, PipelineConfig,
+};
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, WorkspaceIndex,
@@ -1132,6 +1134,96 @@ pub fn compute_effect_lenses(
     }))
     .ok()
     .flatten()
+}
+
+/// What the database inlay hints of one open file are computed from. Built
+/// from cheap clones on the thread that owns the session, it holds no
+/// snapshot: a write waits for every snapshot to drop, and the analysis of a
+/// large file takes tens of milliseconds, longer than a keystroke may wait.
+/// So no other buffer's edit can cancel it either.
+pub struct HintSource {
+    /// The session's configuration.
+    pub config: AnalysisConfig,
+    /// The file the hints are shown in.
+    pub file: PathBuf,
+    /// Its text, as the request saw it.
+    pub text: Arc<str>,
+    /// The selected include context of an include: the root that is
+    /// analysed, and the open buffers it reads over the disk.
+    pub context: Option<(PathBuf, HashMap<PathBuf, Arc<str>>)>,
+}
+
+impl HintSource {
+    /// Whether the file shows hints: for an include in a context, as the
+    /// root's configuration says, as for its diagnostics.
+    pub fn enabled(&self) -> bool {
+        let shown = self.context.as_ref().map_or(&self.file, |(root, _)| root);
+        self.config
+            .lint_pipeline()
+            .with_file(shown)
+            .database_hints_enabled()
+    }
+
+    /// The hints of `kinds` for the whole file, in its own bytes, and the
+    /// files the analysis read besides it (in a context: the root and every
+    /// include its expansion read). Unguarded: run it inside a panic guard.
+    /// Empty when the selected root cannot be read, fails to preprocess, or
+    /// no longer includes the file.
+    pub fn hints(&self, kinds: HintKinds) -> (Vec<InlayHint>, Vec<PathBuf>) {
+        let config = &self.config;
+        let site = oxabl_common::panic_sites::LSP_INLAY_HINTS;
+        match &self.context {
+            None => {
+                oxabl_common::hold_if_injected(site, &self.text);
+                let run = config.lint_pipeline();
+                let handle = run.with_file(&self.file);
+                let expansion = handle.expand(&self.text);
+                (
+                    handle.database_hints(&self.text, &expansion, kinds),
+                    Vec::new(),
+                )
+            }
+            Some((root, overlay)) => {
+                let fs = OverlayFs {
+                    overlay: overlay.clone(),
+                    inner: Arc::clone(&config.fs),
+                };
+                let Ok(source) = fs.read(root) else {
+                    return (Vec::new(), vec![root.clone()]);
+                };
+                oxabl_common::hold_if_injected(site, &source);
+                let run =
+                    LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+                let handle = run.with_file(root);
+                let expansion = handle.expand(&source);
+                let mut read = vec![root.clone()];
+                read.extend(expansion.dependency_paths().iter().cloned());
+                (
+                    handle.database_hints_in_include(&expansion, &self.file, kinds),
+                    read,
+                )
+            }
+        }
+    }
+
+    /// A fingerprint of the open-buffer text of `paths`, as this source's
+    /// context reads them: equal while none of them is edited, opened or
+    /// closed. 0 for a file read alone.
+    pub fn overlay_fingerprint(&self, paths: &[PathBuf]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some((_, overlay)) = &self.context else {
+            return 0;
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for path in paths {
+            path.hash(&mut hasher);
+            let text = overlay
+                .get(path)
+                .or_else(|| overlay.get(&crate::session::canonical_path(path)));
+            text.map(|t| &**t).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
 }
 
 /// Keep the results of at most `buffers` buffers in each query keyed by a buffer
