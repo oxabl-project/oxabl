@@ -1064,6 +1064,9 @@ pub fn expand_source_with(
             Some(note) => {
                 let mut note = note.clone();
                 if note.span.file != root {
+                    // No include chain here, so the note sits at the start of
+                    // the root. A nested note has only been seen through the
+                    // `Ok` arm, which anchors it from the chain.
                     note.span = FileSpan {
                         file: root,
                         span: Span { start: 0, end: 0 },

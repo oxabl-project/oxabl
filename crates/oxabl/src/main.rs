@@ -166,12 +166,13 @@ enum Cli {
         #[arg(long, conflicts_with = "baseline")]
         include_findings: bool,
 
-        /// Fail (exit 1) when a root is encrypted (XCODE) and so not checked. An
-        /// encrypted include file of a walked directory is only warned about.
+        /// Fail (exit 1) when a root is encrypted (XCODE), or reaches an
+        /// encrypted include, and so is not checked. An encrypted include file
+        /// of a walked directory is only warned about.
         ///
-        /// Off by default: an encrypted file is reported with the warning
-        /// `SOURCE001` and the run passes. With the flag, a run that skipped a
-        /// file cannot look like a run that checked it.
+        /// Off by default: such a root is reported with the warning `SOURCE001`
+        /// and the run passes. With the flag, a run that skipped a file cannot
+        /// look like a run that checked it.
         #[arg(long)]
         fail_on_encrypted: bool,
 
@@ -1251,6 +1252,10 @@ struct CheckJsonReport {
     /// `files_checked`. Omitted when none was.
     #[serde(skip_serializing_if = "is_zero")]
     encrypted_files: usize,
+    /// How many roots reach encrypted source, so every finding of theirs is
+    /// withheld; they are not in `files_checked` either. Omitted when none did.
+    #[serde(skip_serializing_if = "is_zero")]
+    withheld_files: usize,
     /// Whether lint findings are reported (`false` under `--no-lint`), so an
     /// empty `diagnostics` cannot be misread as "clean". The pipeline itself runs
     /// either way — parse and semantic diagnostics are never suppressed (A1).
@@ -1635,7 +1640,9 @@ fn run_check(
         include_diagnostics,
         include_files_checked,
         encrypted_files,
+        withheld_files,
     } = totals;
+    let not_checked = encrypted_files + withheld_files;
 
     let baseline = match baseline.map(|run| run.finish(channels.diagnostics && !no_lint)) {
         None => None,
@@ -1659,9 +1666,10 @@ fn run_check(
             // envelope, and its rows gained a `path` (D1).
             // 3: a diagnostic row carries its `help` line when it has one.
             version: 3,
-            files_checked: files.len() - encrypted_files,
+            files_checked: files.len() - not_checked,
             include_files_checked,
             encrypted_files,
+            withheld_files,
             lint_enabled: channels.diagnostics && !no_lint,
             diagnostics,
             format_enabled: channels.format,
@@ -1719,7 +1727,7 @@ fn run_check(
         && drifted.is_empty()
         && failures.is_empty()
     {
-        let checked = files.len() - encrypted_files;
+        let checked = files.len() - not_checked;
         let plural = if checked == 1 { "file" } else { "files" };
         let includes = match include_files_checked {
             0 => String::new(),
@@ -1729,6 +1737,10 @@ fn run_check(
         let encrypted = match encrypted_files {
             0 => String::new(),
             n => format!(" ({n} encrypted, not checked)"),
+        };
+        let withheld = match withheld_files {
+            0 => String::new(),
+            n => format!(" ({n} reaching encrypted source, not checked)"),
         };
         let lint_channel = if !channels.diagnostics {
             "diagnostics off"
@@ -1745,7 +1757,7 @@ fn run_check(
             "no drift"
         };
         println!(
-            "checked {checked} {plural}{includes}{encrypted}: {lint_channel}, {format_channel}"
+            "checked {checked} {plural}{includes}{encrypted}{withheld}: {lint_channel}, {format_channel}"
         );
     }
 
@@ -1867,6 +1879,8 @@ struct Unit {
     fragment_root: Option<String>,
     include_file_checked: bool,
     encrypted: bool,
+    /// The unit reaches encrypted source, so its findings are withheld.
+    withheld: bool,
 }
 
 /// The run's report, built from its units in file order.
@@ -1881,6 +1895,7 @@ struct Totals {
     include_diagnostics: Vec<CheckJsonIncludeFinding>,
     include_files_checked: usize,
     encrypted_files: usize,
+    withheld_files: usize,
 }
 
 impl Totals {
@@ -1895,6 +1910,7 @@ impl Totals {
         self.include_diagnostics.extend(unit.include_diagnostics);
         self.include_files_checked += usize::from(unit.include_file_checked);
         self.encrypted_files += usize::from(unit.encrypted);
+        self.withheld_files += usize::from(unit.withheld);
     }
 }
 
@@ -2023,6 +2039,22 @@ impl CheckPass<'_> {
         }
     }
 
+    /// A unit that reaches encrypted source: its findings are withheld and the
+    /// note is already reported. Only a `root` is counted, and only a root
+    /// fails the run under `--fail-on-encrypted`.
+    fn withhold(&self, display: &str, unit: &mut Unit, root: bool) {
+        unit.withheld = root;
+        if root && self.fail_on_encrypted {
+            unit.output.err(format!(
+                "error: {display}: reaches encrypted source, not checked (--fail-on-encrypted)\n"
+            ));
+            unit.failures.push(CheckJsonFailure {
+                path: display.to_string(),
+                reason: "reaches encrypted source, not checked".to_string(),
+            });
+        }
+    }
+
     /// The diagnostics channel of one root: its parse, preprocessor, semantic and
     /// lint findings.
     fn diagnose(
@@ -2056,6 +2088,7 @@ impl CheckPass<'_> {
             // coverage warnings, not findings, and never move the exit code: an
             // elided include still parses.
             surface_collected_preproc(file, source, result.diagnostics(), &mut unit.output);
+            let withheld = reaches_encrypted(&result);
             // Machine-readable, through the *same* row builder the findings use
             // (D1): an entry names its file, so two files losing coverage on
             // different includes are two distinguishable entries.
@@ -2073,6 +2106,13 @@ impl CheckPass<'_> {
                     unit.preproc
                         .extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
                 }
+            }
+
+            // Nothing was judged: the baseline must not see the file, or its
+            // entries would read as fixed.
+            if withheld {
+                self.withhold(&display, unit, true);
+                return;
             }
 
             // `--no-lint` is a **filter on the reported set**, exactly as it is
@@ -2152,6 +2192,19 @@ impl CheckPass<'_> {
             });
             return unit;
         }
+        if reaches_encrypted(&result) {
+            surface_collected_preproc(file, &source, result.diagnostics(), &mut unit.output);
+            if self.json_output {
+                let map = SourceMap::new(&source);
+                unit.preproc.extend(
+                    result
+                        .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                        .map(|c| check_json_diagnostic(&display, &map, c)),
+                );
+            }
+            self.withhold(&display, &mut unit, false);
+            return unit;
+        }
         unit.include_file_checked = true;
         report_findings(
             &display,
@@ -2164,6 +2217,13 @@ impl CheckPass<'_> {
         );
         unit
     }
+}
+
+/// Whether the unit reached encrypted source, so its findings were withheld.
+fn reaches_encrypted(result: &oxabl_pipeline::LintResult) -> bool {
+    result
+        .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+        .any(|c| c.diagnostic.code.0 == oxabl_workspace::ENCRYPTED_CODE)
 }
 
 /// Run `work` over `tasks` on `jobs` threads and hand every unit to `absorb`

@@ -601,3 +601,174 @@ fn an_encrypted_include_beside_a_fatal_preprocessor_error_is_reported_alone() {
     assert_eq!(all.matches("SOURCE001").count(), 1, "{all}");
     assert_no_garbage_findings(&all);
 }
+
+fn json_report(dir: &Path, args: &[&str]) -> (Option<i32>, Value) {
+    let mut all = vec!["check", "--json", "--no-format"];
+    all.extend_from_slice(args);
+    let out = run(dir, &all);
+    let report = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "{e}: {}{}",
+            stderr(&out),
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    (out.status.code(), report)
+}
+
+/// A baselined finding of a unit is not judged while an include of it is
+/// encrypted, so it is neither fixed nor removed by an update.
+#[test]
+fn a_baseline_entry_of_a_withheld_unit_is_kept() {
+    let tmp = tree("");
+    fs::write(tmp.path().join("inc.i"), "/* x */\n").unwrap();
+    fs::write(tmp.path().join("bl.p"), "MESSAGE typo.\n{inc.i}\n").unwrap();
+    let base = tmp.path().join("base.json");
+    let out = run(
+        tmp.path(),
+        &[
+            "check",
+            "--no-format",
+            "--baseline",
+            "base.json",
+            "--update-baseline",
+            "bl.p",
+        ],
+    );
+    assert!(stderr(&out).contains("1 added"), "{}", stderr(&out));
+    let recorded = fs::read_to_string(&base).unwrap();
+    assert!(recorded.contains("LINT0001"), "{recorded}");
+
+    fs::write(tmp.path().join("inc.i"), encrypted_bytes()).unwrap();
+    for update in [false, true] {
+        let mut args = vec!["check", "--no-format", "--baseline", "base.json"];
+        if update {
+            args.push("--update-baseline");
+        }
+        args.push("bl.p");
+        let out = run(tmp.path(), &args);
+        let expected = if update { "0 removed" } else { "0 stale" };
+        assert!(stderr(&out).contains(expected), "{}", stderr(&out));
+        assert!(!stderr(&out).contains("fixed"), "{}", stderr(&out));
+        assert_eq!(fs::read_to_string(&base).unwrap(), recorded);
+    }
+
+    fs::write(tmp.path().join("inc.i"), "/* x */\n").unwrap();
+    let out = run(
+        tmp.path(),
+        &["check", "--no-format", "--baseline", "base.json", "bl.p"],
+    );
+    assert!(
+        stderr(&out).contains("0 new, 1 baselined"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+}
+
+/// An include file of a walk that includes an encrypted file gets the note in
+/// the preprocessor channel, like a root does: no finding, no exit code, no
+/// baseline entry.
+#[test]
+fn a_walked_include_file_that_includes_encrypted_source_gets_only_the_note() {
+    let tmp = strict_walk(
+        &[
+            ("r.p", "MESSAGE 1.\n"),
+            (
+                "frag.i",
+                "{enc.i}\nDEFINE VARIABLE d AS DATE NO-UNDO.\nd = ?.\nIF d < TODAY THEN MESSAGE \"old\".\n",
+            ),
+        ],
+        &["enc.i"],
+    );
+    let (code, report) = json_report(tmp.path(), &["src"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["diagnostics"], serde_json::json!([]), "{report}");
+    let notes: Vec<&str> = report["preproc"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert!(notes.iter().any(|p| p.ends_with("frag.i")), "{report}");
+    assert!(
+        report["preproc"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["code"] == "SOURCE001")
+    );
+    assert!(report.get("include_files_checked").is_none(), "{report}");
+    let out = run(tmp.path(), &["check", "--no-format", "src"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+}
+
+/// A root that only reaches encrypted source is not checked: the summary and
+/// the report say so, and `--fail-on-encrypted` fails it.
+#[test]
+fn a_root_that_reaches_encrypted_source_is_not_counted_as_checked() {
+    let tmp = tree("");
+    fs::write(
+        tmp.path().join("syn.p"),
+        "{enc.i}\nMESSAGE \"a\" \"b\nDISPLAY x y z.\nIF THEN.\n",
+    )
+    .unwrap();
+    let out = run(tmp.path(), &["check", "--no-format", "syn.p"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout.contains("checked 0 files (1 reaching encrypted source, not checked)"),
+        "{stdout}"
+    );
+    let (code, report) = json_report(tmp.path(), &["syn.p"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["files_checked"], 0, "{report}");
+    assert_eq!(report["withheld_files"], 1, "{report}");
+    assert!(report.get("encrypted_files").is_none(), "{report}");
+
+    let out = run(
+        tmp.path(),
+        &["check", "--no-format", "--fail-on-encrypted", "syn.p"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("reaches encrypted source, not checked (--fail-on-encrypted)"),
+        "{}",
+        stderr(&out)
+    );
+    let (code, report) = json_report(tmp.path(), &["--fail-on-encrypted", "syn.p"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(
+        report["failures"][0]["reason"], "reaches encrypted source, not checked",
+        "{report}"
+    );
+}
+
+/// A walked include file that is withheld is not a root: it neither counts
+/// nor fails the run.
+#[test]
+fn a_withheld_include_file_of_a_walk_does_not_fail_the_run() {
+    let tmp = strict_walk(
+        &[("r.p", "MESSAGE 1.\n"), ("frag.i", "{enc.i}\nMESSAGE 2.\n")],
+        &["enc.i"],
+    );
+    let (code, report) = json_report(tmp.path(), &["--fail-on-encrypted", "src"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["files_checked"], 1, "{report}");
+    assert!(report.get("withheld_files").is_none(), "{report}");
+}
+
+/// A nested encrypted include beside a preprocessor error is reported alone,
+/// at the reference of the root.
+#[test]
+fn a_nested_encrypted_include_beside_a_fatal_preprocessor_error_is_reported_alone() {
+    let tmp = tree("");
+    fs::write(tmp.path().join("bad.i"), b"\xff\xfe\xfa abc").unwrap();
+    fs::write(tmp.path().join("mid.i"), "{enc.i}{bad.i}").unwrap();
+    fs::write(tmp.path().join("fatal2.p"), "{mid.i}").unwrap();
+    let (code, all) = check_text(tmp.path(), "fatal2.p");
+    assert_eq!(code, Some(0), "{all}");
+    assert_eq!(all.matches("SOURCE001").count(), 1, "{all}");
+    assert!(all.contains("reached through this include"), "{all}");
+    assert_no_garbage_findings(&all);
+}
