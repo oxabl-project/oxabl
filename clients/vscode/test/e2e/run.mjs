@@ -37,6 +37,7 @@ import { documentHighlight } from "./scenarios/document-highlight.mjs";
 import { folding } from "./scenarios/folding.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
 import { includeContext } from "./scenarios/include-context.mjs";
+import { inactiveRegions } from "./scenarios/inactive-regions.mjs";
 import { outline } from "./scenarios/outline.mjs";
 import { schema, schemaConfigAbove } from "./scenarios/schema.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
@@ -61,6 +62,7 @@ const SCENARIOS = [
   ["outline", outline],
   ["include-context", includeContext],
   ["expanded-unit", expandedUnit],
+  ["inactive-regions", inactiveRegions],
   ["definition", definition],
   ["schema", schema],
   ["schema-config-above", schemaConfigAbove],

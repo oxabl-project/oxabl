@@ -11,6 +11,9 @@ pub struct Environment<'a> {
     /// The compile environment behind `OPSYS`, `PROVERSION` and the database
     /// functions. Unlike `{&OPSYS}`, a `&SCOPED-DEFINE` cannot shadow them.
     pub config: &'a PreprocessorConfig,
+    /// Whether the value of a name is known, for
+    /// [`Evaluation::reads_unknown_name`]. `None` knows every name.
+    pub known: Option<&'a dyn Fn(&str) -> bool>,
 }
 
 /// A part of a condition that was not decided from facts.
@@ -32,6 +35,13 @@ pub enum Gap {
 pub struct Evaluation {
     pub value: bool,
     pub gaps: Vec<Gap>,
+    /// Whether the condition asks `DEFINED` about a name that
+    /// [`Environment::known`] does not know, after `{&name}` expansion.
+    pub reads_unknown_name: bool,
+    /// Whether the value rests on a default of the configuration rather than
+    /// on a stated fact: the `OPSYS` function while `opsys` is not set, or
+    /// `DBTYPE` of a database that `database-types` does not name.
+    pub reads_default: bool,
 }
 
 /// Evaluate a preprocessor `&IF` condition.
@@ -78,12 +88,19 @@ pub struct Evaluation {
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
+    let reads_unknown_name = env.known.is_some_and(|known| {
+        tokens
+            .iter()
+            .any(|token| matches!(token, CondToken::Defined(name) if !known(name)))
+    });
     // A condition with nothing in it is false, as in the AVM; an empty operand
     // inside one is a syntax error.
     if tokens.is_empty() {
         return Evaluation {
             value: false,
             gaps: Vec::new(),
+            reads_unknown_name,
+            reads_default: false,
         };
     }
     let mut parser = CondParser {
@@ -92,6 +109,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
         env,
         gaps: Vec::new(),
         guesses: 0,
+        read_default: false,
     };
     let value = parser.parse_or();
     if parser.pos < tokens.len() {
@@ -101,30 +119,125 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     Evaluation {
         value,
         gaps: parser.gaps,
+        reads_unknown_name,
+        reads_default: parser.read_default,
     }
 }
 
 /// Expand `{&name}` references in the condition string.
 fn expand_refs<'a>(input: &'a str, vars: &PreprocVarTable) -> Cow<'a, str> {
+    expand_refs_with(input, vars, |_| {})
+}
+
+/// Expand `{&name}` references in `input`, calling `visit` with each name
+/// looked up. A reference whose name holds another (`{&a-{&b}}`) is expanded
+/// from the inside out, as the AVM does: the inner value becomes part of the
+/// outer name. An undefined name expands to nothing. A value is not scanned
+/// again, so a value that holds a reference stays as text.
+pub(crate) fn expand_refs_with<'a>(
+    input: &'a str,
+    vars: &PreprocVarTable,
+    mut visit: impl FnMut(&str),
+) -> Cow<'a, str> {
     if find_var_ref(input).is_none() {
         return Cow::Borrowed(input);
     }
+    // Without a nested reference, each name is a slice of the input.
     let mut result = String::with_capacity(input.len());
     let mut rest = input;
-
+    let mut nested = false;
     while let Some(open) = find_var_ref(rest) {
         let Some(close) = rest[open..].find('}') else {
             break;
         };
+        let name = &rest[open + 2..open + close];
+        if find_var_ref(name).is_some() {
+            nested = true;
+            break;
+        }
         result.push_str(&rest[..open]);
-        if let Some(val) = vars.get(&rest[open + 2..open + close]) {
+        visit(name);
+        if let Some(val) = vars.get(name) {
             result.push_str(val);
         }
-        // If not defined, expand to empty string (ABL behaviour)
         rest = &rest[open + close + 1..];
     }
-    result.push_str(rest);
-    Cow::Owned(result)
+    if !nested {
+        result.push_str(rest);
+        return Cow::Owned(result);
+    }
+    // One pass over the source text. Each open reference collects its name;
+    // a value goes into the name of the reference around it, or into the
+    // output, and is never scanned again, so a value that holds `{&` cannot
+    // make the pass loop or grow.
+    let mut out = String::with_capacity(input.len());
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = input;
+    while !rest.is_empty() {
+        let marker = if names.is_empty() {
+            find_var_ref(rest)
+        } else {
+            match (find_var_ref(rest), rest.find('}')) {
+                (Some(open), Some(close)) => Some(open.min(close)),
+                (open, close) => open.or(close),
+            }
+        };
+        let Some(at) = marker else {
+            break;
+        };
+        let target = names.last_mut().unwrap_or(&mut out);
+        target.push_str(&rest[..at]);
+        if rest[at..].starts_with("{&") {
+            names.push(String::new());
+            rest = &rest[at + 2..];
+        } else if let Some(name) = names.pop() {
+            visit(&name);
+            let value = vars.get(&name).map_or("", |v| &**v);
+            names.last_mut().unwrap_or(&mut out).push_str(value);
+            rest = &rest[at + 1..];
+        }
+    }
+    // References that never close stay as written.
+    for name in names {
+        out.push_str("{&");
+        out.push_str(&name);
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
+/// Call `visit` with each name that [`expand_refs_with`] looks up in `input`,
+/// with no allocation unless a reference holds another.
+pub(crate) fn visit_ref_names(input: &str, vars: &PreprocVarTable, mut visit: impl FnMut(&str)) {
+    // Names are only visited once the whole text is known to hold no nested
+    // reference, which would change what they are.
+    let mut names: [&str; 8] = [""; 8];
+    let mut count = 0;
+    let mut rest = input;
+    while let Some(open) = find_var_ref(rest) {
+        let Some(close) = rest[open..].find('}') else {
+            break;
+        };
+        let name = &rest[open + 2..open + close];
+        if find_var_ref(name).is_some() || count == names.len() {
+            expand_refs_with(input, vars, visit);
+            return;
+        }
+        names[count] = name;
+        count += 1;
+        rest = &rest[open + close + 1..];
+    }
+    for name in &names[..count] {
+        visit(name);
+    }
+}
+
+/// The offset of the last `{&` in `text`.
+pub(crate) fn last_var_ref(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(1))
+        .rev()
+        .find(|&at| bytes[at] == b'{' && bytes[at + 1] == b'&')
 }
 
 /// The offset of the first `{&` in `text`.
@@ -526,6 +639,10 @@ struct CondParser<'a> {
     /// How many times a guess was made, counting repeats that `gaps` folds. A
     /// [`Gap::Invalid`] is no guess and is not counted.
     guesses: usize,
+    /// Whether a default stood for a fact: the `OPSYS` function while `opsys`
+    /// is not set, or `DBTYPE` of a database that `database-types` does not
+    /// name.
+    read_default: bool,
 }
 
 impl<'a> CondParser<'a> {
@@ -775,7 +892,10 @@ impl<'a> CondParser<'a> {
         let upper = name.to_ascii_uppercase();
         if self.peek() != Some(&CondToken::LParen) {
             return match upper.as_str() {
-                "OPSYS" => CondValue::Str(self.env.config.opsys.clone()),
+                "OPSYS" => {
+                    self.read_default |= !self.env.config.stated.opsys;
+                    CondValue::Str(self.env.config.opsys.clone())
+                }
                 "PROVERSION" => match self.env.config.proversion.as_deref() {
                     Some(version) => CondValue::Str(version.to_string()),
                     None => {
@@ -880,14 +1000,15 @@ impl<'a> CondParser<'a> {
             ("CONNECTED", connected) => CondValue::Bool(connected.is_some()),
             (_, None) => CondValue::Null,
             ("LDBNAME", Some(db)) => CondValue::Str(db.clone()),
-            (_, Some(db)) => CondValue::Str(
-                config
+            (_, Some(db)) => {
+                let named = config
                     .database_types
                     .iter()
-                    .find(|(listed, _)| listed.eq_ignore_ascii_case(db))
-                    .map_or("PROGRESS", |(_, kind)| kind)
-                    .to_string(),
-            ),
+                    .find(|(listed, _)| listed.eq_ignore_ascii_case(db));
+                // `PROGRESS` is a default, not a fact about this project.
+                self.read_default |= named.is_none();
+                CondValue::Str(named.map_or("PROGRESS", |(_, kind)| kind).to_string())
+            }
         }
     }
 
@@ -1262,6 +1383,7 @@ mod tests {
             &Environment {
                 vars,
                 config: &config,
+                known: None,
             },
         )
     }
@@ -1543,6 +1665,7 @@ mod tests {
             let env = Environment {
                 vars: &vars,
                 config: &config,
+                known: None,
             };
             let e = super::evaluate(c, &env);
             assert!(e.gaps.is_empty(), "{c}: {:?}", e.gaps);
@@ -2004,6 +2127,7 @@ mod tests {
             &Environment {
                 vars: &vars,
                 config: &config,
+                known: None,
             },
         )
     }
@@ -2057,6 +2181,7 @@ mod tests {
             &Environment {
                 vars: &vars,
                 config: &config,
+                known: None,
             },
         )
     }

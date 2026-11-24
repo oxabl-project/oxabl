@@ -212,6 +212,11 @@
           },
           "default": [],
           "description": "Extra arguments for `oxabl build`, for example `[\"--config-overlay\", \"/path/overlay.toml\"]`. Also passed when the extension reads the build setup of a project."
+        },
+        "oxabl.inactiveRegions.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Dim the `&IF`, `&ELSEIF` and `&ELSE` branches that the preprocessor does not compile with the current configuration, or in the selected include context. A branch whose condition oxabl cannot decide is never dimmed. Applied automatically when changed."
         }
       }
     },
