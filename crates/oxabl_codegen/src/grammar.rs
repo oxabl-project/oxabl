@@ -552,8 +552,10 @@ const NESTING_LIMIT: &str = "x-nesting-limit";
 
 /// Replaces each repository rule `name` that has `"x-nesting-limit": N` with
 /// N copies: `name` includes `name-2` where it included itself, `name-2`
-/// includes `name-3`, and so on. Copy N drops its self-includes, so the rule
-/// stack holds at most N of them and an opener past that depth is plain text.
+/// includes `name-3`, and so on. Copy N matches the rule's `begin` where it
+/// included itself, so the rule stack holds at most N of them and an opener
+/// past that depth is consumed whole as plain text: `/*/*` past the limit
+/// must not read as `/` `*/` `*`.
 fn bound_nesting(grammar: &mut Value) -> Result<(), String> {
     let Some(repository) = grammar.get_mut("repository").and_then(Value::as_object_mut) else {
         return Ok(());
@@ -572,6 +574,11 @@ fn bound_nesting(grammar: &mut Value) -> Result<(), String> {
             .filter(|&n| n >= 2)
             .ok_or_else(|| format!("{name}: {NESTING_LIMIT} must be an integer of 2 or more"))?;
         let own = format!("#{name}");
+        let begin = rule
+            .get("begin")
+            .cloned()
+            .ok_or_else(|| format!("{name}: has {NESTING_LIMIT} but no begin"))?;
+        let opener = serde_json::json!({ "match": begin });
         if !includes(&rule, &own) {
             return Err(format!(
                 "{name}: has {NESTING_LIMIT} but does not include itself"
@@ -589,8 +596,12 @@ fn bound_nesting(grammar: &mut Value) -> Result<(), String> {
                 ));
             }
             let mut copy = rule.clone();
-            let next = (depth < limit).then(|| format!("#{name}-{}", depth + 1));
-            retarget(&mut copy, &own, next.as_deref());
+            let next = if depth < limit {
+                serde_json::json!({ "include": format!("#{name}-{}", depth + 1) })
+            } else {
+                opener.clone()
+            };
+            retarget(&mut copy, &own, &next);
             repository.insert(copy_name, copy);
         }
     }
@@ -611,23 +622,15 @@ fn includes(value: &Value, target: &str) -> bool {
     }
 }
 
-/// Points every `{"include": from}` at `to`, or removes it when `to` is `None`.
-fn retarget(value: &mut Value, from: &str, to: Option<&str>) {
+/// Replaces every `{"include": from}` with `to`.
+fn retarget(value: &mut Value, from: &str, to: &Value) {
+    if is_include_of(value, from) {
+        *value = to.clone();
+        return;
+    }
     match value {
-        Value::Array(items) => {
-            if to.is_none() {
-                items.retain(|v| !is_include_of(v, from));
-            }
-            items.iter_mut().for_each(|v| retarget(v, from, to));
-        }
-        Value::Object(map) => {
-            if let (Some(include), Some(to)) = (map.get_mut("include"), to)
-                && include.as_str() == Some(from)
-            {
-                *include = Value::String(to.to_string());
-            }
-            map.values_mut().for_each(|v| retarget(v, from, to));
-        }
+        Value::Array(items) => items.iter_mut().for_each(|v| retarget(v, from, to)),
+        Value::Object(map) => map.values_mut().for_each(|v| retarget(v, from, to)),
         _ => {}
     }
 }

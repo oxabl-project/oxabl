@@ -989,7 +989,11 @@
         }
       },
       "name": "comment.block.abl",
-      "patterns": []
+      "patterns": [
+        {
+          "match": "/\\*"
+        }
+      ]
     },
     "comment-block-6": {
       "begin": "/\\*",
@@ -2386,6 +2390,9 @@
       "patterns": [
         {
           "include": "#include-arguments"
+        },
+        {
+          "match": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])"
         }
       ]
     },

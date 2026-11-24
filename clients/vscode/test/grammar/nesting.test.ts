@@ -85,6 +85,14 @@ describe("nested block comments", () => {
     expect(count(r.scopes("inside"), COMMENT)).toBe(LIMIT);
     expect(r.maxDepth).toBe(LIMIT + 1);
   });
+
+  for (const n of [LIMIT + 1, LIMIT + 2, LIMIT * 2, LIMIT * 20]) {
+    it(`stay a comment past ${LIMIT} adjacent openers on one line (${n})`, () => {
+      const r = tokenize("/*".repeat(n) + " inside");
+      expect(count(r.scopes("inside"), COMMENT)).toBe(LIMIT);
+      expect(r.endDepth).toBe(LIMIT + 1);
+    });
+  }
 });
 
 describe("nested include references", () => {
