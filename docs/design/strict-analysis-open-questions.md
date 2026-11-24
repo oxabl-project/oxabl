@@ -394,6 +394,44 @@ HD005 is reported once per file, on the file's own first create. A root leaves o
 include wrote and counts only its own, so it reports even when an include creates earlier. The include
 reports its own creates (lower confidence) when it is checked.
 
+`oxabl check <dir>` judges the HD005 finding of an include by the roots of the same run. The rule is
+conservative: it drops the finding only when the full set of files that can include the file is
+established and every one of them is a root, analysed in this run, that gives the objects a pool. When
+the set is established and some roots give none, the finding stays and its help names those roots. In
+every other case the finding stays unchanged, with the note that the includer was not seen.
+
+A file *names* an include when it has a reference `{name ...}` with the include's base name
+(case-insensitive, any file name part before it ignored). So two include files with the same base name
+in two directories are never judged: each is named by the roots of the other. The set is established when all of these hold:
+
+- `<dir>` holds the `oxabl.toml` of the workspace, and every include path lies below it (a
+  root-relative path must not climb out with `..`), and no root expands an include file outside it;
+- the roots that expand the include are exactly the roots that name it. So an include reached through
+  another include, an inactive `&IF` branch and a computed name keep the finding;
+- no other file of the workspace directory names it: an include file, a trigger file, a file in a
+  hidden directory, or any other file such as notes or a log that holds a reference with that name. A
+  file that only mentions the name outside a reference does not count. A name in quotes may hold
+  spaces. Text files are read with the encoding of `[workspace.sources]`. A non-root file that
+  names a root (for example a trigger file that includes `lib.p`) keeps the finding of every include
+  that the root reaches. The `oxabl.toml`, the baseline
+  file and binary files (a NUL byte in the first 4 KiB, unless the file starts with a UTF-16 mark) are
+  not read. A text file over 8 MiB, or one that the configured encoding cannot decode, cannot be read
+  and keeps every finding;
+- no file that is not a root has a reference that holds a preprocessor name or an argument
+  (`{{&n}.i}`, `{{1}.i}`, `{{*}.i}`); other uses of `{{` (`${{ x }}` in a workflow file, compact JSON)
+  do not count, and the workspace has no symbolic link (the walk follows links and the scan does not).
+  A reference longer than 1 KiB is no file name and counts as such a reference;
+- no root that a file which is not a root names has such a reference: the unseen includer can define
+  the name or pass the argument, so the root may include any file;
+- every root was analysed and parsed without errors, and no include of any root failed to resolve,
+  could not be read or did not arrive (such an include may include anything, so a workspace needs all
+  its includes to resolve);
+- every root that expands the include creates at least one of the objects that the fragment reports.
+
+Includers outside the workspace directory (other applications on the `PROPATH`) are not seen. The
+analysis expands the roots a second time and reads the workspace directory, and only runs when an
+include file can report HD005. `oxabl check --watch` and the editor do not use this judgement.
+
 ## 4. Shared definitions and `NO-UNDO`
 
 TX006 reports a variable or temp-table defined without `NO-UNDO`, and its help used to say "add

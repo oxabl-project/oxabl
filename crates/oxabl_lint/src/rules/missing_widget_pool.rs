@@ -59,11 +59,14 @@
 //! creates that an include wrote and reports at its own first create, even
 //! when an include creates earlier. The include reports its own when it is
 //! checked. An include may count on a pool that its includer creates, so a
-//! finding in an include says so and is lower confidence.
+//! finding in an include says so and is lower confidence. `oxabl check <dir>`
+//! then judges the finding by the roots of the same run
+//! (`oxabl_pipeline::IncluderPools`), using [`counts`] on each root's own
+//! analysis.
 
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, Severity};
-use oxabl_handles::{FileHandles, Placement};
+use oxabl_handles::{FileHandles, Object, Placement};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD005;
@@ -87,6 +90,12 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
     check(&oxabl_handles::analyze_file(program, ctx.source), ctx)
 }
 
+/// Whether the rule counts `o`: its kind goes into a widget pool, no pool of
+/// the file holds it, and it does not escape.
+pub fn counts(o: &Object) -> bool {
+    o.kind.uses_widget_pool() && o.placement == Placement::Unscoped && o.escapes.is_empty()
+}
+
 /// The findings over an analysed file.
 pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
     if not_judged(ctx) {
@@ -95,12 +104,7 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
     let unpooled: Vec<_> = handles
         .objects()
         .map(|(_, o)| o)
-        .filter(|o| {
-            o.kind.uses_widget_pool()
-                && o.placement == Placement::Unscoped
-                && o.escapes.is_empty()
-                && !ctx.in_include(o.create.span)
-        })
+        .filter(|o| counts(o) && !ctx.in_include(o.create.span))
         .collect();
     let Some(first) = unpooled.iter().min_by_key(|o| o.create.span.start) else {
         return Vec::new();

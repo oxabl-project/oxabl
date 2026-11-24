@@ -1664,12 +1664,57 @@ fn run_check(
         return ExitCode::from(2);
     }
 
+    // Judging needs the roots of the whole workspace: the walk starts at the
+    // directory of `oxabl.toml` and every include path lies below it. Only a
+    // fragment that text-wise creates something can report HD005.
+    let workspace = std::path::absolute(path)
+        .ok()
+        .filter(|abs| oxabl_workspace::find_workspace_root(abs).as_deref() == Some(abs.as_path()))
+        .filter(|abs| {
+            let up = |p: &PathBuf| p.components().any(|c| c == std::path::Component::ParentDir);
+            config
+                .include_paths
+                .iter()
+                .all(|p| p.starts_with(abs) && !up(p))
+                // Resolved against each root's directory: an absolute path must
+                // lie below the workspace, a relative one must not climb out.
+                && config
+                    .root_relative_include_paths
+                    .iter()
+                    .all(|p| if p.is_absolute() { p.starts_with(abs) } else { true } && !up(p))
+        });
+    let judged: Vec<PathBuf> = if workspace.is_some() {
+        fragments
+            .iter()
+            .filter(|(file, key)| {
+                lint.with_file(key).rule_enabled(oxabl_lint::HD005)
+                    && read_source(file, config.decoding)
+                        .is_ok_and(|text| text.to_ascii_lowercase().contains("create"))
+            })
+            .map(|(_, key)| key.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let skip: Vec<PathBuf> = baseline_file
+        .into_iter()
+        .filter_map(|(file, _)| std::path::absolute(file).ok())
+        .collect();
+    let pools =
+        oxabl_pipeline::IncluderPools::new(&indexed, &judged, jobs, workspace, &skip, || {
+            LintPipeline::new(&config, &fs)
+                .with_preprocess(preprocess)
+                .with_shared_producers(&producers)
+        });
+    pools.prepare();
+    let judge = |include: &Path, result: oxabl_pipeline::LintResult| pools.judge(include, result);
     let pass = CheckPass {
         json_output,
         diagnostics: channels.diagnostics,
         no_lint,
         no_format: !channels.format,
         include_findings,
+        pools: Some(&judge),
         baseline: baseline.as_ref(),
         format: &format,
         decoding: config.decoding,
@@ -1993,6 +2038,10 @@ struct Task<'a> {
     fragment: bool,
 }
 
+/// Judges the lint result of an include fragment by the roots of the walk.
+type Judge<'a> =
+    dyn Fn(&Path, oxabl_pipeline::LintResult) -> oxabl_pipeline::LintResult + Sync + 'a;
+
 /// The settings of one `check` run, read by every worker.
 struct CheckPass<'a> {
     json_output: bool,
@@ -2001,6 +2050,9 @@ struct CheckPass<'a> {
     no_lint: bool,
     no_format: bool,
     include_findings: bool,
+    /// What the roots of the walk say about the widget pools of its include
+    /// fragments. `None` leaves each fragment judged alone.
+    pools: Option<&'a Judge<'a>>,
     baseline: Option<&'a baseline::Run>,
     format: &'a FormatPipeline,
     decoding: SourceDecoding,
@@ -2189,6 +2241,10 @@ impl CheckPass<'_> {
             }
         };
         let result = lint.with_file(indexed_path).run_context_free(&source);
+        let result = match self.pools {
+            Some(judge) => judge(indexed_path, result),
+            None => result,
+        };
         if let Some(panic) = result.failure() {
             unit.output
                 .err(format!("error: analysis failed on {display}: {panic}\n"));

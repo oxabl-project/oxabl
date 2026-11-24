@@ -273,6 +273,7 @@ fn cycle(
         no_lint: opts.no_lint,
         no_format: !channels.format,
         include_findings: opts.include_findings,
+        pools: None,
         baseline: None,
         format: &format,
         decoding: config.decoding,

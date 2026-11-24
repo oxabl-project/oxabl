@@ -284,6 +284,14 @@ impl LintResult {
         }
     }
 
+    /// The diagnostics of a completed run, to change them in place.
+    pub(crate) fn diagnostics_mut(&mut self) -> Option<&mut CollectedDiagnostics> {
+        match &mut self.outcome {
+            Outcome::Computed { diagnostics, .. } => Some(diagnostics),
+            Outcome::Failed(_) => None,
+        }
+    }
+
     /// The contained panic, if the run failed.
     ///
     /// Carrying it — rather than reducing a failure to a bare flag — is what
@@ -973,6 +981,22 @@ impl<'a> LintPipeline<'a> {
             matches!(r.meta().code, "DB001" | "TX004")
                 && registry.severity_for(r, &severities).is_some()
         })
+    }
+
+    /// Whether the rule `code` is enabled for this file and diagnostics are on
+    /// in `[workspace.features]`.
+    pub fn rule_enabled(&self, code: &str) -> bool {
+        if !self.config.features.diagnostics {
+            return false;
+        }
+        let severities = self
+            .file()
+            .map(|p| self.config.lint_severities.for_path(p))
+            .unwrap_or_else(|| self.config.lint_severities.clone());
+        let registry = oxabl_lint::Registry::builtin_shared();
+        registry
+            .rules()
+            .any(|r| r.meta().code == code && registry.severity_for(r, &severities).is_some())
     }
 
     /// Whether TX004 is enabled for this file. This query computes no effects.

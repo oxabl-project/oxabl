@@ -2879,6 +2879,7 @@ dependencies = [
  "oxabl_effects",
  "oxabl_flow",
  "oxabl_formatter",
+ "oxabl_handles",
  "oxabl_index",
  "oxabl_lexer",
  "oxabl_lint",
