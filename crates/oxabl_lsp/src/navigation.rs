@@ -3,7 +3,8 @@
 //!
 //! Each analyses one compilation unit on a worker thread with the open buffers
 //! over the disk ([`compute_navigation`]) and render its byte spans in the
-//! negotiated position encoding. An open include with a selected compilation
+//! negotiated position encoding. A highlight of an open file that is its own
+//! root is answered from the cached analysis ([`compute_highlights`]). An open include with a selected compilation
 //! context is analysed in that root for go to definition; otherwise an include
 //! is analysed alone. A failed analysis answers with an error, never with an
 //! empty answer that reads as "no definition".
@@ -17,7 +18,7 @@ use lsp_types::{
     DocumentLinkParams, GotoDefinitionParams, Location, PositionEncodingKind, Range,
 };
 use oxabl_daemon::canonical_path;
-use oxabl_daemon::db::{NavigationAnswer, NavigationQuery, compute_navigation};
+use oxabl_daemon::db::{NavigationAnswer, NavigationQuery, compute_highlights, compute_navigation};
 use ropey::Rope;
 
 use crate::position::{byte_to_position, position_to_byte};
@@ -45,7 +46,7 @@ impl Server<'_> {
             .cloned()
             .unwrap_or_else(|| path.clone());
         let query = NavigationQuery::Definition { file: path, offset };
-        self.spawn_navigation(req.id, root, query, |answer, encoding| {
+        self.spawn_navigation(req.id, root, None, query, |answer, encoding| {
             serde_json::to_value(locations(answer, encoding))
         })
     }
@@ -70,8 +71,11 @@ impl Server<'_> {
             .selected(&uri)
             .cloned()
             .unwrap_or_else(|| path.clone());
+        // The open file as its own root is answered from the analysis that
+        // diagnostics share; an include analysed in a selected root is not.
+        let own_buffer = (root == path).then(|| uri.as_str().to_string());
         let query = NavigationQuery::Highlights { file: path, offset };
-        self.spawn_navigation(req.id, root, query, |answer, encoding| {
+        self.spawn_navigation(req.id, root, own_buffer, query, |answer, encoding| {
             serde_json::to_value(highlights(answer, encoding))
         })
     }
@@ -86,29 +90,36 @@ impl Server<'_> {
             return self.respond(invalid(req.id, &format!("{} is not a file", uri.as_str())));
         };
         let root = canonical_path(&path);
-        self.spawn_navigation(req.id, root, NavigationQuery::Links, |answer, encoding| {
-            serde_json::to_value(links(answer, encoding))
-        })
+        self.spawn_navigation(
+            req.id,
+            root,
+            None,
+            NavigationQuery::Links,
+            |answer, encoding| serde_json::to_value(links(answer, encoding)),
+        )
     }
 
     /// Answer a navigation request on a worker thread. The response goes
-    /// straight to the client.
+    /// straight to the client. With a `buffer` key, a highlight query uses the
+    /// open buffer's cached analysis.
     fn spawn_navigation(
         &mut self,
         id: RequestId,
         root: PathBuf,
+        buffer: Option<String>,
         query: NavigationQuery,
         render: fn(
             NavigationAnswer,
             &PositionEncodingKind,
         ) -> serde_json::Result<serde_json::Value>,
     ) -> anyhow::Result<()> {
-        let Some((snapshot, schema, overlay)) = self.host.with(|sessions| {
+        let Some((snapshot, schema, overlay, buffer)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
             Some((
                 session.database().clone(),
                 session.schema_handle(),
                 session.buffer_overlay(),
+                buffer.and_then(|key| session.buffer(&key)),
             ))
         }) else {
             return self.respond(Response::new_err(
@@ -126,8 +137,13 @@ impl Server<'_> {
                 let id = id.clone();
                 move || {
                     let answered = oxabl_common::catch_panic(|| {
-                        compute_navigation(&snapshot, schema, &root, overlay, &query)
-                            .map(|answer| answer.map(|answer| render(answer, &encoding)))
+                        let answer = match (&query, buffer) {
+                            (NavigationQuery::Highlights { offset, .. }, Some(buffer)) => {
+                                compute_highlights(&snapshot, buffer, schema, *offset)
+                            }
+                            _ => compute_navigation(&snapshot, schema, &root, overlay, &query),
+                        };
+                        answer.map(|answer| answer.map(|answer| render(answer, &encoding)))
                     });
                     let response = match answered {
                         Ok(Some(Ok(Ok(value)))) => Response::new_ok(id, value),
