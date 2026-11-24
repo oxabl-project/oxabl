@@ -50,6 +50,18 @@ Never put passwords in oxabl.toml. Check your work with
 `oxabl build --print-config`, `oxabl check .` and `oxabl build --plan`, and fix any errors before you finish. Ask me if anything is unclear.
 ```
 
+### Coding agents
+
+Oxabl ships a skill that teaches a coding agent (Claude Code, Codex, pi, OpenCode, Copilot and others) to use its commands without exploring. It is built into the binary and matches its version:
+
+```sh
+oxabl skill install            # this project: .agents/skills/oxabl and .claude/skills/oxabl
+oxabl skill install --user     # every project: the same folders in your home directory
+oxabl skill install --check    # exit 1 when a copy is missing or out of date
+```
+
+`oxabl skill show` prints the skill. After `oxabl self-update`, the copies that you installed with `--user` update with the binary. The docs site also serves [llms.txt](https://docs.oxabl.org/llms.txt), a Markdown copy of every page, and a read-only MCP server at `https://docs.oxabl.org/mcp`. The VS Code command **oxabl: Install agent skill in this workspace** does the same for the open folder.
+
 ## Features
 
 ### Build
