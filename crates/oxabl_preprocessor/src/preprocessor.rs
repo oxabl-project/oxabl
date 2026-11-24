@@ -369,7 +369,9 @@ impl ProcessContext<'_> {
     /// `[at, end)` of `source`, with its `{N}` and defined `{&name}`
     /// references expanded within the expansion limit. A nested reference that
     /// an include argument brought in (`~{...~}`) is read here, where the define
-    /// is written, so the stored value holds none.
+    /// is written, so the stored value holds none. The second result is the
+    /// include tree of that read without its text: a file the read includes is
+    /// a dependency of the source that holds the define.
     fn define_value(
         &mut self,
         value: String,
@@ -381,7 +383,7 @@ impl ProcessContext<'_> {
         source: &str,
         at: usize,
         end: usize,
-    ) -> String {
+    ) -> (String, Option<SpanNode>) {
         let site = FileSpan {
             file,
             span: Span {
@@ -404,11 +406,20 @@ impl ProcessContext<'_> {
             .expand_defined_preproc_vars(&value, source, at, site)
             .unwrap_or(value);
         if !value.contains(NESTED_OPEN) {
-            return value;
+            return (value, None);
         }
         match self.nested_value_nodes(&value, site, depth, positional_args) {
-            Some(nodes) => self.nodes_text(&nodes),
-            None => String::new(),
+            Some(nodes) => {
+                let text = self.nodes_text(&nodes);
+                let reads = include_skeleton(nodes);
+                let node = (!reads.is_empty()).then_some(SpanNode::Include {
+                    site,
+                    path: None,
+                    children: reads,
+                });
+                (text, node)
+            }
+            None => (String::new(), None),
         }
     }
 
@@ -539,7 +550,7 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if emitting {
-                                    let expanded = self.define_value(
+                                    let (expanded, reads) = self.define_value(
                                         value,
                                         Expansion {
                                             depth,
@@ -551,6 +562,7 @@ impl ProcessContext<'_> {
                                         directive.end,
                                     );
                                     self.vars.define(&name, &expanded);
+                                    nodes.extend(reads);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -565,7 +577,7 @@ impl ProcessContext<'_> {
                                     });
                                 }
                                 if emitting {
-                                    let expanded = self.define_value(
+                                    let (expanded, reads) = self.define_value(
                                         value,
                                         Expansion {
                                             depth,
@@ -577,6 +589,7 @@ impl ProcessContext<'_> {
                                         directive.end,
                                     );
                                     self.vars.define_global(&name, &expanded);
+                                    nodes.extend(reads);
                                 }
                                 i = directive.end;
                                 chunk_start = i as u32;
@@ -1209,6 +1222,7 @@ impl ProcessContext<'_> {
         let mut copied = 0;
         let mut rest = condition;
         let mut rest_at = 0;
+        let mut nested = false;
         while let Some(open) = find_var_ref(rest) {
             let Some(close_rel) = rest[open..].find('}') else {
                 break;
@@ -1218,6 +1232,10 @@ impl ProcessContext<'_> {
             let reference_at = rest_at + open;
             if self.vars.is_defined(name) {
                 // Kept as written.
+                nested |= self
+                    .vars
+                    .get(name.trim_ascii_end())
+                    .is_some_and(|val| val.contains(NESTED_OPEN));
             } else if let Some(computed) = ComputedName::from_name(name) {
                 let value = self.computed_value(computed, source, at);
                 if value.is_none() {
@@ -1235,6 +1253,9 @@ impl ProcessContext<'_> {
             }
             rest = &rest[open + close_rel + 1..];
             rest_at += open + close_rel + 1;
+        }
+        if nested {
+            self.report_unmodelled_condition("a nested reference from an include argument", site);
         }
         match out {
             Some(mut out) => {
@@ -1495,7 +1516,10 @@ impl ProcessContext<'_> {
         file: FileId,
         source: &str,
         i: usize,
-        Expansion { depth, .. }: Expansion<'_>,
+        Expansion {
+            depth,
+            args: positional_args,
+        }: Expansion<'_>,
         chunk_start: &mut u32,
         nodes: &mut Vec<SpanNode>,
     ) -> Option<usize> {
@@ -1524,6 +1548,20 @@ impl ProcessContext<'_> {
         {
             if val.ends_with('~') {
                 self.report_trailing_tilde(site);
+            }
+            // A named argument may hold a nested reference (`&n=~{&m~}`): it is
+            // read here, where the include uses the name, as `{N}` is.
+            if val.contains(NESTED_OPEN) {
+                if let Some(children) = self.nested_value_nodes(&val, site, depth, positional_args)
+                {
+                    nodes.push(SpanNode::Include {
+                        site,
+                        path: None,
+                        children,
+                    });
+                }
+                *chunk_start = ref_end as u32;
+                return Some(ref_end);
             }
             // Create a synthetic chunk for the expanded value.
             // We store it as a new source entry.
@@ -1891,6 +1929,7 @@ impl ProcessContext<'_> {
         let bytes = text.as_bytes();
         let mut out = String::with_capacity(text.len());
         let mut i = 0;
+        let mut copied = 0;
         let mut changed = false;
         while i < bytes.len() {
             if i + 1 < bytes.len()
@@ -1899,6 +1938,7 @@ impl ProcessContext<'_> {
                 && let Some(close_rel) = text[i..].find('}')
             {
                 let end = i + close_rel;
+                out.push_str(&text[copied..i]);
                 let name = text[i + 2..end].trim_ascii_end();
                 // A computed name is read where the define is written, as the
                 // AVM does, rather than where the define is later used.
@@ -1918,11 +1958,12 @@ impl ProcessContext<'_> {
                     out.push_str(&text[i..=end]);
                 }
                 i = end + 1;
+                copied = i;
                 continue;
             }
-            out.push(bytes[i] as char);
             i += 1;
         }
+        out.push_str(&text[copied..]);
         if changed { Some(out) } else { None }
     }
 
@@ -2562,10 +2603,34 @@ fn holds_include_ref(text: &str) -> bool {
         .any(|i| bytes[i] == b'{' && bytes[i + 1] != b'&' && include_ref_start(bytes, i))
 }
 
+/// The include nodes of `nodes`, at any depth, with every chunk removed: the
+/// files that were read, without their text. A node that read no file is left
+/// out.
+fn include_skeleton(nodes: Vec<SpanNode>) -> Vec<SpanNode> {
+    nodes
+        .into_iter()
+        .filter_map(|node| match node {
+            SpanNode::Chunk { .. } => None,
+            SpanNode::Include {
+                site,
+                path,
+                children,
+            } => {
+                let children = include_skeleton(children);
+                (path.is_some() || !children.is_empty()).then_some(SpanNode::Include {
+                    site,
+                    path,
+                    children,
+                })
+            }
+        })
+        .collect()
+}
+
 /// Where the `{` of one source close. A scan from a `{` also settles every
-/// `{` it counts on the way. So each `{` is scanned once, where a scan per `{`
-/// read to the end of the source for each unclosed one, and time grew with the
-/// square of a run of `{`.
+/// `{` it passes, escaped or not. So each `{` is scanned once, where a scan
+/// per `{` read to the end of the source for each unclosed one, and time grew
+/// with the square of a run of `{` or of `~{`.
 #[derive(Default)]
 struct BraceMatches {
     found: rustc_hash::FxHashMap<usize, Option<usize>>,
@@ -2577,27 +2642,47 @@ impl BraceMatches {
     /// As in the compiler, a quote does not hide a brace: `{a.i '}' b}` ends
     /// at the first `}`. A `~` escapes the next byte, so `~}` and `~{` do not
     /// count. The lexer's `read_include_reference` uses the same rule.
+    ///
+    /// A `{` after a `~` does not count for this scan, but a scan of its own
+    /// would start there. It closes at the first `}` that no later counted `{`
+    /// takes, so such a `{` waits on the stack and the first `}` that reaches
+    /// it settles it, together with the counted `{` below.
     fn find(&mut self, source: &str, open: usize) -> Option<usize> {
         if let Some(&close) = self.found.get(&open) {
             return close;
         }
         let bytes = source.as_bytes();
-        let mut opens = vec![open];
+        // `true` marks an escaped `{`.
+        let mut opens = vec![(open, false)];
+        let mut counted = 1;
         let mut i = open + 1;
-        while i < bytes.len() && !opens.is_empty() {
+        while i < bytes.len() && counted > 0 {
             match bytes[i] {
-                b'~' => i += 1,
-                b'{' => opens.push(i),
+                b'~' => {
+                    i += 1;
+                    if bytes.get(i) == Some(&b'{') {
+                        opens.push((i, true));
+                    }
+                }
+                b'{' => {
+                    opens.push((i, false));
+                    counted += 1;
+                }
                 b'}' => {
-                    if let Some(at) = opens.pop() {
+                    while let Some(&(at, true)) = opens.last() {
                         self.found.insert(at, Some(i));
+                        opens.pop();
+                    }
+                    if let Some((at, _)) = opens.pop() {
+                        self.found.insert(at, Some(i));
+                        counted -= 1;
                     }
                 }
                 _ => {}
             }
             i += 1;
         }
-        for at in opens {
+        for (at, _) in opens {
             self.found.insert(at, None);
         }
         self.found[&open]
@@ -3286,6 +3371,56 @@ mod tests {
 
     fn kinds(result: &PreprocessedFile) -> Vec<TextLossKind> {
         result.text_losses.iter().map(|l| l.kind).collect()
+    }
+
+    /// The `}` of the `{` at `open`, by a scan of its own.
+    fn closing_brace_alone(bytes: &[u8], open: usize) -> Option<usize> {
+        let mut depth = 1;
+        let mut i = open + 1;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'~' => i += 1,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    #[test]
+    fn the_shared_brace_scan_agrees_with_a_scan_per_brace() {
+        const ALPHABET: &[u8] = b"{}~a";
+        for len in 0..=8u32 {
+            for code in 0..ALPHABET.len().pow(len) {
+                let source: String = (0..len)
+                    .map(|k| ALPHABET[code / ALPHABET.len().pow(k) % ALPHABET.len()] as char)
+                    .collect();
+                // A fresh memo for each order of asking: first to last, and back.
+                for reverse in [false, true] {
+                    let mut matches = BraceMatches::default();
+                    let mut opens: Vec<usize> = (0..source.len())
+                        .filter(|&i| source.as_bytes()[i] == b'{')
+                        .collect();
+                    if reverse {
+                        opens.reverse();
+                    }
+                    for open in opens {
+                        assert_eq!(
+                            matches.find(&source, open),
+                            closing_brace_alone(source.as_bytes(), open),
+                            "`{{` at {open} of {source:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

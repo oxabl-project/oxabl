@@ -88,6 +88,25 @@ fn a_run_of_unclosed_braces() {
     );
 }
 
+/// A run of `~{name` has no `}` either: each escaped `{` must settle with the
+/// scan that passes it, not start a scan to the end of the file of its own.
+#[test]
+fn a_run_of_unclosed_escaped_braces() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in [
+        ("escaped.p", "~{a.i ".repeat(200_000)),
+        ("mixed.p", "{a.i ~{a.i ".repeat(100_000)),
+    ] {
+        let path = write(dir.path(), name, &format!("{text}\n"));
+        let output = check_capped(&path);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.matches("PREPROC008").count() <= 100,
+            "{name}: the unclosed references are reported up to the cap"
+        );
+    }
+}
+
 #[test]
 fn json_saved_as_abl() {
     let dir = tempfile::tempdir().unwrap();

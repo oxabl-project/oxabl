@@ -20,6 +20,9 @@ const RUNNER: &str = "RUN {1}. /* {2}";
 /// Runs argument 1 and shows argument 2.
 const MESSAGE: &str = "RUN {1}.\nMESSAGE \"{2}\".\n";
 
+/// Declares a variable whose name is the named argument `n`.
+const DECLARE: &str = "DEFINE VARIABLE {&n} AS INTEGER NO-UNDO.\n";
+
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();
@@ -33,6 +36,7 @@ fn run(source: &str, args: &[&str]) -> serde_json::Value {
     let root = tmp.path();
     write(&root.join("inc/r.i"), RUNNER);
     write(&root.join("inc/m.i"), MESSAGE);
+    write(&root.join("inc/n.i"), DECLARE);
     write(&root.join("main.p"), source);
     let out = Command::new(env!("CARGO_BIN_EXE_oxabl"))
         .current_dir(root)
@@ -113,6 +117,28 @@ fn an_unclosed_escaped_open_brace_in_an_argument_is_reported() {
     assert_eq!(check_preproc_codes("{m.i six.p a~{b}\n"), ["PREPROC012"]);
     assert_eq!(
         check_preproc_codes("{m.i six.p a~}b}\n"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_nested_reference_in_a_named_argument_names_the_variable_it_reads() {
+    // `vv` is declared by the include through `{&n}`. If the nested reference
+    // stayed unread, the include would declare another name and `vv` would be
+    // undefined.
+    let v = run(
+        "&SCOPED-DEFINE m vv\n{n.i &n=~{&m~}}\nDISPLAY vv.\n",
+        &["check", "--json"],
+    );
+    let codes: Vec<&str> = v["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap_or_default())
+        .collect();
+    assert!(!codes.contains(&"LINT0001"), "undefined symbol in {v:#}");
+    assert_eq!(
+        check_preproc_codes("&SCOPED-DEFINE m vv\n{n.i &n=~{&m~}}\n"),
         Vec::<String>::new()
     );
 }
