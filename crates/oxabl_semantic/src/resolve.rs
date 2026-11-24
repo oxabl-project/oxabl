@@ -28,9 +28,9 @@ use std::sync::Arc;
 
 use oxabl_ast::{
     AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, FrameField,
-    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeArguments,
-    TypeSource, UsingSource,
+    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterExtent,
+    ParameterType, RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget,
+    TypeArguments, TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::is_builtin_function;
@@ -68,8 +68,14 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
                 ParameterDirection::Return => "return",
             };
             let shape = match param_type {
-                ParameterType::Variable { type_source, .. } => match type_source {
-                    TypeSource::Explicit(ty) => format!("value:{}", canonical_data_type(ty)),
+                ParameterType::Variable {
+                    type_source,
+                    extent,
+                    ..
+                } => match type_source {
+                    TypeSource::Explicit(ty) => {
+                        format!("value:{}{}", canonical_data_type(ty), extent_key(*extent))
+                    }
                     TypeSource::Like { source } => {
                         format!("like:{}", source.name.to_ascii_lowercase())
                     }
@@ -85,6 +91,18 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
             Some(format!("{direction}:{shape}"))
         })
         .collect()
+}
+
+/// Part of a method signature: array and scalar parameters differ, and so do
+/// arrays of different sizes. An extent the parser cannot read matches nothing,
+/// so an unknown size never reports a duplicate.
+fn extent_key(extent: Option<ParameterExtent>) -> String {
+    match extent {
+        None => String::new(),
+        Some(ParameterExtent::Indeterminate) => "[]".to_string(),
+        Some(ParameterExtent::Fixed(n)) => format!("[{n}]"),
+        Some(ParameterExtent::Unresolved(span)) => format!("[?{}]", span.start),
+    }
 }
 
 fn canonical_data_type(ty: &DataType) -> String {
@@ -949,6 +967,7 @@ impl<'a> Walker<'a> {
                 name,
                 type_source,
                 no_undo,
+                ..
             } => {
                 let data_type = match type_source {
                     TypeSource::Explicit(dt) => Some(ResolvedType::from_data_type(dt)),
@@ -7225,6 +7244,7 @@ mod tests {
                 name: id(name),
                 type_source: TypeSource::Explicit(ty),
                 no_undo: false,
+                extent: None,
             },
         })
     }
@@ -8807,6 +8827,7 @@ mod tests {
                 name: id("h"),
                 type_source: TypeSource::Explicit(DataType::Handle),
                 no_undo: false,
+                extent: None,
             },
         })]);
         let h = find_symbol(&tree, &symbols, NamespaceId::Values, "h").unwrap();
@@ -10999,6 +11020,7 @@ mod tests {
                     name: id("ttItem"),
                     type_source: TypeSource::Explicit(DataType::Integer),
                     no_undo: false,
+                    extent: None,
                 },
             }),
         ];

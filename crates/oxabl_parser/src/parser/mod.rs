@@ -15,8 +15,8 @@ mod tests;
 use oxabl_ast::{
     AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, GenericClass,
     HandleParamKind, HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection,
-    ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument, TypeArguments,
-    TypeSource,
+    ParameterExtent, ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument,
+    TypeArguments, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 use std::collections::HashSet;
@@ -2222,15 +2222,7 @@ impl<'a> Parser<'a> {
                 if self.looks_like_type_only_param() {
                     let type_start = self.current_span().start;
                     let data_type = self.parse_data_type()?;
-                    if self.check(Kind::Extent) {
-                        self.advance();
-                        if self.check(Kind::IntegerLiteral)
-                            || self.check(Kind::Preprop)
-                            || self.check(Kind::IncludeArgReference)
-                        {
-                            self.advance();
-                        }
-                    }
+                    let extent = self.parse_extent_clause();
                     let no_undo = if self.check(Kind::NoUndo) {
                         self.advance();
                         true
@@ -2254,6 +2246,7 @@ impl<'a> Parser<'a> {
                                 name,
                                 type_source: TypeSource::Explicit(data_type),
                                 no_undo,
+                                extent,
                             },
                         },
                     ));
@@ -2265,7 +2258,7 @@ impl<'a> Parser<'a> {
                 }
 
                 let name = self.parse_identifier()?;
-                let type_source = self.parse_type_source()?;
+                let (type_source, extent) = self.parse_type_source_with_extent()?;
                 let no_undo = if self.check(Kind::NoUndo) {
                     self.advance();
                     true
@@ -2281,6 +2274,7 @@ impl<'a> Parser<'a> {
                             name,
                             type_source,
                             no_undo,
+                            extent,
                         },
                     },
                 ));
@@ -2349,6 +2343,15 @@ impl<'a> Parser<'a> {
     /// Parse `AS type | LIKE field` for DEFINE VARIABLE and DEFINE PARAMETER contexts.
     /// Consumes the `AS` or `LIKE` keyword and the following type/identifier.
     fn parse_type_source(&mut self) -> ParseResult<TypeSource> {
+        self.parse_type_source_with_extent()
+            .map(|(source, _)| source)
+    }
+
+    /// Like [`Self::parse_type_source`], also returning the `EXTENT` clause
+    /// that follows an `AS` type.
+    fn parse_type_source_with_extent(
+        &mut self,
+    ) -> ParseResult<(TypeSource, Option<ParameterExtent>)> {
         if self.check(Kind::Like) {
             self.advance(); // consume LIKE
             let source = self.parse_qualified_identifier()?;
@@ -2360,21 +2363,41 @@ impl<'a> Parser<'a> {
                     self.advance();
                 }
             }
-            Ok(TypeSource::Like { source })
+            Ok((TypeSource::Like { source }, None))
         } else {
             self.expect_kind(Kind::KwAs, "Expected AS or LIKE")?;
             let data_type = self.parse_data_type()?;
-            // Consume optional EXTENT [n] clause (e.g. AS CHAR EXTENT 2 or AS HANDLE EXTENT {&N})
-            if self.check(Kind::Extent) {
+            let extent = self.parse_extent_clause();
+            Ok((TypeSource::Explicit(data_type), extent))
+        }
+    }
+
+    /// Consume an optional `EXTENT [n]` clause (`AS CHAR EXTENT 2`,
+    /// `AS HANDLE EXTENT {&N}`).
+    fn parse_extent_clause(&mut self) -> Option<ParameterExtent> {
+        if !self.check(Kind::Extent) {
+            return None;
+        }
+        self.advance();
+        let tok = self.peek().clone();
+        let span = Span {
+            start: tok.start as u32,
+            end: tok.end as u32,
+        };
+        match tok.kind {
+            Kind::IntegerLiteral => {
                 self.advance();
-                if self.check(Kind::IntegerLiteral)
-                    || self.check(Kind::Preprop)
-                    || self.check(Kind::IncludeArgReference)
-                {
-                    self.advance();
-                }
+                Some(
+                    self.source[tok.start..tok.end]
+                        .parse::<u32>()
+                        .map_or(ParameterExtent::Unresolved(span), ParameterExtent::Fixed),
+                )
             }
-            Ok(TypeSource::Explicit(data_type))
+            Kind::Preprop | Kind::IncludeArgReference => {
+                self.advance();
+                Some(ParameterExtent::Unresolved(span))
+            }
+            _ => Some(ParameterExtent::Indeterminate),
         }
     }
 

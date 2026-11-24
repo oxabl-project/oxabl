@@ -112,3 +112,18 @@ fn an_internal_procedure_with_periods_in_its_name_defined_twice_is_still_a_dupli
         vec![sem0001("SEM0001", 4)]
     );
 }
+
+#[test]
+fn methods_that_differ_only_by_extent_are_different_overloads() {
+    let source = "CLASS Overloads:\n  METHOD PRIVATE VOID fixture(INPUT pKind AS CHARACTER, INPUT pDates AS DATETIME EXTENT 4):\n  END METHOD.\n  METHOD PRIVATE VOID fixture(INPUT pKind AS CHARACTER, INPUT pDate AS DATETIME):\n  END METHOD.\n  METHOD PRIVATE VOID addr(INPUT pLines AS CHARACTER EXTENT 2):\n  END METHOD.\n  METHOD PRIVATE VOID addr(INPUT pLines AS CHARACTER EXTENT 3):\n  END METHOD.\n  METHOD PRIVATE VOID dyn(INPUT pLines AS CHARACTER EXTENT):\n  END METHOD.\n  METHOD PRIVATE VOID dyn(INPUT pLines AS CHARACTER):\n  END METHOD.\nEND CLASS.\n";
+    assert_eq!(semantic_findings("Overloads.cls", source), vec![]);
+}
+
+#[test]
+fn methods_with_the_same_extent_signature_are_still_a_duplicate() {
+    let source = "CLASS Dup:\n  METHOD PRIVATE VOID addr(INPUT pLines AS CHARACTER EXTENT 2):\n  END METHOD.\n  METHOD PRIVATE VOID addr(INPUT pOther AS CHARACTER EXTENT 2):\n  END METHOD.\n  METHOD PRIVATE VOID one(INPUT p AS CHARACTER):\n  END METHOD.\n  METHOD PRIVATE VOID one(INPUT q AS CHARACTER):\n  END METHOD.\nEND CLASS.\n";
+    assert_eq!(
+        semantic_findings("Dup.cls", source),
+        vec![sem0001("SEM0001", 4), sem0001("SEM0001", 8)]
+    );
+}

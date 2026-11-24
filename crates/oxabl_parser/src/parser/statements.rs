@@ -1662,7 +1662,7 @@ impl Parser<'_> {
                 if no_undo {
                     self.advance();
                 }
-                let type_source = self.parse_type_source()?;
+                let (type_source, mut extent) = self.parse_type_source_with_extent()?;
                 loop {
                     match self.peek().kind {
                         Kind::NoUndo => {
@@ -1689,13 +1689,7 @@ impl Parser<'_> {
                             // Consume the initial value expression
                             self.parse_expression().ok();
                         }
-                        Kind::Extent => {
-                            self.advance(); // consume EXTENT
-                            // Consume optional array size integer (e.g. EXTENT 10)
-                            if self.check(Kind::IntegerLiteral) {
-                                self.advance();
-                            }
-                        }
+                        Kind::Extent => extent = self.parse_extent_clause(),
                         Kind::CaseSensitive | Kind::FindCaseSensitive => {
                             self.advance(); // consume CASE-SENSITIVE
                         }
@@ -1706,6 +1700,7 @@ impl Parser<'_> {
                     name,
                     type_source,
                     no_undo,
+                    extent,
                 }
             }
         };
