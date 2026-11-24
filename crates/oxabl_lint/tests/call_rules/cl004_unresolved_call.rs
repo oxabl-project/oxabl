@@ -217,3 +217,37 @@ fn a_name_the_parser_read_short_is_not_reported() {
     assert!(check("RUN dir/870-recon-compare.p (INPUT 1).\n").is_empty());
     assert_eq!(check("RUN zf/recon-compare (INPUT 1).\n").len(), 1);
 }
+
+#[test]
+fn an_optional_probe_in_this_procedure_is_not_reported() {
+    let source = "\
+RUN hook-a IN THIS-PROCEDURE (INPUT 1) NO-ERROR.
+RUN hook-b IN THIS-PROCEDURE NO-ERROR.
+RUN hook-c IN THIS-PROCEDURE (INPUT 1).
+RUN hook-d NO-ERROR.
+";
+    // Only a probe in `THIS-PROCEDURE` is optional by its form: a super
+    // procedure may supply it. The same run with no `NO-ERROR`, and a bare run
+    // with one, are still reported.
+    let found = check(source);
+    assert_eq!(lines(source, &found), [3, 4]);
+}
+
+#[test]
+fn the_help_does_not_tell_a_run_in_this_procedure_to_run_in_a_handle() {
+    let found = check("RUN hook IN THIS-PROCEDURE.\n");
+    let help = found[0].help.as_deref().unwrap();
+    assert!(help.contains("NO-ERROR"), "{help}");
+    assert!(!help.contains("run it `IN`"), "{help}");
+    let bare = check("RUN hook.\n");
+    assert!(bare[0].help.as_deref().unwrap().contains("run it `IN`"));
+}
+
+#[test]
+fn a_member_of_this_procedure_is_another_handle_and_is_not_reported() {
+    let source = "\
+RUN hook-a IN THIS-PROCEDURE:INSTANTIATING-PROCEDURE.
+RUN hook-b IN THIS-PROCEDURE.
+";
+    assert_eq!(lines(source, &check(source)), [2]);
+}
