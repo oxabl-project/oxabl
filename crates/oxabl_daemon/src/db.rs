@@ -1285,6 +1285,9 @@ pub enum NavigationQuery {
     /// The declarations of the name at byte `offset` of `file`, which is the
     /// root or an include its expansion reads.
     Definition { file: PathBuf, offset: u32 },
+    /// What the name or keyword at byte `offset` of `file` is, which is the
+    /// root or an include its expansion reads.
+    Hover { file: PathBuf, offset: u32 },
     /// The links written in the root itself.
     Links,
 }
@@ -1295,6 +1298,8 @@ pub enum NavigationQuery {
 pub struct NavigationAnswer {
     pub definitions: Vec<oxabl_pipeline::Target>,
     pub links: Vec<oxabl_pipeline::Link>,
+    /// The hover, and the file its span is in.
+    pub hover: Option<(PathBuf, oxabl_pipeline::Hover)>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -1344,6 +1349,18 @@ pub fn compute_navigation(
             NavigationQuery::Definition { file, offset } => {
                 let file = spelled_as_expanded(&expansion, root, file);
                 answer.definitions = navigation.definitions(&file, *offset);
+            }
+            NavigationQuery::Hover { file, offset } => {
+                let file = spelled_as_expanded(&expansion, root, file);
+                if let Some(hover) = navigation.hover(&file, *offset) {
+                    let path = search::normalize_lexically(&file);
+                    if hover.span.is_some()
+                        && let Ok(text) = fs.read(&file)
+                    {
+                        answer.texts.insert(path.clone(), text);
+                    }
+                    answer.hover = Some((path, hover));
+                }
             }
             NavigationQuery::Links => {
                 answer.links = navigation.links();

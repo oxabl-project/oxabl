@@ -82,6 +82,7 @@ pub use effects::{EffectFile, WorkspaceEffects};
 mod config;
 mod format;
 mod includers;
+mod keyword_docs;
 mod lint;
 mod navigate;
 mod outline;
@@ -90,6 +91,7 @@ mod parity;
 pub mod position;
 mod reverse;
 mod schema_view;
+pub mod schema_hover;
 
 pub use config::{
     ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
@@ -98,7 +100,7 @@ pub use config::{
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use includers::{IncluderPools, PoolVerdict};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
-pub use navigate::{Link, Navigation, Target};
+pub use navigate::{Hover, Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 pub use schema_view::{
     SchemaDatabase, SchemaField, SchemaIndex, SchemaIndexField, SchemaProblem, SchemaSequence,

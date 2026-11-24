@@ -73,6 +73,16 @@ you also get, with no setup:
   and `table.field` go to the `.df`. A name that two files on the include path
   supply shows both. A name that does not resolve, or that is computed at run
   time (`RUN VALUE(...)`), goes nowhere.
+- **Hover.** Point at a name to see what it is: a variable, parameter or
+  property with its type, `EXTENT`, `INITIAL` and `NO-UNDO`; the signature of
+  an internal procedure, function or method (each overload of an inherited
+  method); a class header; a table or field from the schema with its format,
+  label and the indexes it takes part in; a temp-table with its fields and
+  indexes, including those it takes with `LIKE` (and a note when the source is
+  not in the loaded schema). A built-in function, a statement
+  keyword and a system handle show their name and a link to the Progress
+  documentation. A name declared in an include file works. A name that does
+  not resolve, or that two files supply, shows nothing.
 - **Document links.** Include references, `RUN` targets and `USING` names are
   links to the file each names (`Ctrl+Click`). A name that resolves to no file,
   or to more than one, is not a link.
@@ -80,7 +90,7 @@ you also get, with no setup:
   Local names need no setup. Programs, includes and classes are found through
   `include_paths` under `[workspace.sources]` in `oxabl.toml`, and tables and
   fields through `[workspace.schema]`. Text in an `&IF` branch that is not
-  compiled has no definition and no link.
+  compiled has no definition, no hover and no link.
 
 A folder with an `oxabl.toml` is a project. A project also gets:
 

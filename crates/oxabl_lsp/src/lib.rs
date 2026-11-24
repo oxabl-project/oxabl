@@ -4,8 +4,8 @@
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
-//! `textDocument/definition` and `textDocument/documentLink` (see
-//! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
+//! `textDocument/definition`, `textDocument/hover` and `textDocument/documentLink`
+//! (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
 //! `docs/design/include-context.md`. `oxabl/schema` and `oxabl/schemaTable`
@@ -51,8 +51,8 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, Request as _,
-    WorkspaceSymbolRequest,
+    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest,
+    Request as _, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -950,6 +950,8 @@ struct Server<'c> {
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
+    /// Hover requests, one at a time, the stale ones dropped.
+    hovers: navigation::HoverGate,
     /// The generation of the newest `oxabl/schema` request; an older one stops.
     schema_requests: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -1014,6 +1016,7 @@ impl<'c> Server<'c> {
             contexts: includer_context::Contexts::default(),
             context_events,
             context_results,
+            hovers: navigation::HoverGate::default(),
             schema_requests: Default::default(),
         }
     }
@@ -1062,6 +1065,8 @@ impl<'c> Server<'c> {
                                 self.handle_document_symbol(req)?;
                             } else if req.method == GotoDefinition::METHOD {
                                 self.handle_definition(req)?;
+                            } else if req.method == HoverRequest::METHOD {
+                                self.handle_hover(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
                                 self.handle_document_link(req)?;
                             } else if req.method == expanded_unit::METHOD {
@@ -1242,6 +1247,15 @@ impl<'c> Server<'c> {
             self.lenses.invalidate();
         }
         match not.method.as_str() {
+            "$/cancelRequest" => {
+                if let Ok(params) = serde_json::from_value::<lsp_types::CancelParams>(not.params) {
+                    let id = match params.id {
+                        lsp_types::NumberOrString::Number(n) => RequestId::from(n),
+                        lsp_types::NumberOrString::String(s) => RequestId::from(s),
+                    };
+                    self.hovers.cancel(&id);
+                }
+            }
             DidOpenTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
                 {

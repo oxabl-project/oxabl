@@ -11,7 +11,7 @@ use bitflags::bitflags;
 use oxabl_ast::NodeId;
 use oxabl_common::VirtualSpan;
 use oxabl_lexer::oxabl_atom::OxablAtom;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::{IndexName, IndexedFileId, NamespaceId, ResolvedType, ScopeId, UnresolvedReason};
@@ -464,7 +464,7 @@ pub struct SymbolTable {
 /// The record a buffer reads from: a schema table, or a temp-table this file
 /// declares (identified by its `TempTable` symbol).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum RecordSource {
+pub enum RecordSource {
     Schema(oxabl_schema::TableId),
     TempTable(SymbolId),
 }
@@ -576,6 +576,9 @@ struct Navigation {
     class_files: FxHashMap<SymbolId, IndexedFileId>,
     member_files: FxHashMap<SymbolId, IndexedFileId>,
     field_tables: FxHashMap<SymbolId, oxabl_schema::TableId>,
+    /// Calls resolved as built-in functions in a class with an ancestor whose
+    /// members were not read, which may declare a method of that name.
+    maybe_member_calls: FxHashSet<NodeId>,
 }
 
 /// One place the analysed text names something, in expanded coordinates.
@@ -897,6 +900,18 @@ impl SymbolTable {
             .map_or(&[], |side| side.navigation.sites.as_slice())
     }
 
+    pub(crate) fn record_maybe_member_call(&mut self, node: NodeId) {
+        self.side_mut().navigation.maybe_member_calls.insert(node);
+    }
+
+    /// Whether the built-in call `node` may be a method of an ancestor that was
+    /// not read. Kept only when the analysis context recorded sites.
+    pub fn may_be_member_call(&self, node: NodeId) -> bool {
+        self.side
+            .as_deref()
+            .is_some_and(|side| side.navigation.maybe_member_calls.contains(&node))
+    }
+
     pub(crate) fn record_class_file(&mut self, sym: SymbolId, file: IndexedFileId) {
         self.side_mut().navigation.class_files.insert(sym, file);
     }
@@ -1003,7 +1018,7 @@ impl SymbolTable {
     }
 
     /// The record `temp_table`'s `LIKE` clause copies, when it names one.
-    pub(crate) fn temp_table_like(&self, temp_table: SymbolId) -> Option<RecordSource> {
+    pub fn temp_table_like(&self, temp_table: SymbolId) -> Option<RecordSource> {
         self.records.as_deref()?.like.get(&temp_table).copied()
     }
 }
