@@ -27,6 +27,21 @@ fn encrypted_bytes() -> Vec<u8> {
     bytes
 }
 
+/// 1 KiB of pseudo-random bytes with no header: only its density names it.
+fn headerless_bytes() -> Vec<u8> {
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut bytes: Vec<u8> = (0..1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        })
+        .collect();
+    bytes[0] = b'/';
+    bytes
+}
+
 fn tree(encoding: &str) -> TempDir {
     let tmp = TempDir::new().unwrap();
     fs::write(
@@ -197,4 +212,117 @@ fn text_with_a_utf_16_byte_order_mark_is_not_taken_for_encrypted() {
     fs::write(tmp.path().join("wide.p"), utf16).unwrap();
     let out = run(tmp.path(), &["check", "--no-format", "wide.p"]);
     assert!(!stderr(&out).contains("SOURCE001"), "{}", stderr(&out));
+}
+
+#[test]
+fn a_file_without_the_header_is_found_by_its_bytes() {
+    let tmp = tree("");
+    fs::write(tmp.path().join("bare.p"), headerless_bytes()).unwrap();
+    let out = run(tmp.path(), &["check", "--json", "bare.p"]);
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["encrypted_files"], 1, "{report}");
+    let preproc = report["preproc"].as_array().unwrap();
+    assert_eq!(preproc.len(), 1, "every counted file is reported: {report}");
+    assert_eq!(preproc[0]["code"], "SOURCE001");
+}
+
+/// Readable source with a printer escape in a string is not encrypted: it is
+/// checked, and a finding in it still fails the run.
+#[test]
+fn source_with_a_stray_control_byte_is_still_checked() {
+    for encoding in ENCODINGS {
+        let tmp = tree(encoding);
+        fs::write(
+            tmp.path().join("esc.p"),
+            b"DEFINE VARIABLE x AS CHARACTER NO-UNDO.\nx = \"\x1bE\".\nPUT CONTROL x.\nDISPLAY y.\n",
+        )
+        .unwrap();
+        let out = run(tmp.path(), &["check", "--json", "--no-format", "esc.p"]);
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(report.get("encrypted_files").is_none(), "{report}");
+        assert_eq!(report["files_checked"], 1);
+        let codes: Vec<&str> = report["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|d| d["code"].as_str())
+            .collect();
+        assert!(codes.contains(&"LINT0001"), "{codes:?}");
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    }
+}
+
+#[test]
+fn an_encrypted_file_is_not_counted_as_checked() {
+    let tmp = tree("");
+    fs::write(tmp.path().join("plain.p"), "MESSAGE 1.\n").unwrap();
+    let plain = run(tmp.path(), &["check", "--no-format", "plain.p"]);
+    assert!(
+        String::from_utf8_lossy(&plain.stdout).contains("checked 1 file:"),
+        "{}",
+        String::from_utf8_lossy(&plain.stdout)
+    );
+    let only = run(tmp.path(), &["check", "enc.p"]);
+    assert!(
+        String::from_utf8_lossy(&only.stdout)
+            .contains("checked 0 files (1 encrypted, not checked)"),
+        "{}",
+        String::from_utf8_lossy(&only.stdout)
+    );
+    let json = run(tmp.path(), &["check", "--json", "enc.p"]);
+    let report: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(report["files_checked"], 0, "{report}");
+}
+
+#[test]
+fn fail_on_encrypted_makes_a_skipped_root_fail_the_run() {
+    let tmp = tree("");
+    let out = run(tmp.path(), &["check", "--fail-on-encrypted", "enc.p"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--fail-on-encrypted"),
+        "{}",
+        stderr(&out)
+    );
+    let json = run(
+        tmp.path(),
+        &["check", "--json", "--fail-on-encrypted", "enc.p"],
+    );
+    let report: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(report["failures"][0]["reason"], "encrypted, not checked");
+    assert_eq!(json.status.code(), Some(1));
+}
+
+#[test]
+fn the_root_warning_does_not_depend_on_no_preprocess() {
+    let tmp = tree("");
+    let out = run(tmp.path(), &["check", "--no-preprocess", "enc.p"]);
+    assert_eq!(
+        stderr(&out).matches("SOURCE001").count(),
+        1,
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The include may declare any name, so no name is called undefined.
+#[test]
+fn an_encrypted_include_does_not_make_the_includer_report_undefined_symbols() {
+    let tmp = tree("");
+    fs::write(tmp.path().join("uses.p"), "{enc.i}\nMESSAGE some-name.\n").unwrap();
+    let out = run(tmp.path(), &["check", "--no-format", "uses.p"]);
+    let err = stderr(&out);
+    let all = format!("{err}{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(out.status.code(), Some(0), "{all}");
+    assert!(err.contains("SOURCE001"), "{all}");
+    assert!(!all.contains("LINT0001"), "{all}");
+    // Without the encrypted include the same name is undefined.
+    fs::write(tmp.path().join("plain-uses.p"), "MESSAGE some-name.\n").unwrap();
+    let plain = run(tmp.path(), &["check", "--no-format", "plain-uses.p"]);
+    let plain_all = format!(
+        "{}{}",
+        stderr(&plain),
+        String::from_utf8_lossy(&plain.stdout)
+    );
+    assert!(plain_all.contains("LINT0001"), "{plain_all}");
 }

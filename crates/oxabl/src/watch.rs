@@ -38,6 +38,7 @@ pub struct Options<'a> {
     pub no_lint: bool,
     pub no_format: bool,
     pub include_findings: bool,
+    pub fail_on_encrypted: bool,
     pub jobs: usize,
 }
 
@@ -273,6 +274,7 @@ fn cycle(
         no_lint: opts.no_lint,
         no_format: !channels.format,
         include_findings: opts.include_findings,
+        fail_on_encrypted: opts.fail_on_encrypted,
         baseline: None,
         format: &format,
         decoding: config.decoding,
