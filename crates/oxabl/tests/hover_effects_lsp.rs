@@ -83,7 +83,13 @@ const MAIN: &str = "PROCEDURE ReadItems:\n\
     RUN pSup.\n\
     RUN pLib.\n\
     RUN pRem.\n\
-    RUN pOuter.\n";
+    RUN pOuter.\n\
+    DEFINE VARIABLE hProtos AS HANDLE NO-UNDO.\n\
+    RUN jobs/protos.p PERSISTENT SET hProtos.\n\
+    RUN pX IN hProtos.\n";
+
+/// A program whose procedure is a prototype: a super procedure has its body.
+const PROTOS: &str = "PROCEDURE pX IN SUPER:\nEND PROCEDURE.\n";
 
 /// An interface: the class that implements it supplies the body.
 const ITHING: &str = "INTERFACE app.IThing:\n\
@@ -146,6 +152,7 @@ impl Workspace {
             ("app/Base.cls", BASE),
             ("app/Kid.cls", KID),
             ("app/IThing.cls", ITHING),
+            ("jobs/protos.p", PROTOS),
         ];
         for (name, text) in files {
             let path = root.join(name);
@@ -405,6 +412,8 @@ fn a_body_that_runs_elsewhere_is_incomplete() {
 
     let cases = [
         ("pSup.", "the body runs in a super procedure"),
+        // The same prototype in the program a handle runs.
+        ("pX IN", "the body runs in a super procedure"),
         // At the declaration: `RUN pLib` itself gives no hover.
         (
             "pLib IN",

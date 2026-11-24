@@ -156,6 +156,9 @@ impl CalleeSummaries for EffectFile {
 #[derive(Debug, Default)]
 pub struct WorkspaceEffects {
     files: BTreeMap<PathBuf, EffectFile>,
+    /// [`Self::sources`] in the caller's spelling, built on the first
+    /// [`Self::reads`].
+    read_index: std::sync::OnceLock<std::collections::HashSet<PathBuf>>,
 }
 
 impl WorkspaceEffects {
@@ -678,6 +681,15 @@ impl WorkspaceEffects {
         self.files.iter().flat_map(|(path, file)| {
             std::iter::once(path.as_path()).chain(file.includes.iter().map(PathBuf::as_path))
         })
+    }
+
+    /// Whether the summaries read `path`, as `spell` writes paths (for one
+    /// client, its canonical form). The index of [`Self::sources`] is built on
+    /// the first call and kept, so `spell` must be the same on every call.
+    pub fn reads(&self, path: &Path, spell: &dyn Fn(&Path) -> PathBuf) -> bool {
+        self.read_index
+            .get_or_init(|| self.sources().map(spell).collect())
+            .contains(path)
     }
 }
 

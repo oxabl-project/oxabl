@@ -1440,20 +1440,16 @@ fn unsaved_sources(
     fs: &OverlayFs,
     from_buffer: Option<&Path>,
 ) -> Vec<PathBuf> {
-    let mut unsaved: Vec<PathBuf> = effects
-        .sources()
-        .filter_map(|path| {
-            let canonical = crate::session::canonical_path(path);
-            if Some(canonical.as_path()) == from_buffer {
-                return None;
-            }
-            let open = fs.overlay.get(&canonical)?;
-            let saved = fs.inner.read(path).ok();
-            (saved.as_deref() != Some(open.as_ref())).then_some(canonical)
-        })
+    // The open buffers are few; the files the summaries read can be thousands.
+    let mut unsaved: Vec<PathBuf> = fs
+        .overlay
+        .iter()
+        .filter(|(path, _)| Some(path.as_path()) != from_buffer)
+        .filter(|(path, _)| effects.reads(path, &crate::session::canonical_path))
+        .filter(|(path, open)| fs.inner.read(path).ok().as_deref() != Some(open.as_ref()))
+        .map(|(path, _)| path.clone())
         .collect();
     unsaved.sort();
-    unsaved.dedup();
     unsaved
 }
 

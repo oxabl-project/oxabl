@@ -192,7 +192,8 @@ code lenses and `TX004` read):
   the call graph follows the declared type, and another body can run. Other
   bodies that oxabl does not see give their own reason: an interface method
   (the implementing class supplies the body), `PROCEDURE p IN SUPER` (a super
-  procedure), `PROCEDURE p IN h` (the procedure that the handle names). A
+  procedure), `PROCEDURE p IN h` (the procedure that the handle names), also
+  when the prototype is in the program that `RUN p IN h` runs. A
   routine that runs a program on an AppServer (`RUN ... ON SERVER`), itself or
   through what it calls, also gives a reason: that program changes the
   database, but the summaries leave a remote call out (as `TX004` needs). A
@@ -212,7 +213,9 @@ one of those files is open in the editor with other text than on disk, the
 hover gives no effects and says "Not known: `x` has unsaved changes", because
 the effects of the saved file are not the ones the editor shows. The check
 covers every file that the summaries read, so an unsaved change in any program
-the root reaches also stops it.
+the root reaches also stops it, also for a routine that does not reach that
+program. The check goes over the open buffers, not over the files read: the
+set of files read is built once per memoized summary and kept with it.
 
 ## Document links
 

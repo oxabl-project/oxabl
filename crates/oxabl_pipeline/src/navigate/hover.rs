@@ -180,18 +180,26 @@ impl Navigation<'_, '_> {
                     let [
                         Target {
                             path,
-                            span: Some(_),
+                            span: Some(declared),
                         },
                     ] = targets.as_slice()
                     else {
                         return None;
                     };
                     let name = self.text(span)?.trim().trim_matches(['"', '\'']);
+                    // The declaration in the handle's program may be a prototype.
+                    let text = self.run.file_system().read(path).ok()?;
+                    let parsed = Parsed::of(&text);
+                    let source = Source::new(&text, &parsed.tokens);
+                    let found = find_declaration(
+                        &parsed.program.statements,
+                        VirtualSpan::new(declared.start, declared.end),
+                    )?;
                     Some(Routine::Unit {
                         file: path.clone(),
                         kind: UnitKind::Procedure,
                         name: name.to_string(),
-                        elsewhere: None,
+                        elsewhere: procedure_elsewhere(&source, found.statement),
                     })
                 }
                 Resolution::Resolved(sym) => self.symbol_routine(*sym),
@@ -246,22 +254,7 @@ impl Navigation<'_, '_> {
                 &name.name,
                 Some(found.statement.span),
             ),
-            StatementKind::Procedure {
-                is_prototype: true,
-                is_external: false,
-                ..
-            } => {
-                let tail = source.prototype_tail(found.statement);
-                let words: Vec<&str> = tail.split_whitespace().collect();
-                if words.len() >= 2
-                    && words[0].eq_ignore_ascii_case("IN")
-                    && words[1].eq_ignore_ascii_case("SUPER")
-                {
-                    Some(Elsewhere::SuperProcedure)
-                } else {
-                    Some(Elsewhere::Handle)
-                }
-            }
+            StatementKind::Procedure { .. } => procedure_elsewhere(&source, found.statement),
             _ => None,
         };
         Some(Routine::Unit {
@@ -728,6 +721,31 @@ fn declares<'a>(
         _ => return None,
     };
     (name.span == span).then(|| found(None))
+}
+
+/// Where the body of a `PROCEDURE` prototype runs: `IN SUPER` in a super
+/// procedure, `IN h` in the procedure the handle names. `None` for a
+/// definition with a body, and for `EXTERNAL`, a library entry point that
+/// touches no database.
+fn procedure_elsewhere(source: &Source, statement: &Statement) -> Option<Elsewhere> {
+    let StatementKind::Procedure {
+        is_prototype: true,
+        is_external: false,
+        ..
+    } = &statement.kind
+    else {
+        return None;
+    };
+    let tail = source.prototype_tail(statement);
+    let words: Vec<&str> = tail.split_whitespace().collect();
+    if words.len() >= 2
+        && words[0].eq_ignore_ascii_case("IN")
+        && words[1].eq_ignore_ascii_case("SUPER")
+    {
+        Some(Elsewhere::SuperProcedure)
+    } else {
+        Some(Elsewhere::Handle)
+    }
 }
 
 /// Whether a call of method `name` of the class in `statements` may run
