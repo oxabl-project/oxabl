@@ -37,6 +37,7 @@
     "onCommand:oxabl.restartServer",
     "onCommand:oxabl.checkForUpdates",
     "onCommand:oxabl.installCli",
+    "onCommand:oxabl.installSkill",
     "onCommand:oxabl.build",
     "onCommand:oxabl.selectIncluderContext",
     "onCommand:oxabl.showExpandedUnit",
@@ -58,6 +59,10 @@
       {
         "command": "oxabl.installCli",
         "title": "oxabl: Install or Update the CLI"
+      },
+      {
+        "command": "oxabl.installSkill",
+        "title": "oxabl: Install agent skill in this workspace"
       },
       {
         "command": "oxabl.build",

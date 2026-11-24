@@ -267,6 +267,19 @@ managed. Otherwise one message says that it needs a newer oxabl.
 
 Only Linux x86_64 binaries are released.
 
+## Coding agents
+
+The command **oxabl: Install agent skill in this workspace** runs `oxabl skill
+install --dir <folder>` with the oxabl binary that the extension uses. It
+writes the oxabl skill to `.agents/skills/oxabl/` and `.claude/skills/oxabl/`
+in the workspace folder (it asks which one in a multi-root workspace), so
+coding agents know how to run `oxabl check`, `format`, `build` and the other
+commands. A message shows the path and state of each target, or the error. The
+extension never installs the skill by itself and asks no question. A
+`SKILL.md` that oxabl did not install is not replaced; run `oxabl skill install
+--force` in a terminal for that. The command needs an oxabl with `oxabl skill`
+(5.10.0 or newer).
+
 ## Windows and WSL
 
 The language server needs Unix sockets, so it does not run on Windows. The
