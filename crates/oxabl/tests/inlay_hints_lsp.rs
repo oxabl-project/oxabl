@@ -488,3 +488,346 @@ fn an_edit_moves_the_hints_with_the_text() {
         2
     );
 }
+
+/// A workspace with the fixture schema, `toml` added to its `oxabl.toml`, and
+/// `files`.
+fn workspace_with(toml: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::copy(fixtures().join("schema.df"), root.path().join("schema.df")).unwrap();
+    std::fs::write(
+        root.path().join("oxabl.toml"),
+        format!(
+            "[workspace]\nname = \"hints\"\n[workspace.schema]\nfiles = [\"schema.df\"]\n{toml}\n"
+        ),
+    )
+    .unwrap();
+    for (name, text) in files {
+        std::fs::write(root.path().join(name), text).unwrap();
+    }
+    root
+}
+
+/// Replace the text of the open file `name` with `text`, on disk too.
+fn change(session: &mut Session, root: &Path, name: &str, version: i32, text: &str) {
+    let path = root.join(name);
+    std::fs::write(&path, text).unwrap();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": session::file_uri(&path), "version": version},
+            "contentChanges": [{"text": text}]
+        }
+    }));
+}
+
+/// Each hint as `line|text before it|label`.
+fn placed(hints: &[Hint], text: &str) -> Vec<String> {
+    let starts = line_starts(text);
+    hints
+        .iter()
+        .map(|h| {
+            let line = text.lines().nth(h.line - 1).unwrap_or("");
+            let column = (h.at - starts[h.line - 1]).min(line.len());
+            format!("{}|{}|{}", h.line, &line[..column], h.label)
+        })
+        .collect()
+}
+
+/// The hints a fresh server gives for `name` with its text on disk.
+fn fresh_hints(root: &Path, name: &str) -> Vec<String> {
+    let mut session = Session::start_with(root, capabilities());
+    open(&mut session, root, name);
+    let text = std::fs::read_to_string(root.join(name)).unwrap();
+    placed(&hints(&mut session, root, name), &text)
+}
+
+#[test]
+fn an_edit_that_keeps_the_expanded_text_moves_the_hints() {
+    let lint = format!("[workspace.lint]\n{STRICT}");
+    let before = "&SCOPED-DEFINE foo bar\nFIND FIRST customer WHERE customer.custnum = 1.\n\
+                  DISPLAY customer.name.\n";
+    let root = workspace_with(&lint, &[("defines.p", before)]);
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "defines.p");
+    let expected = [
+        "2|FIND FIRST customer|SHARE-LOCK",
+        "2|FIND FIRST customer|index custnum",
+    ];
+    assert_eq!(
+        placed(&hints(&mut session, root.path(), "defines.p"), before),
+        expected
+    );
+
+    // The directive line grows: the expanded text is the same, the file's
+    // bytes move.
+    let longer = before.replace("foo bar", "foo barbazqux /* longer */");
+    change(&mut session, root.path(), "defines.p", 2, &longer);
+    let after = placed(&hints(&mut session, root.path(), "defines.p"), &longer);
+    assert_eq!(after, expected);
+
+    // The table name comes from a define: the read now holds a reference,
+    // and the answer is a fresh server's.
+    let referenced = "&SCOPED-DEFINE t customer\nFIND FIRST {&t} WHERE customer.custnum = 1.\n\
+                      DISPLAY customer.name.\n";
+    change(&mut session, root.path(), "defines.p", 3, referenced);
+    let after = placed(&hints(&mut session, root.path(), "defines.p"), referenced);
+    assert_eq!(after, fresh_hints(root.path(), "defines.p"));
+
+    change(&mut session, root.path(), "defines.p", 4, &longer);
+    let after = placed(&hints(&mut session, root.path(), "defines.p"), &longer);
+    assert_eq!(after, expected);
+}
+
+/// A procedure file of `procedures` procedures, each with reads and updates.
+fn big_file(procedures: usize) -> String {
+    let mut s = String::from("DEFINE VARIABLE total AS INTEGER NO-UNDO.\n");
+    for k in 0..procedures {
+        s.push_str(&format!(
+            "PROCEDURE p{k}:\n\
+                 FIND FIRST customer WHERE customer.custnum = {k} NO-ERROR.\n\
+                 FOR EACH invoice WHERE invoice.custnum = {k}:\n\
+                     invoice.amount = 0.\n\
+                 END.\n\
+             END PROCEDURE.\n"
+        ));
+    }
+    s
+}
+
+#[test]
+fn an_edit_of_another_file_does_not_overtake_the_answer() {
+    let lint = format!("[workspace.lint]\n{STRICT}");
+    let root = workspace_with(
+        &lint,
+        &[("big.p", &big_file(800)), ("other.p", "MESSAGE 1.\n")],
+    );
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "big.p");
+    let big = root.path().join("big.p");
+    let other = root.path().join("other.p");
+    let ask = json!({
+        "textDocument": {"uri": session::file_uri(&big)},
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 10, "character": 0}}
+    });
+    session.send(
+        json!({"jsonrpc": "2.0", "id": 777, "method": "textDocument/inlayHint", "params": ask}),
+    );
+    // Another file opens and changes while the analysis runs.
+    session.open(&other, "MESSAGE 1.\n");
+    for version in 2..6 {
+        session.send(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": session::file_uri(&other), "version": version},
+                "contentChanges": [{"text": format!("MESSAGE {version}.\n")}]
+            }
+        }));
+    }
+    let answer = session.wait_for(|m| m["id"] == json!(777));
+    // VS Code does not ask again after `ContentModified`: it shows no hints.
+    assert!(answer.get("error").is_none(), "{answer}");
+    let labels: Vec<_> = answer["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["label"].as_str().unwrap().to_string())
+        .collect();
+    assert!(labels.contains(&"SHARE-LOCK".to_string()), "{labels:?}");
+}
+
+/// The threads of `pid` whose name starts with `prefix`.
+fn threads_named(pid: u32, prefix: &str) -> usize {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return 0;
+    };
+    tasks
+        .flatten()
+        .filter(|t| {
+            std::fs::read_to_string(t.path().join("comm")).is_ok_and(|n| n.starts_with(prefix))
+        })
+        .count()
+}
+
+#[test]
+fn a_burst_of_edits_runs_one_analysis_at_a_time() {
+    let lint = format!("[workspace.lint]\n{STRICT}");
+    let text = big_file(1000);
+    let root = workspace_with(&lint, &[("big.p", &text)]);
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "big.p");
+    // The daemon serves the session once it has registered itself.
+    hints_in(&mut session, root.path(), "big.p", 0, 1);
+    let pid = session.daemon_pid().expect("the daemon registered itself");
+    let big = root.path().join("big.p");
+    let count = 8;
+    for k in 0..count {
+        let version = 2 + k as i32;
+        session.send(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": session::file_uri(&big), "version": version},
+                "contentChanges": [{"text": format!("{text}/* edit {k} */\n")}]
+            }
+        }));
+        session.send(json!({
+            "jsonrpc": "2.0", "id": 900 + k, "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": {"uri": session::file_uri(&big)},
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 10, "character": 0}}
+            }
+        }));
+    }
+    let mut answers = std::collections::BTreeMap::new();
+    let mut most = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while answers.len() < count {
+        assert!(std::time::Instant::now() < deadline, "answers: {answers:?}");
+        most = most.max(threads_named(pid, "oxabl-inlay"));
+        if let Some(m) = session.try_next(Duration::from_millis(5))
+            && let Some(id) = m["id"]
+                .as_u64()
+                .filter(|id| (900..900 + count as u64).contains(id))
+            && m.get("method").is_none()
+        {
+            answers.insert(id, m);
+        }
+    }
+    // One worker computes hints; a request whose text was replaced before
+    // the worker reached it is answered with no analysis.
+    assert!(most <= 1, "{most} inlay hint threads at once");
+    let stale = answers
+        .values()
+        .filter(|a| a["error"]["code"] == json!(-32801))
+        .count();
+    assert!(stale >= count - 2, "{stale} stale answers: {answers:?}");
+    let last = &answers[&(900 + count as u64 - 1)];
+    assert!(last.get("result").is_some(), "{last}");
+}
+
+#[test]
+fn a_kind_whose_rule_is_off_gives_no_hint() {
+    let root = workspace(&format!("{STRICT}\nLK001 = \"off\"\nTX005 = \"off\""));
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "billing.p");
+    let found = findings(root.path(), "billing.p");
+    assert!(coded(&found, &["LK001", "TX005"]).is_empty(), "{found:?}");
+    let hints = hints(&mut session, root.path(), "billing.p");
+    let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
+    assert!(!labels.contains(&"SHARE-LOCK"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l.contains(" scope ")), "{labels:?}");
+    // The kinds whose rules are on still show.
+    assert!(labels.contains(&"transaction starts"), "{labels:?}");
+    assert!(labels.contains(&"index cust"), "{labels:?}");
+}
+
+#[test]
+fn a_lock_hint_says_that_the_startup_option_is_not_read() {
+    let root = workspace(STRICT);
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "billing.p");
+    let hints = hints(&mut session, root.path(), "billing.p");
+    let lock = hints.iter().find(|h| h.label == "SHARE-LOCK").unwrap();
+    assert!(lock.tooltip.contains("`-NL`"), "{}", lock.tooltip);
+}
+
+const INCLUDE: &str = "FIND FIRST customer WHERE customer.custnum = 1.\n\
+                       &IF DEFINED(full) = 0 &THEN\n\
+                       FIND FIRST invoice WHERE invoice.invnum = 7.\n\
+                       &ENDIF\n";
+
+const INCLUDER: &str = "DEFINE TEMP-TABLE customer NO-UNDO\n    FIELD custnum AS INTEGER\n    \
+                        INDEX k custnum.\n{reads.i}\n";
+
+#[test]
+fn an_include_shows_its_context_or_only_what_no_includer_changes() {
+    let toml = format!("[workspace.sources]\ninclude_paths = [\".\"]\n[workspace.lint]\n{STRICT}");
+    let root = workspace_with(&toml, &[("reads.i", INCLUDE), ("main.p", INCLUDER)]);
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "reads.i");
+
+    // Alone: the read under `&IF` depends on the includer and gives no hint;
+    // the other read says that an includer can change it.
+    let alone = hints(&mut session, root.path(), "reads.i");
+    assert_eq!(
+        placed(&alone, INCLUDE),
+        [
+            "1|FIND FIRST customer|SHARE-LOCK",
+            "1|FIND FIRST customer|index custnum"
+        ]
+    );
+    assert!(
+        alone.iter().all(|h| h.tooltip.contains("include alone")),
+        "{alone:?}"
+    );
+
+    // In `main.p`, `customer` is a temp-table: no lock, its own index.
+    let include = root.path().join("reads.i");
+    let main = std::fs::canonicalize(root.path().join("main.p")).unwrap();
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": session::file_uri(&include)}, "root": main}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+    let inside = hints(&mut session, root.path(), "reads.i");
+    assert_eq!(
+        placed(&inside, INCLUDE),
+        [
+            "1|FIND FIRST customer|index k",
+            "3|FIND FIRST invoice|SHARE-LOCK",
+            "3|FIND FIRST invoice|index invnum"
+        ]
+    );
+    assert!(
+        inside.iter().all(|h| h.tooltip.contains("`main.p`")),
+        "{inside:?}"
+    );
+
+    // Back to fragment mode.
+    let answer = session.request(
+        "oxabl/selectIncluderContext",
+        json!({"textDocument": {"uri": session::file_uri(&include)}, "root": null}),
+    );
+    assert!(answer.get("error").is_none(), "{answer}");
+    let again = hints(&mut session, root.path(), "reads.i");
+    assert_eq!(placed(&again, INCLUDE), placed(&alone, INCLUDE));
+}
+
+const NESTED: &str = "FOR EACH customer NO-LOCK:\n    DISPLAY customer.name.\nEND.\n\
+                      FIND FIRST customer WHERE customer.custnum = 1 EXCLUSIVE-LOCK.\n\
+                      customer.name = \"x\".\n";
+
+#[test]
+fn two_blocks_at_one_place_nest() {
+    let lint = format!("[workspace.lint]\n{STRICT}");
+    let root = workspace_with(&lint, &[("nested.p", NESTED)]);
+    let found = findings(root.path(), "nested.p");
+    assert_eq!(coded(&found, &["TX005"]).len(), 1, "{found:?}");
+    assert_eq!(coded(&found, &["TX002"]).len(), 1, "{found:?}");
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "nested.p");
+    let hints = hints(&mut session, root.path(), "nested.p");
+    let blocks: Vec<_> = hints
+        .iter()
+        .filter(|h| h.label.ends_with(" starts") || h.label.ends_with(" ends"))
+        .map(|h| h.label.as_str())
+        .collect();
+    assert_eq!(
+        blocks,
+        [
+            "customer scope starts",
+            "transaction starts",
+            "transaction ends",
+            "customer scope ends"
+        ]
+    );
+    // A transaction starts here only when none is active yet.
+    let tx = hints
+        .iter()
+        .find(|h| h.label == "transaction starts")
+        .unwrap();
+    assert!(
+        tx.tooltip.contains("unless one is already active"),
+        "{}",
+        tx.tooltip
+    );
+}

@@ -197,12 +197,6 @@ impl Expansion {
         self.inner.as_ref().ok()
     }
 
-    /// Equal for two expansions with the same text and the same places where
-    /// text did not arrive; 0 for a failed expansion.
-    pub fn fingerprint(&self) -> u64 {
-        self.expanded().map_or(0, crate::effects::fingerprint)
-    }
-
     /// A fatally-failed expansion, for the test that pins how
     /// [`LintPipeline::collect`] maps that arm.
     ///
@@ -2077,12 +2071,23 @@ fn lower_includer_dependent(
 
 /// Answers the fragment scan's questions about argument-less includes from the
 /// expansion that was run and the files it read.
-struct ExpansionProbe<'a> {
+pub(crate) struct ExpansionProbe<'a> {
     source: &'a str,
     expansion: &'a Expansion,
     fs: &'a dyn FileSystem,
     /// Per include file: whether its own text has a reference or an `&IF`.
     texts: RefCell<HashMap<PathBuf, bool>>,
+}
+
+impl<'a> ExpansionProbe<'a> {
+    pub(crate) fn new(source: &'a str, expansion: &'a Expansion, fs: &'a dyn FileSystem) -> Self {
+        ExpansionProbe {
+            source,
+            expansion,
+            fs,
+            texts: RefCell::default(),
+        }
+    }
 }
 
 impl oxabl_lint::fragment::IncludeProbe for ExpansionProbe<'_> {

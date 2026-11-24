@@ -11,6 +11,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use oxabl_common::LintSeverityMap;
 use oxabl_pipeline::{HintKinds, LintPipeline, PipelineConfig};
 use oxabl_schema::test_support::schema_from_df;
 use oxabl_workspace::InMemoryFileSystem;
@@ -68,26 +69,38 @@ fn bench_hints(c: &mut Criterion) {
     let config = PipelineConfig {
         schema: schema_from_df(SCHEMA),
         schema_loaded: true,
+        lint_severities: {
+            let mut map = LintSeverityMap::new();
+            map.base_mut().enable_group("strict.locks");
+            map.base_mut().enable_group("strict.transactions");
+            map
+        },
         ..PipelineConfig::default()
     };
     let path = PathBuf::from("/ws/big.p");
     let run = LintPipeline::new(&config, &fs);
     let handle = run.with_file(&path);
     let expansion = handle.expand(&source);
-    let all = handle.database_hints(&expansion, HintKinds::ALL);
+    let all = handle.database_hints(&source, &expansion, HintKinds::ALL);
     // Every kind is present, so the bench measures the work of each.
     assert!(all.len() > 4 * PROCEDURES, "{} hints", all.len());
 
     let mut group = c.benchmark_group("hints");
     group.bench_function("all", |b| {
-        b.iter(|| black_box(handle.database_hints(&expansion, HintKinds::ALL).len()))
+        b.iter(|| {
+            black_box(
+                handle
+                    .database_hints(&source, &expansion, HintKinds::ALL)
+                    .len(),
+            )
+        })
     });
     let scopes = HintKinds {
         index: false,
         ..HintKinds::ALL
     };
     group.bench_function("scopes", |b| {
-        b.iter(|| black_box(handle.database_hints(&expansion, scopes).len()))
+        b.iter(|| black_box(handle.database_hints(&source, &expansion, scopes).len()))
     });
     group.finish();
 }

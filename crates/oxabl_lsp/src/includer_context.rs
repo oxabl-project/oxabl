@@ -203,6 +203,7 @@ impl Server<'_> {
         let Some(wanted) = params.root else {
             self.contexts.selected.remove(&uri);
             self.debouncer.schedule(uri, std::time::Instant::now());
+            self.refresh_inlay_hints();
             return self.respond(Response::new_ok(req.id, json!({ "selected": null })));
         };
         let wanted = canonical_path(&wanted);
@@ -251,6 +252,7 @@ impl Server<'_> {
                     Ok(root) => {
                         self.contexts.selected.insert(uri.clone(), root.clone());
                         self.debouncer.schedule(uri, std::time::Instant::now());
+                        self.refresh_inlay_hints();
                         self.respond(Response::new_ok(id, json!({ "selected": root })))
                     }
                     Err(reason) => self.respond(invalid(id, reason)),
@@ -345,8 +347,13 @@ impl Server<'_> {
     /// Schedule the includes analysed in `root`, after `root` changed.
     pub(crate) fn schedule_context_users(&mut self, root: &Path) {
         let now = std::time::Instant::now();
-        for uri in self.contexts.users_of(root) {
-            self.debouncer.schedule(uri, now);
+        let users = self.contexts.users_of(root);
+        for uri in &users {
+            self.debouncer.schedule(uri.clone(), now);
+        }
+        // The hints of an include in this root change with it.
+        if !users.is_empty() {
+            self.refresh_inlay_hints();
         }
     }
 }

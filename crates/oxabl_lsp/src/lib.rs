@@ -996,6 +996,7 @@ impl<'c> Server<'c> {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
                     self.outlines.invalidate(&doc.uri);
+                    self.note_inlay_version(&doc.uri, Some(doc.version));
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
                     // it: cross-file resolution must exclude this file from its
@@ -1030,6 +1031,7 @@ impl<'c> Server<'c> {
                         &params.content_changes,
                         &encoding,
                     );
+                    self.note_inlay_version(&uri, Some(params.text_document.version));
                     // Mirror the new text into the salsa input (write on main).
                     // This cancels any in-flight snapshot read for a superseded
                     // version via salsa's `Cancelled` unwind (KTD7).
@@ -1063,7 +1065,7 @@ impl<'c> Server<'c> {
                     serde_json::from_value::<DidChangeWatchedFilesParams>(not.params)
                 {
                     self.handle_watched_files(params);
-                    self.refresh_inlay_hints();
+                    self.inlay_disk_changed();
                 }
             }
             "workspace/didChangeConfiguration" => {
@@ -1082,7 +1084,7 @@ impl<'c> Server<'c> {
                             .close_buffer(uri.as_str());
                     });
                     self.dependencies.remove(&uri);
-                    self.forget_inlay_hints(&uri);
+                    self.note_inlay_version(&uri, None);
                     self.debouncer.cancel(&uri);
                     // An include analysed in this root now reads its saved copy.
                     if let Some(path) = uri_to_path(&uri) {

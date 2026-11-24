@@ -198,6 +198,17 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The pid of the daemon that serves this session, once it has
+    /// registered itself.
+    pub fn daemon_pid(&self) -> Option<u32> {
+        let bytes = std::fs::read(&self.registration).ok()?;
+        serde_json::from_slice::<Registration>(&bytes)
+            .ok()
+            .map(|r| r.pid)
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         if let Ok(bytes) = std::fs::read(&self.registration)

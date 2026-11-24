@@ -21,7 +21,14 @@ in the editor, at the code they are about.
 | `scope` | `<buffer> scope starts` before the block, `<buffer> scope ends` after it | A buffer scope that a reference outside a `FOR` block raises to the procedure | `scope-widened` (TX005) |
 | `transactions` | `transaction starts` before the block, `transaction ends` after it | A block that is a transaction block only because it updates the database, and a main block that is the transaction | `implicit-transaction` (TX001), `procedure-wide-transaction` (TX002) |
 
-Each hint has a tooltip that says why, and names the rule.
+Each hint has a tooltip that says why, and names the rule. The lock tooltip
+says that oxabl does not read the `-NL` startup option. The transaction tooltip
+says that a transaction starts at the block only when none is active yet: a
+block that runs inside the caller's transaction is a subtransaction.
+
+When two block pairs start and end at the same place (a raised scope and a
+procedure-wide transaction both cover the main block), the end hints come in
+the reverse order of the start hints, so the pairs nest.
 
 A lock that the code writes, a `DO TRANSACTION` and a `DO FOR` scope are in the
 code, so they get no hint. A `GET` gets no lock hint: it takes the lock of its
@@ -60,19 +67,46 @@ index choices of `oxabl explain --json`.
 - A hint whose place is in an include gives no hint in the file that includes
   it. A block hint is shown only when the start and the end of the block are
   both in the file.
+- A kind whose rule the file turns off gives no hint (see below).
+
+## Include files
+
+An include has no meaning alone (`docs/design/include-context.md`).
+
+- **With a selected include context** (`oxabl/selectIncluderContext`), the
+  hints of the include come from the analysis of the selected root, as its
+  diagnostics do. The root is read with the open buffers over the disk. A
+  hint is shown when its place is in the include's own text. The tooltip names
+  the root. The root's configuration decides whether hints show. When the root
+  expands the include more than once, or no longer includes it, the include
+  gets no hint: one place cannot hold two answers.
+- **In fragment mode** (no context), the include is analysed alone. A hint
+  whose statement holds a `{...}` reference or sits under an `&IF` gives no
+  hint: the rules lower the confidence of such findings, because each includer
+  can read them differently (`oxabl_lint::fragment::IncludeDependence`). Every
+  other hint says in its tooltip that a file that includes it can change it,
+  for example with a temp-table of the same name.
 
 ## When the hints are on
 
 A file shows hints when its configuration enables at least one rule of
 `strict.locks`, `strict.transactions` or `strict.access` (also through
 `[[workspace.lint.overrides]]`), and `diagnostics` is on in
-`[workspace.features]`. These are the groups that read the scope and effects
-analysis. The hints do not need the exact rule of their kind:
+`[workspace.features]`. A project that did not opt in pays nothing: the
+analysis does not run.
 
-- A project that opts in to database analysis gets all facts, also before it
-  turns on each rule. A fact is useful also where its rule is off.
-- A project that did not opt in pays nothing: the analysis does not run, and
-  legacy code does not fill with `SHARE-LOCK` hints.
+Each kind then follows its own rule, for the file's path:
+
+| Kind | Shown when this rule is on |
+| --- | --- |
+| `locks` | LK001 |
+| `scope` | TX005 |
+| `transactions` | TX001 for a nested block, TX002 for the main block |
+| `index` | any rule of the three groups (no rule reports index choices alone) |
+
+A project that turns a rule off does not hold its fact. For example, a project
+that runs with `-NL` turns LK001 off, and then a read with no lock phrase does
+not take `SHARE-LOCK`.
 
 The effect code lenses also need a strict rule: DB001 or TX004.
 
@@ -96,26 +130,37 @@ The VS Code settings are `oxabl.inlayHints.locks`, `.index`, `.scope` and
 
 ## Cost
 
-The scope analysis needs the whole file, so the hints of a file are computed
-for the whole file at once. A request answers only the hints in its range.
+Issue #411 asks that hints are computed only for the requested range. The
+scope analysis cannot do that: a buffer's scope and a transaction depend on
+references anywhere in the routine, and a raised scope on references anywhere
+in the file. So the hints are **computed once per text and filtered per
+range**: a file is analysed whole once for each version of its text, and each
+request returns only the hints in its range.
 
-- The work runs on a worker thread, never on the server's main loop.
-- The worker reads the expansion on a snapshot of the session database (the
-  memoized expansion that the diagnostics read) and drops the snapshot before
-  the analysis. A write to the database waits for every snapshot to drop, so
-  an analysis that held one would delay the next keystroke.
-- The server keeps the hints of each open file until the expanded text, the
-  configuration, the schema or the kinds change. A request for another range of
-  the same text, for example after a scroll, costs a filter.
-- A request that an edit overtakes answers `ContentModified`, never an empty
-  list. The client asks again.
+- One worker thread answers all inlay hint requests, in order. At most one
+  analysis runs at a time.
+- A request whose file changed before the worker reached it answers
+  `ContentModified` with no analysis. VS Code asks again for the new text,
+  because the document changed. Only an edit of the same file does this: an
+  edit, an open or a close of another file does not.
+- The worker holds no snapshot of the session database. A write to the
+  database waits for every snapshot to drop, so an analysis that held one
+  would delay the next keystroke, and an edit of any other buffer would cancel
+  it.
+- The server keeps the hints of each open file until its text, its include
+  context (and, in a context, the open buffers), the configuration, the
+  schema, a file on disk (a watched-file event) or the kinds change. A request
+  for another range of the same text, for example after a scroll, costs a
+  filter. The key holds the file's own text, not only the expanded text: an
+  edit of a `&SCOPED-DEFINE` line can keep the expanded text and move every
+  offset.
 - A kind that is off is not computed. Only the index needs the effects
   analysis.
 
 `crates/oxabl_pipeline/benches/hints_bench.rs` measures the analysis of a
 procedure file of about 5,400 lines. On a loaded development machine it took
 about 31 ms for all kinds and about 15 ms without the index. That is in the
-50 ms interactive budget, and it does not run while the user types.
+50 ms interactive budget, and it does not run on the server's main loop.
 
 ## Limits
 

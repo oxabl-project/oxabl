@@ -39,7 +39,8 @@ Files whose configuration enables a rule of `strict.locks`, `strict.transactions
 `strict.access` get inlay hints: the lock a read takes when it names none, the index oxabl
 expects a search to use, and where a raised buffer scope (TX005) or an implicit transaction
 (TX001, TX002) starts and ends. The hints come from the facts the strict rules read, and a
-fact that is not known gives no hint.
+fact that is not known gives no hint. Each kind shows only where its rule is on (LK001, TX005,
+TX001/TX002). An include with a selected include context shows the hints of that root.
 
 The client must advertise `textDocument.inlayHint` support. It can turn each kind off with the
 `inlayHints` object (`locks`, `index`, `scope`, `transactions`) in its initialization options or

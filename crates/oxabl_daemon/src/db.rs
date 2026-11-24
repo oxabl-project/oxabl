@@ -1078,57 +1078,62 @@ pub fn compute_effect_lenses(
     .flatten()
 }
 
-/// What the database inlay hints of a buffer are computed from, read on a
-/// snapshot. It holds no snapshot, so the analysis it runs never delays a
-/// write: a write waits for every snapshot to drop, and the analysis of a
+/// What the database inlay hints of one open file are computed from. Built
+/// from cheap clones on the thread that owns the session, it holds no
+/// snapshot: a write waits for every snapshot to drop, and the analysis of a
 /// large file takes tens of milliseconds, longer than a keystroke may wait.
-pub struct HintInput {
-    config: AnalysisConfig,
-    path: PathBuf,
-    expansion: Expansion,
+/// So no other buffer's edit can cancel it either.
+pub struct HintSource {
+    /// The session's configuration.
+    pub config: AnalysisConfig,
+    /// The file the hints are shown in.
+    pub file: PathBuf,
+    /// Its text, as the request saw it.
+    pub text: Arc<str>,
+    /// The selected include context of an include: the root that is
+    /// analysed, and the open buffers it reads over the disk.
+    pub context: Option<(PathBuf, HashMap<PathBuf, Arc<str>>)>,
 }
 
-impl HintInput {
-    /// Equal for two inputs whose analysed text is the same.
-    pub fn fingerprint(&self) -> u64 {
-        self.expansion.fingerprint()
-    }
-
-    /// The hints of `kinds` for the whole file. Unguarded: run it inside a
-    /// panic guard.
-    pub fn hints(&self, kinds: HintKinds) -> Vec<InlayHint> {
+impl HintSource {
+    /// Whether the file shows hints: for an include in a context, as the
+    /// root's configuration says, as for its diagnostics.
+    pub fn enabled(&self) -> bool {
+        let shown = self.context.as_ref().map_or(&self.file, |(root, _)| root);
         self.config
             .lint_pipeline()
-            .with_file(&self.path)
-            .database_hints(&self.expansion, kinds)
-    }
-}
-
-/// Read what the database hints of `buffer` are computed from. The
-/// expansion is the memoized one the diagnostics read. `Some(None)` when the
-/// file shows no hints (its configuration enables no strict database rule);
-/// `None` when a concurrent write cancelled the read.
-pub fn database_hint_input(
-    snapshot: &AnalysisDatabase,
-    buffer: Buffer,
-) -> Option<Option<HintInput>> {
-    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-        let path = buffer.path(snapshot).clone()?;
-        let config = snapshot.config();
-        if !config
-            .lint_pipeline()
-            .with_file(&path)
+            .with_file(shown)
             .database_hints_enabled()
-        {
-            return None;
+    }
+
+    /// The hints of `kinds` for the whole file, in its own bytes.
+    /// Unguarded: run it inside a panic guard. Empty when the selected root
+    /// cannot be read, fails to preprocess, or no longer includes the file.
+    pub fn hints(&self, kinds: HintKinds) -> Vec<InlayHint> {
+        let config = &self.config;
+        match &self.context {
+            None => {
+                let run = config.lint_pipeline();
+                let handle = run.with_file(&self.file);
+                let expansion = handle.expand(&self.text);
+                handle.database_hints(&self.text, &expansion, kinds)
+            }
+            Some((root, overlay)) => {
+                let fs = OverlayFs {
+                    overlay: overlay.clone(),
+                    inner: Arc::clone(&config.fs),
+                };
+                let Ok(source) = fs.read(root) else {
+                    return Vec::new();
+                };
+                let run =
+                    LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+                let handle = run.with_file(root);
+                let expansion = handle.expand(&source);
+                handle.database_hints_in_include(&expansion, &self.file, kinds)
+            }
         }
-        Some(HintInput {
-            config: config.clone(),
-            path,
-            expansion: expanded_text(snapshot, buffer),
-        })
-    }))
-    .ok()
+    }
 }
 
 /// Keep the results of at most `buffers` buffers in each query keyed by a buffer
