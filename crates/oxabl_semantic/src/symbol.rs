@@ -997,6 +997,16 @@ impl SymbolTable {
         Some(RecordSource::TempTable(*tt))
     }
 
+    /// The temp-table whose records `sym` reads: the temp-table itself, or
+    /// the temp-table a buffer was defined for. `None` for a record of a
+    /// schema table, and for a buffer whose table is unknown.
+    pub fn temp_table_of(&self, sym: SymbolId) -> Option<SymbolId> {
+        match self.record_source(sym)? {
+            RecordSource::TempTable(temp_table) => Some(temp_table),
+            RecordSource::Schema(_) => None,
+        }
+    }
+
     /// The scope holding `temp_table`'s own `FIELD` symbols.
     pub(crate) fn temp_table_fields(&self, temp_table: SymbolId) -> Option<ScopeId> {
         self.records.as_deref()?.fields.get(&temp_table).copied()

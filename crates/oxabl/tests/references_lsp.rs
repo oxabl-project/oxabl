@@ -875,8 +875,18 @@ fn overloads_in_the_class_and_in_its_include_are_one_member() {
     session.open(&members, MIXED_MEMBERS);
     let (found, shown, _) = references_logged(&mut session, &members, MIXED_MEMBERS, "Inc", 0);
     let own: Vec<Value> = expected
-        .into_iter()
-        .filter(|place| *place != location(&mixed, MIXED_SPLIT, "Inc", 0))
+        .iter()
+        .filter(|place| **place != location(&mixed, MIXED_SPLIT, "Inc", 0))
+        .cloned()
+        .collect();
+    assert_eq!(found, own);
+    assert_eq!(shown, Vec::<String>::new());
+    // The same from the overload the class text declares.
+    let (found, shown, _) = references_logged(&mut session, &mixed, MIXED_SPLIT, "Inc(INPUT", 0);
+    let own: Vec<Value> = expected
+        .iter()
+        .filter(|place| **place != location(&members, MIXED_MEMBERS, "Inc", 0))
+        .cloned()
         .collect();
     assert_eq!(found, own);
     assert_eq!(shown, Vec::<String>::new());
@@ -1490,5 +1500,155 @@ fn outgoing_calls_cost_about_linear_time_in_the_calls() {
     assert!(
         large < small * 40,
         "500 calls took {small:?}, 8,000 took {large:?}"
+    );
+}
+
+const FORMS: &str = "DEFINE TEMP-TABLE ttL NO-UNDO LIKE Item.\nCREATE ttL.\nttL.ItemNum = 1.\n\
+    DISPLAY ttL.ItemNum.\n";
+
+#[test]
+fn a_field_of_a_like_temp_table_is_not_the_database_field() {
+    let config = "[workspace]\nname = \"references\"\n\
+        [workspace.sources]\ninclude_paths = [\".\"]\n\
+        [workspace.schema]\nfiles = [\"db/shop.df\"]\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", config),
+        ("db/shop.df", SHOP),
+        ("forms.p", FORMS),
+        ("reads.p", READS),
+    ]);
+    let forms = ws.path("forms.p");
+    let reads = ws.path("reads.p");
+    let mut session = Session::start(&ws.root);
+
+    // From the temp-table's field: its uses, and nothing of the table.
+    session.open(&forms, FORMS);
+    let (found, shown, _) = references_logged(&mut session, &forms, FORMS, "ItemNum = 1", 0);
+    assert_eq!(
+        found,
+        sorted(vec![
+            location(&forms, FORMS, "ItemNum", 0),
+            location(&forms, FORMS, "ItemNum", 1),
+        ])
+    );
+    assert_eq!(shown, Vec::<String>::new());
+    // Go to definition still goes to the database field it copies.
+    let (definition, _) = ask(
+        &mut session,
+        "textDocument/definition",
+        position(&forms, FORMS, "ItemNum = 1", 0),
+    );
+    assert_eq!(
+        definition[0]["uri"],
+        json!(file_uri(&ws.path("db/shop.df"))),
+        "{definition}"
+    );
+
+    // From the database field: no use of the temp-table's field.
+    session.open(&reads, READS);
+    let (found, _, _) = references_logged(&mut session, &reads, READS, "ItemNum", 0);
+    let in_forms: Vec<&Value> = found
+        .iter()
+        .filter(|place| place["uri"] == json!(file_uri(&forms)))
+        .collect();
+    assert_eq!(in_forms, Vec::<&Value>::new());
+    assert!(
+        found.contains(&location(&reads, READS, "ItemNum", 0)),
+        "{found:?}"
+    );
+}
+
+/// A program that calls a method of each of `classes` classes, each class
+/// with `lines` lines of body and no include, and one of the same size that
+/// calls nothing.
+fn class_callers(classes: usize, lines: usize) -> (Workspace, String, String) {
+    let mut class_texts = Vec::new();
+    for at in 0..classes {
+        let mut text = format!(
+            "CLASS app.C{at}:\n    METHOD PUBLIC VOID Work():\n        DEFINE VARIABLE i AS INTEGER NO-UNDO.\n"
+        );
+        for _ in 0..lines {
+            text.push_str("        i = i + 1.\n");
+        }
+        text.push_str("    END METHOD.\nEND CLASS.\n");
+        class_texts.push((format!("app/C{at}.cls"), text));
+    }
+    let mut caller = String::from("DEFINE VARIABLE iCount AS INTEGER NO-UNDO.\n");
+    let mut plain = caller.clone();
+    for at in 0..classes {
+        caller.push_str(&format!(
+            "DEFINE VARIABLE o{at} AS app.C{at} NO-UNDO.\no{at} = NEW app.C{at}().\no{at}:Work().\n"
+        ));
+        plain.push_str(&format!(
+            "DEFINE VARIABLE v{at} AS INTEGER NO-UNDO.\nv{at} = {at}.\nv{at} = v{at} + 1.\n"
+        ));
+    }
+    caller.push_str("iCount = iCount + 1.\n");
+    plain.push_str("iCount = iCount + 1.\n");
+    let mut files: Vec<(&str, &str)> = vec![
+        ("oxabl.toml", CONFIG),
+        ("caller.p", caller.as_str()),
+        ("plain.p", plain.as_str()),
+    ];
+    files.extend(
+        class_texts
+            .iter()
+            .map(|(name, text)| (name.as_str(), text.as_str())),
+    );
+    (Workspace::new(&files), caller, plain)
+}
+
+/// The shortest of three times for the references of `iCount` in `file`.
+fn local_references_time(session: &mut Session, file: &Path, text: &str) -> std::time::Duration {
+    (0..3)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let (found, _, _) = references_logged(session, file, text, "iCount + 1", 0);
+            assert_eq!(found.len(), 3, "{found:?}");
+            started.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+#[test]
+fn a_local_name_costs_no_resolution_of_class_calls() {
+    let (ws, caller, plain) = class_callers(200, 300);
+    let caller_path = ws.path("caller.p");
+    let plain_path = ws.path("plain.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&caller_path, &caller);
+    session.open(&plain_path, &plain);
+    let base = local_references_time(&mut session, &plain_path, &plain);
+    let calls = local_references_time(&mut session, &caller_path, &caller);
+    eprintln!("a unit that calls 200 classes: {calls:?}, one that calls none: {base:?}");
+    // The class of each call is resolved only for a name that the call can
+    // be: not for a local variable.
+    assert!(
+        calls < base * 5,
+        "a unit that calls 200 classes took {calls:?}, one that calls none {base:?}"
+    );
+}
+
+const ABBREVIATED: &str = "FIND FIRST Item NO-LOCK NO-ERROR.\nDISPLAY Item.ItemN.\n";
+
+#[test]
+fn an_abbreviated_field_name_is_a_reference() {
+    let config = "[workspace]\nname = \"references\"\n\
+        [workspace.sources]\ninclude_paths = [\".\"]\n\
+        [workspace.schema]\nfiles = [\"db/shop.df\"]\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", config),
+        ("db/shop.df", SHOP),
+        ("reads.p", READS),
+        ("short.p", ABBREVIATED),
+    ]);
+    let reads = ws.path("reads.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&reads, READS);
+    let (found, _, _) = references_logged(&mut session, &reads, READS, "ItemNum", 0);
+    assert!(
+        found.contains(&location(&ws.path("short.p"), ABBREVIATED, "ItemN", 0)),
+        "{found:?}"
     );
 }

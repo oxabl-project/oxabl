@@ -38,6 +38,7 @@ The code is in `oxabl_pipeline::references` (one compilation unit) and
 | A local name: a variable, parameter, buffer or temp-table of the unit, a variable of a routine or method | The compilation unit only |
 | A name declared in an include, outside a routine | Each unit that expands the include. For a procedure or function, also each file with a `RUN` edge to such a unit; for a member written in a class, also where the members of that class are searched |
 | A database table or one of its fields | Each file with a schema edge to the table |
+| A field of a temp-table that copies a table with `LIKE` (`tt.field`) | The unit, or each includer when an include declares the temp-table. It is the temp-table's own field: the references of the database field do not list it, and its references do not list the database field. Go to definition still goes to the field in the `.df` |
 | A program (`RUN x.p`) | The program, and each file with a `RUN` edge to it |
 | An internal procedure or user-defined function of a program | The program, and each file with a `RUN` edge to it: such a file can set a handle with `RUN ... PERSISTENT SET` |
 | A class | The class file, and each file that names the class |
@@ -192,8 +193,9 @@ most visible place that it can without a message on every request:
   can call any routine. Outgoing calls show it; incoming calls cannot.
 - A method call refers to each overload of the name, also an overload that an
   include of the class writes, so the references of one overload include the
-  calls of the others. From a call, each overload's declaration is listed; from
-  one declaration, only that one.
+  calls of the others. From a call, each overload's declaration is listed. From
+  a declaration, in the class text or in an include, only that declaration is
+  listed, with every call.
 - `NEW` (a constructor call) is not an outgoing call.
 - The units that use a shared variable are not searched (a gap says so).
 - Text in an `&IF` branch that the preprocessor did not take is not analysed.
@@ -206,7 +208,15 @@ check). A search over other files analyses each of them the same way, on
 resolution names once per file. A lookup of the name at an offset, of the call
 that holds a `RUN` name and of the routine that holds a call is a binary
 search; the declared symbols and each callee's item are built once per
-request. So a unit costs about linear time in its sites and calls: the
+request. A referent that every use writes in full (a variable, a routine, a
+member; not a field, table, buffer, temp-table, class or program, which can be
+abbreviated or written as a short name or a path) is resolved only at the sites
+whose text holds its name. A class file with no `{` is not expanded to find its
+members: its own outline shows them. So the references of a local variable in a
+unit that calls a method of each of 200 classes cost about 30 ms against 13 ms
+for a unit of that size that calls none (debug build), where both were not
+done they cost 750 ms; the test `a_local_name_costs_no_resolution_of_class_calls`
+pins it. So a unit costs about linear time in its sites and calls: the
 outgoing calls of a program with N variables and N calls take 0.10 to 0.16 s
 for N = 2,000 and 0.9 to 1.2 s for N = 16,000 (release, a loaded machine), and
 the test `outgoing_calls_cost_about_linear_time_in_the_calls` fails when 16
@@ -247,6 +257,8 @@ a searched file whose analysis panics, a procedure a super procedure
 supplies, a name like the referent that did not resolve, a field of a shared
 temp-table), overloads split between a class and its include, a qualified
 temp-table field with no false gap, several requests after one change that
-share one pass, a cancel during the workspace pass and between files, and the
-cost of outgoing calls as a unit grows. The `references` scenario of
+share one pass, a field of a `LIKE` temp-table kept apart from the database
+field, an abbreviated field name, a cancel during the workspace pass and
+between files, the cost of outgoing calls as a unit grows, and the cost of a
+local name in a unit that calls many classes. The `references` scenario of
 `clients/vscode/test/e2e` shows both features in a real VS Code.

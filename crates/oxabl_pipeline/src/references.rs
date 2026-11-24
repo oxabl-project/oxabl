@@ -38,6 +38,10 @@ pub struct Referent {
     pub reach: Vec<Reach>,
     /// What the unit that found it knows the search will miss.
     pub gaps: Vec<Gap>,
+    /// Whether every use writes the name in full: a variable, a routine or a
+    /// member, not a program path, a class name or a field or table name
+    /// (which can be abbreviated).
+    whole_name: bool,
 }
 
 /// Why an answer can miss something.
@@ -449,8 +453,33 @@ impl Navigation<'_, '_> {
         let mut name = None;
         let mut reach = Vec::new();
         let mut gaps = Vec::new();
+        let mut whole_name = true;
         for key in keys {
+            whole_name &= match &key {
+                Key::TableField { .. } | Key::At(Target { span: None, .. }) => false,
+                Key::Undeclared { .. } | Key::Member { .. } => true,
+                Key::At(Target {
+                    path,
+                    span: Some(span),
+                }) => self.written_whole(path, *span),
+            };
             let (named, reached) = match &key {
+                Key::TableField { table, name, .. } => {
+                    if let Some(span) = table.span
+                        && let Some(shared) = self.shared_declared_at(&table.path, span)
+                    {
+                        gaps.push(Gap::of_referent(format!(
+                            "`{name}` is a field of the shared temp-table `{shared}`: other \
+                             programs that define it SHARED are not searched"
+                        )));
+                    }
+                    // A temp-table of an include is each includer's own.
+                    let reach = is_include_fragment(&table.path).then(|| Reach::Included {
+                        include: table.path.clone(),
+                        kind: OutlineKind::Field,
+                    });
+                    (name.clone(), reach)
+                }
                 Key::Undeclared { program, procedure } => (
                     procedure.clone(),
                     Some(Reach::Routine {
@@ -515,7 +544,34 @@ impl Navigation<'_, '_> {
             name: name?,
             reach,
             gaps,
+            whole_name,
         })
+    }
+
+    /// Whether every use of the declaration at `span` of `path` writes its
+    /// name in full. A field, a table, a buffer and a temp-table can be named
+    /// by an abbreviation, a class by its unqualified name; so can anything
+    /// the outline does not show.
+    fn written_whole(&self, path: &Path, span: Span) -> bool {
+        if self.schema_declared_at(path, span).is_some() {
+            return false;
+        }
+        let outline = self.outline_of(path);
+        let Some((symbol, _)) = outline
+            .as_deref()
+            .and_then(|symbols| find_selected(symbols, span))
+        else {
+            return false;
+        };
+        !matches!(
+            symbol.kind,
+            OutlineKind::Field
+                | OutlineKind::TempTable
+                | OutlineKind::Buffer
+                | OutlineKind::Class
+                | OutlineKind::Interface
+                | OutlineKind::Enum
+        )
     }
 
     /// The name of a shared variable, buffer, temp-table or other shared
@@ -688,6 +744,15 @@ impl Navigation<'_, '_> {
         // resolved site and an unresolved one for one place.
         let mut spelled: HashMap<(u32, u32), bool> = HashMap::new();
         for site in symbols.sites() {
+            // A site whose text does not hold the name cannot name a referent
+            // that is always written whole: no resolution needed.
+            if referent.whole_name
+                && !self
+                    .text(site.span)
+                    .is_some_and(|text| contains_folded(text, &referent.name))
+            {
+                continue;
+            }
             let named = self.site_keys(&site.target, site.span);
             let resolved = named.as_ref().is_some_and(|keys| !keys.is_empty());
             // A resolved site of any kind marks its place; only a reference
@@ -1107,6 +1172,7 @@ impl Navigation<'_, '_> {
     /// program.
     fn item_for(&self, key: &Key) -> Option<CallItem> {
         match key {
+            Key::TableField { .. } => None,
             Key::Undeclared { program, procedure } => Some(CallItem {
                 name: procedure.clone(),
                 kind: CallItemKind::Procedure,
@@ -1476,6 +1542,12 @@ fn key_id(key: &Key) -> KeyId {
         ),
         Key::Undeclared { program, procedure } => (1, program.clone(), None, procedure.clone()),
         Key::Member { class, name } => (2, class.clone(), None, name.clone()),
+        Key::TableField { table, name, .. } => (
+            3,
+            table.path.clone(),
+            table.span.map(|span| (span.start, span.end)),
+            name.clone(),
+        ),
     }
 }
 
@@ -1497,6 +1569,15 @@ fn field_and_table(
         stack.extend(symbol.children.iter());
     }
     None
+}
+
+/// Whether `text` holds `name`, ignoring ASCII case.
+fn contains_folded(text: &str, name: &str) -> bool {
+    let (text, name) = (text.as_bytes(), name.as_bytes());
+    name.is_empty()
+        || text
+            .windows(name.len())
+            .any(|window| window.eq_ignore_ascii_case(name))
 }
 
 /// Whether other files reach the referent through a handle.

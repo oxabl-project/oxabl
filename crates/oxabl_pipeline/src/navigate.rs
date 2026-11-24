@@ -56,6 +56,14 @@ pub(crate) enum Key {
     /// Member `name` (folded) of the class in `class`, whose declaration
     /// neither the class file nor its expansion shows.
     Member { class: PathBuf, name: String },
+    /// Field `name` (as the schema spells it) of the temp-table declared at
+    /// `table`, which copies it from a database table with `LIKE`. Go to
+    /// definition goes to `schema`, the field in the `.df`.
+    TableField {
+        table: Target,
+        name: String,
+        schema: Option<Target>,
+    },
 }
 
 impl Key {
@@ -64,6 +72,7 @@ impl Key {
     pub(crate) fn into_target(self) -> Target {
         match self {
             Key::At(target) => target,
+            Key::TableField { table, schema, .. } => schema.unwrap_or(table),
             Key::Undeclared { program: path, .. } | Key::Member { class: path, .. } => {
                 Target { path, span: None }
             }
@@ -97,6 +106,8 @@ pub struct Navigation<'s, 'a> {
     /// The declarations of each program or class file as its expansion shows
     /// them, by path. `None` when the file cannot be expanded.
     expanded_outlines: RefCell<HashMap<PathBuf, Option<Declarations>>>,
+    /// The members of each class file its expansion shows, by path.
+    members: RefCell<HashMap<PathBuf, Members>>,
     /// The navigation sites, by start.
     site_index: OnceCell<SpanIndex>,
     /// The declared symbols of the unit, and an index of them by the start of
@@ -114,6 +125,9 @@ type Methods = (
     HashMap<(u32, u32), String>,
     HashMap<String, Vec<VirtualSpan>>,
 );
+
+/// The members of a class file by folded name, each with its places.
+type Members = Rc<HashMap<String, Vec<Target>>>;
 
 /// One declaration of an expanded file: the name, the outline kind, the kind
 /// of the symbol that holds it, and where the name is written.
@@ -194,6 +208,7 @@ impl<'a> LintPipeline<'a> {
             outlines: RefCell::new(HashMap::new()),
             routines: OnceCell::new(),
             expanded_outlines: RefCell::new(HashMap::new()),
+            members: RefCell::new(HashMap::new()),
             site_index: OnceCell::new(),
             declarations: OnceCell::new(),
             run_sites: OnceCell::new(),
@@ -328,9 +343,7 @@ impl Navigation<'_, '_> {
     fn answer_at(&self, virt: u32) -> Option<Vec<Key>> {
         let symbols = &self.semantic.symbols;
         let all = symbols.sites();
-        let site_index = self.site_index.get_or_init(|| {
-            SpanIndex::new(all.iter().enumerate().map(|(at, site)| (site.span, at)))
-        });
+        let site_index = self.site_index();
         let mut sites: Vec<_> = site_index.holding(virt).map(|at| &all[at]).collect();
         sites.sort_by_key(|site| (site.span.end - site.span.start, site.span.start));
         let (declared, declaration_index) = self.declarations.get_or_init(|| {
@@ -351,15 +364,16 @@ impl Navigation<'_, '_> {
             .holding(virt)
             .map(|at| (declared[at], symbols.get(declared[at])))
             .min_by_key(|(sym, symbol)| (symbol.name_span.end - symbol.name_span.start, sym.raw()));
+        let declared_keys = || declaration.map(|(sym, _)| self.declaration_keys(sym));
         // Sites of one length name one thing; the first with a target wins, and
         // one that answers "nothing" only stops the search when none has one.
         let mut at = 0;
         while at < sites.len() {
             let length = sites[at].span.end - sites[at].span.start;
-            if let Some((sym, symbol)) = declaration
+            if let Some((_, symbol)) = declaration
                 && symbol.name_span.end - symbol.name_span.start <= length
             {
-                return Some(self.symbol_keys(sym));
+                return declared_keys();
             }
             let mut answered = false;
             while at < sites.len() && sites[at].span.end - sites[at].span.start == length {
@@ -374,7 +388,44 @@ impl Navigation<'_, '_> {
                 return Some(Vec::new());
             }
         }
-        declaration.map(|(sym, _)| self.symbol_keys(sym))
+        declared_keys()
+    }
+
+    /// The navigation sites, indexed by start once.
+    fn site_index(&self) -> &SpanIndex {
+        self.site_index.get_or_init(|| {
+            let all = self.semantic.symbols.sites();
+            SpanIndex::new(all.iter().enumerate().map(|(at, site)| (site.span, at)))
+        })
+    }
+
+    /// The temp-table that the qualifier of the field at `span` reads
+    /// (`tt.field`, `buffer.field`), when it is one.
+    fn qualifier_temp_table(&self, span: VirtualSpan) -> Option<SymbolId> {
+        let dot = span.start.checked_sub(1)?;
+        if self.expanded.text.as_bytes().get(dot as usize) != Some(&b'.') {
+            return None;
+        }
+        let all = self.semantic.symbols.sites();
+        self.site_index()
+            .holding(dot.checked_sub(1)?)
+            .map(|at| &all[at])
+            .filter(|site| site.span.end == dot)
+            .find_map(|site| match site.target {
+                SiteTarget::Symbol(sym) => Some(sym),
+                SiteTarget::Reference(node) => match self.semantic.references.get(node)? {
+                    Resolution::Resolved(sym) => Some(*sym),
+                    Resolution::Unresolved { .. } => None,
+                },
+                _ => None,
+            })
+            .and_then(|sym| self.semantic.symbols.temp_table_of(sym))
+    }
+
+    /// What the declaration of `sym` itself names: its own place. One
+    /// overload, not the others of its name.
+    fn declaration_keys(&self, sym: SymbolId) -> Vec<Key> {
+        self.symbol_targets(sym).into_iter().map(Key::At).collect()
     }
 
     fn symbol_keys(&self, sym: SymbolId) -> Vec<Key> {
@@ -395,19 +446,14 @@ impl Navigation<'_, '_> {
                     })
                 })
                 .collect();
-            for (found, kind, parent, target) in self
-                .expanded_declarations(&path)
-                .as_deref()
-                .unwrap_or_default()
+            let members = self.included_members(&path);
+            for target in members
+                .get(&name.to_ascii_lowercase())
+                .into_iter()
+                .flatten()
             {
-                let member = found.eq_ignore_ascii_case(name)
-                    && is_member_kind(*kind)
-                    && matches!(
-                        parent,
-                        Some(OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum)
-                    );
                 let key = Key::At(target.clone());
-                if member && !keys.contains(&key) {
+                if !keys.contains(&key) {
                     keys.push(key);
                 }
             }
@@ -493,7 +539,20 @@ impl Navigation<'_, '_> {
             SiteTarget::Table(table) => Some(at(self.table_target(*table).into_iter().collect())),
             SiteTarget::SchemaField(table) => {
                 let name = self.text(span)?;
-                Some(at(self.field_target(*table, name)))
+                let targets = self.field_target(*table, name);
+                // `tt.field` of a temp-table `LIKE` a database table is the
+                // temp-table's own field, not the database field.
+                if let Some(temp_table) = self.qualifier_temp_table(span)
+                    && let Some(field) = self.schema_field_name(*table, name)
+                    && let Some(place) = self.place(self.semantic.symbols.get(temp_table).name_span)
+                {
+                    return Some(vec![Key::TableField {
+                        table: place,
+                        name: field,
+                        schema: targets.into_iter().next(),
+                    }]);
+                }
+                Some(at(targets))
             }
         }
     }
@@ -610,6 +669,46 @@ impl Navigation<'_, '_> {
                 (symbol.name.clone(), target)
             })
             .collect()
+    }
+
+    /// The members of the class in `path`, by folded name, as its expansion
+    /// shows them. Empty for a class file that names no include and no
+    /// preprocessor value (no `{`): its own outline shows every member. Built
+    /// once per file and analysis.
+    fn included_members(&self, path: &Path) -> Members {
+        if let Some(known) = self.members.borrow().get(path) {
+            return Rc::clone(known);
+        }
+        let mut members: HashMap<String, Vec<Target>> = HashMap::new();
+        let expands = self
+            .run
+            .file_system()
+            .read(path)
+            .is_ok_and(|text| text.contains('{'));
+        if expands {
+            for (name, kind, parent, target) in self
+                .expanded_declarations(path)
+                .as_deref()
+                .unwrap_or_default()
+            {
+                let member = is_member_kind(*kind)
+                    && matches!(
+                        parent,
+                        Some(OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum)
+                    );
+                if member {
+                    members
+                        .entry(name.to_ascii_lowercase())
+                        .or_default()
+                        .push(target.clone());
+                }
+            }
+        }
+        let members = Rc::new(members);
+        self.members
+            .borrow_mut()
+            .insert(path.to_path_buf(), Rc::clone(&members));
+        members
     }
 
     /// The declarations of a program or class file as its expansion shows
@@ -794,6 +893,16 @@ impl Navigation<'_, '_> {
             path: path.to_path_buf(),
             span: Some(table.source.span),
         })
+    }
+
+    /// The name of the field of `table` that `name` means, as the schema
+    /// spells it.
+    fn schema_field_name(&self, table: oxabl_schema::TableId, name: &str) -> Option<String> {
+        let table = self.run.config().schema.get_by_id(table)?;
+        match table.resolve_field_by_name(name) {
+            oxabl_schema::FieldResolution::Unique(field) => Some(field.name.to_string()),
+            _ => None,
+        }
     }
 
     fn field_target(&self, table: oxabl_schema::TableId, name: &str) -> Vec<Target> {
