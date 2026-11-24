@@ -5,7 +5,7 @@
 //! else, so another request that shows a table (a schema browser) can use the
 //! same text.
 
-use oxabl_schema::{Field, Index, SchemaType, Table};
+use oxabl_schema::{EffectiveIndex, Field, SchemaType, Table};
 
 /// The most indexes a hover lists; the rest are counted.
 const MAX_INDEXES: usize = 8;
@@ -25,7 +25,11 @@ pub fn table_markdown(table: &Table) -> String {
         out.push_str("\n\n");
         out.push_str(&plain(description));
     }
-    let indexes: Vec<IndexView> = table.indexes.iter().map(IndexView::from_schema).collect();
+    let indexes: Vec<EffectiveIndex> = table
+        .indexes
+        .iter()
+        .map(EffectiveIndex::from_schema)
+        .collect();
     if !indexes.is_empty() {
         out.push_str("\n\nIndexes:");
         index_lines(&mut out, &indexes);
@@ -73,11 +77,11 @@ pub fn field_markdown(table: &Table, field: &Field) -> String {
         out.push_str("\n\n");
         out.push_str(&plain(description));
     }
-    let indexes: Vec<IndexView> = table
+    let indexes: Vec<EffectiveIndex> = table
         .indexes
         .iter()
         .filter(|index| index.fields.iter().any(|part| part.name == field.name))
-        .map(IndexView::from_schema)
+        .map(EffectiveIndex::from_schema)
         .collect();
     out.push_str("\n\n");
     if indexes.is_empty() {
@@ -89,36 +93,8 @@ pub fn field_markdown(table: &Table, field: &Field) -> String {
     out
 }
 
-/// One index as a hover lists it, whatever declares it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct IndexView {
-    pub name: String,
-    pub primary: bool,
-    pub unique: bool,
-    pub word: bool,
-    pub inactive: bool,
-    pub fields: Vec<String>,
-}
-
-impl IndexView {
-    pub(crate) fn from_schema(index: &Index) -> IndexView {
-        IndexView {
-            name: index.display_name.clone(),
-            primary: index.primary,
-            unique: index.unique,
-            word: index.word,
-            inactive: index.inactive,
-            fields: index
-                .fields
-                .iter()
-                .map(|part| part.display_name.clone())
-                .collect(),
-        }
-    }
-}
-
 /// One list line per index: its name, its flags and its fields.
-pub(crate) fn index_lines(out: &mut String, indexes: &[IndexView]) {
+pub(crate) fn index_lines(out: &mut String, indexes: &[EffectiveIndex]) {
     for index in indexes.iter().take(MAX_INDEXES) {
         let mut flags = Vec::new();
         for (set, flag) in [

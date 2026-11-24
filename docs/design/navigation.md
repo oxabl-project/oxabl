@@ -91,7 +91,10 @@ of it: options that do not change what a name holds or what a call does
 (`FORMAT`, `LABEL`, `VIEW-AS`, `SERIALIZE-NAME`, ...) are left out.
 
 A temp-table that is defined `LIKE` another table has the fields and indexes of
-that table (`navigate/hover/like.rs`). The source is the record that the
+that table. One definition gives them: `EffectiveTable::declare` in
+`oxabl_schema` (`like.rs`). The hover (`navigate/hover/like.rs`) and the
+effects analysis (`oxabl_effects`, for the index of `oxabl explain`, the
+`index` inlay hint and `find-in-loop`) both use it. The source is the record that the
 analysis resolved for the `LIKE` clause (`SymbolTable::temp_table_like`): a
 temp-table of the file, followed through a chain, or a table of the loaded
 schema. The rules are the ones that OpenEdge 12.8.9 applies, as its
@@ -116,7 +119,9 @@ is loaded, or when the chain does not end, the hover does not count the
 inherited part as zero. It says `Fields: 1 own + those of `Customer` (not in
 the loaded schema)`, gives the same for the indexes, and lists only the own
 indexes, as "Own indexes". A temp-table member that a class file declares has
-no resolved source in that file, so its `LIKE` is shown the same way.
+no resolved source in that file, so its `LIKE` is shown the same way. The
+effects analysis names no index for a table whose `LIKE` source it does not
+know.
 
 A type that an `&IF` chooses has no one name, so the hover writes no `AS`
 part and says "An `&IF` chooses the type." A schema field whose type the

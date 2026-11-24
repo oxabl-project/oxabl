@@ -44,7 +44,7 @@ use oxabl_ast::{Span, Statement, StatementKind};
 use oxabl_flow::{BlockId, BlockKind, FileFlow, UnitId};
 use oxabl_index::calls::FileCalls;
 use oxabl_lexer::{Kind, Token};
-use oxabl_schema::Schema;
+use oxabl_schema::{EffectiveTable, Schema};
 use oxabl_scope::{FileScopes, ReadKind, Table, UnknownReason, UpdateKind};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -597,67 +597,31 @@ impl Decls {
                 indexes,
                 ..
             } => {
-                let mut info = TableInfo::default();
-                if let Some(like) = like_table {
-                    let like_info = d
-                        .temp_tables
-                        .get(&like.name.to_ascii_lowercase())
-                        .cloned()
-                        .or_else(|| {
-                            schema
-                                .and_then(|s| s.table(last(&like.name)))
-                                .map(TableInfo::from_schema)
-                        });
-                    if let Some(l) = like_info {
-                        info.fields = l.fields;
-                        if indexes.is_empty() && use_indexes.is_empty() {
-                            info.indexes = l.indexes;
-                        } else {
-                            for u in use_indexes {
-                                if let Some(i) = l
-                                    .indexes
-                                    .iter()
-                                    .find(|i| i.name.eq_ignore_ascii_case(&u.name.name))
-                                {
-                                    let mut i = i.clone();
-                                    i.primary = u.as_primary;
-                                    info.indexes.push(i);
-                                }
-                            }
-                        }
-                    } else {
+                let source = match like_table {
+                    None => None,
+                    Some(like) => {
+                        let known = d
+                            .temp_tables
+                            .get(&like.name.to_ascii_lowercase())
+                            .cloned()
+                            .map(EffectiveTable::from)
+                            .or_else(|| {
+                                schema
+                                    .and_then(|s| s.table(last(&like.name)))
+                                    .map(EffectiveTable::from_schema)
+                            });
                         // The source table is not known: neither are the fields.
-                        return;
+                        let Some(known) = known else { return };
+                        Some(known)
                     }
-                }
-                info.fields
-                    .extend(fields.iter().map(|f| f.name.name.to_ascii_lowercase()));
-                for i in indexes {
-                    info.indexes.push(Idx {
-                        name: i.name.name.clone(),
-                        unique: i.is_unique,
-                        primary: i.is_primary,
-                        word: i.is_word_index,
-                        inactive: false,
-                        components: i
-                            .fields
-                            .iter()
-                            .map(|f| f.name.name.to_ascii_lowercase())
-                            .collect(),
-                    });
-                }
-                if info.indexes.is_empty() {
-                    info.indexes.push(Idx {
-                        name: "default".to_string(),
-                        unique: false,
-                        primary: true,
-                        word: false,
-                        inactive: false,
-                        components: Vec::new(),
-                    });
-                } else if !info.indexes.iter().any(|i| i.primary) {
-                    info.indexes[0].primary = true;
-                }
+                };
+                let declared = EffectiveTable::declare(
+                    source,
+                    use_indexes,
+                    fields.iter().map(|f| f.name.name.as_str()),
+                    indexes,
+                );
+                let info = TableInfo::from(declared);
                 d.temp_tables.insert(name.name.to_ascii_lowercase(), info);
             }
             _ => {}
@@ -701,7 +665,25 @@ fn table_info<'t>(
         }
     };
     let entry = cache.entry(key).or_insert_with(|| match table {
-        Table::TempTable { name, .. } => decls.temp_tables.get(&name.to_ascii_lowercase()).cloned(),
+        Table::TempTable { name, .. } => decls
+            .temp_tables
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+            .map(|mut info| {
+                // A temp-table without an index has the default one, which a
+                // `LIKE` does not inherit.
+                if info.indexes.is_empty() {
+                    info.indexes.push(Idx {
+                        name: "default".to_string(),
+                        unique: false,
+                        primary: true,
+                        word: false,
+                        inactive: false,
+                        components: Vec::new(),
+                    });
+                }
+                info
+            }),
         Table::Database(name) => schema
             .and_then(|s| s.table(last(name)))
             .map(TableInfo::from_schema),

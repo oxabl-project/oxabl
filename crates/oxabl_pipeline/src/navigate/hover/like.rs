@@ -5,20 +5,15 @@
 //! clause, so the hover and the diagnostics read the same table. A source that
 //! the analysis cannot reach is a gap, never an empty table.
 
-use oxabl_ast::{Statement, StatementKind, TempTableIndex, UseIndex};
+use oxabl_ast::{Statement, StatementKind};
+use oxabl_schema::{EffectiveIndex, EffectiveTable};
 use oxabl_semantic::{RecordSource, SymbolId};
 
 use super::{Navigation, find_declaration};
-use crate::schema_hover::{IndexView, index_lines, inline};
+use crate::schema_hover::{index_lines, inline};
 
 /// The longest `LIKE` chain that is followed.
 const MAX_CHAIN: usize = 8;
-
-/// The effective fields and indexes of a temp-table.
-struct Shape {
-    fields: usize,
-    indexes: Vec<IndexView>,
-}
 
 /// Why the part that a `LIKE` inherits is not known.
 struct Gap {
@@ -50,7 +45,7 @@ impl Navigation<'_, '_> {
             Ok(shape) => {
                 let mut out = format!(
                     "Fields: {} · Indexes: {}",
-                    shape.fields,
+                    shape.fields.len(),
                     shape.indexes.len()
                 );
                 if !shape.indexes.is_empty() {
@@ -69,7 +64,10 @@ impl Navigation<'_, '_> {
             format!("{}: {}", inline(&gap.name), gap.reason)
         };
         let inherited = format!("those of {} ({why})", inline(source));
-        let own: Vec<IndexView> = indexes.iter().map(own_index).collect();
+        let own: Vec<EffectiveIndex> = indexes
+            .iter()
+            .map(EffectiveIndex::from_temp_table)
+            .collect();
         let mut out = format!(
             "Fields: {} own + {inherited} · Indexes: {} own + {inherited}",
             fields.len(),
@@ -89,7 +87,7 @@ impl Navigation<'_, '_> {
         statement: &Statement,
         symbol: Option<SymbolId>,
         depth: usize,
-    ) -> Result<Shape, Gap> {
+    ) -> Result<EffectiveTable, Gap> {
         let StatementKind::DefineTempTable {
             like_table,
             use_indexes,
@@ -103,9 +101,9 @@ impl Navigation<'_, '_> {
                 reason: "its declaration is not found",
             });
         };
-        let own: Vec<IndexView> = indexes.iter().map(own_index).collect();
+        let fields = fields.iter().map(|field| field.name.name.as_str());
         let Some(like) = like_table else {
-            return Ok(finish(fields.len(), Vec::new(), own));
+            return Ok(EffectiveTable::declare(None, &[], fields, indexes));
         };
         let gap = |reason| Gap {
             name: like.name.clone(),
@@ -126,10 +124,7 @@ impl Navigation<'_, '_> {
                     .schema
                     .get_by_id(table)
                     .ok_or_else(|| gap("not in the loaded schema"))?;
-                Shape {
-                    fields: table.fields.len(),
-                    indexes: table.indexes.iter().map(IndexView::from_schema).collect(),
-                }
+                EffectiveTable::from_schema(table)
             }
             Some(RecordSource::TempTable(source)) => {
                 let name_span = symbols.get(source).name_span;
@@ -140,76 +135,11 @@ impl Navigation<'_, '_> {
             None if self.run.config().schema.is_empty() => return Err(gap("no schema is loaded")),
             None => return Err(gap("not in the loaded schema")),
         };
-        let inherited_indexes = if use_indexes.is_empty() {
-            inherited.indexes
-        } else {
-            used_indexes(inherited.indexes, use_indexes)
-        };
-        Ok(finish(
-            inherited.fields + fields.len(),
-            inherited_indexes,
-            own,
+        Ok(EffectiveTable::declare(
+            Some(inherited),
+            use_indexes,
+            fields,
+            indexes,
         ))
-    }
-}
-
-/// The indexes of a table from its inherited and its own indexes. A table has
-/// one primary index: an own one replaces an inherited one, and the first index
-/// is the primary one when none is marked.
-fn finish(fields: usize, mut inherited: Vec<IndexView>, own: Vec<IndexView>) -> Shape {
-    if own.iter().any(|index| index.primary) {
-        for index in &mut inherited {
-            index.primary = false;
-        }
-    }
-    inherited.extend(own);
-    if !inherited.iter().any(|index| index.primary)
-        && let Some(first) = inherited.first_mut()
-    {
-        first.primary = true;
-    }
-    Shape {
-        fields,
-        indexes: inherited,
-    }
-}
-
-/// The inherited indexes that `USE-INDEX` names, in the order of the source
-/// table. The one marked `AS PRIMARY` is the primary one. Without one, the
-/// inherited primary index stays primary when it is taken; [`finish`] makes the
-/// first index primary when none is.
-fn used_indexes(inherited: Vec<IndexView>, used: &[UseIndex]) -> Vec<IndexView> {
-    let named = |index: &IndexView, only_primary: bool| {
-        used.iter().any(|wanted| {
-            index.name.eq_ignore_ascii_case(&wanted.name.name)
-                && (!only_primary || wanted.as_primary)
-        })
-    };
-    let chosen = inherited.iter().position(|index| named(index, true));
-    inherited
-        .into_iter()
-        .enumerate()
-        .filter(|(_, index)| named(index, false))
-        .map(|(at, mut index)| {
-            if chosen.is_some() {
-                index.primary = Some(at) == chosen;
-            }
-            index
-        })
-        .collect()
-}
-
-fn own_index(index: &TempTableIndex) -> IndexView {
-    IndexView {
-        name: index.name.name.clone(),
-        primary: index.is_primary,
-        unique: index.is_unique,
-        word: index.is_word_index,
-        inactive: false,
-        fields: index
-            .fields
-            .iter()
-            .map(|field| field.name.name.clone())
-            .collect(),
     }
 }
