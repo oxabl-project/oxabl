@@ -100,7 +100,14 @@ can contain:
    `Name`, then `Customer.Name`. A cursor between `)` and `.` in
    `foo(a + b).` selects `)`, then `foo(a + b)`.
 2. Each containing expression, from small to large.
-3. Each containing statement, block, and routine, from small to large.
+3. Each containing statement, block, and routine, from small to large. A
+   statement that owns a block or a branch is a level of its own, after its
+   block: an `IF` with its `THEN` and `ELSE` branches, a `CASE`, an `ON`
+   statement, a block with a label, and a `CATCH` or `FINALLY` block. The
+   black-box tests `selection_reaches_*` and `selection_includes_the_label_of_a_block`
+   in `crates/oxabl/tests/folding_selection_lsp.rs` check the exact range of
+   each of these forms. A `DO` block on the line of `THEN` or on its own line
+   gives the same chain.
 4. The whole file.
 
 An equal range occurs once. Every parent contains the child range: the pass
@@ -108,6 +115,12 @@ does not add a range that does not contain the one before it. A chain has at
 most 32 ranges. A deeper chain keeps the innermost 31 ranges and the file.
 This limit keeps the nested JSON below the recursion limits of clients. A
 request with several positions gets one chain for each position, in order.
+
+VS Code merges the chains of all selection providers, also those of other
+extensions, and sorts them. It keeps a range only when it contains the range
+kept before it. A range of another extension that crosses a range of oxabl
+can hide an oxabl level. VS Code also adds its own steps for the lines of a
+range.
 
 The server converts each requested position to a byte offset with the
 negotiated position encoding. It converts every returned span back with the

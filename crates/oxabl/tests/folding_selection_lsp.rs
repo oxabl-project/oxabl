@@ -740,3 +740,229 @@ fn a_large_file_answers_both_requests() {
         "selection took {selection_time:?}"
     );
 }
+
+/// Asserts the selection chain at the start of the first `needle`, as the text of each range from
+/// the innermost to the file.
+fn assert_chain(form: &str, source: &str, needle: &str, expected: &[&str]) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("owner.p");
+    let mut session = Session::start(root.path());
+    session.open(&path, source);
+    let (line, character) = position_of(source, needle);
+    let chain = chain_of(selection(&mut session, &path, line, character));
+    assert_containment(&chain);
+    let texts: Vec<&str> = chain
+        .iter()
+        .map(|range| range_text(source, range))
+        .collect();
+    assert_eq!(texts, expected, "unexpected selection chain: {form}");
+}
+
+/// The text from the first `from` to the end of the first `to` after it.
+fn between<'a>(source: &'a str, from: &str, to: &str) -> &'a str {
+    let start = source.find(from).unwrap_or_else(|| panic!("no {from:?}"));
+    let end = start
+        + source[start..]
+            .find(to)
+            .unwrap_or_else(|| panic!("no {to:?} after {from:?}"))
+        + to.len();
+    &source[start..end]
+}
+
+#[test]
+fn selection_reaches_the_if_that_owns_a_do_block() {
+    let on_own_line = r#"PROCEDURE p:
+    DEFINE INPUT PARAMETER pCustNumber AS CHARACTER NO-UNDO.
+    if pCustNumber ne "" then
+        do:
+            MESSAGE pCustNumber.
+        end.
+END PROCEDURE.
+"#;
+    assert_chain(
+        "DO: on its own line after THEN",
+        on_own_line,
+        "MESSAGE",
+        &[
+            "MESSAGE",
+            "MESSAGE pCustNumber.",
+            between(on_own_line, "do:", "end."),
+            between(on_own_line, "if pCustNumber", "end."),
+            between(on_own_line, "PROCEDURE p:", "END PROCEDURE."),
+            on_own_line,
+        ],
+    );
+
+    let same_line = r#"PROCEDURE p:
+    if pCustNumber ne "" then do:
+        MESSAGE pCustNumber.
+    end.
+END PROCEDURE.
+"#;
+    assert_chain(
+        "DO: on the line of THEN",
+        same_line,
+        "MESSAGE",
+        &[
+            "MESSAGE",
+            "MESSAGE pCustNumber.",
+            between(same_line, "do:", "end."),
+            between(same_line, "if pCustNumber", "end."),
+            between(same_line, "PROCEDURE p:", "END PROCEDURE."),
+            same_line,
+        ],
+    );
+
+    // The IF holds its ELSE branch, whichever branch the cursor is in.
+    let with_else = "IF a THEN DO:\n    MESSAGE 1.\nEND.\nELSE DO:\n    MESSAGE 2.\nEND.\n";
+    let whole = &with_else[..with_else.len() - 1];
+    for (needle, block) in [
+        ("MESSAGE 1", "DO:\n    MESSAGE 1.\nEND."),
+        ("MESSAGE 2", "DO:\n    MESSAGE 2.\nEND."),
+    ] {
+        assert_chain(
+            "IF with a DO block in each branch",
+            with_else,
+            needle,
+            &["MESSAGE", &format!("{needle}."), block, whole, with_else],
+        );
+    }
+}
+
+#[test]
+fn selection_reaches_the_if_around_a_single_statement_and_an_else_if() {
+    let single = "IF a THEN\n    MESSAGE 1.\nELSE\n    MESSAGE 2.\n";
+    let whole = &single[..single.len() - 1];
+    assert_chain(
+        "a single statement in THEN",
+        single,
+        "MESSAGE 1",
+        &["MESSAGE", "MESSAGE 1.", whole, single],
+    );
+    assert_chain(
+        "a single statement in ELSE",
+        single,
+        "MESSAGE 2",
+        &["MESSAGE", "MESSAGE 2.", whole, single],
+    );
+
+    let chained =
+        "IF a THEN\n    MESSAGE 1.\nELSE IF b THEN\n    MESSAGE 2.\nELSE\n    MESSAGE 3.\n";
+    let outer = &chained[..chained.len() - 1];
+    let inner = between(chained, "IF b", "MESSAGE 3.");
+    assert_chain(
+        "ELSE IF, in the inner IF",
+        chained,
+        "MESSAGE 2",
+        &["MESSAGE", "MESSAGE 2.", inner, outer, chained],
+    );
+    assert_chain(
+        "ELSE IF, in the last ELSE",
+        chained,
+        "MESSAGE 3",
+        &["MESSAGE", "MESSAGE 3.", inner, outer, chained],
+    );
+    assert_chain(
+        "ELSE IF, in the first THEN",
+        chained,
+        "MESSAGE 1",
+        &["MESSAGE", "MESSAGE 1.", outer, chained],
+    );
+}
+
+#[test]
+fn selection_reaches_the_case_that_owns_a_when_or_otherwise_block() {
+    let source = "CASE x:\n    WHEN 1 THEN DO:\n        MESSAGE a.\n    END.\n    OTHERWISE DO:\n        MESSAGE b.\n    END.\nEND CASE.\n";
+    let whole = &source[..source.len() - 1];
+    assert_chain(
+        "WHEN THEN DO:",
+        source,
+        "MESSAGE a",
+        &[
+            "MESSAGE",
+            "MESSAGE a.",
+            "DO:\n        MESSAGE a.\n    END.",
+            whole,
+            source,
+        ],
+    );
+    assert_chain(
+        "OTHERWISE DO:",
+        source,
+        "MESSAGE b",
+        &[
+            "MESSAGE",
+            "MESSAGE b.",
+            "DO:\n        MESSAGE b.\n    END.",
+            whole,
+            source,
+        ],
+    );
+}
+
+#[test]
+fn selection_reaches_the_on_statement_that_owns_a_do_block() {
+    let source = "ON CHOOSE OF btn DO:\n    MESSAGE a.\nEND.\n";
+    let whole = &source[..source.len() - 1];
+    assert_chain(
+        "ON event OF widget DO:",
+        source,
+        "MESSAGE a",
+        &[
+            "MESSAGE",
+            "MESSAGE a.",
+            "DO:\n    MESSAGE a.\nEND.",
+            whole,
+            source,
+        ],
+    );
+}
+
+#[test]
+fn selection_reaches_the_block_that_owns_a_catch_or_finally() {
+    let source = "DO ON ERROR UNDO, LEAVE:\n    MESSAGE a.\n    CATCH e AS Progress.Lang.Error:\n        MESSAGE b.\n    END CATCH.\n    FINALLY:\n        MESSAGE c.\n    END FINALLY.\nEND.\n";
+    let whole = &source[..source.len() - 1];
+    assert_chain(
+        "CATCH",
+        source,
+        "MESSAGE b",
+        &[
+            "MESSAGE",
+            "MESSAGE b.",
+            between(source, "CATCH e", "END CATCH."),
+            whole,
+            source,
+        ],
+    );
+    assert_chain(
+        "FINALLY",
+        source,
+        "MESSAGE c",
+        &[
+            "MESSAGE",
+            "MESSAGE c.",
+            between(source, "FINALLY:", "END FINALLY."),
+            whole,
+            source,
+        ],
+    );
+}
+
+#[test]
+fn selection_includes_the_label_of_a_block() {
+    for (kind, header, tail) in [
+        ("DO", "DO:", "END."),
+        ("FOR EACH", "FOR EACH Customer:", "END."),
+        ("REPEAT", "REPEAT:", "END."),
+    ] {
+        let source = format!("outer:\n{header}\n    MESSAGE a.\n{tail}\n");
+        let block = format!("{header}\n    MESSAGE a.\n{tail}");
+        let whole = format!("outer:\n{block}");
+        assert_chain(
+            &format!("{kind} with a label on the line before"),
+            &source,
+            "MESSAGE a",
+            &["MESSAGE", "MESSAGE a.", &block, &whole, &source],
+        );
+    }
+}

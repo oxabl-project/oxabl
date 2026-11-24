@@ -30,6 +30,13 @@ const MAIN = [
   "ELSE DO:",
   'MESSAGE "else-inside".',
   "END.",
+  "PROCEDURE Owner:",
+  "    DEFINE INPUT PARAMETER pCustNumber AS CHARACTER NO-UNDO.",
+  '    if pCustNumber ne "" then',
+  "        do:",
+  '            MESSAGE "owner-inside".',
+  "        end.",
+  "END PROCEDURE.",
   "",
 ].join("\n");
 
@@ -147,6 +154,24 @@ export async function folding(ctx) {
       `sizes ${sizes.join(", ")}`,
     );
     await screenshot(page, `${name}-selection`);
+
+    // 5. Expand Selection reaches the IF statement that owns a DO block on its own line.
+    const ownerLine = MAIN.split("\n").findIndex((l) => l.includes("owner-inside")) + 1;
+    await page.keyboard.press("Control+G");
+    await page.locator(".quick-input-widget input").first().waitFor({ state: "visible", timeout: 15_000 });
+    await page.keyboard.type(`${ownerLine}:24`);
+    await page.keyboard.press("Enter");
+    await sleep(300);
+    const owner = MAIN.slice(MAIN.indexOf("if pCustNumber"), MAIN.indexOf("end.\nEND PROCEDURE.") + "end.".length).length;
+    const block = MAIN.slice(MAIN.indexOf("do:\n"), MAIN.indexOf("end.\nEND PROCEDURE.") + "end.".length).length;
+    const ownerSizes = [];
+    for (let i = 0; i < 8; i++) {
+      await page.keyboard.press("Shift+Alt+ArrowRight");
+      await sleep(300);
+      ownerSizes.push(await selected(page));
+    }
+    check(`${name}: Expand Selection reaches the DO block`, ownerSizes.includes(block), `sizes ${ownerSizes.join(", ")}, want ${block}`);
+    check(`${name}: Expand Selection reaches the IF that owns the DO block`, ownerSizes.includes(owner), `sizes ${ownerSizes.join(", ")}, want ${owner}`);
   } finally {
     await vs.close();
     await sleep(1500);
