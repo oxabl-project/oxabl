@@ -73,8 +73,11 @@ pub enum Command {
     /// store whole. A link is created when missing and left alone when it
     /// already points to the store. Anything else at a link's path (a real
     /// directory, a file, a symlink to somewhere else) is foreign: it is
-    /// refused, and nothing is written anywhere. `--force` renames it to
-    /// `oxabl.bak-<UTC timestamp>` beside it, never deletes it, and links.
+    /// refused, and nothing is written anywhere. `--force` moves it out of the
+    /// skills folders (agents would load a backup there as a second skill) to
+    /// `${XDG_DATA_HOME:-~/.local/share}/oxabl/skill-backups/<agents|claude|store>-<UTC timestamp>`,
+    /// never deletes or copies it, and links. When the move fails (another
+    /// filesystem), nothing else is written and the error names the entry.
     ///
     /// Where a symlink cannot be made (Windows without the privilege), oxabl
     /// copies the store to the link's path instead and says so. Such a copy
@@ -100,7 +103,7 @@ pub struct InstallArgs {
     #[arg(long, conflicts_with = "force")]
     refresh: bool,
 
-    /// Rename a foreign entry to `oxabl.bak-<UTC timestamp>` and install
+    /// Move a foreign entry to the `skill-backups` data folder and install
     #[arg(long)]
     force: bool,
 }
@@ -356,19 +359,69 @@ fn utc_stamp(seconds: u64) -> String {
     )
 }
 
-/// `oxabl.bak-<UTC timestamp>` beside `path`, one that does not exist yet.
-fn backup_path(path: &Path) -> PathBuf {
+/// `<backups>/<label>-<UTC timestamp>`, one that does not exist yet.
+fn backup_path(backups: &Path, label: &str) -> PathBuf {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let stamp = utc_stamp(seconds);
-    let mut candidate = path.with_file_name(format!("oxabl.bak-{stamp}"));
+    let mut candidate = backups.join(format!("{label}-{stamp}"));
     let mut n = 1;
     while fs::symlink_metadata(&candidate).is_ok() {
-        candidate = path.with_file_name(format!("oxabl.bak-{stamp}-{n}"));
+        candidate = backups.join(format!("{label}-{stamp}-{n}"));
         n += 1;
     }
     candidate
+}
+
+/// `agents` or `claude` for `~/.agents/skills/oxabl` or `~/.claude/skills/oxabl`.
+fn link_label(link: &Path) -> String {
+    link.parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .map_or_else(
+            || "link".to_string(),
+            |name| name.to_string_lossy().trim_start_matches('.').to_string(),
+        )
+}
+
+/// Renames each foreign entry of `all` into `backups`, in order. A rename that
+/// fails (another filesystem, no permission) puts the earlier ones back and
+/// returns an error that names the entry; nothing is copied or deleted.
+fn move_away(
+    backups: &Path,
+    all: &[(&Path, &Entry)],
+    labels: &[String],
+) -> Result<Vec<Option<PathBuf>>, String> {
+    let mut moved: Vec<Option<PathBuf>> = Vec::new();
+    for ((path, entry), label) in all.iter().zip(labels) {
+        if !matches!(entry, Entry::Foreign(_) | Entry::Elsewhere(_)) {
+            moved.push(None);
+            continue;
+        }
+        let target = backup_path(backups, label);
+        let result = fs::create_dir_all(backups)
+            .map_err(|e| io_error(backups, &e))
+            .and_then(|()| {
+                fs::rename(path, &target).map_err(|e| {
+                    format!(
+                        "{} could not be moved to {}: {e}; nothing else was written; move it out of the skills folder yourself, then run the install again",
+                        path.display(),
+                        target.display()
+                    )
+                })
+            });
+        if let Err(error) = result {
+            for (earlier, back) in all.iter().zip(&moved) {
+                if let Some(back) = back {
+                    let _ = fs::rename(back, earlier.0);
+                }
+            }
+            return Err(error);
+        }
+        moved.push(Some(target));
+    }
+    Ok(moved)
 }
 
 /// The nearest ancestor of `path` that exists must be a directory this process
@@ -409,10 +462,10 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
 }
 
 /// Puts the skill at `dest` as a whole: it writes a staging directory beside
-/// `dest`, moves what is at `dest` away (to `keep`, or to a place it deletes
-/// after the swap), and renames the staging directory to `dest`. A failure
-/// before the swap leaves `dest` as it was.
-fn replace_tree(dest: &Path, files: &[(&str, String)], keep: Option<&Path>) -> Result<(), String> {
+/// `dest`, moves what is at `dest` aside (it deletes that after the swap), and
+/// renames the staging directory to `dest`. A failure before the swap leaves
+/// `dest` as it was.
+fn replace_tree(dest: &Path, files: &[(&str, String)]) -> Result<(), String> {
     let parent = dest
         .parent()
         .ok_or("the skill has no directory to live in")?;
@@ -431,10 +484,7 @@ fn replace_tree(dest: &Path, files: &[(&str, String)], keep: Option<&Path>) -> R
             io_error(dest, &e)
         });
     }
-    let old = keep.map_or_else(
-        || parent.join(format!(".oxabl-skill-old-{}", unique())),
-        Path::to_path_buf,
-    );
+    let old = parent.join(format!(".oxabl-skill-old-{}", unique()));
     if let Err(error) = fs::rename(dest, &old) {
         let _ = fs::remove_dir_all(&staging);
         return Err(io_error(dest, &error));
@@ -444,9 +494,7 @@ fn replace_tree(dest: &Path, files: &[(&str, String)], keep: Option<&Path>) -> R
         let _ = fs::remove_dir_all(&staging);
         return Err(io_error(dest, &error));
     }
-    if keep.is_none() {
-        let _ = fs::remove_dir_all(&old);
-    }
+    let _ = fs::remove_dir_all(&old);
     Ok(())
 }
 
@@ -468,7 +516,7 @@ fn link_or_copy(link: &Path, store: &Path, files: &[(&str, String)]) -> Result<S
     match symlink(store, link) {
         Ok(()) => Ok("linked".to_string()),
         Err(error) => {
-            replace_tree(link, files, None)?;
+            replace_tree(link, files)?;
             Ok(format!("copied (a symlink was not possible: {error})"))
         }
     }
@@ -583,7 +631,7 @@ fn refresh(
         std::iter::once((store, store_entry)).chain(links.iter().map(|l| l.as_path()).zip(entries))
     {
         if stale(entry) {
-            replace_tree(path, files, None)?;
+            replace_tree(path, files)?;
         }
         println!("{}: {}", path.display(), word(entry));
     }
@@ -616,7 +664,7 @@ fn install_all(
         .collect();
     if !foreign.is_empty() && !force {
         return Err(format!(
-            "not installed by oxabl: {}; nothing was written (use --force to rename it to oxabl.bak-<timestamp> and install)",
+            "not installed by oxabl: {}; nothing was written (use --force to move it to the skill-backups folder of oxabl's data directory and install)",
             foreign.join(", ")
         ));
     }
@@ -628,42 +676,53 @@ fn install_all(
         }
     }
 
+    // Foreign entries leave first: a failed move writes nothing else.
+    let backups = store
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("the store has no data directory")?
+        .join("skill-backups");
+    let labels: Vec<String> = std::iter::once("store".to_string())
+        .chain(links.iter().map(|link| link_label(link)))
+        .collect();
+    let moved = move_away(&backups, &all, &labels)?;
+    let kept = |index: usize| {
+        moved[index]
+            .as_ref()
+            .map(|path| format!(" (the foreign entry was moved to {})", path.display()))
+            .unwrap_or_default()
+    };
+
     // The store first: a link that fell back to a copy needs it written.
     let word = match store_entry {
         Entry::Copy(problems) if problems.is_empty() => "current".to_string(),
         Entry::Copy(_) => {
-            replace_tree(store, files, None)?;
+            replace_tree(store, files)?;
             "updated".to_string()
         }
         Entry::Missing => {
-            replace_tree(store, files, None)?;
+            replace_tree(store, files)?;
             "installed".to_string()
         }
         _ => {
-            let backup = backup_path(store);
-            replace_tree(store, files, Some(&backup))?;
-            format!(
-                "installed (the foreign entry is kept as {})",
-                backup.display()
-            )
+            replace_tree(store, files)?;
+            format!("installed{}", kept(0))
         }
     };
     println!("{}: {word}", store.display());
 
-    for (link, entry) in links.iter().zip(entries) {
+    for (index, (link, entry)) in links.iter().zip(entries).enumerate() {
         let word = match entry {
             Entry::Linked => "current".to_string(),
             Entry::Copy(problems) if problems.is_empty() => "current (a copy)".to_string(),
             Entry::Copy(_) => {
-                replace_tree(link, files, None)?;
+                replace_tree(link, files)?;
                 "updated (a copy)".to_string()
             }
             Entry::Missing => link_or_copy(link, store, files)?,
             Entry::Elsewhere(_) | Entry::Foreign(_) => {
-                let backup = backup_path(link);
-                fs::rename(link, &backup).map_err(|e| io_error(link, &e))?;
                 let word = link_or_copy(link, store, files)?;
-                format!("{word} (the foreign entry is kept as {})", backup.display())
+                format!("{word}{}", kept(index + 1))
             }
         };
         println!("{}: {word}", link.display());

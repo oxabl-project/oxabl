@@ -135,19 +135,38 @@ fn assert_installed(env: &Env) {
     }
 }
 
-fn backups(dir: &Path) -> Vec<PathBuf> {
+/// The entries of the backup folder in the data directory, sorted.
+fn backups(env: &Env) -> Vec<PathBuf> {
+    let dir = env.data.path().join("oxabl/skill-backups");
     let mut found: Vec<PathBuf> = fs::read_dir(dir)
+        .map(|entries| entries.map(|entry| entry.unwrap().path()).collect())
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+/// The entry names of a skills folder (`~/.claude/skills`), sorted.
+fn names(dir: &Path) -> Vec<String> {
+    let mut found: Vec<String> = fs::read_dir(dir)
         .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("oxabl.bak-")
-        })
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     found.sort();
     found
+}
+
+/// `<label>-YYYYMMDDTHHMMSSZ` with the label `label`.
+fn assert_backup_name(path: &Path, label: &str) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let stamp = name.strip_prefix(&format!("{label}-")).unwrap_or(&name);
+    assert!(
+        stamp.len() == 16
+            && stamp.as_bytes()[8] == b'T'
+            && stamp.ends_with('Z')
+            && stamp[..8].bytes().all(|b| b.is_ascii_digit())
+            && stamp[9..15].bytes().all(|b| b.is_ascii_digit()),
+        "{name} is not {label}-<UTC stamp>"
+    );
 }
 
 /// Makes a directory that holds the oxabl skill as a copy, as an install on a
@@ -379,14 +398,18 @@ fn a_foreign_store_is_refused_too() {
 }
 
 #[test]
-fn force_renames_the_foreign_entry_beside_it_and_links() {
+fn force_moves_the_foreign_entry_out_of_the_skills_folders_and_links() {
     let env = Env::new();
     let link = env.claude();
     fs::create_dir_all(&link).unwrap();
     fs::write(link.join("notes.md"), "mine\n").unwrap();
+    fs::write(
+        link.join("SKILL.md"),
+        "---\nname: oxabl\ndescription: mine\n---\n",
+    )
+    .unwrap();
     let elsewhere = env.home.path().join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
-    fs::remove_dir_all(env.agents()).ok();
     fs::create_dir_all(env.agents().parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&elsewhere, env.agents()).unwrap();
 
@@ -394,31 +417,50 @@ fn force_renames_the_foreign_entry_beside_it_and_links() {
 
     assert_eq!(code(&output), 0, "{}", text(&output.stderr));
     assert_installed(&env);
-    let kept = backups(link.parent().unwrap());
-    assert_eq!(kept.len(), 1, "{kept:?}");
+    for skills in [env.claude(), env.agents()] {
+        assert_eq!(
+            names(skills.parent().unwrap()),
+            ["oxabl"],
+            "a new entry in a skills folder"
+        );
+    }
+    let kept = backups(&env);
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    let claude = kept
+        .iter()
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("claude-")
+        })
+        .unwrap();
+    let agents = kept
+        .iter()
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("agents-")
+        })
+        .unwrap();
+    assert_backup_name(claude, "claude");
+    assert_backup_name(agents, "agents");
     assert_eq!(
-        fs::read_to_string(kept[0].join("notes.md")).unwrap(),
+        fs::read_to_string(claude.join("notes.md")).unwrap(),
         "mine\n"
     );
-    let stamp = kept[0].file_name().unwrap().to_string_lossy().into_owned();
-    let stamp = stamp.strip_prefix("oxabl.bak-").unwrap();
+    assert_eq!(fs::read_link(agents).unwrap(), elsewhere);
+    let out = text(&output.stdout);
     assert!(
-        stamp.len() == 16
-            && stamp.as_bytes()[8] == b'T'
-            && stamp.ends_with('Z')
-            && stamp[..8].bytes().all(|b| b.is_ascii_digit())
-            && stamp[9..15].bytes().all(|b| b.is_ascii_digit()),
-        "{stamp}"
+        out.contains(&format!("moved to {}", claude.display())) && !out.contains("oxabl.bak"),
+        "{out}"
     );
-    let moved = backups(env.agents().parent().unwrap());
-    assert_eq!(moved.len(), 1);
-    assert_eq!(fs::read_link(&moved[0]).unwrap(), elsewhere);
-    assert!(text(&output.stdout).contains("oxabl.bak-"));
     assert_eq!(code(&env.install(&["--check"])), 0);
 }
 
 #[test]
-fn force_keeps_a_foreign_store_as_a_backup() {
+fn force_moves_a_foreign_store_out_too() {
     let env = Env::new();
     fs::create_dir_all(env.store()).unwrap();
     fs::write(env.store().join("notes.md"), "mine\n").unwrap();
@@ -427,9 +469,40 @@ fn force_keeps_a_foreign_store_as_a_backup() {
 
     assert_eq!(code(&output), 0, "{}", text(&output.stderr));
     assert_installed(&env);
-    let kept = backups(env.store().parent().unwrap());
+    let kept = backups(&env);
     assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_backup_name(&kept[0], "store");
     assert_eq!(tree(&kept[0]), ["notes.md"]);
+    assert_eq!(names(env.store().parent().unwrap()), ["oxabl"]);
+}
+
+#[test]
+fn a_move_that_fails_exits_two_names_the_entry_and_writes_nothing_else() {
+    let env = Env::new();
+    let link = env.claude();
+    fs::create_dir_all(&link).unwrap();
+    fs::write(link.join("notes.md"), "mine\n").unwrap();
+    let folder = env.data.path().join("oxabl/skill-backups");
+    fs::create_dir_all(&folder).unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o500)).unwrap();
+    if fs::create_dir(folder.join("probe")).is_ok() {
+        // Running as a user that ignores permissions (root).
+        return;
+    }
+    let before = env.everything();
+
+    let output = env.install(&["--force"]);
+
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(code(&output), 2, "{}", text(&output.stdout));
+    let err = text(&output.stderr);
+    assert!(
+        err.contains(&link.display().to_string()) && err.contains("move it"),
+        "{err}"
+    );
+    assert_eq!(env.everything(), before, "the failed move wrote");
+    assert_eq!(tree(&link), ["notes.md"]);
+    assert!(!env.store().exists() && !env.agents().exists());
 }
 
 #[test]

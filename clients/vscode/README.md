@@ -269,7 +269,7 @@ Only Linux x86_64 binaries are released.
 
 ## Coding agents
 
-The command **oxabl: Install agent skill** runs `oxabl skill install` with the oxabl binary that the extension uses. It installs the skill for your user, not for a project: one copy in `${XDG_DATA_HOME:-~/.local/share}/oxabl/skills/oxabl/`, linked from `~/.agents/skills/oxabl` and `~/.claude/skills/oxabl`, so coding agents know how to run `oxabl check`, `format`, `build` and the other commands in every project. A message shows the path and state of the store and of each link, or the error. The extension never installs the skill by itself and asks no question. An entry that oxabl did not install is not replaced; run `oxabl skill install --force` in a terminal to move it aside as `oxabl.bak-<timestamp>`. The command needs an oxabl with `oxabl skill` (5.10.0 or newer).
+The command **oxabl: Install agent skill** runs `oxabl skill install` with the oxabl binary that the extension uses. It installs the skill for your user, not for a project: one copy in `${XDG_DATA_HOME:-~/.local/share}/oxabl/skills/oxabl/`, linked from `~/.agents/skills/oxabl` and `~/.claude/skills/oxabl`, so coding agents know how to run `oxabl check`, `format`, `build` and the other commands in every project. A message shows the path and state of the store and of each link, or the error. The extension never installs the skill by itself and asks no question. An entry that oxabl did not install is not replaced; run `oxabl skill install --force` in a terminal to move it to `~/.local/share/oxabl/skill-backups/` (outside the skills folders) and install. The command needs an oxabl with `oxabl skill` (5.10.0 or newer).
 
 ## Windows and WSL
 
