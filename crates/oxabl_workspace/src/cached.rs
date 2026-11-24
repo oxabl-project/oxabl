@@ -70,6 +70,7 @@ struct Failure {
     kind: io::ErrorKind,
     os_code: Option<i32>,
     message: String,
+    encrypted: bool,
 }
 
 impl Failure {
@@ -85,10 +86,14 @@ impl Failure {
             kind: error.kind(),
             os_code: error.raw_os_error(),
             message: error.to_string(),
+            encrypted: crate::is_encrypted(error),
         })
     }
 
     fn error(&self) -> io::Error {
+        if self.encrypted {
+            return crate::EncryptedSource.into();
+        }
         match self.os_code {
             Some(code) => io::Error::from_raw_os_error(code),
             None => io::Error::new(self.kind, self.message.clone()),
@@ -484,5 +489,27 @@ mod tests {
     fn it_is_sync() {
         fn sync<T: Sync + Send>() {}
         sync::<CachedFileSystem<crate::RealFileSystem>>();
+    }
+
+    /// A file that is encrypted answers `InvalidData` with the encrypted error.
+    struct Encrypted;
+
+    impl FileSystem for Encrypted {
+        fn read(&self, _: &Path) -> Result<Arc<str>, io::Error> {
+            Err(crate::EncryptedSource.into())
+        }
+
+        fn exists(&self, _: &Path) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_kept_encrypted_failure_is_still_named_encrypted() {
+        let cached = CachedFileSystem::new(Encrypted);
+        for read in 0..4 {
+            let error = cached.read(Path::new("/p/enc.i")).unwrap_err();
+            assert!(crate::is_encrypted(&error), "read {read}: {error}");
+        }
     }
 }

@@ -2026,19 +2026,37 @@ impl ProcessContext<'_> {
         });
 
         // Read the include file
-        let content = match self.fs.read(&path) {
+        // A filesystem may hand back text of an encrypted file it could not
+        // refuse, such as an open editor buffer.
+        let read = self.fs.read(&path).and_then(|content| {
+            if oxabl_workspace::looks_encrypted(content.as_bytes()) {
+                Err(oxabl_workspace::EncryptedSource.into())
+            } else {
+                Ok(content)
+            }
+        });
+        let content = match read {
             Ok(c) => c,
             Err(e) => {
-                self.diagnostics.push(Diagnostic::error(
-                    "PREPROC005",
-                    format!("failed to read include file '{}': {e}", path.display()),
-                    site,
-                ));
+                self.diagnostics.push(if oxabl_workspace::is_encrypted(&e) {
+                    Diagnostic::warning(
+                        oxabl_workspace::ENCRYPTED_CODE,
+                        oxabl_workspace::encrypted_include_note(include_name),
+                        site,
+                    )
+                } else {
+                    Diagnostic::error(
+                        "PREPROC005",
+                        format!("failed to read include file '{}': {e}", path.display()),
+                        site,
+                    )
+                });
                 self.unreadable_includes.push(UnreadableInclude {
                     name: include_name.to_string(),
                     path,
                     site,
                     via: self.site_stack.clone(),
+                    encrypted: oxabl_workspace::is_encrypted(&e),
                 });
                 return None;
             }

@@ -221,13 +221,20 @@ impl CollectedDiagnostics {
 /// (unresolvable include — symbol loss), PREPROC008 (unterminated include
 /// reference), PREPROC009 (predefined name without a value in a condition),
 /// PREPROC010 (condition part the evaluator does not model), PREPROC013 (a
-/// substituted value ending with `~`) and PREPROC002 (unclosed `&IF`).
+/// substituted value ending with `~`) and PREPROC002 (unclosed `&IF`), and
+/// SOURCE001 (encrypted source, which is not checked).
 /// PREPROC012 (an unclosed `~{` in an include argument) is an error.
 pub fn is_loud(d: &Diagnostic) -> bool {
     matches!(d.severity, Severity::Error)
         || matches!(
             d.code.0,
-            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009" | "PREPROC010" | "PREPROC013"
+            "PREPROC002"
+                | "PREPROC007"
+                | "PREPROC008"
+                | "PREPROC009"
+                | "PREPROC010"
+                | "PREPROC013"
+                | oxabl_workspace::ENCRYPTED_CODE
         )
 }
 
@@ -991,7 +998,7 @@ pub fn expand_source_with(
             let mut preproc: Vec<Diagnostic> = pf
                 .diagnostics
                 .iter()
-                .filter(|d| is_loud(d) && d.span.file == root)
+                .filter(|d| is_loud(d) && d.span.file == root && !is_encrypted_note(d))
                 .cloned()
                 .collect();
             // An unresolvable include *below* the root elides symbols from this
@@ -1006,7 +1013,7 @@ pub fn expand_source_with(
             let nested_preproc = pf
                 .diagnostics
                 .iter()
-                .filter(|d| is_loud(d) && d.span.file != root)
+                .filter(|d| is_loud(d) && d.span.file != root && !is_encrypted_note(d))
                 .cloned()
                 .collect();
             let mut direct_includes = Vec::new();
@@ -1046,7 +1053,7 @@ pub fn expand_source_with(
                     nested_unresolved_includes.push(include.clone());
                 }
             }
-            let unreadable_includes = pf
+            let unreadable_includes: Vec<UnreadableInclude> = pf
                 .unreadable_includes
                 .iter()
                 .map(
@@ -1067,6 +1074,7 @@ pub fn expand_source_with(
                     Some((file, Arc::clone(pf.source(file)?)))
                 })
                 .collect();
+            preproc.extend(encrypted_include_note(&unreadable_includes, root));
             let mut skipped_sources: Vec<(FileId, Arc<str>)> = Vec::new();
             for skipped in &pf.skipped_text {
                 let file = skipped.site.file;
@@ -1102,10 +1110,26 @@ pub fn expand_source_with(
                 root,
             })
         }
-        Err(diags) => Err(diags
-            .into_iter()
-            .filter(|d| is_loud(d) && d.span.file == root)
-            .collect()),
+        // A unit that reaches encrypted source is reported as that alone.
+        Err(diags) => match diags.iter().find(|d| is_encrypted_note(d)) {
+            Some(note) => {
+                let mut note = note.clone();
+                if note.span.file != root {
+                    // No include chain here, so the note sits at the start of
+                    // the root. A nested note has only been seen through the
+                    // `Ok` arm, which anchors it from the chain.
+                    note.span = FileSpan {
+                        file: root,
+                        span: Span { start: 0, end: 0 },
+                    };
+                }
+                Err(vec![note])
+            }
+            None => Err(diags
+                .into_iter()
+                .filter(|d| is_loud(d) && d.span.file == root)
+                .collect()),
+        },
     }
 }
 
@@ -1635,7 +1659,72 @@ pub fn collect_from_expanded_with_summaries(
     }
     out.label_files = label_files(&out, expanded);
 
-    (Some(sem), out)
+    (
+        Some(sem),
+        without_findings_of_encrypted_reach(out, expanded),
+    )
+}
+
+fn is_encrypted_note(d: &Diagnostic) -> bool {
+    d.code.0 == oxabl_workspace::ENCRYPTED_CODE
+}
+
+/// The one `SOURCE001` finding of a unit that reaches encrypted source, at any
+/// include depth, or `None` when it reaches none.
+///
+/// It names the first encrypted include, and is anchored on the `{...}`
+/// reference in the root's own bytes that leads to it: the reference itself, or
+/// for a nested include the outermost reference of its chain.
+fn encrypted_include_note(unreadable: &[UnreadableInclude], root: FileId) -> Option<Diagnostic> {
+    let mut encrypted = unreadable.iter().filter(|include| include.encrypted);
+    let first = encrypted.next()?;
+    let more = encrypted
+        .map(|include| &include.path)
+        .filter(|path| **path != first.path)
+        .collect::<HashSet<_>>()
+        .len();
+    let nested = first.site.file != root;
+    let anchor = if nested {
+        first.via.first().copied().filter(|site| site.file == root)
+    } else {
+        Some(first.site)
+    }
+    .unwrap_or(FileSpan {
+        file: root,
+        span: Span { start: 0, end: 0 },
+    });
+    let mut message = oxabl_workspace::encrypted_include_note(&first.name);
+    if nested {
+        message.push_str(" (reached through this include)");
+    }
+    if more > 0 {
+        message.push_str(&format!(" (and {more} more encrypted)"));
+    }
+    Some(Diagnostic::warning(
+        oxabl_workspace::ENCRYPTED_CODE,
+        message,
+        anchor,
+    ))
+}
+
+/// A unit that reaches encrypted source reports that and nothing else.
+///
+/// An encrypted include is not read, so any finding of the unit may depend on
+/// it: it may declare names, define temp-tables and preprocessor names, and
+/// read or write the variables of its includer. A finding in the readable text
+/// can be false, and its absence proves nothing. The unit is withheld whole:
+/// parse, semantic and lint findings, and findings of readable includes.
+fn without_findings_of_encrypted_reach(
+    found: CollectedDiagnostics,
+    expanded: &ExpandedFile,
+) -> CollectedDiagnostics {
+    match expanded.preproc.iter().find(|d| is_encrypted_note(d)) {
+        Some(note) => CollectedDiagnostics::new(vec![CollectedDiagnostic {
+            diagnostic: note.clone(),
+            source: DiagnosticSource::Preproc,
+        }]),
+        None => found,
+    }
 }
 
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree
