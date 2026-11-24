@@ -35,9 +35,17 @@ fn preprocess_with(source: &str, more: &[(&str, &str)]) -> PreprocessedFile {
     fs.insert(PathBuf::from("/inc/named.i"), NAMED);
     fs.insert(PathBuf::from("/inc/msg.i"), MSG);
     let paths = vec![PathBuf::from("/inc")];
-    Preprocessor::new(&fs, &paths)
+    let result = Preprocessor::new(&fs, &paths)
         .process(FileId::new(1), source)
-        .unwrap()
+        .unwrap();
+    // The private-use character that stands for `~{` while an argument is
+    // held must never reach the text.
+    assert!(
+        !result.to_text().contains('\u{E000}'),
+        "marker in the text for {source:?}: {:?}",
+        result.to_text()
+    );
+    result
 }
 
 fn assert_text(source: &str, expected: &str) {
@@ -451,4 +459,95 @@ fn a_nested_include_used_only_in_a_comment_is_not_read() {
             .collect();
         assert_eq!(paths, ["/inc/cmt.i"], "for {name}");
     }
+}
+
+#[test]
+fn a_nested_reference_in_a_named_argument_is_read_where_the_include_uses_it() {
+    let result = preprocess_with("&GLOBAL-DEFINE m M\n{/inc/named.i &n=~{&m~} a}", &[]);
+    assert_eq!(&*result.to_text(), "n=<M> 1=<M> 2=<a>");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.text_losses.is_empty());
+}
+
+#[test]
+fn a_named_argument_reads_the_definition_at_the_use() {
+    let result = preprocess_with(
+        "&GLOBAL-DEFINE m first\n{/inc/late.i &n=~{&m~}}",
+        &[("/inc/late.i", "&GLOBAL-DEFINE m second\n[{&n}]")],
+    );
+    assert_eq!(&*result.to_text(), "[second]");
+}
+
+#[test]
+fn a_nested_include_in_a_named_argument_is_included_where_it_is_used() {
+    let result = preprocess_with("{/inc/named.i &n=~{/inc/b.i~}}", &[("/inc/b.i", "B")]);
+    assert_eq!(&*result.to_text(), "n=<B> 1=<B> 2=<>");
+    let names: Vec<&str> = result
+        .resolved_includes
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
+    // Read at each use of the argument: `{&n}` and `{1}`.
+    assert_eq!(names, ["/inc/named.i", "/inc/b.i", "/inc/b.i"]);
+}
+
+#[test]
+fn a_nested_reference_in_a_named_argument_is_read_at_a_define() {
+    let result = preprocess_with(
+        "&GLOBAL-DEFINE m M\n{/inc/defn.i &n=~{&m~}}\n[{&x}]",
+        &[("/inc/defn.i", "&GLOBAL-DEFINE x <{&n}> {&k}")],
+    );
+    assert_eq!(&*result.to_text(), "\n[<M> ]");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+}
+
+#[test]
+fn a_condition_that_reads_a_nested_named_argument_is_a_guess() {
+    let result = preprocess_with(
+        "&GLOBAL-DEFINE m M\n{/inc/condn.i &n=~{&m~}}",
+        &[(
+            "/inc/condn.i",
+            "&IF \"{&n}\" = \"M\" &THEN\nYES\n&ELSE\nNO\n&ENDIF\n",
+        )],
+    );
+    let codes: Vec<&str> = result.diagnostics.iter().map(|d| d.code.0).collect();
+    assert_eq!(codes, ["PREPROC010"]);
+}
+
+#[test]
+fn a_named_argument_that_names_itself_is_reported_not_looped() {
+    let result = preprocess_with("{/inc/named.i &n=~{&n~}}", &[]);
+    let codes: Vec<&str> = result.diagnostics.iter().map(|d| d.code.0).collect();
+    assert_eq!(codes, ["PREPROC003"]);
+}
+
+#[test]
+fn a_nested_reference_next_to_a_defined_name_in_a_define_value_keeps_its_text() {
+    // The value mixes a `{&name}` read at the define with a nested reference
+    // and a non-ASCII byte run, which a byte-wise copy would corrupt.
+    let result = preprocess_with(
+        "&GLOBAL-DEFINE m M\n&GLOBAL-DEFINE k é\n{/inc/defonly.i ~{&m~}}\n[{&x}]",
+        &[("/inc/defonly.i", "&GLOBAL-DEFINE x {&k}-{1}-{&k}")],
+    );
+    assert_eq!(&*result.to_text(), "\n[é-M-é]");
+}
+
+#[test]
+fn a_nested_named_argument_passed_on_to_another_include_is_read_there() {
+    let result = preprocess_with(
+        "&GLOBAL-DEFINE m M\n{/inc/pass.i &n=~{&m~}}",
+        &[("/inc/pass.i", "{/inc/named.i &n={&n}}")],
+    );
+    assert_eq!(&*result.to_text(), "n=<M> 1=<M> 2=<>");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+}
+
+#[test]
+fn a_nested_named_argument_in_an_include_name_is_never_text() {
+    let result = preprocess_with(
+        "&GLOBAL-DEFINE nm b.i\n{/inc/byname.i &n=~{&nm~}}Z",
+        &[("/inc/byname.i", "{{&n} Q}"), ("/inc/b.i", "B")],
+    );
+    // The marker must not reach the text; whether the name resolves is secondary.
+    assert!(result.to_text().ends_with('Z'), "{:?}", result.to_text());
 }

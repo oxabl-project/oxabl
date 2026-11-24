@@ -252,6 +252,30 @@ fn the_closure_lists_what_each_conditional_target_reads_once_through_a_cycle() {
 }
 
 #[test]
+fn the_closure_lists_a_file_a_define_reads_through_an_argument() {
+    let (edges, _) = edges(
+        "&IF FALSE &THEN\n{skipped.i}\n&ENDIF\n",
+        &[
+            ("skipped.i", "{defonly.i ~{zz.i~}}\n"),
+            ("defonly.i", "&GLOBAL-DEFINE x {1}\n"),
+            ("zz.i", "ZZZ\n"),
+        ],
+        true,
+    );
+    let [entry] = edges.conditional_include_closure() else {
+        panic!("one entry: {:?}", edges.conditional_include_closure());
+    };
+    assert_eq!(
+        entry.reaches,
+        [
+            PathBuf::from("/proj/defonly.i"),
+            PathBuf::from("/proj/zz.i")
+        ]
+    );
+    assert!(entry.complete);
+}
+
+#[test]
 fn a_computed_or_missing_conditional_include_has_an_incomplete_closure() {
     let (edges, _) = edges(
         "&IF FALSE &THEN\n{{&dir}/x.i}\n{nowhere.i}\n&ENDIF\n",
