@@ -5,6 +5,8 @@
 //! the keyword `NAME` and each of its legal abbreviations, and
 //! `{{keywords:CATEGORY}}` a regex for every spelling in a category. Both are
 //! built as a trie of lower-case spellings, for use inside `(?i)` patterns.
+//! `{{boundary}}` and `{{non-boundary}}` lead a pattern that must not follow a
+//! word character, before a word character and before any other character.
 //!
 //! Keywords are the union of the HTML keyword index, the reserved list and the
 //! `[[add]]` overrides, less the `[[remove]]` overrides. Only plain words take
@@ -508,6 +510,8 @@ impl Keywords {
                     out.push_str(&trie_regex(spellings));
                 }
                 Some(("word", name)) => out.push_str(&self.word(name)?),
+                None if placeholder == "boundary" => out.push_str(BOUNDARY),
+                None if placeholder == "non-boundary" => out.push_str(NON_BOUNDARY),
                 _ => return Err(format!("unknown placeholder {{{{{placeholder}}}}}")),
             }
             rest = &after[end + 2..];
@@ -534,6 +538,15 @@ impl Keywords {
         Ok(())
     }
 }
+
+/// `\b` with the six characters that Oniguruma's `\b` takes as word
+/// characters and its `[\w]` does not (`²`, `³`, `¹`, `¼`, `½`, `¾`). Before a
+/// word character it accepts what `(?<![\w])` accepts. A pattern that starts
+/// with a look-behind is tried at every position of a line; one that starts
+/// with `\b` is not, which makes tokenizing about twice as fast.
+const BOUNDARY: &str = r"(?:\b|(?<=[\x{b2}\x{b3}\x{b9}\x{bc}-\x{be}]))";
+/// `{{boundary}}` before a character that is not a word character.
+const NON_BOUNDARY: &str = r"(?:\B|(?<=[\x{b2}\x{b3}\x{b9}\x{bc}-\x{be}]))";
 
 /// Fills `template` from the keyword data in `resources` and returns the
 /// grammar JSON.

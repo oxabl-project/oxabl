@@ -26,6 +26,9 @@ how each part works and why.
     in the `function` or `reserved` set.
   Both are tries in lower case, used inside `(?i)` patterns. Codegen fails on
   an unknown placeholder.
+- Two placeholders start a pattern that must not follow a word character:
+  `{{boundary}}` before a word character and `{{non-boundary}}` before
+  another character (`&`, `.`). See the rule about look-behinds below.
 
 ### Keyword data
 
@@ -92,10 +95,16 @@ how each part works and why.
     keep their keywords.
   The keywords before the name keep their scopes: the rule hands them to
   `#keywords`.
-- The `record-names` rule starts with `\b(?<![#$%&.-])`, not
-  `(?<![\w#$%&.-])`. Before a letter the two match the same, but Oniguruma
-  tries a pattern that starts with a look-behind at every position: the rule
-  cost about 20% more time that way, and 3% with `\b`.
+- No `match` or `begin` pattern starts with a look-behind. Oniguruma tries
+  such a pattern at every position of every line. A rule that must not follow
+  a word character starts with `{{boundary}}(?<![#$%&.-])`, not
+  `(?<![\w#$%&.-])`. Before a word character the two accept the same text,
+  and tokenizing is about twice as fast. `{{non-boundary}}` does the same
+  before `&` or `.`. The placeholders are `\b` and `\B` plus the six
+  characters `²`, `³`, `¹`, `¼`, `½` and `¾`: Oniguruma's `\b` takes them as
+  word characters and its `[\w]` does not, so a plain `\b` would change the
+  tokens after them (`test/grammar/cases/boundaries.p`). A test in
+  `corpus.test.ts` fails when a pattern starts with a look-behind.
 
 ### Known limits
 
@@ -125,12 +134,17 @@ From `clients/vscode`:
 - `pnpm test` — includes `test/grammar/corpus.test.ts`: every regex
   compiles, and every ABL file in the repository tokenizes within a time
   budget, on vscode-textmate 9 and vscode-oniguruma 2, the engine VS Code
-  uses. It also includes `test/grammar/fuzz.test.ts`: pathological shapes,
+  uses, and no `match` or `begin` regex starts with a look-behind. It also includes `test/grammar/fuzz.test.ts`: pathological shapes,
   random token runs and mutated corpus files must stay inside a time budget
   per line and per file and a rule-stack depth. The time budgets grow on a
   slow machine: a calibration scan that does not use the grammar sets the
   factor. `OXABL_FUZZ_SECONDS` makes a longer run, `OXABL_FUZZ_SEED` replays
   one.
+- `node test/grammar/compare.mjs <old.json> <new.json> [dir ...]` — tokenizes
+  the repository's ABL files (or the given files and directories) with two
+  grammars, counts the lines whose tokens differ and times both. Use it for a
+  change that must keep every token. `--counts-only` prints no file name and no
+  source text.
 - `xvfb-run -a pnpm run test:e2e` — the packaged VSIX in a downloaded VS Code:
   activation, the colours that the editor renders, Markdown code blocks, a
   missing binary (a line in the output channel, no message), the self-update
