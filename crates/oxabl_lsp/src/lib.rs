@@ -947,6 +947,8 @@ struct Server<'c> {
     debouncer: crate::debounce::Debouncer,
     /// The selected compilation context of each open include.
     contexts: includer_context::Contexts,
+    /// The highlight requests of each open document, so one runs at a time.
+    highlight_turns: navigation::HighlightTurns,
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
@@ -1014,6 +1016,7 @@ impl<'c> Server<'c> {
             outlines: document_symbol::OutlineCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
             contexts: includer_context::Contexts::default(),
+            highlight_turns: navigation::HighlightTurns::default(),
             context_events,
             context_results,
             hovers: navigation::HoverGate::default(),
@@ -1339,6 +1342,7 @@ impl<'c> Server<'c> {
                     let uri = params.text_document.uri;
                     self.documents.close(&uri);
                     self.contexts.forget(&uri);
+                    self.highlight_turns.remove(&uri);
                     self.outlines.invalidate(&uri);
                     self.host.with(|sessions| {
                         sessions

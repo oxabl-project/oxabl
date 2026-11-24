@@ -245,8 +245,8 @@ Two sites name the same thing when they have the same identity:
 | The name resolves to | Identity |
 | --- | --- |
 | A declaration in the unit | The symbol. An include that the unit reads twice declares one symbol for each read, so `DEFINE VARIABLE i` in an include read in two procedures is two variables |
-| A buffer that the code declares (`DEFINE BUFFER`, the implicit buffer of `FOR EACH`) | The symbol, also when it is named like its table. It is its own record scope |
-| A table name that no buffer declares, and the default buffer of a table | The table. All such uses in the unit are one name |
+| A buffer that the code declares (`DEFINE BUFFER`, a parameter buffer) | The symbol, also when it is named like its table. It is its own record scope |
+| A table name that no buffer declares, and the default buffer of a table | The table. All such uses in the unit are one name. `FOR EACH` of a database table uses its default buffer, so the uses inside the loop and those around it are one name |
 | A program, or a class from another file | The file |
 | An inherited member | The class file and the member name |
 | A schema field | The table and the full field name, so an abbreviation counts |
@@ -280,6 +280,8 @@ The answer never guesses:
   none. The uses of such a name are not matched by their text either.
 - A use that comes from a macro (`{&name}`) or an include argument has no place
   in the file, so it is not shown.
+- A `FUNCTION ... FORWARD` declaration is not a use of its function: the cursor
+  on it gives none, and the cursor on a call does not mark it.
 
 VS Code marks the same word as plain text when the server answers `null`. That
 fallback is the editor's own.
@@ -304,6 +306,9 @@ fields through `[workspace.schema]`. No request depends on
 `highlight_cost.rs` of `oxabl_pipeline` counts the file system operations of a
 highlight in a unit with 300 `RUN ... IN h`. A test of `oxabl_daemon::db` counts
 the executions of the memoized queries over five cursor moves.
+`document_highlight_lsp.rs` also pins an unsaved include, and that the newest of
+a burst of requests is answered. That only one analysis runs at a time depends on
+timing and is not pinned.
 `navigation_sweep_lsp.rs` asks for a definition and for highlights at every
 position, and a hover at every position that can give another answer (each
 start and end of a name, and each other character outside a run of spaces), of
@@ -356,7 +361,10 @@ A highlight comes on every cursor move, so it has a bound:
   the buffer pays for that pass; every later one pays for a pass over the
   recorded sites. An edit makes the next highlight analyse again. The model
   also keeps the call sites (`FileCalls`) after the first `RUN` that needs
-  them. Includes are read from disk, as for diagnostics.
+  them. Includes are read from disk, as for diagnostics. When the unit reads
+  an include whose open buffer differs from the file, the request is analysed
+  as go to definition is, with the open buffers over the disk, so both answer
+  from the same text.
 - Diagnostics do not record sites, so their own resolve pass is not the one a
   highlight uses. Recording sites in every diagnostics run would add a push for
   each expression to each keystroke.
@@ -367,5 +375,6 @@ A highlight comes on every cursor move, so it has a bound:
   variable.
 - An include with a selected compilation context is analysed in its root for
   each request, as go to definition does, and is not memoized.
-- A request does not cancel an older one. Each request is one pass over the
-  recorded sites, so a held arrow key does not queue analyses.
+- The highlights of one document run one at a time. A request that waits while
+  a newer one comes is answered `RequestCancelled` without an analysis, so a
+  held arrow key runs at most the analysis in progress and the newest one.
