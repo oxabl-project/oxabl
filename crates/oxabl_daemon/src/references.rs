@@ -14,12 +14,17 @@
 //! [`MAX_UNITS`].
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use oxabl_index::calls::MAX_SITES;
-use oxabl_pipeline::{CallItem, IncomingCall, Occurrence, OutgoingCall, Referent, Target};
+use oxabl_pipeline::{
+    CallItem, Gap, IncomingCall, ItemKey, Occurrence, OutgoingCall, Referent, Target, UnitIncoming,
+    UnitReferences, dedupe_spans,
+};
 
 use crate::SessionHost;
 use crate::db::{NavigationUnit, with_navigation};
@@ -30,6 +35,48 @@ pub const MAX_UNITS: usize = 2_000;
 
 /// How often a unit is analysed again after an edit cancelled its analysis.
 const ATTEMPTS: usize = 3;
+
+/// The most searches over other files that run at one time. A later one
+/// waits, so repeated requests do not multiply the analysis threads.
+pub const MAX_SEARCHES: usize = 2;
+
+/// The searches over other files that run now.
+static SEARCHES: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// One of the [`MAX_SEARCHES`] places, given back on drop.
+struct SearchSlot;
+
+impl SearchSlot {
+    /// Wait for a place. `None` when `cancel` is set while waiting.
+    fn take(cancel: &AtomicBool) -> Option<SearchSlot> {
+        let (count, freed) = &SEARCHES;
+        let mut running = count
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *running >= MAX_SEARCHES {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            running = freed
+                .wait_timeout(running, Duration::from_millis(50))
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        *running += 1;
+        Some(SearchSlot)
+    }
+}
+
+impl Drop for SearchSlot {
+    fn drop(&mut self) {
+        let (count, freed) = &SEARCHES;
+        let mut running = count
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *running -= 1;
+        freed.notify_one();
+    }
+}
 
 /// What a references or call hierarchy request asks.
 #[derive(Debug, Clone)]
@@ -58,7 +105,7 @@ pub struct ReferenceAnswer {
     pub incoming: Vec<IncomingCall>,
     pub outgoing: Vec<OutgoingCall>,
     /// Why the answer can miss something. Empty for a complete answer.
-    pub gaps: Vec<String>,
+    pub gaps: Vec<Gap>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -69,6 +116,8 @@ pub enum ReferenceError {
     Modified,
     /// The unit that asked gives no answer.
     Failed(String),
+    /// The client cancelled the request.
+    Cancelled,
 }
 
 /// What the unit that asked gives.
@@ -82,13 +131,22 @@ enum Local {
 /// Answer `query` for the unit `root` of the workspace at `session_root`.
 ///
 /// Blocks until a workspace pass is current when other files can name the
-/// referent, so callers keep it off the LSP thread.
+/// referent, so callers keep it off the LSP thread. Stops with
+/// [`ReferenceError::Cancelled`] once `cancel` is set.
 pub fn answer_references(
     host: &SessionHost,
     session_root: &Path,
     root: &Path,
     query: &ReferenceQuery,
+    cancel: &AtomicBool,
 ) -> Result<ReferenceAnswer, ReferenceError> {
+    let cancelled = || {
+        if cancel.load(Ordering::Relaxed) {
+            Err(ReferenceError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
     let local = analyse(host, session_root, root, |unit| local_answer(unit, query))
         .ok_or(ReferenceError::Modified)?
         .map_err(ReferenceError::Failed)?;
@@ -96,19 +154,28 @@ pub fn answer_references(
         Local::Done(answer) => return Ok(answer),
         Local::Search(referent, part, texts) => (referent, part, texts),
     };
-    let mut gaps = Vec::new();
+    let mut gaps = referent.gaps.clone();
     let mut units = Vec::new();
+    let mut slot = None;
     if !referent.is_local() {
+        cancelled()?;
+        slot = Some(SearchSlot::take(cancel).ok_or(ReferenceError::Cancelled)?);
+        cancelled()?;
         match reference_graph(host, session_root) {
             Ok(Ok(graph)) => {
-                gaps.extend(graph.gaps);
+                gaps.extend(graph.gaps.into_iter().map(Gap::standing));
                 let search = referent.search(&graph.graph, root, MAX_UNITS);
                 gaps.extend(search.gaps);
                 units = search.units;
             }
-            Ok(Err(reason)) => gaps.push(format!("other files are not searched: {reason}")),
-            Err(error) => gaps.push(format!("other files are not searched: {error}")),
+            Ok(Err(reason)) => gaps.push(Gap::standing(format!(
+                "other files are not searched: {reason}"
+            ))),
+            Err(error) => gaps.push(Gap::standing(format!(
+                "other files are not searched: {error}"
+            ))),
         }
+        cancelled()?;
     }
     let incoming = matches!(local, Part::Incoming(..));
     let include_declaration = matches!(
@@ -118,48 +185,74 @@ pub fn answer_references(
             ..
         }
     );
-    let remote = search_units(host, session_root, &units, |unit| {
+    let remote = search_units(host, session_root, &units, cancel, |unit| {
         unit_part(unit, &referent, incoming)
     });
+    drop(slot);
+    cancelled()?;
 
     let mut answer = ReferenceAnswer::default();
     let mut unresolved = 0;
+    let mut grouped: HashMap<ItemKey, usize> = HashMap::new();
     let parts = std::iter::once((local, HashMap::new())).chain(remote.parts);
     for (part, part_texts) in parts {
-        texts.extend(part_texts);
+        // The first text of a file is the one its spans were measured on: a
+        // later analysis can have read an edit.
+        for (path, text) in part_texts {
+            texts.entry(path).or_insert(text);
+        }
         match part {
-            Part::References(found, unresolved_calls) => {
-                unresolved += unresolved_calls;
+            Part::References(found) => {
+                unresolved += found.unresolved_calls;
+                gaps.extend(found.gaps);
                 answer
                     .locations
-                    .extend(kept_locations(found, include_declaration));
+                    .extend(kept_locations(found.occurrences, include_declaration));
             }
-            Part::Incoming(calls, unresolved_calls) => {
-                unresolved += unresolved_calls;
-                merge_incoming(&mut answer.incoming, calls);
+            Part::Incoming(found) => {
+                unresolved += found.unresolved_calls;
+                gaps.extend(found.gaps);
+                merge_incoming(&mut answer.incoming, &mut grouped, found.calls);
             }
         }
     }
+    if include_declaration && !incoming {
+        answer.locations.extend(
+            referent
+                .declarations()
+                .into_iter()
+                .filter(|target| texts.contains_key(&target.path)),
+        );
+    }
     if !remote.failed.is_empty() {
         let (path, reason) = &remote.failed[0];
-        gaps.push(format!(
+        gaps.push(Gap::of_referent(format!(
             "{} file(s) that can name `{}` could not be analysed, such as {}: {reason}",
             remote.failed.len(),
             referent.name,
             path.display()
-        ));
+        )));
     }
     if unresolved > 0 {
-        gaps.push(format!(
+        gaps.push(Gap::of_referent(format!(
             "{unresolved} call(s) of a routine named `{}` go through a handle, a super \
              procedure or an object whose class oxabl does not know, and can call it",
             referent.name
-        ));
+        )));
     }
+    let mut seen = Vec::new();
+    gaps.retain(|gap| {
+        let new = !seen.contains(gap);
+        if new {
+            seen.push(gap.clone());
+        }
+        new
+    });
     answer.locations.sort_by(|a, b| {
         (&a.path, a.span.map(|s| s.start)).cmp(&(&b.path, b.span.map(|s| s.start)))
     });
     answer.locations.dedup();
+    finish_incoming(&mut answer.incoming);
     answer.gaps = gaps;
     answer.texts = texts;
     Ok(answer)
@@ -177,13 +270,16 @@ fn unit_part(
         for call in &found.calls {
             read_into(unit, &mut texts, &call.from.path);
         }
-        Part::Incoming(found.calls, found.unresolved_calls)
+        Part::Incoming(found)
     } else {
         let found = unit.navigation.references(referent);
         for occurrence in &found.occurrences {
             read_into(unit, &mut texts, &occurrence.place.path);
         }
-        Part::References(found.occurrences, found.unresolved_calls)
+        for declaration in referent.declarations() {
+            read_into(unit, &mut texts, &declaration.path);
+        }
+        Part::References(found)
     };
     (part, texts)
 }
@@ -204,13 +300,14 @@ fn local_answer(unit: &NavigationUnit<'_, '_, '_>, query: &ReferenceQuery) -> Lo
             match navigation.outgoing_calls(item) {
                 Ok(outgoing) => {
                     if outgoing.truncated {
-                        answer.gaps.push(format!(
+                        answer.gaps.push(Gap::of_referent(format!(
                             "the unit has more than {MAX_SITES} calls: the rest are not listed"
-                        ));
+                        )));
                     }
+                    answer.gaps.extend(outgoing.gaps);
                     answer.outgoing = outgoing.calls;
                 }
-                Err(reason) => answer.gaps.push(reason),
+                Err(reason) => answer.gaps.push(Gap::of_referent(reason)),
             }
             read_into(unit, &mut answer.texts, &item.path);
             for call in &answer.outgoing {
@@ -257,30 +354,34 @@ fn kept_locations(found: Vec<Occurrence>, include_declaration: bool) -> Vec<Targ
         .collect()
 }
 
-fn merge_incoming(into: &mut Vec<IncomingCall>, calls: Vec<IncomingCall>) {
+/// Add each unit's callers to `into`, one entry per caller. The spans of an
+/// entry are sorted and without repeats at the end ([`finish_incoming`]).
+fn merge_incoming(
+    into: &mut Vec<IncomingCall>,
+    grouped: &mut HashMap<ItemKey, usize>,
+    calls: Vec<IncomingCall>,
+) {
     for call in calls {
-        let known = into.iter_mut().find(|known| {
-            known.from.path == call.from.path
-                && known.from.selection == call.from.selection
-                && known.from.kind == call.from.kind
-        });
-        match known {
-            Some(known) => {
-                for span in call.spans {
-                    if !known.spans.contains(&span) {
-                        known.spans.push(span);
-                    }
-                }
+        match grouped.entry(call.from.key()) {
+            Entry::Occupied(at) => into[*at.get()].spans.extend(call.spans),
+            Entry::Vacant(at) => {
+                at.insert(into.len());
+                into.push(call);
             }
-            None => into.push(call),
         }
     }
 }
 
-/// What one other unit gives.
+fn finish_incoming(calls: &mut [IncomingCall]) {
+    for call in calls {
+        dedupe_spans(&mut call.spans);
+    }
+}
+
+/// What one unit gives.
 enum Part {
-    References(Vec<Occurrence>, usize),
-    Incoming(Vec<IncomingCall>, usize),
+    References(UnitReferences),
+    Incoming(UnitIncoming),
 }
 
 struct Searched<T> {
@@ -294,6 +395,7 @@ fn search_units<T: Send>(
     host: &SessionHost,
     session_root: &Path,
     units: &[PathBuf],
+    cancel: &AtomicBool,
     answer: impl Fn(&NavigationUnit<'_, '_, '_>) -> T + Sync,
 ) -> Searched<T> {
     let jobs = std::thread::available_parallelism()
@@ -309,6 +411,9 @@ fn search_units<T: Send>(
                     .spawn_scoped(scope, move || {
                         let mut mine = Vec::new();
                         loop {
+                            if cancel.load(Ordering::Relaxed) {
+                                break;
+                            }
                             let at = next.fetch_add(1, Ordering::Relaxed);
                             let Some(unit) = units.get(at) else { break };
                             // A panic in one file costs that file, not the request.

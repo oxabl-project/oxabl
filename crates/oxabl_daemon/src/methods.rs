@@ -337,11 +337,13 @@ pub fn reference_graph(
     if let Some(reason) = cross_file_refusal(root) {
         return Ok(Err(reason));
     }
+    // The walk for added files is not reused here: a file added a moment ago
+    // can hold a reference, and a poll's walk would not see it.
     let mut workspace = ensure_workspace(host, root, false)?;
-    let mut freshness = workspace_freshness(&workspace);
+    let mut freshness = workspace_freshness_within(&workspace, Duration::ZERO);
     if matches!(freshness.state, IndexState::Stale { .. }) {
         workspace = ensure_workspace(host, root, true)?;
-        freshness = workspace_freshness(&workspace);
+        freshness = workspace_freshness_within(&workspace, Duration::ZERO);
     }
     let gaps = match freshness.state {
         IndexState::Ready => Vec::new(),
@@ -1132,6 +1134,12 @@ fn provenance(session: &crate::Session) -> Provenance {
 /// that also named a file count would invite the reader to treat the file count as
 /// the whole story.
 fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
+    workspace_freshness_within(workspace, ADDED_FILE_WALK_INTERVAL)
+}
+
+/// [`workspace_freshness`], reusing a walk for added files only when it is
+/// younger than `interval`.
+fn workspace_freshness_within(workspace: &WorkspaceSnapshot, interval: Duration) -> Freshness {
     Freshness {
         state: match workspace.superseded {
             Some(superseded) => IndexState::Superseded {
@@ -1149,7 +1157,7 @@ fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
                     // Every stamp is clean, which is exactly when a file the pass
                     // never saw is the only thing left that could make the workspace
                     // stale — it is in no stamp, so no stamp can report it.
-                    match added_since_pass(workspace) {
+                    match added_since_pass(workspace, interval) {
                         AddedFiles::None => IndexState::Ready,
                         AddedFiles::Some(count) => IndexState::Stale {
                             changed_files: count,
@@ -1206,14 +1214,14 @@ enum AddedFiles {
 /// continuously — so without the limit the common case would be a full directory walk
 /// per poll, and the gate would be admitting the walk on exactly the path it was
 /// supposed to protect.
-fn added_since_pass(workspace: &WorkspaceSnapshot) -> AddedFiles {
+fn added_since_pass(workspace: &WorkspaceSnapshot, interval: Duration) -> AddedFiles {
     let mut walk = workspace
         .added_files
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let counted = match walk.last_ran {
-        Some(last) if last.elapsed() < ADDED_FILE_WALK_INTERVAL => walk.last_count,
+        Some(last) if last.elapsed() < interval => walk.last_count,
         _ => {
             let Ok(files) = discover_path_in(&workspace.root, &workspace.config.root_extensions)
             else {

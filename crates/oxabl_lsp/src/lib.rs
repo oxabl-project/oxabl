@@ -696,6 +696,9 @@ struct Server<'c> {
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
+    /// The references and call hierarchy requests in flight, and the gaps
+    /// already logged.
+    references: references::InFlight,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -756,6 +759,7 @@ impl<'c> Server<'c> {
             contexts: includer_context::Contexts::default(),
             context_events,
             context_results,
+            references: references::InFlight::default(),
         }
     }
 
@@ -986,6 +990,15 @@ impl<'c> Server<'c> {
             self.lenses.invalidate();
         }
         match not.method.as_str() {
+            lsp_types::notification::Cancel::METHOD => {
+                if let Ok(params) = serde_json::from_value::<lsp_types::CancelParams>(not.params) {
+                    let id = match params.id {
+                        lsp_types::NumberOrString::Number(id) => RequestId::from(id),
+                        lsp_types::NumberOrString::String(id) => RequestId::from(id),
+                    };
+                    self.references.cancel(&id);
+                }
+            }
             DidOpenTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
                 {

@@ -98,8 +98,8 @@ pub use outline::{OutlineKind, OutlineSymbol, outline};
 // byte spans their answers carry.
 pub use oxabl_ast::Span;
 pub use references::{
-    CallItem, CallItemKind, IncomingCall, Occurrence, Outgoing, OutgoingCall, Reach, Referent,
-    Search, UnitIncoming, UnitReferences,
+    CallItem, CallItemKind, Gap, IncomingCall, ItemKey, Occurrence, Outgoing, OutgoingCall, Reach,
+    Referent, Search, UnitIncoming, UnitReferences, dedupe_spans,
 };
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};

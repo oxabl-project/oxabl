@@ -3,14 +3,17 @@
 //! `callHierarchy/outgoingCalls`). See `docs/design/references.md`.
 //!
 //! Each request runs on a worker thread ([`answer_references`]): it can wait
-//! for a workspace pass. An answer that can be short is never shown as a
-//! complete one. A references answer comes with a `window/showMessage`
-//! warning that names each gap. A call hierarchy answer holds an item named
-//! `incomplete` that names them, first in the list, and the same warning.
+//! for a workspace pass, and `$/cancelRequest` stops it. An answer that can be
+//! short is never shown as a complete one. A call hierarchy answer holds an
+//! item named `incomplete` that names every gap, first in the list. A gap of
+//! the referent is also sent as a `window/showMessage` warning. A standing gap
+//! (the state of the workspace index, a limit of the analysis) is sent as a
+//! `window/logMessage` once per session, so it does not interrupt each request.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use lsp_server::{ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
@@ -23,12 +26,56 @@ use oxabl_daemon::canonical_path;
 use oxabl_daemon::references::{
     ReferenceAnswer, ReferenceError, ReferenceQuery, answer_references,
 };
-use oxabl_pipeline::{CallItem, CallItemKind, Span};
+use oxabl_pipeline::{CallItem, CallItemKind, Gap, Span};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 
 use crate::position::{byte_to_position, position_to_byte};
 use crate::{Server, path_to_uri, uri_to_path};
+
+/// The requests in flight, by id, each with the flag that cancels it, and the
+/// standing gaps this session has logged.
+#[derive(Clone, Default)]
+pub(crate) struct InFlight {
+    requests: Arc<Mutex<HashMap<RequestId, Arc<AtomicBool>>>>,
+    logged: Arc<Mutex<HashSet<String>>>,
+}
+
+impl InFlight {
+    fn start(&self, id: &RequestId) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.lock().insert(id.clone(), Arc::clone(&flag));
+        flag
+    }
+
+    fn finish(&self, id: &RequestId) {
+        self.lock().remove(id);
+    }
+
+    /// Cancel request `id`, if it is in flight.
+    pub(crate) fn cancel(&self, id: &RequestId) {
+        if let Some(flag) = self.lock().get(id) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RequestId, Arc<AtomicBool>>> {
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Whether a standing gap is new to this session, recording it.
+    fn first_time(&self, gap: &str) -> bool {
+        self.logged
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(gap.to_string())
+    }
+}
+
+/// A rendered answer, and how many places it could not show.
+type Rendered = serde_json::Result<(serde_json::Value, usize)>;
 
 /// What a call hierarchy item carries back to the server, in `data`.
 #[derive(Serialize, Deserialize)]
@@ -162,7 +209,10 @@ impl Server<'_> {
             include_declaration: params.context.include_declaration,
         };
         self.spawn_references(req.id, root, query, "references", |answer, encoding| {
-            serde_json::to_value(locations(answer, encoding))
+            let wanted = answer.locations.len();
+            let found = locations(answer, encoding);
+            let dropped = wanted - found.len();
+            Ok((serde_json::to_value(found)?, dropped))
         })
     }
 
@@ -188,7 +238,11 @@ impl Server<'_> {
                     .iter()
                     .filter_map(|item| render_item(item, &mut ropes, encoding))
                     .collect();
-                serde_json::to_value((!items.is_empty()).then_some(items))
+                let dropped = answer.items.len() - items.len();
+                Ok((
+                    serde_json::to_value((!items.is_empty()).then_some(items))?,
+                    dropped,
+                ))
             },
         )
     }
@@ -216,24 +270,31 @@ impl Server<'_> {
             move |answer, encoding| {
                 let mut ropes = Ropes::new(&answer.texts);
                 let mut calls: Vec<CallHierarchyIncomingCall> = Vec::new();
-                if !answer.gaps.is_empty() {
-                    calls.push(CallHierarchyIncomingCall {
-                        from: marker(&shown, &answer.gaps),
-                        from_ranges: Vec::new(),
-                    });
-                }
+                let mut dropped = 0;
                 for call in &answer.incoming {
                     let Some(from) = render_item(&call.from, &mut ropes, encoding) else {
+                        dropped += 1;
                         continue;
                     };
-                    let from_ranges = call
+                    let from_ranges: Vec<Range> = call
                         .spans
                         .iter()
                         .filter_map(|span| ropes.range(&call.from.path, *span, encoding))
                         .collect();
+                    dropped += call.spans.len() - from_ranges.len();
                     calls.push(CallHierarchyIncomingCall { from, from_ranges });
                 }
-                serde_json::to_value(calls)
+                let gaps = with_dropped(&answer.gaps, dropped);
+                if !gaps.is_empty() {
+                    calls.insert(
+                        0,
+                        CallHierarchyIncomingCall {
+                            from: marker(&shown, &gaps),
+                            from_ranges: Vec::new(),
+                        },
+                    );
+                }
+                Ok((serde_json::to_value(calls)?, dropped))
             },
         )
     }
@@ -262,24 +323,31 @@ impl Server<'_> {
             move |answer, encoding| {
                 let mut ropes = Ropes::new(&answer.texts);
                 let mut calls: Vec<CallHierarchyOutgoingCall> = Vec::new();
-                if !answer.gaps.is_empty() {
-                    calls.push(CallHierarchyOutgoingCall {
-                        to: marker(&shown, &answer.gaps),
-                        from_ranges: Vec::new(),
-                    });
-                }
+                let mut dropped = 0;
                 for call in &answer.outgoing {
                     let Some(to) = render_item(&call.to, &mut ropes, encoding) else {
+                        dropped += 1;
                         continue;
                     };
-                    let from_ranges = call
+                    let from_ranges: Vec<Range> = call
                         .spans
                         .iter()
                         .filter_map(|span| ropes.range(&caller, *span, encoding))
                         .collect();
+                    dropped += call.spans.len() - from_ranges.len();
                     calls.push(CallHierarchyOutgoingCall { to, from_ranges });
                 }
-                serde_json::to_value(calls)
+                let gaps = with_dropped(&answer.gaps, dropped);
+                if !gaps.is_empty() {
+                    calls.insert(
+                        0,
+                        CallHierarchyOutgoingCall {
+                            to: marker(&shown, &gaps),
+                            from_ranges: Vec::new(),
+                        },
+                    );
+                }
+                Ok((serde_json::to_value(calls)?, dropped))
             },
         )
     }
@@ -325,13 +393,10 @@ impl Server<'_> {
         root: PathBuf,
         query: ReferenceQuery,
         what: &'static str,
-        render: impl FnOnce(
-            ReferenceAnswer,
-            &PositionEncodingKind,
-        ) -> serde_json::Result<serde_json::Value>
-        + Send
-        + 'static,
+        render: impl FnOnce(ReferenceAnswer, &PositionEncodingKind) -> Rendered + Send + 'static,
     ) -> anyhow::Result<()> {
+        let in_flight = self.references.clone();
+        let cancel = in_flight.start(&id);
         let host = self.host.clone();
         let session_root = self.session_root.clone();
         let encoding = self.encoding.clone();
@@ -341,17 +406,20 @@ impl Server<'_> {
             .spawn({
                 let sender = sender.clone();
                 let id = id.clone();
+                let in_flight = in_flight.clone();
                 move || {
                     let answered = oxabl_common::catch_panic(|| {
-                        answer_references(&host, &session_root, &root, &query)
+                        answer_references(&host, &session_root, &root, &query, &cancel)
                     });
+                    in_flight.finish(&id);
                     let response = match answered {
                         Ok(Ok(answer)) => {
-                            if !answer.gaps.is_empty() {
-                                warn(&sender, what, &answer.gaps);
-                            }
+                            let gaps = answer.gaps.clone();
                             match render(answer, &encoding) {
-                                Ok(value) => Response::new_ok(id, value),
+                                Ok((value, dropped)) => {
+                                    warn(&sender, &in_flight, what, &with_dropped(&gaps, dropped));
+                                    Response::new_ok(id, value)
+                                }
                                 Err(error) => Response::new_err(
                                     id,
                                     ErrorCode::InternalError as i32,
@@ -359,6 +427,11 @@ impl Server<'_> {
                                 ),
                             }
                         }
+                        Ok(Err(ReferenceError::Cancelled)) => Response::new_err(
+                            id,
+                            ErrorCode::RequestCanceled as i32,
+                            "oxabl-lsp: the request was cancelled".to_string(),
+                        ),
                         Ok(Err(ReferenceError::Failed(reason))) => Response::new_err(
                             id,
                             ErrorCode::RequestFailed as i32,
@@ -379,6 +452,7 @@ impl Server<'_> {
                 }
             });
         if let Err(error) = spawned {
+            self.references.finish(&id);
             return self.respond(Response::new_err(
                 id,
                 ErrorCode::InternalError as i32,
@@ -389,13 +463,27 @@ impl Server<'_> {
     }
 }
 
-/// Tell the user, and the log, that an answer can be incomplete and why.
-fn warn(sender: &crossbeam_channel::Sender<Message>, what: &str, gaps: &[String]) {
-    let message = format!("oxabl: {what} may be incomplete: {}", gaps.join("; "));
-    for method in [
-        lsp_types::notification::ShowMessage::METHOD,
-        lsp_types::notification::LogMessage::METHOD,
-    ] {
+/// `gaps`, and one more when the rendering dropped places.
+fn with_dropped(gaps: &[Gap], dropped: usize) -> Vec<Gap> {
+    let mut gaps = gaps.to_vec();
+    if dropped > 0 {
+        gaps.push(Gap::of_referent(format!(
+            "{dropped} place(s) are not shown: the text of their file could not be read"
+        )));
+    }
+    gaps
+}
+
+/// Tell the user that an answer can be incomplete and why: a gap of this
+/// answer as a warning and in the log, a standing gap in the log once per
+/// session.
+fn warn(
+    sender: &crossbeam_channel::Sender<Message>,
+    in_flight: &InFlight,
+    what: &str,
+    gaps: &[Gap],
+) {
+    let send = |method: &str, message: &str| {
         let _ = sender.send(Message::Notification(Notification {
             method: method.to_string(),
             params: serde_json::json!({
@@ -403,16 +491,38 @@ fn warn(sender: &crossbeam_channel::Sender<Message>, what: &str, gaps: &[String]
                 "message": message,
             }),
         }));
+    };
+    let own: Vec<&str> = gaps
+        .iter()
+        .filter(|gap| !gap.standing)
+        .map(|gap| gap.reason.as_str())
+        .collect();
+    if !own.is_empty() {
+        let message = format!("oxabl: {what} may be incomplete: {}", own.join("; "));
+        send(lsp_types::notification::ShowMessage::METHOD, &message);
+        send(lsp_types::notification::LogMessage::METHOD, &message);
+    }
+    for gap in gaps.iter().filter(|gap| gap.standing) {
+        if in_flight.first_time(&gap.reason) {
+            send(
+                lsp_types::notification::LogMessage::METHOD,
+                &format!(
+                    "oxabl: references and calls may be incomplete: {}",
+                    gap.reason
+                ),
+            );
+        }
     }
 }
 
 /// The item that says the answer for `shown` is incomplete, and why.
-fn marker(shown: &CallHierarchyItem, gaps: &[String]) -> CallHierarchyItem {
+fn marker(shown: &CallHierarchyItem, gaps: &[Gap]) -> CallHierarchyItem {
+    let reasons: Vec<&str> = gaps.iter().map(|gap| gap.reason.as_str()).collect();
     CallHierarchyItem {
         name: "incomplete".to_string(),
         kind: SymbolKind::NULL,
         tags: None,
-        detail: Some(gaps.join("; ")),
+        detail: Some(reasons.join("; ")),
         uri: shown.uri.clone(),
         range: shown.range,
         selection_range: shown.selection_range,

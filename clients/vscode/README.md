@@ -79,9 +79,12 @@ you also get, with no setup:
   file uses. A program, an internal procedure, a function, a class or a
   method is also searched in the other files that can name it, also files
   that are not open: the files that `RUN` the program, and the files that name
-  the class. When the list can be short, a warning says why: for example no
-  include path, a file that oxabl could not analyse, or a call through a
-  handle that oxabl cannot follow.
+  the class, a database field in the files that read its table, and a name
+  declared in an include in each file that includes it. When the list can be
+  short because of this name, a warning says why: for example a call through a
+  handle that oxabl cannot follow, or a shared variable. A reason that holds
+  for the whole workspace (no include path, a file that oxabl could not
+  analyse) is written once to the `oxabl language server` output instead.
 - **Call hierarchy** (`Shift+Alt+H`). Shows the callers of a procedure,
   function, method or program, and the `RUN`, function and method calls it
   makes. On a name that is no routine, or on a keyword, it shows the routine

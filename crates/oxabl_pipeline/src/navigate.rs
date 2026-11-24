@@ -53,6 +53,9 @@ pub(crate) enum Key {
     /// Internal procedure `procedure` (folded) of `program`, whose text does
     /// not declare it: a super procedure of the program can supply it.
     Undeclared { program: PathBuf, procedure: String },
+    /// Member `name` (folded) of the class in `class`, whose declaration the
+    /// class file's outline does not show (one written in an include).
+    Member { class: PathBuf, name: String },
 }
 
 impl Key {
@@ -61,10 +64,9 @@ impl Key {
     pub(crate) fn into_target(self) -> Target {
         match self {
             Key::At(target) => target,
-            Key::Undeclared { program, .. } => Target {
-                path: program,
-                span: None,
-            },
+            Key::Undeclared { program: path, .. } | Key::Member { class: path, .. } => {
+                Target { path, span: None }
+            }
         }
     }
 }
@@ -91,6 +93,52 @@ pub struct Navigation<'s, 'a> {
     outlines: RefCell<HashMap<PathBuf, Option<Rc<[OutlineSymbol]>>>>,
     /// The routines of the expanded text, outlined on first use.
     pub(crate) routines: OnceCell<Vec<OutlineSymbol>>,
+    /// The internal procedures of each program a handle runs, as its
+    /// expansion declares them, by path.
+    procedures: RefCell<HashMap<PathBuf, Procedures>>,
+    /// The navigation sites, by start.
+    site_index: OnceCell<SpanIndex>,
+    /// The declared symbols, by the start of their name.
+    declaration_index: OnceCell<SpanIndex>,
+    /// The `RUN` navigation sites, by start.
+    pub(crate) run_sites: OnceCell<Vec<usize>>,
+}
+
+/// The internal procedures of a program, each name with its declaration.
+type Procedures = Rc<[(String, Target)]>;
+
+/// Spans sorted by start, so the ones that hold an offset are found without a
+/// scan of all of them.
+#[derive(Default)]
+struct SpanIndex {
+    /// Start, end and the caller's index of each span.
+    spans: Vec<(u32, u32, usize)>,
+    longest: u32,
+}
+
+impl SpanIndex {
+    fn new(spans: impl Iterator<Item = (VirtualSpan, usize)>) -> SpanIndex {
+        let mut spans: Vec<(u32, u32, usize)> =
+            spans.map(|(span, at)| (span.start, span.end, at)).collect();
+        spans.sort_unstable();
+        let longest = spans
+            .iter()
+            .map(|(start, end, _)| end.saturating_sub(*start))
+            .max()
+            .unwrap_or(0);
+        SpanIndex { spans, longest }
+    }
+
+    /// The indices of the spans that hold `at`.
+    fn holding(&self, at: u32) -> impl Iterator<Item = usize> + '_ {
+        let end = self.spans.partition_point(|(start, _, _)| *start <= at);
+        let from = at.saturating_sub(self.longest);
+        let begin = self.spans[..end].partition_point(|(start, _, _)| *start < from);
+        self.spans[begin..end]
+            .iter()
+            .filter(move |(start, end, _)| *start <= at && at < *end)
+            .map(|(_, _, index)| *index)
+    }
 }
 
 impl<'a> LintPipeline<'a> {
@@ -130,6 +178,10 @@ impl<'a> LintPipeline<'a> {
             calls: OnceCell::new(),
             outlines: RefCell::new(HashMap::new()),
             routines: OnceCell::new(),
+            procedures: RefCell::new(HashMap::new()),
+            site_index: OnceCell::new(),
+            declaration_index: OnceCell::new(),
+            run_sites: OnceCell::new(),
         })
     }
 }
@@ -259,18 +311,28 @@ impl Navigation<'_, '_> {
     /// no name there has an answer, `Some(empty)` when the name has no target.
     fn answer_at(&self, virt: u32) -> Option<Vec<Key>> {
         let symbols = &self.semantic.symbols;
-        let mut sites: Vec<_> = symbols
-            .sites()
+        let all = symbols.sites();
+        let site_index = self.site_index.get_or_init(|| {
+            SpanIndex::new(all.iter().enumerate().map(|(at, site)| (site.span, at)))
+        });
+        let mut sites: Vec<_> = site_index.holding(virt).map(|at| &all[at]).collect();
+        sites.sort_by_key(|site| (site.span.end - site.span.start, site.span.start));
+        let declared: Vec<(SymbolId, &oxabl_semantic::Symbol)> = symbols
             .iter()
-            .filter(|site| contains(site.span, virt))
+            .filter(|(_, symbol)| symbol.declaration != NodeId::DUMMY)
             .collect();
-        sites.sort_by_key(|site| site.span.end - site.span.start);
-        let declaration = symbols
-            .iter()
-            .filter(|(_, symbol)| {
-                symbol.declaration != NodeId::DUMMY && contains(symbol.name_span, virt)
-            })
-            .min_by_key(|(_, symbol)| symbol.name_span.end - symbol.name_span.start);
+        let declaration_index = self.declaration_index.get_or_init(|| {
+            SpanIndex::new(
+                declared
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (_, symbol))| (symbol.name_span, at)),
+            )
+        });
+        let declaration = declaration_index
+            .holding(virt)
+            .map(|at| declared[at])
+            .min_by_key(|(sym, symbol)| (symbol.name_span.end - symbol.name_span.start, sym.raw()));
         // Sites of one length name one thing; the first with a target wins, and
         // one that answers "nothing" only stops the search when none has one.
         let mut at = 0;
@@ -298,6 +360,18 @@ impl Navigation<'_, '_> {
     }
 
     fn symbol_keys(&self, sym: SymbolId) -> Vec<Key> {
+        let symbols = &self.semantic.symbols;
+        if let Some(file) = symbols.member_file(sym)
+            && let Some(path) = self.path_of(file)
+        {
+            let name = symbols.get(sym).name.as_ref();
+            if self.member_spans(&path, name).is_empty() {
+                return vec![Key::Member {
+                    class: path,
+                    name: name.to_ascii_lowercase(),
+                }];
+            }
+        }
         self.symbol_targets(sym).into_iter().map(Key::At).collect()
     }
 
@@ -351,13 +425,20 @@ impl Navigation<'_, '_> {
     /// `RUN` there names no handle, or names `THIS-PROCEDURE`.
     fn handle_call_keys(&self, span: VirtualSpan) -> Option<Vec<Key>> {
         let calls = self.calls();
-        let site = calls.sites.iter().find(|site| {
+        // `RUN` statements do not nest, so the nearest `RUN` that starts at or
+        // before the name is the only one that can hold it.
+        let before = calls
+            .sites
+            .partition_point(|site| site.at.start <= span.start);
+        let site = calls.sites[..before].iter().rev().find(|site| {
             matches!(
                 site.kind,
                 CallKind::Run | CallKind::Persistent | CallKind::Remote
-            ) && site.at.start <= span.start
-                && span.end <= site.at.end
+            )
         })?;
+        if !(site.at.start <= span.start && span.end <= site.at.end) {
+            return None;
+        }
         match &site.target {
             CallTarget::InProgram { program, procedure } => {
                 Some(self.procedure_keys(program, procedure))
@@ -398,32 +479,85 @@ impl Navigation<'_, '_> {
         let procedure = procedure.trim_matches(['"', '\'']);
         let mut keys = Vec::new();
         for path in paths {
-            let spans: Vec<Span> = self
-                .outline_of(&path)
-                .as_deref()
-                .unwrap_or_default()
+            let declared: Vec<Target> = self
+                .program_procedures(&path)
                 .iter()
-                .filter(|symbol| {
-                    symbol.kind == OutlineKind::Procedure
-                        && symbol.name.eq_ignore_ascii_case(procedure)
-                })
-                .map(|symbol| symbol.selection_span)
+                .filter(|(name, _)| name.eq_ignore_ascii_case(procedure))
+                .map(|(_, target)| target.clone())
                 .collect();
-            if spans.is_empty() {
+            if declared.is_empty() {
                 keys.push(Key::Undeclared {
                     program: path,
                     procedure: procedure.to_ascii_lowercase(),
                 });
                 continue;
             }
-            for span in spans {
-                keys.push(Key::At(Target {
-                    path: path.clone(),
-                    span: Some(span),
-                }));
-            }
+            keys.extend(declared.into_iter().map(Key::At));
         }
         keys
+    }
+
+    /// The internal procedures a program declares, in its own text or in an
+    /// include it expands, each at its name in the file that writes it.
+    /// Expanded once per program and analysis.
+    fn program_procedures(&self, path: &Path) -> Procedures {
+        if let Some(known) = self.procedures.borrow().get(path) {
+            return Rc::clone(known);
+        }
+        let found: Procedures = self.expand_procedures(path).into();
+        self.procedures
+            .borrow_mut()
+            .insert(path.to_path_buf(), Rc::clone(&found));
+        found
+    }
+
+    fn expand_procedures(&self, path: &Path) -> Vec<(String, Target)> {
+        let Ok(text) = self.run.file_system().read(path) else {
+            return Vec::new();
+        };
+        let run = LintPipeline::new(self.run.config(), self.run.file_system());
+        let program = run.with_file(path);
+        let expansion = program.expand(&text);
+        let Some(expanded) = expansion.expanded() else {
+            // No expansion: the program's own text is all there is to read.
+            return self
+                .outline_of(path)
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|symbol| symbol.kind == OutlineKind::Procedure)
+                .map(|symbol| {
+                    let target = Target {
+                        path: path.to_path_buf(),
+                        span: Some(symbol.selection_span),
+                    };
+                    (symbol.name.clone(), target)
+                })
+                .collect();
+        };
+        let root = search::normalize_lexically(path);
+        outline(&expanded.text)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|symbol| symbol.kind == OutlineKind::Procedure)
+            .filter_map(|symbol| {
+                let span = symbol.selection_span;
+                let target = match expanded.resolve_root_span(span) {
+                    Some(span) => Target {
+                        path: root.clone(),
+                        span: Some(span),
+                    },
+                    None => {
+                        let (file, span, _) = expanded.resolve_include_span(span)?;
+                        Target {
+                            path: search::normalize_lexically(file),
+                            span: Some(span),
+                        }
+                    }
+                };
+                Some((symbol.name, target))
+            })
+            .collect()
     }
 
     /// Every file on the search path that the name written at `span` could
@@ -584,7 +718,7 @@ impl Navigation<'_, '_> {
     }
 
     /// The name of the class, interface or enum a `.cls` file declares.
-    fn class_span(&self, path: &Path) -> Option<Span> {
+    pub(crate) fn class_span(&self, path: &Path) -> Option<Span> {
         let symbols = self.outline_of(path)?;
         symbols
             .iter()
@@ -599,7 +733,7 @@ impl Navigation<'_, '_> {
 
     /// Each declaration of member `name` in the class of a `.cls` file: one per
     /// overload of a method.
-    fn member_spans(&self, path: &Path, name: &str) -> Vec<Span> {
+    pub(crate) fn member_spans(&self, path: &Path, name: &str) -> Vec<Span> {
         let Some(symbols) = self.outline_of(path) else {
             return Vec::new();
         };
@@ -616,6 +750,7 @@ impl Navigation<'_, '_> {
                         | OutlineKind::TempTable
                         | OutlineKind::Dataset
                         | OutlineKind::DataSource
+                        | OutlineKind::EnumMember
                 );
                 if is_member && member.name.eq_ignore_ascii_case(name) {
                     spans.push(member.selection_span);
@@ -642,10 +777,6 @@ impl Navigation<'_, '_> {
             .insert(path.to_path_buf(), outlined.clone());
         outlined
     }
-}
-
-fn contains(span: VirtualSpan, at: u32) -> bool {
-    span.start <= at && at < span.end
 }
 
 fn to_span(span: VirtualSpan) -> Span {

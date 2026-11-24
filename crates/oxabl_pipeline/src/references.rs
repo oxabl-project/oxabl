@@ -12,7 +12,8 @@
 //! An answer that can be short says why in its gaps. It is never shown as a
 //! complete answer.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use oxabl_ast::Span;
@@ -20,7 +21,7 @@ use oxabl_common::VirtualSpan;
 use oxabl_index::EdgeKind;
 use oxabl_index::calls::{CallKind, CallSite, CallTarget, UnknownCall};
 use oxabl_index::search;
-use oxabl_semantic::SiteTarget;
+use oxabl_semantic::{SiteTarget, SymbolFlags};
 use oxabl_workspace::is_include_fragment;
 
 use crate::navigate::Key;
@@ -35,6 +36,35 @@ pub struct Referent {
     pub name: String,
     /// Where other files can name it. Empty when only the analysed unit can.
     pub reach: Vec<Reach>,
+    /// What the unit that found it knows the search will miss.
+    pub gaps: Vec<Gap>,
+}
+
+/// Why an answer can miss something.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Gap {
+    pub reason: String,
+    /// True for a gap that every request in the workspace has (the state of
+    /// the index, a limit of the analysis), false for one of this referent.
+    pub standing: bool,
+}
+
+impl Gap {
+    /// A gap of this referent or answer.
+    pub fn of_referent(reason: String) -> Gap {
+        Gap {
+            reason,
+            standing: false,
+        }
+    }
+
+    /// A gap that every request in the workspace has.
+    pub fn standing(reason: String) -> Gap {
+        Gap {
+            reason,
+            standing: true,
+        }
+    }
 }
 
 /// Which other files can name a referent.
@@ -50,6 +80,11 @@ pub enum Reach {
     /// A member of a class: the files that name the class or a class that
     /// names it, which can inherit the member.
     Member { class: PathBuf },
+    /// A declaration in an include file: each unit that expands the include,
+    /// and for a routine or a member, the files that reach it there.
+    Included { include: PathBuf, kind: OutlineKind },
+    /// A database table or one of its fields: the files that read the table.
+    Table(String),
 }
 
 /// One place that names a referent.
@@ -66,6 +101,8 @@ pub struct Occurrence {
 #[derive(Debug, Clone, Default)]
 pub struct UnitReferences {
     pub occurrences: Vec<Occurrence>,
+    /// What this unit's answer can miss.
+    pub gaps: Vec<Gap>,
     /// Calls of a routine of the referent's name that go through a handle, a
     /// super procedure or an object whose class is not known. Any of them can
     /// call the referent.
@@ -73,7 +110,7 @@ pub struct UnitReferences {
 }
 
 /// What an item of the call hierarchy is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallItemKind {
     Program,
     Class,
@@ -138,6 +175,8 @@ pub struct OutgoingCall {
 #[derive(Debug, Clone, Default)]
 pub struct UnitIncoming {
     pub calls: Vec<IncomingCall>,
+    /// What this unit's answer can miss.
+    pub gaps: Vec<Gap>,
     /// As [`UnitReferences::unresolved_calls`].
     pub unresolved_calls: usize,
 }
@@ -149,6 +188,8 @@ pub struct Outgoing {
     /// The unit has more calls than
     /// [`MAX_SITES`](oxabl_index::calls::MAX_SITES): the rest are not listed.
     pub truncated: bool,
+    /// What else the answer can miss.
+    pub gaps: Vec<Gap>,
 }
 
 /// The other files that can name a referent, and why that list can be short.
@@ -157,7 +198,7 @@ pub struct Search {
     /// Root files to analyse, sorted, without the unit that asked.
     pub units: Vec<PathBuf>,
     /// Why the answer can miss a reference. Empty when it cannot.
-    pub gaps: Vec<String>,
+    pub gaps: Vec<Gap>,
 }
 
 impl Referent {
@@ -166,107 +207,208 @@ impl Referent {
         self.reach.is_empty()
     }
 
+    /// The declarations of the referent, each at its name.
+    pub fn declarations(&self) -> Vec<Target> {
+        self.keys
+            .iter()
+            .filter_map(|key| match key {
+                Key::At(target) if target.span.is_some() => Some(target.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The units other than `origin` that can name the referent, by the
-    /// workspace dependency graph, at most `limit` of them.
+    /// workspace dependency graph, at most `limit` of them. The units that
+    /// declare it come first, so a cut at `limit` keeps them.
     pub fn search(&self, graph: &ReverseGraph, origin: &Path, limit: usize) -> Search {
         let origin = search::normalize_lexically(origin);
+        let mut own: Vec<PathBuf> = Vec::new();
         let mut units: BTreeSet<PathBuf> = BTreeSet::new();
         let mut unresolved = 0usize;
-        let mut add = |subject: &Subject, kind: EdgeKind, units: &mut BTreeSet<PathBuf>| {
+        let mut add = |subject: &Subject, kinds: &[EdgeKind], units: &mut BTreeSet<PathBuf>| {
             let dependents = graph.dependents(subject);
             let mut found = Vec::new();
-            for dependent in dependents.of_kind(kind) {
-                if units.insert(dependent.file.clone()) {
+            for dependent in dependents.all() {
+                if kinds.contains(&dependent.kind) && units.insert(dependent.file.clone()) {
                     found.push(dependent.file.clone());
                 }
             }
             unresolved += dependents
                 .unresolved()
                 .iter()
-                .filter(|row| row.reference.kind == kind)
+                .filter(|row| kinds.contains(&row.reference.kind))
                 .count();
             found
         };
-        for reach in &self.reach {
+        let mut handles = false;
+        let mut queue: VecDeque<Reach> = self.reach.iter().cloned().collect();
+        let mut done: Vec<Reach> = Vec::new();
+        while let Some(reach) = queue.pop_front() {
+            if done.contains(&reach) {
+                continue;
+            }
+            done.push(reach.clone());
             // The declaring file can name it too: a recursive call, a local one.
-            let own = match reach {
-                Reach::Program(file)
-                | Reach::Routine { program: file }
-                | Reach::Class(file)
-                | Reach::Member { class: file } => search::normalize_lexically(file),
-            };
-            if !is_include_fragment(&own) {
-                units.insert(own);
+            if let Reach::Program(file)
+            | Reach::Routine { program: file }
+            | Reach::Class(file)
+            | Reach::Member { class: file } = &reach
+            {
+                let file = search::normalize_lexically(file);
+                if !own.contains(&file) {
+                    own.push(file);
+                }
             }
             match reach {
-                Reach::Program(program) | Reach::Routine { program } => {
+                Reach::Program(program) => {
                     add(
-                        &Subject::file(program),
-                        EdgeKind::ProgramReference,
+                        &Subject::file(&program),
+                        &[EdgeKind::ProgramReference],
+                        &mut units,
+                    );
+                }
+                Reach::Routine { program } => {
+                    handles = true;
+                    add(
+                        &Subject::file(&program),
+                        &[EdgeKind::ProgramReference],
                         &mut units,
                     );
                 }
                 Reach::Class(class) => {
-                    add(&Subject::file(class), EdgeKind::ClassReference, &mut units);
+                    add(
+                        &Subject::file(&class),
+                        &[EdgeKind::ClassReference],
+                        &mut units,
+                    );
                 }
                 Reach::Member { class } => {
                     // A class that names the class can inherit the member, and
                     // so can a class that names that one.
-                    let mut seen = BTreeSet::from([search::normalize_lexically(class)]);
-                    let mut queue = VecDeque::from([search::normalize_lexically(class)]);
-                    while let Some(class) = queue.pop_front() {
-                        let found =
-                            add(&Subject::file(&class), EdgeKind::ClassReference, &mut units);
+                    let mut seen = BTreeSet::from([search::normalize_lexically(&class)]);
+                    let mut classes = VecDeque::from([search::normalize_lexically(&class)]);
+                    while let Some(class) = classes.pop_front() {
+                        let found = add(
+                            &Subject::file(&class),
+                            &[EdgeKind::ClassReference],
+                            &mut units,
+                        );
                         for file in found {
                             if is_class_file(&file) && seen.insert(file.clone()) {
-                                queue.push_back(file);
+                                classes.push_back(file);
                             }
                         }
                     }
                 }
+                Reach::Included { include, kind } => {
+                    let includers = add(
+                        &Subject::file(&include),
+                        &[EdgeKind::DirectInclude, EdgeKind::TransitiveInclude],
+                        &mut units,
+                    );
+                    // A routine or member written in the include is the
+                    // includer's own: search where the includer's are found.
+                    for includer in includers {
+                        let derived = match kind {
+                            OutlineKind::Procedure | OutlineKind::Function
+                                if !is_class_file(&includer) =>
+                            {
+                                Some(Reach::Routine { program: includer })
+                            }
+                            kind if is_member_kind(kind) && is_class_file(&includer) => {
+                                Some(Reach::Member { class: includer })
+                            }
+                            _ => None,
+                        };
+                        queue.extend(derived);
+                    }
+                }
+                Reach::Table(table) => {
+                    add(
+                        &Subject::table(&table),
+                        &[EdgeKind::SchemaTable],
+                        &mut units,
+                    );
+                }
             }
         }
-        units.remove(&origin);
+        let mut ordered: Vec<PathBuf> = own
+            .into_iter()
+            .filter(|file| !is_include_fragment(file) && *file != origin)
+            .collect();
+        for unit in units {
+            if unit != origin && !ordered.contains(&unit) {
+                ordered.push(unit);
+            }
+        }
         let mut gaps = Vec::new();
-        let found = units.len();
-        let mut units: Vec<PathBuf> = units.into_iter().collect();
+        let found = ordered.len();
         if found > limit {
-            units.truncate(limit);
-            gaps.push(format!(
+            ordered.truncate(limit);
+            gaps.push(Gap::of_referent(format!(
                 "the search stopped after {limit} of the {found} files that can name `{}`",
                 self.name
-            ));
+            )));
         }
         if unresolved > 0 {
-            gaps.push(format!(
+            gaps.push(Gap::of_referent(format!(
                 "{unresolved} reference(s) in other files that may name `{}` did not resolve",
                 self.name
+            )));
+        }
+        if handles {
+            gaps.push(Gap::standing(
+                "a RUN ... IN a handle that a file gets from elsewhere (a parameter, a shared \
+                 variable, SESSION) is not followed"
+                    .to_string(),
             ));
         }
         let unanalysed = graph.unanalysed().len();
         if unanalysed > 0 {
-            gaps.push(format!(
+            gaps.push(Gap::standing(format!(
                 "{unanalysed} file(s) of the workspace could not be analysed"
-            ));
+            )));
         }
         let degraded = graph.degraded().len();
         if degraded > 0 {
-            gaps.push(format!(
+            gaps.push(Gap::standing(format!(
                 "{degraded} file(s) of the workspace have an incomplete dependency set"
-            ));
+            )));
         }
-        Search { units, gaps }
+        Search {
+            units: ordered,
+            gaps,
+        }
     }
 }
+
+/// What makes two call items one: the file, the name's bytes, the folded name
+/// and the kind.
+pub type ItemKey = (PathBuf, u32, u32, String, CallItemKind);
 
 impl CallItem {
     /// Whether two items name one thing.
     fn same(&self, other: &CallItem) -> bool {
-        self.path == other.path
-            && self.selection == other.selection
-            && self.name.eq_ignore_ascii_case(&other.name)
-            && self.kind == other.kind
+        self.key() == other.key()
     }
+
+    /// The identity of the item, for grouping calls.
+    pub fn key(&self) -> ItemKey {
+        (
+            self.path.clone(),
+            self.selection.start,
+            self.selection.end,
+            self.name.to_ascii_lowercase(),
+            self.kind,
+        )
+    }
+}
+
+/// Sort spans by position and drop repeats.
+pub fn dedupe_spans(spans: &mut Vec<Span>) {
+    spans.sort_unstable_by_key(|span| (span.start, span.end));
+    spans.dedup();
 }
 
 impl Navigation<'_, '_> {
@@ -285,6 +427,11 @@ impl Navigation<'_, '_> {
         let path = search::normalize_lexically(&item.path);
         let key = match item.kind {
             CallItemKind::Program => Key::At(Target { path, span: None }),
+            // The class as a whole: the places that name it.
+            CallItemKind::Class if item.selection.end == 0 => {
+                let span = self.class_span(&path);
+                Key::At(Target { path, span })
+            }
             CallItemKind::Procedure if !item.declared => Key::Undeclared {
                 program: path,
                 procedure: item.name.to_ascii_lowercase(),
@@ -301,6 +448,7 @@ impl Navigation<'_, '_> {
         let mut kept = Vec::new();
         let mut name = None;
         let mut reach = Vec::new();
+        let mut gaps = Vec::new();
         for key in keys {
             let (named, reached) = match &key {
                 Key::Undeclared { program, procedure } => (
@@ -309,16 +457,45 @@ impl Navigation<'_, '_> {
                         program: program.clone(),
                     }),
                 ),
+                Key::Member { class, name } => {
+                    gaps.push(Gap::of_referent(format!(
+                        "the declaration of `{name}` is not placed: the outline of {} \
+                         does not show it",
+                        file_name(class)
+                    )));
+                    (
+                        name.clone(),
+                        Some(Reach::Member {
+                            class: class.clone(),
+                        }),
+                    )
+                }
                 Key::At(Target { path, span: None }) => {
                     if is_include_fragment(path) {
                         continue;
                     }
-                    (file_name(path), Some(Reach::Program(path.clone())))
+                    if is_class_file(path) {
+                        let stem = path
+                            .file_stem()
+                            .map(|stem| stem.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        (stem, Some(Reach::Class(path.clone())))
+                    } else {
+                        (file_name(path), Some(Reach::Program(path.clone())))
+                    }
                 }
                 Key::At(Target {
                     path,
                     span: Some(span),
-                }) => self.classify(path, *span),
+                }) => {
+                    if let Some(shared) = self.shared_declared_at(path, *span) {
+                        gaps.push(Gap::of_referent(format!(
+                            "`{shared}` is shared: other programs that define it SHARED are \
+                             not searched"
+                        )));
+                    }
+                    self.classify(path, *span)
+                }
             };
             name.get_or_insert(named);
             if let Some(reached) = reached
@@ -332,12 +509,53 @@ impl Navigation<'_, '_> {
             keys: (!kept.is_empty()).then_some(kept)?,
             name: name?,
             reach,
+            gaps,
         })
+    }
+
+    /// The name of a shared variable, buffer, temp-table or other shared
+    /// object this unit declares at `span` of `path`.
+    fn shared_declared_at(&self, path: &Path, span: Span) -> Option<String> {
+        let wanted = Target {
+            path: path.to_path_buf(),
+            span: Some(span),
+        };
+        let shared = SymbolFlags::SHARED | SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED;
+        self.semantic.symbols.iter().find_map(|(_, symbol)| {
+            (symbol.declaration != oxabl_ast::NodeId::DUMMY
+                && symbol.flags.intersects(shared)
+                && self.place(symbol.name_span).as_ref() == Some(&wanted))
+            .then(|| self.text(symbol.name_span).unwrap_or_default().to_string())
+        })
+    }
+
+    /// The database table whose `.df` declares the table or a field at `span`
+    /// of `path`, and the name declared there.
+    fn schema_declared_at(&self, path: &Path, span: Span) -> Option<(String, String)> {
+        let schema = &self.run.config().schema;
+        for (id, table) in schema.tables() {
+            let Some((source, _)) = schema.table_source(id) else {
+                continue;
+            };
+            if search::normalize_lexically(source) != path {
+                continue;
+            }
+            if table.source.span == span {
+                return Some((table.name.to_string(), table.name.to_string()));
+            }
+            if let Some(field) = table.fields.iter().find(|field| field.source.span == span) {
+                return Some((table.name.to_string(), field.name.to_string()));
+            }
+        }
+        None
     }
 
     /// The name declared at `span` of `path`, and which other files can name
     /// it.
     fn classify(&self, path: &Path, span: Span) -> (String, Option<Reach>) {
+        if let Some((table, name)) = self.schema_declared_at(path, span) {
+            return (name, Some(Reach::Table(table)));
+        }
         let outline = self.outline_of(path);
         let symbol = outline
             .as_deref()
@@ -355,37 +573,42 @@ impl Navigation<'_, '_> {
                 })
                 .unwrap_or_default(),
         };
-        let Some((symbol, in_class)) = symbol else {
+        let Some((symbol, parent)) = symbol else {
             return (name, None);
         };
-        let reach = match symbol.kind {
-            OutlineKind::Procedure | OutlineKind::Function
-                if !in_class && !is_include_fragment(path) && !is_class_file(path) =>
-            {
-                Some(Reach::Routine {
-                    program: path.to_path_buf(),
-                })
+        // A member is a direct child of its class; a variable of a method is not.
+        let in_class = matches!(
+            parent,
+            Some(OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum)
+        );
+        let reach = if is_include_fragment(path) {
+            // Only what an includer can reach by name: not a routine's own
+            // variables.
+            (parent.is_none() || in_class).then(|| Reach::Included {
+                include: path.to_path_buf(),
+                kind: symbol.kind,
+            })
+        } else {
+            match symbol.kind {
+                OutlineKind::Procedure | OutlineKind::Function
+                    if parent.is_none() && !is_class_file(path) =>
+                {
+                    Some(Reach::Routine {
+                        program: path.to_path_buf(),
+                    })
+                }
+                OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum
+                    if is_class_file(path) =>
+                {
+                    Some(Reach::Class(path.to_path_buf()))
+                }
+                kind if in_class && is_member_kind(kind) && is_class_file(path) => {
+                    Some(Reach::Member {
+                        class: path.to_path_buf(),
+                    })
+                }
+                _ => None,
             }
-            OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum
-                if is_class_file(path) =>
-            {
-                Some(Reach::Class(path.to_path_buf()))
-            }
-            OutlineKind::Method
-            | OutlineKind::Property
-            | OutlineKind::Event
-            | OutlineKind::Variable
-            | OutlineKind::TempTable
-            | OutlineKind::Buffer
-            | OutlineKind::Dataset
-            | OutlineKind::DataSource
-                if in_class && is_class_file(path) =>
-            {
-                Some(Reach::Member {
-                    class: path.to_path_buf(),
-                })
-            }
-            _ => None,
         };
         (name, reach)
     }
@@ -393,18 +616,40 @@ impl Navigation<'_, '_> {
     /// Every place in this unit that names `referent`: the uses, and the
     /// declarations this unit holds.
     pub fn references(&self, referent: &Referent) -> UnitReferences {
-        let occurrences = self.occurrences(referent);
+        let (occurrences, unplaced) = self.occurrences(referent);
         let unresolved_calls = self.unresolved_calls(referent, &occurrences);
+        let mut gaps = Vec::new();
+        let root = self
+            .root_path()
+            .map(|root| file_name(&root))
+            .unwrap_or_default();
+        if unplaced > 0 {
+            gaps.push(Gap::of_referent(format!(
+                "{unplaced} place(s) in {root} that name `{}` come from text no file writes",
+                referent.name
+            )));
+        }
+        if referent.reach.iter().any(through_handles) && self.calls().truncated {
+            gaps.push(Gap::of_referent(format!(
+                "{root} has more than {} calls: a call through a handle after that is not \
+                 resolved",
+                oxabl_index::calls::MAX_SITES
+            )));
+        }
         UnitReferences {
             occurrences,
+            gaps,
             unresolved_calls,
         }
     }
 
-    fn occurrences(&self, referent: &Referent) -> Vec<Occurrence> {
+    /// The occurrences of `referent`, and how many sites named it in text that
+    /// has no place in a file.
+    fn occurrences(&self, referent: &Referent) -> (Vec<Occurrence>, usize) {
         let keys = &referent.keys;
         let symbols = &self.semantic.symbols;
         let mut found: Vec<Occurrence> = Vec::new();
+        let mut unplaced = 0;
         for site in symbols.sites() {
             let Some(named) = self.site_keys(&site.target, site.span) else {
                 continue;
@@ -412,14 +657,26 @@ impl Navigation<'_, '_> {
             if !named.iter().any(|key| keys.contains(key)) {
                 continue;
             }
-            let span = self.narrow(site.span, &referent.name);
-            if let Some(place) = self.place(span) {
-                let declaration = keys.contains(&Key::At(place.clone()));
-                found.push(Occurrence {
-                    place,
-                    declaration,
-                    expanded: span,
-                });
+            let span = if referent
+                .reach
+                .iter()
+                .any(|reach| matches!(reach, Reach::Program(_)))
+            {
+                // A program is named by its path, which no narrowing keeps.
+                site.span
+            } else {
+                self.narrow(site.span, &referent.name)
+            };
+            match self.place_or_site(span) {
+                Some(place) => {
+                    let declaration = keys.contains(&Key::At(place.clone()));
+                    found.push(Occurrence {
+                        place,
+                        declaration,
+                        expanded: span,
+                    });
+                }
+                None => unplaced += 1,
             }
         }
         for (_, symbol) in symbols.iter() {
@@ -442,17 +699,35 @@ impl Navigation<'_, '_> {
             key(a).cmp(&key(b)).then(b.declaration.cmp(&a.declaration))
         });
         found.dedup_by(|later, kept| later.place == kept.place);
-        found
+        (found, unplaced)
     }
 
-    /// The name `name` within a site that is a call or a member access
-    /// (`fn(x)`, `obj:Method(x)`), so a reference shows the name and not the
-    /// whole expression. Any other site is kept whole.
+    /// A span of the expanded text in the file that wrote it, or for text a
+    /// `{&name}` substitution spliced in, the reference in the root that brought
+    /// it in.
+    fn place_or_site(&self, span: VirtualSpan) -> Option<Target> {
+        if let Some(place) = self.place(span) {
+            return Some(place);
+        }
+        let site = self.expanded.resolve_include_site(Span {
+            start: span.start,
+            end: span.end,
+        })?;
+        Some(Target {
+            path: self.root_path()?,
+            span: Some(site),
+        })
+    }
+
+    /// The name `name` within a site that is a call, a member access or a
+    /// qualified name (`fn(x)`, `obj:Method(x)`, `table.field`), so a
+    /// reference shows the name and not the whole expression. Any other site
+    /// is kept whole.
     fn narrow(&self, span: VirtualSpan, name: &str) -> VirtualSpan {
         let Some(text) = self.text(span) else {
             return span;
         };
-        if name.is_empty() || !(text.contains(':') || text.contains('(')) {
+        if name.is_empty() || !text.contains([':', '(', '.']) {
             return span;
         }
         let bytes = text.as_bytes();
@@ -490,21 +765,21 @@ impl Navigation<'_, '_> {
     /// The calls in this unit of a routine named like `referent` whose target
     /// is not known and that no occurrence covers.
     fn unresolved_calls(&self, referent: &Referent, occurrences: &[Occurrence]) -> usize {
-        let reasons: &[UnknownCall] = if referent
-            .reach
-            .iter()
-            .any(|reach| matches!(reach, Reach::Member { .. }))
-        {
+        let reasons: &[UnknownCall] = if referent.reach.iter().any(|reach| {
+            matches!(reach, Reach::Member { .. })
+                || matches!(reach, Reach::Included { kind, .. } if is_member_kind(*kind))
+        }) {
             &[UnknownCall::Method]
-        } else if referent
-            .reach
-            .iter()
-            .any(|reach| matches!(reach, Reach::Routine { .. }))
-        {
+        } else if referent.reach.iter().any(through_handles) {
             &[UnknownCall::Handle, UnknownCall::Super]
         } else {
             return 0;
         };
+        let mut covered: Vec<(u32, u32)> = occurrences
+            .iter()
+            .map(|occurrence| (occurrence.expanded.start, occurrence.expanded.end))
+            .collect();
+        covered.sort_unstable();
         self.calls()
             .sites
             .iter()
@@ -521,10 +796,11 @@ impl Navigation<'_, '_> {
                 _ => false,
             })
             .filter(|site| {
-                !occurrences.iter().any(|occurrence| {
-                    site.at.start <= occurrence.expanded.start
-                        && occurrence.expanded.end <= site.at.end
-                })
+                let from = covered.partition_point(|(start, _)| *start < site.at.start);
+                !covered[from..]
+                    .iter()
+                    .take_while(|(start, _)| *start < site.at.end)
+                    .any(|(_, end)| *end <= site.at.end)
             })
             .count()
     }
@@ -566,6 +842,7 @@ impl Navigation<'_, '_> {
     pub fn incoming_calls(&self, referent: &Referent) -> UnitIncoming {
         let references = self.references(referent);
         let mut calls: Vec<IncomingCall> = Vec::new();
+        let mut grouped: HashMap<ItemKey, usize> = HashMap::new();
         for occurrence in references.occurrences {
             if occurrence.declaration {
                 continue;
@@ -578,20 +855,23 @@ impl Navigation<'_, '_> {
             let Some(span) = self.span_in(&caller.path, occurrence.expanded) else {
                 continue;
             };
-            match calls.iter_mut().find(|call| call.from.same(&caller)) {
-                Some(call) => {
-                    if !call.spans.contains(&span) {
-                        call.spans.push(span);
-                    }
+            match grouped.entry(caller.key()) {
+                Entry::Occupied(at) => calls[*at.get()].spans.push(span),
+                Entry::Vacant(at) => {
+                    at.insert(calls.len());
+                    calls.push(IncomingCall {
+                        from: caller,
+                        spans: vec![span],
+                    });
                 }
-                None => calls.push(IncomingCall {
-                    from: caller,
-                    spans: vec![span],
-                }),
             }
+        }
+        for call in &mut calls {
+            dedupe_spans(&mut call.spans);
         }
         UnitIncoming {
             calls,
+            gaps: references.gaps,
             unresolved_calls: references.unresolved_calls,
         }
     }
@@ -600,6 +880,16 @@ impl Navigation<'_, '_> {
     pub fn outgoing_calls(&self, item: &CallItem) -> Result<Outgoing, String> {
         if item.unresolved.is_some() {
             return Ok(Outgoing::default());
+        }
+        if !item.declared {
+            return Ok(Outgoing {
+                gaps: vec![Gap::of_referent(format!(
+                    "a super procedure of {} supplies `{}`: its calls are not known",
+                    file_name(&item.path),
+                    item.name
+                ))],
+                ..Outgoing::default()
+            });
         }
         let root = self.root_path();
         let whole_unit = matches!(item.kind, CallItemKind::Program | CallItemKind::Class)
@@ -628,6 +918,8 @@ impl Navigation<'_, '_> {
         let caller_path = search::normalize_lexically(&item.path);
         let calls = self.calls();
         let mut out: Vec<OutgoingCall> = Vec::new();
+        let mut grouped: HashMap<ItemKey, usize> = HashMap::new();
+        let mut unplaced = 0;
         for site in &calls.sites {
             let enclosing = self.enclosing(site.at.start);
             if enclosing.map(|r| r.span) != routine.map(|r| r.span) {
@@ -658,25 +950,37 @@ impl Navigation<'_, '_> {
                 callees.extend(self.unresolved_item(site));
             }
             let Some(span) = self.span_in(&caller_path, shown) else {
+                unplaced += 1;
                 continue;
             };
             for callee in callees {
-                match out.iter_mut().find(|call| call.to.same(&callee)) {
-                    Some(call) => {
-                        if !call.spans.contains(&span) {
-                            call.spans.push(span);
-                        }
+                match grouped.entry(callee.key()) {
+                    Entry::Occupied(at) => out[*at.get()].spans.push(span),
+                    Entry::Vacant(at) => {
+                        at.insert(out.len());
+                        out.push(OutgoingCall {
+                            to: callee,
+                            spans: vec![span],
+                        });
                     }
-                    None => out.push(OutgoingCall {
-                        to: callee,
-                        spans: vec![span],
-                    }),
                 }
             }
+        }
+        for call in &mut out {
+            dedupe_spans(&mut call.spans);
+        }
+        let mut gaps = Vec::new();
+        if unplaced > 0 {
+            gaps.push(Gap::of_referent(format!(
+                "{unplaced} call(s) of `{}` could not be placed in {}",
+                item.name,
+                file_name(&item.path)
+            )));
         }
         Ok(Outgoing {
             calls: out,
             truncated: calls.truncated,
+            gaps,
         })
     }
 
@@ -698,11 +1002,20 @@ impl Navigation<'_, '_> {
         }
         match site.kind {
             CallKind::Run | CallKind::Persistent | CallKind::Remote => {
-                let named = self.semantic.symbols.sites().iter().find(|named| {
-                    matches!(named.target, SiteTarget::Run(_))
-                        && site.at.start <= named.span.start
-                        && named.span.end <= site.at.end
+                let sites = self.semantic.symbols.sites();
+                let runs = self.run_sites.get_or_init(|| {
+                    let mut runs: Vec<usize> = (0..sites.len())
+                        .filter(|at| matches!(sites[*at].target, SiteTarget::Run(_)))
+                        .collect();
+                    runs.sort_by_key(|at| sites[*at].span.start);
+                    runs
                 });
+                let from = runs.partition_point(|at| sites[*at].span.start < site.at.start);
+                let named = runs[from..]
+                    .iter()
+                    .map(|at| &sites[*at])
+                    .take_while(|named| named.span.start < site.at.end)
+                    .find(|named| named.span.end <= site.at.end);
                 match named {
                     Some(named) => (
                         self.site_keys(&named.target, named.span)
@@ -741,6 +1054,20 @@ impl Navigation<'_, '_> {
                 }
                 self.file_item(path)
             }
+            Key::Member { class, name } => Some(CallItem {
+                name: name.clone(),
+                kind: CallItemKind::Method,
+                detail: Some(format!(
+                    "in {}, where its outline does not show it",
+                    file_name(class)
+                )),
+                path: class.clone(),
+                span: Span { start: 0, end: 0 },
+                selection: Span { start: 0, end: 0 },
+                root: class.clone(),
+                declared: false,
+                unresolved: None,
+            }),
             Key::At(Target {
                 path,
                 span: Some(span),
@@ -971,7 +1298,7 @@ impl Navigation<'_, '_> {
     /// itself when `file` writes it, else the `{...}` reference in `file`
     /// through which it arrived.
     fn span_in(&self, file: &Path, virt: VirtualSpan) -> Option<Span> {
-        let place = self.place(virt)?;
+        let place = self.place_or_site(virt)?;
         if place.path == file {
             return place.span;
         }
@@ -1013,23 +1340,54 @@ fn routine_kind(kind: OutlineKind) -> Option<CallItemKind> {
     })
 }
 
-/// The symbol whose name is at `span`, at any depth, and whether a class or
-/// interface holds it.
-fn find_selected(symbols: &[OutlineSymbol], span: Span) -> Option<(&OutlineSymbol, bool)> {
-    let mut stack: Vec<(&OutlineSymbol, bool)> = symbols.iter().map(|s| (s, false)).collect();
-    while let Some((symbol, in_class)) = stack.pop() {
+/// The symbol whose name is at `span`, at any depth, and the kind of the
+/// symbol that holds it.
+fn find_selected(
+    symbols: &[OutlineSymbol],
+    span: Span,
+) -> Option<(&OutlineSymbol, Option<OutlineKind>)> {
+    let mut stack: Vec<(&OutlineSymbol, Option<OutlineKind>)> =
+        symbols.iter().map(|s| (s, None)).collect();
+    while let Some((symbol, parent)) = stack.pop() {
         if symbol.selection_span == span {
-            return Some((symbol, in_class));
+            return Some((symbol, parent));
         }
-        let class = matches!(symbol.kind, OutlineKind::Class | OutlineKind::Interface);
         stack.extend(
             symbol
                 .children
                 .iter()
-                .map(|child| (child, in_class || class)),
+                .map(|child| (child, Some(symbol.kind))),
         );
     }
     None
+}
+
+/// Whether a class member of this kind can be named from another file.
+fn is_member_kind(kind: OutlineKind) -> bool {
+    matches!(
+        kind,
+        OutlineKind::Method
+            | OutlineKind::Property
+            | OutlineKind::Event
+            | OutlineKind::Variable
+            | OutlineKind::TempTable
+            | OutlineKind::Buffer
+            | OutlineKind::Dataset
+            | OutlineKind::DataSource
+            | OutlineKind::EnumMember
+    )
+}
+
+/// Whether other files reach the referent through a handle.
+fn through_handles(reach: &Reach) -> bool {
+    matches!(reach, Reach::Routine { .. })
+        || matches!(
+            reach,
+            Reach::Included {
+                kind: OutlineKind::Procedure | OutlineKind::Function,
+                ..
+            }
+        )
 }
 
 fn unknown_reason(reason: UnknownCall) -> &'static str {
