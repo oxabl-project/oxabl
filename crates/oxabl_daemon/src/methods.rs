@@ -337,13 +337,13 @@ pub fn reference_graph(
     if let Some(reason) = cross_file_refusal(root) {
         return Ok(Err(reason));
     }
-    // The walk for added files is not reused here: a file added a moment ago
-    // can hold a reference, and a poll's walk would not see it.
+    // A walk for added files is reused for a shorter time than a poll's, so
+    // a file added a moment ago is seen without a walk per request.
     let mut workspace = ensure_workspace(host, root, false)?;
-    let mut freshness = workspace_freshness_within(&workspace, Duration::ZERO);
+    let mut freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
     if matches!(freshness.state, IndexState::Stale { .. }) {
         workspace = ensure_workspace(host, root, true)?;
-        freshness = workspace_freshness_within(&workspace, Duration::ZERO);
+        freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
     }
     let gaps = match freshness.state {
         IndexState::Ready => Vec::new(),
@@ -362,6 +362,9 @@ pub fn reference_graph(
         gaps,
     }))
 }
+
+/// How long a references search reuses a walk for added files.
+const REFERENCE_WALK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The best `limit` matches for `query`, and how many matched in total (R19).
 ///

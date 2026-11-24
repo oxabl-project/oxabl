@@ -607,7 +607,7 @@ fn an_answer_that_can_be_short_says_so() {
     let main = ws.path("main.p");
     let mut session = Session::start(&ws.root);
     session.open(&main, MAIN);
-    let (found, warnings) = references(&mut session, &main, MAIN, "fnTwice(2)", 0, false);
+    let (found, _) = references(&mut session, &main, MAIN, "fnTwice(2)", 0, false);
     assert_eq!(
         found,
         sorted(vec![
@@ -615,8 +615,16 @@ fn an_answer_that_can_be_short_says_so() {
             location(&main, MAIN, "fnTwice", 1)
         ])
     );
-    // A gap of the workspace, not of this name: logged, not shown.
-    assert_eq!(warnings, Vec::<String>::new());
+    // The whole search of other files is left out: shown on each request.
+    for _ in 0..2 {
+        let (_, warnings) = references(&mut session, &main, MAIN, "fnTwice(2)", 0, false);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("other files are not searched")
+                && warnings[0].contains("no include path"),
+            "{warnings:?}"
+        );
+    }
     let fn_twice = item(&mut session, &main, MAIN, "fnTwice(2)", 0);
     let (result, warnings) = ask(
         &mut session,
@@ -632,7 +640,7 @@ fn an_answer_that_can_be_short_says_so() {
         "{result}"
     );
     assert_eq!(result.as_array().unwrap().len(), 3, "{result}");
-    assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
     // The marker has no calls of its own.
     let (inner, _) = calls(&mut session, "incoming", &result[0]["from"]);
     assert_eq!(inner, Vec::<Call>::new());
@@ -794,7 +802,8 @@ fn an_enum_member_is_its_own_referent() {
     assert_eq!(shown, Vec::<String>::new());
 }
 
-const MIXED: &str = "CLASS app.Mixed:\n{mixed-members.i}\nEND CLASS.\n";
+const MIXED: &str = "CLASS app.Mixed:\n{mixed-members.i}\n\
+    METHOD PUBLIC VOID Go():\n    Inc().\nEND METHOD.\nEND CLASS.\n";
 const MIXED_MEMBERS: &str = "METHOD PUBLIC VOID Inc():\nEND METHOD.\n\
     METHOD PUBLIC VOID Dec():\nEND METHOD.\n";
 const MIXER: &str = "DEFINE VARIABLE oMix AS app.Mixed NO-UNDO.\n\
@@ -803,7 +812,7 @@ const MIXER: &str = "DEFINE VARIABLE oMix AS app.Mixed NO-UNDO.\n\
     oMix:Dec().\n";
 
 #[test]
-fn a_member_the_class_outline_does_not_show_is_still_one_member() {
+fn a_member_written_in_an_include_of_its_class_is_one_member() {
     let ws = Workspace::new(&[
         ("oxabl.toml", CONFIG),
         ("app/Mixed.cls", MIXED),
@@ -811,16 +820,25 @@ fn a_member_the_class_outline_does_not_show_is_still_one_member() {
         ("mixer.p", MIXER),
     ]);
     let mixer = ws.path("mixer.p");
+    let mixed = ws.path("app/Mixed.cls");
+    let members = ws.path("mixed-members.i");
+    // Not `Dec`, which is also written in the include.
+    let expected = sorted(vec![
+        location(&mixer, MIXER, "Inc", 0),
+        location(&mixed, MIXED, "Inc", 0),
+        location(&members, MIXED_MEMBERS, "Inc", 0),
+    ]);
     let mut session = Session::start(&ws.root);
-    session.open(&mixer, MIXER);
-    let (found, shown, _) = references_logged(&mut session, &mixer, MIXER, "Inc", 0);
-    // Not `Dec`, which also has no place in the class outline.
-    assert_eq!(found, vec![location(&mixer, MIXER, "Inc", 0)]);
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    assert!(
-        shown[0].contains("the declaration of `inc` is not placed"),
-        "{shown:?}"
-    );
+    for (file, text, needle) in [
+        (&mixer, MIXER, "Inc"),
+        (&mixed, MIXED, "Inc()"),
+        (&members, MIXED_MEMBERS, "Inc"),
+    ] {
+        session.open(file, text);
+        let (found, shown, _) = references_logged(&mut session, file, text, needle, 0);
+        assert_eq!(found, expected, "from {}", file.display());
+        assert_eq!(shown, Vec::<String>::new(), "from {}", file.display());
+    }
 }
 
 const PROCS: &str = "PROCEDURE incProc:\nEND PROCEDURE.\n";
@@ -1105,8 +1123,10 @@ fn a_workspace_index_that_is_out_of_date_is_rebuilt_or_said_to_be() {
     assert_eq!(found.len(), 4, "{found:?}");
 
     // A caller written on disk after the pass, with no notice to the server.
+    // A search reuses a walk for added files for one second.
     let late = ws.path("late.p");
     std::fs::write(&late, THIRD).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
     let (found, shown, logged) = references_logged(&mut session, &main, MAIN, "lib/util.p", 0);
     assert!(
         found.contains(&location(&late, THIRD, "lib/util.p", 0)),
@@ -1166,6 +1186,99 @@ fn a_search_past_the_limit_keeps_the_declaring_program() {
     );
 }
 
+/// Callers with more text, so a search over them takes a while.
+fn heavy_workspace() -> Workspace {
+    let mut caller = String::from(WIDE_CALLER);
+    caller.push_str("DEFINE VARIABLE iWork AS INTEGER NO-UNDO.\n");
+    for _ in 0..400 {
+        caller.push_str("iWork = iWork + 1.\n");
+    }
+    let names: Vec<String> = (0..2_000).map(|n| format!("a{n:04}.p")).collect();
+    let mut files: Vec<(&str, &str)> = vec![("oxabl.toml", CONFIG), ("lib/util.p", WIDE_UTIL)];
+    files.extend(names.iter().map(|name| (name.as_str(), caller.as_str())));
+    Workspace::new(&files)
+}
+
+/// A workspace whose pass is long: many heavy files that do not name the
+/// program, and a few callers, so a search after the pass is short.
+fn long_pass_workspace() -> Workspace {
+    let mut other = String::from("DEFINE VARIABLE iWork AS INTEGER NO-UNDO.\n");
+    for _ in 0..400 {
+        other.push_str("iWork = iWork + 1.\n");
+    }
+    let names: Vec<String> = (0..3_000).map(|n| format!("b{n:04}.p")).collect();
+    let callers: Vec<String> = (0..5).map(|n| format!("a{n:04}.p")).collect();
+    let mut files: Vec<(&str, &str)> = vec![("oxabl.toml", CONFIG), ("lib/util.p", WIDE_UTIL)];
+    files.extend(callers.iter().map(|name| (name.as_str(), WIDE_CALLER)));
+    files.extend(names.iter().map(|name| (name.as_str(), other.as_str())));
+    Workspace::new(&files)
+}
+
+/// Ask for the references of `doWork` in `a0000.p`, cancel after `delay` when
+/// one is given, and return the answer and how long it took.
+fn timed_references(
+    session: &mut Session,
+    caller: &Path,
+    text: &str,
+    cancel_after: Option<std::time::Duration>,
+) -> (Value, std::time::Duration) {
+    let id = 9_000 + next_id();
+    let mut params = position(caller, text, "doWork", 0);
+    params["context"] = json!({"includeDeclaration": true});
+    let started = std::time::Instant::now();
+    session.send(json!({
+        "jsonrpc": "2.0", "id": id, "method": "textDocument/references", "params": params
+    }));
+    if let Some(delay) = cancel_after {
+        std::thread::sleep(delay);
+        session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}));
+    }
+    let (answer, _, _) = wait_answer(session, id);
+    (answer, started.elapsed())
+}
+
+#[test]
+fn a_cancel_stops_the_wait_for_the_workspace_pass() {
+    let ws = long_pass_workspace();
+    let caller = ws.path("a0000.p");
+    let text = std::fs::read_to_string(&caller).unwrap();
+    let mut session = Session::start(&ws.root);
+    session.open(&caller, &text);
+    // The first search waits for the workspace pass.
+    let delay = std::time::Duration::from_millis(100);
+    let (cancelled, took) = timed_references(&mut session, &caller, &text, Some(delay));
+    assert_eq!(cancelled["error"]["code"], json!(-32800), "{cancelled}");
+    // The pass goes on; the next request waits for the rest of it, and searches.
+    let (answer, rest) = timed_references(&mut session, &caller, &text, None);
+    assert!(answer.get("error").is_none(), "{answer}");
+    eprintln!("the cancel took {took:?}, the rest of the pass and a search {rest:?}");
+    assert!(
+        took * 3 < took + rest,
+        "the cancel took {took:?}, the rest of the pass and a search {rest:?}"
+    );
+}
+
+#[test]
+fn a_cancel_stops_a_search_between_files() {
+    let ws = heavy_workspace();
+    let caller = ws.path("a0000.p");
+    let text = std::fs::read_to_string(&caller).unwrap();
+    let mut session = Session::start(&ws.root);
+    session.open(&caller, &text);
+    let (answer, full) = timed_references(&mut session, &caller, &text, None);
+    assert!(answer.get("error").is_none(), "{answer}");
+    let (full, _) = (
+        full.min(timed_references(&mut session, &caller, &text, None).1),
+        (),
+    );
+    let (cancelled, took) = timed_references(&mut session, &caller, &text, Some(full / 10));
+    assert_eq!(cancelled["error"]["code"], json!(-32800), "{cancelled}");
+    assert!(
+        took * 2 < full,
+        "the cancel took {took:?}, a whole search {full:?}"
+    );
+}
+
 #[test]
 fn a_cancelled_search_answers_request_cancelled() {
     let ws = wide_workspace();
@@ -1181,4 +1294,96 @@ fn a_cancelled_search_answers_request_cancelled() {
     session.send(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}));
     let (answer, _, _) = wait_answer(&mut session, id);
     assert_eq!(answer["error"]["code"], json!(-32800), "{answer}");
+}
+
+const SHOP_FIELDS: &str =
+    "FIND FIRST Item NO-LOCK NO-ERROR.\nDISPLAY ItemNum.\nDISPLAY Item.ItemNum.\n";
+
+#[test]
+fn a_name_like_the_referent_that_does_not_resolve_is_counted() {
+    let config = "[workspace]\nname = \"references\"\n\
+        [workspace.sources]\ninclude_paths = [\".\"]\n\
+        [workspace.schema]\nfiles = [\"db/shop.df\"]\n";
+    let ws = Workspace::new(&[
+        ("oxabl.toml", config),
+        ("db/shop.df", SHOP),
+        ("fields.p", SHOP_FIELDS),
+        ("reads-too.p", READS_TOO),
+    ]);
+    let path = ws.path("fields.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, SHOP_FIELDS);
+    let (_, shown, _) = references_logged(&mut session, &path, SHOP_FIELDS, "ItemNum.\n", 1);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(
+        shown[0].contains("1 name(s) `itemnum` in fields.p did not resolve"),
+        "{shown:?}"
+    );
+}
+
+const SHARED_TT: &str = "DEFINE NEW SHARED TEMP-TABLE ttShared NO-UNDO\n    FIELD amount AS INTEGER.\n\
+    CREATE ttShared.\nttShared.amount = 1.\n";
+
+#[test]
+fn a_field_of_a_shared_temp_table_is_said_to_be_short() {
+    let ws = Workspace::new(&[("oxabl.toml", CONFIG), ("tt.p", SHARED_TT)]);
+    let path = ws.path("tt.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, SHARED_TT);
+    let (found, shown, _) = references_logged(&mut session, &path, SHARED_TT, "amount = 1", 0);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(
+        shown[0].contains("`amount` is a field of the shared temp-table `ttShared`"),
+        "{shown:?}"
+    );
+}
+
+/// A program with `n` variables and `n` calls of one function.
+fn many_calls(n: usize) -> String {
+    let mut text =
+        String::from("FUNCTION fnOne RETURNS INTEGER ():\n    RETURN 1.\nEND FUNCTION.\n");
+    for at in 0..n {
+        text.push_str(&format!("DEFINE VARIABLE v{at} AS INTEGER NO-UNDO.\n"));
+    }
+    for at in 0..n {
+        text.push_str(&format!("v{at} = fnOne().\n"));
+    }
+    text
+}
+
+/// The shortest of three times for the outgoing calls of a program of `n`.
+fn outgoing_time(n: usize) -> std::time::Duration {
+    let text = many_calls(n);
+    let ws = Workspace::new(&[("oxabl.toml", CONFIG), ("many.p", &text)]);
+    let path = ws.path("many.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, &text);
+    let program = item(&mut session, &path, &text, "\nDEFINE", 0);
+    (0..3)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let (result, _) = ask(
+                &mut session,
+                "callHierarchy/outgoingCalls",
+                json!({"item": program}),
+            );
+            assert_eq!(result[0]["fromRanges"].as_array().unwrap().len(), n);
+            started.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+#[test]
+fn outgoing_calls_cost_about_linear_time_in_the_calls() {
+    let small = outgoing_time(500);
+    let large = outgoing_time(8_000);
+    eprintln!("outgoing calls: 500 in {small:?}, 8,000 in {large:?}");
+    // Linear is about 16 times; a cost per call that grows with the unit is
+    // about 256 times.
+    assert!(
+        large < small * 40,
+        "500 calls took {small:?}, 8,000 took {large:?}"
+    );
 }

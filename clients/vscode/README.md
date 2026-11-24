@@ -82,9 +82,10 @@ you also get, with no setup:
   the class, a database field in the files that read its table, and a name
   declared in an include in each file that includes it. When the list can be
   short because of this name, a warning says why: for example a call through a
-  handle that oxabl cannot follow, or a shared variable. A reason that holds
-  for the whole workspace (no include path, a file that oxabl could not
-  analyse) is written once to the `oxabl language server` output instead.
+  handle that oxabl cannot follow, a shared variable, no include path, or a
+  workspace index that is not ready. A reason that holds for the whole
+  workspace and leaves out only a part of the search (a file that oxabl could
+  not analyse) is written once to the `oxabl language server` output instead.
 - **Call hierarchy** (`Shift+Alt+H`). Shows the callers of a procedure,
   function, method or program, and the `RUN`, function and method calls it
   makes. On a name that is no routine, or on a keyword, it shows the routine

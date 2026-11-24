@@ -53,8 +53,8 @@ pub(crate) enum Key {
     /// Internal procedure `procedure` (folded) of `program`, whose text does
     /// not declare it: a super procedure of the program can supply it.
     Undeclared { program: PathBuf, procedure: String },
-    /// Member `name` (folded) of the class in `class`, whose declaration the
-    /// class file's outline does not show (one written in an include).
+    /// Member `name` (folded) of the class in `class`, whose declaration
+    /// neither the class file nor its expansion shows.
     Member { class: PathBuf, name: String },
 }
 
@@ -91,33 +91,39 @@ pub struct Navigation<'s, 'a> {
     /// The outline of each file read for an answer, by path. `None` when the
     /// file cannot be read or outlined.
     outlines: RefCell<HashMap<PathBuf, Option<Rc<[OutlineSymbol]>>>>,
-    /// The routines of the expanded text, outlined on first use.
-    pub(crate) routines: OnceCell<Vec<OutlineSymbol>>,
-    /// The internal procedures of each program a handle runs, as its
-    /// expansion declares them, by path.
-    procedures: RefCell<HashMap<PathBuf, Procedures>>,
+    /// The routines of the expanded text, outlined on first use, sorted by
+    /// start, each with the index of the innermost routine that holds it.
+    pub(crate) routines: OnceCell<(Vec<OutlineSymbol>, Vec<Option<usize>>)>,
+    /// The declarations of each program or class file as its expansion shows
+    /// them, by path. `None` when the file cannot be expanded.
+    expanded_outlines: RefCell<HashMap<PathBuf, Option<Declarations>>>,
     /// The navigation sites, by start.
     site_index: OnceCell<SpanIndex>,
-    /// The declared symbols, by the start of their name.
-    declaration_index: OnceCell<SpanIndex>,
+    /// The declared symbols of the unit, and an index of them by the start of
+    /// their name.
+    declarations: OnceCell<(Vec<SymbolId>, SpanIndex)>,
     /// The `RUN` navigation sites, by start.
     pub(crate) run_sites: OnceCell<Vec<usize>>,
 }
 
-/// The internal procedures of a program, each name with its declaration.
-type Procedures = Rc<[(String, Target)]>;
+/// One declaration of an expanded file: the name, the outline kind, the kind
+/// of the symbol that holds it, and where the name is written.
+type Declaration = (String, OutlineKind, Option<OutlineKind>, Target);
+
+/// The declarations of an expanded file.
+type Declarations = Rc<[Declaration]>;
 
 /// Spans sorted by start, so the ones that hold an offset are found without a
 /// scan of all of them.
 #[derive(Default)]
-struct SpanIndex {
+pub(crate) struct SpanIndex {
     /// Start, end and the caller's index of each span.
     spans: Vec<(u32, u32, usize)>,
     longest: u32,
 }
 
 impl SpanIndex {
-    fn new(spans: impl Iterator<Item = (VirtualSpan, usize)>) -> SpanIndex {
+    pub(crate) fn new(spans: impl Iterator<Item = (VirtualSpan, usize)>) -> SpanIndex {
         let mut spans: Vec<(u32, u32, usize)> =
             spans.map(|(span, at)| (span.start, span.end, at)).collect();
         spans.sort_unstable();
@@ -130,7 +136,7 @@ impl SpanIndex {
     }
 
     /// The indices of the spans that hold `at`.
-    fn holding(&self, at: u32) -> impl Iterator<Item = usize> + '_ {
+    pub(crate) fn holding(&self, at: u32) -> impl Iterator<Item = usize> + '_ {
         let end = self.spans.partition_point(|(start, _, _)| *start <= at);
         let from = at.saturating_sub(self.longest);
         let begin = self.spans[..end].partition_point(|(start, _, _)| *start < from);
@@ -178,9 +184,9 @@ impl<'a> LintPipeline<'a> {
             calls: OnceCell::new(),
             outlines: RefCell::new(HashMap::new()),
             routines: OnceCell::new(),
-            procedures: RefCell::new(HashMap::new()),
+            expanded_outlines: RefCell::new(HashMap::new()),
             site_index: OnceCell::new(),
-            declaration_index: OnceCell::new(),
+            declarations: OnceCell::new(),
             run_sites: OnceCell::new(),
         })
     }
@@ -317,21 +323,23 @@ impl Navigation<'_, '_> {
         });
         let mut sites: Vec<_> = site_index.holding(virt).map(|at| &all[at]).collect();
         sites.sort_by_key(|site| (site.span.end - site.span.start, site.span.start));
-        let declared: Vec<(SymbolId, &oxabl_semantic::Symbol)> = symbols
-            .iter()
-            .filter(|(_, symbol)| symbol.declaration != NodeId::DUMMY)
-            .collect();
-        let declaration_index = self.declaration_index.get_or_init(|| {
-            SpanIndex::new(
+        let (declared, declaration_index) = self.declarations.get_or_init(|| {
+            let declared: Vec<SymbolId> = symbols
+                .iter()
+                .filter(|(_, symbol)| symbol.declaration != NodeId::DUMMY)
+                .map(|(sym, _)| sym)
+                .collect();
+            let index = SpanIndex::new(
                 declared
                     .iter()
                     .enumerate()
-                    .map(|(at, (_, symbol))| (symbol.name_span, at)),
-            )
+                    .map(|(at, sym)| (symbols.get(*sym).name_span, at)),
+            );
+            (declared, index)
         });
         let declaration = declaration_index
             .holding(virt)
-            .map(|at| declared[at])
+            .map(|at| (declared[at], symbols.get(declared[at])))
             .min_by_key(|(sym, symbol)| (symbol.name_span.end - symbol.name_span.start, sym.raw()));
         // Sites of one length name one thing; the first with a target wins, and
         // one that answers "nothing" only stops the search when none has one.
@@ -366,6 +374,27 @@ impl Navigation<'_, '_> {
         {
             let name = symbols.get(sym).name.as_ref();
             if self.member_spans(&path, name).is_empty() {
+                // Written in an include of the class: the expansion places it.
+                let expanded: Vec<Key> = self
+                    .expanded_declarations(&path)
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|(found, kind, parent, _)| {
+                        found.eq_ignore_ascii_case(name)
+                            && is_member_kind(*kind)
+                            && matches!(
+                                parent,
+                                Some(
+                                    OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum
+                                )
+                            )
+                    })
+                    .map(|(_, _, _, target)| Key::At(target.clone()))
+                    .collect();
+                if !expanded.is_empty() {
+                    return expanded;
+                }
                 return vec![Key::Member {
                     class: path,
                     name: name.to_ascii_lowercase(),
@@ -481,9 +510,9 @@ impl Navigation<'_, '_> {
         for path in paths {
             let declared: Vec<Target> = self
                 .program_procedures(&path)
-                .iter()
+                .into_iter()
                 .filter(|(name, _)| name.eq_ignore_ascii_case(procedure))
-                .map(|(_, target)| target.clone())
+                .map(|(_, target)| target)
                 .collect();
             if declared.is_empty() {
                 keys.push(Key::Undeclared {
@@ -498,66 +527,86 @@ impl Navigation<'_, '_> {
     }
 
     /// The internal procedures a program declares, in its own text or in an
-    /// include it expands, each at its name in the file that writes it.
-    /// Expanded once per program and analysis.
-    fn program_procedures(&self, path: &Path) -> Procedures {
-        if let Some(known) = self.procedures.borrow().get(path) {
-            return Rc::clone(known);
+    /// include it expands, each at its name in the file that writes it. The
+    /// program's own outline when it cannot be expanded.
+    fn program_procedures(&self, path: &Path) -> Vec<(String, Target)> {
+        let procedure =
+            |(name, kind, parent, target): &(String, OutlineKind, Option<OutlineKind>, Target)| {
+                (*kind == OutlineKind::Procedure && parent.is_none())
+                    .then(|| (name.clone(), target.clone()))
+            };
+        if let Some(found) = self.expanded_declarations(path) {
+            return found.iter().filter_map(procedure).collect();
         }
-        let found: Procedures = self.expand_procedures(path).into();
-        self.procedures
+        self.outline_of(path)
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|symbol| symbol.kind == OutlineKind::Procedure)
+            .map(|symbol| {
+                let target = Target {
+                    path: path.to_path_buf(),
+                    span: Some(symbol.selection_span),
+                };
+                (symbol.name.clone(), target)
+            })
+            .collect()
+    }
+
+    /// The declarations of a program or class file as its expansion shows
+    /// them, each at its name in the file that writes it. Expanded once per
+    /// file and analysis. `None` when the file cannot be read or expanded.
+    fn expanded_declarations(&self, path: &Path) -> Option<Declarations> {
+        if let Some(known) = self.expanded_outlines.borrow().get(path) {
+            return known.clone();
+        }
+        let found: Option<Declarations> = self.expand_declarations(path).map(Rc::from);
+        self.expanded_outlines
             .borrow_mut()
-            .insert(path.to_path_buf(), Rc::clone(&found));
+            .insert(path.to_path_buf(), found.clone());
         found
     }
 
-    fn expand_procedures(&self, path: &Path) -> Vec<(String, Target)> {
-        let Ok(text) = self.run.file_system().read(path) else {
-            return Vec::new();
-        };
+    fn expand_declarations(&self, path: &Path) -> Option<Vec<Declaration>> {
+        let text = self.run.file_system().read(path).ok()?;
         let run = LintPipeline::new(self.run.config(), self.run.file_system());
-        let program = run.with_file(path);
-        let expansion = program.expand(&text);
-        let Some(expanded) = expansion.expanded() else {
-            // No expansion: the program's own text is all there is to read.
-            return self
-                .outline_of(path)
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .filter(|symbol| symbol.kind == OutlineKind::Procedure)
-                .map(|symbol| {
-                    let target = Target {
-                        path: path.to_path_buf(),
-                        span: Some(symbol.selection_span),
-                    };
-                    (symbol.name.clone(), target)
-                })
-                .collect();
-        };
+        let file = run.with_file(path);
+        let expansion = file.expand(&text);
+        if expansion.preprocessing_failed() {
+            return None;
+        }
+        let expanded = expansion.expanded()?;
         let root = search::normalize_lexically(path);
-        outline(&expanded.text)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|symbol| symbol.kind == OutlineKind::Procedure)
-            .filter_map(|symbol| {
-                let span = symbol.selection_span;
-                let target = match expanded.resolve_root_span(span) {
-                    Some(span) => Target {
-                        path: root.clone(),
+        let mut found = Vec::new();
+        let outlined = outline(&expanded.text).ok()?;
+        let mut stack: Vec<(&OutlineSymbol, Option<OutlineKind>)> =
+            outlined.iter().map(|symbol| (symbol, None)).collect();
+        while let Some((symbol, parent)) = stack.pop() {
+            stack.extend(
+                symbol
+                    .children
+                    .iter()
+                    .map(|child| (child, Some(symbol.kind))),
+            );
+            let span = symbol.selection_span;
+            let target = match expanded.resolve_root_span(span) {
+                Some(span) => Target {
+                    path: root.clone(),
+                    span: Some(span),
+                },
+                None => {
+                    let Some((file, span, _)) = expanded.resolve_include_span(span) else {
+                        continue;
+                    };
+                    Target {
+                        path: search::normalize_lexically(file),
                         span: Some(span),
-                    },
-                    None => {
-                        let (file, span, _) = expanded.resolve_include_span(span)?;
-                        Target {
-                            path: search::normalize_lexically(file),
-                            span: Some(span),
-                        }
                     }
-                };
-                Some((symbol.name, target))
-            })
-            .collect()
+                }
+            };
+            found.push((symbol.name.clone(), symbol.kind, parent, target));
+        }
+        Some(found)
     }
 
     /// Every file on the search path that the name written at `span` could
@@ -777,6 +826,22 @@ impl Navigation<'_, '_> {
             .insert(path.to_path_buf(), outlined.clone());
         outlined
     }
+}
+
+/// Whether a class member of this kind can be named from another file.
+pub(crate) fn is_member_kind(kind: OutlineKind) -> bool {
+    matches!(
+        kind,
+        OutlineKind::Method
+            | OutlineKind::Property
+            | OutlineKind::Event
+            | OutlineKind::Variable
+            | OutlineKind::TempTable
+            | OutlineKind::Buffer
+            | OutlineKind::Dataset
+            | OutlineKind::DataSource
+            | OutlineKind::EnumMember
+    )
 }
 
 fn to_span(span: VirtualSpan) -> Span {

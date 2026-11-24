@@ -21,10 +21,12 @@ outline:
 - An internal procedure that a program declares in one of its includes is
   found in the expanded program, so `RUN p IN h` and the `RUN p` of the
   program name one declaration, in the include.
-- A class member that the outline of its class file does not show (one
-  written in an include in the class) is the member of that name of that
-  class. Its declaration is not placed, and the answer says so. An enum member
-  is a member like any other.
+- A class member written in an include of its class is found in the expanded
+  class, so a call from another file, a call in the class and the declaration
+  name one member, in the include. Only when the class cannot be expanded is
+  it the member of that name of that class, with no place: the answer then
+  says that its declaration and its uses in the class can be missed. An enum
+  member is a member like any other.
 
 The code is in `oxabl_pipeline::references` (one compilation unit) and
 `oxabl_daemon::references` (the search over the workspace).
@@ -51,13 +53,17 @@ most 2000 other files (`oxabl_daemon::references::MAX_UNITS`). The files that
 declare the referent come first, so the limit never cuts them.
 
 At most two searches over other files run at one time
-(`oxabl_daemon::references::MAX_SEARCHES`); a later one waits. A
-`$/cancelRequest` stops a request between two files, and while it waits, and
-the request answers `RequestCancelled`.
+(`oxabl_daemon::references::MAX_SEARCHES`); a later one waits. A request takes
+its place only after the workspace graph is ready, so a request that waits for
+a workspace pass holds no place. A `$/cancelRequest` stops a request while it
+waits for the pass (the pass goes on and is kept for later requests), while it
+waits for a place, and between two files. The request answers
+`RequestCancelled`.
 
-The search starts from a current workspace pass. A references request does not
-reuse a recent walk for added files: it walks the workspace again, so a file
-written a moment ago is found or the pass is run again.
+The search starts from a current workspace pass. It reuses a walk for added
+files for at most one second (a poll of `oxabl/freshness` reuses one for two),
+so a file written more than a second ago is found or the pass is run again, and
+expanding many call hierarchy nodes does not walk the workspace each time.
 
 `includeDeclaration` adds the declarations of the referent. A program has no
 declaration.
@@ -130,19 +136,27 @@ two kinds.
 - A unit with more than 20000 calls (`oxabl_index::calls::MAX_SITES`): the
   rest of its calls are not listed, and a call through a handle after the
   limit is not resolved.
-- A shared variable (or other shared object): the programs that define it
-  `SHARED` are not searched.
+- A shared variable (or other shared object), or a field of a shared
+  temp-table: the programs that define it `SHARED` are not searched.
 - A class member whose declaration is not placed.
+- Names spelled like the referent (`name`, `x.name`, `x:name`) that did not
+  resolve in a searched unit, such as an unqualified database field that the
+  analysis does not tie to its table: any of them can mean it.
+- No include path is configured: other files are not searched. This is the
+  refusal of `oxabl/impact`.
+- The workspace index is not ready or out of date. A pass whose files changed
+  is run again once. When it is still out of date, or edits replaced each
+  pass, it is a gap.
 - A place that names the referent in text no file writes and no reference
   can stand for, and a place that the client cannot be shown because the text
   of its file could not be read.
 
-**Standing gaps** are the same for every request in the workspace:
+The last two leave out or date the whole search of other files, so they are
+shown on each request that has them.
 
-- No include path is configured: other files are not searched. This is the
-  refusal of `oxabl/impact`.
-- The workspace index is out of date. A pass whose files changed is run again
-  once. When it is still out of date, or edits replaced each pass, it is a gap.
+**Standing gaps** are the same for every request in the workspace, and each
+says that only a part of the search can be short:
+
 - Files of the workspace that could not be analysed, or whose dependency set
   is incomplete (a recovered parse, an include that was not found): they can
   hold a reference that the graph does not show.
@@ -180,9 +194,15 @@ most visible place that it can without a message on every request:
 Each request analyses the unit that asks again (expand, parse, resolve; no type
 check). A search over other files analyses each of them the same way, on
 `available_parallelism` threads, and reads the outline of each file a
-resolution names once per file. A lookup of the name at an offset, and of the
-call that holds a `RUN` name, is a binary search over sites sorted by start, so
-a unit costs about linear time in its sites and calls. Nothing is memoized between requests. The
+resolution names once per file. A lookup of the name at an offset, of the call
+that holds a `RUN` name and of the routine that holds a call is a binary
+search; the declared symbols and each callee's item are built once per
+request. So a unit costs about linear time in its sites and calls: the
+outgoing calls of a program with N variables and N calls take 0.10 to 0.16 s
+for N = 2,000 and 0.9 to 1.2 s for N = 16,000 (release, a loaded machine), and
+the test `outgoing_calls_cost_about_linear_time_in_the_calls` fails when 16
+times the calls cost more than 40 times the time. Nothing is memoized between
+requests. The
 first request that searches other files waits for the workspace pass that
 `workspace/symbol` and `oxabl/impact` also wait for.
 
@@ -215,5 +235,7 @@ fields, include variables, the search limit, cancellation, an index made out of
 date on disk, and the gaps (no include path, a file with an incomplete
 dependency set, logged once per session, a unit with more than 20000 calls,
 a searched file whose analysis panics, a procedure a super procedure
-supplies). The `references` scenario of
+supplies, a name like the referent that did not resolve, a field of a shared
+temp-table), a cancel during the workspace pass and between files, and the
+cost of outgoing calls as a unit grows. The `references` scenario of
 `clients/vscode/test/e2e` shows both features in a real VS Code.

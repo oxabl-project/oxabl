@@ -28,7 +28,7 @@ use oxabl_pipeline::{
 
 use crate::SessionHost;
 use crate::db::{NavigationUnit, with_navigation};
-use crate::methods::reference_graph;
+use crate::methods::{ReferenceGraph, reference_graph};
 
 /// The most other units one request analyses.
 pub const MAX_UNITS: usize = 2_000;
@@ -159,23 +159,28 @@ pub fn answer_references(
     let mut slot = None;
     if !referent.is_local() {
         cancelled()?;
-        slot = Some(SearchSlot::take(cancel).ok_or(ReferenceError::Cancelled)?);
-        cancelled()?;
-        match reference_graph(host, session_root) {
+        // These leave out or date the whole search, so they are gaps of this
+        // answer, not standing ones.
+        match graph_or_cancel(host, session_root, cancel)? {
             Ok(Ok(graph)) => {
-                gaps.extend(graph.gaps.into_iter().map(Gap::standing));
+                gaps.extend(graph.gaps.into_iter().map(Gap::of_referent));
                 let search = referent.search(&graph.graph, root, MAX_UNITS);
                 gaps.extend(search.gaps);
                 units = search.units;
             }
-            Ok(Err(reason)) => gaps.push(Gap::standing(format!(
+            Ok(Err(reason)) => gaps.push(Gap::of_referent(format!(
                 "other files are not searched: {reason}"
             ))),
-            Err(error) => gaps.push(Gap::standing(format!(
+            Err(error) => gaps.push(Gap::of_referent(format!(
                 "other files are not searched: {error}"
             ))),
         }
         cancelled()?;
+        // Taken once the graph is ready: a request that waits for a pass holds
+        // no place another request could use.
+        if !units.is_empty() {
+            slot = Some(SearchSlot::take(cancel).ok_or(ReferenceError::Cancelled)?);
+        }
     }
     let incoming = matches!(local, Part::Incoming(..));
     let include_declaration = matches!(
@@ -375,6 +380,44 @@ fn merge_incoming(
 fn finish_incoming(calls: &mut [IncomingCall]) {
     for call in calls {
         dedupe_spans(&mut call.spans);
+    }
+}
+
+type GraphAnswer = Result<Result<ReferenceGraph, String>, crate::MethodError>;
+
+/// The workspace graph, from a thread of its own, so a cancel stops the wait
+/// for a workspace pass. The pass goes on and is kept for later requests.
+fn graph_or_cancel(
+    host: &SessionHost,
+    session_root: &Path,
+    cancel: &AtomicBool,
+) -> Result<GraphAnswer, ReferenceError> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let spawned = oxabl_common::stack::builder()
+        .name("oxabl-reference-graph".to_string())
+        .spawn({
+            let host = host.clone();
+            let session_root = session_root.to_path_buf();
+            move || {
+                let answer = oxabl_common::catch_panic(|| reference_graph(&host, &session_root))
+                    .unwrap_or_else(|panic| Ok(Err(format!("the workspace pass failed: {panic}"))));
+                let _ = sender.send(answer);
+            }
+        });
+    if let Err(error) = spawned {
+        return Ok(Ok(Err(format!("cannot start the workspace pass: {error}"))));
+    }
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ReferenceError::Cancelled);
+        }
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(answer) => return Ok(answer),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Ok(Ok(Err("the workspace pass stopped".to_string())));
+            }
+        }
     }
 }
 

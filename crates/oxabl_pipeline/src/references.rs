@@ -24,7 +24,7 @@ use oxabl_index::search;
 use oxabl_semantic::{SiteTarget, SymbolFlags};
 use oxabl_workspace::is_include_fragment;
 
-use crate::navigate::Key;
+use crate::navigate::{Key, is_member_kind};
 use crate::{Navigation, OutlineKind, OutlineSymbol, ReverseGraph, Subject, Target};
 
 /// What a references or call hierarchy request is about: every declaration,
@@ -459,8 +459,8 @@ impl Navigation<'_, '_> {
                 ),
                 Key::Member { class, name } => {
                     gaps.push(Gap::of_referent(format!(
-                        "the declaration of `{name}` is not placed: the outline of {} \
-                         does not show it",
+                        "the declaration of `{name}` is not placed, and its uses in {} can \
+                         be missed: neither the class nor its expansion shows it",
                         file_name(class)
                     )));
                     (
@@ -492,6 +492,11 @@ impl Navigation<'_, '_> {
                         gaps.push(Gap::of_referent(format!(
                             "`{shared}` is shared: other programs that define it SHARED are \
                              not searched"
+                        )));
+                    } else if let Some((field, table)) = self.shared_table_field_at(path, *span) {
+                        gaps.push(Gap::of_referent(format!(
+                            "`{field}` is a field of the shared temp-table `{table}`: other \
+                             programs that define it SHARED are not searched"
                         )));
                     }
                     self.classify(path, *span)
@@ -527,6 +532,26 @@ impl Navigation<'_, '_> {
                 && self.place(symbol.name_span).as_ref() == Some(&wanted))
             .then(|| self.text(symbol.name_span).unwrap_or_default().to_string())
         })
+    }
+
+    /// The name of the field declared at `span` of `path` and of its
+    /// temp-table, when this unit declares that temp-table shared.
+    fn shared_table_field_at(&self, path: &Path, span: Span) -> Option<(String, String)> {
+        let outline = self.outline_of(path)?;
+        let (field, table) = field_and_table(&outline, span)?;
+        let shared = SymbolFlags::SHARED | SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED;
+        self.semantic
+            .symbols
+            .iter()
+            .any(|(_, symbol)| {
+                symbol.declaration != oxabl_ast::NodeId::DUMMY
+                    && symbol.kind == oxabl_semantic::SymbolKind::TempTable
+                    && symbol.flags.intersects(shared)
+                    && self
+                        .text(symbol.name_span)
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&table.name))
+            })
+            .then(|| (field.name.clone(), table.name.clone()))
     }
 
     /// The database table whose `.df` declares the table or a field at `span`
@@ -616,7 +641,7 @@ impl Navigation<'_, '_> {
     /// Every place in this unit that names `referent`: the uses, and the
     /// declarations this unit holds.
     pub fn references(&self, referent: &Referent) -> UnitReferences {
-        let (occurrences, unplaced) = self.occurrences(referent);
+        let (occurrences, unplaced, unresolved_names) = self.occurrences(referent);
         let unresolved_calls = self.unresolved_calls(referent, &occurrences);
         let mut gaps = Vec::new();
         let root = self
@@ -626,6 +651,13 @@ impl Navigation<'_, '_> {
         if unplaced > 0 {
             gaps.push(Gap::of_referent(format!(
                 "{unplaced} place(s) in {root} that name `{}` come from text no file writes",
+                referent.name
+            )));
+        }
+        if unresolved_names > 0 {
+            gaps.push(Gap::of_referent(format!(
+                "{unresolved_names} name(s) `{}` in {root} did not resolve, and any of them can \
+                 mean it",
                 referent.name
             )));
         }
@@ -643,15 +675,28 @@ impl Navigation<'_, '_> {
         }
     }
 
-    /// The occurrences of `referent`, and how many sites named it in text that
-    /// has no place in a file.
-    fn occurrences(&self, referent: &Referent) -> (Vec<Occurrence>, usize) {
+    /// The occurrences of `referent`, how many sites named it in text that
+    /// has no place in a file, and how many names spelled like it did not
+    /// resolve.
+    fn occurrences(&self, referent: &Referent) -> (Vec<Occurrence>, usize, usize) {
         let keys = &referent.keys;
         let symbols = &self.semantic.symbols;
         let mut found: Vec<Occurrence> = Vec::new();
         let mut unplaced = 0;
+        let mut unresolved: Vec<VirtualSpan> = Vec::new();
         for site in symbols.sites() {
-            let Some(named) = self.site_keys(&site.target, site.span) else {
+            let named = self.site_keys(&site.target, site.span);
+            if matches!(site.target, SiteTarget::Reference(_))
+                && named.as_ref().is_none_or(Vec::is_empty)
+                && self.spells(site.span, &referent.name)
+            {
+                let span = self.narrow(site.span, &referent.name);
+                if !unresolved.contains(&span) {
+                    unresolved.push(span);
+                }
+                continue;
+            }
+            let Some(named) = named else {
                 continue;
             };
             if !named.iter().any(|key| keys.contains(key)) {
@@ -699,7 +744,24 @@ impl Navigation<'_, '_> {
             key(a).cmp(&key(b)).then(b.declaration.cmp(&a.declaration))
         });
         found.dedup_by(|later, kept| later.place == kept.place);
-        (found, unplaced)
+        (found, unplaced, unresolved.len())
+    }
+
+    /// Whether the text at `span` is `name`, or a qualified name that ends in
+    /// it (`x.name`, `x:name`), ignoring case.
+    fn spells(&self, span: VirtualSpan, name: &str) -> bool {
+        let Some(text) = self.text(span) else {
+            return false;
+        };
+        let text = text.trim();
+        let Some(at) = text.len().checked_sub(name.len()) else {
+            return false;
+        };
+        if name.is_empty() || !text.is_char_boundary(at) {
+            return false;
+        }
+        let (head, tail) = text.split_at(at);
+        tail.eq_ignore_ascii_case(name) && (head.is_empty() || head.ends_with(['.', ':']))
     }
 
     /// A span of the expanded text in the file that wrote it, or for text a
@@ -919,6 +981,7 @@ impl Navigation<'_, '_> {
         let calls = self.calls();
         let mut out: Vec<OutgoingCall> = Vec::new();
         let mut grouped: HashMap<ItemKey, usize> = HashMap::new();
+        let mut items: HashMap<KeyId, CallItem> = HashMap::new();
         let mut unplaced = 0;
         for site in &calls.sites {
             let enclosing = self.enclosing(site.at.start);
@@ -928,7 +991,11 @@ impl Navigation<'_, '_> {
             let (keys, shown) = self.call_keys(site);
             let mut callees: Vec<CallItem> = Vec::new();
             for key in &keys {
-                let item = self.item_for(key).unwrap_or_else(|| self.other_item(key));
+                // Many calls name one callee: build its item once.
+                let item = items
+                    .entry(key_id(key))
+                    .or_insert_with(|| self.item_for(key).unwrap_or_else(|| self.other_item(key)))
+                    .clone();
                 if !callees.iter().any(|known| known.same(&item)) {
                     callees.push(item);
                 }
@@ -1270,6 +1337,11 @@ impl Navigation<'_, '_> {
 
     /// The routines of the expanded unit, outlined once.
     fn routines(&self) -> &[OutlineSymbol] {
+        &self.routine_tree().0
+    }
+
+    /// The routines sorted by start, and the parent of each.
+    fn routine_tree(&self) -> &(Vec<OutlineSymbol>, Vec<Option<usize>>) {
         self.routines.get_or_init(|| {
             let mut routines = Vec::new();
             let outline = crate::outline(&self.expanded.text).unwrap_or_default();
@@ -1283,15 +1355,38 @@ impl Navigation<'_, '_> {
                 stack.extend(symbol.children.iter());
             }
             routines
+                .sort_by_key(|routine| (routine.span.start, std::cmp::Reverse(routine.span.end)));
+            let mut parents = Vec::with_capacity(routines.len());
+            let mut open: Vec<usize> = Vec::new();
+            for (at, routine) in routines.iter().enumerate() {
+                while let Some(&last) = open.last()
+                    && routines[last].span.end <= routine.span.start
+                {
+                    open.pop();
+                }
+                parents.push(open.last().copied());
+                open.push(at);
+            }
+            (routines, parents)
         })
     }
 
-    /// The innermost routine of the expanded unit that holds `virt`.
+    /// The innermost routine of the expanded unit that holds `virt`. Routines
+    /// nest, so it is the last routine that starts at or before `virt`, or
+    /// one that holds it.
     fn enclosing(&self, virt: u32) -> Option<&OutlineSymbol> {
-        self.routines()
-            .iter()
-            .filter(|routine| routine.span.start <= virt && virt < routine.span.end)
-            .min_by_key(|routine| routine.span.end - routine.span.start)
+        let (routines, parents) = self.routine_tree();
+        let mut at = routines
+            .partition_point(|routine| routine.span.start <= virt)
+            .checked_sub(1);
+        while let Some(index) = at {
+            let routine = &routines[index];
+            if virt < routine.span.end {
+                return Some(routine);
+            }
+            at = parents[index];
+        }
+        None
     }
 
     /// The bytes of `file` that show the expanded span `virt`: the span
@@ -1362,20 +1457,40 @@ fn find_selected(
     None
 }
 
-/// Whether a class member of this kind can be named from another file.
-fn is_member_kind(kind: OutlineKind) -> bool {
-    matches!(
-        kind,
-        OutlineKind::Method
-            | OutlineKind::Property
-            | OutlineKind::Event
-            | OutlineKind::Variable
-            | OutlineKind::TempTable
-            | OutlineKind::Buffer
-            | OutlineKind::Dataset
-            | OutlineKind::DataSource
-            | OutlineKind::EnumMember
-    )
+/// A [`Key`] as a value a map can hold.
+type KeyId = (u8, PathBuf, Option<(u32, u32)>, String);
+
+fn key_id(key: &Key) -> KeyId {
+    match key {
+        Key::At(target) => (
+            0,
+            target.path.clone(),
+            target.span.map(|span| (span.start, span.end)),
+            String::new(),
+        ),
+        Key::Undeclared { program, procedure } => (1, program.clone(), None, procedure.clone()),
+        Key::Member { class, name } => (2, class.clone(), None, name.clone()),
+    }
+}
+
+/// The field whose name is at `span`, and the temp-table that holds it.
+fn field_and_table(
+    symbols: &[OutlineSymbol],
+    span: Span,
+) -> Option<(&OutlineSymbol, &OutlineSymbol)> {
+    let mut stack: Vec<&OutlineSymbol> = symbols.iter().collect();
+    while let Some(symbol) = stack.pop() {
+        if symbol.kind == OutlineKind::TempTable
+            && let Some(field) = symbol
+                .children
+                .iter()
+                .find(|child| child.kind == OutlineKind::Field && child.selection_span == span)
+        {
+            return Some((field, symbol));
+        }
+        stack.extend(symbol.children.iter());
+    }
+    None
 }
 
 /// Whether other files reach the referent through a handle.
