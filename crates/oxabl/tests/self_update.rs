@@ -182,7 +182,7 @@ fn an_update_refreshes_the_installed_skill_with_the_new_binary() {
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     let args = std::fs::read_to_string(fixture.state().with_file_name("skill-args")).unwrap();
-    assert_eq!(args.trim(), "skill install --user --refresh");
+    assert_eq!(args.trim(), "skill install --refresh");
     assert!(!text(&output.stderr).contains("warning"));
 }
 

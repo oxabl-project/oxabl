@@ -201,4 +201,4 @@ case ":${PATH:-}:" in
   *":$install_dir:"*) ;;
   *) say "warning: $install_dir is not on your PATH. Add it, for example: export PATH=\"$install_dir:\$PATH\"" ;;
 esac
-say "To teach coding agents oxabl: oxabl skill install --user"
+say "To teach coding agents oxabl: oxabl skill install"

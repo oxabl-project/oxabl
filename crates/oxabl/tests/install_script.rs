@@ -116,7 +116,7 @@ fn it_installs_the_newest_release_and_writes_the_record() {
     assert!(
         text(&output.stdout)
             .lines()
-            .any(|line| line == "To teach coding agents oxabl: oxabl skill install --user"),
+            .any(|line| line == "To teach coding agents oxabl: oxabl skill install"),
         "{}",
         text(&output.stdout)
     );

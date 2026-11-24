@@ -366,7 +366,8 @@ fn the_check_reads_the_help_of_the_real_binary() {
     let skill = tree.help(&["skill".to_string()]);
     assert!(skill.subcommands.contains("install") && skill.subcommands.contains("show"));
     let install = tree.help(&["skill".to_string(), "install".to_string()]);
-    assert!(install.long.contains("refresh") && install.long.contains("user"));
+    assert!(install.long.contains("refresh") && install.long.contains("agent"));
+    assert!(!install.long.contains("user") && !install.long.contains("dir"));
 }
 
 #[test]
@@ -419,7 +420,7 @@ fn flags_are_checked_against_the_subcommand_they_follow() {
     let problems = check_markdown(
         &mut tree,
         "SKILL.md",
-        "```sh\noxabl skill install --user --refresh\noxabl check --refresh src/\n```\n",
+        "```sh\noxabl skill install --agent claude --refresh\noxabl check --refresh src/\n```\n",
     );
 
     assert_eq!(problems.len(), 1, "{problems:?}");

@@ -55,12 +55,11 @@ Never put passwords in oxabl.toml. Check your work with
 Oxabl ships a skill that teaches a coding agent (Claude Code, Codex, pi, OpenCode, Copilot and others) to use its commands without exploring. It is built into the binary and matches its version:
 
 ```sh
-oxabl skill install            # this project: .agents/skills/oxabl and .claude/skills/oxabl
-oxabl skill install --user     # every project: the same folders in your home directory
-oxabl skill install --check    # exit 1 when a copy is missing or out of date
+oxabl skill install            # one copy in ~/.local/share/oxabl/skills/oxabl, linked from ~/.agents/skills/oxabl and ~/.claude/skills/oxabl
+oxabl skill install --check    # exit 1 when the store or a link is missing, foreign or out of date
 ```
 
-`oxabl skill show` prints the skill. After `oxabl self-update`, the copies that you installed with `--user` update with the binary. The docs site also serves [llms.txt](https://docs.oxabl.org/llms.txt), a Markdown copy of every page, and a read-only MCP server at `https://docs.oxabl.org/mcp`. The VS Code command **oxabl: Install agent skill in this workspace** does the same for the open folder.
+The install is for your user, so every project sees the skill. `oxabl skill show` prints the skill. After `oxabl self-update`, the store updates with the binary. A link that points elsewhere, or a real directory, is never overwritten: `--force` renames it to `oxabl.bak-<timestamp>` and links. The docs site also serves [llms.txt](https://docs.oxabl.org/llms.txt), a Markdown copy of every page, and a read-only MCP server at `https://docs.oxabl.org/mcp`. The VS Code command **oxabl: Install agent skill** does the same.
 
 ## Features
 

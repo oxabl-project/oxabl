@@ -3,6 +3,9 @@
 //! The skill is an Agent Skills folder (`SKILL.md` plus reference files) that
 //! teaches a coding agent to use oxabl. The source lives in `crates/oxabl/skill/`
 //! and says `dev` for its version; `show` and `install` write the binary's own.
+//!
+//! `install` keeps one copy of the skill, the store, in oxabl's data directory
+//! and links it from the folders that coding agents read.
 
 use std::fs;
 use std::io;
@@ -11,7 +14,8 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use clap::{Args, Subcommand, ValueEnum};
-use serde::{Deserialize, Serialize};
+
+use crate::paths;
 
 /// Every file of the skill, by path inside the skill directory. A file added
 /// to `skill/` must be added here; a test compares the list with the directory.
@@ -38,25 +42,6 @@ const FILES: &[(&str, &str)] = &[
 const ENTRY: &str = "SKILL.md";
 const SOURCE_VERSION: &str = "oxabl-version: dev";
 const SKILL_NAME: &str = "oxabl";
-const MANIFEST: &str = ".oxabl-skill.json";
-
-/// What an install wrote: the version and the files oxabl owns in the target.
-#[derive(Serialize, Deserialize)]
-struct Manifest {
-    #[serde(rename = "oxabl-version")]
-    version: String,
-    files: Vec<String>,
-}
-
-fn manifest_text(files: &[(&str, String)]) -> String {
-    let manifest = Manifest {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        files: files.iter().map(|(name, _)| name.to_string()).collect(),
-    };
-    let mut text = serde_json::to_string_pretty(&manifest).expect("a manifest serializes");
-    text.push('\n');
-    text
-}
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -74,70 +59,64 @@ pub enum Command {
         #[arg(long)]
         list: bool,
     },
-    /// Copy the skill where coding agents look for it.
+    /// Install the skill for your user, where coding agents look for it.
     ///
-    /// Writes `.agents/skills/oxabl/` (read by Codex, pi, OpenCode, Copilot and
-    /// others) and `.claude/skills/oxabl/` (Claude Code) under the base
-    /// directory: the current directory, `--dir DIR`, or with `--user` the home
-    /// directory. One line per target says its path and state.
+    /// oxabl keeps one copy, the store, in
+    /// `${XDG_DATA_HOME:-~/.local/share}/oxabl/skills/oxabl/`, and links it
+    /// from `~/.agents/skills/oxabl` (read by Codex, pi, OpenCode, Copilot and
+    /// others) and `~/.claude/skills/oxabl` (Claude Code). One line for the
+    /// store and one per link say its path and state. Every project then sees
+    /// the skill, and a new oxabl version updates the one copy.
     ///
-    /// Each target gets a `.oxabl-skill.json` that lists the files oxabl
-    /// wrote. Updating a copy removes only the files that an earlier install
-    /// listed and the skill no longer has; any other file in the directory
-    /// stays. A symlinked target is written through.
+    /// oxabl owns the store and replaces it as a whole: it writes a staging
+    /// directory beside it and swaps it in, so a failed install leaves the old
+    /// store whole. A link is created when missing and left alone when it
+    /// already points to the store. Anything else at a link's path (a real
+    /// directory, a file, a symlink to somewhere else) is foreign: it is
+    /// refused, and nothing is written anywhere. `--force` renames it to
+    /// `oxabl.bak-<UTC timestamp>` beside it, never deletes it, and links.
     ///
-    /// A target whose SKILL.md oxabl did not install (no `oxabl-version`, or
-    /// another `name`) is foreign: it is refused without `--force`, and nothing
-    /// is written. `--force` writes the skill's files over such a directory and
-    /// lists only them, so its other files stay and later updates never remove
-    /// them. A target that cannot be written (a dangling symlink, a file where
-    /// a directory belongs, no permission) is an error before anything is
-    /// written.
+    /// Where a symlink cannot be made (Windows without the privilege), oxabl
+    /// copies the store to the link's path instead and says so. Such a copy
+    /// counts as oxabl's: `--refresh` and a new install replace it whole.
     ///
-    /// Exit codes: `0` on success, `1` when `--check` finds a target missing,
-    /// stale or foreign, `2` on a usage or I/O error, or a refused target.
+    /// Exit codes: `0` on success, `1` when `--check` finds the store missing
+    /// or stale, or a selected link missing, foreign or pointing elsewhere, `2`
+    /// on a usage or I/O error, a refused entry, or no home directory.
     Install(InstallArgs),
 }
 
 #[derive(Args)]
 pub struct InstallArgs {
-    /// Install under the home directory (`HOME`) instead of the current one
-    #[arg(long, conflicts_with = "dir")]
-    user: bool,
-
-    /// Base directory to install under (default: the current directory)
-    #[arg(long, value_name = "DIR")]
-    dir: Option<PathBuf>,
-
-    /// Which target to write
+    /// Which links to create
     #[arg(long, value_enum, default_value_t = Agent::All)]
     agent: Agent,
 
-    /// Write nothing; exit 1 when a target is missing, stale or foreign
+    /// Write nothing; exit 1 when the store or a selected link is not in place
     #[arg(long, conflicts_with_all = ["refresh", "force"])]
     check: bool,
 
-    /// Update only the targets that already hold an oxabl copy; create none
+    /// Update the store and the copies that exist; create nothing
     #[arg(long, conflicts_with = "force")]
     refresh: bool,
 
-    /// Write the skill over a target whose SKILL.md oxabl did not install
+    /// Rename a foreign entry to `oxabl.bak-<UTC timestamp>` and install
     #[arg(long)]
     force: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Agent {
-    /// `.agents/skills/oxabl`
+    /// `~/.agents/skills/oxabl`
     Agents,
-    /// `.claude/skills/oxabl`
+    /// `~/.claude/skills/oxabl`
     Claude,
     /// Both
     All,
 }
 
 impl Agent {
-    fn dirs(self) -> &'static [&'static str] {
+    fn links(self) -> &'static [&'static str] {
         match self {
             Agent::Agents => &[".agents/skills/oxabl"],
             Agent::Claude => &[".claude/skills/oxabl"],
@@ -204,28 +183,6 @@ fn show(file: Option<&str>, list: bool) -> Result<ExitCode, String> {
     }
 }
 
-/// What a target directory holds.
-enum State {
-    /// No SKILL.md.
-    Missing,
-    /// A SKILL.md that oxabl did not install.
-    Foreign,
-    /// An oxabl copy.
-    Oxabl(Copy),
-}
-
-struct Copy {
-    /// What differs from the current skill; empty when the copy is current.
-    problems: Vec<String>,
-    /// The skill files are current but the manifest is absent: an install
-    /// writes it, and `--check` does not count it as stale.
-    unlisted: bool,
-    /// Files an earlier install wrote that the skill no longer has.
-    remove: Vec<String>,
-    /// Files in the directory that oxabl did not write.
-    others: Vec<String>,
-}
-
 /// Whether a SKILL.md says it is the oxabl skill that oxabl installed.
 fn is_oxabl_copy(text: &str) -> bool {
     let mut lines = text.lines();
@@ -250,165 +207,26 @@ fn io_error(path: &Path, error: &io::Error) -> String {
     format!("{}: {error}", path.display())
 }
 
-/// The directory that `dir` stands for, or why nothing can be written there:
-/// a symlink that points nowhere, or a file where a directory belongs.
-fn resolve(dir: &Path) -> Result<PathBuf, String> {
-    match fs::symlink_metadata(dir) {
-        Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(dir)
-            .map_err(|e| {
-                format!(
-                    "{} is a symlink that cannot be followed: {e}",
-                    dir.display()
-                )
-            })
-            .and_then(|real| directory(dir, real)),
-        Ok(_) => directory(dir, dir.to_path_buf()),
-        Err(error) if matches!(error.kind(), io::ErrorKind::NotFound) => {
-            for parent in dir.ancestors().skip(1) {
-                match fs::symlink_metadata(parent) {
-                    Ok(meta) if meta.file_type().is_symlink() => {
-                        let real = fs::canonicalize(parent).map_err(|e| {
-                            format!(
-                                "{} is a symlink that cannot be followed: {e}",
-                                parent.display()
-                            )
-                        })?;
-                        directory(parent, real)?;
-                        break;
-                    }
-                    Ok(_) => {
-                        directory(parent, parent.to_path_buf())?;
-                        break;
-                    }
-                    Err(e) if matches!(e.kind(), io::ErrorKind::NotFound) => {}
-                    Err(e) => return Err(io_error(parent, &e)),
-                }
-            }
-            Ok(dir.to_path_buf())
-        }
-        Err(error) => Err(io_error(dir, &error)),
-    }
+fn not_found(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::NotFound)
 }
 
-fn directory(shown: &Path, real: PathBuf) -> Result<PathBuf, String> {
-    if real.is_dir() {
-        Ok(real)
-    } else {
-        Err(format!("{} is not a directory", shown.display()))
-    }
+/// What sits at the path of the store or of a link.
+enum Entry {
+    Missing,
+    /// A symlink to the store.
+    Linked,
+    /// A symlink to somewhere else.
+    Elsewhere(PathBuf),
+    /// An oxabl copy of the skill (the store, or a link's copy where symlinks
+    /// are not possible); what differs from the current skill, empty when it
+    /// is current.
+    Copy(Vec<String>),
+    /// Anything oxabl did not make, and why it looks so.
+    Foreign(String),
 }
 
-/// Fails when a file cannot be created where the install would write.
-fn writable(dir: &Path) -> Result<(), String> {
-    let existing = dir
-        .ancestors()
-        .find(|path| path.is_dir())
-        .ok_or_else(|| format!("{} has no directory above it", dir.display()))?;
-    let probe = existing.join(format!(".oxabl-skill-probe-{}", unique()));
-    fs::File::create_new(&probe).map_err(|e| io_error(&probe, &e))?;
-    fs::remove_file(&probe).map_err(|e| io_error(&probe, &e))
-}
-
-/// Fails when a directory the install writes into, below `dir`, is a symlink
-/// or not a directory: a write there could leave `dir`.
-fn inside(dir: &Path, files: &[(&str, String)]) -> Result<(), String> {
-    for (name, _) in files {
-        let mut path = dir.to_path_buf();
-        let parents = Path::new(name)
-            .parent()
-            .into_iter()
-            .flat_map(Path::components);
-        for part in parents {
-            path.push(part);
-            match fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_dir() => {}
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    return Err(format!(
-                        "{} is a symlink inside the skill directory; nothing was written",
-                        path.display()
-                    ));
-                }
-                Ok(_) => {
-                    return Err(format!(
-                        "{} is not a directory; nothing was written",
-                        path.display()
-                    ));
-                }
-                Err(e) if matches!(e.kind(), io::ErrorKind::NotFound) => break,
-                Err(e) => return Err(io_error(&path, &e)),
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The files that an earlier install wrote, from the manifest. A directory
-/// with a SKILL.md of oxabl's and no readable manifest is a copy from before
-/// manifests: the files that bear the skill's names are oxabl's, no others.
-fn owned(dir: &Path, files: &[(&str, String)]) -> Vec<String> {
-    fs::read(dir.join(MANIFEST))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
-        .map(|manifest| manifest.files)
-        .unwrap_or_else(|| files.iter().map(|(name, _)| name.to_string()).collect())
-}
-
-fn inspect(dir: &Path, files: &[(&str, String)]) -> Result<State, String> {
-    let entry = dir.join(ENTRY);
-    let text = match fs::read(&entry) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(error) if matches!(error.kind(), io::ErrorKind::NotFound) => {
-            return Ok(State::Missing);
-        }
-        Err(error) => return Err(io_error(&entry, &error)),
-    };
-    if !is_oxabl_copy(&text) {
-        return Ok(State::Foreign);
-    }
-    let mut problems = Vec::new();
-    for (name, expected) in files {
-        match fs::read(dir.join(name)) {
-            Ok(bytes) if bytes == expected.as_bytes() => {}
-            Ok(_) => problems.push(format!("{name} differs")),
-            Err(error) if matches!(error.kind(), io::ErrorKind::NotFound) => {
-                problems.push(format!("{name} is missing"));
-            }
-            Err(error) => return Err(io_error(&dir.join(name), &error)),
-        }
-    }
-    let mut unlisted = false;
-    match fs::read(dir.join(MANIFEST)) {
-        Ok(bytes) if bytes == manifest_text(files).as_bytes() => {}
-        Ok(_) => problems.push(format!("{MANIFEST} differs")),
-        Err(error) if matches!(error.kind(), io::ErrorKind::NotFound) => unlisted = true,
-        Err(error) => return Err(io_error(&dir.join(MANIFEST), &error)),
-    }
-    let mut present = Vec::new();
-    list_files(dir, Path::new(""), &mut present)?;
-    let owned = owned(dir, files);
-    let (mut remove, mut others) = (Vec::new(), Vec::new());
-    for name in present {
-        if files.iter().any(|(expected, _)| *expected == name) || name == MANIFEST {
-            continue;
-        }
-        // Only files found in the directory are listed, so a manifest cannot
-        // name a path outside it.
-        if owned.contains(&name) {
-            problems.push(format!("{name} is no longer part of the skill"));
-            remove.push(name);
-        } else {
-            others.push(name);
-        }
-    }
-    Ok(State::Oxabl(Copy {
-        problems,
-        unlisted,
-        remove,
-        others,
-    }))
-}
-
-/// Relative paths (with `/`) of the regular files under `dir`.
+/// Relative paths (with `/`) of the files under `root`.
 fn list_files(root: &Path, prefix: &Path, out: &mut Vec<String>) -> Result<(), String> {
     let here = root.join(prefix);
     let entries = fs::read_dir(&here).map_err(|e| io_error(&here, &e))?;
@@ -431,121 +249,72 @@ fn list_files(root: &Path, prefix: &Path, out: &mut Vec<String>) -> Result<(), S
     Ok(())
 }
 
-fn base(args: &InstallArgs) -> Result<PathBuf, String> {
-    if args.user {
-        return std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .filter(|home| !home.is_empty())
-            .map(PathBuf::from)
-            .ok_or_else(|| "--user needs the home directory, and HOME is not set".to_string());
-    }
-    match &args.dir {
-        Some(dir) => Ok(dir.clone()),
-        None => {
-            std::env::current_dir().map_err(|e| format!("cannot find the current directory: {e}"))
+/// What differs between the directory `dir` and the skill.
+fn differences(dir: &Path, files: &[(&str, String)]) -> Result<Vec<String>, String> {
+    let mut problems = Vec::new();
+    for (name, expected) in files {
+        match fs::read(dir.join(name)) {
+            Ok(bytes) if bytes == expected.as_bytes() => {}
+            Ok(_) => problems.push(format!("{name} differs")),
+            Err(error) if not_found(&error) => problems.push(format!("{name} is missing")),
+            Err(error) => return Err(io_error(&dir.join(name), &error)),
         }
+    }
+    let mut present = Vec::new();
+    list_files(dir, Path::new(""), &mut present)?;
+    present.sort();
+    for name in present {
+        if !files.iter().any(|(expected, _)| *expected == name) {
+            problems.push(format!("{name} is not part of the skill"));
+        }
+    }
+    Ok(problems)
+}
+
+/// Whether the symlink `link`, which points to `target`, resolves to `store`.
+fn points_to(link: &Path, target: &Path, store: &Path) -> bool {
+    let joined = link
+        .parent()
+        .map_or_else(|| target.to_path_buf(), |p| p.join(target));
+    match (fs::canonicalize(&joined), fs::canonicalize(store)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => joined == store,
     }
 }
 
-fn install(args: &InstallArgs) -> Result<ExitCode, String> {
-    let base = base(args)?;
-    let files = files();
-    let targets: Vec<PathBuf> = args
-        .agent
-        .dirs()
-        .iter()
-        .map(|relative| base.join(relative))
-        .collect();
-    let reals = targets
-        .iter()
-        .map(|dir| resolve(dir))
-        .collect::<Result<Vec<_>, _>>()?;
-    let states = reals
-        .iter()
-        .map(|dir| inspect(dir, &files))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if !(args.check || args.refresh || args.force) {
-        let paths: Vec<_> = targets
-            .iter()
-            .zip(&states)
-            .filter(|(_, state)| matches!(state, State::Foreign))
-            .map(|(dir, _)| dir.display().to_string())
-            .collect();
-        if !paths.is_empty() {
-            return Err(format!(
-                "{} holds a SKILL.md that oxabl did not install; nothing was written (use --force to write the skill over it)",
-                paths.join(", ")
-            ));
-        }
+/// `store` is the store's path when `path` may be a symlink to it (a link of
+/// an agent); the store itself may not be a symlink.
+fn inspect(path: &Path, store: Option<&Path>, files: &[(&str, String)]) -> Result<Entry, String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if not_found(&error) => return Ok(Entry::Missing),
+        Err(error) => return Err(io_error(path, &error)),
+    };
+    if meta.file_type().is_symlink() {
+        let target = fs::read_link(path).map_err(|e| io_error(path, &e))?;
+        return Ok(match store {
+            Some(store) if points_to(path, &target, store) => Entry::Linked,
+            Some(_) => Entry::Elsewhere(target),
+            None => Entry::Foreign("a symlink".to_string()),
+        });
     }
-
-    let writes: Vec<bool> = states
-        .iter()
-        .map(|state| match state {
-            State::Oxabl(copy) => !args.check && (!copy.problems.is_empty() || copy.unlisted),
-            State::Missing | State::Foreign => !args.check && !args.refresh,
-        })
-        .collect();
-    for (real, _) in reals.iter().zip(&writes).filter(|(_, write)| **write) {
-        writable(real)?;
-        inside(real, &files)?;
+    if !meta.is_dir() {
+        return Ok(Entry::Foreign("a file".to_string()));
     }
-
-    let mut failed = false;
-    for ((dir, real), (state, write)) in targets.iter().zip(&reals).zip(states.iter().zip(&writes))
-    {
-        let mut word = match (state, args.check, args.refresh) {
-            (State::Oxabl(copy), true, _) if copy.problems.is_empty() => {
-                if copy.unlisted {
-                    format!("current ({MANIFEST} is missing; an install writes it)")
-                } else {
-                    "current".to_string()
-                }
-            }
-            (State::Oxabl(copy), false, _) if copy.problems.is_empty() && !copy.unlisted => {
-                "current".to_string()
-            }
-            (State::Oxabl(copy), true, _) => {
-                failed = true;
-                format!("stale ({})", copy.problems.join(", "))
-            }
-            (State::Missing, true, _) => {
-                failed = true;
-                "missing".to_string()
-            }
-            (State::Foreign, true, _) => {
-                failed = true;
-                "foreign (SKILL.md was not installed by oxabl)".to_string()
-            }
-            (State::Missing, false, true) => "skipped (not installed)".to_string(),
-            (State::Foreign, false, true) => "skipped (foreign SKILL.md)".to_string(),
-            (State::Oxabl(_), false, _) => "updated".to_string(),
-            (State::Missing, false, false) => "installed".to_string(),
-            (State::Foreign, false, false) => "replaced (foreign SKILL.md)".to_string(),
-        };
-        if *write {
-            let remove = match state {
-                State::Oxabl(copy) => copy.remove.as_slice(),
-                _ => &[],
-            };
-            write_copy(real, &files, remove)?;
+    let entry = path.join(ENTRY);
+    let text = match fs::read(&entry) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) if not_found(&error) => {
+            return Ok(Entry::Foreign("a directory without SKILL.md".to_string()));
         }
-        if let State::Oxabl(copy) = state
-            && !copy.others.is_empty()
-        {
-            word.push_str(&format!(
-                "; other files left alone: {}",
-                copy.others.join(", ")
-            ));
-        }
-        println!("{}: {word}", dir.display());
+        Err(error) => return Err(io_error(&entry, &error)),
+    };
+    if !is_oxabl_copy(&text) {
+        return Ok(Entry::Foreign(
+            "a directory whose SKILL.md oxabl did not install".to_string(),
+        ));
     }
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    Ok(Entry::Copy(differences(path, files)?))
 }
 
 fn unique() -> String {
@@ -561,49 +330,343 @@ fn unique() -> String {
     )
 }
 
+/// `YYYYMMDDTHHMMSSZ` for a time in seconds since the epoch.
+fn utc_stamp(seconds: u64) -> String {
+    let (days, rest) = ((seconds / 86_400) as i64, seconds % 86_400);
+    // Civil date from a day count (proleptic Gregorian, days since 1970-01-01).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    )
+}
+
+/// `oxabl.bak-<UTC timestamp>` beside `path`, one that does not exist yet.
+fn backup_path(path: &Path) -> PathBuf {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let stamp = utc_stamp(seconds);
+    let mut candidate = path.with_file_name(format!("oxabl.bak-{stamp}"));
+    let mut n = 1;
+    while fs::symlink_metadata(&candidate).is_ok() {
+        candidate = path.with_file_name(format!("oxabl.bak-{stamp}-{n}"));
+        n += 1;
+    }
+    candidate
+}
+
+/// The nearest ancestor of `path` that exists must be a directory this process
+/// can create files in; fails with the reason otherwise.
+fn writable_above(path: &Path) -> Result<(), String> {
+    for parent in path.ancestors().skip(1) {
+        match fs::metadata(parent) {
+            Ok(meta) if meta.is_dir() => {
+                let probe = parent.join(format!(".oxabl-skill-probe-{}", unique()));
+                fs::File::create_new(&probe).map_err(|e| io_error(&probe, &e))?;
+                return fs::remove_file(&probe).map_err(|e| io_error(&probe, &e));
+            }
+            Ok(_) => return Err(format!("{} is not a directory", parent.display())),
+            Err(error) if not_found(&error) => {
+                if fs::symlink_metadata(parent).is_ok() {
+                    return Err(format!(
+                        "{} is a symlink that cannot be followed",
+                        parent.display()
+                    ));
+                }
+            }
+            Err(error) => return Err(io_error(parent, &error)),
+        }
+    }
+    Err(format!("{} has no directory above it", path.display()))
+}
+
 fn write_file(path: &Path, text: &str) -> Result<(), String> {
     use std::io::Write;
     let parent = path.parent().ok_or("a skill file has no directory")?;
     fs::create_dir_all(parent).map_err(|e| io_error(parent, &e))?;
-    let temp = parent.join(format!(".oxabl-skill-{}", unique()));
-    let written = fs::File::create(&temp).and_then(|mut file| {
-        file.write_all(text.as_bytes())?;
-        file.sync_all()
-    });
-    if let Err(error) = written {
-        let _ = fs::remove_file(&temp);
-        return Err(io_error(&temp, &error));
-    }
-    fs::rename(&temp, path).map_err(|e| {
-        let _ = fs::remove_file(&temp);
-        io_error(path, &e)
-    })
+    fs::File::create(path)
+        .and_then(|mut file| {
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })
+        .map_err(|e| io_error(path, &e))
 }
 
-/// Writes the skill into `dir`, one file at a time (each through a temporary
-/// file and a rename), SKILL.md after the others so an interrupted install
-/// never leaves a half-written one. Then it removes the files in `remove` and
-/// writes the manifest. No other file in `dir` is touched.
-fn write_copy(dir: &Path, files: &[(&str, String)], remove: &[String]) -> Result<(), String> {
-    let (entry, rest): (Vec<_>, Vec<_>) = files.iter().partition(|(name, _)| *name == ENTRY);
-    for (name, text) in rest.into_iter().chain(entry) {
-        write_file(&dir.join(name), text)?;
+/// Puts the skill at `dest` as a whole: it writes a staging directory beside
+/// `dest`, moves what is at `dest` away (to `keep`, or to a place it deletes
+/// after the swap), and renames the staging directory to `dest`. A failure
+/// before the swap leaves `dest` as it was.
+fn replace_tree(dest: &Path, files: &[(&str, String)], keep: Option<&Path>) -> Result<(), String> {
+    let parent = dest
+        .parent()
+        .ok_or("the skill has no directory to live in")?;
+    fs::create_dir_all(parent).map_err(|e| io_error(parent, &e))?;
+    let staging = parent.join(format!(".oxabl-skill-staging-{}", unique()));
+    let staged = files
+        .iter()
+        .try_for_each(|(name, text)| write_file(&staging.join(name), text));
+    if let Err(error) = staged {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
     }
-    for name in remove {
-        let path = dir.join(name);
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if matches!(error.kind(), io::ErrorKind::NotFound) => {}
-            Err(error) => return Err(io_error(&path, &error)),
+    if fs::symlink_metadata(dest).is_err() {
+        return fs::rename(&staging, dest).map_err(|e| {
+            let _ = fs::remove_dir_all(&staging);
+            io_error(dest, &e)
+        });
+    }
+    let old = keep.map_or_else(
+        || parent.join(format!(".oxabl-skill-old-{}", unique())),
+        Path::to_path_buf,
+    );
+    if let Err(error) = fs::rename(dest, &old) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(io_error(dest, &error));
+    }
+    if let Err(error) = fs::rename(&staging, dest) {
+        let _ = fs::rename(&old, dest);
+        let _ = fs::remove_dir_all(&staging);
+        return Err(io_error(dest, &error));
+    }
+    if keep.is_none() {
+        let _ = fs::remove_dir_all(&old);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink(store: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(store, link)
+}
+
+#[cfg(windows)]
+fn symlink(store: &Path, link: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_dir(store, link)
+}
+
+/// Links `link` to `store`; where that is not possible, copies the skill
+/// there. Returns the state word.
+fn link_or_copy(link: &Path, store: &Path, files: &[(&str, String)]) -> Result<String, String> {
+    let parent = link.parent().ok_or("a link has no directory to live in")?;
+    fs::create_dir_all(parent).map_err(|e| io_error(parent, &e))?;
+    match symlink(store, link) {
+        Ok(()) => Ok("linked".to_string()),
+        Err(error) => {
+            replace_tree(link, files, None)?;
+            Ok(format!("copied (a symlink was not possible: {error})"))
         }
-        // Drops a directory that the removal emptied; a full one stays.
-        let mut parent = path.parent();
-        while let Some(up) = parent.filter(|up| *up != dir) {
-            if fs::remove_dir(up).is_err() {
-                break;
+    }
+}
+
+enum Mode {
+    Install { force: bool },
+    Check,
+    Refresh,
+}
+
+/// The store: `<data dir>/skills/oxabl`, absolute.
+fn store_dir() -> Result<PathBuf, String> {
+    let data = paths::data_dir()
+        .ok_or("neither XDG_DATA_HOME nor HOME is set, so there is no place for the skill")?;
+    let data = std::path::absolute(&data).map_err(|e| io_error(&data, &e))?;
+    Ok(data.join("skills").join(SKILL_NAME))
+}
+
+fn install(args: &InstallArgs) -> Result<ExitCode, String> {
+    let home =
+        paths::home().ok_or("HOME is not set, so there is no home directory to install in")?;
+    let store = store_dir()?;
+    let links: Vec<PathBuf> = args
+        .agent
+        .links()
+        .iter()
+        .map(|rel| home.join(rel))
+        .collect();
+    let mode = if args.check {
+        Mode::Check
+    } else if args.refresh {
+        Mode::Refresh
+    } else {
+        Mode::Install { force: args.force }
+    };
+    let files = files();
+
+    let store_entry = inspect(&store, None, &files)?;
+    let link_entries = links
+        .iter()
+        .map(|link| inspect(link, Some(&store), &files))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    match mode {
+        Mode::Check => Ok(check(&store, &store_entry, &links, &link_entries)),
+        Mode::Refresh => refresh(&store, &store_entry, &links, &link_entries, &files),
+        Mode::Install { force } => {
+            install_all(force, &store, &store_entry, &links, &link_entries, &files)
+        }
+    }
+}
+
+fn describe(entry: &Entry) -> String {
+    match entry {
+        Entry::Missing => "missing".to_string(),
+        Entry::Linked => "current".to_string(),
+        Entry::Elsewhere(target) => format!("foreign (a symlink to {})", target.display()),
+        Entry::Copy(problems) if problems.is_empty() => "current".to_string(),
+        Entry::Copy(problems) => format!("stale ({})", problems.join(", ")),
+        Entry::Foreign(what) => format!("foreign ({what})"),
+    }
+}
+
+fn check(store: &Path, store_entry: &Entry, links: &[PathBuf], entries: &[Entry]) -> ExitCode {
+    let ok = |entry: &Entry| {
+        matches!(entry, Entry::Linked)
+            || matches!(entry, Entry::Copy(problems) if problems.is_empty())
+    };
+    let mut failed = !ok(store_entry);
+    println!("{}: {}", store.display(), describe(store_entry));
+    for (link, entry) in links.iter().zip(entries) {
+        let copy = matches!(entry, Entry::Copy(_));
+        failed |= !ok(entry);
+        let word = describe(entry);
+        println!(
+            "{}: {word}{}",
+            link.display(),
+            if copy { " (a copy)" } else { "" }
+        );
+    }
+    if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn refresh(
+    store: &Path,
+    store_entry: &Entry,
+    links: &[PathBuf],
+    entries: &[Entry],
+    files: &[(&str, String)],
+) -> Result<ExitCode, String> {
+    let stale = |entry: &Entry| matches!(entry, Entry::Copy(problems) if !problems.is_empty());
+    for path in
+        std::iter::once((store, store_entry)).chain(links.iter().map(|l| l.as_path()).zip(entries))
+    {
+        if stale(path.1) {
+            writable_above(path.0)?;
+        }
+    }
+    let word = |entry: &Entry| match entry {
+        Entry::Copy(problems) if problems.is_empty() => "current",
+        Entry::Copy(_) => "updated",
+        Entry::Linked => "current",
+        Entry::Missing => "skipped (not installed)",
+        Entry::Elsewhere(_) | Entry::Foreign(_) => "skipped (not oxabl's)",
+    };
+    for (path, entry) in
+        std::iter::once((store, store_entry)).chain(links.iter().map(|l| l.as_path()).zip(entries))
+    {
+        if stale(entry) {
+            replace_tree(path, files, None)?;
+        }
+        println!("{}: {}", path.display(), word(entry));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn install_all(
+    force: bool,
+    store: &Path,
+    store_entry: &Entry,
+    links: &[PathBuf],
+    entries: &[Entry],
+    files: &[(&str, String)],
+) -> Result<ExitCode, String> {
+    let all: Vec<(&Path, &Entry)> = std::iter::once((store, store_entry))
+        .chain(links.iter().map(PathBuf::as_path).zip(entries))
+        .collect();
+
+    let foreign: Vec<String> = all
+        .iter()
+        .filter(|(_, entry)| matches!(entry, Entry::Foreign(_) | Entry::Elsewhere(_)))
+        .map(|(path, entry)| {
+            let what = match entry {
+                Entry::Elsewhere(target) => format!("a symlink to {}", target.display()),
+                Entry::Foreign(what) => what.clone(),
+                _ => String::new(),
+            };
+            format!("{} ({what})", path.display())
+        })
+        .collect();
+    if !foreign.is_empty() && !force {
+        return Err(format!(
+            "not installed by oxabl: {}; nothing was written (use --force to rename it to oxabl.bak-<timestamp> and install)",
+            foreign.join(", ")
+        ));
+    }
+    for (path, entry) in &all {
+        let current = matches!(entry, Entry::Linked)
+            || matches!(entry, Entry::Copy(problems) if problems.is_empty());
+        if !current {
+            writable_above(path)?;
+        }
+    }
+
+    // The store first: a link that fell back to a copy needs it written.
+    let word = match store_entry {
+        Entry::Copy(problems) if problems.is_empty() => "current".to_string(),
+        Entry::Copy(_) => {
+            replace_tree(store, files, None)?;
+            "updated".to_string()
+        }
+        Entry::Missing => {
+            replace_tree(store, files, None)?;
+            "installed".to_string()
+        }
+        _ => {
+            let backup = backup_path(store);
+            replace_tree(store, files, Some(&backup))?;
+            format!(
+                "installed (the foreign entry is kept as {})",
+                backup.display()
+            )
+        }
+    };
+    println!("{}: {word}", store.display());
+
+    for (link, entry) in links.iter().zip(entries) {
+        let word = match entry {
+            Entry::Linked => "current".to_string(),
+            Entry::Copy(problems) if problems.is_empty() => "current (a copy)".to_string(),
+            Entry::Copy(_) => {
+                replace_tree(link, files, None)?;
+                "updated (a copy)".to_string()
             }
-            parent = up.parent();
-        }
+            Entry::Missing => link_or_copy(link, store, files)?,
+            Entry::Elsewhere(_) | Entry::Foreign(_) => {
+                let backup = backup_path(link);
+                fs::rename(link, &backup).map_err(|e| io_error(link, &e))?;
+                let word = link_or_copy(link, store, files)?;
+                format!("{word} (the foreign entry is kept as {})", backup.display())
+            }
+        };
+        println!("{}: {word}", link.display());
     }
-    write_file(&dir.join(MANIFEST), &manifest_text(files))
+    Ok(ExitCode::SUCCESS)
 }

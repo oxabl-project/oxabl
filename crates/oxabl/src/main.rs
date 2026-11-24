@@ -14,6 +14,7 @@ mod build_probe;
 mod build_run;
 mod display_path;
 mod explain;
+mod paths;
 mod self_update;
 mod skill;
 mod watch;

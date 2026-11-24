@@ -8,8 +8,6 @@ mod github;
 #[cfg(feature = "self-update")]
 mod install;
 #[cfg(feature = "self-update")]
-mod paths;
-#[cfg(feature = "self-update")]
 mod record;
 #[cfg(feature = "self-update")]
 mod schedule;
@@ -46,7 +44,8 @@ mod real {
     use serde::Serialize;
 
     use super::github::{Api, Version};
-    use super::{Options, install, paths, record, schedule};
+    use super::{Options, install, record, schedule};
+    use crate::paths;
 
     const LOCK: &str = "update.lock";
     const LOG: &str = "update.log";
@@ -262,7 +261,7 @@ mod real {
     /// It never creates one, and its failure does not fail the update.
     fn refresh_skill(binary: &std::path::Path) {
         let refreshed = Command::new(binary)
-            .args(["skill", "install", "--user", "--refresh"])
+            .args(["skill", "install", "--refresh"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
