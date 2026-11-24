@@ -2678,6 +2678,7 @@ name = "oxabl_daemon"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "codspeed-criterion-compat",
  "crossbeam-channel",
  "lsp-server",

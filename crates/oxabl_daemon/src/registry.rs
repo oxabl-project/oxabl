@@ -664,6 +664,8 @@ fn classify(state: DaemonState) -> Discovery {
         DaemonState::Running(registration) | DaemonState::Saturated(registration) => {
             if registration.contract_version != CONTRACT_VERSION
                 || registration.daemon_version != crate::build_version()
+                || registration.build != crate::build_identity().id
+                || crate::executable_replaced(registration.pid)
             {
                 Discovery::VersionMismatch(registration)
             } else {
@@ -1125,6 +1127,8 @@ pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Resu
         // raw spelling would let the registration disagree with its own file name.
         workspace_root: advertisable(&canonical_root(workspace_root)?, "the workspace root")?,
         daemon_version: crate::build_version().to_string(),
+        build: crate::build_identity().id.clone(),
+        build_modified_ms: crate::build_identity().modified_ms,
     };
     let body = serde_json::to_string_pretty(&registration)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -2416,6 +2420,8 @@ mod tests {
                 contract_version: CONTRACT_VERSION + 7,
                 workspace_root: root.to_string_lossy().into_owned(),
                 daemon_version: crate::build_version().to_string(),
+                build: crate::build_identity().id.clone(),
+                build_modified_ms: crate::build_identity().modified_ms,
             };
             fs::write(
                 registration_path_for(root).expect("a registration path"),
@@ -2494,6 +2500,8 @@ mod tests {
             contract_version: CONTRACT_VERSION,
             workspace_root: "/proj".to_string(),
             daemon_version: crate::build_version().to_string(),
+            build: crate::build_identity().id.clone(),
+            build_modified_ms: crate::build_identity().modified_ms,
         };
 
         assert!(matches!(
@@ -2717,6 +2725,8 @@ mod tests {
                 contract_version: CONTRACT_VERSION + 7,
                 workspace_root: root.to_string_lossy().into_owned(),
                 daemon_version: crate::build_version().to_string(),
+                build: crate::build_identity().id.clone(),
+                build_modified_ms: crate::build_identity().modified_ms,
             };
             fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("write");
             // A daemon of the wrong contract is still a daemon: it answers.

@@ -420,6 +420,214 @@ fn editor_replaces_an_older_daemon(
     );
 }
 
+/// A copy of the `oxabl` binary under `dir`, written `age` ago, with `padding`
+/// appended. The padding changes the bytes and so the build; an executable ignores
+/// bytes after its last segment, so every copy runs as `oxabl` does.
+fn binary_copy(
+    dir: &std::path::Path,
+    name: &str,
+    padding: &[u8],
+    age: Duration,
+) -> std::path::PathBuf {
+    binary_copy_at(dir, name, padding, std::time::SystemTime::now() - age)
+}
+
+/// As `binary_copy`, written at the given time.
+fn binary_copy_at(
+    dir: &std::path::Path,
+    name: &str,
+    padding: &[u8],
+    written: std::time::SystemTime,
+) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::copy(OXABL_BIN, &path).expect("copy the oxabl binary");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open the copy");
+    file.write_all(padding).expect("pad the copy");
+    file.set_modified(written).expect("date the copy");
+    path
+}
+
+/// The notifications of an editor's log that name the replaced daemon's build, the
+/// client's build and that the daemon was stopped.
+fn log_names_both_builds(
+    notifications: &[serde_json::Value],
+    old_build: &str,
+    new_build: &str,
+) -> bool {
+    notifications.iter().any(|notification| {
+        notification["method"] == "window/logMessage"
+            && notification["params"]["message"]
+                .as_str()
+                .is_some_and(|message| {
+                    message.contains(&format!("(build {old_build})"))
+                        && message.contains(&format!("(build {new_build})"))
+                        && message.contains("Stopped it")
+                })
+    })
+}
+
+/// An upgrade that keeps the version number, as every development build does: the
+/// editor's new language server must stop the daemon of the old build. A second
+/// editor still on the old build then leaves the new daemon alone, so two editors on
+/// two builds do not replace each other's daemon in turn.
+#[test]
+fn an_editor_replaces_a_daemon_of_another_build_of_the_same_version() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let binaries = tempfile::tempdir().expect("a directory for the binaries");
+    let old_binary = binary_copy(
+        binaries.path(),
+        "oxabl-old",
+        b"old",
+        Duration::from_secs(7200),
+    );
+    let new_binary = binary_copy(
+        binaries.path(),
+        "oxabl-new",
+        b"new",
+        Duration::from_secs(60),
+    );
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let mut old = ChildGuard(launch_daemon_from(&old_binary, root.path(), cache.path()));
+    let old_pid = old.0.id();
+    let old_registration = wait_for_registration(&registration_path);
+    assert_eq!(old_registration.pid, old_pid);
+    assert_eq!(old_registration.daemon_version, env!("CARGO_PKG_VERSION"));
+    assert!(
+        !old_registration.build.is_empty(),
+        "a daemon names its build"
+    );
+
+    let editor = Editor::start_binary(&new_binary, root.path(), cache.path(), &[]);
+    let (notifications, response) =
+        editor.initialize_with_notifications(&registration_path, old_pid);
+    assert_eq!(response["id"], 10);
+    let replacement = wait_for_registration(&registration_path);
+    let _replacement = (replacement.pid != old_pid).then(|| PidGuard(replacement.pid));
+    assert_ne!(
+        replacement.pid, old_pid,
+        "a daemon of the new build serves the root"
+    );
+    assert_ne!(replacement.build, old_registration.build);
+    assert_eq!(replacement.daemon_version, old_registration.daemon_version);
+    assert!(
+        log_names_both_builds(&notifications, &old_registration.build, &replacement.build),
+        "the editor's log names both builds: {notifications:?}"
+    );
+    assert!(
+        exits_within(&mut old.0, Duration::from_secs(5)).is_some(),
+        "the daemon of the old build must be stopped"
+    );
+
+    let mut stale_editor = Editor::start_binary(&old_binary, root.path(), cache.path(), &[]);
+    let status = exits_within(&mut stale_editor.child.0, Duration::from_secs(15))
+        .expect("an editor on the old build gives up");
+    assert!(!status.success());
+    let stderr = stale_editor.stderr(Duration::from_secs(5));
+    assert!(
+        stderr.contains("not older") && stderr.contains(&replacement.build),
+        "the refusal names the newer build: {stderr}"
+    );
+    assert_eq!(
+        wait_for_registration(&registration_path).pid,
+        replacement.pid,
+        "the daemon of the newer build stays"
+    );
+}
+
+/// Two builds whose executables carry the same time do not say which is older, so an
+/// editor leaves the other build's daemon alone, in both directions: they must not
+/// stop each other's daemon in turn.
+#[test]
+fn an_editor_leaves_a_daemon_of_another_build_with_the_same_time_alone() {
+    let binaries = tempfile::tempdir().expect("a directory for the binaries");
+    let written = std::time::SystemTime::now() - Duration::from_secs(3600);
+    let first = binary_copy_at(binaries.path(), "oxabl-first", b"first", written);
+    let second = binary_copy_at(binaries.path(), "oxabl-second", b"second", written);
+
+    for (daemon_binary, editor_binary) in [(&first, &second), (&second, &first)] {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let cache = tempfile::tempdir().expect("a cache root");
+        let registration_path = registration_path_in(root.path(), cache.path());
+        let mut daemon = ChildGuard(launch_daemon_from(daemon_binary, root.path(), cache.path()));
+        let daemon_pid = daemon.0.id();
+        assert_eq!(wait_for_registration(&registration_path).pid, daemon_pid);
+
+        let mut editor = Editor::start_binary(editor_binary, root.path(), cache.path(), &[]);
+        let status = exits_within(&mut editor.child.0, Duration::from_secs(15))
+            .expect("an editor on a build with the same time gives up");
+        assert!(!status.success());
+        let stderr = editor.stderr(Duration::from_secs(5));
+        assert!(
+            stderr.contains("not older"),
+            "the refusal says the daemon is not older: {stderr}"
+        );
+        assert_eq!(
+            wait_for_registration(&registration_path).pid,
+            daemon_pid,
+            "the daemon of the other build stays"
+        );
+        assert!(
+            daemon.0.try_wait().expect("poll the daemon").is_none(),
+            "the daemon is still running"
+        );
+    }
+}
+
+/// A daemon whose executable was replaced on disk is another build, even when the
+/// new file holds the same bytes and is dated before the daemon's.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_editor_replaces_a_daemon_whose_executable_was_replaced_on_disk() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let binaries = tempfile::tempdir().expect("a directory for the binaries");
+    let binary = binary_copy(binaries.path(), "oxabl", b"", Duration::from_secs(60));
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let mut old = ChildGuard(launch_daemon_from(&binary, root.path(), cache.path()));
+    let old_pid = old.0.id();
+    let old_registration = wait_for_registration(&registration_path);
+    assert_eq!(old_registration.pid, old_pid);
+
+    let replacement_file = binary_copy(
+        binaries.path(),
+        "oxabl.next",
+        b"",
+        Duration::from_secs(7200),
+    );
+    std::fs::rename(&replacement_file, &binary).expect("replace the executable on disk");
+
+    let editor = Editor::start_binary(&binary, root.path(), cache.path(), &[]);
+    let (notifications, response) =
+        editor.initialize_with_notifications(&registration_path, old_pid);
+    assert_eq!(response["id"], 10);
+    let replacement = wait_for_registration(&registration_path);
+    let _replacement = (replacement.pid != old_pid).then(|| PidGuard(replacement.pid));
+    assert_ne!(replacement.pid, old_pid, "a new daemon serves the root");
+    assert_eq!(
+        replacement.build, old_registration.build,
+        "the bytes did not change: only the replacement on disk tells the builds apart"
+    );
+    assert!(
+        notifications.iter().any(|notification| {
+            notification["method"] == "window/logMessage"
+                && notification["params"]["message"]
+                    .as_str()
+                    .is_some_and(|message| {
+                        message.contains("replaced on disk") && message.contains("Stopped it")
+                    })
+        }),
+        "the editor's log says the executable was replaced: {notifications:?}"
+    );
+    assert!(
+        exits_within(&mut old.0, Duration::from_secs(5)).is_some(),
+        "the daemon of the replaced executable must be stopped"
+    );
+}
+
 /// A newer daemon is left alone: replacing it would let two builds that both stay in
 /// use stop each other's daemon on every restart of their editors.
 #[test]
@@ -994,7 +1202,15 @@ fn registration_left_behind(
 }
 
 fn launch_daemon(root: &std::path::Path, base: &std::path::Path) -> Child {
-    Command::new(OXABL_BIN)
+    launch_daemon_from(std::path::Path::new(OXABL_BIN), root, base)
+}
+
+fn launch_daemon_from(
+    binary: &std::path::Path,
+    root: &std::path::Path,
+    base: &std::path::Path,
+) -> Child {
+    Command::new(binary)
         .arg("daemon")
         .arg(root)
         .envs(isolated_base(base))
@@ -1046,7 +1262,16 @@ impl Editor {
         base: &std::path::Path,
         environment: &[(&str, &str)],
     ) -> Self {
-        let mut child = Command::new(OXABL_BIN)
+        Editor::start_binary(std::path::Path::new(OXABL_BIN), root, base, environment)
+    }
+
+    fn start_binary(
+        binary: &std::path::Path,
+        root: &std::path::Path,
+        base: &std::path::Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
+        let mut child = Command::new(binary)
             .arg("lsp")
             .envs(isolated_base(base))
             .envs(environment.iter().copied())
