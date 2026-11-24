@@ -251,6 +251,10 @@ impl FormatPipeline {
     /// never fire, and reaching for the umbrella's re-export instead would be a
     /// package cycle.
     pub fn format(&self, source: &str) -> FormatOutcome {
+        // Encrypted text is not ABL: nothing to rewrite, in any mode.
+        if oxabl_workspace::looks_encrypted(source.as_bytes()) {
+            return FormatOutcome::Unchanged;
+        }
         match try_format_source(source, &self.style) {
             // Byte-identical output is its own answer, not a `Reformatted` a
             // caller has to compare for itself.
