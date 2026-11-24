@@ -210,7 +210,7 @@ fn an_unmodelled_statement_naming_a_class_is_an_edge_or_degrades_the_set() {
     assert!(found.completeness().is_complete());
 
     let lost = pipeline
-        .edge_set("ACCUMULATE orders.nothere:two() (TOTAL).\n")
+        .edge_set("UNDERLINE orders.nothere:two().\n")
         .expect("edge set");
     assert_eq!(lost.of_kind(EdgeKind::ClassReference).count(), 0);
     assert_eq!(

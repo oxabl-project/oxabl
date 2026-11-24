@@ -3300,12 +3300,21 @@ pub const FIXTURES: &[ParityFixture] = &[
         })],
     },
     // A constructor inside `ACCUMULATE` is a class and nothing else, so a miss is
-    // a gap.
+    // a gap and, as the statement is modelled, an undefined class.
     class_site_row! {
         name: "class_site_accumulate_new",
         root_file: "report.p",
         siblings: CALC_BASE_SIBLING,
-        resolutions: SILENT,
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-base()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 11,
+                end: 33,
+            }),
+        }],
         source: "ACCUMULATE NEW orders.calc-base():calc-total() (TOTAL).\n",
         diagnostics: &[],
         needs: &[],
@@ -3321,7 +3330,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         resolutions: SILENT,
         source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
                  MESSAGE VALID-OBJECT(v-calc).\n\
-                 ACCUMULATE mystery.helper:run() (TOTAL).\n",
+                 UNDERLINE mystery.helper:run().\n",
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],

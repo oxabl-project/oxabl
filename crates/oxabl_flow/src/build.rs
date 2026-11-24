@@ -1511,6 +1511,7 @@ impl<'a> Builder<'a> {
             | SK::Close { .. }
             | SK::Reposition { .. }
             | SK::Clear { .. }
+            | SK::Accumulate { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }

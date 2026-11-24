@@ -15181,3 +15181,33 @@ fn a_name_after_clear_is_not_a_clear_statement() {
         stmts[0].kind
     );
 }
+
+#[test]
+fn accumulate_is_head_parsed_with_expression_and_breaks() {
+    for (source, breaks) in [
+        ("ACCUMULATE v-total (TOTAL).", 0),
+        ("ACCUMULATE v-qty (TOTAL COUNT MAXIMUM).", 0),
+        ("ACCUMULATE tt-item.amount (TOTAL BY tt-item.grp).", 1),
+        ("ACCUMULATE v-qty (TOTAL BY v-a BY v-b).", 2),
+        ("ACCUM v-total (COUNT).", 0),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Accumulate { breaks: b, .. } = &stmts[0].kind else {
+            panic!("{source}: expected Accumulate, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(b.len(), breaks, "{source}: {b:?}");
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn an_accumulate_the_head_cannot_split_stays_skipped() {
+    // No aggregate, and an expression whose last operand a call would swallow.
+    for source in ["ACCUMULATE v-total.", "ACCUMULATE v-price * v-qty (TOTAL)."] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}"
+        );
+    }
+}

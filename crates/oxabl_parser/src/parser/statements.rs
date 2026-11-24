@@ -829,11 +829,14 @@ impl Parser<'_> {
             }
         }
 
+        // ACCUMULATE expr (aggregate [BY group]...) — head-parsed.
+        if self.check(Kind::Accumulate) || self.check(Kind::Accum) {
+            return self.parse_accumulate_statement();
+        }
+
         if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
-            || self.check(Kind::Accumulate)
-            || self.check(Kind::Accum) // abbreviation of ACCUMULATE
             || self.check(Kind::Open)
             || self.check(Kind::Status)
             || self.check(Kind::Get) // GET with no query position
@@ -4605,6 +4608,95 @@ impl Parser<'_> {
         }
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Clear { frame }, tail))
+    }
+
+    /// `ACCUMULATE expression (aggregate-option... [BY break-group]...)`. The
+    /// expression must be one name, or end right before the parenthesis: a name
+    /// followed by `(` would otherwise read as a call. Any other shape leaves the
+    /// statement skipped.
+    fn parse_accumulate_statement(&mut self) -> ParseResult<Statement> {
+        let is_aggregate = |k: Kind| {
+            matches!(
+                k,
+                Kind::Average
+                    | Kind::Count
+                    | Kind::Maximum
+                    | Kind::Minimum
+                    | Kind::Total
+                    | Kind::SubAverage
+                    | Kind::SubCount
+                    | Kind::SubMaximum
+                    | Kind::SubMinimum
+                    | Kind::SubTotal
+            )
+        };
+        self.advance(); // consume ACCUMULATE
+        let start = self.current;
+        let mut depth = 0usize;
+        let mut open = None;
+        let mut i = start;
+        while let Some(t) = self.tokens.get(i) {
+            match t.kind {
+                Kind::Eof => break,
+                // A period joins a qualified name when a name follows it directly.
+                Kind::Period
+                    if !self
+                        .tokens
+                        .get(i + 1)
+                        .is_some_and(|n| n.start == t.end && Self::can_be_identifier(n.kind)) =>
+                {
+                    break;
+                }
+                Kind::LeftParen => {
+                    if depth == 0 && self.tokens.get(i + 1).is_some_and(|n| is_aggregate(n.kind)) {
+                        open = Some(i);
+                        break;
+                    }
+                    depth += 1;
+                }
+                Kind::RightParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            i += 1;
+        }
+        let expression = open.and_then(|open| {
+            // A lone name directly before `(` would read as a call.
+            if open == start + 1 && Self::can_be_identifier(self.peek().kind) {
+                let id = self.parse_identifier().ok()?;
+                return Some(self.expr(ExpressionKind::Identifier(id)));
+            }
+            match self.parse_expression() {
+                Ok(e) if self.current == open => Some(e),
+                _ => {
+                    self.current = start;
+                    None
+                }
+            }
+        });
+        let Some(expression) = expression else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut breaks = Vec::new();
+        self.advance(); // consume (
+        loop {
+            if is_aggregate(self.peek().kind) {
+                self.advance();
+            } else if self.check(Kind::By) {
+                self.advance();
+                match self.parse_head_item(|k| k == Kind::RightParen) {
+                    Some(e) => breaks.push(e),
+                    None => break,
+                }
+            } else {
+                break;
+            }
+        }
+        if self.check(Kind::RightParen) {
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Accumulate { expression, breaks }, tail))
     }
 
     /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query

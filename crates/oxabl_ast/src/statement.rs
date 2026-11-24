@@ -390,6 +390,18 @@ pub enum StatementKind {
         frame: Option<Identifier>,
     },
 
+    /// ACCUMULATE statement — accumulates aggregate values of an expression.
+    ///
+    /// `ACCUMULATE expression (aggregate [BY break-group]...)`. The aggregate
+    /// keywords are not modelled. An expression that is neither a single name
+    /// nor an expression that ends before the parenthesis leaves the statement
+    /// [`StatementKind::Skipped`].
+    Accumulate {
+        expression: Expression,
+        /// The `BY` break groups, in source order.
+        breaks: Vec<Expression>,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an

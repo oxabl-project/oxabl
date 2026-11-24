@@ -82,6 +82,14 @@ const FORMS: &[Form] = &[
         bare: Some("REPOSITION q-detail FORWARD 2."),
     },
     Form {
+        name: "ACCUMULATE",
+        decls: DECL_INT,
+        credits: true,
+        statement: "ACCUMULATE v-x (TOTAL COUNT).",
+        undefined: Some("ACCUMULATE v-x (TOTAL BY v-nope)."),
+        bare: None,
+    },
+    Form {
         name: "CLEAR",
         decls: DECL_FRAME,
         credits: false,

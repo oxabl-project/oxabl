@@ -334,6 +334,11 @@ impl Visitor<'_> {
                     self.walk_expression(query);
                 }
             }
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.walk_expression(e);
+                }
+            }
             // A bare name may be a static query, which is not a symbol.
             StatementKind::Reposition {
                 query, operands, ..

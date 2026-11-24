@@ -278,6 +278,11 @@ impl Visitor<'_> {
                 }
             }
             StatementKind::Get { query, .. } => self.walk_expression(query),
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.walk_expression(e);
+                }
+            }
             StatementKind::Reposition {
                 query, operands, ..
             } => {

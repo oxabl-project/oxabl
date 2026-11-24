@@ -3394,6 +3394,11 @@ impl<'a> ResolveWalker<'a> {
                     );
                 }
             }
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
             StatementKind::Get { query, .. } => self.walk_lenient_operand(query, scope),
             StatementKind::Reposition {
                 query, operands, ..

@@ -511,6 +511,7 @@ impl<'a> Collector<'a> {
             | SK::Close { .. }
             | SK::Reposition { .. }
             | SK::Clear { .. }
+            | SK::Accumulate { .. }
             | SK::Import { .. }
             | SK::Export { .. }
             | SK::Put { .. }

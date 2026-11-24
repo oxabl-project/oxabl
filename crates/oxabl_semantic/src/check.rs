@@ -383,6 +383,11 @@ impl<'a> CheckWalker<'a> {
             StatementKind::Get { query, .. } => {
                 self.check_expression(query, scope);
             }
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.check_expression(e, scope);
+                }
+            }
             StatementKind::Reposition {
                 query, operands, ..
             } => {
