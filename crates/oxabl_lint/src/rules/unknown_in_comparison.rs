@@ -26,6 +26,7 @@
 //! preview until they are.
 
 use super::handle_support::warning;
+use super::null_support::with_source_labels;
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_nulls::FileNulls;
@@ -68,7 +69,7 @@ pub fn check(
         .first_values()
         .filter(|u| !u.propagation)
         .map(|u| {
-            warning(
+            let d = warning(
                 ctx,
                 super::NL001,
                 format!(
@@ -82,7 +83,8 @@ pub fn check(
                     u.name
                 ),
                 u.at,
-            )
+            );
+            with_source_labels(d, ctx, u)
         })
         .collect()
 }

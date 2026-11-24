@@ -3,13 +3,16 @@
 //!
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
-//! `textDocument/definition` and `textDocument/documentLink` (see
-//! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses and
+//! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
+//! `textDocument/selectionRange`, `workspace/symbol`,
+//! `textDocument/definition`, `textDocument/hover` and `textDocument/documentLink`
+//! (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses and
 //! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
-//! `docs/design/include-context.md`.
+//! `docs/design/include-context.md`. `oxabl/schema` and `oxabl/schemaTable`
+//! answer the configured `.df` files as a tree for a schema browser; see
+//! `docs/design/schema-browser.md`.
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -28,12 +31,14 @@ pub mod debounce;
 pub mod diagnostics;
 pub mod document;
 mod document_symbol;
+mod editor_syntax;
 mod expanded_unit;
 pub mod formatting;
 mod includer_context;
 mod inlay_hint;
 mod navigation;
 pub mod position;
+mod schema;
 mod workspace_symbol;
 
 use std::collections::HashMap;
@@ -50,14 +55,15 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, InlayHintRequest,
-    Request as _, WorkspaceSymbolRequest,
+    DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDefinition,
+    HoverRequest, InlayHintRequest, Request as _, SelectionRangeRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbolParams, InitializeParams, InitializeResult, PositionEncodingKind,
-    PublishDiagnosticsParams, ServerInfo, TextEdit, Uri,
+    DocumentSymbolParams, FoldingRangeParams, InitializeParams, InitializeResult,
+    PositionEncodingKind, PublishDiagnosticsParams, SelectionRangeParams, ServerInfo, TextEdit,
+    Uri,
 };
 use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
 use oxabl_workspace::FeaturesConfig;
@@ -108,23 +114,174 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
     let workspace_root = declared_workspace_root(&init)
         .or_else(|| std::env::current_dir().ok())
         .context("finding a workspace root for the daemon")?;
-    let registration = find_or_start_daemon(&workspace_root)?;
-    let stream = UnixStream::connect(&registration.socket_path).with_context(|| {
-        format!(
-            "connecting to the oxabl daemon: {}",
-            registration.socket_path
-        )
-    })?;
-    let (daemon, daemon_threads) = oxabl_daemon::connection_over(stream);
-    daemon
-        .sender
-        .send(first)
-        .context("forwarding LSP initialize to the daemon")?;
-
-    let outcome = proxy_messages(connection, &daemon);
+    // A daemon that exits idle refuses a client that reaches it after it decided: the
+    // connect fails, or the connection closes before the daemon answers. Either means
+    // "no daemon here", so the client looks again and starts one.
+    const ATTEMPTS: u32 = 3;
+    let mut attempt = 1;
+    let mut notices = Vec::new();
+    let (daemon, daemon_threads, answer) = loop {
+        let registration = match find_or_start_daemon(&workspace_root, &mut notices) {
+            Ok(registration) => registration,
+            Err(error) => {
+                // The editor shows a server that fails to start only as a crash, so a
+                // daemon of another version this client cannot replace is named in the
+                // editor itself. The binary prints the error on stderr.
+                if error.downcast_ref::<VersionMismatch>().is_some() {
+                    notify_editor(
+                        connection,
+                        lsp_types::MessageType::WARNING,
+                        &error.to_string(),
+                    );
+                }
+                return Err(error);
+            }
+        };
+        for notice in notices.drain(..) {
+            eprintln!("oxabl lsp: {notice}");
+            let _ = connection
+                .sender
+                .send(Message::Notification(Notification::new(
+                    "window/logMessage".to_string(),
+                    lsp_types::LogMessageParams {
+                        typ: lsp_types::MessageType::INFO,
+                        message: notice,
+                    },
+                )));
+        }
+        match initialize_daemon(&registration, &first) {
+            Ok(joined) => break joined,
+            Err(refusal) if attempt < ATTEMPTS => {
+                // A daemon that refused this client and stays is not exiting: asking it
+                // again gets the same answer.
+                if !wait_for_departure(&workspace_root, registration.pid) {
+                    anyhow::bail!(
+                        "{refusal}, and it still serves the root, so it is not exiting. \
+                         Its stderr may say why; stop it with `kill {}`",
+                        registration.pid
+                    );
+                }
+                eprintln!(
+                    "oxabl lsp: {refusal} (attempt {attempt} of {ATTEMPTS}); looking for the \
+                     daemon again"
+                );
+                attempt += 1;
+            }
+            Err(refusal) => anyhow::bail!("{refusal} (attempt {attempt} of {ATTEMPTS})"),
+        }
+    };
+    let outcome =
+        editor_send(connection, answer).and_then(|()| proxy_messages(connection, &daemon));
     drop(daemon);
     daemon_threads.shutdown();
     outcome
+}
+
+/// Connect to the daemon a registration names, forward the editor's `initialize` and
+/// wait for the daemon's first frame. An error means the daemon did not take this
+/// client.
+#[cfg(unix)]
+fn initialize_daemon(
+    registration: &oxabl_daemon_protocol::Registration,
+    initialize: &Message,
+) -> std::result::Result<(Connection, oxabl_daemon::listener::ClientThreads, Message), String> {
+    let stream = UnixStream::connect(&registration.socket_path).map_err(|error| {
+        format!(
+            "could not connect to the oxabl daemon (pid {}) at {}: {error}",
+            registration.pid, registration.socket_path
+        )
+    })?;
+    let (daemon, daemon_threads) = oxabl_daemon::connection_over(stream);
+    let answer = daemon
+        .sender
+        .send(initialize.clone())
+        .ok()
+        .and_then(|()| daemon.receiver.recv().ok());
+    match answer {
+        Some(answer) => Ok((daemon, daemon_threads, answer)),
+        None => {
+            drop(daemon);
+            daemon_threads.shutdown();
+            Err(format!(
+                "the oxabl daemon (pid {}) closed the connection before it answered \
+                 `initialize`",
+                registration.pid
+            ))
+        }
+    }
+}
+
+/// Wait, for two seconds at most, until the daemon `pid` no longer serves `root`: a
+/// daemon that refused a client because it is exiting is still found until its
+/// registration is gone. Returns whether it went.
+#[cfg(unix)]
+fn wait_for_departure(root: &Path, pid: u32) -> bool {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match oxabl_daemon::discover(root) {
+            oxabl_daemon::Discovery::Live(registration)
+            | oxabl_daemon::Discovery::VersionMismatch(registration)
+                if registration.pid == pid => {}
+            _ => return true,
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// Forward one frame from the daemon to the editor.
+#[cfg(unix)]
+fn editor_send(editor: &Connection, message: Message) -> Result<()> {
+    editor
+        .sender
+        .send(with_null_result(message))
+        .context("the editor connection closed")
+}
+
+/// Show `message` in the editor and wait until it is written.
+///
+/// The stdio writer takes the next frame only after it has written the one before, so
+/// the second frame, a copy in the editor's log, returns once the warning is out. The
+/// process may exit right after this.
+#[cfg(unix)]
+fn notify_editor(connection: &Connection, typ: lsp_types::MessageType, message: &str) {
+    let show = Notification::new(
+        "window/showMessage".to_string(),
+        lsp_types::ShowMessageParams {
+            typ,
+            message: format!("oxabl: {message}"),
+        },
+    );
+    let log = Notification::new(
+        "window/logMessage".to_string(),
+        lsp_types::LogMessageParams {
+            typ,
+            message: format!("oxabl lsp: {message}"),
+        },
+    );
+    let _ = connection.sender.send(Message::Notification(show));
+    let _ = connection.sender.send(Message::Notification(log));
+}
+
+/// A daemon of another version serves the root and this client could not replace it.
+#[cfg(unix)]
+#[derive(Debug)]
+struct VersionMismatch(String);
+
+#[cfg(unix)]
+impl std::fmt::Display for VersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for VersionMismatch {}
+
+#[cfg(unix)]
+fn mismatch(message: String) -> anyhow::Error {
+    anyhow::Error::new(VersionMismatch(message))
 }
 
 #[cfg(not(unix))]
@@ -137,7 +294,10 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 /// One loop, not a check followed by a loop, because discovery has four answers and
 /// only one of them may start a daemon:
 ///
-/// * `Absent` — nothing is registered. Start a daemon, once, and keep polling.
+/// * `Absent` — nothing is registered. Start a daemon and keep polling. Start another
+///   only when the one started lost the start lock
+///   ([`oxabl_daemon::listener::EXIT_START_LOCK_HELD`]), which a daemon that is still
+///   exiting idle can hold. Any other exit repeats on every start, so it is reported.
 /// * `Undecided` — the registration could not be read, or the socket could not be
 ///   probed. Neither starting a daemon nor connecting is defensible on that answer, so
 ///   the loop waits. The reason is kept, because a client that runs out of attempts
@@ -150,7 +310,10 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 ///   second daemon of another build, which means another build keeps starting them.
 /// * `Live` — decided; return it.
 #[cfg(unix)]
-fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registration> {
+fn find_or_start_daemon(
+    root: &Path,
+    notices: &mut Vec<String>,
+) -> Result<oxabl_daemon_protocol::Registration> {
     use std::time::{Duration, Instant};
 
     // Polled every 20ms for two seconds. A cold start is far quicker; the budget is
@@ -159,7 +322,16 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
     const INTERVAL: Duration = Duration::from_millis(20);
 
     let mut deadline = Instant::now() + BUDGET;
+    // A daemon that lost the start lock is started again at most this often, and this
+    // many times.
+    const RESTART_INTERVAL: Duration = Duration::from_millis(250);
+    const STARTS: u32 = 5;
+
     let mut started = false;
+    let mut starts = 0;
+    let mut child: Option<std::process::Child> = None;
+    let mut last_start: Option<Instant> = None;
+    let mut child_exit: Option<std::process::ExitStatus> = None;
     let mut stopping: Option<StaleDaemon> = None;
     // A daemon of another build too busy to be named on its socket: that can clear,
     // so the loop keeps polling and reports it only at the deadline.
@@ -178,49 +350,83 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
                 }
                 // Another daemon of another build after this client stopped one or
                 // started its own.
-                Some(_) => anyhow::bail!(keeps_starting(&registration, root)),
-                None if started => anyhow::bail!(keeps_starting(&registration, root)),
-                None if !older_than_this_build(&registration) => anyhow::bail!(
-                    "{}. That daemon is not older than this client: update this oxabl, or \
-                     stop it with `kill {}`",
-                    mismatch_message(&registration, root),
-                    registration.pid
-                ),
-                None => match oxabl_daemon::stop_daemon(&registration, false) {
-                    Ok(()) => {
-                        busy = None;
-                        stopping = Some(StaleDaemon {
-                            registration,
-                            since: Instant::now(),
-                            killed: false,
-                        });
-                        // The old daemon's exit is not this client's start: both get
-                        // time.
-                        deadline = Instant::now() + STOP_GRACE + BUDGET;
+                Some(_) => return Err(mismatch(keeps_starting(&registration, root))),
+                None if started => return Err(mismatch(keeps_starting(&registration, root))),
+                None if !older_than_this_build(&registration) => {
+                    return Err(mismatch(format!(
+                        "{}. That daemon is not older than this client: update this oxabl, \
+                         or stop it with `kill {}`. The next oxabl command then starts a \
+                         daemon of this version",
+                        mismatch_message(&registration, root),
+                        registration.pid
+                    )));
+                }
+                None => {
+                    // Described before the signal: a daemon that has exited no longer
+                    // shows that its executable was replaced.
+                    let described = mismatch_message(&registration, root);
+                    match oxabl_daemon::stop_daemon(&registration, false) {
+                        Ok(()) => {
+                            notices.push(format!(
+                                "{described}. Stopped it; a daemon of this version serves the \
+                             root, and its other clients reconnect"
+                            ));
+                            busy = None;
+                            stopping = Some(StaleDaemon {
+                                registration,
+                                since: Instant::now(),
+                                killed: false,
+                            });
+                            // The old daemon's exit is not this client's start: both get
+                            // time.
+                            deadline = Instant::now() + STOP_GRACE + BUDGET;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            busy = Some(not_stopped(&registration, root, &error));
+                        }
+                        Err(error) => {
+                            return Err(mismatch(not_stopped(&registration, root, &error)));
+                        }
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        busy = Some(not_stopped(&registration, root, &error));
-                    }
-                    Err(error) => anyhow::bail!(not_stopped(&registration, root, &error)),
-                },
+                }
             },
             // Keep the latest reason rather than the first: a cause that has cleared
             // should not be the one reported, and one that has not will be read again
             // on the next pass.
             oxabl_daemon::Discovery::Undecided(reason) => refusal = Some(reason),
             oxabl_daemon::Discovery::Absent => {
-                if !started {
+                if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
+                    if status.code()
+                        != Some(i32::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD))
+                    {
+                        anyhow::bail!(
+                            "the oxabl daemon this client started for {} exited ({status}) \
+                             before it served the root; its error is above",
+                            root.display()
+                        );
+                    }
+                    child_exit = Some(status);
+                    child = None;
+                }
+                if child.is_none()
+                    && starts < STARTS
+                    && last_start.is_none_or(|at| at.elapsed() >= RESTART_INTERVAL)
+                {
                     let executable =
                         std::env::current_exe().context("locating the oxabl executable")?;
-                    Command::new(executable)
-                        .arg("daemon")
-                        .arg(root)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::inherit())
-                        .spawn()
-                        .context("starting the oxabl daemon")?;
+                    child = Some(
+                        Command::new(executable)
+                            .arg("daemon")
+                            .arg(root)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::inherit())
+                            .spawn()
+                            .context("starting the oxabl daemon")?,
+                    );
                     started = true;
+                    starts += 1;
+                    last_start = Some(Instant::now());
                 }
             }
         }
@@ -236,20 +442,27 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
     // cause, and a message that reports only the symptom sends its reader looking for
     // a slow machine when the answer is a directory mode.
     if let Some(stale) = stopping.filter(|_| !started) {
-        anyhow::bail!(
+        return Err(mismatch(format!(
             "{}, and it did not stop. Stop it with `kill -9 {}`",
             mismatch_message(&stale.registration, root),
             stale.registration.pid
-        );
+        )));
     }
     if let Some(busy) = busy {
-        anyhow::bail!(busy);
+        return Err(mismatch(busy));
     }
-    match refusal {
-        Some(reason) => {
+    if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
+        child_exit = Some(status);
+    }
+    match (refusal, child_exit) {
+        (Some(reason), _) => {
             anyhow::bail!("the oxabl daemon did not become ready in time: {reason}")
         }
-        None => anyhow::bail!("the oxabl daemon did not become ready in time"),
+        (None, Some(status)) => anyhow::bail!(
+            "the oxabl daemon did not become ready in time: every daemon this \
+             client started found the start lock held (starts: {starts}, last: {status})"
+        ),
+        (None, None) => anyhow::bail!("the oxabl daemon did not become ready in time"),
     }
 }
 
@@ -273,7 +486,7 @@ fn stop(
     force: bool,
 ) -> Result<()> {
     oxabl_daemon::stop_daemon(registration, force)
-        .map_err(|error| anyhow::anyhow!(not_stopped(registration, root, &error)))
+        .map_err(|error| mismatch(not_stopped(registration, root, &error)))
 }
 
 /// A daemon of another build that could not be signalled, with the way to stop it.
@@ -293,7 +506,13 @@ fn not_stopped(
 /// Whether the daemon a registration names is of an older build than this client.
 ///
 /// Versions compare by their numbers; a registration without one predates the field
-/// and is older. At an equal version the contract decides.
+/// and is older. At an equal version the contract decides. At an equal contract two
+/// builds of one version are ordered by when their executables were written: a daemon
+/// whose executable was replaced on disk, or that does not say when while this client
+/// does, is older, and so is one written before this client's executable. A time that
+/// does not order (equal, or unknown on this side) proves nothing, so the daemon stays.
+/// Two editors on two builds of one version then leave each other's daemon alone, or
+/// the newer build's daemon alone, and do not replace each other's daemon in turn.
 #[cfg(unix)]
 fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> bool {
     fn numbers(version: &str) -> Option<(u64, u64, u64)> {
@@ -309,7 +528,16 @@ fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> 
         numbers(oxabl_daemon::build_version()),
     ) {
         (Some(theirs), Some(ours)) if theirs != ours => theirs < ours,
-        _ => registration.contract_version < oxabl_daemon_protocol::CONTRACT_VERSION,
+        _ if registration.contract_version != oxabl_daemon_protocol::CONTRACT_VERSION => {
+            registration.contract_version < oxabl_daemon_protocol::CONTRACT_VERSION
+        }
+        _ => {
+            let (theirs, ours) = (
+                registration.build_modified_ms,
+                oxabl_daemon::build_identity().modified_ms,
+            );
+            oxabl_daemon::executable_replaced(registration.pid) || (ours != 0 && theirs < ours)
+        }
     }
 }
 
@@ -327,19 +555,39 @@ fn keeps_starting(registration: &oxabl_daemon_protocol::Registration, root: &Pat
 #[cfg(unix)]
 fn mismatch_message(registration: &oxabl_daemon_protocol::Registration, root: &Path) -> String {
     let version = if registration.daemon_version.is_empty() {
-        "an older version"
+        // A registration without the field predates it, so the daemon is older, but
+        // its version is not known.
+        "an unknown, older version"
     } else {
         registration.daemon_version.as_str()
     };
+    let ours = oxabl_daemon::build_identity();
     format!(
-        "the oxabl daemon for {} (pid {}) is {version} with contract {}, but this client \
-         is {} with contract {}",
+        "the oxabl daemon for {} (pid {}) is {version}{} with contract {}{}, but this client \
+         is {}{} with contract {}",
         root.display(),
         registration.pid,
+        build_suffix(&registration.build),
         registration.contract_version,
+        if oxabl_daemon::executable_replaced(registration.pid) {
+            " and its executable was replaced on disk"
+        } else {
+            ""
+        },
         oxabl_daemon::build_version(),
+        build_suffix(&ours.id),
         oxabl_daemon_protocol::CONTRACT_VERSION,
     )
+}
+
+/// ` (build <id>)`, or nothing when the build is not known.
+#[cfg(unix)]
+fn build_suffix(build: &str) -> String {
+    if build.is_empty() {
+        String::new()
+    } else {
+        format!(" (build {build})")
+    }
 }
 
 #[cfg(unix)]
@@ -356,7 +604,7 @@ fn proxy_messages(editor: &Connection, daemon: &Connection) -> Result<()> {
             }
             recv(daemon.receiver) -> message => {
                 let message = message.context("the daemon exited during the editor session")?;
-                editor.sender.send(with_null_result(message)).context("the editor connection closed")?;
+                editor_send(editor, message)?;
             }
         }
     }
@@ -529,6 +777,10 @@ struct Negotiated {
     inlay: inlay_hint::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `relatedInformation` on a diagnostic.
+    related_information: bool,
+    /// The most folding ranges the client takes (`rangeLimit`), if it says.
+    folding_range_limit: Option<usize>,
 }
 
 fn serve_initialized(
@@ -592,6 +844,20 @@ fn finish_handshake(
         .and_then(|c| c.document_symbol.as_ref())
         .and_then(|c| c.hierarchical_document_symbol_support)
         .unwrap_or(false);
+    let related_information = init
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|c| c.publish_diagnostics.as_ref())
+        .and_then(|c| c.related_information)
+        .unwrap_or(false);
+    let folding_range_limit = init
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|c| c.folding_range.as_ref())
+        .and_then(|c| c.range_limit)
+        .map(|limit| limit as usize);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
@@ -625,6 +891,8 @@ fn finish_handshake(
             options,
             inlay,
             hierarchical_symbols,
+            related_information,
+            folding_range_limit,
         },
         workspace_root,
     ))
@@ -661,6 +929,10 @@ struct Server<'c> {
     encoding: PositionEncodingKind,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `relatedInformation` on a diagnostic.
+    related_information: bool,
+    /// The most folding ranges the client takes, if it says.
+    folding_range_limit: Option<usize>,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
     /// The daemon's one session map. No analysis state lives in this client.
@@ -697,6 +969,8 @@ struct Server<'c> {
     inlay: inlay_hint::Options,
     /// The last outline of each open buffer, for its version.
     outlines: document_symbol::OutlineCache,
+    /// The folding and selection facts of each open buffer, for its version.
+    syntax: editor_syntax::SyntaxCache,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
     /// The selected compilation context of each open include.
@@ -704,6 +978,10 @@ struct Server<'c> {
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
+    /// Hover requests, one at a time, the stale ones dropped.
+    hovers: navigation::HoverGate,
+    /// The generation of the newest `oxabl/schema` request; an older one stops.
+    schema_requests: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -742,6 +1020,8 @@ impl<'c> Server<'c> {
             options,
             inlay,
             hierarchical_symbols,
+            related_information,
+            folding_range_limit,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -749,6 +1029,8 @@ impl<'c> Server<'c> {
             connection,
             encoding: options.encoding.clone(),
             hierarchical_symbols,
+            related_information,
+            folding_range_limit,
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -762,10 +1044,13 @@ impl<'c> Server<'c> {
             lenses: code_lens::LensCache::new(options),
             inlay,
             outlines: document_symbol::OutlineCache::default(),
+            syntax: editor_syntax::SyntaxCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
             contexts: includer_context::Contexts::default(),
             context_events,
             context_results,
+            hovers: navigation::HoverGate::default(),
+            schema_requests: Default::default(),
         }
     }
 
@@ -813,8 +1098,14 @@ impl<'c> Server<'c> {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
                                 self.handle_document_symbol(req)?;
+                            } else if req.method == FoldingRangeRequest::METHOD {
+                                self.handle_folding_range(req)?;
+                            } else if req.method == SelectionRangeRequest::METHOD {
+                                self.handle_selection_range(req)?;
                             } else if req.method == GotoDefinition::METHOD {
                                 self.handle_definition(req)?;
+                            } else if req.method == HoverRequest::METHOD {
+                                self.handle_hover(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
                                 self.handle_document_link(req)?;
                             } else if req.method == expanded_unit::METHOD {
@@ -823,6 +1114,10 @@ impl<'c> Server<'c> {
                                 self.handle_includer_contexts(req)?;
                             } else if req.method == includer_context::SELECT_METHOD {
                                 self.handle_select_includer_context(req)?;
+                            } else if req.method == schema::METHOD {
+                                self.handle_schema(req)?;
+                            } else if req.method == schema::TABLE_METHOD {
+                                self.handle_schema_table(req)?;
                             } else if req.method == WorkspaceSymbolRequest::METHOD {
                                 workspace_symbol::spawn(
                                     req,
@@ -975,7 +1270,8 @@ impl<'c> Server<'c> {
                 let Some(doc) = self.documents.get(&res.uri) else {
                     return;
                 };
-                let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
+                let related = self.related_information.then_some(&res.uri);
+                let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding, related);
                 self.publish(res.uri.clone(), lsp_diags, Some(res.version));
             }
         }
@@ -997,6 +1293,15 @@ impl<'c> Server<'c> {
             self.lenses.invalidate();
         }
         match not.method.as_str() {
+            "$/cancelRequest" => {
+                if let Ok(params) = serde_json::from_value::<lsp_types::CancelParams>(not.params) {
+                    let id = match params.id {
+                        lsp_types::NumberOrString::Number(n) => RequestId::from(n),
+                        lsp_types::NumberOrString::String(s) => RequestId::from(s),
+                    };
+                    self.hovers.cancel(&id);
+                }
+            }
             DidOpenTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
                 {
@@ -1004,6 +1309,7 @@ impl<'c> Server<'c> {
                     self.ensure_config(&doc.uri);
                     self.outlines.invalidate(&doc.uri);
                     self.note_inlay_version(&doc.uri, Some(doc.version));
+                    self.syntax.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
                     // it: cross-file resolution must exclude this file from its
@@ -1032,6 +1338,7 @@ impl<'c> Server<'c> {
                     let uri = params.text_document.uri;
                     let encoding = self.encoding.clone();
                     self.outlines.invalidate(&uri);
+                    self.syntax.invalidate(&uri);
                     self.documents.change(
                         &uri,
                         params.text_document.version,
@@ -1085,6 +1392,7 @@ impl<'c> Server<'c> {
                     self.documents.close(&uri);
                     self.contexts.forget(&uri);
                     self.outlines.invalidate(&uri);
+                    self.syntax.invalidate(&uri);
                     self.host.with(|sessions| {
                         sessions
                             .for_root(&self.session_root)
@@ -1343,7 +1651,8 @@ impl<'c> Server<'c> {
             return;
         };
         if let Some(doc) = self.documents.get(uri) {
-            let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
+            let related = self.related_information.then_some(uri);
+            let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding, related);
             self.publish(uri.clone(), lsp_diags, Some(version));
         }
     }
@@ -1657,6 +1966,86 @@ impl<'c> Server<'c> {
         self.respond(response)
     }
 
+    /// `textDocument/foldingRange`: syntax blocks, comments and region markers
+    /// of the open buffer's raw text. An unopened URI gives `null`.
+    fn handle_folding_range(&mut self, req: Request) -> Result<()> {
+        let params = match serde_json::from_value::<FoldingRangeParams>(req.params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.respond(Response::new_err(
+                    req.id,
+                    ErrorCode::InvalidParams as i32,
+                    format!("oxabl-lsp: invalid foldingRange params: {error}"),
+                ));
+            }
+        };
+        let uri = params.text_document.uri;
+        let Some(doc) = self.documents.get(&uri) else {
+            return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
+        };
+        let syntax = self.syntax.get_or_compute(&uri, doc.version, || {
+            oxabl_pipeline::document_syntax(&doc.text())
+        });
+        let response = match syntax {
+            Ok(syntax) => Response::new_ok(
+                req.id,
+                editor_syntax::folding_ranges(
+                    syntax,
+                    self.folding_range_limit,
+                    &doc.rope,
+                    &self.encoding,
+                ),
+            ),
+            Err(panic) => Response::new_err(
+                req.id,
+                ErrorCode::RequestFailed as i32,
+                format!("oxabl-lsp: folding ranges failed: {panic}"),
+            ),
+        };
+        self.respond(response)
+    }
+
+    /// `textDocument/selectionRange`: nested source ranges for every requested
+    /// position. An unopened URI gives `null`.
+    fn handle_selection_range(&mut self, req: Request) -> Result<()> {
+        let params = match serde_json::from_value::<SelectionRangeParams>(req.params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.respond(Response::new_err(
+                    req.id,
+                    ErrorCode::InvalidParams as i32,
+                    format!("oxabl-lsp: invalid selectionRange params: {error}"),
+                ));
+            }
+        };
+        let uri = params.text_document.uri;
+        let Some(doc) = self.documents.get(&uri) else {
+            return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
+        };
+        let offsets: Vec<u32> = params
+            .positions
+            .iter()
+            .map(|position| {
+                crate::position::position_to_byte(&doc.rope, *position, &self.encoding) as u32
+            })
+            .collect();
+        let syntax = self.syntax.get_or_compute(&uri, doc.version, || {
+            oxabl_pipeline::document_syntax(&doc.text())
+        });
+        let response = match syntax {
+            Ok(syntax) => Response::new_ok(
+                req.id,
+                editor_syntax::selection_ranges(syntax, &offsets, &doc.rope, &self.encoding),
+            ),
+            Err(panic) => Response::new_err(
+                req.id,
+                ErrorCode::RequestFailed as i32,
+                format!("oxabl-lsp: selection ranges failed: {panic}"),
+            ),
+        };
+        self.respond(response)
+    }
+
     fn respond(&self, response: Response) -> Result<()> {
         self.connection
             .sender
@@ -1755,6 +2144,8 @@ mod tests {
                 },
                 inlay: inlay_hint::Options::from_client(&Default::default(), None),
                 hierarchical_symbols: false,
+                related_information: false,
+                folding_range_limit: None,
             },
             std::time::Duration::from_millis(10),
             None,
@@ -2085,7 +2476,7 @@ mod tests {
             }
         }
 
-        let outcome = find_or_start_daemon(workspace.path());
+        let outcome = find_or_start_daemon(workspace.path(), &mut Vec::new());
 
         unsafe {
             for (name, value) in previous {

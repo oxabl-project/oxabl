@@ -157,27 +157,29 @@ pub mod panic_sites {
     pub const LSP_INDEX: &str = "lsp.index";
     /// The shared document outline.
     pub const OUTLINE: &str = "outline";
+    /// The shared folding and selection ranges.
+    pub const SYNTAX: &str = "syntax";
+    /// Hover, for [`hold_if_injected`](super::hold_if_injected).
+    pub const HOVER: &str = "hover";
     /// The language server's inlay hint analysis, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_INLAY_HINTS: &str = "lsp.inlay-hints";
 }
 
-/// The comment marker that makes a guarded call site wait, for tests:
-/// `OXABL-TEST-HOLD:<site>` in the analysed source holds the site for
-/// [`TEST_HOLD`]. A test of work that an edit overtakes then needs no slow
-/// input, and its result does not depend on the speed of the machine.
+/// The marker that holds a site for [`HOLD_TIME`], for a test that needs a
+/// request to be still running when the next one arrives:
+/// `OXABL-TEST-HOLD:<site>` in the source, as with [`TEST_PANIC_MARKER`].
 pub const TEST_HOLD_MARKER: &str = "OXABL-TEST-HOLD";
 
 /// How long [`hold_if_injected`] waits.
-pub const TEST_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+pub const HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Wait [`TEST_HOLD`] when `source` carries this `site`'s hold marker. A
-/// no-op unless the test-only `test-panics` feature is enabled, like
-/// [`panic_if_injected`].
+/// Sleep [`HOLD_TIME`] when `source` carries this `site`'s hold marker. A no-op
+/// unless the test-only `test-panics` feature is enabled.
 #[inline]
 pub fn hold_if_injected(site: &str, source: &str) {
     #[cfg(feature = "test-panics")]
     if source.contains(&format!("{TEST_HOLD_MARKER}:{site}")) {
-        std::thread::sleep(TEST_HOLD);
+        std::thread::sleep(HOLD_TIME);
     }
 
     #[cfg(not(feature = "test-panics"))]

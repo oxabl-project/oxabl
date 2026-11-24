@@ -10,12 +10,24 @@ import { installVsix, launch, makeProfile } from "../lib/vscode.mjs";
 // runtime directory of its own, so no daemon meets one of a running editor.
 //
 //   OXABL_E2E_CRASH_SECONDS   how long the crash-loop scenario watches (default 20)
-//   OXABL_E2E_SOAK_SECONDS    how long the soak scenario types (default 30)
+//   OXABL_E2E_TYPING_SECONDS  how long the soak scenario types at key-repeat speed
+//                             (default 30); the window must stay responsive
+//   OXABL_E2E_SOAK_SECONDS    how long the soak scenario then types as fast as it can (default 30)
+//   OXABL_E2E_SOAK_DELAY      milliseconds between the keys of that stress typing (default 5)
+//   OXABL_E2E_HOLD_KEY        a key (Delete, Backspace) to hold from the top of the file instead of
+//                             the stress typing; OXABL_E2E_HOLD_RATE presses a second (default 40,
+//                             the repeat rate of many desktops)
 //   OXABL_E2E_OXABL           the oxabl binary the soak scenario runs (required for it)
 //   OXABL_E2E_NO_SERVER       1 turns the server off (oxabl.enable false): the same typing then
 //                             measures the editor and the grammar alone
 //   OXABL_E2E_BIG_FILE        the name of the large file (default big.p); big.txt gives a plain-text
-//                             control that the grammar does not tokenize
+//                             control that no grammar tokenizes, big.c the same text in VS Code's
+//                             own C grammar
+//   OXABL_E2E_LANGUAGE        the language the status bar shows for that file (default ABL for .p,
+//                             C for .c, else Plain Text)
+//   OXABL_E2E_SETTINGS        JSON object of more user settings, for example
+//                             {"editor.experimental.asyncTokenization":false}
+//   OXABL_E2E_PROFILE         a file that receives a CPU profile of the window during the typing
 //   OXABL_E2E_RUNTIME         the runtime directory of the soak scenario (required for it); keep
 //                             the path short: VS Code's own socket must fit in 107 characters
 //   OXABL_E2E_REPORT          a file that receives the measurements as JSON lines
@@ -132,7 +144,7 @@ export async function serverCrashLoop(ctx) {
 }
 
 // A fuzzed ABL file: the resource files joined, then damaged in a few places.
-function fuzzedFile(bytes) {
+export function fuzzedFile(bytes) {
   const dir = path.resolve(EXT_DIR, "../../resources");
   const pool = fs
     .readdirSync(dir)
@@ -156,23 +168,151 @@ function fuzzedFile(bytes) {
   return text.slice(0, bytes);
 }
 
+// The longest time the window's main thread may be blocked while keys repeat.
+const STALL_LIMIT_MS = 1000;
+// The share of a sample (about 10 s) in which the main thread may be blocked in slices over 100 ms.
+const BLOCKED_SHARE_LIMIT = 0.1;
+// The time the window has to answer after the stress typing; a click times out after the same time.
+const ANSWER_LIMIT_MS = 30_000;
+// The status bar language of the large file, by extension.
+const LANGUAGES = { ".p": "ABL", ".c": "C", ".rs": "Rust" };
+// Key-repeat speed (a held key or very fast typing): about 39 characters a second. The window starts to block at about 45.
+const REPEAT_DELAY_MS = 20;
+// Fewer characters a second than this mean the window did not take the keys at key-repeat speed
+// (Playwright waits for the window), so it was under less load than the check intends.
+const REPEAT_MIN_CHARS_PER_SECOND = 28;
+
+/**
+ * Counts in the window how late a 50 ms timer fires: the time the main thread was blocked.
+ * `takeStalls` reads and resets the longest delay and the sum of the delays over 100 ms.
+ */
+async function watchStalls(page) {
+  await page.evaluate(() => {
+    globalThis.__oxablStalls = { maxMs: 0, totalMs: 0 };
+    let last = performance.now();
+    setInterval(() => {
+      const now = performance.now();
+      const late = Math.round(now - last - 50);
+      last = now;
+      const s = globalThis.__oxablStalls;
+      s.maxMs = Math.max(s.maxMs, late);
+      if (late > 100) s.totalMs += late;
+    }, 50);
+  });
+}
+
+/** The time the window takes to run a script, or null when it does not answer within `limit`. */
+async function answerMs(page, limit) {
+  const start = Date.now();
+  const answered = await Promise.race([
+    page.evaluate(() => true).catch(() => false),
+    sleep(limit).then(() => false),
+  ]);
+  return answered ? Date.now() - start : null;
+}
+
+// null when nothing watches (a reload starts a new window).
+const takeStalls = (page) =>
+  page.evaluate(() => {
+    const s = globalThis.__oxablStalls ?? null;
+    if (s) globalThis.__oxablStalls = { maxMs: 0, totalMs: 0 };
+    return s;
+  });
+
+// Text that opens and closes comments, strings and include references, so the state at the
+// end of a line changes and the rest of the file must be tokenized again.
+const TYPED = ["DEFINE VARIABLE x AS INTEGER NO-UNDO.\n", "/* ", "*/", '"', "{&a}", "IF x THEN DO:\n", "END.\n", "~", "FOR EACH t:\n", "\n"];
+
+/**
+ * Types TYPED in a loop for `seconds`, `delay` ms between keys. `onTick(insertions)` runs about
+ * every 10 s. Returns the insertions, the characters and the seconds the typing took.
+ */
+async function typeFor(page, seconds, delay, onTick) {
+  const start = Date.now();
+  const end = start + seconds * 1000;
+  let typed = 0;
+  let chars = 0;
+  let last = start;
+  while (Date.now() < end) {
+    const text = `${TYPED[typed % TYPED.length]}x`;
+    await page.keyboard.type(text, { delay });
+    chars += text.length;
+    typed++;
+    if (typed % 40 === 0) await page.keyboard.press("Control+Home");
+    if (Date.now() - last > 10_000) {
+      await onTick(typed);
+      last = Date.now();
+    }
+  }
+  return { insertions: typed, chars, seconds: (Date.now() - start) / 1000 };
+}
+
+/**
+ * Holds `key` as the keyboard repeats it, `rate` presses a second, from the top of the file. Held
+ * Delete takes the text below the cursor away, so each comment, string or include reference that
+ * it opens or closes changes the state of the rest of the file.
+ */
+async function holdKey(page, key, seconds, rate, onTick) {
+  const start = Date.now();
+  const end = start + seconds * 1000;
+  let presses = 0;
+  let last = start;
+  await page.keyboard.press("Control+Home");
+  while (Date.now() < end) {
+    await page.keyboard.press(key, { delay: 0 });
+    presses++;
+    const due = start + (presses * 1000) / rate - Date.now();
+    if (due > 0) await sleep(due);
+    if (Date.now() - last > 10_000) {
+      await onTick(presses);
+      last = Date.now();
+    }
+  }
+  return { insertions: presses, chars: presses, seconds: (Date.now() - start) / 1000 };
+}
+
+/** A number from the environment; a value that is not a finite number of at least `min` stops the run. */
+function numberEnv(name, fallback, min) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (raw.trim() === "" || !Number.isFinite(n) || n < min) throw new Error(`${name}=${raw} must be a number of at least ${min}`);
+  return n;
+}
+
 /**
  * A real oxabl in a real VS Code: a large fuzzed file is edited for a while, then the
  * window is reloaded several times. Reports the memory, threads and CPU of the extension
- * host and the server, and the number of oxabl processes after each reload.
+ * host and the server, the number of oxabl processes after each reload, and how long the
+ * window's main thread was blocked.
+ *
+ * First text is typed at key-repeat speed (about 39 characters a second): the window must never be blocked
+ * longer than STALL_LIMIT_MS, and for no more than BLOCKED_SHARE_LIMIT of the time.
+ * Then the scenario types as fast as it can (about 78 characters a second). That rate
+ * blocks the window for seconds in any language with a grammar, through VS Code's
+ * asynchronous tokenization (docs/design/vscode-extension.md, "Input faster than VS Code
+ * tokenizes"), so the scenario only reports the stalls and checks that the window still answers.
  */
 export async function serverSoak(ctx) {
   const name = "server-soak";
   const oxabl = process.env.OXABL_E2E_OXABL;
   if (!oxabl) throw new Error("OXABL_E2E_OXABL must name the oxabl binary");
-  const seconds = Number(process.env.OXABL_E2E_SOAK_SECONDS ?? 30);
+  const typingSeconds = numberEnv("OXABL_E2E_TYPING_SECONDS", 30, 0);
+  const seconds = numberEnv("OXABL_E2E_SOAK_SECONDS", 30, 0);
+  const soakDelay = numberEnv("OXABL_E2E_SOAK_DELAY", 5, 0);
   if (!process.env.OXABL_E2E_RUNTIME) throw new Error("OXABL_E2E_RUNTIME must name a short directory");
   const runtimeDir = path.resolve(process.env.OXABL_E2E_RUNTIME);
   fs.rmSync(runtimeDir, { recursive: true, force: true });
   fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
-  const profile = makeProfile(name, { files: ["sample.p"], settings: { "oxabl.updates": "off", "oxabl.server.path": path.resolve(oxabl), "oxabl.enable": !process.env.OXABL_E2E_NO_SERVER } });
+  const settings = {
+    "oxabl.updates": "off",
+    "oxabl.server.path": path.resolve(oxabl),
+    "oxabl.enable": !process.env.OXABL_E2E_NO_SERVER,
+    ...JSON.parse(process.env.OXABL_E2E_SETTINGS ?? "{}"),
+  };
+  const profile = makeProfile(name, { files: ["sample.p"], settings });
   const bigFile = process.env.OXABL_E2E_BIG_FILE ?? "big.p";
-  const language = bigFile.endsWith(".p") ? "ABL" : "Plain Text";
+  const language = process.env.OXABL_E2E_LANGUAGE ?? LANGUAGES[path.extname(bigFile)] ?? "Plain Text";
   const serverOn = !process.env.OXABL_E2E_NO_SERVER;
   fs.writeFileSync(path.join(profile.workspace, bigFile), fuzzedFile(400_000));
   fs.writeFileSync(path.join(profile.workspace, "oxabl.toml"), '[workspace]\nname = "soak"\n');
@@ -182,11 +322,20 @@ export async function serverSoak(ctx) {
     open: [bigFile],
     env: { OXABL_UPDATE_API_URL: server.url, XDG_RUNTIME_DIR: runtimeDir },
   });
-  const sample = (at) => {
+  let lastSampleAt = Date.now();
+  const sample = async (at) => {
     const c = census(profile.root, runtimeDir);
+    const answer = await answerMs(vs.page, ANSWER_LIMIT_MS);
+    const stalls = answer === null ? null : await takeStalls(vs.page);
+    const elapsedMs = Date.now() - lastSampleAt;
+    lastSampleAt = Date.now();
     report({
       scenario: name,
       at,
+      windowAnswerMs: answer,
+      windowStallMaxMs: stalls?.maxMs ?? null,
+      windowStallTotalMs: stalls?.totalMs ?? null,
+      windowBlockedShare: stalls ? Math.round((stalls.totalMs / elapsedMs) * 100) / 100 : null,
       extensionHostRssMb: sum(c.extensionHost, "rssMb"),
       extensionHostThreads: sum(c.extensionHost, "threads"),
       extensionHostCpuSeconds: Math.round(sum(c.extensionHost, "cpu")),
@@ -199,39 +348,87 @@ export async function serverSoak(ctx) {
       oxablDaemonThreads: sum(c.oxablDaemon, "threads"),
       oxablDaemonCpuSeconds: Math.round(sum(c.oxablDaemon, "cpu") * 10) / 10,
     });
-    return c;
+    return { census: c, answer, stalls, elapsedMs };
   };
   const one = (c) => !serverOn || (c.oxablLsp.length === 1 && c.oxablDaemon.length === 1);
   const counts = (c) => `lsp ${c.oxablLsp.length}, daemons ${c.oxablDaemon.length}`;
+  let cdp;
   try {
     await waitForLanguage(vs.page, language);
     await sleep(8000);
-    sample("opened");
-    await vs.page.locator(".monaco-editor .view-lines").first().click();
-    const tokens = ["DEFINE VARIABLE x AS INTEGER NO-UNDO.\n", "/* ", "*/", '"', "{&a}", "IF x THEN DO:\n", "END.\n", "~", "FOR EACH t:\n", "\n"];
-    const end = Date.now() + seconds * 1000;
-    let typed = 0;
-    let lastSample = Date.now();
-    while (Date.now() < end) {
-      await vs.page.keyboard.type(`${tokens[typed % tokens.length]}x`, { delay: 5 });
-      typed++;
-      if (typed % 40 === 0) await vs.page.keyboard.press("Control+Home");
-      if (Date.now() - lastSample > 10_000) {
-        sample(`after ${typed} insertions`);
-        lastSample = Date.now();
-      }
+    await watchStalls(vs.page);
+    await sample("opened");
+    if (process.env.OXABL_E2E_PROFILE) {
+      cdp = await vs.page.context().newCDPSession(vs.page);
+      await cdp.send("Profiler.enable");
+      await cdp.send("Profiler.start");
     }
-    const typedC = sample("after typing");
-    check(`${name}: one server and one daemon after typing`, one(typedC), counts(typedC));
+    await vs.page.locator(".monaco-editor .view-lines").first().click();
+
+    if (typingSeconds > 0) {
+      let worstMax = 0;
+      let worstShare = 0;
+      let sampled = 0;
+      const repeatSample = async (typed) => {
+        if (typed === sampled) return;
+        sampled = typed;
+        const s = await sample(`key repeat, after ${typed} insertions`);
+        // A window that does not answer, or one that nothing measures, counts as blocked.
+        worstMax = Math.max(worstMax, s.stalls?.maxMs ?? Infinity);
+        worstShare = Math.max(worstShare, s.stalls ? s.stalls.totalMs / s.elapsedMs : Infinity);
+      };
+      const typing = await typeFor(vs.page, typingSeconds, REPEAT_DELAY_MS, repeatSample);
+      await repeatSample(typing.insertions);
+      const rate = typing.chars / typing.seconds;
+      check(
+        `${name}: the window is never blocked longer than ${STALL_LIMIT_MS} ms while keys repeat`,
+        worstMax <= STALL_LIMIT_MS,
+        `blocked for ${worstMax} ms`,
+      );
+      check(
+        `${name}: the window is blocked less than ${BLOCKED_SHARE_LIMIT * 100}% of the time while keys repeat`,
+        worstShare <= BLOCKED_SHARE_LIMIT,
+        `blocked for ${Math.round(worstShare * 100)}% of a sample`,
+      );
+      check(
+        `${name}: the window takes the keys at key-repeat speed, ${REPEAT_MIN_CHARS_PER_SECOND} characters a second or more`,
+        rate >= REPEAT_MIN_CHARS_PER_SECOND,
+        `${rate.toFixed(1)} characters a second`,
+      );
+    } else {
+      console.log("!!   server-soak: OXABL_E2E_TYPING_SECONDS=0: the key-repeat check does not run");
+    }
+
+    const hold = process.env.OXABL_E2E_HOLD_KEY;
+    const onStress = (n) => sample(`stress, after ${n} insertions`);
+    const stress = hold
+      ? await holdKey(vs.page, hold, seconds, numberEnv("OXABL_E2E_HOLD_RATE", 40, 1), onStress)
+      : await typeFor(vs.page, seconds, soakDelay, onStress);
+    if (seconds > 0) report({ scenario: name, at: "stress rate", charsPerSecond: Math.round((stress.chars / stress.seconds) * 10) / 10 });
+    const typedS = await sample("after typing");
+    if (seconds > 0) {
+      check(
+        `${name}: the window answers within ${ANSWER_LIMIT_MS / 1000}s after the stress typing`,
+        typedS.answer !== null,
+        "no answer",
+      );
+    } else {
+      console.log("!!   server-soak: OXABL_E2E_SOAK_SECONDS=0: the answer check after the stress typing does not run");
+    }
+    check(`${name}: one server and one daemon after typing`, one(typedS.census), counts(typedS.census));
     for (let i = 1; i <= 5; i++) {
       await vs.page.locator(".monaco-editor .view-lines").first().click();
       await runCommand(vs.page, "Developer: Reload Window", 60_000);
       await waitForLanguage(vs.page, language, 60_000);
       await sleep(6000);
-      const c = sample(`after reload ${i}`);
+      const { census: c } = await sample(`after reload ${i}`);
       check(`${name}: after reload ${i} there is one server and one daemon`, one(c), counts(c));
     }
   } finally {
+    if (cdp) {
+      const { profile: cpu } = await cdp.send("Profiler.stop").catch(() => ({}));
+      if (cpu) fs.writeFileSync(process.env.OXABL_E2E_PROFILE, JSON.stringify(cpu));
+    }
     await vs.close();
     await sleep(1500);
     const c = census(profile.root, runtimeDir);

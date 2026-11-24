@@ -52,11 +52,12 @@
 //! # Where the rule looks
 //!
 //! Expressions in every modelled statement, `CREATE CALL`, and — by lexing the
-//! statement's source text, because the parser keeps no expression tree there —
-//! statements the parser recognizes but does not model
-//! (`StatementKind::Skipped`: `PUT`, `EXPORT`, `UPDATE`, `OPEN QUERY`, ...). A
-//! dynamic call inside a clause that a *modelled* statement discards (a
-//! `FORMAT` or `LABEL` expression, say) is not seen.
+//! source text, because the parser keeps no expression tree there — statements
+//! the parser recognizes but does not model (`StatementKind::Skipped`: `PUT`,
+//! `EXPORT`, `OPEN QUERY`, ...) and the skipped tail of a modelled statement
+//! (`Statement::skipped_tail`: the frame phrase and `EDITING` block of
+//! `PROMPT-FOR`, say). A call is reported once, also when the tail and an
+//! expression both hold it.
 
 use oxabl_ast::{
     CreateTarget, CreateTargetKind, Expression, ExpressionKind, Span, Statement, StatementKind,
@@ -82,6 +83,7 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
     let mut v = DynamicCalls {
         ctx,
         diags: Vec::new(),
+        reported: std::collections::HashSet::new(),
     };
     walk_block(&mut v, program);
     v.diags
@@ -106,10 +108,15 @@ fn dynamic_name(text: &str) -> Option<&'static str> {
 struct DynamicCalls<'a> {
     ctx: &'a AnalysisContext<'a>,
     diags: Vec<Diagnostic>,
+    /// The start of each call reported.
+    reported: std::collections::HashSet<u32>,
 }
 
 impl DynamicCalls<'_> {
     fn report(&mut self, span: Span, what: &str) {
+        if !self.reported.insert(span.start) {
+            return;
+        }
         self.diags.push(
             Diagnostic::warning(
                 CL002,
@@ -123,9 +130,9 @@ impl DynamicCalls<'_> {
         );
     }
 
-    /// Lex a skipped statement and report each dynamic-call keyword in it.
-    fn scan_skipped(&mut self, stmt: &Statement) {
-        let Some(text) = source_of(self.ctx.source, stmt.span) else {
+    /// Lex the source at `span` and report each dynamic-call keyword in it.
+    fn scan_skipped(&mut self, span: Span) {
+        let Some(text) = source_of(self.ctx.source, span) else {
             return;
         };
         let tokens = tokenize(text);
@@ -143,8 +150,8 @@ impl DynamicCalls<'_> {
             // a field may carry the same name.
             let called = tokens.get(i + 1).is_some_and(|t| t.kind == Kind::LeftParen);
             if called || name == "DYNAMIC-NEW" {
-                let start = stmt.span.start + tok.start as u32;
-                let end = stmt.span.start + tok.end as u32;
+                let start = span.start + tok.start as u32;
+                let end = span.start + tok.end as u32;
                 self.report(Span { start, end }, name);
             }
         }
@@ -172,8 +179,11 @@ impl Visitor for DynamicCalls<'_> {
                     "CREATE CALL",
                 );
             }
-            StatementKind::Skipped { .. } => self.scan_skipped(stmt),
+            StatementKind::Skipped { .. } => self.scan_skipped(stmt.span),
             _ => {}
+        }
+        if let Some(tail) = &stmt.skipped_tail {
+            self.scan_skipped(tail.span);
         }
         true
     }

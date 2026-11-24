@@ -41,6 +41,11 @@ pub struct EffectFile {
     callees: HashMap<u32, u32>,
     solved: Arc<Vec<Summary>>,
     names: Arc<Vec<String>>,
+    /// Per summary node: whether it runs a program on an AppServer, itself or
+    /// through what it calls. The summaries leave such a call out.
+    remote: Arc<Vec<bool>>,
+    /// The includes the file's expansion read.
+    includes: Vec<PathBuf>,
     fingerprint: u64,
 }
 
@@ -151,6 +156,9 @@ impl CalleeSummaries for EffectFile {
 #[derive(Debug, Default)]
 pub struct WorkspaceEffects {
     files: BTreeMap<PathBuf, EffectFile>,
+    /// [`Self::sources`] in the caller's spelling, built on the first
+    /// [`Self::reads`].
+    read_index: std::sync::OnceLock<std::collections::HashSet<PathBuf>>,
 }
 
 impl WorkspaceEffects {
@@ -166,10 +174,16 @@ struct Direct {
     root_units: Vec<Option<oxabl_ast::Span>>,
     root_headers: Vec<Option<u32>>,
     incomplete: Vec<oxabl_effects::EffectUnknown>,
+    includes: Vec<PathBuf>,
     fingerprint: u64,
 }
 
-fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option<Direct> {
+fn direct(
+    config: &PipelineConfig,
+    path: &Path,
+    expansion: &Expansion,
+    index: &BatchIndex<'_>,
+) -> Option<Direct> {
     let expanded = expansion.expanded()?;
     let text = expanded.text.as_str();
     let tokens = oxabl_lexer::tokenize(text);
@@ -178,7 +192,8 @@ fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option
         .with_tokens(&tokens)
         .with_parse_recovered(!program.errors.is_empty())
         .with_elided(expanded.elided_offsets())
-        .with_elided_includes(expanded.elided_include_offsets());
+        .with_elided_includes(expanded.elided_include_offsets())
+        .with_index(index);
     ctx.schema_loaded = config.schema_loaded;
     let shared = oxabl_lint::RunShared::default();
     let effects = shared.effects(&program.statements, &ctx).clone();
@@ -226,16 +241,12 @@ fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option
     if !program.errors.is_empty() {
         incomplete.push(oxabl_effects::EffectUnknown::RecoveredParse);
     }
-    if !expanded.unresolved_includes().is_empty()
-        || !expanded.nested_unresolved_includes().is_empty()
-        || !expanded.unreadable_includes().is_empty()
-        || !expanded.text_losses().is_empty()
-        || !expanded.elided_include_offsets().is_empty()
-    {
+    if expanded.lost_include_text() {
         incomplete.push(oxabl_effects::EffectUnknown::UnexpandedInclude);
     }
     Some(Direct {
         incomplete,
+        includes: expansion.dependency_paths().to_vec(),
         fingerprint: fingerprint(expanded),
         path: key(path),
         effects,
@@ -295,22 +306,22 @@ impl LintPipeline<'_> {
         );
         let fs = self.file_system();
         let preprocess = self.preprocess();
+        let index = self.effect_index(&index);
         let load = |path: &PathBuf| {
             oxabl_common::catch_panic(|| {
                 if let Some((_, expansion)) = root.filter(|(r, _)| *path == key(r)) {
-                    direct(config, path, expansion)
+                    direct(config, path, expansion, index)
                 } else {
                     fs.read(path).ok().and_then(|text| {
                         let run = LintPipeline::new(config, fs).with_preprocess(preprocess);
                         let handle = run.with_file(path);
-                        direct(config, path, &handle.expand(&text))
+                        direct(config, path, &handle.expand(&text), index)
                     })
                 }
             })
             .ok()
             .flatten()
         };
-        let index = self.effect_index(&index);
         // Breadth-first, one frontier at a time: the files of a frontier are
         // analysed in parallel, then taken in discovery order, so node ids do
         // not depend on the thread count.
@@ -426,7 +437,13 @@ impl LintPipeline<'_> {
             let mut nodes = Vec::with_capacity(f.effects.units().len());
             let mut names = Vec::with_capacity(f.effects.units().len());
             let mut callees = HashMap::new();
+            let mut remote = Vec::with_capacity(f.effects.units().len());
             for u in f.effects.units() {
+                remote.push(
+                    u.calls
+                        .iter()
+                        .any(|c| c.kind == oxabl_index::calls::CallKind::Remote),
+                );
                 let mut node = Node::of_unit(&f.effects, u, |c| {
                     if c.kind == oxabl_index::calls::CallKind::Remote {
                         None
@@ -447,18 +464,21 @@ impl LintPipeline<'_> {
                     }
                 }
             }
-            (nodes, names, callees)
+            (nodes, names, callees, remote)
         });
         let mut nodes = Vec::with_capacity(size as usize);
         let mut names = Vec::with_capacity(size as usize);
         let mut callees_by_file = Vec::with_capacity(files.len());
-        for (n, s, c) in per_file {
+        let mut remote = Vec::with_capacity(size as usize);
+        for (n, s, c, r) in per_file {
             nodes.extend(n);
             names.extend(s);
             callees_by_file.push(c);
+            remote.extend(r);
         }
         let solved = Arc::new(summary::summarize(&nodes, &summary::graph_of(&nodes)));
         let names = Arc::new(names);
+        let remote = Arc::new(reaches(&nodes, remote));
         let mut out = WorkspaceEffects::default();
         for (fi, (f, callees)) in files.into_iter().zip(callees_by_file).enumerate() {
             let base = bases[fi] as usize;
@@ -483,12 +503,40 @@ impl LintPipeline<'_> {
                     callees,
                     solved: Arc::clone(&solved),
                     names: Arc::clone(&names),
+                    remote: Arc::clone(&remote),
+                    includes: f.includes,
                     fingerprint: f.fingerprint,
                 },
             );
         }
         out
     }
+}
+
+/// Per node: whether it, or a node it calls, is marked in `marked`.
+fn reaches(nodes: &[Node], mut marked: Vec<bool>) -> Vec<bool> {
+    let mut callers: Vec<Vec<u32>> = vec![Vec::new(); nodes.len()];
+    for (caller, node) in nodes.iter().enumerate() {
+        for (callee, _) in &node.calls {
+            if let Callee::Node(callee) = callee
+                && let Some(list) = callers.get_mut(*callee as usize)
+            {
+                list.push(caller as u32);
+            }
+        }
+    }
+    let mut pending: Vec<u32> = (0..nodes.len() as u32)
+        .filter(|n| marked[*n as usize])
+        .collect();
+    while let Some(node) = pending.pop() {
+        for &caller in &callers[node as usize] {
+            if !marked[caller as usize] {
+                marked[caller as usize] = true;
+                pending.push(caller);
+            }
+        }
+    }
+    marked
 }
 
 fn program_of(c: &oxabl_effects::UnitCall) -> Option<&String> {
@@ -535,4 +583,261 @@ fn map_in_order<T: Sync, R: Send>(
     });
     done.sort_unstable_by_key(|(i, _)| *i);
     done.into_iter().map(|(_, r)| r).collect()
+}
+
+/// A routine whose database effects a hover shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Routine {
+    /// An internal procedure, function or method of `file`.
+    Unit {
+        file: PathBuf,
+        kind: UnitKind,
+        name: String,
+        /// Another body than the one the unit declares may run.
+        elsewhere: Option<Elsewhere>,
+    },
+    /// The main block of the program `file`.
+    Program(PathBuf),
+}
+
+/// Why a call of a routine may run another body than the one oxabl sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Elsewhere {
+    /// A method that a subclass can override.
+    Override,
+    /// A method of an interface: the implementing class supplies the body.
+    Implementation,
+    /// `PROCEDURE p IN SUPER`: a super procedure supplies the body.
+    SuperProcedure,
+    /// `PROCEDURE p IN h`: the procedure that the handle names supplies it.
+    Handle,
+}
+
+impl Elsewhere {
+    fn reason(self) -> &'static str {
+        match self {
+            Elsewhere::Override => "an override in a subclass may run instead of this method",
+            Elsewhere::Implementation => {
+                "the class that implements the interface supplies the body"
+            }
+            Elsewhere::SuperProcedure => "the body runs in a super procedure",
+            Elsewhere::Handle => "the body runs in the procedure that the handle names",
+        }
+    }
+}
+
+impl Routine {
+    /// The file that declares the routine.
+    pub fn file(&self) -> &Path {
+        match self {
+            Routine::Unit { file, .. } | Routine::Program(file) => file,
+        }
+    }
+}
+
+/// The most table lines a hover lists; the rest are counted.
+const MAX_EFFECT_LINES: usize = 12;
+
+impl WorkspaceEffects {
+    /// The database effects of `routine` as Markdown: each table with its
+    /// operations and locks, direct effects apart from those through a call,
+    /// and why the summary may miss effects. `None` when the summaries do not
+    /// hold the routine, or hold more than one routine of its name. A routine
+    /// without a body whose body runs [`Elsewhere`] has no known effects.
+    pub fn routine_markdown(&self, routine: &Routine) -> Option<String> {
+        let (file, kind, name, elsewhere) = match routine {
+            Routine::Unit {
+                file,
+                kind,
+                name,
+                elsewhere,
+            } => (file, *kind, Some(name.as_str()), *elsewhere),
+            Routine::Program(file) => (file, UnitKind::Main, None, None),
+        };
+        let effects = self.file(file)?;
+        // A declaration without a body (an interface method) has no unit.
+        let bodiless = elsewhere.map(|elsewhere| {
+            format!(
+                "**Database effects**\n\nNo known database effects.\n\n\
+                 **Incomplete:** effects may be missing: {}.",
+                elsewhere.reason()
+            )
+        });
+        let mut matching = effects.effects.units().iter().enumerate().filter(|(_, u)| {
+            u.kind == kind
+                && match name {
+                    Some(name) => u
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name)),
+                    None => true,
+                }
+        });
+        let Some((at, _)) = matching.next() else {
+            return bodiless;
+        };
+        if matching.next().is_some() {
+            return None;
+        }
+        Some(effects.unit_markdown(at, file, elsewhere))
+    }
+
+    /// Every file the summaries read: each analysed file and its includes.
+    pub fn sources(&self) -> impl Iterator<Item = &Path> {
+        self.files.iter().flat_map(|(path, file)| {
+            std::iter::once(path.as_path()).chain(file.includes.iter().map(PathBuf::as_path))
+        })
+    }
+
+    /// Whether the summaries read `path`, as `spell` writes paths (for one
+    /// client, its canonical form). The index of [`Self::sources`] is built on
+    /// the first call and kept, so `spell` must be the same on every call.
+    pub fn reads(&self, path: &Path, spell: &dyn Fn(&Path) -> PathBuf) -> bool {
+        self.read_index
+            .get_or_init(|| self.sources().map(spell).collect())
+            .contains(path)
+    }
+}
+
+impl EffectFile {
+    /// The effects of unit `at`. Its direct effects come from its summary; each
+    /// routine it calls has its lines from the callee's own summary, so a route
+    /// lists all that the callee does, also what the unit does itself.
+    fn unit_markdown(&self, at: usize, file: &Path, elsewhere: Option<Elsewhere>) -> String {
+        let summary = &self.summaries()[at];
+        let own = (self.summary_range.start + at) as u32;
+        let mut lines: BTreeMap<(String, Option<String>), Vec<String>> = BTreeMap::new();
+        let mut add = |table: &str, via: Option<String>, op: String| {
+            let ops = lines.entry((table.to_string(), via)).or_default();
+            if !ops.contains(&op) {
+                ops.push(op);
+            }
+        };
+        for effect in summary.effects.iter().filter(|e| e.via.is_none()) {
+            add(&effect.table, None, op_text(effect));
+        }
+        let mut callees: Vec<u32> = self.effects.units()[at]
+            .calls
+            .iter()
+            .filter(|call| call.kind != oxabl_index::calls::CallKind::Remote)
+            .filter_map(|call| self.callees.get(&call.at.start).copied())
+            .filter(|node| *node != own)
+            .collect();
+        callees.sort_unstable();
+        callees.dedup();
+        for node in callees {
+            let Some(callee) = self.solved.get(node as usize) else {
+                continue;
+            };
+            let via = self.via_label(node, file);
+            for effect in &callee.effects {
+                add(&effect.table, Some(via.clone()), op_text(effect));
+            }
+        }
+        let mut reasons: Vec<&str> = summary.partial.iter().map(|p| partial_text(*p)).collect();
+        if self.remote.get(own as usize).copied().unwrap_or(true) {
+            reasons.push("a program run on an AppServer (`RUN ... ON SERVER`)");
+        }
+        if let Some(elsewhere) = elsewhere {
+            reasons.push(elsewhere.reason());
+        }
+        let mut out = String::from("**Database effects**");
+        if lines.is_empty() {
+            out.push_str(if reasons.is_empty() {
+                "\n\nNo database effects."
+            } else {
+                "\n\nNo known database effects."
+            });
+        }
+        let total = lines.len();
+        // Direct lines sort before routed ones of the same table (`None` first).
+        for ((table, via), ops) in lines.into_iter().take(MAX_EFFECT_LINES) {
+            let table = match table.strip_prefix('?') {
+                Some(name) => format!("`{name}` (not in the schema)"),
+                None => format!("`{table}`"),
+            };
+            out.push_str(&format!("\n- {table}"));
+            if let Some(via) = via {
+                out.push_str(&format!(" through `{via}`"));
+            }
+            out.push_str(&format!(": {}", ops.join(", ")));
+        }
+        if total > MAX_EFFECT_LINES {
+            out.push_str(&format!("\n- and {} more", total - MAX_EFFECT_LINES));
+        }
+        if !reasons.is_empty() {
+            out.push_str(&format!(
+                "\n\n**Incomplete:** effects may be missing: {}.",
+                reasons.join("; ")
+            ));
+        }
+        out
+    }
+
+    /// The routine a summary node names: its name in `file`, the program's
+    /// file name for a main block, else `name in file`.
+    fn via_label(&self, node: u32, file: &Path) -> String {
+        let Some((path, unit)) = self.callee_name(node).and_then(|n| n.rsplit_once("::")) else {
+            return "a call".to_string();
+        };
+        let path = Path::new(path);
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if unit == UnitKind::Main.as_str() {
+            return file_name;
+        }
+        if path == key(file) {
+            unit.to_string()
+        } else {
+            format!("{unit} in {file_name}")
+        }
+    }
+}
+
+fn op_text(effect: &summary::SummaryEffect) -> String {
+    match effect.op {
+        oxabl_effects::Op::Read => format!("read {}", lock_name(effect.lock)),
+        op => op.as_str().to_string(),
+    }
+}
+
+fn lock_name(lock: summary::SummaryLock) -> &'static str {
+    use oxabl_scope::LockMode;
+    match lock {
+        summary::SummaryLock::Mode(LockMode::NoLock) => "NO-LOCK",
+        summary::SummaryLock::Mode(LockMode::ShareLock) => "SHARE-LOCK",
+        summary::SummaryLock::Mode(LockMode::ExclusiveLock) => "EXCLUSIVE-LOCK",
+        summary::SummaryLock::Default => "SHARE-LOCK (default)",
+        summary::SummaryLock::None | summary::SummaryLock::Unknown => "(lock unknown)",
+    }
+}
+
+fn partial_text(partial: summary::Partial) -> &'static str {
+    use oxabl_effects::EffectUnknown;
+    match partial {
+        summary::Partial::Unit(reason) => match reason {
+            EffectUnknown::Dynamic => "a dynamic query or buffer",
+            EffectUnknown::SkippedStatement => "a statement oxabl does not read names a table",
+            EffectUnknown::UnknownTable => "a write to a table the schema does not have",
+            EffectUnknown::NoSchema => "no schema is loaded",
+            EffectUnknown::UnexpandedInclude => "an include was not expanded",
+            EffectUnknown::RecoveredParse => "the parse recovered from an error",
+            EffectUnknown::TooComplex => "the analysis reached its work limit",
+        },
+        summary::Partial::Call(reason) => match reason {
+            UnknownCall::Dynamic => "a dynamic call (`RUN VALUE`, `DYNAMIC-FUNCTION`, ...)",
+            UnknownCall::Handle => "a call through a handle oxabl cannot follow",
+            UnknownCall::Super => "a call to a super procedure",
+            UnknownCall::Event => "a `PUBLISH`",
+            UnknownCall::Method => "a method call on an object or handle",
+            UnknownCall::Unexpanded => "a call target the preprocessor did not expand",
+            UnknownCall::NotFound => "a program no file on the include path supplies",
+            UnknownCall::Unusable => "a program oxabl cannot read",
+            UnknownCall::Ambiguous => "a program that several files supply",
+            UnknownCall::NoRoutine => "a procedure its program does not declare",
+        },
+        summary::Partial::Bound => "the call graph or the summary reached a size limit",
+    }
 }

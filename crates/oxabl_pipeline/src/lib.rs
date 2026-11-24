@@ -61,6 +61,14 @@
 //! view, breadcrumbs and "Go to Symbol in File". It reads the raw source, like
 //! [`FormatPipeline`], so every span is a byte range of the buffer as written.
 //!
+//! [`schema_view`] — the configured `.df` files as a tree of databases, tables,
+//! fields, indexes and sequences, for an editor's schema browser, and
+//! [`schema_table`], one table as the browser and the hover show it.
+//!
+//! [`document_syntax`] — the folding ranges and nested selection spans of the
+//! same raw source. One result lets a client share the parse between both
+//! requests. Include text never enters these ranges.
+//!
 //! [`resolve_diagnostic`] and its siblings — the single derivation of line and
 //! column from a byte span, for the byte-offset clients. The language server
 //! deliberately does not use it (R13, KTD5); see [`position`].
@@ -74,10 +82,12 @@ pub mod fixtures;
 
 mod effects;
 mod explain;
-pub use effects::{EffectFile, WorkspaceEffects};
+pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
 mod config;
 mod format;
 mod hints;
+mod includers;
+mod keyword_docs;
 mod lint;
 mod navigate;
 mod outline;
@@ -85,6 +95,9 @@ mod outline;
 mod parity;
 pub mod position;
 mod reverse;
+pub mod schema_hover;
+mod schema_view;
+mod syntax;
 
 pub use config::{
     ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
@@ -92,11 +105,20 @@ pub use config::{
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use hints::{HintKinds, InlayHint, InlayKind};
-pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
-pub use navigate::{Link, Navigation, Target};
+pub use includers::{IncluderPools, PoolVerdict};
+pub use lint::{
+    Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun,
+    encrypted_root_diagnostics,
+};
+pub use navigate::{Hover, Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
+pub use schema_view::{
+    SchemaDatabase, SchemaField, SchemaIndex, SchemaIndexField, SchemaProblem, SchemaSequence,
+    SchemaTable, SchemaView, TextPosition, TextRange, schema_database, schema_table, schema_view,
+    schema_view_table, schema_view_until,
+};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
-pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
+pub use oxabl_analyze::{IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{
     Position, ResolvedSpan, resolve_diagnostic, resolve_file_span, resolve_offset, resolve_offsets,
 };
@@ -104,6 +126,7 @@ pub use reverse::{
     Degraded, Dependent, Dependents, ReverseGraph, Subject, Unanalysed, UnnameableEdge,
     UnresolvedRow, dependency_section,
 };
+pub use syntax::{DocumentSyntax, Fold, FoldKind, document_syntax};
 // Re-exported so a consumer of the reverse query need not also depend on
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{

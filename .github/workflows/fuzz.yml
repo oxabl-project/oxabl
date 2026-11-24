@@ -33,12 +33,12 @@ jobs:
         target: [lex, preprocess_parse, lint, format, outline, navigate]
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: nightly
-          bins: cargo-fuzz
+          toolchain: nightly
+          bins: cargo-fuzz@0.13.2
       # The corpus a run grew is the start of the next one.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}

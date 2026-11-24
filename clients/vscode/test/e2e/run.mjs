@@ -33,10 +33,12 @@ import {
 } from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import { definition } from "./scenarios/definition.mjs";
+import { folding } from "./scenarios/folding.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
 import { includeContext } from "./scenarios/include-context.mjs";
 import { inlayHints } from "./scenarios/inlay-hints.mjs";
 import { outline } from "./scenarios/outline.mjs";
+import { schema, schemaConfigAbove } from "./scenarios/schema.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
   updateAuto,
@@ -61,6 +63,9 @@ const SCENARIOS = [
   ["expanded-unit", expandedUnit],
   ["definition", definition],
   ["inlay-hints", inlayHints],
+  ["schema", schema],
+  ["schema-config-above", schemaConfigAbove],
+  ["folding", folding],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],

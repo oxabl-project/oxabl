@@ -168,7 +168,9 @@ fn ascii_to_string(bytes: Vec<u8>) -> String {
 /// 3. If that fails, they are decoded as `fallback` when one is set. Only UTF-8
 ///    can fail, so a fallback matters when `encoding` is UTF-8.
 ///
-/// A failure of every step is an [`io::ErrorKind::InvalidData`] error.
+/// Before all of that, a file that [looks encrypted](crate::looks_encrypted)
+/// is an [`io::ErrorKind::InvalidData`] error that [`is_encrypted`](crate::is_encrypted)
+/// names. A failure of every step is an [`io::ErrorKind::InvalidData`] error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct SourceDecoding {
     pub encoding: SourceEncoding,
@@ -182,6 +184,9 @@ impl SourceDecoding {
 
     /// Decode `bytes` as the rules on [`SourceDecoding`] say.
     pub fn decode(&self, mut bytes: Vec<u8>) -> io::Result<DecodedSource> {
+        if crate::encrypted::looks_encrypted(&bytes) {
+            return Err(crate::encrypted::EncryptedSource.into());
+        }
         if bytes.starts_with(&UTF8_BOM) {
             bytes.drain(..UTF8_BOM.len());
             return Ok(DecodedSource {

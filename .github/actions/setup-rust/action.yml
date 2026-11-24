@@ -1,0 +1,152 @@
+name: Set up Rust
+description: >-
+  Install a Rust toolchain with the runner's own rustup, restore cargo's
+  registry, and install pinned cargo binaries from crates.io. It calls no
+  GitHub API and uses no third-party action.
+
+inputs:
+  toolchain:
+    description: The toolchain to install and make the default (stable, nightly, 1.90.0).
+    default: stable
+  components:
+    description: Comma-separated rustup components (clippy, rustfmt).
+    default: ""
+  targets:
+    description: Comma-separated rustup targets (wasm32-unknown-unknown).
+    default: ""
+  bins:
+    description: >-
+      Comma-separated cargo binaries, each pinned as name@version
+      (cargo-fuzz@0.13.2). The crate must install a binary of its own name.
+      They are built once with `cargo install --locked` and then restored
+      from the cache.
+    default: ""
+  save-registry:
+    description: >-
+      Fetch every dependency of the workspace and the fuzz crate, and save the
+      registry when no entry exists for the lock files. Set it in one job
+      only, so the entry always holds the whole set. Like every save of this
+      action, it runs on master only.
+    default: "false"
+
+# Caches are saved on master only, which every branch and pull request can
+# read; a pull request only restores. A save on a pull request ref is visible
+# to that pull request alone and takes room from master's entries.
+runs:
+  using: composite
+  steps:
+    # Composite steps take no timeout-minutes, so each network call has its
+    # own limit, below every job's timeout.
+    - name: Install the toolchain
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+        COMPONENTS: ${{ inputs.components }}
+        TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        args=(--profile minimal --no-self-update)
+        IFS=', ' read -ra list <<<"$COMPONENTS"
+        for c in "${list[@]}"; do [ -n "$c" ] || continue; args+=(--component "$c"); done
+        IFS=', ' read -ra list <<<"$TARGETS"
+        for t in "${list[@]}"; do [ -n "$t" ] || continue; args+=(--target "$t"); done
+        timeout 300 rustup toolchain install "$TOOLCHAIN" "${args[@]}"
+        rustup default "$TOOLCHAIN"
+        # CI builds once, so incremental data only costs time and disk.
+        echo "CARGO_INCREMENTAL=0" >>"$GITHUB_ENV"
+        echo "CARGO_TERM_COLOR=always" >>"$GITHUB_ENV"
+        rustc --version --verbose
+
+    # Only the registry is cached. A target directory is several GB per job,
+    # so a set of them passes the repository's cache limit and evicts itself.
+    - name: Restore the cargo registry
+      id: registry
+      uses: actions/cache/restore@v6
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+        restore-keys: cargo-registry-${{ runner.os }}-
+
+    - name: Fetch every dependency
+      if: inputs.save-registry == 'true' && github.ref == 'refs/heads/master' && steps.registry.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        timeout 600 cargo fetch --locked
+        # Not --locked: the fuzz lock file names the workspace crates by
+        # version, and a release moves them without touching it.
+        if [ -f fuzz/Cargo.lock ]; then
+          timeout 600 cargo fetch --manifest-path fuzz/Cargo.toml
+        fi
+
+    - name: Save the cargo registry
+      if: inputs.save-registry == 'true' && github.ref == 'refs/heads/master' && steps.registry.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ steps.registry.outputs.cache-primary-key }}
+
+    - name: Name the cargo binaries
+      id: bins
+      if: inputs.bins != ''
+      shell: bash
+      env:
+        BINS: ${{ inputs.bins }}
+      run: |
+        set -euo pipefail
+        IFS=', ' read -ra list <<<"$BINS"
+        names=()
+        paths=()
+        for b in "${list[@]}"; do
+          [ -n "$b" ] || continue
+          case "$b" in
+            ?*@?*) ;;
+            *) echo "::error::bin '$b' is not written as name@version" >&2; exit 1 ;;
+          esac
+          names+=("$b")
+          paths+=("$HOME/.cargo/bin/${b%@*}")
+        done
+        {
+          echo "key=cargo-bins-${{ runner.os }}-${{ runner.arch }}-${ImageOS:-unknown}-$(printf '%s\n' "${names[@]}" | sort | tr '\n' '+')"
+          echo "paths<<EOF"
+          printf '%s\n' "${paths[@]}"
+          echo "EOF"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Restore the cargo binaries
+      id: bins-cache
+      if: inputs.bins != ''
+      uses: actions/cache/restore@v6
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+      with:
+        path: ${{ steps.bins.outputs.paths }}
+        key: ${{ steps.bins.outputs.key }}
+
+    - name: Install the cargo binaries
+      if: inputs.bins != '' && steps.bins-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        BINS: ${{ inputs.bins }}
+      run: |
+        set -euo pipefail
+        IFS=', ' read -ra list <<<"$BINS"
+        for b in "${list[@]}"; do
+          [ -n "$b" ] || continue
+          timeout 1200 cargo install --locked "$b"
+        done
+
+    - name: Save the cargo binaries
+      if: inputs.bins != '' && github.ref == 'refs/heads/master' && steps.bins-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ steps.bins.outputs.paths }}
+        key: ${{ steps.bins.outputs.key }}

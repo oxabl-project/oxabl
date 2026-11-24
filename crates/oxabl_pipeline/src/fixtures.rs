@@ -3300,12 +3300,21 @@ pub const FIXTURES: &[ParityFixture] = &[
         })],
     },
     // A constructor inside `ACCUMULATE` is a class and nothing else, so a miss is
-    // a gap.
+    // a gap and, as the statement is modelled, an undefined class.
     class_site_row! {
         name: "class_site_accumulate_new",
         root_file: "report.p",
         siblings: CALC_BASE_SIBLING,
-        resolutions: SILENT,
+        resolutions: &[CrossFileResolution {
+            name: "NEW orders.calc-base()",
+            effect: CrossFileEffect::ResolvedFromWorkspaceMiss(ExpectedDiagnostic {
+                code: "LINT0001",
+                severity: Severity::Error,
+                source: DiagnosticSource::Lint,
+                start: 11,
+                end: 33,
+            }),
+        }],
         source: "ACCUMULATE NEW orders.calc-base():calc-total() (TOTAL).\n",
         diagnostics: &[],
         needs: &[],
@@ -3321,7 +3330,7 @@ pub const FIXTURES: &[ParityFixture] = &[
         resolutions: SILENT,
         source: "DEFINE VARIABLE v-calc AS orders.calc-base NO-UNDO.\n\
                  MESSAGE VALID-OBJECT(v-calc).\n\
-                 ACCUMULATE mystery.helper:run() (TOTAL).\n",
+                 UNDERLINE mystery.helper:run().\n",
         diagnostics: &[],
         format: ExpectedFormat::Unchanged,
         needs: &[],
@@ -3510,7 +3519,8 @@ pub const FIXTURES: &[ParityFixture] = &[
             },
         }],
     },
-    // A brace inside a quoted include argument does not close the reference.
+    // A `~}` in an include argument does not close the reference, as in the
+    // compiler. A plain `}` closes it, also inside quotes.
     ParityFixture {
         name: "edges_quoted_brace_in_include_argument",
         root_file: "main.p",
@@ -3525,12 +3535,47 @@ pub const FIXTURES: &[ParityFixture] = &[
                 severity: Severity::Warning,
                 source: DiagnosticSource::Preproc,
                 start: 0,
-                end: 9,
+                end: 10,
             }),
         }],
-        source: "{a.i \"}\"}\nMESSAGE 2.\n",
+        source: "{a.i \"~}\"}\nMESSAGE 2.\n",
         diagnostics: &[],
-        format: ExpectedFormat::Refused(NotFormattedKind::Bail),
+        format: ExpectedFormat::Unchanged,
+        needs: &[Capability::IncludeResolution],
+        edges: &[EdgeExpectation::ResolvedWithSiblings {
+            edge: ExpectedEdge {
+                via: "direct_include",
+                target: "a.i",
+            },
+            withheld: ExpectedUnresolvedEdge {
+                via: "direct_include",
+                name: "a.i",
+                reason: "absent_from_workspace",
+            },
+        }],
+    },
+    // A `}` inside quotes ends the include reference, as in the compiler, and the
+    // text after it is source text: here the rest of a string.
+    ParityFixture {
+        name: "edges_quoted_brace_ends_the_include_reference",
+        root_file: "main.p",
+        siblings: &[SiblingFile {
+            path: "a.i",
+            source: "/* {1} */",
+        }],
+        resolutions: &[CrossFileResolution {
+            name: "{a.i \"}",
+            effect: CrossFileEffect::Resolved(ExpectedDiagnostic {
+                code: "PREPROC007",
+                severity: Severity::Warning,
+                source: DiagnosticSource::Preproc,
+                start: 8,
+                end: 15,
+            }),
+        }],
+        source: "MESSAGE {a.i \"}\"x\".\n",
+        diagnostics: &[],
+        format: ExpectedFormat::Unchanged,
         needs: &[Capability::IncludeResolution],
         edges: &[EdgeExpectation::ResolvedWithSiblings {
             edge: ExpectedEdge {
@@ -4371,6 +4416,10 @@ const DEGRADED_FIXTURES: &[(&str, Degraded)] = &[
     ),
     (
         "edges_quoted_brace_in_include_argument",
+        Degraded(&[], &["unresolved_include"]),
+    ),
+    (
+        "edges_quoted_brace_ends_the_include_reference",
         Degraded(&[], &["unresolved_include"]),
     ),
     (

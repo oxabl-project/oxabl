@@ -350,8 +350,9 @@ fn json_carries_two_findings_keys_and_span_anchored_lint_entries() {
 
     let v = run.json();
     assert_eq!(
-        v["version"], 3,
-        "bumped when a key's meaning changes, or a key is added — 3 added `help`"
+        v["version"], 5,
+        "bumped when a key's meaning changes, or a key is added — 3 added `help`, 4 \
+         added `related`, 5 added `includers` and `summary`"
     );
     assert_eq!(v["files_checked"], 2);
     assert_eq!(v["lint_enabled"], true);
@@ -1042,7 +1043,7 @@ fn the_same_walk_with_no_search_path_keeps_the_json_shape_and_does_not_guess() {
 
     assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
     let v = run.json();
-    assert_eq!(v["version"], 3);
+    assert_eq!(v["version"], 5);
     assert_eq!(v["files_checked"], 2);
     assert_eq!(v["lint_enabled"], true);
     assert_eq!(v["format_enabled"], false);

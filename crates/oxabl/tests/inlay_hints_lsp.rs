@@ -1059,7 +1059,7 @@ fn edits_of_the_selected_root_run_one_analysis_and_one_refresh() {
     let start = std::time::Instant::now();
     let again = hints(&mut session, root.path(), "reads.i");
     assert!(
-        start.elapsed() < oxabl_common::TEST_HOLD,
+        start.elapsed() < oxabl_common::HOLD_TIME,
         "an edit of a file the root does not read ran the analysis again: {:?}",
         start.elapsed()
     );

@@ -937,7 +937,7 @@ impl<'a> Walker<'a> {
 
 /// Calls `f` with the statement lists that `statement` holds, last list first,
 /// so a stack that pops them sees source order.
-fn children<'a>(statement: &'a Statement, mut f: impl FnMut(&'a [Statement])) {
+pub(crate) fn children<'a>(statement: &'a Statement, mut f: impl FnMut(&'a [Statement])) {
     use std::slice::from_ref;
     match &statement.kind {
         StatementKind::Do { body, .. }
@@ -1096,7 +1096,7 @@ fn truncate_chars(text: &str, max: usize) -> String {
     }
 }
 
-fn access_name(access: AccessModifier) -> &'static str {
+pub(crate) fn access_name(access: AccessModifier) -> &'static str {
     match access {
         AccessModifier::Public => "PUBLIC",
         AccessModifier::Private => "PRIVATE",
@@ -1106,7 +1106,7 @@ fn access_name(access: AccessModifier) -> &'static str {
     }
 }
 
-fn direction_name(direction: &ParameterDirection) -> &'static str {
+pub(crate) fn direction_name(direction: &ParameterDirection) -> &'static str {
     match direction {
         ParameterDirection::Input => "INPUT",
         ParameterDirection::Output => "OUTPUT",
@@ -1116,7 +1116,7 @@ fn direction_name(direction: &ParameterDirection) -> &'static str {
 }
 
 /// The type as a detail; `None` for a conditional type, which has no one name.
-fn data_type_name(data_type: &DataType) -> Option<String> {
+pub(crate) fn data_type_name(data_type: &DataType) -> Option<String> {
     let name = match data_type {
         DataType::Integer => "INTEGER",
         DataType::Int64 => "INT64",

@@ -96,6 +96,8 @@ pub struct UnreadableInclude {
     /// The enclosing include sites that led here, outermost first. Empty when the
     /// reference was written in the file being processed.
     pub via: Vec<FileSpan>,
+    /// The file is encrypted source: it was refused, not merely unreadable.
+    pub encrypted: bool,
 }
 
 /// The directive that opens a conditional branch.
@@ -175,6 +177,12 @@ pub enum TextLossKind {
     UnknownPredefinedName,
     /// An `&IF` was decided on a function or shape the evaluator does not model.
     UnmodelledCondition,
+    /// A `~{` in an include argument is never closed, met where the include
+    /// uses the argument (`PREPROC012`); the compiler stops with error 374.
+    UnmatchedArgumentBrace,
+    /// A substituted value ends with `~`, which the compiler reads with the
+    /// text that follows the reference (`PREPROC013`).
+    ArgumentEndsWithTilde,
 }
 
 /// A place where the preprocessor dropped text, or chose between branches without

@@ -26,6 +26,15 @@ how each part works and why.
     in the `function` or `reserved` set.
   Both are tries in lower case, used inside `(?i)` patterns. Codegen fails on
   an unknown placeholder.
+- Two placeholders start a pattern that must not follow a word character:
+  `{{boundary}}` before a word character and `{{non-boundary}}` before
+  another character (`&`, `.`). See the rule about look-behinds below.
+- A repository rule that includes itself can have `"x-nesting-limit": N`.
+  Codegen then writes N copies of the rule (`name`, `name-2`, … `name-N`).
+  Each copy includes the next where the rule included itself, and the last
+  copy does not include itself. So the rule stack holds at most N of them.
+  Codegen fails when the rule does not include itself, when N is less than 2,
+  or when a copy's name is already a rule.
 
 ### Keyword data
 
@@ -92,6 +101,28 @@ how each part works and why.
     keep their keywords.
   The keywords before the name keep their scopes: the rule hands them to
   `#keywords`.
+- No `match` or `begin` pattern starts with a look-behind. Oniguruma tries
+  such a pattern at every position of every line. A rule that must not follow
+  a word character starts with `{{boundary}}(?<![#$%&.-])`, not
+  `(?<![\w#$%&.-])`. Before a word character the two accept the same text,
+  and tokenizing is about twice as fast. `{{non-boundary}}` does the same
+  before `&` or `.`. The placeholders are `\b` and `\B` plus the six
+  characters `²`, `³`, `¹`, `¼`, `½` and `¾`: Oniguruma's `\b` takes them as
+  word characters and its `[\w]` does not, so a plain `\b` would change the
+  tokens after them (`test/grammar/cases/boundaries.p`). A test in
+  `corpus.test.ts` fails when a pattern starts with a look-behind.
+- Block comments and include references nest. Each opener pushes a rule, so
+  without a limit, damaged text (`/*` or `{` many times) makes the rule stack
+  deep and each line slower than the one before it. `comment-block` and
+  `include` have `"x-nesting-limit": 50`. The `include` rule keeps its
+  argument patterns in `include-arguments`, so its 50 copies stay small.
+- A `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` in the value of another one is a
+  `match`, not a second `begin`. Otherwise each continued line
+  (`&SCOPED-DEFINE a ~`) pushes one more define rule.
+- Digit runs joined by `/` with no spaces (`12/31/2026`, `2/1/26`, `10/2`)
+  are one date constant, as the compiler and the lexer read them: `10/2` is a
+  date, `10 / 2` a division. A run followed by a word character, `/` or `.`
+  plus a word character is a path part (`rpt/2024/01/x.p`), not a date.
 - The `record-names` rule starts with `\b(?<![#$%&.-])`, not
   `(?<![\w#$%&.-])`. Before a letter the two match the same, but Oniguruma
   tries a pattern that starts with a look-behind at every position: the rule
@@ -109,8 +140,100 @@ how each part works and why.
   So does a table name on the line after its record word, and a table after
   `TO` in `BUFFER-COPY a TO item`. LSP semantic tokens are the planned
   correction: the parser and the semantic model know what each name is.
-- The grammar scopes three integer literals joined by `/` with no spaces
-  (`10/2/3`) as a date, the same as `12/31/2026`.
+- The grammar counts at most 50 nested block comments and 50 nested include
+  references. Past that depth, `/*` is comment text and `{` is argument
+  text, and each `*/` or `}` closes one of the 50 levels. So in a comment
+  nested deeper than 50 levels, the highlighting ends the comment too early.
+  The compiler has no such limit. Real files nest fewer than 10 levels.
+- Continuous input of more than about 45 characters a second into a large
+  file can block the window for seconds in a headless run. On a desktop the
+  same input gave stale colours, not a blocked window. This is a limit of
+  VS Code, not of the grammar, so the extension does not change it. See
+  [Input faster than VS Code tokenizes](#input-faster-than-vs-code-tokenizes).
+
+### Input faster than VS Code tokenizes
+
+A comment, a string or an include reference can continue on the next lines.
+When an edit opens or closes one of them, the state at the end of each line
+below the edit changes, and the tokens of the remainder of the file become
+incorrect. VS Code tokenizes in a worker
+(`editor.experimental.asyncTokenization`, on by default). The worker sends
+the new tokens to the window in parts of about 200 lines. When more edits
+come before a part arrives, the window must move each line of the part
+through each of these edits. With continuous fast input into a large file,
+this work fills the main thread of the window.
+
+The `server-soak` end-to-end scenario measures it (`test/e2e/README.md`).
+It types into a fuzzed ABL file of 400 KB (about 13,700 lines) and counts
+how long a 50 ms timer in the window is late. All rows below are for the
+language server off, 60 seconds of input and VS Code 1.145.2.
+
+By input speed (ABL, typed text):
+
+| Characters a second | Longest block | Share of a 10 s sample blocked |
+| --- | --- | --- |
+| 11 | 0.13 s | 0% |
+| 18 | 0.04 s | 0% |
+| 39 | 0.09 s | 0% |
+| 44 | 0.37 s | up to 12% |
+| 50 | 3.0 s | 18% to 91% |
+| 78 | 4.5 s | about 100% |
+
+The limit is between 40 and 50 characters a second. The repeat rate of a
+held key is often 25 to 40 a second, so a held key stays below it. Holding
+Delete from the top of the file (`OXABL_E2E_HOLD_KEY=Delete`) does not block
+the window at 30, 40 or 50 presses a second. At 60 presses a second it
+blocks for 97% of the time (longest block 8.8 s). Holding Backspace at the
+top of the file does nothing: no text is before the cursor.
+
+By configuration (ABL, typed at about 78 characters a second):
+
+| Configuration | Longest block | Sum of blocks over 100 ms |
+| --- | --- | --- |
+| ABL as shipped | 6.5 s | 47 s |
+| Empty `language-configuration.json` | 3.9 s | 46 s |
+| No indentation rules, or no auto-closing pairs | 7.3 s, 3.4 s | 45 s, 44 s |
+| Bracket pair colorization off | 4.1 s | 45 s |
+| Same text in VS Code's own C grammar | 3.7 s | 43 s |
+| Same text in VS Code's own Rust grammar | 3.8 s | 46 s |
+| `editor.experimental.asyncTokenization: false` | 0.07 s | 0 s |
+| Same text as plain text (no grammar) | 0.03 s | 0 s |
+
+The C and Rust rows need `OXABL_E2E_BIG_FILE=big.c` or `big.rs`.
+
+VS Code 1.147.0 gives the same result (ABL 9.0 s and 48 s, C 3.0 s and
+41 s). A CPU profile of the window shows the time in
+`setTokensAndStates` of the worker tokenizer controller, in the transform of
+the pending edits, and in the rendering of the changed lines. The language
+configuration and bracket pair colorization have no effect. The grammars of
+VS Code itself have the same effect as the ABL grammar.
+
+All numbers above come from the headless harness (Xvfb, software
+rendering). On a desktop (Wayland, VS Code 1.147.0), input of about 80
+characters a second gave no input lag and no blocked window. The colours of
+the file changed between comment and code for about 60 seconds after the
+typing stopped, while the tokenizer worker caught up. The scenario does not
+measure this backlog: the timer only sees a blocked main thread.
+
+The full hang of the issue (a click that times out after 120 seconds, and
+the memory growth from 1.3 GB to 2.1 GB) did not occur in these runs. The
+window answered within 3 seconds. The memory of the VS Code processes grew
+about the same with and without a grammar. The cause of the full hang is not
+shown: only the stalls are.
+
+The extension cannot set `editor.experimental.asyncTokenization` for ABL
+files only: VS Code reads it for all languages, and an `[abl]` value has no
+effect. A default from the extension (`configurationDefaults`) removes the
+blocks in the measurement, but it changes the tokenization of all languages,
+so the extension does not set it. A person who is affected can set it to
+`false` in the settings.
+
+The `server-soak` scenario types at about 39 characters a second first. It
+fails when the window blocks for more than 1 second, when it is blocked for
+more than 10% of a sample, or when the window takes the keys at fewer than
+28 characters a second (a slow window gets less load). The scenario is not in
+the default CI run: it runs only when `OXABL_E2E_SCENARIOS` names it, so
+nothing runs these checks automatically.
 
 ### Tests
 
@@ -122,26 +245,43 @@ From `clients/vscode`:
   compiles: nested comments, comment markers in strings, escapes, numbers,
   preprocessor names and blocks nested six deep. Open it to see the
   highlighting.
-- `pnpm test` — includes `test/grammar/corpus.test.ts`: every regex
+- `pnpm test` — includes `test/grammar/nesting.test.ts`: nested comments
+  and include references keep their scopes up to the limit of 50 levels, and
+  the rule stack stops at it. It also includes `test/grammar/corpus.test.ts`: every regex
   compiles, and every ABL file in the repository tokenizes within a time
   budget, on vscode-textmate 9 and vscode-oniguruma 2, the engine VS Code
-  uses. It also includes `test/grammar/fuzz.test.ts`: pathological shapes,
+  uses, and no `match` or `begin` regex starts with a look-behind. It also includes `test/grammar/fuzz.test.ts`: pathological shapes,
   random token runs and mutated corpus files must stay inside a time budget
-  per line and per file and a rule-stack depth. The time budgets grow on a
+  per line and per file and a rule-stack depth of 64. Every shape runs at
+  sizes up to 10,000 (`OXABL_FUZZ_SCALE`), the deep shapes (`/*`, `{` and
+  `&SCOPED-DEFINE a ~` many times) too. The time budgets grow on a
   slow machine: a calibration scan that does not use the grammar sets the
   factor. `OXABL_FUZZ_SECONDS` makes a longer run, `OXABL_FUZZ_SEED` replays
   one.
+- `node test/grammar/compare.mjs <old.json> <new.json> [dir ...]` — tokenizes
+  the repository's ABL files (or the given files and directories) with two
+  grammars, counts the lines whose tokens differ and times both. Use it for a
+  change that must keep every token. `--counts-only` prints no file name and no
+  source text.
 - `xvfb-run -a pnpm run test:e2e` — the packaged VSIX in a downloaded VS Code:
   activation, the colours that the editor renders, Markdown code blocks, a
   missing binary (a line in the output channel, no message), the self-update
   against a fake GitHub API, the install of the CLI and the build loop against
   a fake `oxabl` (see [The build loop](#the-build-loop)), the outline (Outline
-  view, breadcrumbs and "Go to Symbol in File") from a real `oxabl` binary, and
-  screenshots. The `outline` scenario needs `OXABL_E2E_OXABL` and
+  view, breadcrumbs and "Go to Symbol in File") and the ABL Schema view from a
+  real `oxabl` binary, and screenshots. The `outline` scenario needs `OXABL_E2E_OXABL` and
   `OXABL_E2E_RUNTIME` and fails without them. It removes every `oxabl` from
   `PATH` and sets `VSCODE_CLI=1` (otherwise VS Code reads the login shell's
   `PATH` and starts a real language server), and fails when a scenario leaves
   a process running.
+
+## The schema view
+
+The **ABL Schema** view in the Explorer shows the `.df` files of
+`[workspace.schema]` from the language server's `oxabl/schema` request, with a
+filter, "Open in .df", copy commands and a details page per table. It asks the
+server only after it is visible for the first time, so activation does not
+read the schema. See [schema-browser.md](schema-browser.md).
 
 ## Releases
 
@@ -306,10 +446,18 @@ restarts the client when the version differs. The new `oxabl lsp` then finds
 the `oxabl daemon` of the old binary still serving the root: the registration
 names the version of the binary, so it stops that older daemon (`SIGTERM`,
 `SIGKILL` after one second) and starts one of its own build, which reads
-`oxabl.toml` with the new rules. The other clients of the stopped daemon (a
-second window, the desktop app) lose their connection and start again. A newer
-daemon is not stopped: `oxabl lsp` exits and names both versions. It also
-checks once per binary
+`oxabl.toml` with the new rules. A binary replaced by another build of the
+same version (a local build) is found by the build hash in the registration, and
+a daemon whose executable was replaced on disk is found by `/proc/<pid>/exe` on
+Linux. `oxabl lsp` replaces such a daemon when its executable is older than its
+own binary, and a daemon of a replaced executable always. The other clients of
+the stopped daemon (a second window, the desktop app) lose their connection and
+start again. A daemon that is newer, or that has the same time, is not
+stopped: `oxabl lsp` shows a warning that names both versions and the `kill`
+command that stops it, then exits. A replaced daemon is written to the output
+channel (`window/logMessage`). A daemon also exits 10 minutes
+after its last client (`OXABL_DAEMON_IDLE_TIMEOUT`, see `docs/overview.md`), so
+a closed window does not keep it. The extension also checks once per binary
 version that `oxabl build --help` mentions `--yield`. A binary without it is
 updated when it is managed, and otherwise one message asks for a newer oxabl.
 

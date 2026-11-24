@@ -664,6 +664,8 @@ fn classify(state: DaemonState) -> Discovery {
         DaemonState::Running(registration) | DaemonState::Saturated(registration) => {
             if registration.contract_version != CONTRACT_VERSION
                 || registration.daemon_version != crate::build_version()
+                || registration.build != crate::build_identity().id
+                || crate::executable_replaced(registration.pid)
             {
                 Discovery::VersionMismatch(registration)
             } else {
@@ -1125,6 +1127,8 @@ pub fn register(workspace_root: &Path, socket_path: &Path, pid: u32) -> io::Resu
         // raw spelling would let the registration disagree with its own file name.
         workspace_root: advertisable(&canonical_root(workspace_root)?, "the workspace root")?,
         daemon_version: crate::build_version().to_string(),
+        build: crate::build_identity().id.clone(),
+        build_modified_ms: crate::build_identity().modified_ms,
     };
     let body = serde_json::to_string_pretty(&registration)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -1467,9 +1471,10 @@ const LOCK_NB: i32 = 4;
 
 /// The lock file that says a daemon owns this root.
 ///
-/// Never unlinked. Deleting it would let two daemons hold locks on two different
-/// inodes for one root, which is the race the lock exists to prevent — so the file
-/// outlives every daemon and costs one empty inode per workspace.
+/// Removed only by the daemon that holds it, on an orderly exit ([`RootLock::remove`]).
+/// A daemon that takes the lock checks afterwards that the file is still at this path
+/// ([`acquire_root_lock`]), so two daemons never hold locks on two different inodes for
+/// one root.
 pub fn lock_path_for(workspace_root: &Path) -> io::Result<PathBuf> {
     sibling_of_registration(&registration_path_for(workspace_root)?, ".lock")
 }
@@ -1482,11 +1487,36 @@ pub fn lock_path_for(workspace_root: &Path) -> io::Result<PathBuf> {
 /// depending on a pid that the operating system is free to hand to somebody else.
 #[derive(Debug)]
 pub struct RootLock {
-    /// Held, never read. Closing this descriptor is what releases the lock, so the
-    /// value exists purely for its `Drop`.
+    /// Closing this descriptor is what releases the lock.
     #[cfg(unix)]
-    #[allow(dead_code)]
     file: fs::File,
+    #[cfg(unix)]
+    path: PathBuf,
+}
+
+impl RootLock {
+    /// Remove the lock file while the lock is still held, then release it.
+    ///
+    /// A daemon that opened the file before the removal gets the lock on the removed
+    /// inode only after this release, and then sees that the path no longer names it,
+    /// so it opens the path again. One that opens the path after the removal makes a
+    /// new file. Either way one lock decides.
+    pub fn remove(self) {
+        #[cfg(unix)]
+        if self.still_at_path() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    /// Whether the locked file is the one at the lock path.
+    #[cfg(unix)]
+    fn still_at_path(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        match (self.file.metadata(), fs::symlink_metadata(&self.path)) {
+            (Ok(held), Ok(named)) => held.dev() == named.dev() && held.ino() == named.ino(),
+            _ => false,
+        }
+    }
 }
 
 /// Take the lock for `workspace_root`, or report that a daemon already holds it.
@@ -1499,26 +1529,41 @@ pub fn acquire_root_lock(workspace_root: &Path) -> io::Result<Option<RootLock>> 
 
     #[cfg(unix)]
     {
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&path)?;
-        // SAFETY: `flock` takes a valid descriptor this function owns and an
-        // operation constant. It mutates no memory and the descriptor outlives the
-        // call.
-        let taken =
-            unsafe { libc_flock(std::os::fd::AsRawFd::as_raw_fd(&file), LOCK_EX | LOCK_NB) };
-        if taken == 0 {
-            return Ok(Some(RootLock { file }));
+        // A daemon that exits removes the file while it holds the lock. A lock taken on
+        // the file it removed guards nothing, so the path is opened again. Each retry
+        // needs another exit between the open and the check, so a few are plenty.
+        for _ in 0..8 {
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(&path)?;
+            // SAFETY: `flock` takes a valid descriptor this function owns and an
+            // operation constant. It mutates no memory and the descriptor outlives the
+            // call.
+            let taken =
+                unsafe { libc_flock(std::os::fd::AsRawFd::as_raw_fd(&file), LOCK_EX | LOCK_NB) };
+            if taken != 0 {
+                let error = io::Error::last_os_error();
+                // `EWOULDBLOCK`/`EAGAIN` is the answer we asked for: somebody holds it.
+                return match error.raw_os_error() {
+                    Some(11) | Some(35) => Ok(None),
+                    _ => Err(error),
+                };
+            }
+            let lock = RootLock {
+                file,
+                path: path.clone(),
+            };
+            if lock.still_at_path() {
+                return Ok(Some(lock));
+            }
         }
-        let error = io::Error::last_os_error();
-        // `EWOULDBLOCK`/`EAGAIN` is the answer we asked for: somebody holds it.
-        match error.raw_os_error() {
-            Some(11) | Some(35) => Ok(None),
-            _ => Err(error),
-        }
+        Err(io::Error::other(format!(
+            "the lock file {} kept being removed while this daemon took it",
+            path.display()
+        )))
     }
     #[cfg(not(unix))]
     {
@@ -2375,6 +2420,8 @@ mod tests {
                 contract_version: CONTRACT_VERSION + 7,
                 workspace_root: root.to_string_lossy().into_owned(),
                 daemon_version: crate::build_version().to_string(),
+                build: crate::build_identity().id.clone(),
+                build_modified_ms: crate::build_identity().modified_ms,
             };
             fs::write(
                 registration_path_for(root).expect("a registration path"),
@@ -2453,6 +2500,8 @@ mod tests {
             contract_version: CONTRACT_VERSION,
             workspace_root: "/proj".to_string(),
             daemon_version: crate::build_version().to_string(),
+            build: crate::build_identity().id.clone(),
+            build_modified_ms: crate::build_identity().modified_ms,
         };
 
         assert!(matches!(
@@ -2676,6 +2725,8 @@ mod tests {
                 contract_version: CONTRACT_VERSION + 7,
                 workspace_root: root.to_string_lossy().into_owned(),
                 daemon_version: crate::build_version().to_string(),
+                build: crate::build_identity().id.clone(),
+                build_modified_ms: crate::build_identity().modified_ms,
             };
             fs::write(&path, serde_json::to_string(&stale).expect("json")).expect("write");
             // A daemon of the wrong contract is still a daemon: it answers.

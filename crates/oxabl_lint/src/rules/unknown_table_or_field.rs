@@ -252,6 +252,9 @@ impl Visitor<'_> {
             }
             | StatementKind::Set {
                 targets, options, ..
+            }
+            | StatementKind::PromptFor {
+                targets, options, ..
             } => {
                 for e in targets.iter().chain(options) {
                     self.walk_expression(e);
@@ -271,6 +274,44 @@ impl Visitor<'_> {
             }
             StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
                 if let Some(e) = lines {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Get { query, .. } => self.walk_expression(query),
+            StatementKind::CopyLob {
+                source,
+                target,
+                options,
+                ..
+            } => {
+                for e in [source, target].into_iter().chain(options) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Color { items, .. } => {
+                for e in items {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Reposition {
+                query, operands, ..
+            } => {
+                for e in std::iter::once(query).chain(operands) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Close {
+                target,
+                status,
+                handle,
+                ..
+            } => {
+                for e in std::iter::once(target).chain(status).chain(handle) {
                     self.walk_expression(e);
                 }
             }

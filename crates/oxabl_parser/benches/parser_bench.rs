@@ -96,6 +96,15 @@ fn parser_benchmarks(c: &mut Criterion) {
         "bench_parser_skipped_forms.abl",
     );
 
+    // PROMPT-FOR / COPY-LOB / REPOSITION / CLEAR / ACCUMULATE / COLOR / GET /
+    // CLOSE: head-parsed forms, kept out of the fixture above so that bench
+    // keeps its input.
+    bench_fixture(
+        &mut group,
+        "query_lob_forms",
+        "bench_parser_query_lob_forms.abl",
+    );
+
     bench_pipeline_with_includes(
         &mut group,
         "pipeline_with_includes",

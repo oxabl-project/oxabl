@@ -38,6 +38,7 @@ pub struct Options<'a> {
     pub no_lint: bool,
     pub no_format: bool,
     pub include_findings: bool,
+    pub fail_on_encrypted: bool,
     pub jobs: usize,
 }
 
@@ -269,13 +270,18 @@ fn cycle(
     let format = FormatPipeline::new(config.style.clone());
     let pass = CheckPass {
         json_output: false,
+        summary: false,
         diagnostics: channels.diagnostics,
         no_lint: opts.no_lint,
         no_format: !channels.format,
         include_findings: opts.include_findings,
+        pools: None,
+        fail_on_encrypted: opts.fail_on_encrypted,
         baseline: None,
         format: &format,
         decoding: config.decoding,
+        collect_includers: false,
+        includers: std::sync::OnceLock::new(),
     };
     let tasks: Vec<Task<'_>> = files
         .iter()

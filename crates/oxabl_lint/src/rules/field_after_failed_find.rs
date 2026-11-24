@@ -76,6 +76,7 @@ use oxabl_semantic::AnalysisContext;
 
 use super::NL003;
 use super::handle_support::{quote, warning};
+use super::syntactic::file_span;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "field-after-failed-find";
@@ -122,7 +123,7 @@ pub fn check(
             n => format!(" (or one of {} others)", n - 1),
         };
         let verb = if m.write { "assigned" } else { "read" };
-        diags.push(warning(
+        let mut d = warning(
             ctx,
             NL003,
             format!(
@@ -135,7 +136,14 @@ pub fn check(
                  not), or drop `NO-ERROR` when the record must exist."
             ),
             m.at,
-        ));
+        );
+        for &index in &m.finds {
+            d = d.with_label(
+                file_span(ctx, nulls.find(index).at),
+                format!("this may find no record and leave `{buffer}` empty"),
+            );
+        }
+        diags.push(d);
     }
     diags
 }
