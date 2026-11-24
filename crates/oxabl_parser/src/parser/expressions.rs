@@ -821,11 +821,14 @@ impl Parser<'_> {
             }
             let start = self.peek().start;
             self.advance(); // consume first name component
+            // A qualified name has no space around its periods: in
+            // `l = NEW customer.` the period ends the statement.
             while self.check(Kind::Period)
+                && self.token_at(self.current - 1).end == self.peek().start
                 && self
                     .tokens
                     .get(self.current + 1)
-                    .is_some_and(|t| Self::is_word_kind(t.kind))
+                    .is_some_and(|t| Self::is_word_kind(t.kind) && t.start == self.peek().end)
             {
                 self.advance(); // consume '.'
                 self.advance(); // consume next component

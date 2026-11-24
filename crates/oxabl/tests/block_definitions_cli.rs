@@ -236,6 +236,68 @@ MESSAGE AVAILABLE pb VALID-HANDLE(ph).
     assert_clean(&[("w.p", source)], "w.p");
 }
 
+#[test]
+fn streams_datasets_data_sources_and_procedures_in_a_do_block_belong_to_the_routine() {
+    let source = "\
+DO:
+  DEFINE STREAM s-out.
+  DEFINE TEMP-TABLE tt NO-UNDO FIELD a AS INTEGER.
+  DEFINE DATASET ds FOR tt.
+  DEFINE QUERY q FOR orders.
+  DEFINE DATA-SOURCE src FOR QUERY q.
+  PROCEDURE inner:
+  END PROCEDURE.
+END.
+OUTPUT STREAM s-out TO \"x.txt\".
+MESSAGE PAGE-NUMBER(s-out) DATASET ds:NAME.
+RUN inner.
+DEFINE DATA-SOURCE src FOR QUERY q.
+";
+    // The compiler rejects the second DATA-SOURCE: both are in one routine.
+    let found = findings(&[("kinds.p", source)], "kinds.p");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("13:20 SEM0001 "), "{found:?}");
+}
+
+#[test]
+fn a_temp_table_defined_in_catch_and_finally_is_visible_after_the_block() {
+    let source = "\
+DO ON ERROR UNDO, LEAVE:
+  MESSAGE 1.
+  CATCH e AS Progress.Lang.Error:
+    DEFINE TEMP-TABLE tt-c NO-UNDO FIELD a AS INTEGER.
+  END CATCH.
+  FINALLY:
+    DEFINE TEMP-TABLE tt-f NO-UNDO FIELD a AS INTEGER.
+  END FINALLY.
+END.
+tt-c.a = 1.
+tt-f.a = 2.
+";
+    assert_clean(&[("catch.p", source)], "catch.p");
+}
+
+/// A trigger is its own routine: what it defines is not visible after it.
+#[test]
+fn a_definition_in_a_trigger_does_not_leak_out_of_it() {
+    let source = "\
+DEFINE BUTTON bt LABEL \"x\".
+ON CHOOSE OF bt DO:
+  DEFINE TEMP-TABLE tt NO-UNDO FIELD a AS INTEGER.
+  tt.a = 1.
+END.
+tt.a = 2.
+";
+    let found = findings(&[("trig.p", source)], "trig.p");
+    assert_eq!(
+        found,
+        [
+            "6:1 LINT0001 undefined symbol `tt`",
+            "6:4 LINT0003 unknown field `a`",
+        ],
+    );
+}
+
 /// The definitions go to the routine, never further: a name defined in a block
 /// of one routine stays undefined in the main block and in another routine.
 #[test]

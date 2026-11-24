@@ -258,3 +258,19 @@ IF NEW b-cust THEN MESSAGE b-cust.name b-cust.no-such-field.
     let found = findings(CONFIG, Some(CUSTOMER_SCHEMA), source);
     assert_eq!(found, ["3:47 LINT0003 unknown field `no-such-field`"]);
 }
+
+/// `NEW record` at the end of a statement stops at the period: the next
+/// statement is not part of the record name.
+#[test]
+fn new_record_at_the_end_of_a_statement_keeps_the_next_statement() {
+    let source = "\
+DEFINE VARIABLE l AS LOGICAL NO-UNDO.
+FIND FIRST customer NO-LOCK NO-ERROR.
+IF AVAILABLE customer THEN DO:
+  l = NEW customer.
+  MESSAGE customer.name customer.no-such-field l.
+END.
+";
+    let found = findings(CONFIG, Some(CUSTOMER_SCHEMA), source);
+    assert_eq!(found, ["5:34 LINT0003 unknown field `no-such-field`"]);
+}

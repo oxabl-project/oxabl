@@ -11553,3 +11553,57 @@ mod unmodelled_names_tests {
         assert!(!opens_with_end(".5"));
     }
 }
+
+#[cfg(test)]
+mod block_definition_tests {
+    use super::*;
+    use oxabl_common::FileId;
+    use oxabl_schema::Schema;
+
+    /// The scope kind each symbol of `kinds` is declared in, by name.
+    fn declared_in(source: &str, kinds: &[SymbolKind]) -> Vec<(String, ScopeKind)> {
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let (tree, symbols, _, _) = declare_pass(&program.statements, &ctx);
+        let mut found: Vec<(String, ScopeKind)> = symbols
+            .iter()
+            .filter(|(_, sym)| kinds.contains(&sym.kind))
+            .map(|(_, sym)| (sym.name.to_string(), tree.get(sym.declared_in).kind))
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
+    }
+
+    /// Streams, datasets, data-sources and procedures written in a block are
+    /// declared in the routine around it, as the other definitions are.
+    #[test]
+    fn stream_dataset_data_source_and_procedure_in_a_block_bind_to_the_routine() {
+        let source = "DO:\n\
+                      DEFINE STREAM s-out.\n\
+                      DEFINE TEMP-TABLE tt NO-UNDO FIELD a AS INTEGER.\n\
+                      DEFINE DATASET ds FOR tt.\n\
+                      DEFINE QUERY q FOR tt.\n\
+                      DEFINE DATA-SOURCE src FOR QUERY q.\n\
+                      PROCEDURE inner:\n\
+                      END PROCEDURE.\n\
+                      END.\n";
+        let kinds = [
+            SymbolKind::Stream,
+            SymbolKind::Dataset,
+            SymbolKind::DataSource,
+            SymbolKind::Procedure,
+        ];
+        assert_eq!(
+            declared_in(source, &kinds),
+            [
+                ("ds".to_string(), ScopeKind::File),
+                ("inner".to_string(), ScopeKind::File),
+                ("s-out".to_string(), ScopeKind::File),
+                ("src".to_string(), ScopeKind::File),
+            ]
+        );
+    }
+}
