@@ -1,5 +1,81 @@
 # Changelog
 
+## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.9.0...oxabl-v6.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB
+* **semantic:** stop SEM0001 false duplicates
+
+### Features
+
+* **cli:** includers of an include finding, check --summary, TX rules bench ([3d32752](https://github.com/oxabl-project/oxabl/commit/3d32752667d399a74b8c5ff855528ebcf3013764))
+* **lsp:** dim inactive preprocessor regions ([cc57d5e](https://github.com/oxabl-project/oxabl/commit/cc57d5efd24bbb6b6880abc6276ec0f7460133f6))
+* **lsp:** find references and the call hierarchy ([4fbab73](https://github.com/oxabl-project/oxabl/commit/4fbab733b91d8594a30071b5515bdd5b1cf73703))
+* **lsp:** folding and selection ranges from the syntax tree ([39ffd97](https://github.com/oxabl-project/oxabl/commit/39ffd97cfc343ee634472870c8d676b42f5200de))
+* **lsp:** highlight the other uses of the name under the cursor ([47df7a5](https://github.com/oxabl-project/oxabl/commit/47df7a5a62c4b76358ef6a7c45a4336014561736))
+* **lsp:** hover with types, signatures, built-in docs and schema fields ([ca50283](https://github.com/oxabl-project/oxabl/commit/ca502838f6343f5f28a225df5e8b64020b304263))
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **lsp:** related locations on unknown-value and handle-leak diagnostics ([2bd42ec](https://github.com/oxabl-project/oxabl/commit/2bd42ec174d6051e58327e78277516accbdb172b))
+* **lsp:** schema browser for the configured .df files ([09e1661](https://github.com/oxabl-project/oxabl/commit/09e166179a76347d56d8e9b173d9e62f8e4865fb))
+* **lsp:** show a routine's database effects on hover ([772b5c6](https://github.com/oxabl-project/oxabl/commit/772b5c6943c456e18f080cb1ab7bc6dc89550e62))
+* **lsp:** show the editor a daemon of another version ([4870036](https://github.com/oxabl-project/oxabl/commit/48700369252158265bc3fe75f50741103b869fa5))
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB ([8e14ef7](https://github.com/oxabl-project/oxabl/commit/8e14ef72ecfac9f8e8d32b62ad5f5aba847158eb))
+* **workspace:** detect XCODE-encrypted source and skip it with one message ([a07fa67](https://github.com/oxabl-project/oxabl/commit/a07fa6756fa4dafdd4e408ba36cce8815b90c854))
+
+
+### Bug Fixes
+
+* **analysis:** look up substitution sites in a set, not a list ([70c2fbe](https://github.com/oxabl-project/oxabl/commit/70c2fbe8fdbbe07a0290368a87865c68ebe3d3bc))
+* **daemon:** exit after an idle timeout and remove the registration ([94a4214](https://github.com/oxabl-project/oxabl/commit/94a4214272c16c653ce4ed3ae60302c6aa89a22b))
+* **effects:** LIKE temp-tables keep their inherited indexes ([04d70de](https://github.com/oxabl-project/oxabl/commit/04d70de485ec5367caeb3442eae858e21c56783a))
+* **formatter:** stable output on bare CR and strings, property accessor indentation ([c4793ff](https://github.com/oxabl-project/oxabl/commit/c4793fff9494af8cf37623b00b134ce373318edf))
+* **lint:** CL004 skips an optional RUN ... IN THIS-PROCEDURE NO-ERROR probe ([36c2e2c](https://github.com/oxabl-project/oxabl/commit/36c2e2c59f1a9cbf4b05247e5695b034e88a024f))
+* **lint:** judge HD005 in an include by the roots of the same run ([2291b21](https://github.com/oxabl-project/oxabl/commit/2291b216ba8f57167689a59f8df8449a4ffe07c0))
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **lsp:** replace a daemon of another build of the same version ([0285b5d](https://github.com/oxabl-project/oxabl/commit/0285b5d3d9ccff5e64d77956467e15691b3fcc6b))
+* **parser:** a failed CREATE trigger block is parsed once and keeps its names ([900bd57](https://github.com/oxabl-project/oxabl/commit/900bd57e4b5fb98e18f860772cf944cd2706bc5b))
+* **preprocessor:** end an include reference at the first } as the compiler does ([2072df5](https://github.com/oxabl-project/oxabl/commit/2072df58afae02cb78b1861afeeeda065d50ed7a))
+* **scope:** the effects of a statement on an inherited buffer or temp-table are attributed ([c27d9e2](https://github.com/oxabl-project/oxabl/commit/c27d9e2c3663a7226f33bbc5ee92398a90f4a3dc))
+* **semantic:** block definitions bind to the routine; record names need no schema ([c45acc6](https://github.com/oxabl-project/oxabl/commit/c45acc640dacda664d39c79cd2bf63d9eeee44d7))
+* **semantic:** stop SEM0001 false duplicates ([619d300](https://github.com/oxabl-project/oxabl/commit/619d300863efacc54cdc85b36a4d853ec032beaf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+    * oxabl_preprocessor bumped from 0.8.3 to 0.9.0
+    * oxabl_semantic bumped from 5.2.0 to 6.0.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_analyze bumped from 4.3.0 to 4.4.0
+    * oxabl_pipeline bumped from 3.8.0 to 4.0.0
+    * oxabl_lint bumped from 5.1.1 to 6.0.0
+    * oxabl_lsp bumped from 3.3.0 to 3.4.0
+    * oxabl_daemon bumped from 0.7.0 to 0.8.0
+    * oxabl_build bumped from 0.8.2 to 0.9.0
+    * oxabl_build_remote bumped from 0.2.12 to 0.2.13
+    * oxabl_formatter bumped from 2.1.1 to 2.1.2
+  * dev-dependencies
+    * oxabl_daemon_protocol bumped from 0.4.0 to 0.4.1
+    * oxabl_analyze bumped from 4.3.0 to 4.4.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+    * oxabl_pipeline bumped from 3.8.0 to 4.0.0
+    * oxabl_flow bumped from 0.4.1 to 0.5.0
+    * oxabl_handles bumped from 0.2.10 to 0.3.0
+    * oxabl_scope bumped from 0.2.10 to 0.3.0
+    * oxabl_effects bumped from 0.3.8 to 0.3.9
+    * oxabl_nulls bumped from 0.2.10 to 0.3.0
+    * oxabl_index bumped from 5.3.0 to 6.0.0
+
 ## [5.9.0](https://github.com/oxabl-project/oxabl/compare/oxabl-v5.8.0...oxabl-v5.9.0) (2026-11-23)
 
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.7.1...oxabl_codegen-v0.8.0) (2026-11-24)
+
+
+### Features
+
+* **lsp:** hover with types, signatures, built-in docs and schema fields ([ca50283](https://github.com/oxabl-project/oxabl/commit/ca502838f6343f5f28a225df5e8b64020b304263))
+
+
+### Bug Fixes
+
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **vscode:** bound the nesting of comments and include references in the grammar ([66cb2f5](https://github.com/oxabl-project/oxabl/commit/66cb2f524d1f0f29e1084c25d00bbdb22b969751))
+
+
+### Performance Improvements
+
+* **vscode:** lead keyword rules with a word boundary, not a look-behind ([27de1bb](https://github.com/oxabl-project/oxabl/commit/27de1bbf184cf053cea2e358b64a577c62ca4f66))
+
 ## [0.7.1](https://github.com/oxabl-project/oxabl/compare/oxabl_codegen-v0.7.0...oxabl_codegen-v0.7.1) (2026-11-11)
 
 

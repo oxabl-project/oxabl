@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.1.2](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.1.1...oxabl_formatter-v2.1.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **formatter:** stable output on bare CR and strings, property accessor indentation ([c4793ff](https://github.com/oxabl-project/oxabl/commit/c4793fff9494af8cf37623b00b134ce373318edf))
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+
 ## [2.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_formatter-v2.1.0...oxabl_formatter-v2.1.1) (2026-11-23)
 
 

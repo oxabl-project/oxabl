@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.9](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.8...oxabl_effects-v0.3.9) (2026-11-24)
+
+
+### Bug Fixes
+
+* **effects:** LIKE temp-tables keep their inherited indexes ([04d70de](https://github.com/oxabl-project/oxabl/commit/04d70de485ec5367caeb3442eae858e21c56783a))
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_flow bumped from 0.4.1 to 0.5.0
+    * oxabl_index bumped from 5.3.0 to 6.0.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_scope bumped from 0.2.10 to 0.3.0
+  * dev-dependencies
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+
 ## [0.3.8](https://github.com/oxabl-project/oxabl/compare/oxabl_effects-v0.3.7...oxabl_effects-v0.3.8) (2026-11-23)
 
 

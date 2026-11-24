@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.3.1...oxabl_common-v1.4.0) (2026-11-24)
+
+
+### Features
+
+* **lsp:** folding and selection ranges from the syntax tree ([39ffd97](https://github.com/oxabl-project/oxabl/commit/39ffd97cfc343ee634472870c8d676b42f5200de))
+* **lsp:** hover with types, signatures, built-in docs and schema fields ([ca50283](https://github.com/oxabl-project/oxabl/commit/ca502838f6343f5f28a225df5e8b64020b304263))
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **lsp:** related locations on unknown-value and handle-leak diagnostics ([2bd42ec](https://github.com/oxabl-project/oxabl/commit/2bd42ec174d6051e58327e78277516accbdb172b))
+* **workspace:** detect XCODE-encrypted source and skip it with one message ([a07fa67](https://github.com/oxabl-project/oxabl/commit/a07fa6756fa4dafdd4e408ba36cce8815b90c854))
+
+
+### Bug Fixes
+
+* **analysis:** look up substitution sites in a set, not a list ([70c2fbe](https://github.com/oxabl-project/oxabl/commit/70c2fbe8fdbbe07a0290368a87865c68ebe3d3bc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+
 ## [1.3.1](https://github.com/oxabl-project/oxabl/compare/oxabl_common-v1.3.0...oxabl_common-v1.3.1) (2026-11-23)
 
 

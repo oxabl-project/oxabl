@@ -1,5 +1,41 @@
 # Changelog
 
+## [4.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.3.0...oxabl_analyze-v4.4.0) (2026-11-24)
+
+
+### Features
+
+* **lsp:** dim inactive preprocessor regions ([cc57d5e](https://github.com/oxabl-project/oxabl/commit/cc57d5efd24bbb6b6880abc6276ec0f7460133f6))
+* **lsp:** find references and the call hierarchy ([4fbab73](https://github.com/oxabl-project/oxabl/commit/4fbab733b91d8594a30071b5515bdd5b1cf73703))
+* **lsp:** hover with types, signatures, built-in docs and schema fields ([ca50283](https://github.com/oxabl-project/oxabl/commit/ca502838f6343f5f28a225df5e8b64020b304263))
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **lsp:** related locations on unknown-value and handle-leak diagnostics ([2bd42ec](https://github.com/oxabl-project/oxabl/commit/2bd42ec174d6051e58327e78277516accbdb172b))
+* **workspace:** detect XCODE-encrypted source and skip it with one message ([a07fa67](https://github.com/oxabl-project/oxabl/commit/a07fa6756fa4dafdd4e408ba36cce8815b90c854))
+
+
+### Bug Fixes
+
+* **analysis:** look up substitution sites in a set, not a list ([70c2fbe](https://github.com/oxabl-project/oxabl/commit/70c2fbe8fdbbe07a0290368a87865c68ebe3d3bc))
+* **preprocessor:** end an include reference at the first } as the compiler does ([2072df5](https://github.com/oxabl-project/oxabl/commit/2072df58afae02cb78b1861afeeeda065d50ed7a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_lint bumped from 5.1.1 to 6.0.0
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_preprocessor bumped from 0.8.3 to 0.9.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_semantic bumped from 5.2.0 to 6.0.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+  * dev-dependencies
+    * oxabl_index bumped from 5.3.0 to 6.0.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+
 ## [4.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_analyze-v4.2.2...oxabl_analyze-v4.3.0) (2026-11-23)
 
 

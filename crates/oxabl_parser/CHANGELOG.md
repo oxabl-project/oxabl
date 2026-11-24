@@ -1,5 +1,39 @@
 # Changelog
 
+## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.1.1...oxabl_parser-v5.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB
+* **semantic:** stop SEM0001 false duplicates
+
+### Features
+
+* **lsp:** find references and the call hierarchy ([4fbab73](https://github.com/oxabl-project/oxabl/commit/4fbab733b91d8594a30071b5515bdd5b1cf73703))
+* **lsp:** show a routine's database effects on hover ([772b5c6](https://github.com/oxabl-project/oxabl/commit/772b5c6943c456e18f080cb1ab7bc6dc89550e62))
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB ([8e14ef7](https://github.com/oxabl-project/oxabl/commit/8e14ef72ecfac9f8e8d32b62ad5f5aba847158eb))
+
+
+### Bug Fixes
+
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **parser:** a failed CREATE trigger block is parsed once and keeps its names ([900bd57](https://github.com/oxabl-project/oxabl/commit/900bd57e4b5fb98e18f860772cf944cd2706bc5b))
+* **semantic:** block definitions bind to the routine; record names need no schema ([c45acc6](https://github.com/oxabl-project/oxabl/commit/c45acc640dacda664d39c79cd2bf63d9eeee44d7))
+* **semantic:** stop SEM0001 false duplicates ([619d300](https://github.com/oxabl-project/oxabl/commit/619d300863efacc54cdc85b36a4d853ec032beaf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.8.3 to 0.9.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+
 ## [4.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.1.0...oxabl_parser-v4.1.1) (2026-11-23)
 
 

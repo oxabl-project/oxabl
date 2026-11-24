@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_scope-v0.2.10...oxabl_scope-v0.3.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB
+
+### Features
+
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB ([8e14ef7](https://github.com/oxabl-project/oxabl/commit/8e14ef72ecfac9f8e8d32b62ad5f5aba847158eb))
+
+
+### Bug Fixes
+
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **scope:** the effects of a statement on an inherited buffer or temp-table are attributed ([c27d9e2](https://github.com/oxabl-project/oxabl/commit/c27d9e2c3663a7226f33bbc5ee92398a90f4a3dc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_flow bumped from 0.4.1 to 0.5.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+  * dev-dependencies
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+
 ## [0.2.10](https://github.com/oxabl-project/oxabl/compare/oxabl_scope-v0.2.9...oxabl_scope-v0.2.10) (2026-11-23)
 
 

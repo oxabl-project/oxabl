@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.7.0...oxabl_daemon-v0.8.0) (2026-11-24)
+
+
+### Features
+
+* **lsp:** dim inactive preprocessor regions ([cc57d5e](https://github.com/oxabl-project/oxabl/commit/cc57d5efd24bbb6b6880abc6276ec0f7460133f6))
+* **lsp:** find references and the call hierarchy ([4fbab73](https://github.com/oxabl-project/oxabl/commit/4fbab733b91d8594a30071b5515bdd5b1cf73703))
+* **lsp:** highlight the other uses of the name under the cursor ([47df7a5](https://github.com/oxabl-project/oxabl/commit/47df7a5a62c4b76358ef6a7c45a4336014561736))
+* **lsp:** hover with types, signatures, built-in docs and schema fields ([ca50283](https://github.com/oxabl-project/oxabl/commit/ca502838f6343f5f28a225df5e8b64020b304263))
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **lsp:** related locations on unknown-value and handle-leak diagnostics ([2bd42ec](https://github.com/oxabl-project/oxabl/commit/2bd42ec174d6051e58327e78277516accbdb172b))
+* **lsp:** show a routine's database effects on hover ([772b5c6](https://github.com/oxabl-project/oxabl/commit/772b5c6943c456e18f080cb1ab7bc6dc89550e62))
+
+
+### Bug Fixes
+
+* **daemon:** exit after an idle timeout and remove the registration ([94a4214](https://github.com/oxabl-project/oxabl/commit/94a4214272c16c653ce4ed3ae60302c6aa89a22b))
+* **lsp:** replace a daemon of another build of the same version ([0285b5d](https://github.com/oxabl-project/oxabl/commit/0285b5d3d9ccff5e64d77956467e15691b3fcc6b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.3.0 to 4.4.0
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_daemon_protocol bumped from 0.4.0 to 0.4.1
+    * oxabl_index bumped from 5.3.0 to 6.0.0
+    * oxabl_pipeline bumped from 3.8.0 to 4.0.0
+    * oxabl_semantic bumped from 5.2.0 to 6.0.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_pipeline bumped from 3.8.0 to 4.0.0
+
 ## [0.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon-v0.6.1...oxabl_daemon-v0.7.0) (2026-11-23)
 
 

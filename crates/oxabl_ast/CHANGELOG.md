@@ -1,5 +1,25 @@
 # Changelog
 
+## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v5.0.0...oxabl_ast-v6.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB
+* **semantic:** stop SEM0001 false duplicates
+
+### Features
+
+* **lsp:** find references and the call hierarchy ([4fbab73](https://github.com/oxabl-project/oxabl/commit/4fbab733b91d8594a30071b5515bdd5b1cf73703))
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB ([8e14ef7](https://github.com/oxabl-project/oxabl/commit/8e14ef72ecfac9f8e8d32b62ad5f5aba847158eb))
+
+
+### Bug Fixes
+
+* **analysis:** look up substitution sites in a set, not a list ([70c2fbe](https://github.com/oxabl-project/oxabl/commit/70c2fbe8fdbbe07a0290368a87865c68ebe3d3bc))
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **semantic:** stop SEM0001 false duplicates ([619d300](https://github.com/oxabl-project/oxabl/commit/619d300863efacc54cdc85b36a4d853ec032beaf))
+
 ## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_ast-v4.0.0...oxabl_ast-v5.0.0) (2026-11-20)
 
 

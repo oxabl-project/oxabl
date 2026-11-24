@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon_protocol-v0.4.0...oxabl_daemon_protocol-v0.4.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **lsp:** replace a daemon of another build of the same version ([0285b5d](https://github.com/oxabl-project/oxabl/commit/0285b5d3d9ccff5e64d77956467e15691b3fcc6b))
+
 ## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_daemon_protocol-v0.3.0...oxabl_daemon_protocol-v0.4.0) (2026-11-18)
 
 

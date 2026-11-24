@@ -1,5 +1,58 @@
 # Changelog
 
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.8.0...oxabl_pipeline-v4.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB
+
+### Features
+
+* **cli:** includers of an include finding, check --summary, TX rules bench ([3d32752](https://github.com/oxabl-project/oxabl/commit/3d32752667d399a74b8c5ff855528ebcf3013764))
+* **lsp:** dim inactive preprocessor regions ([cc57d5e](https://github.com/oxabl-project/oxabl/commit/cc57d5efd24bbb6b6880abc6276ec0f7460133f6))
+* **lsp:** find references and the call hierarchy ([4fbab73](https://github.com/oxabl-project/oxabl/commit/4fbab733b91d8594a30071b5515bdd5b1cf73703))
+* **lsp:** folding and selection ranges from the syntax tree ([39ffd97](https://github.com/oxabl-project/oxabl/commit/39ffd97cfc343ee634472870c8d676b42f5200de))
+* **lsp:** highlight the other uses of the name under the cursor ([47df7a5](https://github.com/oxabl-project/oxabl/commit/47df7a5a62c4b76358ef6a7c45a4336014561736))
+* **lsp:** hover with types, signatures, built-in docs and schema fields ([ca50283](https://github.com/oxabl-project/oxabl/commit/ca502838f6343f5f28a225df5e8b64020b304263))
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **lsp:** schema browser for the configured .df files ([09e1661](https://github.com/oxabl-project/oxabl/commit/09e166179a76347d56d8e9b173d9e62f8e4865fb))
+* **lsp:** show a routine's database effects on hover ([772b5c6](https://github.com/oxabl-project/oxabl/commit/772b5c6943c456e18f080cb1ab7bc6dc89550e62))
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB ([8e14ef7](https://github.com/oxabl-project/oxabl/commit/8e14ef72ecfac9f8e8d32b62ad5f5aba847158eb))
+* **workspace:** detect XCODE-encrypted source and skip it with one message ([a07fa67](https://github.com/oxabl-project/oxabl/commit/a07fa6756fa4dafdd4e408ba36cce8815b90c854))
+
+
+### Bug Fixes
+
+* **effects:** LIKE temp-tables keep their inherited indexes ([04d70de](https://github.com/oxabl-project/oxabl/commit/04d70de485ec5367caeb3442eae858e21c56783a))
+* **lint:** judge HD005 in an include by the roots of the same run ([2291b21](https://github.com/oxabl-project/oxabl/commit/2291b216ba8f57167689a59f8df8449a4ffe07c0))
+* **preprocessor:** end an include reference at the first } as the compiler does ([2072df5](https://github.com/oxabl-project/oxabl/commit/2072df58afae02cb78b1861afeeeda065d50ed7a))
+* **scope:** the effects of a statement on an inherited buffer or temp-table are attributed ([c27d9e2](https://github.com/oxabl-project/oxabl/commit/c27d9e2c3663a7226f33bbc5ee92398a90f4a3dc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.8 to 0.3.9
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_handles bumped from 0.2.10 to 0.3.0
+    * oxabl_flow bumped from 0.4.1 to 0.5.0
+    * oxabl_scope bumped from 0.2.10 to 0.3.0
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_analyze bumped from 4.3.0 to 4.4.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_formatter bumped from 2.1.1 to 2.1.2
+    * oxabl_index bumped from 5.3.0 to 6.0.0
+    * oxabl_lint bumped from 5.1.1 to 6.0.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_semantic bumped from 5.2.0 to 6.0.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+  * dev-dependencies
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+
 ## [3.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.7.0...oxabl_pipeline-v3.8.0) (2026-11-23)
 
 
