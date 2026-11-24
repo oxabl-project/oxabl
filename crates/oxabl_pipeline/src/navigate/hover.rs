@@ -173,6 +173,7 @@ impl Navigation<'_, '_> {
                         file: path.clone(),
                         kind: UnitKind::Procedure,
                         name: name.to_string(),
+                        overridable: false,
                     })
                 }
                 Resolution::Resolved(sym) => self.symbol_routine(*sym),
@@ -195,27 +196,44 @@ impl Navigation<'_, '_> {
             return None;
         }
         if let Some(file) = symbols.member_file(sym) {
-            let name = symbol.name.as_ref().to_string();
+            let path = self.path_of(file)?;
+            let name = symbol.name.as_ref();
+            let text = self.run.file_system().read(&path).ok()?;
+            let parsed = Parsed::of(&text);
+            let source = Source::new(&text, &parsed.tokens);
+            let overridable = overridable(&source, &parsed.program.statements, name, None);
             return Some(Routine::Unit {
-                file: self.path_of(file)?,
+                file: path,
                 kind: UnitKind::Method,
-                name,
+                name: name.to_string(),
+                overridable,
             });
         }
         if symbol.declaration == oxabl_ast::NodeId::DUMMY {
             return None;
         }
-        let found = find_declaration(&self.parsed().program.statements, symbol.name_span)?;
+        let parsed = self.parsed();
+        let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
         let (kind, name) = match &found.statement.kind {
             StatementKind::Procedure { name, .. } => (UnitKind::Procedure, name),
             StatementKind::Function { name, .. } => (UnitKind::Function, name),
             StatementKind::Method { name, .. } => (UnitKind::Method, name),
             _ => return None,
         };
+        let overridable = kind == UnitKind::Method && {
+            let source = Source::new(&self.expanded.text, &parsed.tokens);
+            overridable(
+                &source,
+                &parsed.program.statements,
+                &name.name,
+                Some(found.statement.span),
+            )
+        };
         Some(Routine::Unit {
             file: self.root_path()?,
             kind,
             name: name.name.clone(),
+            overridable,
         })
     }
 
@@ -675,6 +693,45 @@ fn declares<'a>(
         _ => return None,
     };
     (name.span == span).then(|| found(None))
+}
+
+/// Whether a call of method `name` of the class in `statements` may run the
+/// body of a subclass instead: the class is not `FINAL`, and a method of that
+/// name (the one at `at`, or any overload) is not `FINAL`, `PRIVATE` or
+/// `STATIC`. An interface, or no class found, counts as overridable.
+fn overridable(source: &Source, statements: &[Statement], name: &str, at: Option<Span>) -> bool {
+    let class = statements.iter().find(|statement| {
+        matches!(
+            statement.kind,
+            StatementKind::Class { .. } | StatementKind::Interface { .. }
+        ) && at.is_none_or(|at| statement.span.start <= at.start && at.end <= statement.span.end)
+    });
+    let Some(Statement {
+        kind: StatementKind::Class { is_final, body, .. },
+        ..
+    }) = class
+    else {
+        return true;
+    };
+    if *is_final {
+        return false;
+    }
+    body.iter().any(|member| {
+        let StatementKind::Method {
+            name: declared,
+            access,
+            is_static,
+            ..
+        } = &member.kind
+        else {
+            return false;
+        };
+        declared.name.eq_ignore_ascii_case(name)
+            && at.is_none_or(|at| member.span == at)
+            && !*is_static
+            && *access != AccessModifier::Private
+            && !source.method_is_final(member)
+    })
 }
 
 /// Whether class member `member` declares `name` as a symbol of `kind`.

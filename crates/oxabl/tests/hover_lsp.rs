@@ -286,6 +286,10 @@ fn code(text: &str) -> String {
 /// (`hover_effects_lsp.rs` tests the effects).
 const NO_EFFECTS: &str = "\n\n---\n\n**Database effects**\n\nNo database effects.";
 
+/// The same for a method that a subclass may override.
+const OVERRIDABLE_NO_EFFECTS: &str = "\n\n---\n\n**Database effects**\n\nNo known database effects.\n\n\
+    **Incomplete:** effects may be missing: an override in a subclass may run instead of this method.";
+
 #[test]
 fn variables_show_type_extent_initial_and_no_undo() {
     let ws = Workspace::new();
@@ -375,7 +379,9 @@ fn routines_show_their_signature() {
     let found = markdown(&mut session, &main, MAIN, "Area()", 0);
     assert_eq!(
         found,
-        code("METHOD PUBLIC DECIMAL Area ()") + "\n\nDeclared in `app.Circle`." + NO_EFFECTS
+        code("METHOD PUBLIC DECIMAL Area ()")
+            + "\n\nDeclared in `app.Circle`."
+            + OVERRIDABLE_NO_EFFECTS
     );
     // An inherited method shows each overload, in the class that declares it.
     let found = markdown(&mut session, &main, MAIN, "Describe()", 0);

@@ -9,6 +9,7 @@
 mod session;
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use session::{Session, file_uri};
@@ -57,11 +58,42 @@ const MAIN: &str = "PROCEDURE ReadItems:\n\
     DISPLAY fnCount().\n\
     DEFINE VARIABLE oStock AS CLASS app.Stock NO-UNDO.\n\
     oStock = NEW app.Stock().\n\
-    oStock:Count().\n";
+    oStock:Count().\n\
+    DEFINE VARIABLE oSealed AS CLASS app.Sealed NO-UNDO.\n\
+    oSealed = NEW app.Sealed().\n\
+    oSealed:Tally().\n\
+    oStock:Fixed().\n\
+    DEFINE VARIABLE oBase AS CLASS app.Base NO-UNDO.\n\
+    oBase = NEW app.Kid().\n\
+    oBase:Go().\n";
+
+/// A `FINAL` class: no subclass can override its methods.
+const SEALED: &str = "CLASS app.Sealed FINAL:\n\
+    \x20   METHOD PUBLIC INTEGER Tally():\n\
+    \x20       FIND FIRST Ledger NO-LOCK NO-ERROR.\n\
+    \x20       RETURN 1.\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+/// An empty method that a subclass overrides with one that writes.
+const BASE: &str = "CLASS app.Base:\n\
+    \x20   METHOD PUBLIC VOID Go():\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
+
+const KID: &str = "CLASS app.Kid INHERITS app.Base:\n\
+    \x20   METHOD PUBLIC OVERRIDE VOID Go():\n\
+    \x20       FIND FIRST Item EXCLUSIVE-LOCK NO-ERROR.\n\
+    \x20   END METHOD.\n\
+    END CLASS.\n";
 
 const STOCK: &str = "CLASS app.Stock:\n\
     \x20   METHOD PUBLIC INTEGER Count():\n\
     \x20       FIND FIRST Item SHARE-LOCK NO-ERROR.\n\
+    \x20       RETURN 1.\n\
+    \x20   END METHOD.\n\
+    \x20   METHOD PUBLIC FINAL INTEGER Fixed():\n\
+    \x20       FIND FIRST Item NO-LOCK NO-ERROR.\n\
     \x20       RETURN 1.\n\
     \x20   END METHOD.\n\
     END CLASS.\n";
@@ -87,6 +119,9 @@ impl Workspace {
             ("main.p", MAIN),
             ("jobs/archive.p", ARCHIVE),
             ("app/Stock.cls", STOCK),
+            ("app/Sealed.cls", SEALED),
+            ("app/Base.cls", BASE),
+            ("app/Kid.cls", KID),
         ];
         for (name, text) in files {
             let path = root.join(name);
@@ -151,11 +186,16 @@ fn direct_effects_are_listed_per_table() {
         effects(&hover),
         "**Database effects**\n- `Ledger`: read NO-LOCK"
     );
-    // A method of another class, from the summaries of its file.
-    let hover = markdown(&mut session, &main, MAIN, ":Count()");
+    // A method no subclass can override, from the summaries of its file.
+    let hover = markdown(&mut session, &main, MAIN, ":Tally()");
     assert_eq!(
         effects(&hover),
-        "**Database effects**\n- `Item`: read SHARE-LOCK"
+        "**Database effects**\n- `Ledger`: read NO-LOCK"
+    );
+    let hover = markdown(&mut session, &main, MAIN, ":Fixed()");
+    assert_eq!(
+        effects(&hover),
+        "**Database effects**\n- `Item`: read NO-LOCK"
     );
     let hover = markdown(&mut session, &main, MAIN, "Quiet.");
     assert_eq!(
@@ -171,15 +211,15 @@ fn effects_through_a_run_are_marked_apart() {
     let mut session = Session::start(&ws.root);
     session.open(&main, MAIN);
 
-    // An effect the routine has itself is not repeated for a call: the
-    // archive's EXCLUSIVE-LOCK read of `Item` shows as direct.
+    // Each route lists all that its routine does, also what the caller does
+    // itself: the archive's EXCLUSIVE-LOCK read of `Item`.
     let hover = markdown(&mut session, &main, MAIN, "Restock.");
     assert_eq!(
         effects(&hover),
         "**Database effects**\n\
          - `Item`: read EXCLUSIVE-LOCK, update\n\
          - `Item` through `ReadItems`: read NO-LOCK\n\
-         - `Item` through `archive.p`: delete\n\
+         - `Item` through `archive.p`: read EXCLUSIVE-LOCK, delete\n\
          - `Ledger` through `archive.p`: create, update"
     );
     // A RUN target program: its own effects are direct.
@@ -215,4 +255,111 @@ fn an_unresolved_call_makes_the_summary_incomplete() {
          **Incomplete:** effects may be missing: a dynamic call (`RUN VALUE`, \
          `DYNAMIC-FUNCTION`, ...)."
     );
+}
+
+#[test]
+fn a_method_a_subclass_may_override_is_incomplete() {
+    let ws = Workspace::new();
+    let main = ws.root.join("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    // `app.Base:Go` has no effects, but `app.Kid` overrides it with a write.
+    let hover = markdown(&mut session, &main, MAIN, ":Go()");
+    assert_eq!(
+        effects(&hover),
+        "**Database effects**\n\nNo known database effects.\n\n\
+         **Incomplete:** effects may be missing: an override in a subclass may run \
+         instead of this method."
+    );
+    let hover = markdown(&mut session, &main, MAIN, ":Count()");
+    assert_eq!(
+        effects(&hover),
+        "**Database effects**\n- `Item`: read SHARE-LOCK\n\n\
+         **Incomplete:** effects may be missing: an override in a subclass may run \
+         instead of this method."
+    );
+}
+
+/// The hover on the first `needle` of `text`, and how long it took.
+fn timed(session: &mut Session, file: &Path, text: &str, needle: &str) -> (String, Duration) {
+    let started = Instant::now();
+    let hover = markdown(session, file, text, needle);
+    (hover, started.elapsed())
+}
+
+#[test]
+fn the_summaries_of_another_file_are_built_once() {
+    let ws = Workspace::new();
+    // A class whose method runs a program with many procedures, so building
+    // its summaries takes a while.
+    let mut big = String::new();
+    for n in 0..3000 {
+        big.push_str(&format!(
+            "PROCEDURE p{n}:\n    FIND FIRST Item NO-LOCK NO-ERROR.\nEND PROCEDURE.\n"
+        ));
+    }
+    std::fs::write(ws.root.join("jobs/big.p"), big).unwrap();
+    std::fs::write(
+        ws.root.join("app/Big.cls"),
+        "CLASS app.Big FINAL:\n    METHOD PUBLIC VOID Go():\n        RUN jobs/big.p.\n    \
+         END METHOD.\nEND CLASS.\n",
+    )
+    .unwrap();
+    let text = "DEFINE VARIABLE o AS CLASS app.Big NO-UNDO.\no = NEW app.Big().\no:Go().\n";
+    let main = ws.root.join("big_user.p");
+    std::fs::write(&main, text).unwrap();
+    let mut session = Session::start(&ws.root);
+    session.open(&main, text);
+
+    let (first, cold) = timed(&mut session, &main, text, ":Go()");
+    assert_eq!(
+        effects(&first),
+        "**Database effects**\n\nNo database effects."
+    );
+    for _ in 0..3 {
+        let (again, warm) = timed(&mut session, &main, text, ":Go()");
+        assert_eq!(again, first);
+        assert!(
+            warm * 3 < cold,
+            "a second hover must reuse the summaries: {warm:?} against {cold:?} for the first"
+        );
+    }
+}
+
+#[test]
+fn a_change_on_disk_reaches_the_summaries_of_another_file() {
+    let ws = Workspace::new();
+    let main = ws.root.join("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    let hover = markdown(&mut session, &main, MAIN, ":Tally()");
+    assert_eq!(
+        effects(&hover),
+        "**Database effects**\n- `Ledger`: read NO-LOCK"
+    );
+
+    let sealed = ws.root.join("app/Sealed.cls");
+    std::fs::write(
+        &sealed,
+        SEALED.replace("FIND FIRST Ledger NO-LOCK", "FIND FIRST Item NO-LOCK"),
+    )
+    .unwrap();
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeWatchedFiles",
+        "params": {"changes": [{"uri": file_uri(&sealed), "type": 2}]}
+    }));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let hover = markdown(&mut session, &main, MAIN, ":Tally()");
+        if effects(&hover) == "**Database effects**\n- `Item`: read NO-LOCK" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the hover still shows the old effects: {hover}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }

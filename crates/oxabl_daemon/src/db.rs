@@ -1022,6 +1022,38 @@ fn effect_summaries(
     Arc::new(summaries)
 }
 
+/// [`effect_summaries`] for a file that is not an open buffer, read from disk:
+/// the root of a selected include context, or the class file of a method that
+/// a hover names. Memoized per disk revision of each file it read, so a second
+/// hover on the same routine reuses it.
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
+fn file_effect_summaries(
+    db: &dyn AblDatabase,
+    file: IndexedFile,
+    schema: SchemaHandle,
+) -> Arc<oxabl_pipeline::WorkspaceEffects> {
+    let _revision = schema.revision(db);
+    let _environment = db.config().index.environment(db).preprocessor(db);
+    let _disk = file.disk_revision(db);
+    let path = file.path(db).clone();
+    let fs = SummaryFs {
+        inner: Arc::clone(&db.config().fs),
+        paths: Default::default(),
+    };
+    let run = LintPipeline::new(&db.config().pipeline, &fs).with_preprocess(db.config().preprocess);
+    let handle = run.with_file(&path);
+    let summaries = match fs.read(&path) {
+        Ok(text) => handle.build_effect_summaries(&handle.expand(&text), &[]),
+        Err(_) => oxabl_pipeline::WorkspaceEffects::default(),
+    };
+    for path in fs.paths.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        let file = db.config().index.file_for(db, path);
+        let _revision = file.disk_revision(db);
+    }
+    db.unwind_if_revision_cancelled();
+    Arc::new(summaries)
+}
+
 /// Phase two: the shared pipeline's collection over the memoized expansion,
 /// yielding the full root-resolved diagnostic set. Depends on the expansion and
 /// on the schema handle's revision (so schema hot-reload invalidates, R16).
@@ -1351,18 +1383,19 @@ pub fn compute_navigation(
                 let file = spelled_as_expanded(&expansion, root, file);
                 if let Some(mut hover) = navigation.hover(&file, *offset) {
                     if let Some(routine) = hover.routine.clone() {
+                        let index = &snapshot.config().index;
                         let mut effects = match buffer {
                             Some(buffer) => effect_summaries(snapshot, *buffer, schema),
-                            None => Arc::new(handle.build_effect_summaries(&expansion, &[])),
+                            None => {
+                                let input = index.file_for(snapshot, root);
+                                file_effect_summaries(snapshot, input, schema)
+                            }
                         };
                         // A method of another class: the summaries of its file.
                         let file = routine.file();
-                        if effects.file(file).is_none()
-                            && let Ok(text) = fs.read(file)
-                        {
-                            let other = run.with_file(file);
-                            let expansion = other.expand(&text);
-                            effects = Arc::new(other.build_effect_summaries(&expansion, &[]));
+                        if effects.file(file).is_none() {
+                            let input = index.file_for(snapshot, file);
+                            effects = file_effect_summaries(snapshot, input, schema);
                         }
                         hover.add_effects(&effects);
                     }

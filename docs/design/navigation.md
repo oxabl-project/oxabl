@@ -169,22 +169,28 @@ code lenses and `TX004` read):
 **Database effects**
 - `Item`: read EXCLUSIVE-LOCK, update
 - `Item` through `ReadItems`: read NO-LOCK
+- `Item` through `archive.p`: read EXCLUSIVE-LOCK, delete
 - `Ledger` through `archive.p`: create
 
 **Incomplete:** effects may be missing: a dynamic call (`RUN VALUE`, ...).
 ```
 
-- One line per table and route. A line without `through` is a direct effect;
-  `through x` names the routine called first on the way. The summary keeps one
-  effect per table, operation, lock and depth, a direct one before one through
-  a call, so an effect that the routine has itself is not repeated for a call.
+- One line per table and route. A line without `through` is a direct effect
+  of the routine. `through x` names a routine it calls, and lists all that `x`
+  does, directly and through its own calls, from the summary of `x`: also an
+  effect the caller has itself. (The caller's summary keeps one effect per
+  table, operation, lock and depth, so it cannot give the routes whole.)
 - A read gives its lock: `NO-LOCK`, `SHARE-LOCK`, `EXCLUSIVE-LOCK`, or
   `SHARE-LOCK (default)` when none is written. A table that the schema does
   not have says so. Temp-tables are not listed.
 - `**Incomplete:**` names every reason the summary may miss effects: a dynamic
   call, a handle oxabl cannot follow, a program that no file supplies or that
   several files supply, a unit whose own effects are not all known, and a call
-  graph or summary that reached a size limit. A summary with a reason is never
+  graph or summary that reached a size limit. A method that a subclass can
+  override (its class is not `FINAL`, and it is not `FINAL`, `PRIVATE` or
+  `STATIC`) adds "an override in a subclass may run instead of this method":
+  the call graph follows the declared type, and another body can run. A summary
+  with a reason is never
   shown as complete: with no effect found it says "No known database effects",
   not "No database effects".
 - No effects are added when the summaries do not hold the routine, or hold two
@@ -192,7 +198,10 @@ code lenses and `TX004` read):
 
 The daemon takes the summaries of the open root buffer from its memoized query
 (`effect_summaries`, shared with the code lenses). For a root that is not open,
-and for a method of another class file, it builds them for the request.
+and for a method of another class file, it takes those of that file from
+`file_effect_summaries`, memoized per disk revision of every file the summaries
+read, so a later hover reuses them and a change on disk rebuilds them. Both
+read the files other than the open root from disk, not from open buffers.
 
 ## Document links
 
@@ -240,8 +249,9 @@ the outline of each program a handle runs. A hover parses the expanded unit at
 most once more (shared with the call sites), and parses one more file when it
 names a class, an inherited member or a procedure run through a handle. A
 keyword hover scans the documentation table, about 460 entries. A hover on a
-routine reads the effect summaries: memoized per open buffer revision, but the
-first one builds the summaries of every program the root reaches.
+routine reads the effect summaries: memoized per open buffer revision and per
+disk revision of every other file, but the first one builds the summaries of
+every program the root or class reaches.
 
 Hover requests run one at a time (`HoverGate` in
 `crates/oxabl_lsp/src/navigation.rs`). An editor asks for a hover at each pause

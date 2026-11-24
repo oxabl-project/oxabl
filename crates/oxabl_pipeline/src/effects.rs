@@ -540,6 +540,8 @@ pub enum Routine {
         file: PathBuf,
         kind: UnitKind,
         name: String,
+        /// A method a subclass can override, so a call may run another body.
+        overridable: bool,
     },
     /// The main block of the program `file`.
     Program(PathBuf),
@@ -563,9 +565,14 @@ impl WorkspaceEffects {
     /// and why the summary may miss effects. `None` when the summaries do not
     /// hold the routine, or hold more than one routine of its name.
     pub fn routine_markdown(&self, routine: &Routine) -> Option<String> {
-        let (file, kind, name) = match routine {
-            Routine::Unit { file, kind, name } => (file, *kind, Some(name.as_str())),
-            Routine::Program(file) => (file, UnitKind::Main, None),
+        let (file, kind, name, overridable) = match routine {
+            Routine::Unit {
+                file,
+                kind,
+                name,
+                overridable,
+            } => (file, *kind, Some(name.as_str()), *overridable),
+            Routine::Program(file) => (file, UnitKind::Main, None, false),
         };
         let effects = self.file(file)?;
         let mut matching = effects.effects.units().iter().enumerate().filter(|(_, u)| {
@@ -582,29 +589,52 @@ impl WorkspaceEffects {
         if matching.next().is_some() {
             return None;
         }
-        let summary = &effects.summaries()[at];
-        Some(effects.summary_markdown(summary, file))
+        Some(effects.unit_markdown(at, file, overridable))
     }
 }
 
 impl EffectFile {
-    fn summary_markdown(&self, summary: &Summary, file: &Path) -> String {
-        // One line per table and route: direct first, then each first callee.
+    /// The effects of unit `at`. Its direct effects come from its summary; each
+    /// routine it calls has its lines from the callee's own summary, so a route
+    /// lists all that the callee does, also what the unit does itself.
+    fn unit_markdown(&self, at: usize, file: &Path, overridable: bool) -> String {
+        let summary = &self.summaries()[at];
+        let own = (self.summary_range.start + at) as u32;
         let mut lines: BTreeMap<(String, Option<String>), Vec<String>> = BTreeMap::new();
-        for effect in &summary.effects {
-            let via = effect.via.map(|node| self.via_label(node, file));
-            let ops = lines.entry((effect.table.clone(), via)).or_default();
-            let op = match effect.op {
-                oxabl_effects::Op::Read => format!("read {}", lock_name(effect.lock)),
-                op => op.as_str().to_string(),
-            };
+        let mut add = |table: &str, via: Option<String>, op: String| {
+            let ops = lines.entry((table.to_string(), via)).or_default();
             if !ops.contains(&op) {
                 ops.push(op);
             }
+        };
+        for effect in summary.effects.iter().filter(|e| e.via.is_none()) {
+            add(&effect.table, None, op_text(effect));
+        }
+        let mut callees: Vec<u32> = self.effects.units()[at]
+            .calls
+            .iter()
+            .filter(|call| call.kind != oxabl_index::calls::CallKind::Remote)
+            .filter_map(|call| self.callees.get(&call.at.start).copied())
+            .filter(|node| *node != own)
+            .collect();
+        callees.sort_unstable();
+        callees.dedup();
+        for node in callees {
+            let Some(callee) = self.solved.get(node as usize) else {
+                continue;
+            };
+            let via = self.via_label(node, file);
+            for effect in &callee.effects {
+                add(&effect.table, Some(via.clone()), op_text(effect));
+            }
+        }
+        let mut reasons: Vec<&str> = summary.partial.iter().map(|p| partial_text(*p)).collect();
+        if overridable {
+            reasons.push("an override in a subclass may run instead of this method");
         }
         let mut out = String::from("**Database effects**");
         if lines.is_empty() {
-            out.push_str(if summary.partial.is_empty() {
+            out.push_str(if reasons.is_empty() {
                 "\n\nNo database effects."
             } else {
                 "\n\nNo known database effects."
@@ -626,8 +656,7 @@ impl EffectFile {
         if total > MAX_EFFECT_LINES {
             out.push_str(&format!("\n- and {} more", total - MAX_EFFECT_LINES));
         }
-        if !summary.partial.is_empty() {
-            let reasons: Vec<&str> = summary.partial.iter().map(|p| partial_text(*p)).collect();
+        if !reasons.is_empty() {
             out.push_str(&format!(
                 "\n\n**Incomplete:** effects may be missing: {}.",
                 reasons.join("; ")
@@ -655,6 +684,13 @@ impl EffectFile {
         } else {
             format!("{unit} in {file_name}")
         }
+    }
+}
+
+fn op_text(effect: &summary::SummaryEffect) -> String {
+    match effect.op {
+        oxabl_effects::Op::Read => format!("read {}", lock_name(effect.lock)),
+        op => op.as_str().to_string(),
     }
 }
 
