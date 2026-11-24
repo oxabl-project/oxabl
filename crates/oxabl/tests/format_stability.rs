@@ -222,3 +222,44 @@ end class.
         GETTER_ONLY.as_bytes(),
     );
 }
+
+#[test]
+fn an_accessor_head_with_a_statement_on_its_line_keeps_its_column() {
+    // The heads are 3 columns past the `DEFINE` (indent 4), so not at the
+    // depth the walk gives a body statement.
+    let src = "\
+CLASS M:
+    DEFINE PROPERTY P AS INTEGER NO-UNDO
+       GET():
+           RETURN 1.
+       END GET.
+       SET(v AS INTEGER): v = 1.
+           w = 2.
+       END SET.
+END CLASS.
+";
+    assert_formats("Inline.cls", src.as_bytes(), src.as_bytes());
+    assert_formats(
+        "InlineMoved.cls",
+        b"\
+CLASS M:
+DEFINE PROPERTY P AS INTEGER NO-UNDO
+   GET(): x = 1.
+  RETURN 1.
+      END GET. SET(v AS INTEGER): v = 1.
+w = 2.
+  x = 3. END SET.
+END CLASS.
+",
+        b"\
+CLASS M:
+    DEFINE PROPERTY P AS INTEGER NO-UNDO
+       GET(): x = 1.
+           RETURN 1.
+       END GET. SET(v AS INTEGER): v = 1.
+           w = 2.
+           x = 3. END SET.
+END CLASS.
+",
+    );
+}

@@ -110,6 +110,24 @@ struct AccessorLines {
     colon_line: usize,
     end_line: usize,
     body_depth: usize,
+    /// First line of the `DEFINE PROPERTY` statement.
+    property_line: usize,
+    /// The head, or the `END`, is the first code token on its line, so it
+    /// governs the line's indent.
+    head_leads: bool,
+    end_leads: bool,
+}
+
+/// Is the token at `offset` the first code token on its line?
+fn leads_line(toks: &[Token], line_starts: &[usize], offset: usize) -> bool {
+    let at = toks.partition_point(|t| t.start < offset);
+    toks[..at]
+        .iter()
+        .rev()
+        .find(|t| t.kind != Kind::Comment)
+        .is_none_or(|t| {
+            line_index(line_starts, t.end.saturating_sub(1)) < line_index(line_starts, offset)
+        })
 }
 
 fn line_index(line_starts: &[usize], offset: usize) -> usize {
@@ -160,6 +178,9 @@ fn collect(
             colon_line: line_index(line_starts, a.colon),
             end_line: line_index(line_starts, a.end),
             body_depth: depth + 1,
+            property_line: fl,
+            head_leads: leads_line(toks, line_starts, a.head),
+            end_leads: leads_line(toks, line_starts, a.end),
         });
     }
     // A statement starts its own line when the token before it (comments aside)
@@ -348,6 +369,9 @@ pub(crate) fn print(
         for slot in protected[(sl + 1).min(n)..(el + 1).min(n)].iter_mut() {
             *slot = true;
         }
+        for slot in ends_inside[sl.min(n)..el.min(n)].iter_mut() {
+            *slot = true;
+        }
     }
 
     // Absolute indent per line from the structural walk. Start-lines snap to
@@ -371,9 +395,6 @@ pub(crate) fn print(
             };
             let delta = first as isize - leadings[fl] as isize;
             *slot = (leadings[l] as isize + delta).max(0) as usize;
-        }
-        for slot in ends_inside[sl.min(n)..el.min(n)].iter_mut() {
-            *slot = true;
         }
     }
     // Snap block `END` lines to the block's depth (a structural line, not an
@@ -457,13 +478,25 @@ pub(crate) fn print(
 
     // Property accessors: the walk puts the body one level below the property,
     // but `GET():` / `SET(...):` is a continuation line that keeps the author's
-    // alignment. Move each body to one level below the column of its head,
-    // put its `END` at that column, and own-line comments just before the head
-    // at that column too. Source order matters: an `END GET.` line that a
-    // `SET(...):` shares is placed before the `SET` reads its column.
+    // alignment, also when a body statement starts on it. Move each body to one
+    // level below the column of its head, put its `END` at that column, and
+    // own-line comments just before the head at that column too. A head or
+    // `END` that follows other code on its line (`END GET. SET(...):`) takes
+    // the column of that line, so source order matters: the `END GET.` line is
+    // placed before the `SET` reads its column.
     for a in &accessors {
         let col = if protected[a.head_line] {
             leadings[a.head_line]
+        } else if a.head_leads {
+            let pl = a.property_line;
+            let moved = if protected[pl] {
+                0
+            } else {
+                indent[pl] as isize - leadings[pl] as isize
+            };
+            let col = (leadings[a.head_line] as isize + moved).max(0) as usize;
+            indent[a.head_line] = col;
+            col
         } else {
             indent[a.head_line]
         };
@@ -472,10 +505,10 @@ pub(crate) fn print(
             for slot in &mut indent[a.colon_line + 1..a.end_line] {
                 *slot = (*slot as isize + shift).max(0) as usize;
             }
-            indent[a.end_line] = if starter[a.end_line].is_some() {
-                (indent[a.end_line] as isize + shift).max(0) as usize
-            } else {
+            indent[a.end_line] = if a.end_leads {
                 col
+            } else {
+                (indent[a.end_line] as isize + shift).max(0) as usize
             };
         }
         let first = program
