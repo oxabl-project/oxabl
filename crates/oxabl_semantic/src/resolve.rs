@@ -3719,6 +3719,14 @@ impl<'a> ResolveWalker<'a> {
                         }
                     }
                 }
+                // The operand of `AVAILABLE` and its siblings is a record.
+                if is_record_operand_function(&name.name)
+                    && !matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
+                    && let [arg] = arguments.as_slice()
+                    && matches!(arg.kind, ExpressionKind::Identifier(_))
+                {
+                    self.soften_record_miss_without_schema(arg.id);
+                }
             }
             ExpressionKind::MethodCall {
                 object,
@@ -3854,6 +3862,7 @@ impl<'a> ResolveWalker<'a> {
                     &[NamespaceId::Buffers, NamespaceId::Tables],
                     AccessMode::Read,
                 );
+                self.soften_record_miss_without_schema(expr.id);
                 if let Some(w) = where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
@@ -5000,6 +5009,28 @@ impl<'a> ResolveWalker<'a> {
                 Resolution::Unresolved {
                     name,
                     reason: UnresolvedReason::External,
+                },
+            );
+        }
+    }
+
+    /// With no schema loaded, a record name that nothing in scope declares may
+    /// be a database table, as in `FIND` or `FOR EACH`: record the miss as
+    /// `NoSchema`, not `NotInScope`.
+    fn soften_record_miss_without_schema(&mut self, expr_id: NodeId) {
+        if self.ctx.schema_loaded {
+            return;
+        }
+        if let Some(Resolution::Unresolved {
+            name,
+            reason: UnresolvedReason::NotInScope,
+        }) = self.references.get(expr_id).cloned()
+        {
+            self.references.insert(
+                expr_id,
+                Resolution::Unresolved {
+                    name,
+                    reason: UnresolvedReason::NoSchema,
                 },
             );
         }
@@ -6782,6 +6813,35 @@ fn pseudo_function_target(name: &str) -> Option<(usize, AccessMode)> {
     } else {
         None
     }
+}
+
+/// Built-ins whose single operand names a record or buffer, with their
+/// abbreviations.
+fn is_record_operand_function(name: &str) -> bool {
+    // (keyword, shortest abbreviation)
+    const RECORD_FUNCTIONS: &[(&str, usize)] = &[
+        ("ambiguous", 5),
+        ("available", 5),
+        ("buffer-group-id", 15),
+        ("buffer-group-name", 17),
+        ("buffer-partition-id", 19),
+        ("buffer-tenant-id", 16),
+        ("buffer-tenant-name", 18),
+        ("current-changed", 15),
+        ("data-source-modified", 20),
+        ("error", 5),
+        ("locked", 6),
+        ("new", 3),
+        ("recid", 5),
+        ("record-length", 13),
+        ("rejected", 8),
+        ("row-state", 9),
+        ("rowid", 5),
+    ];
+    RECORD_FUNCTIONS.iter().any(|(keyword, shortest)| {
+        (*shortest..=keyword.len()).contains(&name.len())
+            && keyword.as_bytes()[..name.len()].eq_ignore_ascii_case(name.as_bytes())
+    })
 }
 
 /// Built-ins whose single operand names a stream.
@@ -9191,8 +9251,7 @@ mod tests {
         assert_eq!(symbols.get(*sym).kind, SymbolKind::Buffer);
     }
 
-    #[test]
-    fn resolve_can_find_unknown_buffer_is_not_in_scope() {
+    fn can_find_ghost() -> (Vec<Statement>, NodeId) {
         let cf = expr_n(ExpressionKind::CanFind {
             find_type: oxabl_ast::FindType::First,
             buffer: id("ghost"),
@@ -9201,12 +9260,31 @@ mod tests {
             no_error: false,
         });
         let cf_id = cf.id;
-        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(cf))];
-        let (_t, _s, refs, _) = run_full(&stmts);
+        (vec![stmt_n(StatementKind::ExpressionStatement(cf))], cf_id)
+    }
+
+    #[test]
+    fn resolve_can_find_unknown_buffer_under_a_schema_is_not_in_scope() {
+        let (stmts, cf_id) = can_find_ghost();
+        let schema = test_schema();
+        let (_t, _s, refs, _) = run_full_with_schema(&stmts, &schema);
         assert!(matches!(
             resolution_of(&refs, cf_id),
             Resolution::Unresolved {
                 reason: UnresolvedReason::NotInScope,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resolve_can_find_unknown_buffer_without_a_schema_is_no_schema() {
+        let (stmts, cf_id) = can_find_ghost();
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, cf_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NoSchema,
                 ..
             }
         ));
