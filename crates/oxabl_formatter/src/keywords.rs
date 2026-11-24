@@ -40,6 +40,7 @@ pub(crate) fn is_transformable(kind: Kind) -> bool {
             | Kind::IntegerLiteral
             | Kind::BigIntLiteral
             | Kind::DecimalLiteral
+            | Kind::DateLiteral
             | Kind::StringLiteral
             | Kind::IncludeReference
             | Kind::IncludeArgReference

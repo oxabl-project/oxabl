@@ -117,7 +117,11 @@ impl Context<'_> {
         let kind = self.reader.toks[r.start].kind;
         if matches!(
             kind,
-            Kind::StringLiteral | Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::BigIntLiteral
+            Kind::StringLiteral
+                | Kind::IntegerLiteral
+                | Kind::DecimalLiteral
+                | Kind::BigIntLiteral
+                | Kind::DateLiteral
         ) {
             return None;
         }
@@ -147,6 +151,7 @@ impl Context<'_> {
                         | Kind::IntegerLiteral
                         | Kind::DecimalLiteral
                         | Kind::BigIntLiteral
+                        | Kind::DateLiteral
                 )
             {
                 let (end, name) = self.reader.name(i);

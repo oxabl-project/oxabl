@@ -1,5 +1,6 @@
 use oxabl_ast::{
-    BooleanLiteral, DecimalLiteral, IntegerLiteral, Literal, Span, StringLiteral, UnknownLiteral,
+    BooleanLiteral, DateLiteral, DecimalLiteral, IntegerLiteral, Literal, Span, StringLiteral,
+    UnknownLiteral,
 };
 use oxabl_lexer::{Kind, Token, TokenValue};
 
@@ -36,6 +37,13 @@ pub fn token_to_literal(token: &Token) -> Option<Literal> {
                 end: token.end as u32,
             },
             value: v.to_string(),
+        })),
+        (Kind::DateLiteral, TokenValue::String(v)) => Some(Literal::Date(DateLiteral {
+            span: Span {
+                start: token.start as u32,
+                end: token.end as u32,
+            },
+            text: v.to_string(),
         })),
         (Kind::Question, TokenValue::None) => Some(Literal::Unknown(UnknownLiteral {
             span: Span {
