@@ -17,7 +17,7 @@ in the editor, at the code they are about.
 | Kind | Label and place | Shown for | Selected by |
 | --- | --- | --- | --- |
 | `locks` | `SHARE-LOCK`, after the buffer name | A `FIND`, a `FOR` or `PRESELECT` phrase, a `CAN-FIND` or an `OPEN QUERY` phrase that reads a database table and names no lock | `default-lock` (LK001) |
-| `index` | `index <name>`, after the buffer name; `index <name>, WHOLE-INDEX` when no condition brackets the index | A search of a database table or a temp-table for which the effects analysis names an index | The effects analysis, the facts `find-in-loop` (DB001) reads |
+| `index` | `index <name>`, after the buffer name; `index <name>, WHOLE-INDEX` when no condition brackets the index | A search of a database table or a temp-table for which the effects analysis names an index | The effects analysis, the facts `find-in-loop` (DB001) reads. No rule turns it on |
 | `scope` | `<buffer> scope starts` before the block, `<buffer> scope ends` after it | A buffer scope that a reference outside a `FOR` block raises to the procedure | `scope-widened` (TX005) |
 | `transactions` | `transaction starts` before the block, `transaction ends` after it | A block that is a transaction block only because it updates the database, and a main block that is the transaction | `implicit-transaction` (TX001), `procedure-wide-transaction` (TX002) |
 
@@ -37,7 +37,10 @@ query, as LK001 says.
 ## The hints are the rules' findings
 
 The hints must never say something that the strict rules do not. So the hints
-do not compute the facts again, and they do not select them again:
+do not compute the facts again, and they do not select them again. The index
+hint is the exception in one way: no rule reports index choices alone, so it
+comes from the effects analysis, and needs no rule. The tests compare it with
+`oxabl explain --json`, which names the same index.
 
 - Each rule that a kind follows has a selection function: `reported_reads`
   (LK001), `reported_scopes` (TX005), `reported_blocks` (TX001) and
@@ -67,7 +70,8 @@ index choices of `oxabl explain --json`.
 - A hint whose place is in an include gives no hint in the file that includes
   it. A block hint is shown only when the start and the end of the block are
   both in the file.
-- A kind whose rule the file turns off gives no hint (see below).
+- A kind whose rule the file turns off gives no hint (see below). The index
+  kind has no rule: a file with no strict rule still gets it.
 
 ## Include files
 
@@ -100,20 +104,17 @@ An include has no meaning alone (`docs/design/include-context.md`).
 
 ## When the hints are on
 
-A file shows hints when its configuration enables at least one rule of
-`strict.locks`, `strict.transactions` or `strict.access` (also through
-`[[workspace.lint.overrides]]`), and `diagnostics` is on in
-`[workspace.features]`. A project that did not opt in pays nothing: the
-analysis does not run.
-
-Each kind then follows its own rule, for the file's path:
+A file shows hints when `diagnostics` is on in `[workspace.features]`. The
+`index` kind needs no rule: a project with no strict rule gets it. Each other
+kind follows its own rule, for the file's path (also through
+`[[workspace.lint.overrides]]`):
 
 | Kind | Shown when this rule is on |
 | --- | --- |
 | `locks` | LK001 |
 | `scope` | TX005 |
 | `transactions` | TX001 for a nested block, TX002 for the main block |
-| `index` | any rule of the three groups (no rule reports index choices alone) |
+| `index` | no rule |
 
 A project that turns a rule off does not hold its fact. For example, a project
 that runs with `-NL` turns LK001 off, and then a read with no lock phrase does
@@ -168,8 +169,14 @@ request returns only the hints in its range.
   filter. The key holds the file's own text, not only the expanded text: an
   edit of a `&SCOPED-DEFINE` line can keep the expanded text and move every
   offset.
-- A kind that is off is not computed. Only the index needs the effects
-  analysis.
+- A kind that is off, or whose rule is off, is not computed. When no kind
+  is wanted (the index setting is off and no strict rule is on), the file is
+  not analysed.
+- Only the index needs the effects analysis. It needs the scope analysis, the
+  flow analysis and the call facts too, so a project with no strict rule pays
+  for these when the editor asks for hints. The analysis is for the requested
+  file only. The server keeps the result until the file's text, configuration
+  or schema changes, so a scroll costs a filter.
 
 The tests of this behaviour do not depend on the speed of the machine. In a
 test build (the `test-panics` feature of `oxabl_common`), the comment
@@ -178,8 +185,13 @@ test build (the `test-panics` feature of `oxabl_common`), the comment
 
 `crates/oxabl_pipeline/benches/hints_bench.rs` measures the analysis of a
 procedure file of about 5,400 lines. On a loaded development machine it took
-about 31 ms for all kinds and about 15 ms without the index. That is in the
-50 ms interactive budget, and it does not run on the server's main loop.
+about 16 ms for all kinds, 13 ms without the index (`hints/scopes`) and 15 ms
+for the index alone (`hints/index`, what a project with no strict rule gets).
+That is in the 50 ms interactive budget, and it does not run on the server's
+main loop. Over `oxabl lsp` (release build, a file of 5,400 lines), the first
+request for a text took about 35 ms in a project with no strict rule, against
+about 15 ms before, when it answered an empty list with no analysis. Each
+later range answered in under 1 ms.
 
 ## Limits
 

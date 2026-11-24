@@ -9,6 +9,7 @@ import { addSettings, installVsix, launch, makeProfile } from "../lib/vscode.mjs
 // A real `oxabl` (OXABL_E2E_OXABL) in a real VS Code: a project that enables the strict database
 // rules shows the lock of a read that names none and the index of a search as inlay hints, and
 // the setting `oxabl.inlayHints.locks` turns the lock hints off on their own, with no restart.
+// When the project turns the strict rule off, the index hint stays and the lock hint stays off.
 // OXABL_E2E_RUNTIME names a short directory, as for `outline`.
 
 const SCHEMA = [
@@ -104,6 +105,27 @@ export async function inlayHints(ctx) {
       `line: ${await lineWith(page, "FIND FIRST customer")}`,
     );
     await screenshot(page, `${name}-locks-off`);
+
+    // 3. With the lock hints on again and no strict rule, only the index hint shows.
+    addSettings(profile, { "oxabl.inlayHints.locks": true });
+    const back = await until("the lock hint back", async () =>
+      (await lineWith(page, "FIND FIRST customer")).includes("SHARE-LOCK"),
+    );
+    check(`${name}: oxabl.inlayHints.locks turns the lock hint on again`, back);
+    fs.writeFileSync(
+      path.join(profile.workspace, "oxabl.toml"),
+      '[workspace]\nname = "hints"\n[workspace.schema]\nfiles = ["schema.df"]\n',
+    );
+    const plain = await until("only the index hint", async () => {
+      const line = await lineWith(page, "FIND FIRST customer");
+      return !line.includes("SHARE-LOCK") && line.includes("index custnum");
+    });
+    check(
+      `${name}: with no strict rule the index hint shows and the lock hint does not`,
+      plain,
+      `line: ${await lineWith(page, "FIND FIRST customer")}`,
+    );
+    await screenshot(page, `${name}-no-strict-rule`);
   } finally {
     await vs.close();
     await sleep(1500);

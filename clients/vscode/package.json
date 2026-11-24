@@ -179,7 +179,7 @@
         "oxabl.inlayHints.index": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show the index oxabl expects a database search to use, and `WHOLE-INDEX` when no condition brackets it. Shown where `oxabl.toml` turns on a rule of `strict.locks`, `strict.transactions` or `strict.access`."
+          "markdownDescription": "Show the index oxabl expects a database search to use, and `WHOLE-INDEX` when no condition brackets it. Needs no strict rule; it shows when `diagnostics` is on in `[workspace.features]`."
         },
         "oxabl.inlayHints.scope": {
           "type": "boolean",
