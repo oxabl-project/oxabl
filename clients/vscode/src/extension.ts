@@ -102,19 +102,10 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
 }
 
 /**
- * Command `oxabl.installSkill`: `oxabl skill install --dir <folder>` with the
- * binary the extension resolved, and its outcome as a message.
+ * Command `oxabl.installSkill`: `oxabl skill install` with the binary the
+ * extension resolved, and its outcome as a message.
  */
 async function installSkillCommand(): Promise<void> {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  if (folders.length === 0) {
-    void vscode.window.showErrorMessage("oxabl: open a folder to install the agent skill in.");
-    return;
-  }
-  const folder = folders.length === 1 ? folders[0] : await vscode.window.showWorkspaceFolderPick();
-  if (!folder) {
-    return;
-  }
   const found = resolveBinary();
   if (found.kind !== "found") {
     void vscode.window.showErrorMessage(
@@ -122,7 +113,7 @@ async function installSkillCommand(): Promise<void> {
     );
     return;
   }
-  const result = await installSkill(found.command, folder.uri.fsPath);
+  const result = await installSkill(found.command);
   if (result.ok) {
     log.info(`agent skill:\n${result.lines.join("\n")}`);
     void vscode.window.showInformationMessage(`oxabl agent skill:\n${result.lines.join("\n")}`);

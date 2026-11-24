@@ -62,7 +62,7 @@
       },
       {
         "command": "oxabl.installSkill",
-        "title": "oxabl: Install agent skill in this workspace"
+        "title": "oxabl: Install agent skill"
       },
       {
         "command": "oxabl.build",

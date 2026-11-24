@@ -1,5 +1,5 @@
-// The command `oxabl: Install agent skill in this workspace`: the resolved
-// binary writes the skill into a workspace folder.
+// The command `oxabl: Install agent skill`: the resolved binary installs the
+// skill for the user (one store, linked where coding agents look).
 //
 // Like `server.ts`, this module is free of any `vscode` import.
 
@@ -8,19 +8,19 @@ import { runCli } from "./cli";
 const INSTALL_TIMEOUT_MS = 30_000;
 
 export type SkillResult =
-  /** One line per target, as `oxabl skill install` prints them. */
+  /** One line for the store and one per link, as `oxabl skill install` prints them. */
   | { ok: true; lines: string[] }
   | { ok: false; message: string };
 
-/** The arguments of `oxabl skill install` for a workspace folder. */
-export function skillInstallArgs(folder: string): string[] {
-  return ["skill", "install", "--dir", folder];
+/** The arguments of `oxabl skill install`: no folder, no force. */
+export function skillInstallArgs(): string[] {
+  return ["skill", "install"];
 }
 
-/** Installs the skill with `binary` into `folder`; never throws. */
-export async function installSkill(binary: string, folder: string): Promise<SkillResult> {
+/** Installs the skill for the user with `binary`; never throws. */
+export async function installSkill(binary: string): Promise<SkillResult> {
   try {
-    const out = await runCli(binary, skillInstallArgs(folder), INSTALL_TIMEOUT_MS);
+    const out = await runCli(binary, skillInstallArgs(), INSTALL_TIMEOUT_MS);
     return { ok: true, lines: out.stdout.split("\n").filter((line) => line.trim() !== "") };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
