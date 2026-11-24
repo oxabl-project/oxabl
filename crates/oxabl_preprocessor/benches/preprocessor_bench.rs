@@ -26,6 +26,17 @@ fn bench_no_include(
     name: &str,
     fixture: &str,
 ) {
+    bench_no_include_tracking(group, name, fixture, false);
+}
+
+/// [`bench_no_include`] with the branch tracking of the language server on or
+/// off.
+fn bench_no_include_tracking(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    name: &str,
+    fixture: &str,
+    track: bool,
+) {
     let source = load_fixture(fixture);
     let fs = InMemoryFileSystem::new();
     let include_paths: Vec<PathBuf> = Vec::new();
@@ -33,7 +44,8 @@ fn bench_no_include(
     group.throughput(Throughput::Bytes(source.len() as u64));
     group.bench_function(name, |b| {
         b.iter(|| {
-            let pp = Preprocessor::new(&fs as &dyn FileSystem, &include_paths);
+            let pp = Preprocessor::new(&fs as &dyn FileSystem, &include_paths)
+                .with_branch_tracking(track);
             pp.process(FileId::new(1), black_box(&source))
         })
     });
@@ -134,6 +146,13 @@ fn preprocessor_benchmarks(c: &mut Criterion) {
         &mut group,
         "micro/if_eval",
         "bench_preprocessor_micro_if_eval.abl",
+    );
+    // What the language server pays to dim inactive branches.
+    bench_no_include_tracking(
+        &mut group,
+        "tracked/if_eval",
+        "bench_preprocessor_micro_if_eval.abl",
+        true,
     );
 
     group.finish();

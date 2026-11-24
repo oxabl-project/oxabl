@@ -97,6 +97,15 @@ you also get, with no setup:
   that a subclass can override, an interface method, `PROCEDURE p IN SUPER`),
   the hover says that the list is incomplete. While a file it reads has unsaved
   changes, the hover shows no effects; save the file to see them.
+- **Highlight other uses.** With the cursor on a name, the editor marks the
+  other uses of it in the file. A use that changes the value (an assignment, an
+  `OUTPUT` argument, the declaration) has the write colour, and every other use
+  has the read colour. A buffer, a field, a procedure, a function, a method and a
+  class name work as well as a variable. It uses the same resolution as **Go to
+  Definition**, so a name that does not resolve has no mark of oxabl (VS Code
+  can still mark the same word as text). In an include file, the marks are the
+  uses in that file. A name that a macro or an include argument writes is not
+  marked.
 - **Document links.** Include references, `RUN` targets and `USING` names are
   links to the file each names (`Ctrl+Click`). A name that resolves to no file,
   or to more than one, is not a link.
@@ -126,6 +135,24 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   `oxabl: in <root>`. The list needs include paths under `[workspace.sources]`
   in `oxabl.toml`, and says so when there are none. The choice lasts until you
   close the file or the language server restarts.
+- **Inactive branches.** The `&IF`, `&ELSEIF` and `&ELSE` branches that the
+  preprocessor does not compile are dimmed. The colours of the text stay. The
+  compile environment comes from `[workspace.preprocessor]` in `oxabl.toml`
+  (for example `opsys` and `proversion`). In an include, the selected include
+  context decides. In fragment mode, a condition on a name that the includer
+  can set is not decided. A branch whose condition oxabl cannot decide is never
+  dimmed: a function that it does not model (such as `SEARCH`), `PROVERSION`
+  with no `proversion` set, a name that an include it cannot read can define,
+  or `OPSYS`, `WINDOW-SYSTEM`, `BATCH-MODE` or `PROCESS-ARCHITECTURE` when
+  `oxabl.toml` does not set `opsys`, `window-system`, `batch-mode` or
+  `process-architecture`, or `DBTYPE` of a database that `database-types` does
+  not name. Their defaults do not dim anything. An include gets no dimming when
+  a root that includes it has an include that oxabl cannot find. While you
+  type plain text, the dimming stays; an edit of a directive line, a removal, a
+  paste with `&`, `{`, a comment or a quote, or text inside a multi-line `&IF`
+  condition or a definition that continues after `~` removes it until oxabl
+  has read the new text. Set `oxabl.inactiveRegions.enable` to `false` to turn the
+  dimming off.
 - **Expanded compilation unit.** **oxabl: Show Expanded Compilation Unit**
   opens a read-only view beside the file: the source oxabl parsed after
   preprocessing. For an include it uses the selected include context, or the
@@ -188,7 +215,7 @@ order: the `oxabl.server.path` setting, `~/.local/bin/oxabl` (the directory in
 then run **oxabl: Restart Server**.
 
 In a project, these features follow `[workspace.features]` in `oxabl.toml`:
-`diagnostics = false` stops the diagnostics, the code lenses and the inlay hints, and `format = false` stops formatting, so format on save does
+`diagnostics = false` stops the diagnostics, the dimming of inactive branches, the code lenses and the inlay hints, and `format = false` stops formatting, so format on save does
 nothing. An `oxabl.toml` that oxabl cannot read turns both off until you fix
 it.
 

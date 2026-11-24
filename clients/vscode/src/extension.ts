@@ -10,6 +10,7 @@ import { BuildController } from "./builds";
 import { binaryVersion, supportsYield } from "./cli";
 import { inlayHintSettings, shouldRestartForConfigChange } from "./config";
 import { ExpandedUnits } from "./expandedUnit";
+import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
 import { SchemaBrowser } from "./schemaView";
@@ -24,6 +25,7 @@ let builds: BuildController;
 let cli: CliManager;
 let includerContexts: IncluderContexts;
 let expandedUnits: ExpandedUnits;
+let inactiveRegions: InactiveRegions;
 let schema: SchemaBrowser;
 /** `path@version` of binaries known to support `--yield`. */
 const capable = new Set<string>();
@@ -50,6 +52,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     memory: context.workspaceState,
   });
   expandedUnits = new ExpandedUnits(() => client);
+  inactiveRegions = new InactiveRegions();
   includerContexts = new IncluderContexts(
     () => client,
     (uri) => expandedUnits.refreshSource(uri),
@@ -58,6 +61,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
   context.subscriptions.push(
     log,
     expandedUnits,
+    inactiveRegions,
     schema,
     includerContexts,
     vscode.commands.registerCommand("oxabl.showExpandedUnit", () => expandedUnits.show()),
@@ -197,6 +201,7 @@ async function startClient(): Promise<void> {
 
   clientVersion = await binaryVersion(discovery.command);
   client = new LanguageClient("oxabl", "oxabl language server", serverOptions, clientOptions);
+  inactiveRegions.attach(client);
 
   try {
     await client.start();
@@ -221,6 +226,7 @@ async function stopClient(): Promise<void> {
   client = undefined;
   clientVersion = undefined;
   includerContexts.reset();
+  inactiveRegions.reset();
   try {
     await running.stop();
   } catch {

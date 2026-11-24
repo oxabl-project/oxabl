@@ -64,6 +64,10 @@ A root that gives no answer for the include gives one warning at the start of
 the include that says why: the root cannot be read, its preprocessing failed,
 or it no longer includes the file.
 
+The same analysis gives the `&IF` branches the root does not compile in the
+include, which the server sends with the diagnostics
+([inactive regions](inactive-regions.md)).
+
 Results go through the same `dispose` rules as every diagnostics result
 (version, configuration generation, cancellation, panic). A result for a root
 that is no longer selected is dropped, and while a root is selected a fragment

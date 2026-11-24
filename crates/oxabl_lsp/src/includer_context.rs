@@ -324,8 +324,13 @@ impl Server<'_> {
             has_diagnostics: res.outcome.is_some(),
             panicked: res.panicked,
         };
+        let current = work.current_version == Some(work.read_version);
         match dispose(work) {
-            Disposition::Drop => {}
+            Disposition::Drop => {
+                if res.panicked && current {
+                    self.publish_inactive_regions(&res.uri, res.version, []);
+                }
+            }
             Disposition::Retry => {
                 self.debouncer.schedule(res.uri, std::time::Instant::now());
             }
@@ -344,6 +349,11 @@ impl Server<'_> {
                     &self.encoding,
                     self.related_information.then_some(&res.uri),
                 );
+                let regions = outcome
+                    .inactive_regions
+                    .iter()
+                    .map(|span| (span.start, span.end));
+                self.publish_inactive_regions(&res.uri, res.version, regions);
                 self.publish(res.uri, diagnostics, Some(res.version));
             }
         }

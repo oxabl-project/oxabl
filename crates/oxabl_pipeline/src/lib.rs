@@ -110,7 +110,7 @@ pub use lint::{
     Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun,
     encrypted_root_diagnostics,
 };
-pub use navigate::{Hover, Link, Navigation, Target};
+pub use navigate::{Highlight, Hover, Link, Navigation, NavigationModel, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 pub use schema_view::{
     SchemaDatabase, SchemaField, SchemaIndex, SchemaIndexField, SchemaProblem, SchemaSequence,

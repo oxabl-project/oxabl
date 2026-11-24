@@ -161,6 +161,38 @@ pub struct SkippedText {
     pub branches: Vec<SkippedBranch>,
 }
 
+/// What the preprocessor knows about one branch of an `&IF` chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchState {
+    /// The branch is compiled.
+    Taken,
+    /// The branch is not compiled.
+    NotTaken,
+    /// The preprocessor chose without the facts to choose: a condition of the
+    /// chain, or of an enclosing one, it cannot evaluate, or one that reads a
+    /// name whose value it does not know. The text was kept or dropped on a
+    /// guess.
+    Undecided,
+}
+
+/// One branch of an `&IF` / `&ELSEIF` / `&ELSE` chain, in a file the
+/// preprocessor read.
+///
+/// A name is not known when a define or an undefine of it sits in an
+/// undecided branch, when its value reads a name that is not known, or after
+/// an include whose text did not arrive. With
+/// [`crate::Preprocessor::with_includer_unknown`], a name the run did not set
+/// itself is not known either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfBranch {
+    pub directive: BranchDirective,
+    /// The text the branch holds: from the end of its directive to the start of
+    /// the next directive of its chain, or to the end of the file when the chain
+    /// is not closed. In the coordinates of the file that holds it.
+    pub body: FileSpan,
+    pub state: BranchState,
+}
+
 /// Why the preprocessor lost sight of text it was asked to expand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -252,6 +284,16 @@ pub struct PreprocessedFile {
     pub skipped_includes: Vec<SkippedInclude>,
     /// Every stretch of text, at any depth, inside a branch that was not taken.
     pub skipped_text: Vec<SkippedText>,
+    /// Every branch of every `&IF` chain, at any depth, in the order the
+    /// branches end.
+    pub branches: Vec<IfBranch>,
+    /// The path of each include expansion, by the file id of its text.
+    pub include_files: Vec<(FileId, PathBuf)>,
+    /// Whether an include the compiler may expand was not expanded: written in
+    /// a branch chosen on a guess, or dropped because it could not be read, closed
+    /// a cycle, or passed the depth or expansion limit. Then [`Self::branches`]
+    /// lacks the branches of that expansion, whichever file it is.
+    pub missed_expansion: bool,
     /// Every place, at any depth, where text was dropped or a branch was chosen
     /// without the facts to choose it.
     pub text_losses: Vec<TextLoss>,
@@ -289,6 +331,9 @@ impl PreprocessedFile {
             resolved_includes: Vec::new(),
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
+            branches: Vec::new(),
+            include_files: Vec::new(),
+            missed_expansion: false,
             text_losses: Vec::new(),
             elided: Vec::new(),
             diagnostics,

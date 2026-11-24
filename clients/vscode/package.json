@@ -232,6 +232,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Show where a transaction starts and ends when a block becomes a transaction only because it updates the database (`implicit-transaction`, TX001, and `procedure-wide-transaction`, TX002). Shown where `oxabl.toml` turns on the rule that reports the block."
+        },
+        "oxabl.inactiveRegions.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Dim the `&IF`, `&ELSEIF` and `&ELSE` branches that the preprocessor does not compile with the current configuration, or in the selected include context. A branch whose condition oxabl cannot decide is never dimmed. Applied automatically when changed."
         }
       }
     },
