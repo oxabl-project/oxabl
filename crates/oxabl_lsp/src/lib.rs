@@ -114,8 +114,36 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
     // "no daemon here", so the client looks again and starts one.
     const ATTEMPTS: u32 = 3;
     let mut attempt = 1;
+    let mut notices = Vec::new();
     let (daemon, daemon_threads, answer) = loop {
-        let registration = find_or_start_daemon(&workspace_root)?;
+        let registration = match find_or_start_daemon(&workspace_root, &mut notices) {
+            Ok(registration) => registration,
+            Err(error) => {
+                // The editor shows a server that fails to start only as a crash, so a
+                // daemon of another version this client cannot replace is named in the
+                // editor itself. The binary prints the error on stderr.
+                if error.downcast_ref::<VersionMismatch>().is_some() {
+                    notify_editor(
+                        connection,
+                        lsp_types::MessageType::WARNING,
+                        &error.to_string(),
+                    );
+                }
+                return Err(error);
+            }
+        };
+        for notice in notices.drain(..) {
+            eprintln!("oxabl lsp: {notice}");
+            let _ = connection
+                .sender
+                .send(Message::Notification(Notification::new(
+                    "window/logMessage".to_string(),
+                    lsp_types::LogMessageParams {
+                        typ: lsp_types::MessageType::INFO,
+                        message: notice,
+                    },
+                )));
+        }
         match initialize_daemon(&registration, &first) {
             Ok(joined) => break joined,
             Err(refusal) if attempt < ATTEMPTS => {
@@ -206,6 +234,51 @@ fn editor_send(editor: &Connection, message: Message) -> Result<()> {
         .context("the editor connection closed")
 }
 
+/// Show `message` in the editor and wait until it is written.
+///
+/// The stdio writer takes the next frame only after it has written the one before, so
+/// the second frame, a copy in the editor's log, returns once the warning is out. The
+/// process may exit right after this.
+#[cfg(unix)]
+fn notify_editor(connection: &Connection, typ: lsp_types::MessageType, message: &str) {
+    let show = Notification::new(
+        "window/showMessage".to_string(),
+        lsp_types::ShowMessageParams {
+            typ,
+            message: format!("oxabl: {message}"),
+        },
+    );
+    let log = Notification::new(
+        "window/logMessage".to_string(),
+        lsp_types::LogMessageParams {
+            typ,
+            message: format!("oxabl lsp: {message}"),
+        },
+    );
+    let _ = connection.sender.send(Message::Notification(show));
+    let _ = connection.sender.send(Message::Notification(log));
+}
+
+/// A daemon of another version serves the root and this client could not replace it.
+#[cfg(unix)]
+#[derive(Debug)]
+struct VersionMismatch(String);
+
+#[cfg(unix)]
+impl std::fmt::Display for VersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for VersionMismatch {}
+
+#[cfg(unix)]
+fn mismatch(message: String) -> anyhow::Error {
+    anyhow::Error::new(VersionMismatch(message))
+}
+
 #[cfg(not(unix))]
 fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
     anyhow::bail!("the oxabl daemon currently requires Unix sockets")
@@ -232,7 +305,10 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 ///   second daemon of another build, which means another build keeps starting them.
 /// * `Live` — decided; return it.
 #[cfg(unix)]
-fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registration> {
+fn find_or_start_daemon(
+    root: &Path,
+    notices: &mut Vec<String>,
+) -> Result<oxabl_daemon_protocol::Registration> {
     use std::time::{Duration, Instant};
 
     // Polled every 20ms for two seconds. A cold start is far quicker; the budget is
@@ -269,16 +345,24 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
                 }
                 // Another daemon of another build after this client stopped one or
                 // started its own.
-                Some(_) => anyhow::bail!(keeps_starting(&registration, root)),
-                None if started => anyhow::bail!(keeps_starting(&registration, root)),
-                None if !older_than_this_build(&registration) => anyhow::bail!(
-                    "{}. That daemon is not older than this client: update this oxabl, or \
-                     stop it with `kill {}`",
-                    mismatch_message(&registration, root),
-                    registration.pid
-                ),
+                Some(_) => return Err(mismatch(keeps_starting(&registration, root))),
+                None if started => return Err(mismatch(keeps_starting(&registration, root))),
+                None if !older_than_this_build(&registration) => {
+                    return Err(mismatch(format!(
+                        "{}. That daemon is not older than this client: update this oxabl, \
+                         or stop it with `kill {}`. The next oxabl command then starts a \
+                         daemon of this version",
+                        mismatch_message(&registration, root),
+                        registration.pid
+                    )));
+                }
                 None => match oxabl_daemon::stop_daemon(&registration, false) {
                     Ok(()) => {
+                        notices.push(format!(
+                            "{}. Stopped it; a daemon of this version serves the root, and \
+                             its other clients reconnect",
+                            mismatch_message(&registration, root)
+                        ));
                         busy = None;
                         stopping = Some(StaleDaemon {
                             registration,
@@ -292,7 +376,9 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         busy = Some(not_stopped(&registration, root, &error));
                     }
-                    Err(error) => anyhow::bail!(not_stopped(&registration, root, &error)),
+                    Err(error) => {
+                        return Err(mismatch(not_stopped(&registration, root, &error)));
+                    }
                 },
             },
             // Keep the latest reason rather than the first: a cause that has cleared
@@ -347,14 +433,14 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
     // cause, and a message that reports only the symptom sends its reader looking for
     // a slow machine when the answer is a directory mode.
     if let Some(stale) = stopping.filter(|_| !started) {
-        anyhow::bail!(
+        return Err(mismatch(format!(
             "{}, and it did not stop. Stop it with `kill -9 {}`",
             mismatch_message(&stale.registration, root),
             stale.registration.pid
-        );
+        )));
     }
     if let Some(busy) = busy {
-        anyhow::bail!(busy);
+        return Err(mismatch(busy));
     }
     if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
         child_exit = Some(status);
@@ -391,7 +477,7 @@ fn stop(
     force: bool,
 ) -> Result<()> {
     oxabl_daemon::stop_daemon(registration, force)
-        .map_err(|error| anyhow::anyhow!(not_stopped(registration, root, &error)))
+        .map_err(|error| mismatch(not_stopped(registration, root, &error)))
 }
 
 /// A daemon of another build that could not be signalled, with the way to stop it.
@@ -445,7 +531,9 @@ fn keeps_starting(registration: &oxabl_daemon_protocol::Registration, root: &Pat
 #[cfg(unix)]
 fn mismatch_message(registration: &oxabl_daemon_protocol::Registration, root: &Path) -> String {
     let version = if registration.daemon_version.is_empty() {
-        "an older version"
+        // A registration without the field predates it, so the daemon is older, but
+        // its version is not known.
+        "an unknown, older version"
     } else {
         registration.daemon_version.as_str()
     };
@@ -2199,7 +2287,7 @@ mod tests {
             }
         }
 
-        let outcome = find_or_start_daemon(workspace.path());
+        let outcome = find_or_start_daemon(workspace.path(), &mut Vec::new());
 
         unsafe {
             for (name, value) in previous {
