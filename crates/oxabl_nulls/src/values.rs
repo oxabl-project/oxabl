@@ -730,6 +730,17 @@ impl Problem<'_> {
             }
         }
     }
+    /// Whether the condition of a choice in `e` reads variable `i`.
+    fn chooses_on(&self, e: &Expression, i: usize) -> bool {
+        let mut found = false;
+        walk(e, &mut |e| {
+            if let E::IfThenElse(c, ..) = &e.kind {
+                walk(c, &mut |c| found |= self.variable(c) == Some(i));
+            }
+        });
+        found
+    }
+
     fn propagates_variable(&self, e: &Expression, i: usize) -> bool {
         if self.variable(e) == Some(i) {
             return true;
@@ -1959,7 +1970,8 @@ impl Problem<'_> {
             let before = walk.solution.before(n);
             walk.budget = walk.budget.checked_sub(1)?;
             if self.replays(walk.cfg, n, before) {
-                let cost = before.cost() * self.width(walk.cfg, n);
+                // `replay` evaluates each pair three times and assigns it once.
+                let cost = 4 * before.cost() * self.width(walk.cfg, n);
                 walk.budget = walk.budget.checked_sub(cost)?;
             }
             let writes = self.replay(walk.cfg, n, before);
@@ -2026,9 +2038,15 @@ impl Problem<'_> {
                         *slot = self.eval(value, &f);
                     }
                     f.values[var] = old;
+                    // A choice that tests the variable can store another `?`
+                    // only because the variable was `?`; the list would then
+                    // miss this pair, so it keeps nothing.
                     (
                         stored[0] & QUESTION != 0,
-                        old & QUESTION != 0 && stored[1] & QUESTION != 0 && stored[1] != stored[2],
+                        old & QUESTION != 0
+                            && stored[1] & QUESTION != 0
+                            && stored[1] != stored[2]
+                            && !self.chooses_on(value, var),
                     )
                 };
                 out.push(Write {

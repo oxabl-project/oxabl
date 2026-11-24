@@ -337,3 +337,28 @@ ASSIGN x = (IF n = 1 THEN x ELSE 0)\n\
         )]
     );
 }
+
+/// A choice that tests the variable can store the `?` of another value only
+/// because the variable was `?`. The list would miss that pair, so there is
+/// none.
+#[test]
+fn a_pair_whose_choice_tests_the_variable_gives_no_partial_list() {
+    let source = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n\
+DEFINE VARIABLE y AS INTEGER NO-UNDO.\n\
+DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.\n\
+IF n = 2 THEN x = ?.\n\
+y = ?.\n\
+x = (IF x = ? THEN y ELSE 0).\n\
+n = x * 2.\n";
+    let found = first_sources(source);
+    let x = found
+        .iter()
+        .find(|(name, _)| name == "x")
+        .expect("a use of x");
+    assert!(
+        x.1.as_ref().is_none_or(|list| list
+            .iter()
+            .any(|(text, _)| text == "x = (IF x = ? THEN y ELSE 0)")),
+        "{found:?}"
+    );
+}
