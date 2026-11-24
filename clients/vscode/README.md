@@ -88,7 +88,10 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   that it cannot format safely byte for byte unchanged.
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
-  applies at once, with no reload.
+  applies at once, with no reload. A finding of the `strict.handles` and
+  `strict.nulls` rules lists the statements on its path under it, such as
+  the `FIND ... NO-ERROR` that may leave a buffer empty or the create of a
+  handle that leaks. Click one to go to it, also in an include file.
 - **Include context.** An include file (`.i`) has no meaning alone: a
   variable it declares is used or unused only in a file that includes it. An
   open include starts in fragment mode, and the status bar says

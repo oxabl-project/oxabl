@@ -1280,6 +1280,86 @@ struct CheckJsonDiagnostic {
     start: Option<CheckJsonPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end: Option<CheckJsonPosition>,
+    /// The related locations of the finding, such as the statement that may
+    /// give a variable `?`. Present since version 4, when there are any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related: Vec<CheckJsonRelated>,
+}
+
+/// A related location of a finding, in the file that holds it: the checked
+/// file or an include. `start` and `end` are omitted when that file cannot be
+/// read.
+#[derive(Serialize)]
+struct CheckJsonRelated {
+    path: String,
+    message: String,
+    span: CheckJsonSpan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<CheckJsonPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<CheckJsonPosition>,
+}
+
+/// The files a finding's labels may point into, each with its display path
+/// and text when known.
+struct LabelPlaces {
+    files: Vec<(FileId, String, Option<String>)>,
+}
+
+impl LabelPlaces {
+    /// The places of a finding in the text `own` (`None` when it cannot be
+    /// read), and of `label_files`, in the text the analysis read.
+    fn new(
+        own: (FileId, &str, Option<&str>),
+        root: &str,
+        label_files: &[oxabl_analyze::LabelFile],
+    ) -> Self {
+        let mut files = vec![(own.0, own.1.to_string(), own.2.map(str::to_owned))];
+        for f in label_files {
+            if f.file != own.0 {
+                let text = f.text.as_deref().map(str::to_owned);
+                files.push((f.file, display_path::spell(&f.path, root), text));
+            }
+        }
+        LabelPlaces { files }
+    }
+
+    /// Add the text-mode places to `resolver`, whose own file is the first.
+    fn resolver<'a>(&self, own_text: &'a str) -> SourceResolver<'a> {
+        let (file, path, text) = &self.files[0];
+        let file = if text.is_some() {
+            *file
+        } else {
+            FileId::UNKNOWN
+        };
+        let mut resolver = SourceResolver::new(file, path.clone(), own_text);
+        for (file, path, text) in &self.files[1..] {
+            resolver = resolver.with_file(*file, path.clone(), text.as_deref());
+        }
+        resolver
+    }
+
+    fn rows(&self, d: &Diagnostic) -> Vec<CheckJsonRelated> {
+        d.labels
+            .iter()
+            .filter_map(|label| {
+                let (_, path, text) = self.files.iter().find(|(f, ..)| *f == label.span.file)?;
+                let resolved = text
+                    .as_deref()
+                    .map(|text| position::resolve_file_span(&SourceMap::new(text), &label.span));
+                Some(CheckJsonRelated {
+                    path: path.clone(),
+                    message: label.message.clone(),
+                    span: CheckJsonSpan {
+                        start: label.span.span.start,
+                        end: label.span.span.end,
+                    },
+                    start: resolved.map(|r| r.start.into()),
+                    end: resolved.map(|r| r.end.into()),
+                })
+            })
+            .collect()
+    }
 }
 
 /// One finding in an include, as a result for one root's compilation unit.
@@ -1304,6 +1384,8 @@ struct CheckJsonIncludeFinding {
     start: Option<CheckJsonPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end: Option<CheckJsonPosition>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related: Vec<CheckJsonRelated>,
     expansions: Vec<CheckJsonExpansion>,
 }
 
@@ -1630,7 +1712,8 @@ fn run_check(
             // 2: `preproc_diagnostics` became `preproc`, matching `analyze`'s
             // envelope, and its rows gained a `path` (D1).
             // 3: a diagnostic row carries its `help` line when it has one.
-            version: 3,
+            // 4: a diagnostic row carries its `related` locations.
+            version: 4,
             files_checked: files.len(),
             include_files_checked,
             lint_enabled: channels.diagnostics && !no_lint,
@@ -1998,7 +2081,7 @@ impl CheckPass<'_> {
                 if collected.peek().is_some() {
                     let map = SourceMap::new(source);
                     unit.preproc
-                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
+                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c, None)));
                 }
             }
 
@@ -2012,22 +2095,22 @@ impl CheckPass<'_> {
             } else {
                 reported
             };
-            report_findings(
-                &display,
-                indexed_path,
-                source,
-                reported,
-                self.baseline,
-                self.json_output,
-                unit,
-            );
+            report_findings(self, &display, indexed_path, source, reported, unit);
 
             if self.include_findings {
                 let mut shown = result.include_origin().to_vec();
                 if self.no_lint {
                     shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
                 }
-                report_include_findings(&display, source, &shown, texts, self.json_output, unit);
+                report_include_findings(
+                    &display,
+                    source,
+                    &shown,
+                    &result.diagnostics().label_files,
+                    texts,
+                    self.json_output,
+                    unit,
+                );
             }
 
             // The unjudged-symbol note is a statement about the *count-gated lint
@@ -2077,12 +2160,11 @@ impl CheckPass<'_> {
         }
         unit.include_file_checked = true;
         report_findings(
+            self,
             &display,
             indexed_path,
             &source,
             result.into_diagnostics(),
-            self.baseline,
-            self.json_output,
             &mut unit,
         );
         unit
@@ -2178,30 +2260,39 @@ fn in_task_order<'t, T: Sync, S, R: Send>(
 /// Apply the baseline to one file's findings, then print them (text mode) and
 /// add them to the report rows.
 fn report_findings(
+    pass: &CheckPass<'_>,
     display: &str,
     indexed_path: &Path,
     source: &str,
     reported: CollectedDiagnostics,
-    baseline: Option<&baseline::Run>,
-    json_output: bool,
     unit: &mut Unit,
 ) {
-    let reported = match baseline {
+    let json_output = pass.json_output;
+    let reported = match pass.baseline {
         Some(run) => run.filter(indexed_path, source, reported),
         None => reported,
     };
     if reported.diagnostics.is_empty() {
         return;
     }
+    let places = LabelPlaces::new(
+        (ROOT_FILE_ID, display, Some(source)),
+        display,
+        &reported.label_files,
+    );
     if !json_output {
-        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), source);
+        let resolver = places.resolver(source);
         let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
         unit.output.out(render_diagnostics(&rendered, &resolver));
     }
     let map = SourceMap::new(source);
     for collected in reported.all() {
-        unit.diagnostics
-            .push(check_json_diagnostic(display, &map, collected));
+        unit.diagnostics.push(check_json_diagnostic(
+            display,
+            &map,
+            collected,
+            Some(&places),
+        ));
     }
 }
 
@@ -2264,27 +2355,31 @@ fn report_include_findings(
     root: &str,
     root_source: &str,
     found: &[oxabl_analyze::IncludeOriginDiagnostic],
+    label_files: &[oxabl_analyze::LabelFile],
     texts: &mut IncludeTexts,
     json_output: bool,
     unit: &mut Unit,
 ) {
     for finding in found {
         let display = display_path::spell(&finding.path, root);
-        let mut diagnostic = finding.diagnostic.clone();
-        diagnostic.span.file = ROOT_FILE_ID;
+        let diagnostic = finding.diagnostic.clone();
         let text = texts.get(&finding.path).map(str::to_owned);
+        let mut places = LabelPlaces::new(
+            (diagnostic.span.file, &display, text.as_deref()),
+            root,
+            label_files,
+        );
+        places.files.push((
+            ROOT_FILE_ID,
+            root.to_string(),
+            Some(root_source.to_string()),
+        ));
         if !json_output {
-            let resolver = SourceResolver::new(
-                if text.is_some() {
-                    ROOT_FILE_ID
-                } else {
-                    FileId::UNKNOWN
-                },
-                display.clone(),
-                text.as_deref().unwrap_or(""),
-            );
-            unit.output
-                .out(render_diagnostics(&[diagnostic.clone()], &resolver));
+            let resolver = places.resolver(text.as_deref().unwrap_or(""));
+            unit.output.out(render_diagnostics(
+                std::slice::from_ref(&diagnostic),
+                &resolver,
+            ));
             for expansion in &finding.expansions {
                 // Each site is in the file that wrote it: the root, then the
                 // include before it in the chain.
@@ -2364,6 +2459,7 @@ fn report_include_findings(
             },
             start: resolved.map(|r| r.start.into()),
             end: resolved.map(|r| r.end.into()),
+            related: places.rows(&diagnostic),
             expansions,
         });
     }
@@ -2379,6 +2475,7 @@ fn check_json_diagnostic(
     path: &str,
     map: &SourceMap,
     collected: &oxabl_analyze::CollectedDiagnostic,
+    places: Option<&LabelPlaces>,
 ) -> CheckJsonDiagnostic {
     let d = &collected.diagnostic;
     let resolved = (d.span.file == ROOT_FILE_ID).then(|| position::resolve_diagnostic(map, d));
@@ -2395,6 +2492,7 @@ fn check_json_diagnostic(
         },
         start: resolved.map(|r| r.start.into()),
         end: resolved.map(|r| r.end.into()),
+        related: places.map(|p| p.rows(d)).unwrap_or_default(),
     }
 }
 

@@ -526,6 +526,8 @@ struct Negotiated {
     options: code_lens::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `relatedInformation` on a diagnostic.
+    related_information: bool,
 }
 
 fn serve_initialized(
@@ -587,6 +589,13 @@ fn finish_handshake(
         .and_then(|c| c.document_symbol.as_ref())
         .and_then(|c| c.hierarchical_document_symbol_support)
         .unwrap_or(false);
+    let related_information = init
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|c| c.publish_diagnostics.as_ref())
+        .and_then(|c| c.related_information)
+        .unwrap_or(false);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
@@ -616,6 +625,7 @@ fn finish_handshake(
         Negotiated {
             options,
             hierarchical_symbols,
+            related_information,
         },
         workspace_root,
     ))
@@ -652,6 +662,8 @@ struct Server<'c> {
     encoding: PositionEncodingKind,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `relatedInformation` on a diagnostic.
+    related_information: bool,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
     /// The daemon's one session map. No analysis state lives in this client.
@@ -730,6 +742,7 @@ impl<'c> Server<'c> {
         let Negotiated {
             options,
             hierarchical_symbols,
+            related_information,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -737,6 +750,7 @@ impl<'c> Server<'c> {
             connection,
             encoding: options.encoding.clone(),
             hierarchical_symbols,
+            related_information,
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -953,7 +967,8 @@ impl<'c> Server<'c> {
                 let Some(doc) = self.documents.get(&res.uri) else {
                     return;
                 };
-                let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
+                let related = self.related_information.then_some(&res.uri);
+                let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding, related);
                 self.publish(res.uri.clone(), lsp_diags, Some(res.version));
             }
         }
@@ -1314,7 +1329,8 @@ impl<'c> Server<'c> {
             return;
         };
         if let Some(doc) = self.documents.get(uri) {
-            let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
+            let related = self.related_information.then_some(uri);
+            let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding, related);
             self.publish(uri.clone(), lsp_diags, Some(version));
         }
     }
@@ -1725,6 +1741,7 @@ mod tests {
                     refresh: false,
                 },
                 hierarchical_symbols: false,
+                related_information: false,
             },
             std::time::Duration::from_millis(10),
             None,

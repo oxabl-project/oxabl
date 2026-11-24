@@ -1124,6 +1124,9 @@ pub fn compute_diagnostics(
 pub struct ContextDiagnostics {
     /// The semantic and lint findings in the include, with spans in its own bytes.
     pub findings: Vec<oxabl_analyze::IncludeOriginDiagnostic>,
+    /// The files the labels of `findings` point into: the root, and each
+    /// include of the expansion, with the text the analysis read.
+    pub label_files: Vec<oxabl_analyze::LabelFile>,
     /// Why the root gives no answer for the include, when it gives none.
     pub failure: Option<String>,
     /// The root and every include its expansion read, for the watcher.
@@ -1155,20 +1158,30 @@ pub fn compute_context_diagnostics(
         match analysed {
             Ok(unit) => {
                 let dependencies = unit.dependencies();
-                let findings = unit
+                let findings: Vec<_> = unit
                     .diagnostics
                     .include_origin
                     .into_iter()
                     .filter(|finding| crate::session::canonical_path(&finding.path) == target)
                     .collect();
+                let mut label_files = unit.diagnostics.label_files;
+                if let Some(expanded) = unit.expansion.expanded() {
+                    label_files.push(oxabl_analyze::LabelFile {
+                        file: expanded.root_file(),
+                        path: unit.root.clone(),
+                        text: unit.sources.get(&unit.root).cloned(),
+                    });
+                }
                 ContextDiagnostics {
                     findings,
+                    label_files,
                     failure: None,
                     dependencies,
                 }
             }
             Err((reason, dependencies)) => ContextDiagnostics {
                 findings: Vec::new(),
+                label_files: Vec::new(),
                 failure: Some(reason),
                 dependencies,
             },
@@ -1829,6 +1842,52 @@ mod tests {
     fn bump(db: &mut AnalysisDatabase, path: &str) -> bool {
         let index = Arc::clone(&db.config().index);
         index.bump(db, Path::new(path))
+    }
+
+    /// A label in an include carries the include's text as the expansion read
+    /// it, so a client places it against the same bytes even after the file
+    /// changes on disk before the watcher reports it.
+    #[test]
+    fn a_label_in_an_include_keeps_the_text_the_expansion_read() {
+        let first = "DEFINE VARIABLE dup-v AS INTEGER NO-UNDO.\n";
+        let fs = EditableFs::new(&[("/src/dup.i", first)]);
+        let db = AnalysisDatabase::new(searching_config(Arc::clone(&fs) as Arc<dyn FileSystem>));
+        let buffer = Buffer::new(
+            &db,
+            "{dup.i}\nDEFINE VARIABLE dup-v AS INTEGER NO-UNDO.\nMESSAGE dup-v.\n".to_string(),
+            Some(PathBuf::from("/src/dup.p")),
+        );
+        let schema = SchemaHandle::new(&db, 0);
+        let label_text = |d: &CollectedDiagnostics| {
+            let found = d
+                .all()
+                .find(|c| c.diagnostic.code.0 == "SEM0001")
+                .expect("the root declares the name again");
+            let label = &found.diagnostic.labels[0];
+            let file = d
+                .label_files
+                .iter()
+                .find(|f| f.file == label.span.file)
+                .expect("the label's file is listed");
+            assert_eq!(file.path, PathBuf::from("/src/dup.i"));
+            let text = file.text.as_deref().expect("the text the expansion read");
+            text[label.span.span.start as usize..label.span.span.end as usize].to_string()
+        };
+        assert_eq!(
+            label_text(&compute_diagnostics(&db, buffer, schema).unwrap()),
+            "dup-v"
+        );
+
+        // Saved elsewhere, not yet reported: the memoized answer still holds
+        // the bytes its offsets are in.
+        fs.write(
+            "/src/dup.i",
+            "/* a longer first line */\nDEFINE VARIABLE dup-v AS INTEGER.\n",
+        );
+        assert_eq!(
+            label_text(&compute_diagnostics(&db, buffer, schema).unwrap()),
+            "dup-v"
+        );
     }
 
     /// AE4 at the substrate level: the child resolves against the parent, the

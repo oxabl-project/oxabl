@@ -116,6 +116,21 @@ pub struct CollectedDiagnostics {
     ///
     /// [`RuleMeta::use_site_in_includer`]: oxabl_lint::RuleMeta::use_site_in_includer
     pub include_findings: Vec<IncludeFinding>,
+    /// The physical include file of each label that points into an include,
+    /// by the file id of the label's span, each id once, with its text as the
+    /// expansion read it. A label in the root has the root's id and no row
+    /// here. A label in text that no file on disk wrote (a `{&name}` value) is
+    /// dropped.
+    pub label_files: Vec<LabelFile>,
+}
+
+/// A file that a label points into, with the text its byte offsets are in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelFile {
+    pub file: FileId,
+    pub path: PathBuf,
+    /// The text the analysis read; `None` when it is not known.
+    pub text: Option<Arc<str>>,
 }
 
 /// A finding whose anchor is in an include file, with where it would show.
@@ -132,7 +147,7 @@ pub struct CollectedDiagnostics {
 #[non_exhaustive]
 pub struct IncludeFinding {
     /// The finding at the root's `{...}` site that brought the include in.
-    /// Labels that are not in the root are dropped.
+    /// Its labels are placed as [`CollectedDiagnostics::label_files`] says.
     pub diagnostic: Diagnostic,
     /// The include file that holds the anchor.
     pub path: PathBuf,
@@ -149,6 +164,7 @@ impl CollectedDiagnostics {
             parse_recovered: false,
             include_origin: Vec::new(),
             include_findings: Vec::new(),
+            label_files: Vec::new(),
         }
     }
 
@@ -195,6 +211,7 @@ impl CollectedDiagnostics {
             } else {
                 self.include_findings.clone()
             },
+            label_files: self.label_files.clone(),
         }
     }
 }
@@ -410,6 +427,8 @@ pub struct ExpandedFile {
     /// The path of each include file the expansion read, by the file id its
     /// chunks carry.
     file_paths: Vec<(u32, PathBuf)>,
+    /// The text of each file of `file_paths`, as the expansion read it.
+    file_texts: Vec<(FileId, Arc<str>)>,
     /// Include references that resolved to no file and that the root names itself:
     /// written in the root, or reached only through `{&var}` substitutions the root
     /// writes. For the second kind `site` is the substitution, in the root's own
@@ -589,6 +608,15 @@ impl ExpandedFile {
             .iter()
             .find(|(known, _)| *known == file.raw())
             .map(|(_, path)| path.as_path())
+    }
+
+    /// The text of an include expansion's file id, as the expansion read it.
+    /// `None` for the root and for an id this expansion did not read.
+    pub fn file_text(&self, file: FileId) -> Option<&Arc<str>> {
+        self.file_texts
+            .iter()
+            .find(|(known, _)| *known == file)
+            .map(|(_, text)| text)
     }
 
     /// The loud preprocessor diagnostics written in includes, such as a cyclic
@@ -911,6 +939,7 @@ pub fn expand_source_with(
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
+            file_texts: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
@@ -1019,6 +1048,13 @@ pub fn expand_source_with(
                     },
                 )
                 .collect();
+            let file_texts = file_paths
+                .iter()
+                .filter_map(|(file, _)| {
+                    let file = FileId::new(*file);
+                    Some((file, Arc::clone(pf.source(file)?)))
+                })
+                .collect();
             let mut skipped_sources: Vec<(FileId, Arc<str>)> = Vec::new();
             for skipped in &pf.skipped_text {
                 let file = skipped.site.file;
@@ -1047,6 +1083,7 @@ pub fn expand_source_with(
                 skipped_includes: pf.skipped_includes.clone(),
                 skipped_text: pf.skipped_text.clone(),
                 skipped_sources,
+                file_texts,
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
@@ -1584,6 +1621,7 @@ pub fn collect_from_expanded_with_summaries(
             Err(_) => {}
         }
     }
+    out.label_files = label_files(&out, expanded);
 
     (Some(sem), out)
 }
@@ -1635,14 +1673,7 @@ impl IncludeRows {
             return;
         }
         d.span = FileSpan { file, span };
-        d.labels
-            .retain_mut(|label| match expanded.resolve_span(label.span.span) {
-                Some(fs) => {
-                    label.span = fs;
-                    true
-                }
-                None => false,
-            });
+        d.labels.retain_mut(|label| resolve_label(label, expanded));
         self.seen.insert(key, out.include_origin.len());
         out.include_origin.push(IncludeOriginDiagnostic {
             diagnostic: d,
@@ -1738,18 +1769,55 @@ fn include_finding(d: &Diagnostic, expanded: &ExpandedFile) -> Option<IncludeFin
     };
     diagnostic
         .labels
-        .retain_mut(|label| match expanded.resolve_span(label.span.span) {
-            Some(fs) => {
-                label.span = fs;
-                true
-            }
-            None => false,
-        });
+        .retain_mut(|label| resolve_label(label, expanded));
     Some(IncludeFinding {
         diagnostic,
         path: path.to_path_buf(),
         span,
     })
+}
+
+/// Place `label` in the bytes of the file that wrote it: the root, or the
+/// physical include file. `false` for text that no file on disk wrote.
+fn resolve_label(label: &mut oxabl_common::Label, expanded: &ExpandedFile) -> bool {
+    let at = label.span.span;
+    if let Some(fs) = expanded.resolve_span(at) {
+        label.span = fs;
+        return true;
+    }
+    match expanded.resolve_include_origin(at) {
+        Some((_, file, span)) if expanded.file_path(file).is_some() => {
+            label.span = FileSpan { file, span };
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The [`CollectedDiagnostics::label_files`] of `out`.
+fn label_files(out: &CollectedDiagnostics, expanded: &ExpandedFile) -> Vec<LabelFile> {
+    let mut files: Vec<LabelFile> = Vec::new();
+    let labels = out
+        .diagnostics
+        .iter()
+        .map(|c| &c.diagnostic)
+        .chain(out.include_origin.iter().map(|c| &c.diagnostic))
+        .chain(out.include_findings.iter().map(|c| &c.diagnostic))
+        .flat_map(|d| &d.labels);
+    for label in labels {
+        let file = label.span.file;
+        if file == expanded.root || files.iter().any(|known| known.file == file) {
+            continue;
+        }
+        if let Some(path) = expanded.file_path(file) {
+            files.push(LabelFile {
+                file,
+                path: path.to_path_buf(),
+                text: expanded.file_text(file).cloned(),
+            });
+        }
+    }
+    files
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,
@@ -1762,14 +1830,7 @@ fn resolve_diagnostic(
         return Err(d);
     };
     d.span = span;
-    d.labels
-        .retain_mut(|label| match expanded.resolve_span(label.span.span) {
-            Some(fs) => {
-                label.span = fs;
-                true
-            }
-            None => false,
-        });
+    d.labels.retain_mut(|label| resolve_label(label, expanded));
     Ok(d)
 }
 
@@ -1911,6 +1972,7 @@ mod tests {
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
+            file_texts: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),

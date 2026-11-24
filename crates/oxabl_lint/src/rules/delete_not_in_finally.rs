@@ -67,7 +67,7 @@ use oxabl_handles::FileHandles;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD002;
-use super::handle_support::{describe, not_judged, quote, warning};
+use super::handle_support::{describe, not_judged, quote, warning, with_create_label};
 use super::syntactic::file_span;
 
 /// Kebab-case rule name.
@@ -133,7 +133,7 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
                     "an error here skips the delete".to_string(),
                 );
             }
-            diags.push(d);
+            diags.push(with_create_label(d, ctx, o));
         }
     }
     diags
