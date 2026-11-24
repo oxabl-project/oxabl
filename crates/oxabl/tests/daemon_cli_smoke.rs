@@ -352,7 +352,7 @@ fn a_daemon_exit_mid_session_is_reported_by_the_editor_shim() {
 /// knows.
 #[test]
 fn an_editor_replaces_a_daemon_of_an_older_version() {
-    editor_replaces_an_older_daemon(|registration| {
+    editor_replaces_an_older_daemon("0.0.1", |registration| {
         registration["daemon_version"] = serde_json::json!("0.0.1");
     });
 }
@@ -361,7 +361,7 @@ fn an_editor_replaces_a_daemon_of_an_older_version() {
 /// registration has no `daemon_version`, and it speaks contract 4.
 #[test]
 fn an_editor_replaces_a_daemon_older_than_the_build_field() {
-    editor_replaces_an_older_daemon(|registration| {
+    editor_replaces_an_older_daemon("unknown, older version", |registration| {
         let fields = registration.as_object_mut().expect("a registration object");
         fields.remove("daemon_version");
         fields.insert("contract_version".to_string(), serde_json::json!(4));
@@ -372,7 +372,10 @@ fn an_editor_replaces_a_daemon_older_than_the_build_field() {
 /// then start `oxabl lsp` on the root as an editor does after an upgrade. The old
 /// daemon stays unreaped until the editor is answered, as under a parent that does
 /// not wait for it.
-fn editor_replaces_an_older_daemon(as_older_build: impl FnOnce(&mut serde_json::Value)) {
+fn editor_replaces_an_older_daemon(
+    old_version: &str,
+    as_older_build: impl FnOnce(&mut serde_json::Value),
+) {
     let root = tempfile::tempdir().expect("a workspace root");
     let cache = tempfile::tempdir().expect("a cache root");
     let registration_path = registration_path_in(root.path(), cache.path());
@@ -382,8 +385,22 @@ fn editor_replaces_an_older_daemon(as_older_build: impl FnOnce(&mut serde_json::
     rewrite_registration(&registration_path, as_older_build);
 
     let editor = Editor::start(root.path(), cache.path());
-    let response = editor.initialize_response(&registration_path, old_pid);
+    let (notifications, response) =
+        editor.initialize_with_notifications(&registration_path, old_pid);
     assert_eq!(response["id"], 10);
+    assert!(
+        notifications.iter().any(|notification| {
+            notification["method"] == "window/logMessage"
+                && notification["params"]["message"]
+                    .as_str()
+                    .is_some_and(|message| {
+                        message.contains(old_version)
+                            && message.contains(env!("CARGO_PKG_VERSION"))
+                            && message.contains("Stopped it")
+                    })
+        }),
+        "the editor's log names the replaced daemon and both versions: {notifications:?}"
+    );
 
     let replacement = wait_for_registration(&registration_path);
     let _replacement = (replacement.pid != old_pid).then(|| PidGuard(replacement.pid));
@@ -422,6 +439,21 @@ fn an_editor_leaves_a_newer_daemon_alone() {
     let registered = wait_for_registration(&registration_path);
     let _started = (registered.pid != newer_pid).then(|| PidGuard(registered.pid));
     let status = exited.expect("the editor shim must give up");
+    let (notifications, response) = editor.frames(Duration::from_secs(5));
+    assert!(response.is_none(), "the shim does not answer: {response:?}");
+    let shown = notifications
+        .iter()
+        .find(|notification| notification["method"] == "window/showMessage")
+        .unwrap_or_else(|| panic!("the editor is shown the mismatch: {notifications:?}"));
+    assert_eq!(shown["params"]["type"], 2, "a warning: {shown}");
+    let shown = shown["params"]["message"].as_str().expect("a message");
+    for part in [
+        "999.0.0",
+        env!("CARGO_PKG_VERSION"),
+        &format!("kill {newer_pid}"),
+    ] {
+        assert!(shown.contains(part), "the warning names `{part}`: {shown}");
+    }
     let stderr = editor.stderr(Duration::from_secs(5));
     assert!(!status.success());
     assert!(
@@ -1043,9 +1075,21 @@ impl Editor {
             }
         });
         write_frame(&mut input, &initialize.to_string());
+        // Every frame up to and including the first response: the notifications the
+        // shim sends before it answers come first.
         let (answered, answer) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = answered.send(read_frame(&mut output));
+            let mut reader = BufReader::new(&mut output);
+            loop {
+                let Some(frame) = try_read_frame(&mut reader) else {
+                    return;
+                };
+                let response = serde_json::from_str::<serde_json::Value>(&frame)
+                    .is_ok_and(|frame| frame.get("id").is_some());
+                if answered.send(frame).is_err() || response {
+                    return;
+                }
+            }
         });
         Editor {
             child: ChildGuard(child),
@@ -1055,6 +1099,20 @@ impl Editor {
         }
     }
 
+    /// The notifications the shim sent before the frame that ends the wait, and that
+    /// frame: the response, or `None` when the shim closed its output first.
+    fn frames(&self, limit: Duration) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
+        let mut notifications = Vec::new();
+        while let Ok(frame) = self.answer.recv_timeout(limit) {
+            let frame: serde_json::Value = serde_json::from_str(&frame).expect("a JSON frame");
+            if frame.get("id").is_some() {
+                return (notifications, Some(frame));
+            }
+            notifications.push(frame);
+        }
+        (notifications, None)
+    }
+
     /// The answer to `initialize`, or a failure with the shim's stderr. On failure the
     /// daemon the shim registered is stopped first: it inherits the shim's stderr.
     fn initialize_response(
@@ -1062,9 +1120,19 @@ impl Editor {
         registration_path: &std::path::Path,
         old_pid: u32,
     ) -> serde_json::Value {
-        match self.answer.recv_timeout(Duration::from_secs(15)) {
-            Ok(response) => serde_json::from_str(&response).expect("LSP initialize response"),
-            Err(_) => {
+        self.initialize_with_notifications(registration_path, old_pid)
+            .1
+    }
+
+    /// [`Editor::initialize_response`] with the notifications sent before it.
+    fn initialize_with_notifications(
+        self,
+        registration_path: &std::path::Path,
+        old_pid: u32,
+    ) -> (Vec<serde_json::Value>, serde_json::Value) {
+        match self.frames(Duration::from_secs(15)) {
+            (notifications, Some(response)) => (notifications, response),
+            (_, None) => {
                 let started = std::fs::read(registration_path)
                     .ok()
                     .and_then(|body| serde_json::from_slice::<Registration>(&body).ok())
@@ -1156,6 +1224,26 @@ fn send_handshake(stream: &mut UnixStream, id: u32, root: &std::path::Path) {
 fn write_frame(stream: &mut impl Write, body: &str) {
     write!(stream, "Content-Length: {}\r\n\r\n{body}", body.len()).expect("write request");
     stream.flush().expect("flush request");
+}
+
+/// One frame, or `None` when the stream ends before a frame starts.
+fn try_read_frame(reader: &mut impl BufRead) -> Option<String> {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Content-Length:") {
+            content_length = Some(value.trim().parse::<usize>().ok()?);
+        }
+    }
+    let mut body = vec![0; content_length?];
+    reader.read_exact(&mut body).ok()?;
+    String::from_utf8(body).ok()
 }
 
 fn read_frame(stream: &mut impl Read) -> String {

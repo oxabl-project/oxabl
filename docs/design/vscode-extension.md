@@ -357,10 +357,11 @@ names the version of the binary, so it stops that older daemon (`SIGTERM`,
 `SIGKILL` after one second) and starts one of its own build, which reads
 `oxabl.toml` with the new rules. The other clients of the stopped daemon (a
 second window, the desktop app) lose their connection and start again. A newer
-daemon is not stopped: `oxabl lsp` exits and names both versions. A
-daemon also exits 10 minutes after its last client (`OXABL_DAEMON_IDLE_TIMEOUT`,
-see `docs/overview.md`), so a closed window does not keep it. The extension
-also checks once per binary
+daemon is not stopped: `oxabl lsp` shows a warning that names both versions
+and the `kill` command that stops it, then exits. A replaced daemon is written
+to the output channel (`window/logMessage`). A daemon also exits 10 minutes
+after its last client (`OXABL_DAEMON_IDLE_TIMEOUT`, see `docs/overview.md`), so
+a closed window does not keep it. The extension also checks once per binary
 version that `oxabl build --help` mentions `--yield`. A binary without it is
 updated when it is managed, and otherwise one message asks for a newer oxabl.
 
