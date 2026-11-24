@@ -19,10 +19,29 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+      # This job alone saves the registry, after fetching every dependency.
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
+          save-registry: true
       - run: cargo check --workspace
+      # A third-party action can hang or change under us: every workflow and
+      # local action uses only first-party actions, local ones, or the few
+      # named here. The first test keeps the check from reading nothing.
+      - name: Workflows use only allowed actions
+        run: |
+          uses=$(grep -rhoE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]#]+' .github/workflows .github/actions \
+            | sed -E 's/.*uses:[[:space:]]*//' | sort -u)
+          if ! grep -qx './.github/actions/setup-rust' <<<"$uses"; then
+            echo "no step uses ./.github/actions/setup-rust, so the check read nothing" >&2
+            exit 1
+          fi
+          bad=$(grep -vE '^(\./\.github/actions/|actions/[a-z-]+(/[a-z-]+)?@|CodSpeedHQ/action@|pnpm/action-setup@|googleapis/release-please-action@)' <<<"$uses" || true)
+          if [ -n "$bad" ]; then
+            echo "actions not on the allowlist in this job:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
       # The fake AVM stands in for Progress, so it must not share a codec with oxabl.
       - name: The fake AVM depends on no oxabl crate
         run: |
@@ -96,7 +115,7 @@ jobs:
       # The tests start the real cache server and drive its admin tool and member
       # command line, built at the revision that Cargo.toml pins. The script builds
       # them only when the cached directory does not hold that revision.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/oxabl-cache-bin
           key: oxabl-cache-bin-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'scripts/remote-cache-binaries.sh') }}
@@ -120,6 +139,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
+          components: clippy
       # The tests copy the built binary and update the copy from a fake GitHub
       # on a loopback port.
       - run: cargo test -p oxabl --features self-update --locked --test self_update
@@ -148,7 +168,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/oxabl-musl
           key: oxabl-musl-${{ hashFiles('Cargo.lock', 'scripts/build-musl.sh') }}
@@ -304,7 +324,7 @@ jobs:
           version: 11
       - run: pnpm install --frozen-lockfile
       # The suite downloads the VS Code version pinned in test/e2e/lib/vscode.mjs.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: clients/vscode/.vscode-test
           key: vscode-test-${{ runner.os }}-${{ hashFiles('clients/vscode/test/e2e/lib/vscode.mjs') }}

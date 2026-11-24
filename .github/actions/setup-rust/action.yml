@@ -17,13 +17,22 @@ inputs:
   bins:
     description: >-
       Comma-separated cargo binaries, each pinned as name@version
-      (cargo-fuzz@0.13.2). They are built once with `cargo install --locked`
-      and then restored from the cache.
+      (cargo-fuzz@0.13.2). The crate must install a binary of its own name.
+      They are built once with `cargo install --locked` and then restored
+      from the cache.
     default: ""
+  save-registry:
+    description: >-
+      Fetch every dependency of the workspace and the fuzz crate, and save the
+      registry when no entry exists for the lock files. Set it in one job
+      only, so the entry always holds the whole set.
+    default: "false"
 
 runs:
   using: composite
   steps:
+    # Composite steps take no timeout-minutes, so each network call has its
+    # own limit, below every job's timeout.
     - name: Install the toolchain
       shell: bash
       env:
@@ -34,10 +43,10 @@ runs:
         set -euo pipefail
         args=(--profile minimal --no-self-update)
         IFS=', ' read -ra list <<<"$COMPONENTS"
-        for c in "${list[@]}"; do [ -n "$c" ] && args+=(--component "$c"); done
+        for c in "${list[@]}"; do [ -n "$c" ] || continue; args+=(--component "$c"); done
         IFS=', ' read -ra list <<<"$TARGETS"
-        for t in "${list[@]}"; do [ -n "$t" ] && args+=(--target "$t"); done
-        rustup toolchain install "$TOOLCHAIN" "${args[@]}"
+        for t in "${list[@]}"; do [ -n "$t" ] || continue; args+=(--target "$t"); done
+        timeout 300 rustup toolchain install "$TOOLCHAIN" "${args[@]}"
         rustup default "$TOOLCHAIN"
         # CI builds once, so incremental data only costs time and disk.
         echo "CARGO_INCREMENTAL=0" >>"$GITHUB_ENV"
@@ -47,14 +56,37 @@ runs:
     # Only the registry is cached. A target directory is several GB per job,
     # so a set of them passes the repository's cache limit and evicts itself.
     - name: Restore the cargo registry
-      uses: actions/cache@v4
+      id: registry
+      uses: actions/cache/restore@v6
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
         path: |
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-        key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
         restore-keys: cargo-registry-${{ runner.os }}-
+
+    - name: Fetch every dependency
+      if: inputs.save-registry == 'true' && steps.registry.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        timeout 600 cargo fetch --locked
+        if [ -f fuzz/Cargo.lock ]; then
+          timeout 600 cargo fetch --locked --manifest-path fuzz/Cargo.toml
+        fi
+
+    - name: Save the cargo registry
+      if: inputs.save-registry == 'true' && steps.registry.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ steps.registry.outputs.cache-primary-key }}
 
     - name: Name the cargo binaries
       id: bins
@@ -65,17 +97,19 @@ runs:
       run: |
         set -euo pipefail
         IFS=', ' read -ra list <<<"$BINS"
+        names=()
         paths=()
         for b in "${list[@]}"; do
           [ -n "$b" ] || continue
           case "$b" in
-            *@*) ;;
-            *) echo "::error::bin '$b' has no version; write it as name@version" >&2; exit 1 ;;
+            ?*@?*) ;;
+            *) echo "::error::bin '$b' is not written as name@version" >&2; exit 1 ;;
           esac
+          names+=("$b")
           paths+=("$HOME/.cargo/bin/${b%@*}")
         done
         {
-          echo "key=cargo-bins-${{ runner.os }}-${ImageOS:-unknown}-$(printf '%s\n' "${list[@]}" | sort | tr '\n' '+')"
+          echo "key=cargo-bins-${{ runner.os }}-${{ runner.arch }}-${ImageOS:-unknown}-$(printf '%s\n' "${names[@]}" | sort | tr '\n' '+')"
           echo "paths<<EOF"
           printf '%s\n' "${paths[@]}"
           echo "EOF"
@@ -84,7 +118,9 @@ runs:
     - name: Restore the cargo binaries
       id: bins-cache
       if: inputs.bins != ''
-      uses: actions/cache@v4
+      uses: actions/cache@v6
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
         path: ${{ steps.bins.outputs.paths }}
         key: ${{ steps.bins.outputs.key }}
@@ -98,5 +134,6 @@ runs:
         set -euo pipefail
         IFS=', ' read -ra list <<<"$BINS"
         for b in "${list[@]}"; do
-          [ -n "$b" ] && cargo install --locked "$b"
+          [ -n "$b" ] || continue
+          timeout 1200 cargo install --locked "$b"
         done

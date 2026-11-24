@@ -38,7 +38,7 @@ jobs:
           toolchain: nightly
           bins: cargo-fuzz@0.13.2
       # The corpus a run grew is the start of the next one.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
