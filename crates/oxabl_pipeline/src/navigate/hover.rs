@@ -18,6 +18,7 @@ use oxabl_ast::{
     StatementKind, TempTableField, TypeSource,
 };
 use oxabl_common::VirtualSpan;
+use oxabl_flow::UnitKind;
 use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_semantic::{
     IndexedFileId, Resolution, ResolvedType, SiteTarget, SymbolId, SymbolKind, UnresolvedReason,
@@ -28,6 +29,7 @@ use oxabl_workspace::is_include_fragment;
 mod like;
 
 use super::{Navigation, Parsed, Target, search};
+use crate::effects::Routine;
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
 use crate::outline::{access_name, children, data_type_name, direction_name};
 use crate::schema_hover::{code, field_markdown, inline, plain, table_markdown};
@@ -40,6 +42,25 @@ pub struct Hover {
     /// The bytes of the hovered word in the hovered file, when the file writes
     /// it there (not when an include argument or a macro supplied it).
     pub span: Option<Span>,
+    /// The procedure, function, method or program the name means, whose
+    /// database effects a client can add
+    /// ([`WorkspaceEffects::routine_markdown`](crate::WorkspaceEffects::routine_markdown)).
+    pub routine: Option<Routine>,
+}
+
+impl Hover {
+    /// Add the database effects of the routine the hover names, from
+    /// `effects`. Nothing is added when `effects` does not hold the routine.
+    pub fn add_effects(&mut self, effects: &crate::WorkspaceEffects) {
+        if let Some(text) = self
+            .routine
+            .as_ref()
+            .and_then(|routine| effects.routine_markdown(routine))
+        {
+            self.contents.push_str("\n\n---\n\n");
+            self.contents.push_str(&text);
+        }
+    }
 }
 
 /// Words that may stand between `DEFINE` and what it defines, and between a
@@ -92,9 +113,10 @@ impl Navigation<'_, '_> {
                 continue;
             };
             if let Some(answer) = self.hover_at(virt) {
-                return answer.map(|contents| Hover {
+                return answer.map(|(contents, routine)| Hover {
                     contents,
                     span: self.word_span(&file, virt),
+                    routine,
                 });
             }
         }
@@ -103,18 +125,98 @@ impl Navigation<'_, '_> {
 
     /// `None` when nothing at expanded offset `virt` has an answer,
     /// `Some(None)` when what is there has no hover.
-    fn hover_at(&self, virt: u32) -> Option<Option<String>> {
+    fn hover_at(&self, virt: u32) -> Option<Option<(String, Option<Routine>)>> {
         let answer = self.innermost(
             virt,
-            &|sym| self.symbol_hover(sym),
-            &|target, span| self.site_hover(target, span, virt),
+            &|sym| {
+                self.symbol_hover(sym)
+                    .map(|contents| (contents, self.symbol_routine(sym)))
+            },
+            &|target, span| {
+                self.site_hover(target, span, virt)
+                    .map(|hover| hover.map(|contents| (contents, self.site_routine(target, span))))
+            },
             &Option::is_some,
             || None,
         );
         if answer.is_some() {
             return answer;
         }
-        self.statement_hover(virt).map(Some)
+        self.statement_hover(virt)
+            .map(|contents| Some((contents, None)))
+    }
+
+    /// The routine a site names, as [`Self::site_hover`] reads the site.
+    fn site_routine(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Routine> {
+        let references = &self.semantic.references;
+        match target {
+            SiteTarget::Reference(node) => match references.get(*node)? {
+                Resolution::Resolved(sym) => self.symbol_routine(*sym),
+                Resolution::Unresolved { .. } => None,
+            },
+            SiteTarget::Run(node) => match references.get(*node)? {
+                Resolution::Resolved(sym) if self.semantic.symbols.program_file(*sym).is_some() => {
+                    self.symbol_routine(*sym)
+                }
+                _ if let Some(targets) = self.handle_call_targets(span) => {
+                    let [
+                        Target {
+                            path,
+                            span: Some(_),
+                        },
+                    ] = targets.as_slice()
+                    else {
+                        return None;
+                    };
+                    let name = self.text(span)?.trim().trim_matches(['"', '\'']);
+                    Some(Routine::Unit {
+                        file: path.clone(),
+                        kind: UnitKind::Procedure,
+                        name: name.to_string(),
+                    })
+                }
+                Resolution::Resolved(sym) => self.symbol_routine(*sym),
+                Resolution::Unresolved { .. } => None,
+            },
+            SiteTarget::Symbol(sym) => self.symbol_routine(*sym),
+            _ => None,
+        }
+    }
+
+    /// The routine `sym` is: a program, or a procedure, function or method
+    /// declared in the unit or in a class file.
+    fn symbol_routine(&self, sym: SymbolId) -> Option<Routine> {
+        let symbols = &self.semantic.symbols;
+        let symbol = symbols.get(sym);
+        if let Some(file) = symbols.program_file(sym) {
+            return Some(Routine::Program(self.path_of(file)?));
+        }
+        if !matches!(symbol.kind, SymbolKind::Procedure | SymbolKind::Function) {
+            return None;
+        }
+        if let Some(file) = symbols.member_file(sym) {
+            let name = symbol.name.as_ref().to_string();
+            return Some(Routine::Unit {
+                file: self.path_of(file)?,
+                kind: UnitKind::Method,
+                name,
+            });
+        }
+        if symbol.declaration == oxabl_ast::NodeId::DUMMY {
+            return None;
+        }
+        let found = find_declaration(&self.parsed().program.statements, symbol.name_span)?;
+        let (kind, name) = match &found.statement.kind {
+            StatementKind::Procedure { name, .. } => (UnitKind::Procedure, name),
+            StatementKind::Function { name, .. } => (UnitKind::Function, name),
+            StatementKind::Method { name, .. } => (UnitKind::Method, name),
+            _ => return None,
+        };
+        Some(Routine::Unit {
+            file: self.root_path()?,
+            kind,
+            name: name.name.clone(),
+        })
     }
 
     fn site_hover(

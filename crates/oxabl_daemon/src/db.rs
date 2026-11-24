@@ -1267,14 +1267,20 @@ fn analyse_root(
 }
 
 /// What a navigation request asks of one compilation unit.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum NavigationQuery {
     /// The declarations of the name at byte `offset` of `file`, which is the
     /// root or an include its expansion reads.
     Definition { file: PathBuf, offset: u32 },
     /// What the name or keyword at byte `offset` of `file` is, which is the
-    /// root or an include its expansion reads.
-    Hover { file: PathBuf, offset: u32 },
+    /// root or an include its expansion reads. A routine's hover adds its
+    /// database effects, from the memoized summaries of `buffer` when the root
+    /// is open, else from summaries built for this request.
+    Hover {
+        file: PathBuf,
+        offset: u32,
+        buffer: Option<Buffer>,
+    },
     /// The links written in the root itself.
     Links,
 }
@@ -1337,9 +1343,29 @@ pub fn compute_navigation(
                 let file = spelled_as_expanded(&expansion, root, file);
                 answer.definitions = navigation.definitions(&file, *offset);
             }
-            NavigationQuery::Hover { file, offset } => {
+            NavigationQuery::Hover {
+                file,
+                offset,
+                buffer,
+            } => {
                 let file = spelled_as_expanded(&expansion, root, file);
-                if let Some(hover) = navigation.hover(&file, *offset) {
+                if let Some(mut hover) = navigation.hover(&file, *offset) {
+                    if let Some(routine) = hover.routine.clone() {
+                        let mut effects = match buffer {
+                            Some(buffer) => effect_summaries(snapshot, *buffer, schema),
+                            None => Arc::new(handle.build_effect_summaries(&expansion, &[])),
+                        };
+                        // A method of another class: the summaries of its file.
+                        let file = routine.file();
+                        if effects.file(file).is_none()
+                            && let Ok(text) = fs.read(file)
+                        {
+                            let other = run.with_file(file);
+                            let expansion = other.expand(&text);
+                            effects = Arc::new(other.build_effect_summaries(&expansion, &[]));
+                        }
+                        hover.add_effects(&effects);
+                    }
                     let path = search::normalize_lexically(&file);
                     if hover.span.is_some()
                         && let Ok(text) = fs.read(&file)

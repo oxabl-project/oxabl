@@ -531,3 +531,168 @@ fn map_in_order<T: Sync, R: Send>(
     done.sort_unstable_by_key(|(i, _)| *i);
     done.into_iter().map(|(_, r)| r).collect()
 }
+
+/// A routine whose database effects a hover shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Routine {
+    /// An internal procedure, function or method of `file`.
+    Unit {
+        file: PathBuf,
+        kind: UnitKind,
+        name: String,
+    },
+    /// The main block of the program `file`.
+    Program(PathBuf),
+}
+
+impl Routine {
+    /// The file that declares the routine.
+    pub fn file(&self) -> &Path {
+        match self {
+            Routine::Unit { file, .. } | Routine::Program(file) => file,
+        }
+    }
+}
+
+/// The most table lines a hover lists; the rest are counted.
+const MAX_EFFECT_LINES: usize = 12;
+
+impl WorkspaceEffects {
+    /// The database effects of `routine` as Markdown: each table with its
+    /// operations and locks, direct effects apart from those through a call,
+    /// and why the summary may miss effects. `None` when the summaries do not
+    /// hold the routine, or hold more than one routine of its name.
+    pub fn routine_markdown(&self, routine: &Routine) -> Option<String> {
+        let (file, kind, name) = match routine {
+            Routine::Unit { file, kind, name } => (file, *kind, Some(name.as_str())),
+            Routine::Program(file) => (file, UnitKind::Main, None),
+        };
+        let effects = self.file(file)?;
+        let mut matching = effects.effects.units().iter().enumerate().filter(|(_, u)| {
+            u.kind == kind
+                && match name {
+                    Some(name) => u
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name)),
+                    None => true,
+                }
+        });
+        let (at, _) = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+        let summary = &effects.summaries()[at];
+        Some(effects.summary_markdown(summary, file))
+    }
+}
+
+impl EffectFile {
+    fn summary_markdown(&self, summary: &Summary, file: &Path) -> String {
+        // One line per table and route: direct first, then each first callee.
+        let mut lines: BTreeMap<(String, Option<String>), Vec<String>> = BTreeMap::new();
+        for effect in &summary.effects {
+            let via = effect.via.map(|node| self.via_label(node, file));
+            let ops = lines.entry((effect.table.clone(), via)).or_default();
+            let op = match effect.op {
+                oxabl_effects::Op::Read => format!("read {}", lock_name(effect.lock)),
+                op => op.as_str().to_string(),
+            };
+            if !ops.contains(&op) {
+                ops.push(op);
+            }
+        }
+        let mut out = String::from("**Database effects**");
+        if lines.is_empty() {
+            out.push_str(if summary.partial.is_empty() {
+                "\n\nNo database effects."
+            } else {
+                "\n\nNo known database effects."
+            });
+        }
+        let total = lines.len();
+        // Direct lines sort before routed ones of the same table (`None` first).
+        for ((table, via), ops) in lines.into_iter().take(MAX_EFFECT_LINES) {
+            let table = match table.strip_prefix('?') {
+                Some(name) => format!("`{name}` (not in the schema)"),
+                None => format!("`{table}`"),
+            };
+            out.push_str(&format!("\n- {table}"));
+            if let Some(via) = via {
+                out.push_str(&format!(" through `{via}`"));
+            }
+            out.push_str(&format!(": {}", ops.join(", ")));
+        }
+        if total > MAX_EFFECT_LINES {
+            out.push_str(&format!("\n- and {} more", total - MAX_EFFECT_LINES));
+        }
+        if !summary.partial.is_empty() {
+            let reasons: Vec<&str> = summary.partial.iter().map(|p| partial_text(*p)).collect();
+            out.push_str(&format!(
+                "\n\n**Incomplete:** effects may be missing: {}.",
+                reasons.join("; ")
+            ));
+        }
+        out
+    }
+
+    /// The routine a summary node names: its name in `file`, the program's
+    /// file name for a main block, else `name in file`.
+    fn via_label(&self, node: u32, file: &Path) -> String {
+        let Some((path, unit)) = self.callee_name(node).and_then(|n| n.rsplit_once("::")) else {
+            return "a call".to_string();
+        };
+        let path = Path::new(path);
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if unit == UnitKind::Main.as_str() {
+            return file_name;
+        }
+        if path == key(file) {
+            unit.to_string()
+        } else {
+            format!("{unit} in {file_name}")
+        }
+    }
+}
+
+fn lock_name(lock: summary::SummaryLock) -> &'static str {
+    use oxabl_scope::LockMode;
+    match lock {
+        summary::SummaryLock::Mode(LockMode::NoLock) => "NO-LOCK",
+        summary::SummaryLock::Mode(LockMode::ShareLock) => "SHARE-LOCK",
+        summary::SummaryLock::Mode(LockMode::ExclusiveLock) => "EXCLUSIVE-LOCK",
+        summary::SummaryLock::Default => "SHARE-LOCK (default)",
+        summary::SummaryLock::None | summary::SummaryLock::Unknown => "(lock unknown)",
+    }
+}
+
+fn partial_text(partial: summary::Partial) -> &'static str {
+    use oxabl_effects::EffectUnknown;
+    match partial {
+        summary::Partial::Unit(reason) => match reason {
+            EffectUnknown::Dynamic => "a dynamic query or buffer",
+            EffectUnknown::SkippedStatement => "a statement oxabl does not read names a table",
+            EffectUnknown::UnknownTable => "a write to a table the schema does not have",
+            EffectUnknown::NoSchema => "no schema is loaded",
+            EffectUnknown::UnexpandedInclude => "an include was not expanded",
+            EffectUnknown::RecoveredParse => "the parse recovered from an error",
+            EffectUnknown::TooComplex => "the analysis reached its work limit",
+        },
+        summary::Partial::Call(reason) => match reason {
+            UnknownCall::Dynamic => "a dynamic call (`RUN VALUE`, `DYNAMIC-FUNCTION`, ...)",
+            UnknownCall::Handle => "a call through a handle oxabl cannot follow",
+            UnknownCall::Super => "a call to a super procedure",
+            UnknownCall::Event => "a `PUBLISH`",
+            UnknownCall::Method => "a method call on an object or handle",
+            UnknownCall::Unexpanded => "a call target the preprocessor did not expand",
+            UnknownCall::NotFound => "a program no file on the include path supplies",
+            UnknownCall::Unusable => "a program oxabl cannot read",
+            UnknownCall::Ambiguous => "a program that several files supply",
+            UnknownCall::NoRoutine => "a procedure its program does not declare",
+        },
+        summary::Partial::Bound => "the call graph or the summary reached a size limit",
+    }
+}
