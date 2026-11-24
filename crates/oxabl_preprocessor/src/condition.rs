@@ -139,6 +139,24 @@ pub(crate) fn expand_refs_with<'a>(
     if find_var_ref(input).is_none() {
         return Cow::Borrowed(input);
     }
+    if !has_nested_ref(input) {
+        let mut result = String::with_capacity(input.len());
+        let mut rest = input;
+        while let Some(open) = find_var_ref(rest) {
+            let Some(close) = rest[open..].find('}') else {
+                break;
+            };
+            result.push_str(&rest[..open]);
+            let name = &rest[open + 2..open + close];
+            visit(name);
+            if let Some(val) = vars.get(name) {
+                result.push_str(val);
+            }
+            rest = &rest[open + close + 1..];
+        }
+        result.push_str(rest);
+        return Cow::Owned(result);
+    }
     let mut text = input.to_string();
     let mut from = 0;
     while let Some(open) = find_var_ref(&text[from..]).map(|at| from + at) {
@@ -151,15 +169,54 @@ pub(crate) fn expand_refs_with<'a>(
             .map_or(open, |at| open + 2 + at);
         let name = &text[inner + 2..close];
         visit(name);
-        let value = vars.get(name).map(|v| v.to_string()).unwrap_or_default();
-        text.replace_range(inner..=close, &value);
-        from = if inner == open {
-            open + value.len()
-        } else {
-            open
-        };
+        let value = vars.get(name).cloned();
+        let value = value.as_deref().unwrap_or("");
+        let len = value.len();
+        text.replace_range(inner..=close, value);
+        from = if inner == open { open + len } else { open };
     }
     Cow::Owned(text)
+}
+
+/// Call `visit` with each name that [`expand_refs_with`] looks up in `input`,
+/// with no allocation unless a reference holds another.
+pub(crate) fn visit_ref_names(input: &str, vars: &PreprocVarTable, mut visit: impl FnMut(&str)) {
+    // Names are only visited once the whole text is known to hold no nested
+    // reference, which would change what they are.
+    let mut names: [&str; 8] = [""; 8];
+    let mut count = 0;
+    let mut rest = input;
+    while let Some(open) = find_var_ref(rest) {
+        let Some(close) = rest[open..].find('}') else {
+            break;
+        };
+        let name = &rest[open + 2..open + close];
+        if name.contains("{&") || count == names.len() {
+            expand_refs_with(input, vars, visit);
+            return;
+        }
+        names[count] = name;
+        count += 1;
+        rest = &rest[open + close + 1..];
+    }
+    for name in &names[..count] {
+        visit(name);
+    }
+}
+
+/// Whether a `{&name}` reference in `input` holds another in its name.
+fn has_nested_ref(input: &str) -> bool {
+    let mut rest = input;
+    while let Some(open) = find_var_ref(rest) {
+        let Some(close) = rest[open..].find('}') else {
+            return false;
+        };
+        if rest[open + 2..open + close].contains("{&") {
+            return true;
+        }
+        rest = &rest[open + close + 1..];
+    }
+    false
 }
 
 /// The offset of the first `{&` in `text`.

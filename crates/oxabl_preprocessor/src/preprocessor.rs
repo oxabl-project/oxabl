@@ -6,9 +6,10 @@ use std::sync::{Arc, LazyLock};
 use oxabl_ast::Span;
 use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
+use rustc_hash::FxHashSet;
 
 use crate::PreprocVarTable;
-use crate::condition::{Environment, Gap, evaluate, expand_refs_with, find_var_ref, skip_comment};
+use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment, visit_ref_names};
 use crate::span_tree::{
     BranchDirective, BranchState, ElidedKind, ElidedReference, IfBranch, PreprocessedFile,
     ResolvedInclude, SkippedBranch, SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind,
@@ -1114,7 +1115,7 @@ impl ProcessContext<'_> {
             return false;
         }
         let mut unknown = false;
-        expand_refs_with(text, &self.vars, |name| {
+        visit_ref_names(text, &self.vars, |name| {
             unknown |= !self.knowledge.is_known(name.trim_ascii_end());
         });
         unknown
@@ -2103,12 +2104,12 @@ enum DefineKind {
 struct Knowledge {
     /// Names the run set itself in a decided region. Kept only with
     /// [`Preprocessor::with_includer_unknown`].
-    set: HashSet<String>,
+    set: FxHashSet<String>,
     /// Names whose value the run does not know.
-    uncertain: HashSet<String>,
+    uncertain: FxHashSet<String>,
     /// Names that were ever in `uncertain`: a definition of them that an
     /// undefine can reveal again may not be known.
-    ever_uncertain: HashSet<String>,
+    ever_uncertain: FxHashSet<String>,
     /// Text the run did not read may have defined any name.
     all_uncertain: bool,
     /// See [`Preprocessor::with_includer_unknown`].
@@ -2162,21 +2163,9 @@ impl Knowledge {
         if !self.includer_unknown && self.uncertain.is_empty() {
             return true;
         }
-        // Folded on the stack: this runs for each name a condition reads.
-        let mut buf = [0u8; 64];
-        let folded;
-        let name = match buf.get_mut(..name.len()) {
-            Some(slot) => {
-                slot.copy_from_slice(name.as_bytes());
-                slot.make_ascii_lowercase();
-                std::str::from_utf8(slot).unwrap_or(name)
-            }
-            None => {
-                folded = name.to_ascii_lowercase();
-                &folded
-            }
-        };
-        !self.uncertain.contains(name) && (!self.includer_unknown || self.set.contains(name))
+        with_folded(name, |name| {
+            !self.uncertain.contains(name) && (!self.includer_unknown || self.set.contains(name))
+        })
     }
 
     /// `name` was defined, as a scoped name or an argument when `scoped`, to
@@ -2184,10 +2173,11 @@ impl Knowledge {
     fn learn(&mut self, name: &str, known: bool, scoped: bool) {
         if known
             && !self.includer_unknown
-            && self.uncertain.is_empty()
             && self.frames.iter().all(Vec::is_empty)
+            && (self.uncertain.is_empty()
+                || !with_folded(name, |name| self.uncertain.contains(name)))
         {
-            // Nothing is uncertain and nothing would change.
+            // The name is known already and nothing needs restoring.
             return;
         }
         let name = name.to_ascii_lowercase();
@@ -2270,6 +2260,23 @@ impl Knowledge {
                 self.apply(&saved.name, saved.before);
             }
         }
+    }
+}
+
+/// Run `f` on the ASCII-lowercase form of `name`, folded on the stack when
+/// it is short: this runs for each name a condition reads or a define sets.
+fn with_folded<T>(name: &str, f: impl FnOnce(&str) -> T) -> T {
+    let mut buf = [0u8; 64];
+    match buf.get_mut(..name.len()) {
+        Some(slot) => {
+            slot.copy_from_slice(name.as_bytes());
+            slot.make_ascii_lowercase();
+            match std::str::from_utf8(slot) {
+                Ok(folded) => f(folded),
+                Err(_) => f(&name.to_ascii_lowercase()),
+            }
+        }
+        None => f(&name.to_ascii_lowercase()),
     }
 }
 
