@@ -7,6 +7,10 @@
 //! - `ASSIGN target = value ...` (`StatementKind::Assign`)
 //! - `DEFINE VARIABLE ... INITIAL expr` (initial value vs declared type)
 //!
+//! A finding sits on the assignment target (`iQty[1]`) or on the `INITIAL`
+//! value. An expression with no span gives its statement's span, never an
+//! empty one.
+//!
 //! Skips (captured as tests below):
 //! - Either side `Unknown` or `Error` (suppresses cascades; `?` is ABL's
 //!   universal bottom).
@@ -65,11 +69,11 @@ impl<'a> Visitor<'a> {
                 let target_ty = self.sem.types.get(stmt.id).cloned();
                 let value_ty = self.sem.types.get(init.id).cloned();
                 if let (Some(to), Some(from)) = (target_ty, value_ty) {
-                    self.check_pair(&from, &to, init.id, &init_span(init));
+                    self.check_pair(&from, &to, init.id, &anchor(init, stmt.span));
                 }
             }
             StatementKind::Assignment { target, value } if !self.holds_elided(stmt.span) => {
-                self.check_assignment(target, value);
+                self.check_assignment(target, value, stmt.span);
             }
             StatementKind::Assign { assignments } => {
                 for AssignPair { target, value } in assignments {
@@ -78,7 +82,7 @@ impl<'a> Visitor<'a> {
                         end: value.span.end,
                     };
                     if !self.holds_elided(pair) {
-                        self.check_assignment(target, value);
+                        self.check_assignment(target, value, stmt.span);
                     }
                 }
             }
@@ -160,13 +164,18 @@ impl<'a> Visitor<'a> {
         self.ctx.elided.get(from).is_some_and(|&o| o < span.end)
     }
 
-    fn check_assignment(&mut self, target: &Expression, value: &Expression) {
+    fn check_assignment(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+        statement: oxabl_ast::Span,
+    ) {
         // Target type: look up the resolved symbol's declared type. For a
         // bare identifier target, that's the symbol's data_type.
         let target_ty = self.target_type(target);
         let value_ty = self.sem.types.get(value.id).cloned();
         if let (Some(to), Some(from)) = (target_ty, value_ty) {
-            self.check_pair(&from, &to, value.id, &expr_span_or_default(target));
+            self.check_pair(&from, &to, value.id, &anchor(target, statement));
         }
     }
 
@@ -272,25 +281,21 @@ impl<'a> Visitor<'a> {
     }
 }
 
-fn init_span(expr: &Expression) -> FileSpan {
+/// Where a finding about `expr` goes: the name of an identifier or field, else
+/// the expression's own span, else the statement's. Never an empty span.
+fn anchor(expr: &Expression, statement: oxabl_ast::Span) -> FileSpan {
+    let span = match &expr.kind {
+        ExpressionKind::Identifier(id) => id.span,
+        ExpressionKind::FieldAccess { field, .. } => field.span,
+        _ => expr.span,
+    };
     FileSpan {
         file: oxabl_common::FileId::UNKNOWN,
-        span: expr_span_inner(expr).unwrap_or(oxabl_ast::Span { start: 0, end: 0 }),
-    }
-}
-
-fn expr_span_or_default(expr: &Expression) -> FileSpan {
-    FileSpan {
-        file: oxabl_common::FileId::UNKNOWN,
-        span: expr_span_inner(expr).unwrap_or(oxabl_ast::Span { start: 0, end: 0 }),
-    }
-}
-
-fn expr_span_inner(expr: &Expression) -> Option<oxabl_ast::Span> {
-    match &expr.kind {
-        ExpressionKind::Identifier(id) => Some(id.span),
-        ExpressionKind::FieldAccess { field, .. } => Some(field.span),
-        _ => None,
+        span: if span.start < span.end {
+            span
+        } else {
+            statement
+        },
     }
 }
 
@@ -430,6 +435,19 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
         assert_eq!(diags[0].code.0, LINT0004);
+    }
+
+    #[test]
+    fn a_value_without_a_span_is_reported_at_its_statement_never_at_0_0() {
+        let span = Span { start: 10, end: 30 };
+        let stmt = Statement::with_id(
+            next_nid(),
+            span,
+            var_with_init("b", DataType::Logical, int_lit(1)).kind,
+        );
+        let diags = analyze_and_lint(vec![stmt]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].span.span, span);
     }
 
     #[test]

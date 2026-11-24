@@ -125,3 +125,47 @@ fn format_leaves_a_date_constant_unchanged() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), source);
 }
+
+// ---------------------------------------------------------------------------
+// Where a finding goes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_mismatch_on_an_array_element_is_reported_at_the_element() {
+    let findings = lint0004(
+        "DEFINE VARIABLE iQty AS INTEGER NO-UNDO EXTENT 3.\niQty[1] = \"5\".\nMESSAGE iQty[1].\n",
+    );
+    assert_eq!(
+        findings,
+        [Finding {
+            message: "type mismatch: cannot assign `CHARACTER` to `INTEGER`".into(),
+            text: "iQty[1]".into(),
+            line: 2,
+        }]
+    );
+}
+
+#[test]
+fn a_mismatch_in_an_assign_statement_is_reported_at_its_element() {
+    let findings = lint0004(
+        "DEFINE VARIABLE iQty AS INTEGER NO-UNDO EXTENT 3.\n\
+         ASSIGN iQty[3] = 1\n  iQty[2] = \"x\".\nMESSAGE iQty[1].\n",
+    );
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].text, "iQty[2]");
+    assert_eq!(findings[0].line, 3);
+}
+
+#[test]
+fn a_mismatched_initial_value_is_reported_at_the_value() {
+    // The compiler: "Invalid date input. Unable to use initial value "5"".
+    let findings = lint0004("DEFINE VARIABLE d AS DATE NO-UNDO INITIAL 5.\nMESSAGE d.\n");
+    assert_eq!(
+        findings,
+        [Finding {
+            message: "type mismatch: cannot assign `INTEGER` to `DATE`".into(),
+            text: "5".into(),
+            line: 1,
+        }]
+    );
+}
