@@ -1,8 +1,6 @@
 # oxabl rule codes
 
-Read this when `oxabl check` reports a code you do not know, or when you set a
-rule's severity in `oxabl.toml`. Codes, names, groups and default severities
-come from the oxabl source (`oxabl_lint` rule registry).
+Read this when `oxabl check` reports a code you do not know, or when you set a rule's severity in `oxabl.toml`. Codes, names, groups and default severities come from the oxabl source (`oxabl_lint` rule registry).
 
 ## Configure a rule
 
@@ -22,11 +20,7 @@ files = ["legacy/**"]          # globs relative to the oxabl.toml directory
 disable = ["strict"]
 ```
 
-Severities: `off`, `hint`, `info`, `warn` (or `warning`), `error`. Any finding
-that is reported, `hint` included, makes `oxabl check` exit 1. An unknown rule
-or group name is a warning and that entry is ignored; a value that is not a
-severity is a config error (exit 2). The `default` group cannot be toggled, but
-each of its rules can be set to `off`.
+Severities: `off`, `hint`, `info`, `warn` (or `warning`), `error`. Any finding that is reported, `hint` included, makes `oxabl check` exit 1. An unknown rule or group name is a warning and that entry is ignored; a value that is not a severity is a config error (exit 2). The `default` group cannot be toggled, but each of its rules can be set to `off`.
 
 ## Core rules (group `default`, always on)
 
@@ -39,8 +33,7 @@ each of its rules can be set to `off`.
 | LINT0005 | `block-var-used-outside` | info | A block-defined variable read outside its block before it is set. |
 | LINT0006 | `assigned-but-never-read` | warning | A variable that is written but never read. |
 
-`LINT0001` from symbols an include declares usually means the include was not
-found: look for `PREPROC007` on the same file first.
+`LINT0001` from symbols an include declares usually means the include was not found: look for `PREPROC007` on the same file first.
 
 ## Strict rules (opt-in, preview, default warning)
 
@@ -71,8 +64,7 @@ found: look for `PREPROC007` on the same file first.
 | CL004 | `unresolved-call` | `strict.calls` | A RUN of a name that is neither a procedure of the file nor a program on the search paths. |
 | CL005 | `shared-state` | `strict.calls` | NEW SHARED and SHARED definitions. |
 
-Rules on database tables skip temp-tables, and skip every table when no schema
-is loaded (for example LK001, LK002, TX001, DB001, NL003, NL004).
+Rules on database tables skip temp-tables, and skip every table when no schema is loaded (for example LK001, LK002, TX001, DB001, NL003, NL004).
 
 ## Other codes
 
@@ -100,9 +92,6 @@ These are not lint rules: `[workspace.lint]` does not configure them.
 | SCHEMA0030 | A schema path outside the workspace root. |
 | SCHEMA0031 | Too many tables or fields (resource cap). |
 
-The coverage warnings `PREPROC002`, `PREPROC007`, `PREPROC008`, `PREPROC009`
-and `PREPROC010` do not change the exit code of `oxabl check`: a file whose
-only problem is a missing include exits 0. They print on stderr, also with
-`--json`, where they are in the `preproc` array, not in `diagnostics`.
+The coverage warnings `PREPROC002`, `PREPROC007`, `PREPROC008`, `PREPROC009` and `PREPROC010` do not change the exit code of `oxabl check`: a file whose only problem is a missing include exits 0. They print on stderr, also with `--json`, where they are in the `preproc` array, not in `diagnostics`.
 
 Docs: https://docs.oxabl.org/toolchain/commands/check/

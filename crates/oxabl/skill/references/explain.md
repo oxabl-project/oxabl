@@ -1,7 +1,6 @@
 # oxabl explain
 
-Read this when you need to know what a program does to the database before you
-change it, or to judge the impact of a table or index change.
+Read this when you need to know what a program does to the database before you change it, or to judge the impact of a table or index change.
 
 ```sh
 oxabl explain src/update.p
@@ -9,21 +8,15 @@ oxabl explain src/update.p:14 --json
 oxabl explain src/update.p -I src/inc --schema db/schema
 ```
 
-- One file per run. `FILE:LINE` (one-based, a line of the file as written)
-  selects the innermost unit at that line; without it every unit is shown.
-- Preprocessing is always on. Lines in the output are **expanded** lines
-  (after includes), so they can differ from the file's own line numbers.
-- `-I` adds include paths before `oxabl.toml`'s; `--schema` replaces its schema.
-  Without a schema, tables are unknown (`?:name`) and no index is chosen.
-- `RUN` targets found on the include paths are followed: their effects show as
-  `transitive` with `via`.
-- Exit codes: `0` report, `2` bad line or unreadable file, `3` preprocessing
-  failed, `4` internal panic, `6` JSON serialization failure.
+- One file per run. `FILE:LINE` (one-based, a line of the file as written) selects the innermost unit at that line; without it every unit is shown.
+- Preprocessing is always on. Lines in the output are **expanded** lines (after includes), so they can differ from the file's own line numbers.
+- `-I` adds include paths before `oxabl.toml`'s; `--schema` replaces its schema. Without a schema, tables are unknown (`?:name`) and no index is chosen.
+- `RUN` targets found on the include paths are followed: their effects show as `transitive` with `via`.
+- Exit codes: `0` report, `2` bad line or unreadable file, `3` preprocessing failed, `4` internal panic, `6` JSON serialization failure.
 
 ## Text output
 
-From a sample `update.p` that includes `defs.i`, runs `audit.p` and has a
-`bumpBalance` procedure:
+From a sample `update.p` that includes `defs.i`, runs `audit.p` and has a `bumpBalance` procedure:
 
 ```text
 src/update.p (expanded lines)
@@ -44,13 +37,10 @@ unit procedure bumpBalance @13
   transitive: update Customer n/a once
 ```
 
-Each line is `<direct|transitive>: <operation> <table> <lock> <shape>
-[@line] [index=NAME (reason)] [via ROUTINE]`.
+Each line is `<direct|transitive>: <operation> <table> <lock> <shape> [@line] [index=NAME (reason)] [via ROUTINE]`.
 
-- `direct`: what this unit's own statements do. `transitive`: the unit plus
-  everything it calls, merged per table, operation and lock.
-- `summary: partial` means the transitive list may miss effects; the
-  `unknown:` lines under it say why.
+- `direct`: what this unit's own statements do. `transitive`: the unit plus everything it calls, merged per table, operation and lock.
+- `summary: partial` means the transitive list may miss effects; the `unknown:` lines under it say why.
 
 ## Values
 
@@ -81,8 +71,6 @@ Index choices are estimates of what the compiler picks.
                                 "reason": null, "via": null } ] } } ] }
 ```
 
-`name` is `null` for the main block. Summary effects have no `line`, `index`
-or `reason`; `via` names the first routine called on the way
-(`<path>::<routine>`). The shape may change before oxabl 1.0: read `version`.
+`name` is `null` for the main block. Summary effects have no `line`, `index` or `reason`; `via` names the first routine called on the way (`<path>::<routine>`). The shape may change before oxabl 1.0: read `version`.
 
 Docs: https://docs.oxabl.org/toolchain/commands/explain/
