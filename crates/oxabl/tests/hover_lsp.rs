@@ -112,7 +112,8 @@ const CIRCLE: &str = "CLASS app.Circle INHERITS app.Base:\n\
     END CLASS.\n";
 
 /// An include opened alone that uses names of its includer.
-const FRAG: &str = "interval = 1.\ncompare = 2.\ncText = SUBSTRING(cText, 1, 2).\n";
+const FRAG: &str = "interval = 1.\ncompare = 2.\ncText = SUBSTRING(cText, 1, 2).\n\
+    i = LOOKUP(\"a\", cText).\n";
 
 /// A class whose ancestor no file supplies, using names that the ancestor may
 /// declare.
@@ -121,6 +122,8 @@ const OPAQUE: &str = "CLASS app.Opaque INHERITS app.Missing:\n\
     \x20       interval = 1.\n\
     \x20       compare = 2.\n\
     \x20       interval = SUBSTRING(\"ab\", 1, 1).\n\
+    \x20       compare = Compare(1, \"=\", 2, \"CASE-SENSITIVE\").\n\
+    \x20       interval = LOOKUP(\"a\", \"a,b\").\n\
     \x20   END METHOD.\n\
     END CLASS.\n";
 
@@ -626,9 +629,11 @@ fn an_include_alone_does_not_guess_built_in_functions() {
             "`{needle}` may be a variable of the includer"
         );
     }
-    // A call is still the built-in function.
-    let found = markdown(&mut session, &frag, FRAG, "SUBSTRING(", 0);
-    assert!(found.starts_with("**SUBSTRING function**"), "{found}");
+    // A call of an unreserved name may be a function of the includer.
+    assert_eq!(hover(&mut session, &frag, FRAG, "SUBSTRING(", 0), None);
+    // A reserved name is still the built-in function.
+    let found = markdown(&mut session, &frag, FRAG, "LOOKUP(", 0);
+    assert!(found.starts_with("**LOOKUP function**"), "{found}");
 }
 
 #[test]
@@ -639,16 +644,18 @@ fn a_class_with_an_unread_ancestor_does_not_guess_built_in_functions() {
     let mut session = Session::start(&ws.root);
     session.open(&opaque, OPAQUE);
 
-    // Names an ancestor that no file supplies may declare.
-    for needle in ["interval =", "compare ="] {
+    // Names an ancestor that no file supplies may declare: a property, or a
+    // method with the name of an unreserved built-in function.
+    for needle in ["interval =", "compare =", "Compare(", "SUBSTRING("] {
         assert_eq!(
             hover(&mut session, &opaque, OPAQUE, needle, 0),
             None,
-            "`{needle}` may be a property of the unread ancestor"
+            "`{needle}` may be a member of the unread ancestor"
         );
     }
-    let found = markdown(&mut session, &opaque, OPAQUE, "SUBSTRING(", 0);
-    assert!(found.starts_with("**SUBSTRING function**"), "{found}");
+    // A reserved name is no routine's.
+    let found = markdown(&mut session, &opaque, OPAQUE, "LOOKUP(", 0);
+    assert!(found.starts_with("**LOOKUP function**"), "{found}");
 }
 
 #[test]

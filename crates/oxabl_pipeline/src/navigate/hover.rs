@@ -23,6 +23,8 @@ use oxabl_semantic::{
     IndexedFileId, Resolution, ResolvedType, SiteTarget, SymbolId, SymbolKind, UnresolvedReason,
 };
 
+use oxabl_workspace::is_include_fragment;
+
 use super::{Navigation, Parsed, Target, search};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
 use crate::outline::{access_name, children, data_type_name, direction_name};
@@ -259,7 +261,9 @@ impl Navigation<'_, '_> {
     /// The name must be written as a call (`name(`). The analysis leaves a
     /// name unresolved when it cannot see where it is declared (an include
     /// analysed alone, a class whose ancestor oxabl did not read), so a bare
-    /// `interval` may be a variable or a property.
+    /// `interval` may be a variable or a property. There, a call may also be a
+    /// user function of the includer or an inherited method (`Compare(...)`),
+    /// so only a reserved name, which no routine can have, is a built-in.
     fn builtin_function_hover(&self, name: &str, span: VirtualSpan, virt: u32) -> Option<String> {
         let token = self.token_at(virt)?;
         if token.start != span.start as usize {
@@ -274,8 +278,32 @@ impl Navigation<'_, '_> {
         if !called {
             return None;
         }
-        let name = full_function_name(name);
-        find_doc(DocKind::Function, name).map(doc_markdown)
+        let doc = find_doc(DocKind::Function, full_function_name(name))?;
+        if !doc.reserved && self.may_hide_routines(virt) {
+            return None;
+        }
+        Some(doc_markdown(doc))
+    }
+
+    /// Whether a routine that this unit cannot see may have the name at
+    /// `virt`: the unit is an include analysed alone, or `virt` is in a class
+    /// that inherits another class than `Progress.Lang.Object`.
+    fn may_hide_routines(&self, virt: u32) -> bool {
+        if self.run.file().is_some_and(is_include_fragment) {
+            return true;
+        }
+        self.parsed().program.statements.iter().any(|statement| {
+            let StatementKind::Class {
+                inherits: Some(parent),
+                ..
+            } = &statement.kind
+            else {
+                return false;
+            };
+            statement.span.start <= virt
+                && virt < statement.span.end
+                && !parent.name.eq_ignore_ascii_case("Progress.Lang.Object")
+        })
     }
 
     /// The statement whose head holds the token at `virt`.

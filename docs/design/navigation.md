@@ -105,7 +105,11 @@ call the analysis left to the runtime (an unresolved name of the built-in
 function registry), written as a call (`name(`). The analysis also leaves a
 name unresolved when it cannot see where it is declared (an include analysed
 alone, a class whose ancestor oxabl did not read), so a bare `interval` may be
-a variable or a property, and gives no hover. A statement keyword shows its page when it is one of the
+a variable or a property, and gives no hover. In an include analysed alone, and
+in a class that inherits another class than `Progress.Lang.Object`, a call may
+also be a function of the includer or an inherited method (`Compare(...)`), so
+there only a reserved name (`LOOKUP(`), which no routine can have, shows the
+page. `keyword_docs.rs` marks each reserved entry. A statement keyword shows its page when it is one of the
 first words of a statement: the longest documented head wins, and the words
 between `DEFINE` and what it defines (`NEW`, `SHARED`, `PRIVATE`, `INPUT`, ...)
 are passed over, so `DEFINE INPUT PARAMETER` is the `DEFINE PARAMETER` page.

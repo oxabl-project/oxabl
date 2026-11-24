@@ -1166,24 +1166,33 @@ fn generate_keyword_docs_rs(entries: &[DocEntry], keywords: &[Keyword]) -> Strin
          \x20   pub title: &'static str,\n\
          \x20   pub kind: DocKind,\n\
          \x20   pub url: &'static str,\n\
+         \x20   /// A reserved keyword: no user routine can have this name.\n\
+         \x20   pub reserved: bool,\n\
          }\n\n",
     );
     out.push_str(&format!(
         "/// Sorted by words ({} entries).\npub(crate) static KEYWORD_DOCS: &[KeywordDoc] = &[\n",
         entries.len()
     ));
+    let reserved: HashSet<String> = keywords
+        .iter()
+        .filter(|kw| kw.reserved)
+        .map(|kw| kw.name.to_uppercase())
+        .collect();
     for entry in entries {
+        let is_reserved = entry.words.len() == 1 && reserved.contains(&entry.words[0]);
         let words: Vec<String> = entry
             .words
             .iter()
             .map(|word| format!("\"{}\"", escape(word)))
             .collect();
         out.push_str(&format!(
-            "    KeywordDoc {{\n        words: &[{}],\n        title: \"{}\",\n        kind: DocKind::{},\n        url: \"{}\",\n    }},\n",
+            "    KeywordDoc {{\n        words: &[{}],\n        title: \"{}\",\n        kind: DocKind::{},\n        url: \"{}\",\n        reserved: {},\n    }},\n",
             words.join(", "),
             escape(&entry.title),
             entry.kind,
-            escape(&entry.url)
+            escape(&entry.url),
+            is_reserved
         ));
     }
     out.push_str("];\n\n");
