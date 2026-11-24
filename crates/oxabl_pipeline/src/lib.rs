@@ -116,7 +116,7 @@ pub use schema_view::{
     schema_view_table, schema_view_until,
 };
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
-pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
+pub use oxabl_analyze::{IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{
     Position, ResolvedSpan, resolve_diagnostic, resolve_file_span, resolve_offset, resolve_offsets,
 };

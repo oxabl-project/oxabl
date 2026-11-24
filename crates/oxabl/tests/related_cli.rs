@@ -90,7 +90,7 @@ fn the_json_report_carries_the_related_locations() {
     let dir = tree();
     let out = check(dir.path(), &["--json", "."]);
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(report["version"], 4);
+    assert_eq!(report["version"], 5);
 
     let nulls = finding(&report, "NL001");
     assert_eq!(
