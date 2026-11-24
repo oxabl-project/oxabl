@@ -78,7 +78,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        self.command(args).output().unwrap()
+        output(&mut self.command(args))
     }
 
     /// The installed bytes.
@@ -92,6 +92,22 @@ impl Fixture {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|name| name != "oxabl")
             .collect()
+    }
+}
+
+/// Runs the command. A concurrent test may hold a forked copy of the write
+/// descriptor of the file this one runs, which fails the start with ETXTBSY
+/// until that fork has exec'd; starting again is safe because nothing ran.
+fn output(command: &mut Command) -> Output {
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 50 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result.unwrap(),
+        }
     }
 }
 
@@ -500,11 +516,11 @@ fn ci_and_the_opt_out_and_an_unmanaged_binary_schedule_nothing() {
         fixture.server.release(NEWER, &script(NEWER), None);
         let file = source(fixture.dir.path());
 
-        fixture
-            .command(&["check", &file.display().to_string()])
-            .env(variable, "1")
-            .output()
-            .unwrap();
+        output(
+            fixture
+                .command(&["check", &file.display().to_string()])
+                .env(variable, "1"),
+        );
 
         quiet_for_a_moment(&fixture);
     }
