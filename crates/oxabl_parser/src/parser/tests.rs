@@ -15155,3 +15155,29 @@ fn reposition_is_head_parsed_with_query_and_operands() {
         assert!(tail_names(&stmts[0]).is_empty(), "{source}");
     }
 }
+
+#[test]
+fn clear_is_head_parsed_with_its_frame() {
+    for (source, frame) in [
+        ("CLEAR.", None),
+        ("CLEAR ALL.", None),
+        ("CLEAR FRAME f-main.", Some("f-main")),
+        ("CLEAR FRAME f-main ALL NO-PAUSE.", Some("f-main")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Clear { frame: f } = &stmts[0].kind else {
+            panic!("{source}: expected Clear, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(f.as_ref().map(|i| i.name.as_str()), frame, "{source}");
+    }
+}
+
+#[test]
+fn a_name_after_clear_is_not_a_clear_statement() {
+    let stmts = assert_parses_clean("CLEAR v-x.");
+    assert!(
+        !matches!(stmts[0].kind, StatementKind::Clear { .. }),
+        "{:?}",
+        stmts[0].kind
+    );
+}

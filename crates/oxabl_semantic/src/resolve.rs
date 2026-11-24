@@ -3384,6 +3384,16 @@ impl<'a> ResolveWalker<'a> {
                 }
             }
             // A bare query name is not a declared symbol.
+            StatementKind::Clear { frame } => {
+                if let Some(f) = frame {
+                    self.resolve_statement_ident(
+                        f,
+                        scope,
+                        &[NamespaceId::Frames],
+                        AccessMode::Read,
+                    );
+                }
+            }
             StatementKind::Get { query, .. } => self.walk_lenient_operand(query, scope),
             StatementKind::Reposition {
                 query, operands, ..

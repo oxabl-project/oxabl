@@ -561,6 +561,8 @@ impl<'a> CheckWalker<'a> {
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
             | StatementKind::Empty
+            // A frame name is not a typed expression.
+            | StatementKind::Clear { .. }
             // Annotation names and attributes are metadata, not expressions.
             | StatementKind::Annotation(_)
             // Recognized-but-unmodelled: the harvested names are lexical

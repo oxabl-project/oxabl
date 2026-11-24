@@ -796,6 +796,17 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
+        // CLEAR [FRAME f] [ALL] [NO-PAUSE] — head-parsed. A name after CLEAR
+        // that is none of these is not this statement.
+        if self.check(Kind::Clear)
+            && matches!(
+                self.peek_at(1).kind,
+                Kind::Frame | Kind::All | Kind::NoPause | Kind::Period
+            )
+        {
+            return self.parse_clear_statement();
+        }
+
         // GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT] — head-parsed.
         if self.check(Kind::Get)
             && matches!(
@@ -4577,6 +4588,23 @@ impl Parser<'_> {
             },
             tail,
         ))
+    }
+
+    /// `CLEAR [FRAME f] [ALL] [NO-PAUSE]`. A frame name that does not parse stays
+    /// in the skipped tail.
+    fn parse_clear_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume CLEAR
+        let mut frame = None;
+        if self.check(Kind::Frame) {
+            let mark = self.current;
+            self.advance();
+            match self.parse_identifier() {
+                Ok(name) => frame = Some(name),
+                Err(_) => self.current = mark,
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Clear { frame }, tail))
     }
 
     /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query

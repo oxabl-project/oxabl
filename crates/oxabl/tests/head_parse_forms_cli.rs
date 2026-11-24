@@ -23,6 +23,9 @@ struct Form {
     /// The same statement with the undefined name `v-nope` where `v-x` was.
     /// `None` when the form has no operand that must be a declared symbol.
     undefined: Option<&'static str>,
+    /// Whether `statement` names a value symbol, so that the credit test can
+    /// fail when the form is skipped.
+    credits: bool,
     /// A statement with a bare name that is not a symbol (a static query, a
     /// frame). It must not be reported as undefined.
     bare: Option<&'static str>,
@@ -32,12 +35,14 @@ const DECL_X: &str = "DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\n";
 const DECL_STORED: &str =
     "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nDEFINE VARIABLE v-st AS INTEGER NO-UNDO.\n";
 const DECL_INT: &str = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n";
+const DECL_FRAME: &str = "DEFINE FRAME f-x WITH SIDE-LABELS.\n";
 const DECL_HANDLE: &str = "DEFINE VARIABLE v-x AS HANDLE NO-UNDO.\n";
 
 const FORMS: &[Form] = &[
     Form {
         name: "PROMPT-FOR",
         decls: DECL_X,
+        credits: true,
         statement: "PROMPT-FOR v-x FORMAT \"x(10)\" WITH FRAME f-main.",
         undefined: Some("PROMPT-FOR v-nope FORMAT \"x(10)\" WITH FRAME f-main."),
         bare: None,
@@ -45,6 +50,7 @@ const FORMS: &[Form] = &[
     Form {
         name: "GET",
         decls: DECL_HANDLE,
+        credits: true,
         statement: "GET FIRST v-x NO-LOCK.",
         undefined: None,
         bare: Some("GET NEXT q-detail NO-LOCK."),
@@ -52,6 +58,7 @@ const FORMS: &[Form] = &[
     Form {
         name: "CLOSE QUERY",
         decls: DECL_HANDLE,
+        credits: true,
         statement: "CLOSE QUERY v-x.",
         undefined: None,
         bare: Some("CLOSE QUERY q-detail."),
@@ -59,6 +66,7 @@ const FORMS: &[Form] = &[
     Form {
         name: "CLOSE STORED-PROC",
         decls: DECL_STORED,
+        credits: true,
         statement: "CLOSE STORED-PROC sp-detail v-st = PROC-STATUS WHERE PROC-HANDLE = v-x.",
         undefined: Some(
             "CLOSE STORED-PROC sp-detail v-st = PROC-STATUS WHERE PROC-HANDLE = v-nope.",
@@ -68,9 +76,18 @@ const FORMS: &[Form] = &[
     Form {
         name: "REPOSITION",
         decls: DECL_INT,
+        credits: true,
         statement: "REPOSITION q-detail TO ROW v-x NO-ERROR.",
         undefined: Some("REPOSITION q-detail TO ROW v-nope NO-ERROR."),
         bare: Some("REPOSITION q-detail FORWARD 2."),
+    },
+    Form {
+        name: "CLEAR",
+        decls: DECL_FRAME,
+        credits: false,
+        statement: "CLEAR FRAME f-x ALL NO-PAUSE.",
+        undefined: None,
+        bare: None,
     },
 ];
 
@@ -100,7 +117,7 @@ fn check(file: &Path, json: bool) -> (String, String) {
 
 #[test]
 fn a_variable_the_form_names_is_credited() {
-    for f in FORMS {
+    for f in FORMS.iter().filter(|f| f.credits) {
         let source = format!("{}{}\n", f.decls, f.statement);
         let (_tmp, file) = project(&source);
         let (text, _) = check(&file, false);

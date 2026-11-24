@@ -516,6 +516,8 @@ impl Visitor<'_> {
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
             | StatementKind::Empty
+            // A frame name is not a symbol.
+            | StatementKind::Clear { .. }
             // Annotation names and attributes are metadata, not symbols.
             | StatementKind::Annotation(_)
             // Recognized-but-unmodelled. Harvested names are resolved

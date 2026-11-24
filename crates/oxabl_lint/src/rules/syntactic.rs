@@ -393,6 +393,7 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
         | StatementKind::Leave(_)
         | StatementKind::Next(_)
         | StatementKind::Empty
+        | StatementKind::Clear { .. }
         | StatementKind::Annotation(_)
         | StatementKind::Skipped { .. } => {}
     }

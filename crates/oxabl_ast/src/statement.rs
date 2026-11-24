@@ -382,6 +382,14 @@ pub enum StatementKind {
         no_error: bool,
     },
 
+    /// CLEAR statement — clears the fields of a frame.
+    ///
+    /// `ALL` and `NO-PAUSE` are not modelled.
+    Clear {
+        /// The frame of `CLEAR FRAME f`. `None` for the default frame.
+        frame: Option<Identifier>,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an
