@@ -202,6 +202,11 @@ x = 1.
 END. ELSE DO:
 y = 1.
 END.
+FOR EACH Customer: /* walk every
+customer once */
+DISPLAY Customer.Name.
+DISPLAY Customer.City.
+END.
 "#;
     let mut session = Session::start(root.path());
     session.open(&path, source);
@@ -220,6 +225,7 @@ END.
         (29, 30, None), // ELSE DO
         (32, 33, None), // IF ... THEN DO before `END. ELSE DO:`
         (34, 35, None), // that ELSE DO
+        (37, 40, None), // FOR EACH, not the comment that starts on its line
     ];
     assert_eq!(fold_lines(&folds), expected, "{folds:#?}");
 }
@@ -448,6 +454,8 @@ END.
         ["bcd", "a + bcd", "foo(a + bcd)", "x = foo(a + bcd)."],
         "{bcd:#?}"
     );
+    let call = texts(position_after(source, "foo(a + bcd)"));
+    assert_eq!(call[..2], [")", "foo(a + bcd)"], "{call:#?}");
     let comment = texts(position_of(source, "here"));
     assert_eq!(comment[0], "/* comment here */", "{comment:#?}");
     assert!(comment[1].starts_with("FOR EACH"), "{comment:#?}");
@@ -537,6 +545,12 @@ fn crlf_and_utf16_positions_map_to_the_source() {
     assert_eq!(comment["endCharacter"], json!(2));
     assert!(has_fold(&folds, 3, 6, None), "{folds:#?}");
     assert!(has_fold(&folds, 4, 6, None), "{folds:#?}");
+
+    // LSP counts a lone CR as a line break too.
+    let cr = root.path().join("cr.p");
+    session.open(&cr, "PROCEDURE p:\r  x = 1.\r  y = 2.\rEND PROCEDURE.\r");
+    let cr_folds = folding(&mut session, &cr);
+    assert_eq!(fold_lines(&cr_folds), [(0, 2, None)], "{cr_folds:#?}");
 
     let (line, character) = position_of(source, "é");
     let chain = chain_of(selection(&mut session, &path, line, character));
@@ -644,6 +658,36 @@ fn a_nest_under_the_parser_limits_answers_both_requests() {
     let chain = chain_of(selection(&mut session, &path, line, character));
     assert_eq!(chain.len(), 32);
     assert_containment(&chain);
+}
+
+/// One line of many statements costs about as much as the same statements on
+/// many lines: no step of the pass scans the line once per statement.
+#[test]
+fn a_long_line_costs_no_more_than_many_lines() {
+    let root = tempfile::tempdir().unwrap();
+    let statements = 150_000;
+    let mut session = Session::start(root.path());
+    let mut times = Vec::new();
+    for (name, separator) in [("lines.p", "\n"), ("line.p", " ")] {
+        let path = root.path().join(name);
+        let mut source = String::from("y = 1.");
+        for _ in 1..statements {
+            source.push_str(separator);
+            source.push_str("y = 1.");
+        }
+        source.push('\n');
+        session.open(&path, &source);
+        let started = Instant::now();
+        let folds = folding(&mut session, &path);
+        times.push(started.elapsed());
+        assert!(folds.is_empty(), "{} folds", folds.len());
+    }
+    let (many_lines, one_line) = (times[0], times[1]);
+    eprintln!("{statements} statements: on many lines {many_lines:?}, on one line {one_line:?}");
+    assert!(
+        one_line < many_lines * 3 + Duration::from_secs(2),
+        "one line took {one_line:?}, many lines {many_lines:?}"
+    );
 }
 
 /// The time a debug build may take for one request on the large file. A walk

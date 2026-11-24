@@ -35,8 +35,8 @@ pub struct DocumentSyntax {
     folds: Vec<Fold>,
     statements: Vec<Span>,
     expressions: Vec<Span>,
-    /// Each token, comments included, and whether it reads as a word.
-    words: Vec<(Span, bool)>,
+    /// Each token, comments included, and its rank at a token boundary.
+    words: Vec<(Span, Boundary)>,
     file: Span,
 }
 
@@ -58,12 +58,7 @@ impl DocumentSyntax {
         let mut builder = Builder {
             source,
             tokens: &tokens,
-            newlines: source
-                .bytes()
-                .enumerate()
-                .filter(|(_, byte)| *byte == b'\n')
-                .map(|(at, _)| at as u32)
-                .collect(),
+            breaks: line_breaks(source),
             folds: Vec::new(),
             statements: Vec::new(),
             expressions: Vec::new(),
@@ -79,7 +74,7 @@ impl DocumentSyntax {
             .filter(|token| token.kind != Kind::Eof)
             .map(token_span)
             .filter(|span| valid_span(source, *span))
-            .map(|span| (span, word_like(&source[span.start as usize..])))
+            .map(|span| (span, Boundary::of(&source[span.start as usize..])))
             .collect();
         DocumentSyntax {
             folds,
@@ -144,8 +139,10 @@ impl DocumentSyntax {
         out
     }
 
-    /// The token at `offset`. Between two tokens, a word wins over
-    /// punctuation, so a cursor at the end of a name selects the name.
+    /// The token at `offset`. Between two tokens, a word wins over a closing
+    /// bracket, which wins over other punctuation, and the left token wins a
+    /// tie. So a cursor at the end of a name selects the name, and a cursor
+    /// after `)` selects the call that it closes.
     fn word_at(&self, offset: u32) -> Option<Span> {
         let at = self.words.partition_point(|(span, _)| span.start <= offset);
         let right = at
@@ -157,18 +154,37 @@ impl DocumentSyntax {
             .map(|i| self.words[i])
             .filter(|(span, _)| span.end == offset);
         match (left, right) {
-            (Some((left, true)), Some((right, false))) if right.start == offset => Some(left),
+            (Some((left, l)), Some((right, r)))
+                if right.start == offset && l != Boundary::Other && l >= r =>
+            {
+                Some(left)
+            }
             _ => right.or(left).map(|(span, _)| span),
         }
     }
 }
 
-/// Whether a token that starts `text` reads as a word: a name, a keyword, a
-/// literal or a reference, not punctuation or an operator.
-fn word_like(text: &str) -> bool {
-    text.chars()
-        .next()
-        .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '"' | '\'' | '{' | '&' | '?'))
+/// How strongly a token claims a cursor at its edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Boundary {
+    Other,
+    /// `)` or `]`: the end of a call, a group or a subscript.
+    Close,
+    /// A name, a keyword, a literal or a reference.
+    Word,
+}
+
+impl Boundary {
+    /// The rank of the token that starts `text`.
+    fn of(text: &str) -> Self {
+        match text.chars().next() {
+            Some(c) if c.is_alphanumeric() || matches!(c, '_' | '"' | '\'' | '{' | '&' | '?') => {
+                Boundary::Word
+            }
+            Some(')' | ']') => Boundary::Close,
+            _ => Boundary::Other,
+        }
+    }
 }
 
 fn sort_levels(spans: &mut Vec<Span>) {
@@ -203,8 +219,8 @@ fn valid_span(source: &str, span: Span) -> bool {
 struct Builder<'a> {
     source: &'a str,
     tokens: &'a [Token],
-    /// The byte offset of each `\n`, in order.
-    newlines: Vec<u32>,
+    /// The last byte of each line break (`\n`, `\r\n` or a lone `\r`), in order.
+    breaks: Vec<u32>,
     folds: Vec<Fold>,
     statements: Vec<Span>,
     expressions: Vec<Span>,
@@ -212,12 +228,29 @@ struct Builder<'a> {
 
 impl<'a> Builder<'a> {
     fn line_of(&self, offset: u32) -> usize {
-        self.newlines.partition_point(|at| *at < offset)
+        self.breaks.partition_point(|at| *at < offset)
+    }
+
+    /// The offset where the line of `offset` starts.
+    fn line_start(&self, offset: u32) -> u32 {
+        match self.line_of(offset) {
+            0 => 0,
+            line => self.breaks[line - 1] + 1,
+        }
+    }
+
+    /// The offset where the line of `offset` ends, before its line break.
+    fn line_end(&self, offset: u32) -> usize {
+        self.breaks
+            .get(self.line_of(offset))
+            .map_or(self.source.len(), |at| *at as usize)
     }
 
     /// Folds in source order, with one fold for each start line: the
     /// innermost. A client folds by line and keeps only one range per line,
     /// so `IF a THEN DO:` folds its `DO` block, not the whole `IF ... ELSE`.
+    /// A comment never takes the line from another fold: in
+    /// `FOR EACH t: /* two\n lines */`, the `FOR` block folds.
     fn one_fold_per_line(&mut self) -> Vec<Fold> {
         let mut folds = std::mem::take(&mut self.folds);
         folds.sort_by_key(|fold| (fold.span.start, std::cmp::Reverse(fold.span.end)));
@@ -226,7 +259,13 @@ impl<'a> Builder<'a> {
         for fold in folds {
             match kept.last_mut() {
                 Some(last) if self.line_of(last.span.start) == self.line_of(fold.span.start) => {
-                    if self.line_of(fold.span.end) <= self.line_of(last.span.end) {
+                    let rank = |fold: &Fold| {
+                        (
+                            fold.kind == Some(FoldKind::Comment),
+                            self.line_of(fold.span.end),
+                        )
+                    };
+                    if rank(&fold) <= rank(last) {
                         *last = fold;
                     }
                 }
@@ -238,15 +277,13 @@ impl<'a> Builder<'a> {
 
     fn push_fold(&mut self, span: Span, kind: Option<FoldKind>) {
         let mut span = trim_trailing_space(self.source, span);
-        if !valid_span(self.source, span) {
+        if !valid_span(self.source, span) || self.line_of(span.start) == self.line_of(span.end) {
             return;
         }
         // A client folds whole lines: when code follows the range on its last
         // line, the range stops on the line before, so that code stays visible.
         if self.code_follows(span.end) {
-            let line_start = self.source[..span.end as usize]
-                .rfind('\n')
-                .map_or(0, |at| at + 1) as u32;
+            let line_start = self.line_start(span.end);
             span = trim_trailing_space(
                 self.source,
                 Span {
@@ -264,11 +301,7 @@ impl<'a> Builder<'a> {
     /// Whether a token other than a comment that ends on the same line starts
     /// at or after `offset` on its line.
     fn code_follows(&self, offset: u32) -> bool {
-        let line_end = self
-            .source
-            .get(offset as usize..)
-            .and_then(|rest| rest.find('\n'))
-            .map_or(self.source.len(), |at| offset as usize + at);
+        let line_end = self.line_end(offset);
         let from = self
             .tokens
             .partition_point(|token| token.start < offset as usize);
@@ -374,9 +407,7 @@ impl<'a> Builder<'a> {
         let Some(last) = tokens.iter().rposition(|token| token.kind != Kind::Comment) else {
             return span;
         };
-        let line_start = self.source[..tokens[last].start]
-            .rfind('\n')
-            .map_or(0, |at| at + 1) as u32;
+        let line_start = self.line_start(tokens[last].start as u32);
         if line_start <= span.start {
             return span;
         }
@@ -491,6 +522,20 @@ fn directive(text: &str, wanted: &str) -> bool {
             .chars()
             .next()
             .is_none_or(char::is_whitespace)
+}
+
+/// The last byte of each line break, as LSP counts them: `\n`, `\r\n` (its
+/// `\n`) and a lone `\r`.
+fn line_breaks(source: &str) -> Vec<u32> {
+    let bytes = source.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(at, byte)| {
+            **byte == b'\n' || (**byte == b'\r' && bytes.get(at + 1) != Some(&b'\n'))
+        })
+        .map(|(at, _)| at as u32)
+        .collect()
 }
 
 fn trim_trailing_space(source: &str, mut span: Span) -> Span {

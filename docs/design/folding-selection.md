@@ -62,7 +62,13 @@ the client shows:
 - Only one range starts on each line: the innermost one. VS Code keeps only
   the first range that starts on a line, so the server makes that choice
   itself. In `IF a THEN DO: ... END. ELSE DO: ... END.`, the `DO` blocks fold
-  and the `IF` statement does not, so the `ELSE DO:` line stays visible.
+  and the `IF` statement does not, so the `ELSE DO:` line stays visible. A
+  block comment never takes the line from another range. In
+  `FOR EACH t: /* two` with the comment closed on the next line, the `FOR`
+  block folds and the comment does not.
+
+The pass counts lines as LSP does: `\n`, `\r\n`, and a lone `\r` each end a
+line.
 
 A client can send `rangeLimit` in its `foldingRange` capabilities (VS Code
 sends 5000). When the file has more ranges, the server sends the outermost
@@ -89,8 +95,10 @@ can contain:
 
 1. The token at the position, also a comment. When the position is between
    two tokens, a word (a name, a keyword, a literal, or a reference) wins over
-   punctuation. So a cursor at the end of `Name` in `Customer.Name.` selects
-   `Name`, then `Customer.Name`.
+   a closing `)` or `]`, which wins over other punctuation. The left token
+   wins a tie. So a cursor at the end of `Name` in `Customer.Name.` selects
+   `Name`, then `Customer.Name`. A cursor between `)` and `.` in
+   `foo(a + b).` selects `)`, then `foo(a + b)`.
 2. Each containing expression, from small to large.
 3. Each containing statement, block, and routine, from small to large.
 4. The whole file.
@@ -113,7 +121,10 @@ contained panic gives `RequestFailed`, never an empty answer. The panic site
 `syntax` (`oxabl_common::panic_sites::SYNTAX`) lets a test inject that panic.
 
 The pass is linear in the tokens and tree nodes, apart from one sort of the
-folds and of the selection spans. The walk recurses once for each level of
+folds and of the selection spans. It finds the bounds of a line in the list of
+line breaks with a binary search. It never scans a line once for each
+statement, so one long line of many statements costs no more than the same
+statements on many lines. The walk recurses once for each level of
 the tree, so the parser limits (`Parser::MAX_NESTING`, `Parser::MAX_CHAIN`)
 set its depth. Selection reads the cached spans for each position.
 
@@ -122,7 +133,9 @@ the pass on the files of the outline bench (6,000 and 8,400 lines). The
 `parse/*` bench there gives the cost of the lex and parse alone. The stdio test
 `a_large_file_answers_both_requests` runs both requests on a file of 33,000
 lines, and it fails when a request takes more than 20 seconds in a debug
-build. That file has 15,000 ranges, and 6,000 of them are not inside another range.
+build. The stdio test `a_long_line_costs_no_more_than_many_lines` puts 150,000
+statements on one line and on 150,000 lines. It fails when the one line takes
+more than three times as long, plus 2 seconds. That file has 15,000 ranges, and 6,000 of them are not inside another range.
 With VS Code's `rangeLimit` of 5000, the editor gets the first 5000 of those
 6,000 ranges. A file with more top-level ranges than the limit cannot fold
 all of them.
