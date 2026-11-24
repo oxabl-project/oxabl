@@ -131,7 +131,10 @@ impl Listener {
                         .unwrap_or_else(|error| error.to_string())
                 ),
             };
-            return Err(io::Error::new(io::ErrorKind::AddrInUse, refusal));
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                StartLockHeld(refusal),
+            ));
         };
 
         let socket_path = registry::socket_path_for(&workspace_root)?;
@@ -389,6 +392,30 @@ impl Drop for Listener {
             lock.remove();
         }
     }
+}
+
+/// The exit status of `oxabl daemon` when another process holds the start lock of its
+/// root (`EX_TEMPFAIL`). That holder may be a daemon that is still exiting, so a client
+/// that started this daemon may start another; every other failure repeats.
+pub const EXIT_START_LOCK_HELD: u8 = 75;
+
+/// The refusal of [`Listener::bind`] when another process holds the start lock.
+#[derive(Debug)]
+struct StartLockHeld(String);
+
+impl std::fmt::Display for StartLockHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StartLockHeld {}
+
+/// Whether a [`Listener::bind`] error says another process holds the start lock.
+pub fn is_start_lock_held(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<StartLockHeld>())
 }
 
 /// Ends an accept loop from another thread.

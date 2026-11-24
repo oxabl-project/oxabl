@@ -714,25 +714,7 @@ fn an_editor_starts_another_daemon_when_its_first_loses_the_start_lock() {
             .expect("a private directory");
     }
     // An exiting daemon holds the lock for a moment after its registration is gone.
-    let mut holder = ChildGuard(
-        Command::new("flock")
-            .arg(&lock_path)
-            .args(["sleep", "0.5"])
-            .spawn()
-            .expect("hold the start lock with flock(1)"),
-    );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Command::new("flock")
-        .args(["-n"])
-        .arg(&lock_path)
-        .arg("true")
-        .status()
-        .expect("probe the start lock")
-        .success()
-    {
-        assert!(Instant::now() < deadline, "flock(1) must take the lock");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let mut holder = StandIn::start(&lock_path, StandInMode::HoldLock);
 
     let editor = Editor::start(root.path(), cache.path());
     let response = editor.initialize_response(&registration_path, 0);
@@ -740,8 +722,62 @@ fn an_editor_starts_another_daemon_when_its_first_loses_the_start_lock() {
     let registration = wait_for_registration(&registration_path);
     let _daemon = PidGuard(registration.pid);
     assert!(
-        exits_within(&mut holder.0, Duration::from_secs(5)).is_some(),
+        exits_within(&mut holder.0.0, Duration::from_secs(5)).is_some(),
         "the lock was held while the editor started"
+    );
+}
+
+/// A daemon that fails to start for a reason that repeats is started once, and the
+/// editor is told at once rather than after five starts.
+#[test]
+fn an_editor_starts_a_daemon_that_cannot_start_only_once() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let mut editor = Editor::start_with(
+        root.path(),
+        cache.path(),
+        &[("OXABL_DAEMON_IDLE_TIMEOUT", "soon")],
+    );
+    let status = exits_within(&mut editor.child.0, Duration::from_secs(10))
+        .expect("the editor shim gives up");
+    let stderr = editor.stderr(Duration::from_secs(5));
+    assert!(!status.success());
+    assert_eq!(
+        stderr.matches("is not an idle timeout").count(),
+        1,
+        "one daemon was started, and its error is shown: {stderr}"
+    );
+    assert!(
+        stderr.contains("exited") && !stderr.contains("did not become ready"),
+        "the editor names the exit, not a timeout: {stderr}"
+    );
+}
+
+/// A daemon that closes the editor's connection and stays is not exiting. The editor
+/// says so at once instead of asking it again.
+#[test]
+fn an_editor_refused_by_a_daemon_that_stays_fails_at_once() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let (registration_path, socket) = registration_left_behind(root.path(), cache.path());
+    let refusing = StandIn::start(&socket, StandInMode::Refuse);
+    let refusing_pid = refusing.0.0.id();
+    rewrite_registration(&registration_path, |registration| {
+        registration["pid"] = serde_json::json!(refusing_pid);
+    });
+
+    let mut editor = Editor::start(root.path(), cache.path());
+    let status = exits_within(&mut editor.child.0, Duration::from_secs(15))
+        .expect("the editor shim gives up");
+    let stderr = editor.stderr(Duration::from_secs(5));
+    assert!(!status.success());
+    assert!(
+        stderr.contains("not exiting") && stderr.contains(&format!("kill {refusing_pid}")),
+        "the editor names the daemon that stays: {stderr}"
+    );
+    assert!(
+        !stderr.contains("attempt 2"),
+        "a daemon that stays is not asked again: {stderr}"
     );
 }
 
@@ -774,6 +810,11 @@ enum StandInMode {
     /// Lets liveness probes go; closes the first connection that sends a frame without
     /// an answer, removes its socket and exits, as a daemon that decided to exit idle.
     RefuseAndExit,
+    /// The same without the exit: closes every connection that sends a frame.
+    Refuse,
+    /// Takes the start lock at the path given in place of the socket, holds it for half
+    /// a second and exits, as a daemon that is still exiting.
+    HoldLock,
 }
 
 /// Stands in for a daemon in another process, on `OXABL_STAND_IN_SOCKET`, in the
@@ -794,6 +835,25 @@ fn stand_in_daemon() {
         fn signal(signum: i32, handler: usize) -> usize;
         fn listen(fd: i32, backlog: i32) -> i32;
     }
+    if mode == "hold-lock" {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        unsafe extern "C" {
+            fn flock(fd: i32, operation: i32) -> i32;
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&socket)
+            .expect("open the lock file");
+        // SAFETY: a valid descriptor this function owns; LOCK_EX is 2.
+        assert_eq!(unsafe { flock(file.as_raw_fd(), 2) }, 0, "take the lock");
+        println!("stand-in ready");
+        std::thread::sleep(Duration::from_millis(500));
+        std::process::exit(0);
+    }
     if mode == "ignore-term" {
         // SAFETY: SIG_IGN (1) for SIGTERM (15) installs no handler code.
         unsafe { signal(15, 1) };
@@ -811,11 +871,11 @@ fn stand_in_daemon() {
             std::thread::sleep(Duration::from_secs(1));
         }
     }
-    if mode == "refuse-and-exit" {
+    if mode == "refuse-and-exit" || mode == "refuse" {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-            if stream.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
+            if stream.read(&mut [0; 1]).is_ok_and(|read| read > 0) && mode != "refuse" {
                 drop(stream);
                 let _ = std::fs::remove_file(&socket);
                 std::process::exit(0);
@@ -848,11 +908,13 @@ impl StandIn {
                     StandInMode::IgnoreTerm => "ignore-term",
                     StandInMode::Busy => "busy",
                     StandInMode::RefuseAndExit => "refuse-and-exit",
+                    StandInMode::Refuse => "refuse",
+                    StandInMode::HoldLock => "hold-lock",
                 },
             )
             .stdin(Stdio::null())
             .stdout(match mode {
-                StandInMode::Busy => Stdio::piped(),
+                StandInMode::Busy | StandInMode::HoldLock => Stdio::piped(),
                 _ => Stdio::null(),
             })
             .stderr(Stdio::null());
@@ -860,7 +922,8 @@ impl StandIn {
         let output = child.stdout.take();
         let stand_in = StandIn(ChildGuard(child));
         if let Some(output) = output {
-            // A connect would wait on the full queue, so the stand-in says when it is.
+            // A connect would wait on the full queue, and a lock has no connect, so the
+            // stand-in says when it is ready.
             let (ready, wait) = mpsc::channel();
             std::thread::spawn(move || {
                 for line in BufReader::new(output).lines() {
@@ -871,7 +934,7 @@ impl StandIn {
                 }
             });
             wait.recv_timeout(Duration::from_secs(10))
-                .expect("the stand-in must fill its queue");
+                .expect("the stand-in must get ready");
             return stand_in;
         }
         let deadline = Instant::now() + Duration::from_secs(10);

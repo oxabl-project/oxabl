@@ -869,6 +869,9 @@ fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
         Ok(listener) => listener,
         Err(error) => {
             eprintln!("oxabl daemon: {error}");
+            if oxabl_daemon::listener::is_start_lock_held(&error) {
+                return ExitCode::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD);
+            }
             return ExitCode::FAILURE;
         }
     };

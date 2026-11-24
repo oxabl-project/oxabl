@@ -116,11 +116,19 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
         match initialize_daemon(&registration, &first) {
             Ok(joined) => break joined,
             Err(refusal) if attempt < ATTEMPTS => {
+                // A daemon that refused this client and stays is not exiting: asking it
+                // again gets the same answer.
+                if !wait_for_departure(&workspace_root, registration.pid) {
+                    anyhow::bail!(
+                        "{refusal}, and it still serves the root, so it is not exiting. \
+                         Its stderr may say why; stop it with `kill {}`",
+                        registration.pid
+                    );
+                }
                 eprintln!(
                     "oxabl lsp: {refusal} (attempt {attempt} of {ATTEMPTS}); looking for the \
                      daemon again"
                 );
-                wait_for_departure(&workspace_root, registration.pid);
                 attempt += 1;
             }
             Err(refusal) => anyhow::bail!("{refusal} (attempt {attempt} of {ATTEMPTS})"),
@@ -168,10 +176,10 @@ fn initialize_daemon(
 }
 
 /// Wait, for two seconds at most, until the daemon `pid` no longer serves `root`: a
-/// daemon that refused a client is exiting, and until its registration is gone a
-/// discovery still finds it.
+/// daemon that refused a client because it is exiting is still found until its
+/// registration is gone. Returns whether it went.
 #[cfg(unix)]
-fn wait_for_departure(root: &Path, pid: u32) {
+fn wait_for_departure(root: &Path, pid: u32) -> bool {
     use std::time::{Duration, Instant};
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -179,10 +187,11 @@ fn wait_for_departure(root: &Path, pid: u32) {
             oxabl_daemon::Discovery::Live(registration)
             | oxabl_daemon::Discovery::VersionMismatch(registration)
                 if registration.pid == pid => {}
-            _ => return,
+            _ => return true,
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    false
 }
 
 /// Forward one frame from the daemon to the editor.
@@ -205,8 +214,9 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 /// only one of them may start a daemon:
 ///
 /// * `Absent` — nothing is registered. Start a daemon and keep polling. Start another
-///   only when the one started has exited: it can lose the start lock to a daemon that
-///   is still exiting idle.
+///   only when the one started lost the start lock
+///   ([`oxabl_daemon::listener::EXIT_START_LOCK_HELD`]), which a daemon that is still
+///   exiting idle can hold. Any other exit repeats on every start, so it is reported.
 /// * `Undecided` — the registration could not be read, or the socket could not be
 ///   probed. Neither starting a daemon nor connecting is defensible on that answer, so
 ///   the loop waits. The reason is kept, because a client that runs out of attempts
@@ -228,8 +238,8 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
     const INTERVAL: Duration = Duration::from_millis(20);
 
     let mut deadline = Instant::now() + BUDGET;
-    // A daemon that cannot start is started again at most this often, and this many
-    // times.
+    // A daemon that lost the start lock is started again at most this often, and this
+    // many times.
     const RESTART_INTERVAL: Duration = Duration::from_millis(250);
     const STARTS: u32 = 5;
 
@@ -288,6 +298,15 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
             oxabl_daemon::Discovery::Undecided(reason) => refusal = Some(reason),
             oxabl_daemon::Discovery::Absent => {
                 if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
+                    if status.code()
+                        != Some(i32::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD))
+                    {
+                        anyhow::bail!(
+                            "the oxabl daemon this client started for {} exited ({status}) \
+                             before it served the root; its error is above",
+                            root.display()
+                        );
+                    }
                     child_exit = Some(status);
                     child = None;
                 }
@@ -343,7 +362,7 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
         }
         (None, Some(status)) => anyhow::bail!(
             "the oxabl daemon did not become ready in time: every daemon this \
-             client started exited (starts: {starts}, last: {status})"
+             client started found the start lock held (starts: {starts}, last: {status})"
         ),
         (None, None) => anyhow::bail!("the oxabl daemon did not become ready in time"),
     }
