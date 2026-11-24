@@ -1588,6 +1588,7 @@ procedure with a plain `RUN name`.
 | R5 | A path into a directory the OpenEdge install ships (`adecomm/`, `adeshar/`, `prodict/`, ...) is not reported: a workspace that does not configure the install cannot supply it. | Proposed. |
 | R6 | A target that starts with `..` is relative to a directory the search paths do not cover (the rule `LINT0001` already keeps): not reported. | Inferred (five cases in the second corpus: the program is there, one directory up from where the search starts). |
 | R7 | The parser reads a name up to a digit after a slash and stops (`RUN dir/870-recon.p` is `dir/870`). A name followed at once by a letter, a digit, `-`, `_`, `/` or `.x` is not reported. | Verified (one case in the first corpus). |
+| R8 | `RUN name IN THIS-PROCEDURE ... NO-ERROR` is not reported. `THIS-PROCEDURE` is a handle, so a super procedure that `ADD-SUPER-PROCEDURE` added at run time can supply the name, and `NO-ERROR` with a read of `ERROR-STATUS:ERROR` is a deliberate probe. The same run with no `NO-ERROR` is still reported: a missing name is then a run-time error, and the file cannot show a super procedure. Its help does not tell the user to run it `IN` a handle. A handle that only starts with `THIS-PROCEDURE` (`THIS-PROCEDURE:INSTANTIATING-PROCEDURE`) is another procedure: not a target, so not reported. | Documented (ABL Reference, RUN statement); the choice for a run with no `NO-ERROR` is Proposed. |
 
 ### 10.5 The rules (M6, first slice)
 

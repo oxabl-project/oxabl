@@ -44,6 +44,9 @@
 //!   the other side only;
 //! - a run with no index, or an index with no search path: nothing was
 //!   searched;
+//! - `RUN name IN THIS-PROCEDURE ... NO-ERROR`: the super procedures of the
+//!   handle can supply the name, and `NO-ERROR` marks the call as an optional
+//!   probe. The same call with no `NO-ERROR` is reported, as a bare name is;
 //! - in an include checked alone, and in a file with an include that did not
 //!   arrive, a bare name: it may be a procedure of the includer;
 //! - in a file that binds a web service port type (`RUN port-type SET h ON
@@ -70,7 +73,7 @@
 use oxabl_ast::{RunTarget, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_index::calls::{
-    CallKind, CallTarget, FileCalls, ProgramAnswer, UnknownCall, resolve_program,
+    CallKind, CallTarget, FileCalls, ProgramAnswer, UnknownCall, is_this_procedure, resolve_program,
 };
 use oxabl_lexer::{Kind, Token};
 use oxabl_semantic::{
@@ -104,7 +107,8 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
     }
     let fragment = ctx.source_context.is_include_fragment();
     let calls = shared.calls(program, ctx);
-    let port_type = binds_port_type(calls, shared.tokens(ctx));
+    let tokens = shared.tokens(ctx);
+    let port_type = binds_port_type(calls, tokens);
     let mut diags = Vec::new();
     for_each_run(program, calls, |stmt, site| {
         let CallTarget::Program(name) = &site.target else {
@@ -128,11 +132,20 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
         }
         let StatementKind::Run {
             target: RunTarget::Literal { name_span, .. },
+            in_handle,
+            no_error,
             ..
         } = &stmt.kind
         else {
             return;
         };
+        let in_this = in_handle
+            .as_ref()
+            .is_some_and(|h| is_this_procedure(tokens, h));
+        // An optional probe: a super procedure may supply the name.
+        if in_this && *no_error {
+            return;
+        }
         // The parser reads a name up to a digit after a slash and stops
         // (`RUN dir/870-recon.p` reads `dir/870`); the text that follows is part of it.
         let mut rest = ctx
@@ -166,10 +179,15 @@ pub fn check(program: &[Statement], ctx: &AnalysisContext, shared: &RunShared) -
                 file_span(ctx, *name_span),
             )
             .with_help(
-                "Check the name. If it is a program, give it its extension or add its directory \
-                 to `[workspace.sources].include_paths`; if a super procedure supplies it, run it \
-                 `IN` the handle."
-                    .to_string(),
+                if in_this {
+                    "Check the name. A super procedure added at run time may supply it; if the \
+                     call is optional, add `NO-ERROR` and read `ERROR-STATUS:ERROR`."
+                } else {
+                    "Check the name. If it is a program, give it its extension or add its \
+                     directory to `[workspace.sources].include_paths`; if a super procedure \
+                     supplies it, run it `IN` the handle."
+                }
+                .to_string(),
             ),
         );
     });
