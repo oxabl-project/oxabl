@@ -33,6 +33,7 @@ import {
 } from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import { definition } from "./scenarios/definition.mjs";
+import { documentHighlight } from "./scenarios/document-highlight.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
 import { includeContext } from "./scenarios/include-context.mjs";
 import { outline } from "./scenarios/outline.mjs";
@@ -59,6 +60,7 @@ const SCENARIOS = [
   ["include-context", includeContext],
   ["expanded-unit", expandedUnit],
   ["definition", definition],
+  ["document-highlight", documentHighlight],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],

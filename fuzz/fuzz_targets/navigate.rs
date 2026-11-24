@@ -7,10 +7,11 @@ use oxabl_pipeline::{LintPipeline, PipelineConfig, Target};
 use oxabl_schema::SchemaLoader;
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
-// Go to definition and document links (docs/design/navigation.md) on a fuzzed
-// file, a fuzzed `.df` and a fuzzed include, in a small workspace: they never
-// panic, every target is a file of the workspace, and every span is inside the
-// file it names and on character boundaries.
+// Go to definition, document highlights and document links
+// (docs/design/navigation.md) on a fuzzed file, a fuzzed `.df` and a fuzzed
+// include, in a small workspace: they never panic, every target is a file of
+// the workspace, and every span is inside the file it names and on character
+// boundaries.
 //
 // Input: `source \0 schema \0 include`, each part optional.
 fuzz_target!(|data: &[u8]| {
@@ -65,6 +66,17 @@ fn check(data: &[u8]) {
         for offset in offsets(text) {
             for target in navigation.definitions(file, offset) {
                 check_target(&fs, &target, file, offset);
+            }
+            for highlight in navigation.highlights(file, offset) {
+                let (start, end) = (highlight.span.start as usize, highlight.span.end as usize);
+                assert!(
+                    start < end && end <= text.len(),
+                    "{file:?}@{offset}: a highlight outside its file: {highlight:?}"
+                );
+                assert!(
+                    text.is_char_boundary(start) && text.is_char_boundary(end),
+                    "{file:?}@{offset}: a highlight off a character boundary: {highlight:?}"
+                );
             }
         }
     }

@@ -21,7 +21,7 @@ runs it for 60 seconds per target; `workflow_dispatch` takes the seconds.
 | `lint` | `LintPipeline::run` on one file (preprocess, parse, analyse, every rule) never panics. |
 | `format` | `try_format_source` never panics, and formatting its own output changes nothing. |
 | `outline` | `outline` never panics, its spans and names obey the rules of `docs/design/document-outline.md`, and a second run gives the same outline. |
-| `navigate` | On a fuzzed file, `.df` and include (`source \0 schema \0 include`) in a small workspace, go to definition at every offset and the document links never panic, every target is a file of the workspace, and every span is inside its file and on character boundaries. |
+| `navigate` | On a fuzzed file, `.df` and include (`source \0 schema \0 include`) in a small workspace, go to definition and document highlights at every offset and the document links never panic, every target is a file of the workspace, and every span is inside its file and on character boundaries. |
 
 Each target runs its input with a stack of at least the analysis stack
 (`oxabl_common::stack`, 64 MiB), as the CLI and the daemon do: on a smaller

@@ -73,6 +73,15 @@ you also get, with no setup:
   and `table.field` go to the `.df`. A name that two files on the include path
   supply shows both. A name that does not resolve, or that is computed at run
   time (`RUN VALUE(...)`), goes nowhere.
+- **Highlight other uses.** With the cursor on a name, the editor marks the
+  other uses of it in the file. A use that changes the value (an assignment, an
+  `OUTPUT` argument, the declaration) has the write colour, and every other use
+  has the read colour. A buffer, a field, a procedure, a function, a method and a
+  class name work as well as a variable. It uses the same resolution as **Go to
+  Definition**, so a name that does not resolve has no mark of oxabl (VS Code
+  can still mark the same word as text). In an include file, the marks are the
+  uses in that file. A name that a macro or an include argument writes is not
+  marked.
 - **Document links.** Include references, `RUN` targets and `USING` names are
   links to the file each names (`Ctrl+Click`). A name that resolves to no file,
   or to more than one, is not a link.
