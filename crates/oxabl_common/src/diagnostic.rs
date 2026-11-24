@@ -171,6 +171,30 @@ impl<'a> SourceResolver<'a> {
     }
 }
 
+/// The longest snippet line shown whole.
+const MAX_SNIPPET: usize = 160;
+
+/// `line`, or for a longer line than [`MAX_SNIPPET`] a window of it around
+/// byte `at`, marked `…` where it is cut. Showing the whole line made the
+/// output, and the memory it takes, grow with diagnostics times line length: a
+/// one-line file of 1 MB with 20,000 findings asked for gigabytes.
+fn snippet(line: &str, at: usize) -> std::borrow::Cow<'_, str> {
+    if line.len() <= MAX_SNIPPET {
+        return line.into();
+    }
+    let mut start = at.min(line.len()).saturating_sub(MAX_SNIPPET / 2);
+    while !line.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (start + MAX_SNIPPET).min(line.len());
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    let before = if start > 0 { "…" } else { "" };
+    let after = if end < line.len() { "…" } else { "" };
+    format!("{before}{}{after}", &line[start..end]).into()
+}
+
 /// Render diagnostics to the familiar `path:line:col: severity[code]: message`
 /// form with a source snippet, using `resolver` for positions.
 ///
@@ -185,7 +209,7 @@ pub fn render_diagnostics(diagnostics: &[Diagnostic], resolver: &SourceResolver)
             let (line, col) = resolver.map.lookup(d.span.span.start as usize);
             out.push_str(&format!("{}:{}:{}: {}\n", resolver.path, line, col, d));
             if let Some(text) = resolver.line_text(line) {
-                out.push_str(&format!("{line:>5} | {text}\n"));
+                out.push_str(&format!("{line:>5} | {}\n", snippet(text, col - 1)));
             }
         } else {
             out.push_str(&format!("{}: {} (in included file)\n", resolver.path, d));

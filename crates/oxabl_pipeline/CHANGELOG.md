@@ -1,5 +1,181 @@
 # Changelog
 
+## [3.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.7.0...oxabl_pipeline-v3.8.0) (2026-11-23)
+
+
+### Features
+
+* **lsp:** go to definition and document links ([9a89c3d](https://github.com/oxabl-project/oxabl/commit/9a89c3d344cee9ac558d7a9218565496066da4d0))
+* **lsp:** go to definition and document links ([1df981d](https://github.com/oxabl-project/oxabl/commit/1df981dfba85c1ffadd26219b36e402a881ef6ca)), closes [#407](https://github.com/oxabl-project/oxabl/issues/407) [#408](https://github.com/oxabl-project/oxabl/issues/408)
+* **navigation:** go to procedures run in a persistent handle ([c401218](https://github.com/oxabl-project/oxabl/commit/c401218d08daa6576d9fbb3b2d31197b1ad8d20f))
+* **navigation:** go to procedures run in a persistent handle ([44a774f](https://github.com/oxabl-project/oxabl/commit/44a774f24e062bab53a27e660b14bbe4a24cc83b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.7 to 0.3.8
+    * oxabl_lexer bumped from 2.0.2 to 2.0.3
+    * oxabl_parser bumped from 4.1.0 to 4.1.1
+    * oxabl_flow bumped from 0.4.0 to 0.4.1
+    * oxabl_scope bumped from 0.2.9 to 0.2.10
+    * oxabl_analyze bumped from 4.2.2 to 4.3.0
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_formatter bumped from 2.1.0 to 2.1.1
+    * oxabl_index bumped from 5.2.1 to 5.3.0
+    * oxabl_lint bumped from 5.1.0 to 5.1.1
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+    * oxabl_semantic bumped from 5.1.0 to 5.2.0
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+  * dev-dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+
+## [3.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.6.1...oxabl_pipeline-v3.7.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+* **lsp:** without an oxabl.toml, no diagnostics and no formatting ([c120ed7](https://github.com/oxabl-project/oxabl/commit/c120ed7697a8b5df89fc9d106315380ae7a0c5f7))
+
+
+### Bug Fixes
+
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+* **pipeline:** a signed ENUM value belongs to its member ([83e61c6](https://github.com/oxabl-project/oxabl/commit/83e61c61b6fe20e258a0cd704e66a64c0d01f8eb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.6 to 0.3.7
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+    * oxabl_flow bumped from 0.3.8 to 0.4.0
+    * oxabl_scope bumped from 0.2.8 to 0.2.9
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_analyze bumped from 4.2.1 to 4.2.2
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_formatter bumped from 2.0.8 to 2.1.0
+    * oxabl_index bumped from 5.2.0 to 5.2.1
+    * oxabl_lint bumped from 5.0.5 to 5.1.0
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+    * oxabl_semantic bumped from 5.0.5 to 5.1.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+  * dev-dependencies
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+
+## [3.6.1](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.6.0...oxabl_pipeline-v3.6.1) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.5 to 0.3.6
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+    * oxabl_flow bumped from 0.3.7 to 0.3.8
+    * oxabl_scope bumped from 0.2.7 to 0.2.8
+    * oxabl_analyze bumped from 4.2.0 to 4.2.1
+    * oxabl_formatter bumped from 2.0.7 to 2.0.8
+    * oxabl_index bumped from 5.1.0 to 5.2.0
+    * oxabl_lint bumped from 5.0.4 to 5.0.5
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+    * oxabl_semantic bumped from 5.0.4 to 5.0.5
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+
+## [3.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.5.0...oxabl_pipeline-v3.6.0) (2026-11-17)
+
+
+### Features
+
+* **build:** key units that use classes under per-directory PROPATHs ([f17685f](https://github.com/oxabl-project/oxabl/commit/f17685fb429585f7d7182b3cf5b65eb7f9b206b5))
+
+
+### Bug Fixes
+
+* **pipeline:** a name written as x:member in a skipped branch is a variable when one comes before it ([62d447a](https://github.com/oxabl-project/oxabl/commit/62d447a57952e7f302c0f051667f06905ce27c36))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_analyze bumped from 4.1.0 to 4.2.0
+
+## [3.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.4.2...oxabl_pipeline-v3.5.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
+
+### Bug Fixes
+
+* **build:** resolve includes of a class from its package root, as the compiler does ([954ce9c](https://github.com/oxabl-project/oxabl/commit/954ce9c1fb6d893eae9859fa15eb5f4663d9667d))
+* **build:** resolve includes of a class from its package root, as the compiler does ([c95549f](https://github.com/oxabl-project/oxabl/commit/c95549f2a5e5418bc69585fcae56c02b07a3ec8d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.4 to 0.3.5
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+    * oxabl_flow bumped from 0.3.6 to 0.3.7
+    * oxabl_scope bumped from 0.2.6 to 0.2.7
+    * oxabl_analyze bumped from 4.0.4 to 4.1.0
+    * oxabl_formatter bumped from 2.0.6 to 2.0.7
+    * oxabl_index bumped from 5.0.3 to 5.1.0
+    * oxabl_lint bumped from 5.0.3 to 5.0.4
+    * oxabl_semantic bumped from 5.0.3 to 5.0.4
+
+## [3.4.2](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.4.1...oxabl_pipeline-v3.4.2) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.3 to 0.3.4
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+    * oxabl_flow bumped from 0.3.5 to 0.3.6
+    * oxabl_scope bumped from 0.2.5 to 0.2.6
+    * oxabl_analyze bumped from 4.0.3 to 4.0.4
+    * oxabl_formatter bumped from 2.0.5 to 2.0.6
+    * oxabl_index bumped from 5.0.2 to 5.0.3
+    * oxabl_lint bumped from 5.0.2 to 5.0.3
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+    * oxabl_semantic bumped from 5.0.2 to 5.0.3
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+
+## [3.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.4.0...oxabl_pipeline-v3.4.1) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_effects bumped from 0.3.2 to 0.3.3
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+    * oxabl_flow bumped from 0.3.4 to 0.3.5
+    * oxabl_scope bumped from 0.2.4 to 0.2.5
+    * oxabl_analyze bumped from 4.0.2 to 4.0.3
+    * oxabl_formatter bumped from 2.0.4 to 2.0.5
+    * oxabl_index bumped from 5.0.1 to 5.0.2
+    * oxabl_lint bumped from 5.0.1 to 5.0.2
+    * oxabl_semantic bumped from 5.0.1 to 5.0.2
+
 ## [3.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_pipeline-v3.3.1...oxabl_pipeline-v3.4.0) (2026-11-11)
 
 

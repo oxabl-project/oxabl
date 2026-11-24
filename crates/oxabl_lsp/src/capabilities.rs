@@ -2,7 +2,10 @@
 //!
 //! v1 advertises what the diagnostics skeleton implements — incremental text
 //! sync (with open/close) and push `publishDiagnostics` — plus whole-document
-//! formatting (`document_formatting_provider`, R1). Push diagnostics require no
+//! formatting (`document_formatting_provider`, R1), document symbols
+//! (`document_symbol_provider`), workspace symbols (`workspace_symbol_provider`), go to
+//! definition (`definition_provider`) and document links (`document_link_provider`). Push
+//! diagnostics require no
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (hover, completion, pull
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
@@ -10,7 +13,7 @@
 //! whose workspace enables strict database rules. Dynamic clients register per file.
 
 use lsp_types::{
-    ClientCapabilities, OneOf, PositionEncodingKind, ServerCapabilities,
+    ClientCapabilities, DocumentLinkOptions, OneOf, PositionEncodingKind, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 
@@ -32,8 +35,9 @@ pub fn negotiate_position_encoding(caps: &ClientCapabilities) -> PositionEncodin
 }
 
 /// Build the v1 [`ServerCapabilities`]: incremental sync with open/close, the
-/// negotiated position encoding, and whole-document formatting (R1). Nothing
-/// else is advertised — range formatting in particular stays unset (the engine
+/// negotiated position encoding, whole-document formatting (R1), document symbols,
+/// workspace symbols, go to definition and document links.
+/// Nothing else is advertised — range formatting in particular stays unset (the engine
 /// only formats whole files; see the plan's Scope Boundaries).
 pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities {
     ServerCapabilities {
@@ -49,6 +53,14 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         // left unset (`document_range_formatting_provider`): the formatter has
         // no region concept and bails whole-file.
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        // Each link carries its target, so there is nothing to resolve later.
+        document_link_provider: Some(DocumentLinkOptions {
+            resolve_provider: Some(false),
+            work_done_progress_options: Default::default(),
+        }),
         // Explicitly leave every other capability unset so clients don't offer
         // features v1 doesn't implement (R2).
         ..Default::default()
@@ -107,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn advertises_incremental_open_close_only() {
+    fn advertises_sync_formatting_and_symbols_only() {
         let caps = server_capabilities(PositionEncodingKind::UTF8);
         assert_eq!(caps.position_encoding, Some(PositionEncodingKind::UTF8));
         match caps.text_document_sync {
@@ -121,11 +133,18 @@ mod tests {
         assert_eq!(caps.document_formatting_provider, Some(OneOf::Left(true)));
         // …but range formatting is not (whole-file engine, no region concept).
         assert!(caps.document_range_formatting_provider.is_none());
+        assert_eq!(caps.document_symbol_provider, Some(OneOf::Left(true)));
+        assert_eq!(caps.workspace_symbol_provider, Some(OneOf::Left(true)));
         // No other feature is advertised.
         assert!(caps.code_lens_provider.is_none());
         assert!(caps.hover_provider.is_none());
         assert!(caps.completion_provider.is_none());
-        assert!(caps.definition_provider.is_none());
+        assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
+        assert_eq!(
+            caps.document_link_provider
+                .and_then(|links| links.resolve_provider),
+            Some(false)
+        );
         assert!(caps.diagnostic_provider.is_none());
     }
 }

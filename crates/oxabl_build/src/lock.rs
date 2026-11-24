@@ -7,7 +7,17 @@ const FILE_NAME: &str = "build.lock";
 /// The exclusive lock on a workspace's state directory. The kernel releases it
 /// when the holder exits, so a stale lock cannot exist.
 pub struct WorkspaceLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for WorkspaceLock {
+    /// Unlocks before the descriptor closes. A child that another thread of
+    /// the process forked while the lock was held shares the lock until it
+    /// execs, so closing the descriptor alone leaves the lock taken for that
+    /// long, and a build that starts at once finds it busy.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 /// The outcome of asking for the workspace lock without waiting.
@@ -81,7 +91,7 @@ fn try_acquire_as(directory: &Path, name: &str, yielding: bool) -> LockOutcome {
             } else {
                 write!(file, "{}", std::process::id())
             };
-            LockOutcome::Held(WorkspaceLock { _file: file })
+            LockOutcome::Held(WorkspaceLock { file })
         }
         Err(TryLockError::WouldBlock) => LockOutcome::Busy(
             std::fs::read_to_string(&path)

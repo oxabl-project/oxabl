@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { resolveServerBinary, serverCandidateNames, splitPath } from "./server";
+import { defaultInstallPath, resolveServerBinary, serverCandidateNames, splitPath } from "./server";
 
 describe("resolveServerBinary", () => {
   it("returns the configured oxabl.server.path when set (highest precedence)", () => {
@@ -65,6 +65,31 @@ describe("resolveServerBinary", () => {
       expect(result.command).toContain("oxabl.exe");
       expect(result.source).toBe("path");
     }
+  });
+});
+
+describe("install path", () => {
+  const installPath = "/home/u/.local/bin/oxabl";
+
+  it("beats PATH and loses to the setting", () => {
+    const base = { pathDirs: ["/usr/bin"], installPath, fileExists: () => true, platform: "linux" as const };
+    expect(resolveServerBinary({ ...base })).toEqual({ kind: "found", command: installPath, source: "install" });
+    expect(resolveServerBinary({ ...base, configuredPath: "/opt/oxabl" })).toMatchObject({ source: "setting" });
+  });
+
+  it("falls through to PATH when nothing is installed there", () => {
+    const result = resolveServerBinary({
+      pathDirs: ["/usr/bin"],
+      installPath,
+      fileExists: (p) => p === path.join("/usr/bin", "oxabl"),
+      platform: "linux",
+    });
+    expect(result).toMatchObject({ source: "path" });
+  });
+
+  it("is ~/.local/bin/oxabl, or OXABL_INSTALL_DIR when set", () => {
+    expect(defaultInstallPath({}, "/home/u")).toBe(installPath);
+    expect(defaultInstallPath({ OXABL_INSTALL_DIR: "/opt/bin" }, "/home/u")).toBe("/opt/bin/oxabl");
   });
 });
 

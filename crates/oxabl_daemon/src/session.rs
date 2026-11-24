@@ -72,8 +72,11 @@ use salsa::Setter;
 
 use crate::db::{
     AnalysisConfig, AnalysisDatabase, Buffer, SchemaHandle, buffer_dependencies,
-    compute_diagnostics,
+    compute_diagnostics, set_buffer_capacity,
 };
+
+/// How many closed buffers may keep their analysis results, beyond the open ones.
+const CLOSED_BUFFERS_CACHED: usize = 4;
 
 /// The one spelling of a workspace root every session key and every discovered
 /// path uses.
@@ -127,6 +130,10 @@ pub struct Session {
     /// Open buffers by document key (a URI for an editor, a path for anything
     /// else).
     buffers: HashMap<String, Buffer>,
+    /// The inputs of closed buffers by key, emptied, for the key to reuse when it
+    /// opens again: salsa cannot remove an input, so a new one per reopen would
+    /// grow without end.
+    closed: HashMap<String, Buffer>,
     /// Each open buffer's workspace path, resolved once by [`canonical_path`] when
     /// the buffer was opened.
     ///
@@ -480,6 +487,7 @@ impl Session {
             db,
             schema,
             buffers: HashMap::new(),
+            closed: HashMap::new(),
             buffer_paths: HashMap::new(),
             config_generation: 0,
             clients: 0,
@@ -632,7 +640,7 @@ impl Session {
     /// The resolution happened when the buffer was opened, so this is a pure map
     /// over cached values. It has to be: every caller runs it under the sessions
     /// lock, and that lock is shared by every workspace root the daemon serves.
-    pub(crate) fn buffer_overlay(&self) -> HashMap<PathBuf, Arc<str>> {
+    pub fn buffer_overlay(&self) -> HashMap<PathBuf, Arc<str>> {
         self.buffer_paths
             .iter()
             .filter_map(|(key, path)| {
@@ -687,21 +695,43 @@ impl Session {
                 buffer
             }
             None => {
-                let buffer = Buffer::new(&self.db, text, path);
+                let buffer = match self.closed.remove(key) {
+                    Some(buffer) => {
+                        buffer.set_text(&mut self.db).to(text);
+                        // A reopen may name the path differently, or name one
+                        // where the first open had none. A set always
+                        // invalidates, so set only a change.
+                        if *buffer.path(&self.db) != path {
+                            buffer.set_path(&mut self.db).to(path);
+                        }
+                        buffer
+                    }
+                    None => Buffer::new(&self.db, text, path),
+                };
                 self.buffers.insert(key.to_string(), buffer);
                 self.buffer_generation = self.buffer_generation.wrapping_add(1);
+                self.fit_buffer_capacity();
                 buffer
             }
         }
     }
 
-    /// Close a buffer. Its salsa input stays allocated — salsa has no removal — but
-    /// nothing reads it again.
+    /// Close a buffer. Salsa has no removal, so its input is emptied and kept for
+    /// the key to reuse, and the results computed for it are freed once newer
+    /// buffers need the room (see [`set_buffer_capacity`]).
     pub fn close_buffer(&mut self, key: &str) {
         self.buffer_paths.remove(key);
-        if self.buffers.remove(key).is_some() {
+        if let Some(buffer) = self.buffers.remove(key) {
+            buffer.set_text(&mut self.db).to(String::new());
+            self.closed.insert(key.to_string(), buffer);
             self.buffer_generation = self.buffer_generation.wrapping_add(1);
+            self.fit_buffer_capacity();
         }
+    }
+
+    /// Bound the cached results to the open buffers plus a few closed ones.
+    fn fit_buffer_capacity(&mut self) {
+        set_buffer_capacity(&mut self.db, self.buffers.len() + CLOSED_BUFFERS_CACHED);
     }
 
     /// Force an open buffer's incremental queries to re-read external inputs.

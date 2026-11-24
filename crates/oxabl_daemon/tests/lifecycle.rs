@@ -306,6 +306,27 @@ fn a_buffer_can_be_replaced_and_closed() {
     assert_eq!(session.open_buffers(), 0);
 }
 
+/// A closed key that opens again reuses its input, and takes the path of the
+/// new open: a first open without a path does not pin the reopen to none.
+#[test]
+fn a_reopened_buffer_takes_the_path_of_its_new_open() {
+    let mut sessions = Sessions::new();
+    let session = sessions.for_root("/proj");
+    let path = Some(PathBuf::from("/proj/main.p"));
+
+    let first = session.set_buffer("main.p", "MESSAGE \"one\".\n".to_string(), None);
+    session.close_buffer("main.p");
+    let second = session.set_buffer("main.p", "MESSAGE \"two\".\n".to_string(), path.clone());
+    assert!(first == second, "a reopen reuses the closed key's input");
+    assert_eq!(*second.path(session.database()), path);
+    assert_eq!(second.text(session.database()), "MESSAGE \"two\".\n");
+
+    session.close_buffer("main.p");
+    let third = session.set_buffer("main.p", "MESSAGE \"three\".\n".to_string(), None);
+    assert!(first == third);
+    assert_eq!(*third.path(session.database()), None);
+}
+
 /// Installing a configuration bumps the generation, which is what lets a completed
 /// computation be recognised as computed under rules the user has replaced.
 #[test]

@@ -593,6 +593,7 @@ mod tests {
                         validate: false,
                         initial_value: None,
                         extent: None,
+                        span: Span::DUMMY,
                     }],
                     indexes: vec![],
                     xml_options: XmlSerializeOptions::default(),

@@ -6,7 +6,7 @@ use std::thread;
 
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use lsp_types::{
-    ClientCapabilities, GeneralClientCapabilities, InitializeParams, InitializeResult,
+    ClientCapabilities, GeneralClientCapabilities, InitializeParams, InitializeResult, OneOf,
     PositionEncodingKind, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 
@@ -73,10 +73,12 @@ fn handshake_advertises_only_incremental_sync_and_push_diagnostics() {
     }
     // Push diagnostics need no capability; pull diagnostics must NOT be offered.
     assert!(caps.diagnostic_provider.is_none());
+    // Navigation is advertised: go to definition and document links.
+    assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
+    assert!(caps.document_link_provider.is_some());
     // No other feature advertised.
     assert!(caps.hover_provider.is_none());
     assert!(caps.completion_provider.is_none());
-    assert!(caps.definition_provider.is_none());
     assert!(caps.references_provider.is_none());
     assert!(caps.rename_provider.is_none());
 

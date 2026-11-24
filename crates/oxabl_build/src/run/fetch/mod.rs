@@ -95,7 +95,7 @@ fn expected(ctx: &Ctx<'_>, unit: u32, files: &[ArtifactPath]) -> bool {
     let mut want: Vec<&str> = ctx.infos[&unit]
         .expected
         .iter()
-        .map(|e| e.staged.as_str())
+        .map(|e| e.artifact.as_str())
         .collect();
     got.sort_unstable();
     want.sort_unstable();

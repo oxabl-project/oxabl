@@ -11,8 +11,9 @@ pub struct Reads<'a> {
     worker_dlc: String,
     /// The workspace root as the worker sees it.
     worker_root: String,
-    /// The r-code directory, root-relative.
-    rcode: String,
+    /// The r-code directory, root-relative; `None` when the r-code goes
+    /// beside the source.
+    rcode: Option<String>,
 }
 
 /// The canonical path of a file name as the compiler gave it: relative to the
@@ -46,7 +47,12 @@ pub fn trim_slash(text: &str) -> &str {
 }
 
 impl<'a> Reads<'a> {
-    pub fn new(names: &'a [String], worker_dlc: &str, worker_root: &str, rcode: &str) -> Reads<'a> {
+    pub fn new(
+        names: &'a [String],
+        worker_dlc: &str,
+        worker_root: &str,
+        rcode: Option<&str>,
+    ) -> Reads<'a> {
         Reads {
             names,
             nodes: names
@@ -56,7 +62,7 @@ impl<'a> Reads<'a> {
                 .collect(),
             worker_dlc: trim_slash(worker_dlc).to_string(),
             worker_root: trim_slash(worker_root).to_string(),
-            rcode: rcode.to_string(),
+            rcode: rcode.map(str::to_string),
         }
     }
 
@@ -66,8 +72,10 @@ impl<'a> Reads<'a> {
 
     /// `Ok` when every name is the unit or in its closure. R-code under the
     /// output directory and members of a library are skipped when the closure
-    /// holds a class: class resolution is protected by the plan rules. `Err`
-    /// names the first file that is neither.
+    /// holds a class: class resolution is protected by the plan rules. With
+    /// no output directory no r-code is skipped: a compile names no class
+    /// file, so r-code it names is not one. `Err` names the first file that
+    /// is neither.
     pub fn check(&self, unit: u32, closure: &[u32], listed: &[String]) -> Result<(), String> {
         let allowed: FxHashSet<u32> = closure.iter().copied().chain([unit]).collect();
         let class_in_closure = allowed
@@ -83,8 +91,11 @@ impl<'a> Reads<'a> {
                 continue;
             }
             let rcode = canonical.ends_with(".r")
-                && canonical.starts_with(&self.rcode)
-                && canonical[self.rcode.len()..].starts_with('/');
+                && self.rcode.as_deref().is_some_and(|rcode| {
+                    canonical
+                        .strip_prefix(rcode)
+                        .is_some_and(|rest| rest.starts_with('/'))
+                });
             let library = name.contains(".pl<<");
             if class_in_closure && (rcode || library) {
                 continue;

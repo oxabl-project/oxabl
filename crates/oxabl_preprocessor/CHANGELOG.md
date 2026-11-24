@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.8.3](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.2...oxabl_preprocessor-v0.8.3) (2026-11-23)
+
+
+### Bug Fixes
+
+* **preprocessor:** long lines and runs of unclosed braces cost memory and time in line with the input ([322fc7b](https://github.com/oxabl-project/oxabl/commit/322fc7b9e4edfe2601d03060c3508b3b0e0eb81c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+
+## [0.8.2](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.1...oxabl_preprocessor-v0.8.2) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+
+## [0.8.1](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.0...oxabl_preprocessor-v0.8.1) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+
+## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.6...oxabl_preprocessor-v0.8.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
+## [0.7.6](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.5...oxabl_preprocessor-v0.7.6) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+
+## [0.7.5](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.4...oxabl_preprocessor-v0.7.5) (2026-11-12)
+
+
+### Bug Fixes
+
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([958fe45](https://github.com/oxabl-project/oxabl/commit/958fe45edf0555ea774c125e949af5c34b30263a))
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([fbbe2ec](https://github.com/oxabl-project/oxabl/commit/fbbe2ec08e8e7b1e89c145052acea0edc25f186f)), closes [#337](https://github.com/oxabl-project/oxabl/issues/337)
+
 ## [0.7.4](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.3...oxabl_preprocessor-v0.7.4) (2026-11-11)
 
 
