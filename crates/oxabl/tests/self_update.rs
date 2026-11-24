@@ -99,6 +99,16 @@ fn script(version: &str) -> Vec<u8> {
     format!("#!/bin/sh\necho 'oxabl {version}'\n").into_bytes()
 }
 
+/// A "new binary" that records the arguments of a `skill` run in the state
+/// directory and exits with `skill_exit` for it.
+fn script_recording_skill(version: &str, skill_exit: i32) -> Vec<u8> {
+    format!(
+        "#!/bin/sh\ncase \"$1\" in\n  skill) echo \"$@\" > \"$XDG_STATE_HOME/skill-args\"; \
+         echo 'refresh broke' >&2; exit {skill_exit};;\nesac\necho 'oxabl {version}'\n"
+    )
+    .into_bytes()
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -142,6 +152,55 @@ fn an_update_installs_the_release_and_rewrites_the_record() {
             "version": NEWER,
         })
     );
+}
+
+#[test]
+fn an_update_refreshes_the_installed_skill_with_the_new_binary() {
+    let fixture = Fixture::new();
+    fixture.manage();
+    fixture
+        .server
+        .release(NEWER, &script_recording_skill(NEWER, 0), None);
+
+    let output = fixture.run(&["self-update"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let args = std::fs::read_to_string(fixture.state().with_file_name("skill-args")).unwrap();
+    assert_eq!(args.trim(), "skill install --user --refresh");
+    assert!(!text(&output.stderr).contains("warning"));
+}
+
+#[test]
+fn a_failed_skill_refresh_is_a_warning_and_the_update_stands() {
+    let fixture = Fixture::new();
+    fixture.manage();
+    let release = script_recording_skill(NEWER, 2);
+    fixture.server.release(NEWER, &release, None);
+
+    let output = fixture.run(&["self-update"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("warning: the agent skill was not refreshed: refresh broke"),
+        "{stderr}"
+    );
+    assert_eq!(fixture.installed_bytes(), release);
+    assert_eq!(fixture.record()["version"], NEWER);
+}
+
+#[test]
+fn no_update_means_no_skill_refresh() {
+    let fixture = Fixture::new();
+    fixture.manage();
+    fixture
+        .server
+        .release(INSTALLED, &script_recording_skill(INSTALLED, 0), None);
+
+    let output = fixture.run(&["self-update"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!fixture.state().with_file_name("skill-args").exists());
 }
 
 #[test]

@@ -253,7 +253,27 @@ mod real {
                 eprintln!("warning: {error}");
             }
             println!("oxabl was updated from {current} to {}", release.version);
+            refresh_skill(binary);
             Ok(ExitCode::SUCCESS)
         })
+    }
+
+    /// Brings the skill copies the user installed up to the new binary's text.
+    /// It never creates one, and its failure does not fail the update.
+    fn refresh_skill(binary: &std::path::Path) {
+        let refreshed = Command::new(binary)
+            .args(["skill", "install", "--user", "--refresh"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match refreshed {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!(
+                "warning: the agent skill was not refreshed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(error) => eprintln!("warning: the agent skill was not refreshed: {error}"),
+        }
     }
 }
