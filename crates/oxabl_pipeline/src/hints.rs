@@ -4,7 +4,8 @@
 //! ([`oxabl_lint::hints`]); this module places them in the shown file and
 //! words them. A hint whose place is not in the shown file's own text is
 //! left out, and a block hint is shown only when both of its ends are in
-//! that file. A kind shows only where its rule is on.
+//! that file. The index kind needs no rule; each other kind shows only where
+//! its rule is on.
 
 use std::path::{Path, PathBuf};
 
@@ -54,21 +55,11 @@ struct Placed<'c> {
 
 impl LintPipeline<'_> {
     /// Whether this file shows database hints: diagnostics are on in
-    /// `[workspace.features]`, and the file enables a rule of
-    /// `strict.locks`, `strict.transactions` or `strict.access`.
+    /// `[workspace.features]`. The index kind needs no rule; each other kind
+    /// shows only where its rule is on (see
+    /// [`database_hints`](Self::database_hints)).
     pub fn database_hints_enabled(&self) -> bool {
-        use oxabl_lint::groups::{STRICT_ACCESS, STRICT_LOCKS, STRICT_TRANSACTIONS};
-        if !self.config().features.diagnostics {
-            return false;
-        }
-        let registry = oxabl_lint::Registry::builtin_shared();
-        let severities = self.hint_severities();
-        registry.rules().any(|r| {
-            matches!(
-                r.meta().group,
-                STRICT_LOCKS | STRICT_TRANSACTIONS | STRICT_ACCESS
-            ) && registry.severity_for(r, &severities).is_some()
-        })
+        self.config().features.diagnostics
     }
 
     fn hint_severities(&self) -> oxabl_common::LintSeverityMap {
@@ -105,7 +96,7 @@ impl LintPipeline<'_> {
         let placed = self.place_hints(expanded, kinds, note, |span| {
             expanded.resolve_root_span(span)
         });
-        let placed = if fragment {
+        let placed = if fragment && !placed.is_empty() {
             let dependence = oxabl_lint::fragment::IncludeDependence::scan(source);
             let probe = crate::lint::ExpansionProbe::new(source, expansion, self.file_system());
             placed
@@ -162,8 +153,9 @@ impl LintPipeline<'_> {
         order(placed)
     }
 
-    /// The hints of the kinds whose rule this file enables, placed by
-    /// `place`, which maps an expanded span to the shown file's bytes.
+    /// The hints of `kinds` placed by `place`, which maps an expanded span to
+    /// the shown file's bytes. The index kind needs no rule; each other kind
+    /// is computed only where its rule is on.
     fn place_hints(
         &self,
         expanded: &oxabl_analyze::ExpandedFile,

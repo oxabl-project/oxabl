@@ -370,12 +370,137 @@ fn a_file_the_analysis_cannot_judge_gives_no_hint() {
     assert!(hints.is_empty(), "{hints:?}");
 }
 
+/// The `(line, index, whole)` of each index hint, in the order of `explain`.
+fn index_labels(hints: &[Hint]) -> Vec<(usize, String, bool)> {
+    let mut index: Vec<_> = hints
+        .iter()
+        .filter_map(|h| {
+            let rest = h.label.strip_prefix("index ")?;
+            Some(match rest.strip_suffix(", WHOLE-INDEX") {
+                Some(name) => (h.line, name.to_string(), true),
+                None => (h.line, rest.to_string(), false),
+            })
+        })
+        .collect();
+    index.sort();
+    index
+}
+
 #[test]
-fn a_workspace_without_strict_database_rules_gives_no_hint() {
-    let root = workspace("enable = [\"strict.handles\"]");
+fn a_workspace_without_strict_database_rules_gives_only_the_index_hint() {
+    // No `[workspace.lint]` at all, and one that enables an unrelated group.
+    for lint in ["", "enable = [\"strict.handles\"]"] {
+        let root = workspace(lint);
+        let mut session = Session::start_with(root.path(), capabilities());
+        for name in ["billing.p", "reset.p"] {
+            open(&mut session, root.path(), name);
+            let hints = hints(&mut session, root.path(), name);
+            // The same indexes `explain` names, and no hint of another kind.
+            let expected = index_choices(root.path(), name);
+            assert!(!expected.is_empty(), "{name}");
+            assert_eq!(index_labels(&hints), expected, "{name}: {lint}");
+            assert_eq!(hints.len(), expected.len(), "{name}: {hints:?}");
+        }
+    }
+}
+
+#[test]
+fn the_strict_rules_add_their_kinds_to_the_index_hint() {
+    let plain = workspace("");
+    let strict = workspace(STRICT);
+    let mut a = Session::start_with(plain.path(), capabilities());
+    let mut b = Session::start_with(strict.path(), capabilities());
+    open(&mut a, plain.path(), "billing.p");
+    open(&mut b, strict.path(), "billing.p");
+    let without = hints(&mut a, plain.path(), "billing.p");
+    let with = hints(&mut b, strict.path(), "billing.p");
+    assert!(with.len() > without.len());
+    assert_eq!(index_labels(&with), index_labels(&without));
+    assert!(with.iter().any(|h| h.label == "SHARE-LOCK"));
+    assert!(with.iter().any(|h| h.label == "transaction starts"));
+}
+
+#[test]
+fn the_index_setting_turns_the_default_index_hint_off() {
+    let root = workspace("");
+    let mut session = Session::start_with_options(
+        root.path(),
+        capabilities(),
+        json!({"inlayHints": {"index": false}}),
+    );
+    open(&mut session, root.path(), "billing.p");
+    let off = hints(&mut session, root.path(), "billing.p");
+    assert!(off.is_empty(), "{off:?}");
+
+    session.send(json!({
+        "jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
+        "params": {"settings": {"oxabl": {"inlayHints": {"index": true}}}}
+    }));
+    session.wait_for(|m| m["method"] == json!("workspace/inlayHint/refresh"));
+    let on = hints(&mut session, root.path(), "billing.p");
+    assert!(!index_labels(&on).is_empty(), "{on:?}");
+}
+
+#[test]
+fn no_hint_without_diagnostics() {
+    let root = workspace("[workspace.features]\ndiagnostics = false");
     let mut session = Session::start_with(root.path(), capabilities());
     open(&mut session, root.path(), "billing.p");
-    assert!(hints(&mut session, root.path(), "billing.p").is_empty());
+    let hints = hints(&mut session, root.path(), "billing.p");
+    assert!(hints.is_empty(), "{hints:?}");
+}
+
+#[test]
+fn the_index_hint_needs_a_file_the_analysis_can_judge() {
+    let root = workspace_with(
+        "",
+        &[
+            // A recovered parse: the second statement is broken.
+            (
+                "broken.p",
+                "FIND FIRST customer WHERE customer.custnum = 1 NO-ERROR.\n\
+                 FOR EACH ) invoice WHERE invoice.custnum = 5:\nEND.\n",
+            ),
+            (
+                "ok.p",
+                "FIND FIRST customer WHERE customer.custnum = 1 NO-ERROR.\n",
+            ),
+            // Text the preprocessor did not expand.
+            (
+                "partial.p",
+                &std::fs::read_to_string(fixtures().join("partial.p")).unwrap(),
+            ),
+        ],
+    );
+    let mut session = Session::start_with(root.path(), capabilities());
+    for name in ["broken.p", "ok.p", "partial.p"] {
+        open(&mut session, root.path(), name);
+    }
+    let ok = hints(&mut session, root.path(), "ok.p");
+    assert_eq!(index_labels(&ok).len(), 1, "{ok:?}");
+    for name in ["broken.p", "partial.p"] {
+        let hints = hints(&mut session, root.path(), name);
+        assert!(hints.is_empty(), "{name}: {hints:?}");
+    }
+}
+
+#[test]
+fn a_table_without_a_loaded_schema_gives_no_index_hint() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("oxabl.toml"),
+        "[workspace]\nname = \"hints\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("a.p"),
+        "FIND FIRST customer WHERE customer.custnum = 1 NO-ERROR.\n",
+    )
+    .unwrap();
+    let mut session = Session::start_with(root.path(), capabilities());
+    open(&mut session, root.path(), "a.p");
+    let hints = hints(&mut session, root.path(), "a.p");
+    assert!(hints.is_empty(), "{hints:?}");
 }
 
 #[test]

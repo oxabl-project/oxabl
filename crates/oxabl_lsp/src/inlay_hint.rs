@@ -4,10 +4,10 @@
 //! and where a raised buffer scope or an implicit transaction starts and
 //! ends. See `docs/design/inlay-hints.md`.
 //!
-//! A file shows hints only when its configuration enables a rule of
-//! `strict.locks`, `strict.transactions` or `strict.access`, and each kind
-//! only where its rule is on. An include with a selected context shows the
-//! hints of that root. The client turns
+//! A file shows hints when `diagnostics` is on in `[workspace.features]`. The
+//! index kind needs no rule; each other kind shows only where its rule (from
+//! `strict.locks`, `strict.transactions` or `strict.access`) is on. An
+//! include with a selected context shows the hints of that root. The client turns
 //! each kind off on its own with the `inlayHints` object of its
 //! initialization options or of `workspace/didChangeConfiguration`
 //! (`settings.oxabl.inlayHints`).

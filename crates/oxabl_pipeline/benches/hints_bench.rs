@@ -4,7 +4,8 @@
 //! result.
 //!
 //! `hints/all` is every kind; `hints/scopes` leaves out the index, which is
-//! the only kind that needs the effects analysis.
+//! the only kind that needs the effects analysis; `hints/index` is the index
+//! alone, which a project with no strict rule gets.
 
 use std::fmt::Write;
 use std::hint::black_box;
@@ -101,6 +102,15 @@ fn bench_hints(c: &mut Criterion) {
     };
     group.bench_function("scopes", |b| {
         b.iter(|| black_box(handle.database_hints(&source, &expansion, scopes).len()))
+    });
+    let index = HintKinds {
+        locks: false,
+        scope: false,
+        transactions: false,
+        ..HintKinds::ALL
+    };
+    group.bench_function("index", |b| {
+        b.iter(|| black_box(handle.database_hints(&source, &expansion, index).len()))
     });
     group.finish();
 }
