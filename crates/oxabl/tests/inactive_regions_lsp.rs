@@ -430,6 +430,7 @@ fn an_include_the_run_did_not_expand_leaves_the_includes_regions_undecided() {
                  &SCOPED-DEFINE x inc.i &mode=b\n&ENDIF\n{{&x}}\n",
             ),
             ("notfound.p", "{inc.i &mode=a}\n{notfound.i}\n"),
+            ("env.p", "{inc.i &mode=a}\nMESSAGE \"{&WINDOW-SYSTEM}\".\n"),
         ],
     );
     let inc_path = dir.path().join("inc.i");
@@ -454,6 +455,30 @@ fn an_include_the_run_did_not_expand_leaves_the_includes_regions_undecided() {
         select(&mut session, &inc_path, Some(&dir.path().join(root)));
         assert_eq!(next_regions(&session, &inc_path), vec![], "in {root}");
     }
+
+    // An unset environment name in the root's text is one of a few fixed
+    // words, never an include, so it misses no expansion.
+    select(&mut session, &inc_path, Some(&dir.path().join("env.p")));
+    assert_eq!(
+        next_regions(&session, &inc_path),
+        vec![(1, 0, 2, 0)],
+        "in env.p"
+    );
+}
+
+#[test]
+fn an_include_argument_inside_a_reference_is_read_as_passed() {
+    let inc = "&IF \"{&a-{1}}\" = \"yes\" &THEN\nMESSAGE 1.\n&ENDIF\n\
+               &IF OPSYS = \"VMS\" &THEN\nMESSAGE 2.\n&ENDIF\n";
+    let root = "&IF PROVERSION >= \"12\" &THEN\n&SCOPED-DEFINE a-4 yes\n&ENDIF\n{inc.i 4}\n";
+    let dir = project(BASE, &[("inc.i", inc), ("root.p", root)]);
+    let inc_path = dir.path().join("inc.i");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&inc_path, inc);
+    next_regions(&session, &inc_path);
+    // In root.p the name read is `a-4`, which a guessed branch defines.
+    select(&mut session, &inc_path, Some(&dir.path().join("root.p")));
+    assert_eq!(next_regions(&session, &inc_path), vec![(4, 0, 5, 0)]);
 }
 
 #[test]
@@ -483,15 +508,25 @@ MESSAGE \"dataserver\".\n\
 &IF CONNECTED(\"stock\") &THEN\n\
 MESSAGE \"stock\".\n\
 &ENDIF\n";
+    // With one environment key stated, and with all four, so that every other
+    // name is known.
+    let all_four =
+        format!("{BASE}window-system = \"TTY\"\nbatch-mode = true\nprocess-architecture = 64\n");
+    for stated in [BASE, all_four.as_str()] {
+        let listed = format!("{stated}databases = [\"ledger\"]\n");
+        let dir = project(&listed, &[("db.p", text)]);
+        let path = dir.path().join("db.p");
+        let mut session = Session::start_with(dir.path(), asks());
+        session.open(&path, text);
+        // `PROGRESS` is only the default type; the stated list does decide
+        // `CONNECTED`.
+        assert_eq!(
+            next_regions(&session, &path),
+            vec![(4, 0, 5, 0)],
+            "with {stated}"
+        );
+    }
     let listed = format!("{BASE}databases = [\"ledger\"]\n");
-    let dir = project(&listed, &[("db.p", text)]);
-    let path = dir.path().join("db.p");
-    let mut session = Session::start_with(dir.path(), asks());
-    session.open(&path, text);
-    // `PROGRESS` is only the default type; the stated list does decide
-    // `CONNECTED`.
-    assert_eq!(next_regions(&session, &path), vec![(4, 0, 5, 0)]);
-    drop(session);
 
     let typed = format!("{listed}database-types = {{ ledger = \"PROGRESS\" }}\n");
     let dir = project(&typed, &[("db.p", text)]);

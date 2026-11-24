@@ -79,8 +79,9 @@ A condition is undecided when:
 
 A reference inside a reference (`{&OPEN-QUERY-{&FRAME-NAME}}`) is expanded
 from the inside out, as the AVM does: the inner value becomes part of the outer
-name. Both names must be known. A computed inner name (`{&a-{&LINE-NUMBER}}`)
-is checked after it is computed. A value is never scanned again, so a value
+name. Both names must be known. An inner include argument (`{&a-{1}}`) or
+computed name (`{&a-{&LINE-NUMBER}}`) is checked after it is substituted: the
+condition is checked once as written and once after every substitution. A value is never scanned again, so a value
 that holds a reference to its own name stays text and cannot make the
 expansion loop.
 
@@ -131,8 +132,8 @@ sets (`oxabl.toml` and, for `oxabl build`, the overlay).
 
 `DBTYPE` of a connected database that `database-types` does not name answers
 `PROGRESS` for the diagnostics. That is a default too, so for the dimming the
-condition is not decided. Name the database under `database-types` to dim on
-its type.
+condition is not decided, also when every other name is known. Name the
+database under `database-types` to dim on its type.
 
 ## Includes
 
@@ -149,7 +150,10 @@ its type.
     guess;
   - an include whose name or arguments read a name that is not known, and a
     `{&name}` with a value that is not known, since another value names
-    another include;
+    another include. An unset compile-environment name (`{&WINDOW-SYSTEM}` and
+    the others of the defaults above) is the exception: its value is one of a
+    few fixed words, never an include reference, unless the source defines
+    the name;
   - an include that oxabl does not find: the compiler's PROPATH may find it;
   - an include dropped because it could not be read, closed a cycle, or passed
     the depth or expansion limit.
@@ -165,7 +169,9 @@ its type.
   `[workspace.features]`, or with no `oxabl.toml`, the server sends no regions
   (an empty list when the diagnostics are off). When the diagnostics publish
   and the regions of the same analysis are lost (a cancelled read), the server
-  sends an empty list, so old regions do not stay on new text.
+  sends an empty list, so old regions do not stay on new text. It does the same
+  for a version whose analysis panics (also in an include context), as no
+  publish follows for that version.
 - A chain on one line (`&IF a &THEN x &ELSE y &ENDIF`) dims only the text
   between its directives.
 - A file whose preprocessing fails has no regions.
@@ -179,9 +185,13 @@ its type.
 last regions of each document with the document version they are for
 (`regionStore.ts`). It paints them in each visible editor of the document, and
 again when an editor shows the document, but only while the document has that
-version. On an edit with one change, the regions move with the text and a region
-that the edit touches goes, until the next publish brings the new ones. Several
-changes at once (multi-cursor) remove all of them until then. The setting
+version. An edit makes a new version, and the regions of the old one are kept
+for it only when the edit cannot change a decision: one insertion of text with
+no `& { } / * " ' ~`, on lines that hold none of them after the edit. Then the
+regions move with the text, and a region that the insertion touches goes. Any
+other edit (a removal, a replacement, a directive line, several changes at
+once) removes the regions until the next publish. An edit away from a region
+can change it (a define above an `&IF`), so only such inert text keeps them. The setting
 `oxabl.inactiveRegions.enable` (default `true`) turns the dimming off and on
 with no restart. The e2e scenario `inactive-regions` tests it with the real
 server.
@@ -195,8 +205,12 @@ reference inside a reference, a chain inside an unclosed `&IF`, a name that an
 unread include can define, an undefine and the end of an include's scope, an
 include under three includer contexts and in fragment mode, an include whose
 root misses an expansion of it (a guessed branch, a guessed include name, an
-include that is not found), a computed name inside a reference, a `DBTYPE`
-default, a value that names itself (also through `oxabl check`, with a time
+include that is not found), an unset environment name in a root's text, an
+include argument and a computed name inside a reference, a `DBTYPE` default
+(with one and with all four environment keys set), a value that names itself (also through `oxabl check`, with a time
 limit), and a client that does not ask (an open and an edit).
-`clients/vscode/src/regionStore.test.ts` tests that old regions are not painted
-on new text and that regions move with an edit.
+`crates/oxabl_lsp/tests/inactive_regions_panic.rs` injects a panic in the
+analysis of an edit, of a reopen, and of an include's root, and wants the
+regions cleared. `clients/vscode/src/regionStore.test.ts` tests that old regions
+are not painted on new text, that they move with an inert insertion, and that a
+removal or an edit of a directive line drops them.

@@ -957,8 +957,15 @@ impl<'c> Server<'c> {
             has_diagnostics: res.diagnostics.is_some(),
             panicked: res.panicked,
         };
+        let current = work.current_version == Some(work.read_version);
         match dispose(work) {
-            Disposition::Drop => {}
+            Disposition::Drop => {
+                // A panic gives this version no answer and none follows, so the
+                // regions of older text must not stand for it.
+                if res.panicked && current {
+                    self.publish_inactive_regions(&res.uri, res.version, []);
+                }
+            }
             Disposition::Retry => {
                 self.debouncer.schedule(res.uri, std::time::Instant::now());
             }
@@ -1333,7 +1340,9 @@ impl<'c> Server<'c> {
             // db while the main loop is inside this call), but if one ever does
             // arrive the open would otherwise publish nothing at all and no timer
             // would remain — the same stale-forever shape as in `handle_result`.
-            if !analysis.panicked {
+            if analysis.panicked {
+                self.publish_inactive_regions(uri, version, []);
+            } else {
                 self.debouncer
                     .schedule(uri.clone(), std::time::Instant::now());
             }

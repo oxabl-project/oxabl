@@ -322,8 +322,13 @@ impl Server<'_> {
             has_diagnostics: res.outcome.is_some(),
             panicked: res.panicked,
         };
+        let current = work.current_version == Some(work.read_version);
         match dispose(work) {
-            Disposition::Drop => {}
+            Disposition::Drop => {
+                if res.panicked && current {
+                    self.publish_inactive_regions(&res.uri, res.version, []);
+                }
+            }
             Disposition::Retry => {
                 self.debouncer.schedule(res.uri, std::time::Instant::now());
             }

@@ -36,11 +36,12 @@ pub struct Evaluation {
     pub value: bool,
     pub gaps: Vec<Gap>,
     /// Whether the condition asks `DEFINED` about a name that
-    /// [`Environment::known`] does not know, after `{&name}` expansion, or,
-    /// with [`Environment::known`] set, reads a default of the configuration:
-    /// the `OPSYS` function while `opsys` is not set, or `DBTYPE` of a database
-    /// that `database-types` does not name.
+    /// [`Environment::known`] does not know, after `{&name}` expansion.
     pub reads_unknown_name: bool,
+    /// Whether the value rests on a default of the configuration rather than
+    /// on a stated fact: the `OPSYS` function while `opsys` is not set, or
+    /// `DBTYPE` of a database that `database-types` does not name.
+    pub reads_default: bool,
 }
 
 /// Evaluate a preprocessor `&IF` condition.
@@ -87,7 +88,7 @@ pub struct Evaluation {
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
-    let mut reads_unknown_name = env.known.is_some_and(|known| {
+    let reads_unknown_name = env.known.is_some_and(|known| {
         tokens
             .iter()
             .any(|token| matches!(token, CondToken::Defined(name) if !known(name)))
@@ -99,6 +100,7 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
             value: false,
             gaps: Vec::new(),
             reads_unknown_name,
+            reads_default: false,
         };
     }
     let mut parser = CondParser {
@@ -114,11 +116,11 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
         parser.invalid(format!("unexpected {}", describe(&tokens[parser.pos])));
     }
     let value = parser.truth(&value);
-    reads_unknown_name |= env.known.is_some() && parser.read_default;
     Evaluation {
         value,
         gaps: parser.gaps,
         reads_unknown_name,
+        reads_default: parser.read_default,
     }
 }
 

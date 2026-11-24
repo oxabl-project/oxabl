@@ -41,12 +41,15 @@ export class InactiveRegions implements vscode.Disposable {
       this.decoration,
       vscode.window.onDidChangeVisibleTextEditors(() => this.paintAll()),
       vscode.workspace.onDidCloseTextDocument((document) => this.regions.delete(document.uri.toString())),
-      // An edit moves the text under the regions. They move with it, and a
-      // region the edit touches goes, until the next publish.
+      // An edit moves the text under the regions. An insertion that cannot
+      // change a decision moves them with it; any other edit removes them until
+      // the next publish.
       vscode.workspace.onDidChangeTextDocument((event) => {
         if (event.contentChanges.length > 0) {
-          const uri = event.document.uri.toString();
-          this.regions.edit(uri, event.document.version - 1, event.document.version, event.contentChanges);
+          const document = event.document;
+          const uri = document.uri.toString();
+          const lineAt = (line: number) => (line < document.lineCount ? document.lineAt(line).text : "");
+          this.regions.edit(uri, document.version - 1, document.version, event.contentChanges, lineAt);
           this.repaint(uri);
         }
       }),

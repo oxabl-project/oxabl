@@ -1350,12 +1350,14 @@ impl ProcessContext<'_> {
         } else {
             &[]
         };
+        let raw = condition;
         let condition = expand_positional_refs(condition, args);
         let condition = self.substitute_computed_names(&condition, source, at, site);
-        // A computed name inside a reference (`{&a-{&LINE-NUMBER}}`) changes the
-        // name that is read, so the substituted text is checked too.
+        // An argument or a computed name inside a reference (`{&a-{1}}`,
+        // `{&a-{&LINE-NUMBER}}`) changes the name that is read, so the text
+        // after every substitution is checked too.
         let reads_unknown = reads_unknown
-            || (matches!(condition, Cow::Owned(_)) && self.reads_unknown_name(&condition));
+            || (self.tracking && *condition != *raw && self.reads_unknown_name(&condition));
         let knowledge = &self.knowledge;
         let known = |name: &str| knowledge.is_known(name);
         let evaluation = evaluate(
@@ -1377,8 +1379,10 @@ impl ProcessContext<'_> {
         if !unmodelled.is_empty() {
             self.report_unmodelled_condition(&unmodelled.join(", "), site);
         }
-        let decided =
-            !reads_unknown && self.text_losses.len() == losses && !evaluation.reads_unknown_name;
+        let decided = !reads_unknown
+            && self.text_losses.len() == losses
+            && !evaluation.reads_unknown_name
+            && !(self.tracking && evaluation.reads_default);
         (evaluation.value, decided)
     }
 
@@ -1609,7 +1613,11 @@ impl ProcessContext<'_> {
                 end: ref_end as u32,
             },
         };
-        if self.tracking && !self.knowledge.is_known(var_name.trim_ascii_end()) {
+        if self.tracking
+            && self
+                .knowledge
+                .may_hold_unknown_text(var_name.trim_ascii_end())
+        {
             // Another value may hold an include reference.
             self.missed_expansion = true;
         }
@@ -2174,6 +2182,10 @@ struct Knowledge {
     ever_uncertain: FxHashSet<String>,
     /// Text the run did not read may have defined any name.
     all_uncertain: bool,
+    /// Predefined environment names that are not known only because their key
+    /// is not set, and that nothing defined since. Their value is one of a few
+    /// fixed words, never an include reference.
+    defaults: FxHashSet<String>,
     /// See [`Preprocessor::with_includer_unknown`].
     includer_unknown: bool,
     /// One frame per include being expanded: what was known of each name
@@ -2207,9 +2219,20 @@ impl Knowledge {
             if !set {
                 knowledge.uncertain.insert(name.to_string());
                 knowledge.ever_uncertain.insert(name.to_string());
+                knowledge.defaults.insert(name.to_string());
             }
         }
         knowledge
+    }
+
+    /// Whether the value of `name` may hold an include reference that the run
+    /// does not know of: it is not known, and not only for an unset key of the
+    /// compile environment.
+    fn may_hold_unknown_text(&self, name: &str) -> bool {
+        !self.is_known(name)
+            && (self.all_uncertain
+                || self.includer_unknown
+                || !with_folded(name, |name| self.defaults.contains(name)))
     }
 
     /// Whether every name is known, as in a root whose branches are all
@@ -2271,6 +2294,8 @@ impl Knowledge {
     }
 
     fn change(&mut self, name: &str, after: (bool, bool), scoped: bool) {
+        // Defined or undefined in the source: no longer only a default.
+        self.defaults.remove(name);
         if !scoped {
             for saved in self.frames.iter_mut().flatten() {
                 if saved.name == name {
@@ -2296,6 +2321,7 @@ impl Knowledge {
     }
 
     fn apply(&mut self, name: &str, (set, uncertain): (bool, bool)) {
+        self.defaults.remove(name);
         if set {
             self.set.insert(name.to_string());
         } else {

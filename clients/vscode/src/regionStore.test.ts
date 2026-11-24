@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { type Region, RegionStore, shiftRegions } from "./regionStore";
+import { type Region, RegionStore, keepsDecisions, shiftRegions } from "./regionStore";
+
+/** The new text, as `lineAt` reads it. */
+const lines = (...text: string[]) => (line: number) => text[line] ?? "";
+const plain = lines("MESSAGE 1.", "x", "y", "x.", "z", "w", "v");
 
 const r = (sl: number, sc: number, el: number, ec: number): Region => ({
   start: { line: sl, character: sc },
@@ -24,21 +28,37 @@ describe("RegionStore", () => {
     const store = new RegionStore();
     store.set("file:///a.p", 3, [r(1, 0, 2, 0), r(5, 0, 6, 0)]);
     // A new line typed at the start of line 3.
-    store.edit("file:///a.p", 3, 4, [{ range: r(3, 0, 3, 0), text: "x.\n" }]);
+    store.edit("file:///a.p", 3, 4, [{ range: r(3, 0, 3, 0), text: "x.\n" }], plain);
     expect(store.get("file:///a.p", 4)).toEqual([r(1, 0, 2, 0), r(6, 0, 7, 0)]);
   });
 
   it("drops the regions of another version or of several edits", () => {
     const store = new RegionStore();
     store.set("file:///a.p", 3, [r(1, 0, 2, 0)]);
-    store.edit("file:///a.p", 2, 3, [{ range: r(0, 0, 0, 0), text: "x" }]);
+    store.edit("file:///a.p", 2, 3, [{ range: r(0, 0, 0, 0), text: "x" }], plain);
     expect(store.get("file:///a.p", 3)).toEqual([]);
     store.set("file:///a.p", 3, [r(1, 0, 2, 0)]);
     const two = [
       { range: r(0, 0, 0, 0), text: "x" },
       { range: r(4, 0, 4, 0), text: "y" },
     ];
-    store.edit("file:///a.p", 3, 4, two);
+    store.edit("file:///a.p", 3, 4, two, plain);
+    expect(store.get("file:///a.p", 4)).toEqual([]);
+  });
+
+  it("drops the regions on an edit of a directive line above them", () => {
+    const store = new RegionStore();
+    store.set("file:///a.p", 3, [r(3, 0, 4, 0)]);
+    // `&SCOPED-DEFINE mode fast` becomes `fastx`: the branch below may compile.
+    const after = lines("&SCOPED-DEFINE mode fastx", "&IF \"{&mode}\" = \"fast\" &THEN", "&ELSE", "MESSAGE 1.");
+    store.edit("file:///a.p", 3, 4, [{ range: r(0, 24, 0, 24), text: "x" }], after);
+    expect(store.get("file:///a.p", 4)).toEqual([]);
+  });
+
+  it("drops the regions on a removal, which may have held a directive", () => {
+    const store = new RegionStore();
+    store.set("file:///a.p", 3, [r(5, 0, 6, 0)]);
+    store.edit("file:///a.p", 3, 4, [{ range: r(1, 0, 2, 0), text: "" }], plain);
     expect(store.get("file:///a.p", 4)).toEqual([]);
   });
 
@@ -66,5 +86,22 @@ describe("shiftRegions", () => {
 
   it("moves a region on the last line of the edit by the change in columns", () => {
     expect(shiftRegions([r(2, 6, 2, 9)], { range: r(2, 1, 2, 3), text: "abcd" })).toEqual([r(2, 8, 2, 11)]);
+  });
+});
+
+describe("keepsDecisions", () => {
+  it("keeps plain text typed on a plain line", () => {
+    expect(keepsDecisions({ range: r(1, 1, 1, 1), text: "abc" }, plain)).toBe(true);
+  });
+
+  it("refuses text that can open a comment, a string or a reference", () => {
+    for (const text of ["/", "*", '"', "'", "~", "{", "}", "&"]) {
+      expect(keepsDecisions({ range: r(1, 1, 1, 1), text }, plain), text).toBe(false);
+    }
+  });
+
+  it("refuses an insertion on a line that holds one", () => {
+    // Typing between `/` and `*` breaks a comment opener.
+    expect(keepsDecisions({ range: r(0, 1, 0, 1), text: "x" }, lines("/x* note */"))).toBe(false);
   });
 });
