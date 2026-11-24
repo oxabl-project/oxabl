@@ -4,7 +4,8 @@
 //! sync (with open/close) and push `publishDiagnostics` — plus whole-document
 //! formatting (`document_formatting_provider`, R1), document symbols
 //! (`document_symbol_provider`), workspace symbols (`workspace_symbol_provider`), go to
-//! definition (`definition_provider`) and document links (`document_link_provider`). Push
+//! definition (`definition_provider`), document highlights
+//! (`document_highlight_provider`) and document links (`document_link_provider`). Push
 //! diagnostics require no
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (hover, completion, pull
@@ -56,6 +57,7 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         definition_provider: Some(OneOf::Left(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
         // Each link carries its target, so there is nothing to resolve later.
         document_link_provider: Some(DocumentLinkOptions {
             resolve_provider: Some(false),
@@ -140,6 +142,7 @@ mod tests {
         assert!(caps.hover_provider.is_none());
         assert!(caps.completion_provider.is_none());
         assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
+        assert_eq!(caps.document_highlight_provider, Some(OneOf::Left(true)));
         assert_eq!(
             caps.document_link_provider
                 .and_then(|links| links.resolve_provider),

@@ -91,7 +91,7 @@ pub use config::{
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
-pub use navigate::{Link, Navigation, Target};
+pub use navigate::{Highlight, Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};

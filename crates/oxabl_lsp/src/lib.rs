@@ -4,7 +4,7 @@
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
-//! `textDocument/definition` and `textDocument/documentLink` (see
+//! `textDocument/definition`, `textDocument/documentHighlight` and `textDocument/documentLink` (see
 //! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
@@ -48,8 +48,8 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentLinkRequest, DocumentSymbolRequest, Formatting, GotoDefinition, Request as _,
-    WorkspaceSymbolRequest,
+    DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, Formatting,
+    GotoDefinition, Request as _, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -800,6 +800,8 @@ impl<'c> Server<'c> {
                                 self.handle_document_symbol(req)?;
                             } else if req.method == GotoDefinition::METHOD {
                                 self.handle_definition(req)?;
+                            } else if req.method == DocumentHighlightRequest::METHOD {
+                                self.handle_document_highlight(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
                                 self.handle_document_link(req)?;
                             } else if req.method == expanded_unit::METHOD {

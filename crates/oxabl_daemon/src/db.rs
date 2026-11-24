@@ -1272,6 +1272,8 @@ pub enum NavigationQuery {
     /// The declarations of the name at byte `offset` of `file`, which is the
     /// root or an include its expansion reads.
     Definition { file: PathBuf, offset: u32 },
+    /// The uses, in `file`, of the name at byte `offset` of `file`.
+    Highlights { file: PathBuf, offset: u32 },
     /// The links written in the root itself.
     Links,
 }
@@ -1282,6 +1284,9 @@ pub enum NavigationQuery {
 pub struct NavigationAnswer {
     pub definitions: Vec<oxabl_pipeline::Target>,
     pub links: Vec<oxabl_pipeline::Link>,
+    /// The uses of a [`NavigationQuery::Highlights`] name; the text of the
+    /// file is the only entry of `texts`.
+    pub highlights: Vec<oxabl_pipeline::Highlight>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -1331,6 +1336,16 @@ pub fn compute_navigation(
             NavigationQuery::Definition { file, offset } => {
                 let file = spelled_as_expanded(&expansion, root, file);
                 answer.definitions = navigation.definitions(&file, *offset);
+            }
+            NavigationQuery::Highlights { file, offset } => {
+                let file = spelled_as_expanded(&expansion, root, file);
+                answer.highlights = navigation.highlights(&file, *offset);
+                let text = fs
+                    .read(&file)
+                    .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+                answer
+                    .texts
+                    .insert(search::normalize_lexically(&file), text);
             }
             NavigationQuery::Links => {
                 answer.links = navigation.links();

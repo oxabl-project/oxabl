@@ -1,6 +1,7 @@
-//! `textDocument/definition` and `textDocument/documentLink`.
+//! `textDocument/definition`, `textDocument/documentHighlight` and
+//! `textDocument/documentLink`.
 //!
-//! Both analyse one compilation unit on a worker thread with the open buffers
+//! Each analyses one compilation unit on a worker thread with the open buffers
 //! over the disk ([`compute_navigation`]) and render its byte spans in the
 //! negotiated position encoding. An open include with a selected compilation
 //! context is analysed in that root for go to definition; otherwise an include
@@ -12,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
-    DocumentLink, DocumentLinkParams, GotoDefinitionParams, Location, PositionEncodingKind, Range,
+    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentLink,
+    DocumentLinkParams, GotoDefinitionParams, Location, PositionEncodingKind, Range,
 };
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::db::{NavigationAnswer, NavigationQuery, compute_navigation};
@@ -45,6 +47,32 @@ impl Server<'_> {
         let query = NavigationQuery::Definition { file: path, offset };
         self.spawn_navigation(req.id, root, query, |answer, encoding| {
             serde_json::to_value(locations(answer, encoding))
+        })
+    }
+
+    pub(crate) fn handle_document_highlight(&mut self, req: Request) -> anyhow::Result<()> {
+        let params: DocumentHighlightParams = match serde_json::from_value(req.params) {
+            Ok(params) => params,
+            Err(error) => return self.respond(invalid(req.id, &error.to_string())),
+        };
+        let position = params.text_document_position_params;
+        let uri = position.text_document.uri;
+        let Some(path) = uri_to_path(&uri) else {
+            return self.respond(invalid(req.id, &format!("{} is not a file", uri.as_str())));
+        };
+        let Some(document) = self.documents.get(&uri) else {
+            return self.respond(invalid(req.id, &format!("{} is not open", uri.as_str())));
+        };
+        let offset = position_to_byte(&document.rope, position.position, &self.encoding) as u32;
+        let path = canonical_path(&path);
+        let root = self
+            .contexts
+            .selected(&uri)
+            .cloned()
+            .unwrap_or_else(|| path.clone());
+        let query = NavigationQuery::Highlights { file: path, offset };
+        self.spawn_navigation(req.id, root, query, |answer, encoding| {
+            serde_json::to_value(highlights(answer, encoding))
         })
     }
 
@@ -162,6 +190,30 @@ fn locations(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Optio
         })
         .collect();
     (!locations.is_empty()).then_some(locations)
+}
+
+/// Each use of the name, read or write. `None` (JSON `null`) when there is none.
+fn highlights(
+    answer: NavigationAnswer,
+    encoding: &PositionEncodingKind,
+) -> Option<Vec<DocumentHighlight>> {
+    let file = answer.texts.keys().next().cloned()?;
+    let mut ropes = Ropes::new(&answer.texts);
+    let found: Vec<DocumentHighlight> = answer
+        .highlights
+        .iter()
+        .filter_map(|use_| {
+            Some(DocumentHighlight {
+                range: ropes.range(&file, (use_.span.start, use_.span.end), encoding)?,
+                kind: Some(if use_.write {
+                    DocumentHighlightKind::WRITE
+                } else {
+                    DocumentHighlightKind::READ
+                }),
+            })
+        })
+        .collect();
+    (!found.is_empty()).then_some(found)
 }
 
 fn links(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Vec<DocumentLink> {

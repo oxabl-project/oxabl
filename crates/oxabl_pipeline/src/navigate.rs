@@ -16,7 +16,8 @@
 //! graph knows it ([`CallTarget::InProgram`]): every `RUN ... PERSISTENT SET h`
 //! of the file runs one program and nothing else writes `h`.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use oxabl_analyze::{ExpandedFile, analyze_for_navigation};
@@ -26,6 +27,7 @@ use oxabl_index::calls::{
     CallKind, CallTarget, FileCalls, ProgramAnswer, UnknownCall, resolve_program,
 };
 use oxabl_index::search::{self, NameKind};
+use oxabl_schema::{FieldResolution, TableId};
 use oxabl_semantic::{
     IndexName, IndexedFileId, Resolution, Semantic, SiteTarget, SourceContext, SymbolId,
     SymbolKind, UnresolvedReason,
@@ -50,6 +52,31 @@ pub struct Link {
     pub target: PathBuf,
 }
 
+/// One use of a name in the analysed file: the bytes of the name and whether
+/// the statement changes its value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Highlight {
+    pub span: Span,
+    pub write: bool,
+}
+
+/// What a name stands for, in terms two uses can share. Two uses highlight
+/// each other when they have the same identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Identity {
+    /// A program or a class: its file.
+    File(PathBuf),
+    /// A member that a class file declares, by lower-case name.
+    Member(PathBuf, String),
+    /// A schema field, by table and full lower-case name.
+    Field(TableId, String),
+    Table(TableId),
+    /// A declaration written in the unit, at its name.
+    Declared(Target),
+    /// A target from a lookup that found one or several files.
+    At(Target),
+}
+
 /// One compilation unit analysed for navigation. See the module docs.
 pub struct Navigation<'s, 'a> {
     run: &'s LintPipeline<'a>,
@@ -59,6 +86,8 @@ pub struct Navigation<'s, 'a> {
     file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
     /// The unit's calls, extracted on the first `RUN` site asked about.
     calls: OnceCell<FileCalls>,
+    /// The identity of each symbol a highlight asked about.
+    identities: RefCell<HashMap<SymbolId, Option<Identity>>>,
 }
 
 impl<'a> LintPipeline<'a> {
@@ -96,6 +125,7 @@ impl<'a> LintPipeline<'a> {
             semantic,
             file_of,
             calls: OnceCell::new(),
+            identities: RefCell::new(HashMap::new()),
         })
     }
 }
@@ -122,6 +152,64 @@ impl Navigation<'_, '_> {
             }
         }
         Vec::new()
+    }
+
+    /// The uses of the name at byte `offset` of `file` that are written in
+    /// `file`, in order, each once. The name is the one go to definition would
+    /// answer for, and a use counts when it resolves to the same declaration.
+    /// Empty when the name does not resolve, the offset is on no name, or the
+    /// name has more than one possible declaration.
+    pub fn highlights(&self, file: &Path, offset: u32) -> Vec<Highlight> {
+        let file = search::normalize_lexically(file);
+        let ids = self.file_ids(&file);
+        let mut wanted = None;
+        for at in [Some(offset), offset.checked_sub(1)].into_iter().flatten() {
+            let virt = ids
+                .iter()
+                .find_map(|id| self.expanded.expanded_offset(*id, at));
+            if let Some(virt) = virt
+                && let Some(found) = self.resolve_at(
+                    virt,
+                    |target, span| self.site_identities(target, span),
+                    |sym| self.symbol_identities(sym),
+                )
+            {
+                wanted = Some(found);
+                break;
+            }
+        }
+        let Some(wanted) = wanted.filter(|wanted| !wanted.is_empty()) else {
+            return Vec::new();
+        };
+        let symbols = &self.semantic.symbols;
+        let mut uses: Vec<(VirtualSpan, bool)> = Vec::new();
+        for site in symbols.sites() {
+            if self.site_identities(&site.target, site.span).as_ref() == Some(&wanted) {
+                uses.push((site.span, site.write));
+            }
+        }
+        for (sym, symbol) in symbols.iter() {
+            if symbol.declaration != NodeId::DUMMY && self.symbol_identities(sym) == wanted {
+                // A buffer holds no value of its own: naming it declares no write.
+                uses.push((symbol.name_span, symbol.kind != SymbolKind::Buffer));
+            }
+        }
+        let mut found: Vec<Highlight> = innermost(uses)
+            .into_iter()
+            .filter_map(|(span, write)| {
+                let span = self.physical(span, &file)?;
+                Some(Highlight { span, write })
+            })
+            .collect();
+        found.sort_by_key(|highlight| (highlight.span.start, highlight.span.end));
+        let mut merged: Vec<Highlight> = Vec::with_capacity(found.len());
+        for highlight in found {
+            match merged.last_mut() {
+                Some(last) if last.span == highlight.span => last.write |= highlight.write,
+                _ => merged.push(highlight),
+            }
+        }
+        merged
     }
 
     /// The include references, literal `RUN` targets and `USING` names written
@@ -201,9 +289,123 @@ impl Navigation<'_, '_> {
         self.run.file().map(search::normalize_lexically)
     }
 
+    /// `span` of the expanded text as bytes of `file`: the root, or an include
+    /// that the expansion read.
+    fn physical(&self, span: VirtualSpan, file: &Path) -> Option<Span> {
+        let span = to_span(span);
+        if let Some(root) = self.expanded.resolve_root_span(span) {
+            return (self.root_path().as_deref() == Some(file)).then_some(root);
+        }
+        let (path, span, _) = self.expanded.resolve_include_span(span)?;
+        (search::normalize_lexically(path) == file).then_some(span)
+    }
+
+    /// What the site names, for [`highlights`](Self::highlights). The shape of
+    /// the answer is that of [`site_targets`](Self::site_targets).
+    fn site_identities(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Vec<Identity>> {
+        let symbols = &self.semantic.symbols;
+        let resolved = match target {
+            SiteTarget::Symbol(sym) => Some(*sym),
+            SiteTarget::Reference(node) => match self.semantic.references.get(*node)? {
+                Resolution::Resolved(sym) => Some(*sym),
+                Resolution::Unresolved { .. } => return Some(Vec::new()),
+            },
+            // A `RUN` through a handle, and a name with several candidates,
+            // take the full answer.
+            SiteTarget::Run(node) => match self.semantic.references.get(*node)? {
+                Resolution::Resolved(sym)
+                    if symbols.program_file(*sym).is_some()
+                        || self.handle_call_targets(span).is_none() =>
+                {
+                    Some(*sym)
+                }
+                _ => None,
+            },
+            SiteTarget::Using(node) => match self.semantic.references.get(*node)? {
+                Resolution::Resolved(sym) => Some(*sym),
+                Resolution::Unresolved { .. } => None,
+            },
+            SiteTarget::Type(Resolution::Resolved(sym)) => Some(*sym),
+            SiteTarget::Type(_) => None,
+            SiteTarget::Table(table) => return Some(vec![Identity::Table(*table)]),
+            SiteTarget::SchemaField(table) => {
+                let name = self.text(span)?;
+                return Some(vec![self.field_identity(*table, name)]);
+            }
+        };
+        if let Some(sym) = resolved {
+            return Some(self.symbol_identities(sym));
+        }
+        let targets = self.site_targets(target, span)?;
+        Some(targets.into_iter().map(Identity::At).collect())
+    }
+
+    /// What the symbol stands for. Empty when oxabl cannot say where it is
+    /// declared.
+    fn symbol_identities(&self, sym: SymbolId) -> Vec<Identity> {
+        let cached = self.identities.borrow().get(&sym).cloned();
+        let identity = cached.unwrap_or_else(|| {
+            let identity = self.symbol_identity(sym);
+            self.identities.borrow_mut().insert(sym, identity.clone());
+            identity
+        });
+        identity.into_iter().collect()
+    }
+
+    fn symbol_identity(&self, sym: SymbolId) -> Option<Identity> {
+        let symbols = &self.semantic.symbols;
+        let symbol = symbols.get(sym);
+        if let Some(file) = symbols
+            .program_file(sym)
+            .or_else(|| symbols.class_file(sym))
+        {
+            return self.path_of(file).map(Identity::File);
+        }
+        if let Some(file) = symbols.member_file(sym) {
+            let name = str::to_ascii_lowercase(&symbol.name);
+            return self.path_of(file).map(|path| Identity::Member(path, name));
+        }
+        if let Some(table) = symbols.field_table(sym) {
+            return Some(self.field_identity(table, symbol.name.as_ref()));
+        }
+        if let Some(table) = self.table_named(symbol) {
+            return Some(Identity::Table(table));
+        }
+        if symbol.declaration == NodeId::DUMMY {
+            return None;
+        }
+        self.place(symbol.name_span).map(Identity::Declared)
+    }
+
+    /// The field by its full name, so an abbreviation names the same field.
+    fn field_identity(&self, table: TableId, name: &str) -> Identity {
+        let full = self.run.config().schema.get_by_id(table).and_then(|found| {
+            match found.resolve_field_by_name(name) {
+                FieldResolution::Unique(field) => Some(str::to_ascii_lowercase(&field.name)),
+                _ => None,
+            }
+        });
+        Identity::Field(table, full.unwrap_or_else(|| str::to_ascii_lowercase(name)))
+    }
+
     /// The targets of the innermost name at expanded offset `virt`. `None` when
     /// no name there has an answer, `Some(empty)` when the name has no target.
     fn answer_at(&self, virt: u32) -> Option<Vec<Target>> {
+        self.resolve_at(
+            virt,
+            |target, span| self.site_targets(target, span),
+            |sym| self.symbol_targets(sym),
+        )
+    }
+
+    /// The innermost name at expanded offset `virt`, answered by `site` for a
+    /// recorded site and by `of_symbol` for a declaration's own name.
+    fn resolve_at<T>(
+        &self,
+        virt: u32,
+        site: impl Fn(&SiteTarget, VirtualSpan) -> Option<Vec<T>>,
+        of_symbol: impl Fn(SymbolId) -> Vec<T>,
+    ) -> Option<Vec<T>> {
         let symbols = &self.semantic.symbols;
         let mut sites: Vec<_> = symbols
             .sites()
@@ -225,11 +427,11 @@ impl Navigation<'_, '_> {
             if let Some((sym, symbol)) = declaration
                 && symbol.name_span.end - symbol.name_span.start <= length
             {
-                return Some(self.symbol_targets(sym));
+                return Some(of_symbol(sym));
             }
             let mut answered = false;
             while at < sites.len() && sites[at].span.end - sites[at].span.start == length {
-                match self.site_targets(&sites[at].target, sites[at].span) {
+                match site(&sites[at].target, sites[at].span) {
                     Some(targets) if !targets.is_empty() => return Some(targets),
                     Some(_) => answered = true,
                     None => {}
@@ -240,7 +442,7 @@ impl Navigation<'_, '_> {
                 return Some(Vec::new());
             }
         }
-        declaration.map(|(sym, _)| self.symbol_targets(sym))
+        declaration.map(|(sym, _)| of_symbol(sym))
     }
 
     fn site_targets(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Vec<Target>> {
@@ -427,20 +629,22 @@ impl Navigation<'_, '_> {
         if let Some(table) = symbols.field_table(sym) {
             return self.field_target(table, symbol.name.as_ref());
         }
-        let table_named = matches!(symbol.kind, SymbolKind::Buffer | SymbolKind::TempTable)
-            && symbol.table_id.is_some()
-            && (symbol.declaration == NodeId::DUMMY || self.names_its_table(symbol));
-        if table_named {
-            return symbol
-                .table_id
-                .and_then(|table| self.table_target(table))
-                .into_iter()
-                .collect();
+        if let Some(table) = self.table_named(symbol) {
+            return self.table_target(table).into_iter().collect();
         }
         if symbol.declaration == NodeId::DUMMY {
             return Vec::new();
         }
         self.place(symbol.name_span).into_iter().collect()
+    }
+
+    /// The table a buffer or temp-table stands for when its name is the table's
+    /// (or it has no declaration, as the default buffer of a table).
+    fn table_named(&self, symbol: &oxabl_semantic::Symbol) -> Option<TableId> {
+        let table = symbol.table_id?;
+        (matches!(symbol.kind, SymbolKind::Buffer | SymbolKind::TempTable)
+            && (symbol.declaration == NodeId::DUMMY || self.names_its_table(symbol)))
+        .then_some(table)
     }
 
     /// Whether a buffer's name is the name of the table it reads, so the name at
@@ -570,6 +774,33 @@ fn to_span(span: VirtualSpan) -> Span {
         start: span.start,
         end: span.end,
     }
+}
+
+/// The spans of `uses` that contain no other span of it, one per span, a write
+/// when any use of it writes. A call site covers its whole call as well as its
+/// name; only the name is a use.
+fn innermost(mut uses: Vec<(VirtualSpan, bool)>) -> Vec<(VirtualSpan, bool)> {
+    uses.sort_by_key(|(span, _)| (span.start, std::cmp::Reverse(span.end)));
+    let mut merged: Vec<(VirtualSpan, bool)> = Vec::with_capacity(uses.len());
+    for (span, write) in uses {
+        match merged.last_mut() {
+            Some((last, last_write)) if *last == span => *last_write |= write,
+            _ => merged.push((span, write)),
+        }
+    }
+    // Later entries start at or after an entry's start, so the entry contains
+    // one when the least end after it is within its own end.
+    let mut least_end = u32::MAX;
+    let mut keep = vec![false; merged.len()];
+    for (at, (span, _)) in merged.iter().enumerate().rev() {
+        keep[at] = least_end > span.end;
+        least_end = least_end.min(span.end);
+    }
+    merged
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(use_, keep)| keep.then_some(use_))
+        .collect()
 }
 
 fn dedupe(targets: Vec<Target>) -> Vec<Target> {

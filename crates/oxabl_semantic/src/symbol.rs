@@ -583,6 +583,10 @@ struct Navigation {
 pub struct Site {
     pub span: VirtualSpan,
     pub target: SiteTarget,
+    /// Whether the statement changes the value the name stands for: an
+    /// assignment target, an `OUTPUT` or `INPUT-OUTPUT` argument, a record
+    /// the statement creates or changes.
+    pub write: bool,
 }
 
 /// What a [`Site`] names.
