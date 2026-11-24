@@ -503,10 +503,11 @@ fn not_stopped(
 /// Versions compare by their numbers; a registration without one predates the field
 /// and is older. At an equal version the contract decides. At an equal contract two
 /// builds of one version are ordered by when their executables were written: a daemon
-/// whose executable was replaced on disk, or that does not say when, is older, and one
-/// written after this client's executable is newer. Two editors on two builds of one
-/// version then leave the newer build's daemon alone and do not replace each other's
-/// daemon in turn.
+/// whose executable was replaced on disk, or that does not say when while this client
+/// does, is older, and so is one written before this client's executable. A time that
+/// does not order (equal, or unknown on this side) proves nothing, so the daemon stays.
+/// Two editors on two builds of one version then leave each other's daemon alone, or
+/// the newer build's daemon alone, and do not replace each other's daemon in turn.
 #[cfg(unix)]
 fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> bool {
     fn numbers(version: &str) -> Option<(u64, u64, u64)> {
@@ -526,9 +527,11 @@ fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> 
             registration.contract_version < oxabl_daemon_protocol::CONTRACT_VERSION
         }
         _ => {
-            oxabl_daemon::executable_replaced(registration.pid)
-                || registration.build_modified_ms == 0
-                || registration.build_modified_ms <= oxabl_daemon::build_identity().modified_ms
+            let (theirs, ours) = (
+                registration.build_modified_ms,
+                oxabl_daemon::build_identity().modified_ms,
+            );
+            oxabl_daemon::executable_replaced(registration.pid) || (ours != 0 && theirs < ours)
         }
     }
 }

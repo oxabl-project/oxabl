@@ -429,6 +429,16 @@ fn binary_copy(
     padding: &[u8],
     age: Duration,
 ) -> std::path::PathBuf {
+    binary_copy_at(dir, name, padding, std::time::SystemTime::now() - age)
+}
+
+/// As `binary_copy`, written at the given time.
+fn binary_copy_at(
+    dir: &std::path::Path,
+    name: &str,
+    padding: &[u8],
+    written: std::time::SystemTime,
+) -> std::path::PathBuf {
     let path = dir.join(name);
     std::fs::copy(OXABL_BIN, &path).expect("copy the oxabl binary");
     let mut file = std::fs::OpenOptions::new()
@@ -436,8 +446,7 @@ fn binary_copy(
         .open(&path)
         .expect("open the copy");
     file.write_all(padding).expect("pad the copy");
-    file.set_modified(std::time::SystemTime::now() - age)
-        .expect("date the copy");
+    file.set_modified(written).expect("date the copy");
     path
 }
 
@@ -527,6 +536,45 @@ fn an_editor_replaces_a_daemon_of_another_build_of_the_same_version() {
         replacement.pid,
         "the daemon of the newer build stays"
     );
+}
+
+/// Two builds whose executables carry the same time do not say which is older, so an
+/// editor leaves the other build's daemon alone, in both directions: they must not
+/// stop each other's daemon in turn.
+#[test]
+fn an_editor_leaves_a_daemon_of_another_build_with_the_same_time_alone() {
+    let binaries = tempfile::tempdir().expect("a directory for the binaries");
+    let written = std::time::SystemTime::now() - Duration::from_secs(3600);
+    let first = binary_copy_at(binaries.path(), "oxabl-first", b"first", written);
+    let second = binary_copy_at(binaries.path(), "oxabl-second", b"second", written);
+
+    for (daemon_binary, editor_binary) in [(&first, &second), (&second, &first)] {
+        let root = tempfile::tempdir().expect("a workspace root");
+        let cache = tempfile::tempdir().expect("a cache root");
+        let registration_path = registration_path_in(root.path(), cache.path());
+        let mut daemon = ChildGuard(launch_daemon_from(daemon_binary, root.path(), cache.path()));
+        let daemon_pid = daemon.0.id();
+        assert_eq!(wait_for_registration(&registration_path).pid, daemon_pid);
+
+        let mut editor = Editor::start_binary(editor_binary, root.path(), cache.path(), &[]);
+        let status = exits_within(&mut editor.child.0, Duration::from_secs(15))
+            .expect("an editor on a build with the same time gives up");
+        assert!(!status.success());
+        let stderr = editor.stderr(Duration::from_secs(5));
+        assert!(
+            stderr.contains("not older"),
+            "the refusal says the daemon is not older: {stderr}"
+        );
+        assert_eq!(
+            wait_for_registration(&registration_path).pid,
+            daemon_pid,
+            "the daemon of the other build stays"
+        );
+        assert!(
+            daemon.0.try_wait().expect("poll the daemon").is_none(),
+            "the daemon is still running"
+        );
+    }
 }
 
 /// A daemon whose executable was replaced on disk is another build, even when the
