@@ -85,6 +85,7 @@ mod explain;
 pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
 mod config;
 mod format;
+mod hints;
 mod includers;
 mod keyword_docs;
 mod lint;
@@ -104,12 +105,13 @@ pub use config::{
     resolve_from_config_deferred,
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
+pub use hints::{HintKinds, InlayHint, InlayKind};
 pub use includers::{IncluderPools, PoolVerdict};
 pub use lint::{
     Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun,
     encrypted_root_diagnostics,
 };
-pub use navigate::{Hover, Link, Navigation, Target};
+pub use navigate::{Highlight, Hover, Link, Navigation, NavigationModel, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 // Re-exported so a client of navigation and the call hierarchy can name the
 // byte spans their answers carry.

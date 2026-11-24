@@ -5,14 +5,17 @@
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
 //! `textDocument/selectionRange`, `workspace/symbol`,
-//! `textDocument/definition`, `textDocument/hover` and `textDocument/documentLink`
-//! (see `docs/design/navigation.md`), and `textDocument/references` and the call
-//! hierarchy (see `docs/design/references.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
+//! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
+//! `textDocument/documentLink` (see `docs/design/navigation.md`), and `textDocument/references` and the call
+//! hierarchy (see `docs/design/references.md`). Strict database rules can also enable effect code lenses and
+//! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
 //! `docs/design/include-context.md`. `oxabl/schema` and `oxabl/schemaTable`
 //! answer the configured `.df` files as a tree for a schema browser; see
-//! `docs/design/schema-browser.md`.
+//! `docs/design/schema-browser.md`. With each diagnostics publish the server sends
+//! `textDocument/inactiveRegions`, the `&IF` branches that are not compiled, to a
+//! client that asks for them (`docs/design/inactive-regions.md`).
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -34,7 +37,9 @@ mod document_symbol;
 mod editor_syntax;
 mod expanded_unit;
 pub mod formatting;
+mod inactive_regions;
 mod includer_context;
+mod inlay_hint;
 mod navigation;
 pub mod position;
 mod references;
@@ -56,8 +61,9 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
-    DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDefinition,
-    HoverRequest, References, Request as _, SelectionRangeRequest, WorkspaceSymbolRequest,
+    DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
+    Formatting, GotoDefinition, HoverRequest, InlayHintRequest, References, Request as _,
+    SelectionRangeRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -775,8 +781,11 @@ fn anchor_or_current_dir(declared: Option<PathBuf>) -> PathBuf {
 /// What the handshake learned from the client's capabilities.
 struct Negotiated {
     options: code_lens::Options,
+    inlay: inlay_hint::Options,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `textDocument/inactiveRegions`.
+    inactive_regions: bool,
     /// Whether the client takes `relatedInformation` on a diagnostic.
     related_information: bool,
     /// The most folding ranges the client takes (`rangeLimit`), if it says.
@@ -829,12 +838,15 @@ fn finish_handshake(
     id: RequestId,
     params: serde_json::Value,
 ) -> Result<(Negotiated, Option<PathBuf>)> {
+    let inactive_regions = inactive_regions::client_supports(&params);
     let init: InitializeParams =
         serde_json::from_value(params).context("deserializing InitializeParams")?;
 
     let encoding = negotiate_position_encoding(&init.capabilities);
     let workspace_root = declared_workspace_root(&init);
     let options = code_lens::Options::from_client(&init.capabilities, encoding.clone());
+    let inlay =
+        inlay_hint::Options::from_client(&init.capabilities, init.initialization_options.as_ref());
     let hierarchical_symbols = init
         .capabilities
         .text_document
@@ -871,6 +883,9 @@ fn finish_handshake(
             resolve_provider: Some(false),
         });
     }
+    if inlay.supported {
+        capabilities.inlay_hint_provider = Some(lsp_types::OneOf::Left(true));
+    }
     let result = InitializeResult {
         capabilities,
         server_info: Some(ServerInfo {
@@ -878,13 +893,18 @@ fn finish_handshake(
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
     };
+    let mut result = serde_json::to_value(result)?;
+    // Not a field of the LSP types: the name clangd gives the capability.
+    result["capabilities"]["inactiveRegionsProvider"] = serde_json::Value::Bool(true);
     connection
-        .initialize_finish(id, serde_json::to_value(result)?)
+        .initialize_finish(id, result)
         .context("LSP initialize_finish")?;
     Ok((
         Negotiated {
             options,
+            inlay,
             hierarchical_symbols,
+            inactive_regions,
             related_information,
             folding_range_limit,
         },
@@ -923,6 +943,8 @@ struct Server<'c> {
     encoding: PositionEncodingKind,
     /// Whether the client takes `DocumentSymbol[]` rather than a flat list.
     hierarchical_symbols: bool,
+    /// Whether the client takes `textDocument/inactiveRegions`.
+    inactive_regions: bool,
     /// Whether the client takes `relatedInformation` on a diagnostic.
     related_information: bool,
     /// The most folding ranges the client takes, if it says.
@@ -959,6 +981,8 @@ struct Server<'c> {
     /// Per-URI include dependency paths (for watcher `*.i` matching, R17).
     dependencies: HashMap<Uri, Vec<PathBuf>>,
     lenses: code_lens::LensCache,
+    /// The client's inlay hint support and the kinds it wants.
+    inlay: inlay_hint::Options,
     /// The last outline of each open buffer, for its version.
     outlines: document_symbol::OutlineCache,
     /// The folding and selection facts of each open buffer, for its version.
@@ -967,6 +991,8 @@ struct Server<'c> {
     debouncer: crate::debounce::Debouncer,
     /// The selected compilation context of each open include.
     contexts: includer_context::Contexts,
+    /// The highlight requests of each open document, so one runs at a time.
+    highlight_turns: navigation::HighlightTurns,
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
@@ -989,6 +1015,9 @@ struct ComputeResult {
     /// `None` when the computation produced no trustworthy set (cancelled, or a
     /// contained panic) — see [`analyze_guarded`].
     dependencies: Option<Vec<PathBuf>>,
+    /// The `&IF` branches the buffer does not compile, from the same analysis.
+    /// `(start, end)` byte offsets.
+    inactive_regions: Option<Vec<(u32, u32)>>,
     /// Whether the absent halves above come from a **contained panic** rather
     /// than a cancellation. The two are otherwise indistinguishable at the
     /// receiving end, and they want opposite handling: a cancellation is a race
@@ -1013,7 +1042,9 @@ impl<'c> Server<'c> {
     ) -> Self {
         let Negotiated {
             options,
+            inlay,
             hierarchical_symbols,
+            inactive_regions,
             related_information,
             folding_range_limit,
         } = negotiated;
@@ -1023,6 +1054,7 @@ impl<'c> Server<'c> {
             connection,
             encoding: options.encoding.clone(),
             hierarchical_symbols,
+            inactive_regions,
             related_information,
             folding_range_limit,
             documents: DocumentStore::new(),
@@ -1036,10 +1068,12 @@ impl<'c> Server<'c> {
             features: FeaturesConfig::OFF,
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
+            inlay,
             outlines: document_symbol::OutlineCache::default(),
             syntax: editor_syntax::SyntaxCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
             contexts: includer_context::Contexts::default(),
+            highlight_turns: navigation::HighlightTurns::default(),
             context_events,
             context_results,
             hovers: navigation::HoverGate::default(),
@@ -1086,6 +1120,8 @@ impl<'c> Server<'c> {
                                 self.respond(Response::new_ok(req.id, serde_json::Value::Null))?;
                             } else if req.method == "textDocument/codeLens" {
                                 self.handle_code_lens(req, &lens_tx)?;
+                            } else if req.method == InlayHintRequest::METHOD {
+                                self.handle_inlay_hint(req)?;
                             } else if req.method == Formatting::METHOD {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
@@ -1098,6 +1134,8 @@ impl<'c> Server<'c> {
                                 self.handle_definition(req)?;
                             } else if req.method == HoverRequest::METHOD {
                                 self.handle_hover(req)?;
+                            } else if req.method == DocumentHighlightRequest::METHOD {
+                                self.handle_document_highlight(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
                                 self.handle_document_link(req)?;
                             } else if req.method == References::METHOD {
@@ -1174,16 +1212,19 @@ impl<'c> Server<'c> {
     /// version it read so a superseded computation is dropped on completion.
     fn fire_due_debounces(&mut self, result_tx: &crossbeam_channel::Sender<ComputeResult>) {
         let now = std::time::Instant::now();
+        let mut context_due = false;
         for uri in self.debouncer.take_due(now) {
             let Some(doc) = self.documents.get(&uri) else {
                 continue;
             };
             let version = doc.version;
             if !self.features.diagnostics {
+                self.publish_inactive_regions(&uri, version, []);
                 self.publish(uri, Vec::new(), Some(version));
                 continue;
             }
             if let Some(root) = self.contexts.selected(&uri).cloned() {
+                context_due = true;
                 self.spawn_context_analysis(uri, version, root);
                 continue;
             }
@@ -1210,11 +1251,19 @@ impl<'c> Server<'c> {
                         version,
                         diagnostics: analysis.diagnostics,
                         dependencies: analysis.dependencies,
+                        inactive_regions: analysis.inactive_regions.map(|regions| {
+                            regions.iter().map(|span| (span.start, span.end)).collect()
+                        }),
                         panicked: analysis.panicked,
                         config_generation,
                     });
                 })
                 .expect("failed to spawn an analysis thread");
+        }
+        // The hints of an include read in a root change with the root: ask
+        // the client again once the edits settle, not on every keystroke.
+        if context_due {
+            self.refresh_inlay_hints();
         }
     }
 
@@ -1246,8 +1295,15 @@ impl<'c> Server<'c> {
             has_diagnostics: res.diagnostics.is_some(),
             panicked: res.panicked,
         };
+        let current = work.current_version == Some(work.read_version);
         match dispose(work) {
-            Disposition::Drop => {}
+            Disposition::Drop => {
+                // A panic gives this version no answer and none follows, so the
+                // regions of older text must not stand for it.
+                if res.panicked && current {
+                    self.publish_inactive_regions(&res.uri, res.version, []);
+                }
+            }
             Disposition::Retry => {
                 self.debouncer.schedule(res.uri, std::time::Instant::now());
             }
@@ -1265,6 +1321,10 @@ impl<'c> Server<'c> {
                 };
                 let related = self.related_information.then_some(&res.uri);
                 let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding, related);
+                // No regions from this analysis clear the old ones, which belong
+                // to other text.
+                let regions = res.inactive_regions.unwrap_or_default();
+                self.publish_inactive_regions(&res.uri, res.version, regions);
                 self.publish(res.uri.clone(), lsp_diags, Some(res.version));
             }
         }
@@ -1302,6 +1362,7 @@ impl<'c> Server<'c> {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
                     self.outlines.invalidate(&doc.uri);
+                    self.note_inlay_version(&doc.uri, Some(doc.version));
                     self.syntax.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
@@ -1338,6 +1399,7 @@ impl<'c> Server<'c> {
                         &params.content_changes,
                         &encoding,
                     );
+                    self.note_inlay_version(&uri, Some(params.text_document.version));
                     // Mirror the new text into the salsa input (write on main).
                     // This cancels any in-flight snapshot read for a superseded
                     // version via salsa's `Cancelled` unwind (KTD7).
@@ -1371,7 +1433,11 @@ impl<'c> Server<'c> {
                     serde_json::from_value::<DidChangeWatchedFilesParams>(not.params)
                 {
                     self.handle_watched_files(params);
+                    self.inlay_disk_changed();
                 }
+            }
+            "workspace/didChangeConfiguration" => {
+                self.handle_configuration_change(not.params);
             }
             DidCloseTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidCloseTextDocumentParams>(not.params)
@@ -1379,6 +1445,7 @@ impl<'c> Server<'c> {
                     let uri = params.text_document.uri;
                     self.documents.close(&uri);
                     self.contexts.forget(&uri);
+                    self.highlight_turns.remove(&uri);
                     self.outlines.invalidate(&uri);
                     self.syntax.invalidate(&uri);
                     self.host.with(|sessions| {
@@ -1387,6 +1454,7 @@ impl<'c> Server<'c> {
                             .close_buffer(uri.as_str());
                     });
                     self.dependencies.remove(&uri);
+                    self.note_inlay_version(&uri, None);
                     self.debouncer.cancel(&uri);
                     // An include analysed in this root now reads its saved copy.
                     if let Some(path) = uri_to_path(&uri) {
@@ -1604,6 +1672,7 @@ impl<'c> Server<'c> {
             return;
         };
         if !self.features.diagnostics {
+            self.publish_inactive_regions(uri, version, []);
             self.publish(uri.clone(), Vec::new(), Some(version));
             return;
         }
@@ -1631,7 +1700,9 @@ impl<'c> Server<'c> {
             // db while the main loop is inside this call), but if one ever does
             // arrive the open would otherwise publish nothing at all and no timer
             // would remain — the same stale-forever shape as in `handle_result`.
-            if !analysis.panicked {
+            if analysis.panicked {
+                self.publish_inactive_regions(uri, version, []);
+            } else {
                 self.debouncer
                     .schedule(uri.clone(), std::time::Instant::now());
             }
@@ -1640,6 +1711,9 @@ impl<'c> Server<'c> {
         if let Some(doc) = self.documents.get(uri) {
             let related = self.related_information.then_some(uri);
             let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding, related);
+            let regions = analysis.inactive_regions.as_deref().unwrap_or_default();
+            let regions = regions.iter().map(|span| (span.start, span.end));
+            self.publish_inactive_regions(uri, version, regions);
             self.publish(uri.clone(), lsp_diags, Some(version));
         }
     }
@@ -2129,7 +2203,9 @@ mod tests {
                     dynamic: false,
                     refresh: false,
                 },
+                inlay: inlay_hint::Options::from_client(&Default::default(), None),
                 hierarchical_symbols: false,
+                inactive_regions: false,
                 related_information: false,
                 folding_range_limit: None,
             },
@@ -2164,6 +2240,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: 0, // no configuration is resolved in this test
         });
@@ -2220,6 +2297,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: 0, // no configuration is resolved in this test
         });
@@ -2246,6 +2324,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: true,
             config_generation: 0, // no configuration is resolved in this test
         });
@@ -2281,6 +2360,7 @@ mod tests {
             version: 1,
             diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: stale,
         });
@@ -2316,6 +2396,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: true,
             config_generation: stale,
         });
@@ -2344,6 +2425,7 @@ mod tests {
             version: 1,
             diagnostics: Some(oxabl_analyze::CollectedDiagnostics::default()),
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: server.config_generation(),
         });
@@ -2410,6 +2492,7 @@ mod tests {
             version: 1,
             diagnostics: None,
             dependencies: None,
+            inactive_regions: None,
             panicked: false,
             config_generation: 0, // no configuration is resolved in this test
         });

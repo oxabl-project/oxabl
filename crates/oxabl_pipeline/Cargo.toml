@@ -87,5 +87,9 @@ name = "outline_bench"
 harness = false
 
 [[bench]]
+name = "hints_bench"
+harness = false
+
+[[bench]]
 name = "tx_rules_bench"
 harness = false

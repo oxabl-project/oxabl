@@ -103,7 +103,9 @@ use std::sync::{Arc, RwLock};
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_index::search::{self, NameKind};
 use oxabl_index::{FileFacts, IncludeContext, index_file_at, program_signatures_at};
-use oxabl_pipeline::{Expansion, LintPipeline, PipelineConfig};
+use oxabl_pipeline::{
+    Expansion, HintKinds, InlayHint, LintPipeline, NavigationModel, PipelineConfig,
+};
 use oxabl_semantic::{
     ClassDescriptor, IndexAnswer, IndexName, IndexRevision, IndexedFileId, LocateKind, Located,
     MemberDescriptor, WorkspaceIndex,
@@ -492,7 +494,10 @@ impl AnalysisConfig {
     /// pointers and a bool — no `Schema` clone, no per-run allocation on the
     /// keystroke path (the 50ms interactivity budget, R14).
     pub fn lint_pipeline(&self) -> LintPipeline<'_> {
-        LintPipeline::new(&self.pipeline, &*self.fs).with_preprocess(self.preprocess)
+        // The language server shows the inactive `&IF` branches of this expansion.
+        LintPipeline::new(&self.pipeline, &*self.fs)
+            .with_preprocess(self.preprocess)
+            .with_branch_tracking(true)
     }
 }
 
@@ -1089,6 +1094,27 @@ fn diagnostics(db: &dyn AblDatabase, buffer: Buffer, schema: SchemaHandle) -> Co
     handle.collect(&expansion).into_diagnostics()
 }
 
+/// The navigation analysis of a buffer: the resolve pass with its sites
+/// recorded, over the expansion that [`diagnostics`] reads. Kept per buffer
+/// revision, so each cursor move after the first costs a pass over the sites and
+/// no analysis. `no_eq`: a recomputed model is never compared.
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
+fn navigation_model(
+    db: &dyn AblDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+) -> Option<Arc<NavigationModel>> {
+    let _revision = schema.revision(db);
+    let expansion = expanded_text(db, buffer);
+    db.unwind_if_revision_cancelled();
+    let index = SnapshotIndex::new(db, buffer.path(db).as_deref(), expansion.search_base());
+    let run = db.config().lint_pipeline();
+    let handle = run
+        .with_file(buffer.path(db).as_deref().unwrap_or(Path::new("")))
+        .with_index(&index);
+    handle.navigation_model(&expansion).map(Arc::new)
+}
+
 /// Render cached effect summaries on a worker snapshot. Cancellation returns no answer.
 /// This may populate the reachable graph; callers must keep it off the LSP thread.
 pub fn compute_effect_lenses(
@@ -1110,6 +1136,96 @@ pub fn compute_effect_lenses(
     .flatten()
 }
 
+/// What the database inlay hints of one open file are computed from. Built
+/// from cheap clones on the thread that owns the session, it holds no
+/// snapshot: a write waits for every snapshot to drop, and the analysis of a
+/// large file takes tens of milliseconds, longer than a keystroke may wait.
+/// So no other buffer's edit can cancel it either.
+pub struct HintSource {
+    /// The session's configuration.
+    pub config: AnalysisConfig,
+    /// The file the hints are shown in.
+    pub file: PathBuf,
+    /// Its text, as the request saw it.
+    pub text: Arc<str>,
+    /// The selected include context of an include: the root that is
+    /// analysed, and the open buffers it reads over the disk.
+    pub context: Option<(PathBuf, HashMap<PathBuf, Arc<str>>)>,
+}
+
+impl HintSource {
+    /// Whether the file shows hints: for an include in a context, as the
+    /// root's configuration says, as for its diagnostics.
+    pub fn enabled(&self) -> bool {
+        let shown = self.context.as_ref().map_or(&self.file, |(root, _)| root);
+        self.config
+            .lint_pipeline()
+            .with_file(shown)
+            .database_hints_enabled()
+    }
+
+    /// The hints of `kinds` for the whole file, in its own bytes, and the
+    /// files the analysis read besides it (in a context: the root and every
+    /// include its expansion read). Unguarded: run it inside a panic guard.
+    /// Empty when the selected root cannot be read, fails to preprocess, or
+    /// no longer includes the file.
+    pub fn hints(&self, kinds: HintKinds) -> (Vec<InlayHint>, Vec<PathBuf>) {
+        let config = &self.config;
+        let site = oxabl_common::panic_sites::LSP_INLAY_HINTS;
+        match &self.context {
+            None => {
+                oxabl_common::hold_if_injected(site, &self.text);
+                let run = config.lint_pipeline();
+                let handle = run.with_file(&self.file);
+                let expansion = handle.expand(&self.text);
+                (
+                    handle.database_hints(&self.text, &expansion, kinds),
+                    Vec::new(),
+                )
+            }
+            Some((root, overlay)) => {
+                let fs = OverlayFs {
+                    overlay: overlay.clone(),
+                    inner: Arc::clone(&config.fs),
+                };
+                let Ok(source) = fs.read(root) else {
+                    return (Vec::new(), vec![root.clone()]);
+                };
+                oxabl_common::hold_if_injected(site, &source);
+                let run =
+                    LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+                let handle = run.with_file(root);
+                let expansion = handle.expand(&source);
+                let mut read = vec![root.clone()];
+                read.extend(expansion.dependency_paths().iter().cloned());
+                (
+                    handle.database_hints_in_include(&expansion, &self.file, kinds),
+                    read,
+                )
+            }
+        }
+    }
+
+    /// A fingerprint of the open-buffer text of `paths`, as this source's
+    /// context reads them: equal while none of them is edited, opened or
+    /// closed. 0 for a file read alone.
+    pub fn overlay_fingerprint(&self, paths: &[PathBuf]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some((_, overlay)) = &self.context else {
+            return 0;
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for path in paths {
+            path.hash(&mut hasher);
+            let text = overlay
+                .get(path)
+                .or_else(|| overlay.get(&crate::session::canonical_path(path)));
+            text.map(|t| &**t).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
 /// Keep the results of at most `buffers` buffers in each query keyed by a buffer
 /// (the `lru` of [`expanded_text`], [`effect_summaries`] and [`diagnostics`]).
 ///
@@ -1121,6 +1237,7 @@ pub fn set_buffer_capacity(db: &mut AnalysisDatabase, buffers: usize) {
     expanded_text::set_lru_capacity(db, buffers);
     effect_summaries::set_lru_capacity(db, buffers);
     diagnostics::set_lru_capacity(db, buffers);
+    navigation_model::set_lru_capacity(db, buffers);
 }
 
 /// Compute diagnostics on a snapshot, swallowing a [`salsa::Cancelled`] unwind
@@ -1161,6 +1278,9 @@ pub struct ContextDiagnostics {
     pub label_files: Vec<oxabl_analyze::LabelFile>,
     /// Why the root gives no answer for the include, when it gives none.
     pub failure: Option<String>,
+    /// The `&IF` branches the root does not compile in the include, in the
+    /// include's own bytes. Empty when the root gives no answer.
+    pub inactive_regions: Vec<oxabl_ast::Span>,
     /// The root and every include its expansion read, for the watcher.
     pub dependencies: Vec<PathBuf>,
 }
@@ -1190,6 +1310,15 @@ pub fn compute_context_diagnostics(
         match analysed {
             Ok(unit) => {
                 let dependencies = unit.dependencies();
+                let inactive_regions = unit
+                    .expansion
+                    .expanded()
+                    .map(|expanded| {
+                        expanded.inactive_regions_in(|path| {
+                            crate::session::canonical_path(path) == target
+                        })
+                    })
+                    .unwrap_or_default();
                 let findings: Vec<_> = unit
                     .diagnostics
                     .include_origin
@@ -1208,6 +1337,7 @@ pub fn compute_context_diagnostics(
                     findings,
                     label_files,
                     failure: None,
+                    inactive_regions,
                     dependencies,
                 }
             }
@@ -1215,6 +1345,7 @@ pub fn compute_context_diagnostics(
                 findings: Vec::new(),
                 label_files: Vec::new(),
                 failure: Some(reason),
+                inactive_regions: Vec::new(),
                 dependencies,
             },
         }
@@ -1280,7 +1411,9 @@ fn analyse_root(
     let source = fs
         .read(root)
         .map_err(|error| (format!("cannot read it: {error}"), dependencies.clone()))?;
-    let run = LintPipeline::new(&config.pipeline, &fs).with_preprocess(config.preprocess);
+    let run = LintPipeline::new(&config.pipeline, &fs)
+        .with_preprocess(config.preprocess)
+        .with_branch_tracking(true);
     let handle = run.with_file(root);
     let expansion = handle.expand(&source);
     dependencies.extend(expansion.dependency_paths().iter().cloned());
@@ -1326,6 +1459,8 @@ pub enum NavigationQuery {
         offset: u32,
         buffer: Option<Buffer>,
     },
+    /// The uses, in `file`, of the name at byte `offset` of `file`.
+    Highlights { file: PathBuf, offset: u32 },
     /// The links written in the root itself.
     Links,
 }
@@ -1338,6 +1473,9 @@ pub struct NavigationAnswer {
     pub links: Vec<oxabl_pipeline::Link>,
     /// The hover, and the file its span is in.
     pub hover: Option<(PathBuf, oxabl_pipeline::Hover)>,
+    /// The uses of a [`NavigationQuery::Highlights`] name; the text of the
+    /// file is the only entry of `texts`.
+    pub highlights: Vec<oxabl_pipeline::Highlight>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -1396,6 +1534,17 @@ pub fn compute_navigation(
                     answer.hover = Some((path, hover));
                 }
             }
+            NavigationQuery::Highlights { file, offset } => {
+                let file = unit.spelled(file);
+                answer.highlights = unit.navigation.highlights(&file, *offset);
+                let text = unit
+                    .fs
+                    .read(&file)
+                    .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+                answer
+                    .texts
+                    .insert(search::normalize_lexically(&file), text);
+            }
             NavigationQuery::Links => {
                 answer.links = unit.navigation.links();
                 answer
@@ -1411,8 +1560,9 @@ pub fn compute_navigation(
                 answer.texts.insert(target.path.clone(), text);
             }
         }
-        answer
+        Ok(answer)
     })
+    .map(|result| result.and_then(|answer| answer))
 }
 
 /// One compilation unit analysed for navigation, as [`with_navigation`] hands
@@ -1513,6 +1663,57 @@ fn unsaved_sources(
     unsaved
 }
 
+/// The uses of the name at byte `offset` of the open `buffer`, from the cached
+/// [`navigation_model`] and the expansion that diagnostics read: after the first
+/// request on a revision of the buffer it analyses nothing. Includes are read as
+/// diagnostics read them, from disk. The buffer is its own root, so a file with
+/// a selected includer context goes through [`compute_navigation`].
+///
+/// `Ok(Err(reason))` when the preprocessing of the buffer failed. `None` when a
+/// concurrent write cancelled the read.
+pub fn compute_highlights(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    schema: SchemaHandle,
+    offset: u32,
+) -> Option<Result<NavigationAnswer, String>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        let root = buffer
+            .path(snapshot)
+            .clone()
+            .ok_or_else(|| "the buffer has no path".to_string())?;
+        let Some(model) = navigation_model(snapshot, buffer, schema) else {
+            return Err("its preprocessing failed".to_string());
+        };
+        let expansion = expanded_text(snapshot, buffer);
+        let index = SnapshotIndex::new(snapshot, Some(&root), expansion.search_base());
+        let config = snapshot.config();
+        let file_of = |id: IndexedFileId| {
+            config
+                .index
+                .registered()
+                .into_iter()
+                .find(|(_, known)| *known == id)
+                .map(|(file, _)| file.path(snapshot).clone())
+        };
+        let run = config.lint_pipeline();
+        let handle = run.with_file(&root).with_index(&index);
+        let Some(navigation) = handle.navigation_with(&expansion, model, &file_of) else {
+            return Err("its preprocessing failed".to_string());
+        };
+        let mut answer = NavigationAnswer {
+            highlights: navigation.highlights(&root, offset),
+            ..NavigationAnswer::default()
+        };
+        answer.texts.insert(
+            search::normalize_lexically(&root),
+            Arc::from(buffer.text(snapshot).as_str()),
+        );
+        Ok(answer)
+    }))
+    .ok()
+}
+
 /// `file` as the expansion of `root` spells it, so a path that reaches it
 /// through a symbolic link or a `.` segment still names it.
 fn spelled_as_expanded(expansion: &Expansion, root: &Path, file: &Path) -> PathBuf {
@@ -1579,6 +1780,24 @@ pub fn buffer_dependencies(snapshot: &AnalysisDatabase, buffer: Buffer) -> Optio
     // one — see the fuller note there.
     salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
         expanded_text(snapshot, buffer).dependency_paths().to_vec()
+    }))
+    .ok()
+}
+
+/// The text of the `&IF` branches a buffer does not compile, in its own bytes,
+/// from the memoized expansion its diagnostics read
+/// ([`oxabl_analyze::ExpandedFile::inactive_regions`]). Empty on a fatal
+/// preprocessing error. `None` when a concurrent write cancelled the read, as
+/// in [`buffer_dependencies`].
+pub fn buffer_inactive_regions(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+) -> Option<Vec<oxabl_ast::Span>> {
+    salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+        expanded_text(snapshot, buffer)
+            .expanded()
+            .map(|expanded| expanded.inactive_regions())
+            .unwrap_or_default()
     }))
     .ok()
 }
@@ -2482,5 +2701,56 @@ mod tests {
         assert_eq!(tx004(&db, buffer, schema), 1);
         buffer.set_text(&mut db).to("MESSAGE \"hi\".".into());
         assert_eq!(tx004(&db, buffer, schema), 0);
+    }
+
+    /// A highlight costs at most one analysis of the open buffer, and shares its
+    /// expansion with diagnostics. Counted on salsa's execution log, not on time:
+    /// every cursor move asks again.
+    #[test]
+    fn highlights_share_one_cached_analysis_with_diagnostics() {
+        let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut db = AnalysisDatabase::recording(
+            config_with(oxabl_workspace::InMemoryFileSystem::new()),
+            Arc::clone(&executed),
+        );
+        let text = "DEFINE VARIABLE iA AS INTEGER NO-UNDO.\niA = iA + 1.\n";
+        let path = PathBuf::from("/src/main.p");
+        let buffer = Buffer::new(&db, text.to_string(), Some(path.clone()));
+        let schema = SchemaHandle::new(&db, 0);
+        let _ = compute_diagnostics(&db, buffer, schema).unwrap();
+        let count = |name: &str| {
+            executed
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|query| query.contains(name))
+                .count()
+        };
+        assert_eq!(count("expanded_text"), 1);
+
+        let at = text.find("iA = ").unwrap() as u32;
+        for moved in 0..5 {
+            let answer = compute_highlights(&db, buffer, schema, at + (moved % 2))
+                .expect("not cancelled")
+                .expect("the buffer analyses");
+            assert_eq!(answer.highlights.len(), 3, "{answer:?}");
+        }
+        assert_eq!(
+            count("navigation_model"),
+            1,
+            "five cursor moves analyse the buffer once"
+        );
+        assert_eq!(
+            count("expanded_text"),
+            1,
+            "the expansion is the one that diagnostics read"
+        );
+
+        buffer.set_text(&mut db).to(format!("{text}MESSAGE iA.\n"));
+        let answer = compute_highlights(&db, buffer, schema, at)
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.highlights.len(), 4, "an edit is seen");
+        assert_eq!(count("navigation_model"), 2);
     }
 }

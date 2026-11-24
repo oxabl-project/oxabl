@@ -166,14 +166,16 @@ impl Navigation<'_, '_> {
 
     /// The routine a site names, as [`Self::site_hover`] reads the site.
     fn site_routine(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Routine> {
-        let references = &self.semantic.references;
+        let references = &self.model.semantic.references;
         match target {
             SiteTarget::Reference(node) => match references.get(*node)? {
                 Resolution::Resolved(sym) => self.symbol_routine(*sym),
                 Resolution::Unresolved { .. } => None,
             },
             SiteTarget::Run(node) => match references.get(*node)? {
-                Resolution::Resolved(sym) if self.semantic.symbols.program_file(*sym).is_some() => {
+                Resolution::Resolved(sym)
+                    if self.model.semantic.symbols.program_file(*sym).is_some() =>
+                {
                     self.symbol_routine(*sym)
                 }
                 _ if let Some(targets) = self.handle_call_targets(span) => {
@@ -213,7 +215,7 @@ impl Navigation<'_, '_> {
     /// The routine `sym` is: a program, or a procedure, function or method
     /// declared in the unit or in a class file.
     fn symbol_routine(&self, sym: SymbolId) -> Option<Routine> {
-        let symbols = &self.semantic.symbols;
+        let symbols = &self.model.semantic.symbols;
         let symbol = symbols.get(sym);
         if let Some(file) = symbols.program_file(sym) {
             return Some(Routine::Program(self.path_of(file)?));
@@ -271,7 +273,7 @@ impl Navigation<'_, '_> {
         span: VirtualSpan,
         virt: u32,
     ) -> Option<Option<String>> {
-        let references = &self.semantic.references;
+        let references = &self.model.semantic.references;
         match target {
             SiteTarget::Reference(node) => match references.get(*node)? {
                 Resolution::Resolved(sym) => Some(self.symbol_hover(*sym)),
@@ -282,7 +284,9 @@ impl Navigation<'_, '_> {
                 Resolution::Unresolved { .. } => Some(None),
             },
             SiteTarget::Run(node) => match references.get(*node)? {
-                Resolution::Resolved(sym) if self.semantic.symbols.program_file(*sym).is_some() => {
+                Resolution::Resolved(sym)
+                    if self.model.semantic.symbols.program_file(*sym).is_some() =>
+                {
                     Some(self.symbol_hover(*sym))
                 }
                 _ if let Some(targets) = self.handle_call_targets(span) => {
@@ -309,7 +313,7 @@ impl Navigation<'_, '_> {
     }
 
     fn symbol_hover(&self, sym: SymbolId) -> Option<String> {
-        let symbols = &self.semantic.symbols;
+        let symbols = &self.model.semantic.symbols;
         let symbol = symbols.get(sym);
         if let Some(file) = symbols.program_file(sym) {
             return self.program_hover(file);
@@ -367,7 +371,7 @@ impl Navigation<'_, '_> {
         let schema = &self.run.config().schema;
         let shown = match data_type.filter(known) {
             Some(data_type) => data_type
-                .display_abl(&self.semantic.symbols, schema)
+                .display_abl(&self.model.semantic.symbols, schema)
                 .to_string(),
             None => self.like_source_type(like.span)?,
         };
@@ -381,7 +385,7 @@ impl Navigation<'_, '_> {
     /// The type of the field or variable that the name at `span` (after a
     /// `LIKE`) resolved to.
     fn like_source_type(&self, span: Span) -> Option<String> {
-        let symbols = &self.semantic.symbols;
+        let symbols = &self.model.semantic.symbols;
         let schema = &self.run.config().schema;
         let mut sites: Vec<_> = symbols
             .sites()
@@ -401,7 +405,7 @@ impl Navigation<'_, '_> {
                         _ => return None,
                     }
                 }
-                SiteTarget::Reference(node) => match self.semantic.references.get(*node)? {
+                SiteTarget::Reference(node) => match self.model.semantic.references.get(*node)? {
                     Resolution::Resolved(sym) => symbols.get(*sym).data_type.clone()?,
                     Resolution::Unresolved { .. } => return None,
                 },
@@ -455,7 +459,7 @@ impl Navigation<'_, '_> {
     fn may_hide_routines(&self, node: oxabl_ast::NodeId) -> bool {
         self.run.file().is_some_and(is_include_fragment)
             || self.expanded.lost_include_text()
-            || self.semantic.symbols.may_be_member_call(node)
+            || self.model.semantic.symbols.may_be_member_call(node)
     }
 
     /// The statement whose head holds the token at `virt`.

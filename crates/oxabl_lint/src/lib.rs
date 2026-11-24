@@ -88,6 +88,7 @@ use oxabl_common::Diagnostic;
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 pub mod fragment;
+pub mod hints;
 mod registry;
 mod rules;
 mod shared;

@@ -1,0 +1,52 @@
+ADD TABLE "customer"
+  DUMP-NAME "customer"
+
+ADD FIELD "custnum" OF "customer" AS integer
+  FORMAT ">>>>9"
+  ORDER 10
+
+ADD FIELD "name" OF "customer" AS character
+  FORMAT "x(30)"
+  ORDER 20
+
+ADD FIELD "region" OF "customer" AS character
+  FORMAT "x(8)"
+  ORDER 30
+
+ADD INDEX "custnum" ON "customer"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "custnum" ASCENDING
+
+ADD INDEX "region-name" ON "customer"
+  INDEX-FIELD "region" ASCENDING
+  INDEX-FIELD "name" ASCENDING
+
+ADD TABLE "invoice"
+  DUMP-NAME "invoice"
+
+ADD FIELD "invnum" OF "invoice" AS integer
+  FORMAT ">>>>9"
+  ORDER 10
+
+ADD FIELD "custnum" OF "invoice" AS integer
+  FORMAT ">>>>9"
+  ORDER 20
+
+ADD FIELD "amount" OF "invoice" AS decimal
+  FORMAT "->>,>>9.99"
+  ORDER 30
+
+ADD INDEX "invnum" ON "invoice"
+  UNIQUE
+  PRIMARY
+  INDEX-FIELD "invnum" ASCENDING
+
+ADD INDEX "cust" ON "invoice"
+  INDEX-FIELD "custnum" ASCENDING
+
+.
+PSC
+cpstream=UTF-8
+.
+0000001234

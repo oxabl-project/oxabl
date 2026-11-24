@@ -29,6 +29,8 @@ pub struct Session {
     registration: PathBuf,
     stderr: PathBuf,
     next_id: u64,
+    /// The answer to `initialize`.
+    pub initialized: Value,
     _base: tempfile::TempDir,
 }
 
@@ -39,6 +41,12 @@ impl Session {
 
     /// Start with the given client capabilities.
     pub fn start_with(root: &Path, capabilities: Value) -> Session {
+        Session::start_with_options(root, capabilities, Value::Null)
+    }
+
+    /// Start with the given client capabilities and initialization options
+    /// (none when `null`).
+    pub fn start_with_options(root: &Path, capabilities: Value, options: Value) -> Session {
         let base = tempfile::tempdir().unwrap();
         let registration = registration_path_in(
             &base.path().join("oxabl").join("daemon"),
@@ -86,17 +94,21 @@ impl Session {
             registration,
             stderr,
             next_id: 1,
+            initialized: Value::Null,
             _base: base,
         };
+        let mut params = json!({
+            "processId": null,
+            "rootUri": file_uri(root),
+            "capabilities": capabilities
+        });
+        if !options.is_null() {
+            params["initializationOptions"] = options;
+        }
         session.send(json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": {
-                "processId": null,
-                "rootUri": file_uri(root),
-                "capabilities": capabilities
-            }
+            "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": params
         }));
-        session.wait_for(|m| m["id"] == json!(0));
+        session.initialized = session.wait_for(|m| m["id"] == json!(0));
         session.send(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
         session
     }
@@ -190,6 +202,17 @@ impl Session {
             "the answer to `{method}` must hold a result or an error: {answer}"
         );
         answer
+    }
+}
+
+impl Session {
+    /// The pid of the daemon that serves this session, once it has
+    /// registered itself.
+    pub fn daemon_pid(&self) -> Option<u32> {
+        let bytes = std::fs::read(&self.registration).ok()?;
+        serde_json::from_slice::<Registration>(&bytes)
+            .ok()
+            .map(|r| r.pid)
     }
 }
 

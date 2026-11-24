@@ -697,7 +697,7 @@ impl Navigation<'_, '_> {
             span: Some(span),
         };
         let shared = SymbolFlags::SHARED | SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED;
-        self.semantic.symbols.iter().find_map(|(_, symbol)| {
+        self.model.semantic.symbols.iter().find_map(|(_, symbol)| {
             (symbol.declaration != oxabl_ast::NodeId::DUMMY
                 && symbol.flags.intersects(shared)
                 && self.place(symbol.name_span).as_ref() == Some(&wanted))
@@ -711,7 +711,8 @@ impl Navigation<'_, '_> {
         let outline = self.outline_of(path)?;
         let (field, table) = field_and_table(&outline, span)?;
         let shared = SymbolFlags::SHARED | SymbolFlags::NEW_SHARED | SymbolFlags::NEW_GLOBAL_SHARED;
-        self.semantic
+        self.model
+            .semantic
             .symbols
             .iter()
             .any(|(_, symbol)| {
@@ -862,14 +863,15 @@ impl Navigation<'_, '_> {
     /// The gap of a unit whose parse had errors: the sites of a damaged
     /// statement are not known.
     fn recovered_gap(&self) -> Option<Gap> {
-        self.recovered
+        self.model
+            .recovered
             .map(|at| Gap::of_file(FoldKind::ParseErrors, self.file_of_text(at), 1))
     }
 
     /// Whether a statement form that oxabl recognizes but does not model names
     /// the referent: its names are not sites, so the search misses them.
     fn named_by_unmodelled_statement(&self, referent: &Referent) -> bool {
-        let symbols = &self.semantic.symbols;
+        let symbols = &self.model.semantic.symbols;
         symbols.iter().any(|(id, symbol)| {
             symbol
                 .flags
@@ -896,7 +898,8 @@ impl Navigation<'_, '_> {
     /// prefix of the name, three letters or more, counts: a field can be
     /// abbreviated.
     fn named_in_unmodelled_text(&self, referent: &Referent) -> Option<PathBuf> {
-        self.semantic
+        self.model
+            .semantic
             .symbols
             .unmodelled_spans()
             .iter()
@@ -912,7 +915,7 @@ impl Navigation<'_, '_> {
     /// resolve.
     fn occurrences(&self, referent: &Referent) -> (Vec<Occurrence>, usize, usize) {
         let keys = &referent.keys;
-        let symbols = &self.semantic.symbols;
+        let symbols = &self.model.semantic.symbols;
         let mut found: Vec<Occurrence> = Vec::new();
         let mut unplaced = 0;
         // Names spelled like the referent, by the place they name: whether
@@ -1316,7 +1319,7 @@ impl Navigation<'_, '_> {
         }
         match site.kind {
             CallKind::Run | CallKind::Persistent | CallKind::Remote => {
-                let sites = self.semantic.symbols.sites();
+                let sites = self.model.semantic.symbols.sites();
                 let runs = self.run_sites.get_or_init(|| {
                     let mut runs: Vec<usize> = (0..sites.len())
                         .filter(|at| matches!(sites[*at].target, SiteTarget::Run(_)))

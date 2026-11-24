@@ -203,6 +203,7 @@ impl Server<'_> {
         let Some(wanted) = params.root else {
             self.contexts.selected.remove(&uri);
             self.debouncer.schedule(uri, std::time::Instant::now());
+            self.refresh_inlay_hints();
             return self.respond(Response::new_ok(req.id, json!({ "selected": null })));
         };
         let wanted = canonical_path(&wanted);
@@ -251,6 +252,7 @@ impl Server<'_> {
                     Ok(root) => {
                         self.contexts.selected.insert(uri.clone(), root.clone());
                         self.debouncer.schedule(uri, std::time::Instant::now());
+                        self.refresh_inlay_hints();
                         self.respond(Response::new_ok(id, json!({ "selected": root })))
                     }
                     Err(reason) => self.respond(invalid(id, reason)),
@@ -322,8 +324,13 @@ impl Server<'_> {
             has_diagnostics: res.outcome.is_some(),
             panicked: res.panicked,
         };
+        let current = work.current_version == Some(work.read_version);
         match dispose(work) {
-            Disposition::Drop => {}
+            Disposition::Drop => {
+                if res.panicked && current {
+                    self.publish_inactive_regions(&res.uri, res.version, []);
+                }
+            }
             Disposition::Retry => {
                 self.debouncer.schedule(res.uri, std::time::Instant::now());
             }
@@ -342,6 +349,11 @@ impl Server<'_> {
                     &self.encoding,
                     self.related_information.then_some(&res.uri),
                 );
+                let regions = outcome
+                    .inactive_regions
+                    .iter()
+                    .map(|span| (span.start, span.end));
+                self.publish_inactive_regions(&res.uri, res.version, regions);
                 self.publish(res.uri, diagnostics, Some(res.version));
             }
         }

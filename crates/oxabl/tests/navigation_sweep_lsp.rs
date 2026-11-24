@@ -1,13 +1,13 @@
-//! Go to definition at every offset, and hover at every offset that can give
-//! another answer, of files full of awkward names, through the real
-//! `oxabl lsp` and its daemon: tables and fields that share a name, names
+//! Go to definition and document highlight at every offset, and hover at every
+//! offset that can give another answer, of files full of awkward names, through
+//! the real `oxabl lsp` and its daemon: tables and fields that share a name, names
 //! that are keywords, hyphens, digits, non-ASCII and very long names, a field
 //! the table lacks, a `.df` that breaks off, and fragments opened alone.
 //!
 //! Every answer must be a well-formed response with no error, and every
 //! location must name a file of the workspace and a range inside it. The
 //! targets themselves are `definition_lsp.rs`'s business, the hover text
-//! `hover_lsp.rs`'s.
+//! `hover_lsp.rs`'s and the highlights `document_highlight_lsp.rs`'s.
 
 #![cfg(unix)]
 
@@ -201,7 +201,7 @@ fn every_position_gets_a_well_formed_answer() {
         let text = ws.text(&path).to_string();
         session.open(&path, &text);
         let positions = positions(&text);
-        let params = positions
+        let params: Vec<Value> = positions
             .iter()
             .map(|(line, character)| {
                 json!({
@@ -210,6 +210,33 @@ fn every_position_gets_a_well_formed_answer() {
                 })
             })
             .collect();
+        // One at a time: a newer highlight of a document cancels one that waits.
+        let highlights: Vec<Value> = params
+            .iter()
+            .map(|params| session.request("textDocument/documentHighlight", params.clone()))
+            .collect();
+        for ((line, character), answer) in positions.iter().zip(highlights) {
+            let context = format!("{name}:{line}:{character} highlights");
+            assert!(answer.get("error").is_none(), "{context}: {answer}");
+            match &answer["result"] {
+                Value::Null => {}
+                Value::Array(found) => {
+                    assert!(!found.is_empty(), "{context}: an empty list, not null");
+                    for highlight in found {
+                        assert!(
+                            matches!(highlight["kind"].as_u64(), Some(2 | 3)),
+                            "{context}: {highlight}"
+                        );
+                        assert_inside(
+                            &ws,
+                            &json!({"uri": file_uri(&path), "range": highlight["range"]}),
+                            &context,
+                        );
+                    }
+                }
+                other => panic!("{context}: {other}"),
+            }
+        }
         let answers = session.request_all("textDocument/definition", params);
         for ((line, character), answer) in positions.iter().zip(answers) {
             let context = format!("{name}:{line}:{character}");

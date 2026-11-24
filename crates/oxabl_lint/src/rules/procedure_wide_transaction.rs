@@ -53,7 +53,7 @@
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_flow::{BlockId, UnitKind};
-use oxabl_scope::{FileScopes, TxKind};
+use oxabl_scope::{FileScopes, TxKind, UnitScopes, Update};
 use oxabl_semantic::AnalysisContext;
 
 use super::TX002;
@@ -85,19 +85,10 @@ pub fn check(
     _program: &[Statement],
     ctx: &AnalysisContext,
 ) -> Vec<Diagnostic> {
-    if not_judged(scopes) {
-        return Vec::new();
-    }
     let fragment = ctx.source_context.is_include_fragment();
-    let Some(main) = scopes.units().first() else {
+    let Some((_, update)) = reported_main(scopes, fragment) else {
         return Vec::new();
     };
-    let TxKind::Implicit(update) = main.block(BlockId::ROUTINE).transaction.kind else {
-        return Vec::new();
-    };
-    if main.kind != UnitKind::Main || !known_transaction(scopes, main, BlockId::ROUTINE, fragment) {
-        return Vec::new();
-    }
     vec![warning(
         ctx,
         TX002,
@@ -112,4 +103,18 @@ pub fn check(
             .to_string(),
         update.at,
     )]
+}
+
+/// The main block [`check`] reports, with its first update. The inlay hints
+/// show the same.
+pub(crate) fn reported_main(scopes: &FileScopes, fragment: bool) -> Option<(&UnitScopes, Update)> {
+    if not_judged(scopes) {
+        return None;
+    }
+    let main = scopes.units().first()?;
+    let TxKind::Implicit(update) = main.block(BlockId::ROUTINE).transaction.kind else {
+        return None;
+    };
+    (main.kind == UnitKind::Main && known_transaction(scopes, main, BlockId::ROUTINE, fragment))
+        .then_some((main, update))
 }

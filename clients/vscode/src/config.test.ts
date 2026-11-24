@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { RESTART_CONFIG_KEYS, shouldRestartForConfigChange } from "./config";
+import {
+  INLAY_HINT_KINDS,
+  RESTART_CONFIG_KEYS,
+  inlayHintSettings,
+  shouldRestartForConfigChange,
+} from "./config";
 
 describe("shouldRestartForConfigChange", () => {
   it("restarts when oxabl.enable changes", () => {
@@ -54,6 +59,41 @@ describe("restart-server command manifest", () => {
     const props = manifest.contributes.configuration.properties as Record<string, unknown>;
     for (const key of RESTART_CONFIG_KEYS) {
       expect(props[key]).toBeDefined();
+    }
+  });
+});
+
+describe("inlayHintSettings", () => {
+  it("turns every kind on when nothing is set", () => {
+    expect(inlayHintSettings(() => undefined)).toEqual({
+      locks: true,
+      index: true,
+      scope: true,
+      transactions: true,
+    });
+  });
+
+  it("turns one kind off on its own", () => {
+    expect(inlayHintSettings((kind) => (kind === "index" ? false : undefined))).toEqual({
+      locks: true,
+      index: false,
+      scope: true,
+      transactions: true,
+    });
+  });
+
+  it("does not restart the server", () => {
+    expect(shouldRestartForConfigChange((s) => s.startsWith("oxabl.inlayHints"))).toBe(false);
+  });
+
+  it("has a boolean setting for each kind, on by default", () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    const props = manifest.contributes.configuration.properties as Record<
+      string,
+      { type: string; default: unknown }
+    >;
+    for (const kind of INLAY_HINT_KINDS) {
+      expect(props[`oxabl.inlayHints.${kind}`]).toMatchObject({ type: "boolean", default: true });
     }
   });
 });
