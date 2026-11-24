@@ -111,6 +111,85 @@ how each part works and why.
   correction: the parser and the semantic model know what each name is.
 - The grammar scopes three integer literals joined by `/` with no spaces
   (`10/2/3`) as a date, the same as `12/31/2026`.
+- Continuous input of more than about 45 characters a second into a large
+  file can block the window for seconds. This is a limit of VS Code, not of
+  the grammar, so the extension does not change it. See
+  [Input faster than VS Code tokenizes](#input-faster-than-vs-code-tokenizes).
+
+### Input faster than VS Code tokenizes
+
+A comment, a string or an include reference can continue on the next lines.
+When an edit opens or closes one of them, the state at the end of each line
+below the edit changes, and the tokens of the remainder of the file become
+incorrect. VS Code tokenizes in a worker
+(`editor.experimental.asyncTokenization`, on by default). The worker sends
+the new tokens to the window in parts of about 200 lines. When more edits
+come before a part arrives, the window must move each line of the part
+through each of these edits. With continuous fast input into a large file,
+this work fills the main thread of the window.
+
+The `server-soak` end-to-end scenario measures it (`test/e2e/README.md`).
+It types into a fuzzed ABL file of 400 KB (about 13,700 lines) and counts
+how long a 50 ms timer in the window is late. All rows below are for the
+language server off, 60 seconds of input and VS Code 1.145.2.
+
+By input speed (ABL, typed text):
+
+| Characters a second | Longest block | Share of a 10 s sample blocked |
+| --- | --- | --- |
+| 11 | 0.13 s | 0% |
+| 18 | 0.04 s | 0% |
+| 39 | 0.09 s | 0% |
+| 44 | 0.37 s | up to 12% |
+| 50 | 3.0 s | 18% to 91% |
+| 78 | 4.5 s | about 100% |
+
+The limit is between 40 and 50 characters a second. The repeat rate of a
+held key is often 25 to 40 a second, so a held key stays below it. Holding
+Delete from the top of the file (`OXABL_E2E_HOLD_KEY=Delete`) does not block
+the window at 30, 40 or 50 presses a second. At 60 presses a second it
+blocks for 97% of the time (longest block 8.8 s). Holding Backspace at the
+top of the file does nothing: no text is before the cursor.
+
+By configuration (ABL, typed at about 78 characters a second):
+
+| Configuration | Longest block | Sum of blocks over 100 ms |
+| --- | --- | --- |
+| ABL as shipped | 6.5 s | 47 s |
+| Empty `language-configuration.json` | 3.9 s | 46 s |
+| No indentation rules, or no auto-closing pairs | 7.3 s, 3.4 s | 45 s, 44 s |
+| Bracket pair colorization off | 4.1 s | 45 s |
+| Same text in VS Code's own C grammar | 3.7 s | 43 s |
+| Same text in VS Code's own Rust grammar | 3.8 s | 46 s |
+| `editor.experimental.asyncTokenization: false` | 0.07 s | 0 s |
+| Same text as plain text (no grammar) | 0.03 s | 0 s |
+
+The C and Rust rows need `OXABL_E2E_BIG_FILE=big.c` or `big.rs`.
+
+VS Code 1.147.0 gives the same result (ABL 9.0 s and 48 s, C 3.0 s and
+41 s). A CPU profile of the window shows the time in
+`setTokensAndStates` of the worker tokenizer controller, in the transform of
+the pending edits, and in the rendering of the changed lines. The language
+configuration and bracket pair colorization have no effect. The grammars of
+VS Code itself have the same effect as the ABL grammar.
+
+The full hang of the issue (a click that times out after 120 seconds, and
+the memory growth from 1.3 GB to 2.1 GB) did not occur in these runs. The
+window answered within 3 seconds. The memory of the VS Code processes grew
+about the same with and without a grammar. The cause of the full hang is not
+shown: only the stalls are.
+
+The extension cannot set `editor.experimental.asyncTokenization` for ABL
+files only: VS Code reads it for all languages, and an `[abl]` value has no
+effect. A default from the extension (`configurationDefaults`) removes the
+blocks in the measurement, but it changes the tokenization of all languages,
+so the extension does not set it. A person who is affected can set it to
+`false` in the settings.
+
+The `server-soak` scenario types at about 39 characters a second first. It
+fails when the window blocks for more than 1 second, when it is blocked for
+more than 10% of a sample, or when the window takes the keys at fewer than
+28 characters a second (a slow window gets less load).
 
 ### Tests
 

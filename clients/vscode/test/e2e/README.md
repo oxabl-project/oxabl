@@ -80,17 +80,33 @@ is still running, and kills it.
 
 Two more scenarios measure what the extension costs the machine. They run only
 when `OXABL_E2E_SCENARIOS` names them, and their settings are in
-`scenarios/server.mjs`:
+`scenarios/server.mjs`. For example, the soak with the server off, and the
+same text in VS Code's own C grammar for comparison:
+
+```bash
+OXABL_E2E_SCENARIOS=server-soak OXABL_E2E_NO_SERVER=1 OXABL_E2E_OXABL=<oxabl> \
+  OXABL_E2E_RUNTIME=<short dir> xvfb-run -a pnpm run test:e2e
+OXABL_E2E_BIG_FILE=big.c ... # the same, as C
+OXABL_E2E_PROFILE=window.cpuprofile ... # a CPU profile of the window while it types
+```
+
 
 | Scenario | What it measures |
 | --- | --- |
 | `server-crash-loop` | A server that exits at once: how often the client starts it again. |
-| `server-soak` | A real `oxabl` (`OXABL_E2E_OXABL`) on a large fuzzed file that is edited for a while, then five window reloads: memory, threads and CPU of the extension host and the server, and the number of `oxabl` processes. |
+| `server-soak` | A real `oxabl` (`OXABL_E2E_OXABL`) on a large fuzzed file. A fast typist (about 39 characters a second) types first: the checks fail when the main thread of the window blocks for more than 1 second, when it is blocked for more than 10% of a sample, or when the window takes fewer than 28 characters a second. Then the scenario types as fast as it can and checks that the window still answers within 30 seconds. Then five window reloads. It reports memory, threads and CPU of the extension host and the server, the number of `oxabl` processes, and how long the window was blocked. Input at that stress speed (about 78 characters a second; the limit is about 45) blocks the window for seconds in every language with a grammar: see "Input faster than VS Code tokenizes" in `docs/design/vscode-extension.md`. |
+
+To open the file of `server-soak` by hand, write it from `clients/vscode`:
+
+```bash
+node -e 'import("./test/e2e/scenarios/server.mjs").then(m => require("fs").writeFileSync("big.p", m.fuzzedFile(400000)))'
+```
 
 Settings through the environment:
 
 - `OXABL_E2E_SCENARIOS=highlight,markdown` runs the scenarios whose name starts
   with one of the prefixes.
+- `OXABL_E2E_VSCODE_VERSION=1.147.0` runs another VS Code than the pinned one.
 - `OXABL_E2E_VSIX=<file>` tests that VSIX. Without it, the run packages the
   tree with `scripts/package-vsix.sh`.
 
