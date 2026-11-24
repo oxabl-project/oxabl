@@ -89,6 +89,7 @@
       ]
     },
     "comment-block": {
+      "x-nesting-limit": 50,
       "name": "comment.block.abl",
       "begin": "/\\*",
       "end": "\\*/",
@@ -137,6 +138,17 @@
           "patterns": [
             {
               "include": "#line-continuation"
+            },
+            {
+              "match": "(?i)(?<![\\w#$%&-])({{word:&GLOBAL-DEFINE}}|{{word:&SCOPED-DEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.control.directive.define.abl"
+                },
+                "2": {
+                  "name": "entity.name.function.preprocessor.abl"
+                }
+              }
             },
             {
               "include": "#code"
@@ -223,6 +235,7 @@
       ]
     },
     "include": {
+      "x-nesting-limit": 50,
       "name": "meta.preprocessor.include.abl",
       "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
       "beginCaptures": {
@@ -236,6 +249,16 @@
           "name": "punctuation.definition.include.end.abl"
         }
       },
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include"
+        }
+      ]
+    },
+    "include-arguments": {
       "patterns": [
         {
           "match": "\\G\\s*((?:\\{[^{}]*\\}|\"[^\"]*\"|[^\\s{}\"])+)",
@@ -263,9 +286,6 @@
         },
         {
           "include": "#preprocessor-references"
-        },
-        {
-          "include": "#include"
         },
         {
           "include": "#strings"

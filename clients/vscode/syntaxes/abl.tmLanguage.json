@@ -91,7 +91,987 @@
       "name": "comment.block.abl",
       "patterns": [
         {
-          "include": "#comment-block"
+          "include": "#comment-block-2"
+        }
+      ]
+    },
+    "comment-block-10": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-11"
+        }
+      ]
+    },
+    "comment-block-11": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-12"
+        }
+      ]
+    },
+    "comment-block-12": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-13"
+        }
+      ]
+    },
+    "comment-block-13": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-14"
+        }
+      ]
+    },
+    "comment-block-14": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-15"
+        }
+      ]
+    },
+    "comment-block-15": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-16"
+        }
+      ]
+    },
+    "comment-block-16": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-17"
+        }
+      ]
+    },
+    "comment-block-17": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-18"
+        }
+      ]
+    },
+    "comment-block-18": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-19"
+        }
+      ]
+    },
+    "comment-block-19": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-20"
+        }
+      ]
+    },
+    "comment-block-2": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-3"
+        }
+      ]
+    },
+    "comment-block-20": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-21"
+        }
+      ]
+    },
+    "comment-block-21": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-22"
+        }
+      ]
+    },
+    "comment-block-22": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-23"
+        }
+      ]
+    },
+    "comment-block-23": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-24"
+        }
+      ]
+    },
+    "comment-block-24": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-25"
+        }
+      ]
+    },
+    "comment-block-25": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-26"
+        }
+      ]
+    },
+    "comment-block-26": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-27"
+        }
+      ]
+    },
+    "comment-block-27": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-28"
+        }
+      ]
+    },
+    "comment-block-28": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-29"
+        }
+      ]
+    },
+    "comment-block-29": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-30"
+        }
+      ]
+    },
+    "comment-block-3": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-4"
+        }
+      ]
+    },
+    "comment-block-30": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-31"
+        }
+      ]
+    },
+    "comment-block-31": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-32"
+        }
+      ]
+    },
+    "comment-block-32": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-33"
+        }
+      ]
+    },
+    "comment-block-33": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-34"
+        }
+      ]
+    },
+    "comment-block-34": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-35"
+        }
+      ]
+    },
+    "comment-block-35": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-36"
+        }
+      ]
+    },
+    "comment-block-36": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-37"
+        }
+      ]
+    },
+    "comment-block-37": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-38"
+        }
+      ]
+    },
+    "comment-block-38": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-39"
+        }
+      ]
+    },
+    "comment-block-39": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-40"
+        }
+      ]
+    },
+    "comment-block-4": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-5"
+        }
+      ]
+    },
+    "comment-block-40": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-41"
+        }
+      ]
+    },
+    "comment-block-41": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-42"
+        }
+      ]
+    },
+    "comment-block-42": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-43"
+        }
+      ]
+    },
+    "comment-block-43": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-44"
+        }
+      ]
+    },
+    "comment-block-44": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-45"
+        }
+      ]
+    },
+    "comment-block-45": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-46"
+        }
+      ]
+    },
+    "comment-block-46": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-47"
+        }
+      ]
+    },
+    "comment-block-47": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-48"
+        }
+      ]
+    },
+    "comment-block-48": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-49"
+        }
+      ]
+    },
+    "comment-block-49": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-50"
+        }
+      ]
+    },
+    "comment-block-5": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-6"
+        }
+      ]
+    },
+    "comment-block-50": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "match": "/\\*"
+        }
+      ]
+    },
+    "comment-block-6": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-7"
+        }
+      ]
+    },
+    "comment-block-7": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-8"
+        }
+      ]
+    },
+    "comment-block-8": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-9"
+        }
+      ]
+    },
+    "comment-block-9": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.abl"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.abl"
+        }
+      },
+      "name": "comment.block.abl",
+      "patterns": [
+        {
+          "include": "#comment-block-10"
         }
       ]
     },
@@ -374,6 +1354,1143 @@
       "name": "meta.preprocessor.include.abl",
       "patterns": [
         {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-2"
+        }
+      ]
+    },
+    "include-10": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-11"
+        }
+      ]
+    },
+    "include-11": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-12"
+        }
+      ]
+    },
+    "include-12": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-13"
+        }
+      ]
+    },
+    "include-13": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-14"
+        }
+      ]
+    },
+    "include-14": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-15"
+        }
+      ]
+    },
+    "include-15": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-16"
+        }
+      ]
+    },
+    "include-16": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-17"
+        }
+      ]
+    },
+    "include-17": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-18"
+        }
+      ]
+    },
+    "include-18": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-19"
+        }
+      ]
+    },
+    "include-19": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-20"
+        }
+      ]
+    },
+    "include-2": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-3"
+        }
+      ]
+    },
+    "include-20": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-21"
+        }
+      ]
+    },
+    "include-21": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-22"
+        }
+      ]
+    },
+    "include-22": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-23"
+        }
+      ]
+    },
+    "include-23": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-24"
+        }
+      ]
+    },
+    "include-24": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-25"
+        }
+      ]
+    },
+    "include-25": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-26"
+        }
+      ]
+    },
+    "include-26": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-27"
+        }
+      ]
+    },
+    "include-27": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-28"
+        }
+      ]
+    },
+    "include-28": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-29"
+        }
+      ]
+    },
+    "include-29": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-30"
+        }
+      ]
+    },
+    "include-3": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-4"
+        }
+      ]
+    },
+    "include-30": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-31"
+        }
+      ]
+    },
+    "include-31": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-32"
+        }
+      ]
+    },
+    "include-32": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-33"
+        }
+      ]
+    },
+    "include-33": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-34"
+        }
+      ]
+    },
+    "include-34": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-35"
+        }
+      ]
+    },
+    "include-35": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-36"
+        }
+      ]
+    },
+    "include-36": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-37"
+        }
+      ]
+    },
+    "include-37": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-38"
+        }
+      ]
+    },
+    "include-38": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-39"
+        }
+      ]
+    },
+    "include-39": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-40"
+        }
+      ]
+    },
+    "include-4": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-5"
+        }
+      ]
+    },
+    "include-40": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-41"
+        }
+      ]
+    },
+    "include-41": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-42"
+        }
+      ]
+    },
+    "include-42": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-43"
+        }
+      ]
+    },
+    "include-43": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-44"
+        }
+      ]
+    },
+    "include-44": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-45"
+        }
+      ]
+    },
+    "include-45": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-46"
+        }
+      ]
+    },
+    "include-46": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-47"
+        }
+      ]
+    },
+    "include-47": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-48"
+        }
+      ]
+    },
+    "include-48": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-49"
+        }
+      ]
+    },
+    "include-49": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-50"
+        }
+      ]
+    },
+    "include-5": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-6"
+        }
+      ]
+    },
+    "include-50": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "match": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])"
+        }
+      ]
+    },
+    "include-6": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-7"
+        }
+      ]
+    },
+    "include-7": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-8"
+        }
+      ]
+    },
+    "include-8": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-9"
+        }
+      ]
+    },
+    "include-9": {
+      "begin": "(\\{)(?=\\s*[A-Za-z_./\\\\\"{])",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.include.begin.abl"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.include.end.abl"
+        }
+      },
+      "name": "meta.preprocessor.include.abl",
+      "patterns": [
+        {
+          "include": "#include-arguments"
+        },
+        {
+          "include": "#include-10"
+        }
+      ]
+    },
+    "include-arguments": {
+      "patterns": [
+        {
           "captures": {
             "1": {
               "name": "string.unquoted.include.abl",
@@ -399,9 +2516,6 @@
         },
         {
           "include": "#preprocessor-references"
-        },
-        {
-          "include": "#include"
         },
         {
           "include": "#strings"
@@ -565,6 +2679,17 @@
           "patterns": [
             {
               "include": "#line-continuation"
+            },
+            {
+              "captures": {
+                "1": {
+                  "name": "keyword.control.directive.define.abl"
+                },
+                "2": {
+                  "name": "entity.name.function.preprocessor.abl"
+                }
+              },
+              "match": "(?i)(?<![\\w#$%&-])(&glob(?:a(?:l(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?|&scop(?:e(?:d(?:-(?:d(?:e(?:f(?:i(?:ne?)?)?)?)?)?)?)?)?)(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?"
             },
             {
               "include": "#code"
