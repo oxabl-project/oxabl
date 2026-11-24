@@ -2488,6 +2488,72 @@
         }
       ]
     },
+    "include-argument-strings": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.abl"
+            }
+          },
+          "end": "(\")(?!\")|(?=\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.string.end.abl"
+            }
+          },
+          "name": "string.quoted.double.abl",
+          "patterns": [
+            {
+              "match": "~[{}~]",
+              "name": "constant.character.escape.abl"
+            },
+            {
+              "match": "\"\"",
+              "name": "constant.character.escape.abl"
+            },
+            {
+              "include": "#preprocessor-references"
+            },
+            {
+              "include": "#include"
+            }
+          ]
+        },
+        {
+          "begin": "'",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.abl"
+            }
+          },
+          "end": "(')(?!')|(?=\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.string.end.abl"
+            }
+          },
+          "name": "string.quoted.single.abl",
+          "patterns": [
+            {
+              "match": "~[{}~]",
+              "name": "constant.character.escape.abl"
+            },
+            {
+              "match": "''",
+              "name": "constant.character.escape.abl"
+            },
+            {
+              "include": "#preprocessor-references"
+            },
+            {
+              "include": "#include"
+            }
+          ]
+        }
+      ]
+    },
     "include-arguments": {
       "patterns": [
         {
@@ -2501,7 +2567,7 @@
               ]
             }
           },
-          "match": "\\G\\s*((?:\\{[^{}]*\\}|\"[^\"]*\"|[^\\s{}\"])+)"
+          "match": "\\G\\s*((?:\\{[^{}]*\\}|\"[^\"{}]*\"|[^\\s{}\"])+)"
         },
         {
           "captures": {
@@ -2518,10 +2584,14 @@
           "include": "#preprocessor-references"
         },
         {
-          "include": "#strings"
+          "include": "#include-argument-strings"
         },
         {
-          "match": "[^\\s{}\"'=]+",
+          "match": "~[{}~]",
+          "name": "constant.character.escape.abl"
+        },
+        {
+          "match": "(?:[^\\s{}\"'=~]|~(?![{}~]))+",
           "name": "string.unquoted.argument.abl"
         }
       ]

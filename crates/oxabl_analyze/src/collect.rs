@@ -220,13 +220,14 @@ impl CollectedDiagnostics {
 /// consumers share it): all errors, plus the always-loud warnings PREPROC007
 /// (unresolvable include — symbol loss), PREPROC008 (unterminated include
 /// reference), PREPROC009 (predefined name without a value in a condition),
-/// PREPROC010 (condition part the evaluator does not model) and PREPROC002
-/// (unclosed `&IF`).
+/// PREPROC010 (condition part the evaluator does not model), PREPROC013 (a
+/// substituted value ending with `~`) and PREPROC002 (unclosed `&IF`).
+/// PREPROC012 (an unclosed `~{` in an include argument) is an error.
 pub fn is_loud(d: &Diagnostic) -> bool {
     matches!(d.severity, Severity::Error)
         || matches!(
             d.code.0,
-            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009" | "PREPROC010"
+            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009" | "PREPROC010" | "PREPROC013"
         )
 }
 

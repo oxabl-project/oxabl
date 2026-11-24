@@ -785,10 +785,18 @@ impl<'a> Lexer<'a> {
     /// Called after '{' has been consumed and we've peeked an alpha, '/', '.', or '"' char.
     /// Consumes up to and including the matching '}', tracking nested braces so that
     /// argument expressions like `{file.i &arg={&var}}` are consumed as a single token.
+    /// As in the compiler and the preprocessor, a quote does not hide a brace,
+    /// and `~` escapes the next character (`~}` does not end the reference).
     fn read_include_reference(&mut self, _start: usize) -> Kind {
         let mut depth = 1usize;
         while let Some(c) = self.peek() {
             match c {
+                '~' => {
+                    self.advance();
+                    if self.peek().is_some() {
+                        self.advance();
+                    }
+                }
                 '{' => {
                     self.advance();
                     depth += 1;
@@ -2235,6 +2243,23 @@ end."#;
         let tokens = collect_tokens(source);
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].kind, Kind::Preprop);
+    }
+
+    #[test]
+    fn a_quoted_brace_ends_an_include_reference() {
+        // As in the compiler and the preprocessor: the first `}` ends it, and
+        // `~}` does not.
+        for (source, end) in [
+            ("{a.i '}' y}Z", 7),
+            ("{a.i \"}\" y}Z", 7),
+            ("{a.i x \"~\"}\" y}Z", 11),
+            ("{a.i x a~}b y}Z", 14),
+            ("{a.i x \"a~}b\" y}Z", 16),
+        ] {
+            let tokens = collect_tokens(source);
+            assert_eq!(tokens[0].kind, Kind::IncludeReference, "for {source:?}");
+            assert_eq!(tokens[0].end, end, "for {source:?}");
+        }
     }
 
     #[test]
