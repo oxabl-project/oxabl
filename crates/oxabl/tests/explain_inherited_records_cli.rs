@@ -431,3 +431,62 @@ fn a_database_qualified_name_is_the_table_even_beside_a_temp_table_of_its_name()
     );
     assert_eq!(blind.table, "customer", "{blind:#?}");
 }
+
+/// In a chain that is not read, the name alone can be a temp-table of the
+/// unread class, so it stays Unknown beside the qualified name, in either
+/// order.
+#[test]
+fn in_an_unread_chain_a_qualified_name_leaves_the_name_alone_unknown() {
+    let opaque = "CLASS pkg.Base INHERITS pkg.Missing:\nEND CLASS.\n";
+    let qualified = "FIND FIRST fixture.customer NO-LOCK NO-ERROR.";
+    let alone = "FIND FIRST customer EXCLUSIVE-LOCK NO-ERROR.";
+    for (statements, expected) in [
+        ([qualified, alone], ["customer", "?:customer"]),
+        ([alone, qualified], ["?:customer", "customer"]),
+    ] {
+        let text = sub("", &statements);
+        let tmp = workspace(&[("pkg/Base.cls", opaque), ("app/Sub.cls", &text)]);
+        let effects = run_effects(tmp.path(), "app/Sub.cls");
+        assert_eq!(
+            table_at(&effects, 4),
+            expected[0],
+            "{statements:?}: {effects:#?}"
+        );
+        assert_eq!(
+            table_at(&effects, 5),
+            expected[1],
+            "{statements:?}: {effects:#?}"
+        );
+    }
+}
+
+/// A field of `db.t` in an expression is a field of the table, also beside a
+/// temp-table of its name.
+#[test]
+fn a_database_qualified_field_beside_a_temp_table_updates_the_table() {
+    let base = "CLASS pkg.Base:\n    DEFINE PROTECTED TEMP-TABLE customer NO-UNDO FIELD name AS CHARACTER.\nEND CLASS.\n";
+    let text = sub(
+        "",
+        &[
+            "FIND FIRST fixture.customer EXCLUSIVE-LOCK NO-ERROR.",
+            "fixture.customer.name = \"x\".",
+            "DELETE fixture.customer.",
+        ],
+    );
+    let tmp = workspace(&[("pkg/Base.cls", base), ("app/Sub.cls", &text)]);
+    let effects = run_effects(tmp.path(), "app/Sub.cls");
+    assert_eq!(table_at(&effects, 5), "customer", "{effects:#?}");
+
+    let local = workspace(&[(
+        "p.p",
+        "DEFINE TEMP-TABLE customer NO-UNDO FIELD name AS CHARACTER.\nFIND FIRST fixture.customer EXCLUSIVE-LOCK NO-ERROR.\nfixture.customer.name = \"x\".\n",
+    )]);
+    let value = oxabl(local.path(), &["explain", "p.p", "--json"]);
+    let lines: Vec<(u64, &str)> = value["units"][0]["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["line"].as_u64().unwrap(), e["table"].as_str().unwrap()))
+        .collect();
+    assert!(lines.contains(&(3, "customer")), "{value}");
+}

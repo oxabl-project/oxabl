@@ -498,8 +498,11 @@ impl<'a> Resolver<'a> {
     fn qualified_default(&mut self, key: &str, written: &str, create: bool) -> Option<BufferId> {
         let main = UnitId::from_index(0);
         // The table and a temp-table or inherited record of its name are two
-        // buffers; the others are one, as `db.t` and `t` are.
-        let shadowed = self.temp_table_in(key, main).is_some() || self.inherited.contains_key(key);
+        // buffers, and so they are when an unread class may define the name;
+        // the others are one, as `db.t` and `t` are.
+        let shadowed = self.opaque
+            || self.temp_table_in(key, main).is_some()
+            || self.inherited.contains_key(key);
         let slot = if shadowed {
             format!("db.{key}")
         } else {
@@ -551,12 +554,17 @@ impl<'a> Resolver<'a> {
         if self.privates(r).contains(&&**qualifier) {
             return (None, false);
         }
-        if let Some(b) = self.lookup(qualifier, r.unit, false) {
+        // `db.t.f` names the table `t` of the database, never a temp-table.
+        let record = match words.len() {
+            3 => format!("{}.{}", &*words[0], &*words[1]),
+            _ => (**qualifier).to_string(),
+        };
+        if let Some(b) = self.lookup(&record, r.unit, false) {
             return (Some(b), true);
         }
         if words.len() == 2 {
             // `db.table` in an expression.
-            if let Some(b) = self.lookup(&words[1], r.unit, false) {
+            if let Some(b) = self.lookup(&format!("{}.{}", &*words[0], &*words[1]), r.unit, false) {
                 return (Some(b), false);
             }
             if self.schema.is_none() {
