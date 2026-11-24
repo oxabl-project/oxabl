@@ -1,11 +1,12 @@
 use super::*;
 use oxabl_ast::{
-    AccessModifier, BooleanLiteral, BufferTarget, CommentKind, CreateTarget, CreateTargetKind,
-    DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind, ExpressionKind,
-    FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal, LockType, NodeId,
-    OnAction, OnKind, ParameterDirection, ParameterType, RunTarget, SortDirection, Span,
-    StatementKind, StreamDirection, StreamOperation, StreamTarget, StringLiteral, SubscribeTarget,
-    TypeSource, UnknownLiteral, UsingSource, WhenBranch, WidgetQualifier,
+    AccessModifier, BooleanLiteral, BufferTarget, CloseKind, CommentKind, CreateTarget,
+    CreateTargetKind, DataSourceKeys, DataType, DbTriggerEvent, DecimalLiteral, DeleteObjectKind,
+    ExpressionKind, FindType, FrameField, HandleParamKind, Identifier, IntegerLiteral, Literal,
+    LockType, NodeId, OnAction, OnKind, ParameterDirection, ParameterType, RunTarget,
+    SortDirection, Span, StatementKind, StreamDirection, StreamOperation, StreamTarget,
+    StringLiteral, SubscribeTarget, TypeSource, UnknownLiteral, UsingSource, WhenBranch,
+    WidgetQualifier,
 };
 use oxabl_lexer::tokenize;
 use rust_decimal::Decimal;
@@ -11862,7 +11863,7 @@ fn skipped_harvest_keeps_spaced_division_operands() {
 /// the widget and frame names survive.
 #[test]
 fn skipped_color_harvests_widget_and_frame_not_the_string() {
-    let names = harvest(r#"COLOR DISPLAY "CHOOSE" btn-ok WITH FRAME f-main."#);
+    let names = harvest(r#"COLOR "CHOOSE" btn-ok WITH FRAME f-main."#);
     assert!(names.contains(&"btn-ok".to_string()), "got {names:?}");
     assert!(names.contains(&"f-main".to_string()), "got {names:?}");
     assert!(!names.iter().any(|n| n.contains("CHOOSE")), "got {names:?}");
@@ -11888,28 +11889,36 @@ fn skipped_forms_without_identifier_content_harvest_almost_nothing() {
 }
 
 /// `skip_to_statement_end_editing_aware` parses the `EDITING:` body and throws
-/// it away, but the cursor still advances past it, so the harvest reaches those
-/// tokens. A statement-leading name inside the block follows a terminating
-/// period *and a space*, so the adjacency filter does not eat it.
+/// it away, but the cursor still advances past it, so the tail harvest reaches
+/// those tokens. A statement-leading name inside the block follows a
+/// terminating period *and a space*, so the adjacency filter does not eat it.
 #[test]
-fn skipped_editing_block_names_survive_the_harvest() {
-    let names = harvest("PROMPT-FOR v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.");
-    assert!(names.contains(&"v-name".to_string()), "got {names:?}");
-    assert!(names.contains(&"v-x".to_string()), "got {names:?}");
-    assert!(names.contains(&"v-y".to_string()), "got {names:?}");
+fn an_editing_block_names_survive_in_the_tail_of_a_head_parsed_statement() {
+    let source = "PROMPT-FOR v-name WITH FRAME f-main EDITING: v-x = 1. v-y = 2. END.";
+    let stmts = assert_parses_clean(source);
+    assert_eq!(stmts.len(), 1, "{stmts:?}");
+    assert!(
+        matches!(stmts[0].kind, StatementKind::PromptFor { .. }),
+        "{:?}",
+        stmts[0].kind
+    );
+    let names = tail_names(&stmts[0]);
+    assert!(
+        names.contains(&"v-x") && names.contains(&"v-y"),
+        "{names:?}"
+    );
 }
 
-/// The nested-statement save/restore in the `parse_statement` funnel: an
-/// `EDITING:` body recurses through `parse_statement`, and without restoring the
-/// anchor the outer harvest range would start at the last inner statement.
+/// An `EDITING:` body recurses through `parse_statement`; the head targets
+/// must still be the ones before it.
 #[test]
-fn skipped_editing_block_does_not_clobber_the_outer_harvest_anchor() {
-    let names = harvest("PROMPT-FOR v-first WITH FRAME f-main EDITING: v-x = 1. END.");
-    assert_eq!(
-        names.first().map(String::as_str),
-        Some("v-first"),
-        "outer anchor lost — got {names:?}"
-    );
+fn an_editing_block_does_not_disturb_the_head_of_the_statement() {
+    let source = "PROMPT-FOR v-first WITH FRAME f-main EDITING: v-x = 1. END.";
+    let stmts = assert_parses_clean(source);
+    let StatementKind::PromptFor { targets, .. } = &stmts[0].kind else {
+        panic!("expected PromptFor, got {:?}", stmts[0].kind);
+    };
+    assert_eq!(targets.len(), 1, "{targets:?}");
 }
 
 /// The thirteen non-dispatch skip-helper callers keep their real statement node
@@ -15009,4 +15018,345 @@ fn abstract_class_method_does_not_swallow_the_next_method() {
         }
         other => panic!("Expected Class statement, got {other:?}"),
     }
+}
+
+#[test]
+fn prompt_for_is_head_parsed_with_stream_and_targets() {
+    for (source, stream, targets, fields) in [
+        ("PROMPT-FOR v-key.", false, 1, 0),
+        (
+            "PROMPT-FOR v-a v-b FORMAT \"x(5)\" WITH FRAME f.",
+            false,
+            2,
+            0,
+        ),
+        ("PROMPT-FOR STREAM s1 v-a.", true, 1, 0),
+        (
+            "PROMPT-FOR v-a LABEL v-lbl VALIDATE(v-a > v-min, \"low\").",
+            false,
+            1,
+            0,
+        ),
+        ("PROMPT-FOR v-new AS INTEGER v-b.", false, 1, 1),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::PromptFor {
+            stream_name,
+            targets: t,
+            fields: f,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected PromptFor, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(stream_name.is_some(), stream, "{source}");
+        assert_eq!(t.len(), targets, "{source}: {t:?}");
+        assert_eq!(f.len(), fields, "{source}");
+    }
+}
+
+#[test]
+fn get_is_head_parsed_with_position_query_and_lock() {
+    for (source, get_type, lock, no_wait) in [
+        ("GET FIRST q-detail.", FindType::First, None, false),
+        (
+            "GET NEXT q-detail NO-LOCK.",
+            FindType::Next,
+            Some(LockType::NoLock),
+            false,
+        ),
+        (
+            "GET LAST hq EXCLUSIVE-LOCK NO-WAIT.",
+            FindType::Last,
+            Some(LockType::ExclusiveLock),
+            true,
+        ),
+        (
+            "GET CURRENT q SHARE-LOCK.",
+            FindType::Current,
+            Some(LockType::ShareLock),
+            false,
+        ),
+        ("GET PREV q-detail.", FindType::Prev, None, false),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Get {
+            get_type: t,
+            lock: l,
+            no_wait: w,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Get, got {:?}", stmts[0].kind);
+        };
+        assert_eq!((t, l, w), (&get_type, &lock, &no_wait), "{source}");
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn close_is_head_parsed_for_a_query_and_a_stored_procedure() {
+    for (source, kind, status, handle) in [
+        ("CLOSE QUERY q-detail.", CloseKind::Query, false, false),
+        ("CLOSE QUERY hq.", CloseKind::Query, false, false),
+        (
+            "CLOSE STORED-PROCEDURE sp-detail.",
+            CloseKind::StoredProcedure,
+            false,
+            false,
+        ),
+        (
+            "CLOSE STORED-PROC sp v-st = PROC-STATUS WHERE PROC-HANDLE = v-h.",
+            CloseKind::StoredProcedure,
+            true,
+            true,
+        ),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Close {
+            kind: k,
+            status: s,
+            handle: h,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Close, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(
+            (*k, s.is_some(), h.is_some()),
+            (kind, status, handle),
+            "{source}"
+        );
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn close_of_something_else_stays_skipped() {
+    let stmts = assert_parses_clean("CLOSE DATASET ds.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
+}
+
+#[test]
+fn reposition_is_head_parsed_with_query_and_operands() {
+    for (source, operands, no_error) in [
+        ("REPOSITION q-detail TO ROW 3.", 1, false),
+        ("REPOSITION q-detail TO ROW v-row NO-ERROR.", 1, true),
+        ("REPOSITION q TO ROWID rid1, rid2.", 2, false),
+        ("REPOSITION q TO ROWID ROWID(cust) NO-ERROR.", 1, true),
+        ("REPOSITION q FORWARD v-n.", 1, false),
+        ("REPOSITION q BACKWARD 2.", 1, false),
+        ("REPOSITION hq TO RECID v-r.", 1, false),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Reposition {
+            operands: o,
+            no_error: n,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Reposition, got {:?}", stmts[0].kind);
+        };
+        assert_eq!((o.len(), *n), (operands, no_error), "{source}: {o:?}");
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn clear_is_head_parsed_with_its_frame() {
+    for (source, frame) in [
+        ("CLEAR.", None),
+        ("CLEAR ALL.", None),
+        ("CLEAR FRAME f-main.", Some("f-main")),
+        ("CLEAR FRAME f-main ALL NO-PAUSE.", Some("f-main")),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Clear { frame: f } = &stmts[0].kind else {
+            panic!("{source}: expected Clear, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(f.as_ref().map(|i| i.name.as_str()), frame, "{source}");
+    }
+}
+
+#[test]
+fn a_name_after_clear_is_not_a_clear_statement() {
+    let stmts = assert_parses_clean("CLEAR v-x.");
+    assert!(
+        !matches!(stmts[0].kind, StatementKind::Clear { .. }),
+        "{:?}",
+        stmts[0].kind
+    );
+}
+
+#[test]
+fn accumulate_is_head_parsed_with_expression_and_breaks() {
+    for (source, breaks) in [
+        ("ACCUMULATE v-total (TOTAL).", 0),
+        ("ACCUMULATE v-qty (TOTAL COUNT MAXIMUM).", 0),
+        ("ACCUMULATE tt-item.amount (TOTAL BY tt-item.grp).", 1),
+        ("ACCUMULATE v-qty (TOTAL BY v-a BY v-b).", 2),
+        ("ACCUM v-total (COUNT).", 0),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Accumulate { breaks: b, .. } = &stmts[0].kind else {
+            panic!("{source}: expected Accumulate, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(b.len(), breaks, "{source}: {b:?}");
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn an_accumulate_the_head_cannot_split_stays_skipped() {
+    // No aggregate, and an expression whose last operand a call would swallow.
+    for source in ["ACCUMULATE v-total.", "ACCUMULATE v-price * v-qty (TOTAL)."] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn color_is_head_parsed_with_the_fields_and_a_value_color() {
+    for (source, stream, items) in [
+        ("COLOR DISPLAY NORMAL v-a v-b WITH FRAME f.", false, 2),
+        ("COLOR PROMPT INPUT v-a.", false, 1),
+        ("COLOR DISPLAY MESSAGES.", false, 0),
+        ("COLOR DISPLAY blue/white v-a.", false, 1),
+        ("COLOR DISPLAY BRIGHT-RED/WHITE tbl.fld.", false, 1),
+        (
+            "COLOR DISPLAY VALUE(v-color) v-a v-b WITH FRAME f.",
+            false,
+            3,
+        ),
+        ("COLOR STREAM s1 DISPLAY NORMAL v-a.", true, 1),
+        (
+            "COLOR DISPLAY NORMAL PROMPT INPUT v-a WITH FRAME f.",
+            false,
+            1,
+        ),
+        ("COLOR DISPLAY MESSAGES PROMPT NORMAL v-a v-b.", false, 2),
+        ("COLOR DISPLAY VALUE(c) PROMPT VALUE(d) v-a.", false, 3),
+        (
+            r#"COLOR DISPLAY "CHOOSE" btn-ok WITH FRAME f-main."#,
+            false,
+            1,
+        ),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Color {
+            stream_name,
+            items: i,
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Color, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(stream_name.is_some(), stream, "{source}");
+        assert_eq!(i.len(), items, "{source}: {i:?}");
+    }
+}
+
+#[test]
+fn color_without_display_or_prompt_stays_skipped() {
+    for source in [
+        "COLOR v-a.",
+        "COLOR DISPLAY.",
+        "COLOR DISPLAY NORMAL PROMPT.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
+}
+
+#[test]
+fn copy_lob_is_head_parsed_with_source_target_and_options() {
+    for (source, source_file, target_file, options, no_error) in [
+        ("COPY-LOB FROM v-a TO v-b.", false, false, 0, false),
+        ("COPY-LOB v-a TO v-b.", false, false, 0, false),
+        (
+            "COPY-LOB FROM FILE v-path TO OBJECT v-b NO-ERROR.",
+            true,
+            false,
+            0,
+            true,
+        ),
+        (
+            "COPY-LOB FROM v-a TO FILE \"out.txt\" APPEND.",
+            false,
+            true,
+            0,
+            false,
+        ),
+        (
+            "COPY-LOB FROM OBJECT v-a STARTING AT v-s FOR v-n TO v-b OVERLAY AT v-o TRIM.",
+            false,
+            false,
+            3,
+            false,
+        ),
+        (
+            "COPY-LOB FROM v-a TO v-b CONVERT TARGET CODEPAGE \"utf-8\" SOURCE CODEPAGE v-cp NO-ERROR.",
+            false,
+            false,
+            2,
+            true,
+        ),
+        (
+            "COPY-LOB FROM v-a TO v-b NO-CONVERT.",
+            false,
+            false,
+            0,
+            false,
+        ),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::CopyLob {
+            source_file: sf,
+            target_file: tf,
+            options: o,
+            no_error: n,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected CopyLob, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(
+            (*sf, *tf, o.len(), *n),
+            (source_file, target_file, options, no_error),
+            "{source}: {o:?}"
+        );
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn a_copy_lob_without_to_stays_skipped() {
+    let stmts = assert_parses_clean("COPY-LOB FROM v-a.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
+}
+
+/// The `query_lob_forms` bench fixture exists to time the head parse of these
+/// forms; a statement that fell back to `Skipped` would time the wrong path.
+#[test]
+fn the_query_lob_bench_fixture_holds_no_skipped_statement() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../resources/bench_parser_query_lob_forms.abl");
+    let source = std::fs::read_to_string(path).unwrap();
+    let program = Parser::new(&tokenize(&source), &source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let skipped: Vec<_> = program
+        .statements
+        .iter()
+        .filter(|s| matches!(s.kind, StatementKind::Skipped { .. }))
+        .map(|s| &source[s.span.start as usize..s.span.end as usize])
+        // The query set-up (`DEFINE QUERY`, `OPEN QUERY`) is not under test.
+        .filter(|text| !text.starts_with("define query") && !text.starts_with("open query"))
+        .collect();
+    assert!(skipped.is_empty(), "{skipped:#?}");
 }

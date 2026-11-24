@@ -355,6 +355,9 @@ impl<'a> CheckWalker<'a> {
             }
             | StatementKind::Set {
                 targets, options, ..
+            }
+            | StatementKind::PromptFor {
+                targets, options, ..
             } => {
                 for e in targets.iter().chain(options) {
                     self.check_expression(e, scope);
@@ -374,6 +377,46 @@ impl<'a> CheckWalker<'a> {
             }
             StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
                 if let Some(e) = lines {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Get { query, .. } => {
+                self.check_expression(query, scope);
+            }
+            StatementKind::CopyLob {
+                source,
+                target,
+                options,
+                ..
+            } => {
+                for e in [source, target].into_iter().chain(options) {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Color { items, .. } => {
+                for e in items {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Reposition {
+                query, operands, ..
+            } => {
+                for e in std::iter::once(query).chain(operands) {
+                    self.check_expression(e, scope);
+                }
+            }
+            StatementKind::Close {
+                target,
+                status,
+                handle,
+                ..
+            } => {
+                for e in std::iter::once(target).chain(status).chain(handle) {
                     self.check_expression(e, scope);
                 }
             }
@@ -538,6 +581,8 @@ impl<'a> CheckWalker<'a> {
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
             | StatementKind::Empty
+            // A frame name is not a typed expression.
+            | StatementKind::Clear { .. }
             // Annotation names and attributes are metadata, not expressions.
             | StatementKind::Annotation(_)
             // Recognized-but-unmodelled: the harvested names are lexical

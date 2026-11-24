@@ -8,7 +8,7 @@
 
 use oxabl_ast::{
     AccessModifier, Annotation, AnnotationAttribute, AnnotationValue, AssignPair, BufferTarget,
-    CreateAssignment, CreateConnect, CreateTarget, CreateTargetKind, DataRelation,
+    CloseKind, CreateAssignment, CreateConnect, CreateTarget, CreateTargetKind, DataRelation,
     DataSourceBuffer, DataSourceKeys, DbTriggerEvent, DeleteObjectKind, DisplayItem, Expression,
     ExpressionKind, FileName, FindType, FrameField, HandleParamKind, HandlePassingOptions,
     Identifier, IndexField, Literal, LockType, OnAction, OnEventClause, OnKind, ParameterDirection,
@@ -678,8 +678,7 @@ impl Parser<'_> {
         // Uses skip_to_statement_end() (not skip_to_period()) to avoid stopping at
         // '.' field-access separators inside expressions like doc_data.body_text.
         if self.check(Kind::CopyLob) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_copy_lob_statement();
         }
 
         // PUT [STREAM s] [UNFORMATTED] expr ... — head-parsed; options stay a skipped tail.
@@ -724,12 +723,10 @@ impl Parser<'_> {
             return self.parse_update_set_statement();
         }
 
-        // PROMPT-FOR — may contain an EDITING: ... END. sub-block.
-        // Skip tokens until a statement-ending period, but if we encounter EDITING:
-        // along the way, parse the editing block body before consuming the outer END.
+        // PROMPT-FOR — head-parsed; the frame phrase and EDITING block stay a
+        // skipped tail.
         if self.check(Kind::PromptFor) {
-            let (_, hi) = self.skip_to_statement_end_editing_aware();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_prompt_for_statement();
         }
 
         // PAUSE / BELL / IMPORT / OS-DELETE / OS-DIR / OS-CREATE-DIR / OS-COMMAND / OS-COPY /
@@ -799,25 +796,26 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
+        // CLEAR / COLOR / GET / CLOSE / ACCUMULATE — head-parsed. One test here
+        // keeps the dispatch cost of every other statement down.
+        if matches!(
+            self.peek().kind,
+            Kind::Clear | Kind::Color | Kind::Get | Kind::Close | Kind::Accumulate | Kind::Accum
+        ) {
+            return self.parse_clear_color_get_close_accumulate();
+        }
+
         if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
-            || self.check(Kind::Accumulate)
-            || self.check(Kind::Accum) // abbreviation of ACCUMULATE
             || self.check(Kind::Open)
             || self.check(Kind::Status)
-            || self.check(Kind::Get)
-            || self.check(Kind::Clear)
             // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             || self.check(Kind::Format)
             || self.check(Kind::Form)
-            // CLOSE QUERY/DATASET/BROWSING name. — close a query, dataset, or browse widget.
-            || self.check(Kind::Close)
             // CONNECT/DISCONNECT — database connection management statements.
             || self.check(Kind::Connect)
             || self.check(Kind::Disconnect)
-            // COLOR statement — terminal color settings (e.g. COLOR DISPLAY NORMAL ... WITH FRAME name.)
-            || self.check(Kind::Color)
             // READKEY [PAUSE n]. — reads next keypress from keyboard.
             || self.check(Kind::Readkey)
             // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
@@ -846,11 +844,9 @@ impl Parser<'_> {
             }
         }
 
-        // REPOSITION query-name TO ... — query cursor repositioning, skip to statement end.
-        // Uses skip_to_statement_end() to skip over ROWID(...) and NO-ERROR properly.
+        // REPOSITION query-name TO ... — head-parsed; the operands are modelled.
         if self.check(Kind::Reposition) && Self::can_be_identifier(self.peek_at(1).kind) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_reposition_statement();
         }
 
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
@@ -4458,6 +4454,508 @@ impl Parser<'_> {
             }
         };
         Ok(self.stmt_with_tail(kind, tail))
+    }
+
+    /// `CLOSE QUERY query` and `CLOSE STORED-PROCEDURE proc [field = PROC-STATUS]
+    /// [WHERE PROC-HANDLE = field]`. A target that is not an expression leaves
+    /// the statement skipped.
+    fn parse_close_statement(&mut self, stored: bool) -> ParseResult<Statement> {
+        self.advance(); // consume CLOSE
+        self.advance(); // consume QUERY / STORED-PROCEDURE
+        let Some(target) = self.parse_head_item(|k| k == Kind::KwWhere) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut status = None;
+        let mut handle = None;
+        if stored {
+            if Self::can_be_identifier(self.peek().kind)
+                && self.check_at(1, Kind::Equals)
+                && self.check_at(2, Kind::ProcStatus)
+            {
+                let mark = self.current;
+                match self.parse_postfix() {
+                    Ok(e) if self.check(Kind::Equals) => {
+                        status = Some(e);
+                        self.advance(); // =
+                        self.advance(); // PROC-STATUS
+                    }
+                    _ => self.current = mark,
+                }
+            }
+            if self.check(Kind::KwWhere)
+                && self.check_at(1, Kind::ProcHandle)
+                && self.check_at(2, Kind::Equals)
+            {
+                let mark = self.current;
+                self.advance();
+                self.advance();
+                self.advance();
+                handle = self.parse_head_item(|_| false);
+                if handle.is_none() {
+                    self.current = mark;
+                }
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        let kind = if stored {
+            CloseKind::StoredProcedure
+        } else {
+            CloseKind::Query
+        };
+        Ok(self.stmt_with_tail(
+            StatementKind::Close {
+                kind,
+                target,
+                status,
+                handle,
+            },
+            tail,
+        ))
+    }
+
+    /// `REPOSITION query {TO ROW n | TO ROWID r[, r]... | TO RECID n | ROW n |
+    /// FORWARD n | BACKWARD n} [NO-ERROR]`. A query that is not an expression
+    /// leaves the statement skipped.
+    fn parse_reposition_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume REPOSITION
+        let Some(query) = self.parse_head_item(|k| matches!(k, Kind::To | Kind::Row)) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut operands = Vec::new();
+        loop {
+            let keyword = self.peek();
+            let direction = keyword.kind == Kind::Identifier
+                && ["forward", "backward"]
+                    .iter()
+                    .any(|w| self.source[keyword.start..keyword.end].eq_ignore_ascii_case(w));
+            if matches!(
+                keyword.kind,
+                Kind::To | Kind::Row | Kind::Rowid | Kind::Recid
+            ) || direction
+            {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        while let Some(e) = self.parse_head_item(|k| k == Kind::NoError) {
+            operands.push(e);
+            if !self.check(Kind::Comma) {
+                break;
+            }
+            self.advance();
+        }
+        let no_error = self.check(Kind::NoError);
+        if no_error {
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(
+            StatementKind::Reposition {
+                query,
+                operands,
+                no_error,
+            },
+            tail,
+        ))
+    }
+
+    /// `CLEAR [FRAME f] [ALL] [NO-PAUSE]`. A frame name that does not parse stays
+    /// in the skipped tail.
+    fn parse_clear_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume CLEAR
+        let mut frame = None;
+        if self.check(Kind::Frame) {
+            let mark = self.current;
+            self.advance();
+            match self.parse_identifier() {
+                Ok(name) => frame = Some(name),
+                Err(_) => self.current = mark,
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Clear { frame }, tail))
+    }
+
+    /// `ACCUMULATE expression (aggregate-option... [BY break-group]...)`. The
+    /// expression must be one name, or end right before the parenthesis: a name
+    /// followed by `(` would otherwise read as a call. Any other shape leaves the
+    /// statement skipped.
+    fn parse_accumulate_statement(&mut self) -> ParseResult<Statement> {
+        let is_aggregate = |k: Kind| {
+            matches!(
+                k,
+                Kind::Average
+                    | Kind::Count
+                    | Kind::Maximum
+                    | Kind::Minimum
+                    | Kind::Total
+                    | Kind::SubAverage
+                    | Kind::SubCount
+                    | Kind::SubMaximum
+                    | Kind::SubMinimum
+                    | Kind::SubTotal
+            )
+        };
+        self.advance(); // consume ACCUMULATE
+        let start = self.current;
+        let mut depth = 0usize;
+        let mut open = None;
+        let mut i = start;
+        while let Some(t) = self.tokens.get(i) {
+            match t.kind {
+                Kind::Eof => break,
+                // A period joins a qualified name when a name follows it directly.
+                Kind::Period
+                    if !self
+                        .tokens
+                        .get(i + 1)
+                        .is_some_and(|n| n.start == t.end && Self::can_be_identifier(n.kind)) =>
+                {
+                    break;
+                }
+                Kind::LeftParen => {
+                    if depth == 0 && self.tokens.get(i + 1).is_some_and(|n| is_aggregate(n.kind)) {
+                        open = Some(i);
+                        break;
+                    }
+                    depth += 1;
+                }
+                Kind::RightParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            i += 1;
+        }
+        let expression = open.and_then(|open| {
+            // A lone name directly before `(` would read as a call.
+            if open == start + 1 && Self::can_be_identifier(self.peek().kind) {
+                let id = self.parse_identifier().ok()?;
+                return Some(self.expr(ExpressionKind::Identifier(id)));
+            }
+            match self.parse_expression() {
+                Ok(e) if self.current == open => Some(e),
+                _ => {
+                    self.current = start;
+                    None
+                }
+            }
+        });
+        let Some(expression) = expression else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut breaks = Vec::new();
+        self.advance(); // consume (
+        loop {
+            if is_aggregate(self.peek().kind) {
+                self.advance();
+            } else if self.check(Kind::By) {
+                self.advance();
+                match self.parse_head_item(|k| k == Kind::RightParen) {
+                    Some(e) => breaks.push(e),
+                    None => break,
+                }
+            } else {
+                break;
+            }
+        }
+        if self.check(Kind::RightParen) {
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Accumulate { expression, breaks }, tail))
+    }
+
+    /// `COLOR [STREAM s] {DISPLAY | PROMPT} {color | VALUE(expr)} [PROMPT
+    /// {color | VALUE(expr)}] [field]... [frame-phrase]`. A color is `NORMAL`,
+    /// `INPUT`, `MESSAGES`, a string or `fg[/bg]`; its words are dropped. A
+    /// phrase whose color does not parse leaves the statement skipped. The list
+    /// of fields ends at the first token that is not a name.
+    fn parse_color_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume COLOR
+        let Ok(stream_name) = self.parse_stream_head() else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let usage = |p: &Self| {
+            let word = p.peek();
+            word.kind == Kind::Display
+                || (word.kind == Kind::Identifier
+                    && p.source[word.start..word.end].eq_ignore_ascii_case("prompt"))
+        };
+        if !usage(self) {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+        let mut items = Vec::new();
+        while usage(self) {
+            self.advance(); // consume DISPLAY / PROMPT
+            let color = if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
+                self.parse_head_item(|_| false).map(|e| items.push(e))
+            } else if Self::can_be_identifier(self.peek().kind)
+                || self.check(Kind::StringLiteral)
+                || self.check(Kind::Input)
+            {
+                self.advance(); // the color, or its foreground
+                while self.check(Kind::Slash) && Self::can_be_identifier(self.peek_at(1).kind) {
+                    self.advance();
+                    self.advance();
+                }
+                Some(())
+            } else {
+                None
+            };
+            if color.is_none() {
+                let (_, hi) = self.skip_to_statement_end();
+                return Ok(self.skipped_stmt(hi));
+            }
+        }
+        while Self::can_be_identifier(self.peek().kind) && !self.check(Kind::With) {
+            let mark = self.current;
+            match self.parse_head_item(|k| k == Kind::With) {
+                Some(e)
+                    if matches!(
+                        e.kind,
+                        ExpressionKind::Identifier(_)
+                            | ExpressionKind::FieldAccess { .. }
+                            | ExpressionKind::ArrayAccess { .. }
+                    ) =>
+                {
+                    items.push(e)
+                }
+                _ => {
+                    self.current = mark;
+                    break;
+                }
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Color { stream_name, items }, tail))
+    }
+
+    /// `COPY-LOB [FROM] [FILE | OBJECT] source [STARTING AT n] [FOR n] TO
+    /// [FILE | OBJECT] target [OVERLAY AT n [TRIM] | APPEND]
+    /// [NO-CONVERT | CONVERT [TARGET CODEPAGE cp] [SOURCE CODEPAGE cp]]
+    /// [NO-ERROR]`. A source or target that does not parse leaves the statement
+    /// skipped.
+    fn parse_copy_lob_statement(&mut self) -> ParseResult<Statement> {
+        let word = |p: &Self, text: &str| {
+            let t = p.peek();
+            p.source[t.start..t.end].eq_ignore_ascii_case(text)
+        };
+        self.advance(); // consume COPY-LOB
+        if self.check(Kind::From) {
+            self.advance();
+        }
+        let source_file = self.check(Kind::File);
+        if source_file || self.check(Kind::Object) {
+            self.advance();
+        }
+        let source_stop = |k: Kind| matches!(k, Kind::To | Kind::KwFor);
+        let mut options = Vec::new();
+        let mut head = self.parse_head_item(source_stop);
+        // `STARTING AT n` and `FOR n`.
+        loop {
+            if head.is_some() && word(self, "starting") && self.check_at(1, Kind::At) {
+                self.advance();
+                self.advance();
+            } else if head.is_some() && self.check(Kind::KwFor) {
+                self.advance();
+            } else {
+                break;
+            }
+            match self.parse_head_item(source_stop) {
+                Some(e) => options.push(e),
+                None => {
+                    head = None;
+                    break;
+                }
+            }
+        }
+        let (Some(source), true) = (head, self.check(Kind::To)) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        self.advance(); // consume TO
+        let target_file = self.check(Kind::File);
+        if target_file || self.check(Kind::Object) {
+            self.advance();
+        }
+        let target_stop = |k: Kind| matches!(k, Kind::Overlay | Kind::Append | Kind::NoError);
+        let Some(target) = self.parse_head_item(target_stop) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut no_error = false;
+        loop {
+            if self.check(Kind::Overlay) && self.check_at(1, Kind::At) {
+                self.advance();
+                self.advance();
+                match self.parse_head_item(|k| k == Kind::Trim) {
+                    Some(e) => options.push(e),
+                    None => break,
+                }
+                if self.check(Kind::Trim) {
+                    self.advance();
+                }
+            } else if self.check(Kind::Append) || word(self, "no-convert") {
+                self.advance();
+            } else if word(self, "convert") {
+                self.advance();
+                // `TARGET CODEPAGE cp` and `SOURCE CODEPAGE cp`, in either order.
+                while (word(self, "target") || word(self, "source"))
+                    && self.peek_nth_non_comment(2).kind != Kind::Period
+                {
+                    self.advance();
+                    if word(self, "codepage") {
+                        self.advance();
+                    }
+                    match self.parse_head_item(|_| false) {
+                        Some(e) => options.push(e),
+                        None => break,
+                    }
+                }
+            } else if self.check(Kind::NoError) {
+                no_error = true;
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(
+            StatementKind::CopyLob {
+                source,
+                source_file,
+                target,
+                target_file,
+                options,
+                no_error,
+            },
+            tail,
+        ))
+    }
+
+    /// The statements that start with `CLEAR`, `COLOR`, `GET`, `CLOSE` or
+    /// `ACCUMULATE`. A spelling that is none of the head-parsed forms (`GET` of a
+    /// property, `CLOSE DATASET`, `COLOR v`) is skipped.
+    #[inline(never)]
+    fn parse_clear_color_get_close_accumulate(&mut self) -> ParseResult<Statement> {
+        let next = self.peek_at(1);
+        match self.peek().kind {
+            Kind::Clear
+                if matches!(
+                    next.kind,
+                    Kind::Frame | Kind::All | Kind::NoPause | Kind::Period
+                ) =>
+            {
+                return self.parse_clear_statement();
+            }
+            Kind::Color => {
+                let prompt = next.kind == Kind::Identifier
+                    && self.source[next.start..next.end].eq_ignore_ascii_case("prompt");
+                if matches!(next.kind, Kind::Display | Kind::Stream) || prompt {
+                    return self.parse_color_statement();
+                }
+            }
+            Kind::Get
+                if matches!(
+                    next.kind,
+                    Kind::First | Kind::Next | Kind::Prev | Kind::Last | Kind::Current
+                ) =>
+            {
+                return self.parse_get_statement();
+            }
+            Kind::Close => {
+                let stored = next.kind == Kind::Identifier
+                    && self.source[next.start..next.end]
+                        .get(..11)
+                        .is_some_and(|w| w.eq_ignore_ascii_case("stored-proc"));
+                if next.kind == Kind::Query || stored {
+                    return self.parse_close_statement(stored);
+                }
+            }
+            Kind::Accumulate | Kind::Accum => return self.parse_accumulate_statement(),
+            _ => {}
+        }
+        let (_, hi) = self.skip_to_statement_end();
+        Ok(self.skipped_stmt(hi))
+    }
+
+    /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query
+    /// that is not an expression leaves the statement skipped.
+    fn parse_get_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume GET
+        let get_type = match self.advance().kind {
+            Kind::First => FindType::First,
+            Kind::Next => FindType::Next,
+            Kind::Prev => FindType::Prev,
+            Kind::Last => FindType::Last,
+            _ => FindType::Current,
+        };
+        let lock_start = |k: Kind| {
+            matches!(
+                k,
+                Kind::NoLock | Kind::ShareLock | Kind::ExclusiveLock | Kind::NoWait
+            )
+        };
+        let Some(query) = self.parse_head_item(lock_start) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut lock = None;
+        let mut no_wait = false;
+        loop {
+            match self.peek().kind {
+                Kind::NoLock => lock = Some(LockType::NoLock),
+                Kind::ShareLock => lock = Some(LockType::ShareLock),
+                Kind::ExclusiveLock => lock = Some(LockType::ExclusiveLock),
+                Kind::NoWait => no_wait = true,
+                _ => break,
+            }
+            self.advance();
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(
+            StatementKind::Get {
+                get_type,
+                query,
+                lock,
+                no_wait,
+            },
+            tail,
+        ))
+    }
+
+    /// `PROMPT-FOR [STREAM s] [UNLESS-HIDDEN] {field [format-phrase] | name AS type |
+    /// name LIKE field | constant}... [frame-phrase] [EDITING: ... END]`. The
+    /// editing block is part of the skipped tail.
+    fn parse_prompt_for_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume PROMPT-FOR
+        let mut stream_name = None;
+        let mut targets = Vec::new();
+        let mut options = Vec::new();
+        let mut fields = Vec::new();
+        if let Ok(stream) = self.parse_stream_head() {
+            stream_name = stream;
+            if self.check(Kind::UnlessHidden) {
+                self.advance();
+            }
+            (targets, options) = self.parse_frame_items(true, Some(&mut fields));
+        }
+        let range = self.skip_to_statement_end_editing_aware();
+        let tail = self.skipped_tail(range);
+        Ok(self.stmt_with_tail(
+            StatementKind::PromptFor {
+                stream_name,
+                targets,
+                options,
+                fields,
+            },
+            tail,
+        ))
     }
 
     /// The items of a FORM, UPDATE or SET list, each with its format options.

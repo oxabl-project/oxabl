@@ -397,7 +397,9 @@ impl<'a> Walker<'a> {
                 self.declare_frame_fields(stmt, scope, fields);
             }
             StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
-            StatementKind::Update { fields, .. } | StatementKind::Set { fields, .. } => {
+            StatementKind::Update { fields, .. }
+            | StatementKind::Set { fields, .. }
+            | StatementKind::PromptFor { fields, .. } => {
                 self.declare_frame_fields(stmt, scope, fields)
             }
             StatementKind::Message { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
@@ -3345,6 +3347,25 @@ impl<'a> ResolveWalker<'a> {
                 }
                 self.note_frame_field_sources(fields, scope);
             }
+            StatementKind::PromptFor {
+                stream_name,
+                targets,
+                options,
+                fields,
+            } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in targets.iter().chain(options) {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+                self.note_frame_field_sources(fields, scope);
+            }
             StatementKind::Pause {
                 duration: a,
                 message: b,
@@ -3476,6 +3497,77 @@ impl<'a> ResolveWalker<'a> {
             StatementKind::Apply { event, target } => {
                 for e in event.iter().chain(target) {
                     self.walk_lenient_operand(e, scope);
+                }
+            }
+            StatementKind::Clear { frame } => {
+                if let Some(f) = frame {
+                    self.resolve_statement_ident(
+                        f,
+                        scope,
+                        &[NamespaceId::Frames],
+                        AccessMode::Read,
+                    );
+                }
+            }
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Color { stream_name, items } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::CopyLob {
+                source,
+                target,
+                target_file,
+                options,
+                ..
+            } => {
+                self.walk_expression(source, scope, AccessMode::Read);
+                // An `APPEND` or `OVERLAY` target is read too.
+                let mode = if *target_file {
+                    AccessMode::Read
+                } else {
+                    AccessMode::ReadWrite
+                };
+                self.walk_expression(target, scope, mode);
+                for e in options {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            // A bare query name is not a declared symbol.
+            StatementKind::Get { query, .. } => self.walk_lenient_operand(query, scope),
+            StatementKind::Reposition {
+                query, operands, ..
+            } => {
+                self.walk_lenient_operand(query, scope);
+                for e in operands {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
+            StatementKind::Close {
+                target,
+                status,
+                handle,
+                ..
+            } => {
+                self.walk_lenient_operand(target, scope);
+                if let Some(e) = status {
+                    self.walk_expression(e, scope, AccessMode::Write);
+                }
+                if let Some(e) = handle {
+                    self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
             StatementKind::Delete { buffer, .. }

@@ -974,14 +974,35 @@ impl<'a> Parser<'a> {
     /// range the helper returned rather than from the statement's first token:
     /// the tail starts after tokens the caller already modelled, so none of its
     /// tokens is a dispatch keyword to drop. `None` when the filter keeps
-    /// nothing, which is the common case, so the node stays allocation-free.
+    /// nothing and the tail holds no dynamic-call keyword, which is the common
+    /// case, so the node stays allocation-free.
     #[inline(never)]
     pub(crate) fn skipped_tail(&self, (lo, hi): (usize, usize)) -> Option<Box<SkippedTail>> {
         // `harvest_skipped_names` drops the token at its `lo`; a tail is always
         // preceded by at least the statement's own first token, so `lo - 1` is
         // in range.
         let names = self.harvest_skipped_names(lo.saturating_sub(1), hi);
-        (!names.is_empty()).then(|| Box::new(SkippedTail { names }))
+        let tokens = self.tokens.get(lo..hi).unwrap_or_default();
+        let dynamic = || {
+            tokens.iter().any(|t| {
+                matches!(
+                    t.kind,
+                    Kind::DynamicFunction | Kind::DynamicInvoke | Kind::DynamicNew
+                )
+            })
+        };
+        let (Some(first), Some(last)) = (tokens.first(), tokens.last()) else {
+            return None;
+        };
+        (!names.is_empty() || dynamic()).then(|| {
+            Box::new(SkippedTail {
+                names,
+                span: Span {
+                    start: first.start as u32,
+                    end: last.end as u32,
+                },
+            })
+        })
     }
 
     /// [`skip_to_statement_end`](Self::skip_to_statement_end), harvesting the

@@ -506,6 +506,14 @@ impl<'a> Collector<'a> {
             SK::Skipped { .. }
             | SK::Update { .. }
             | SK::Set { .. }
+            | SK::PromptFor { .. }
+            | SK::Get { .. }
+            | SK::Close { .. }
+            | SK::Reposition { .. }
+            | SK::Clear { .. }
+            | SK::Accumulate { .. }
+            | SK::Color { .. }
+            | SK::CopyLob { .. }
             | SK::Import { .. }
             | SK::Export { .. }
             | SK::Put { .. }
