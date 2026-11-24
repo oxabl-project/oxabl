@@ -309,6 +309,40 @@ fn the_message_of_a_hard_coded_secret_finding_does_not_repeat_the_secret() {
 }
 
 #[test]
+fn a_short_secret_literal_changes_no_other_finding_with_the_group_off() {
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("oxabl.toml"),
+        "[workspace]\nname = \"t\"\n",
+    );
+    write(
+        &dir.path().join("s1.p"),
+        "DEFINE VARIABLE cPassword AS CHARACTER NO-UNDO INITIAL \"a\".\n\
+         DEFINE VARIABLE cName AS CHARACTER NO-UNDO.\n\
+         DEFINE VARIABLE iCount AS INTEGER NO-UNDO.\n\
+         MESSAGE cPassword.\n",
+    );
+    let (_, text, stderr) = check(dir.path(), &["."]);
+    assert!(text.contains("unused variable `cName`"), "{text}{stderr}");
+    assert!(
+        text.contains("DEFINE VARIABLE cName AS CHARACTER NO-UNDO."),
+        "{text}"
+    );
+    let (_, stdout, _) = check(dir.path(), &[".", "--json"]);
+    let report = json(&stdout);
+    let messages: Vec<&str> = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["message"].as_str())
+        .collect();
+    assert!(
+        messages.contains(&"unused variable `iCount`"),
+        "{messages:?}"
+    );
+}
+
+#[test]
 fn an_override_lists_the_programs_where_integrity_statements_are_expected() {
     let dir = TempDir::new().unwrap();
     write(
