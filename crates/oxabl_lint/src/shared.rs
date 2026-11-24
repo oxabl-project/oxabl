@@ -8,8 +8,10 @@ use oxabl_flow::{FileFlow, FlowOptions};
 use oxabl_handles::FileHandles;
 use oxabl_index::calls::FileCalls;
 use oxabl_nulls::{FileNulls, NullOptions};
-use oxabl_scope::{FileScopes, ScopeOptions};
-use oxabl_semantic::AnalysisContext;
+use oxabl_scope::{
+    FileScopes, Inherited, InheritedKind, InheritedRecord, InheritedTable, ScopeOptions,
+};
+use oxabl_semantic::{AnalysisContext, InheritedBinding};
 
 /// What the rules of one [`Registry::run_where`](crate::Registry::run_where)
 /// share. Each fact is computed on first use, so a run that enables no rule
@@ -71,13 +73,14 @@ impl<'a> RunShared<'a> {
         self.scopes.get_or_init(|| {
             let options = scope_options(ctx);
             let schema = ctx.schema_loaded.then_some(ctx.schema);
-            oxabl_scope::analyze_flow(
+            oxabl_scope::analyze_flow_inherited(
                 program,
                 ctx.source,
                 self.tokens(ctx),
                 self.flow(program, ctx),
                 schema,
                 &options,
+                &inherited(program, ctx),
             )
         })
     }
@@ -190,15 +193,52 @@ fn scope_options<'a>(ctx: &AnalysisContext<'a>) -> ScopeOptions<'a> {
     }
 }
 
-/// [`oxabl_scope::analyze_tokens`] under `ctx`, with its tokens when it has
-/// them.
+/// The buffers and temp-tables the class of `program` inherits, as the scope
+/// analysis names them. Nothing without a workspace index that searches.
+fn inherited(program: &[Statement], ctx: &AnalysisContext) -> Inherited {
+    // An index with nowhere to search answers every class with a miss: that is
+    // no sign that a superclass is missing.
+    if !ctx.index_loaded || !ctx.index_searches_paths {
+        return Inherited::default();
+    }
+    let found = oxabl_semantic::inherited_records(program, ctx.index);
+    Inherited {
+        opaque: found.opaque,
+        records: found
+            .records
+            .iter()
+            .map(|r| InheritedRecord {
+                name: r.name.as_atom().to_string(),
+                kind: match r.kind {
+                    oxabl_semantic::InheritedKind::TempTable => InheritedKind::TempTable,
+                    oxabl_semantic::InheritedKind::Buffer => InheritedKind::Buffer,
+                },
+                table: match &r.binding {
+                    InheritedBinding::TempTable(n) => InheritedTable::TempTable(n.clone()),
+                    InheritedBinding::Table(n) => InheritedTable::Named(n.clone()),
+                    InheritedBinding::Unknown(n) => InheritedTable::Unknown(n.clone()),
+                },
+            })
+            .collect(),
+    }
+}
+
+/// [`oxabl_scope::analyze_tokens_inherited`] under `ctx`, with the records
+/// its class inherits and its tokens when it has them. The rules a registry
+/// runs read [`RunShared::scopes`]; this is the entry of a rule run alone.
 pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> FileScopes {
     let options = scope_options(ctx);
     let schema = ctx.schema_loaded.then_some(ctx.schema);
+    let inherited = inherited(program, ctx);
     if ctx.tokens.is_empty() {
-        return oxabl_scope::analyze_file_with(program, ctx.source, schema, &options);
+        let tokens = oxabl_lexer::tokenize(ctx.source);
+        return oxabl_scope::analyze_tokens_inherited(
+            program, ctx.source, &tokens, schema, &options, &inherited,
+        );
     }
-    oxabl_scope::analyze_tokens(program, ctx.source, ctx.tokens, schema, &options)
+    oxabl_scope::analyze_tokens_inherited(
+        program, ctx.source, ctx.tokens, schema, &options, &inherited,
+    )
 }
 
 #[cfg(test)]

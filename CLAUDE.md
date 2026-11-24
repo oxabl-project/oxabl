@@ -137,6 +137,7 @@ The lexer uses `string_cache` for interned strings (atoms). Atoms are generated 
 ABL-specific features handled:
 - Case-insensitive keywords with abbreviations (e.g., `def`, `defi`, `define` all map to `Kind::Define`)
 - Tilde (`~`) as escape character in strings
+- Date constants: digit runs joined by `/` with no whitespace (`02/01/2026`, `2/1/26`, `10/2`) are one `Kind::DateLiteral` token, as the compiler reads them. `10 / 2` is a division. The token keeps its spelling, because the order of the parts follows the `-d` startup parameter
 - Hyphens allowed in identifiers (`my-variable-name`)
 - Preprocessor directives (`&if`, `&scoped-define`) and references (`{&variable}`)
 - Include file references (`{file.i}`, `{file.i args}`, `{file.i &name=value}`)

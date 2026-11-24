@@ -742,6 +742,7 @@ impl Parser<'_> {
         if self.check(Kind::IntegerLiteral)
             || self.check(Kind::BigIntLiteral)
             || self.check(Kind::DecimalLiteral)
+            || self.check(Kind::DateLiteral)
             || self.check(Kind::StringLiteral)
             || self.check(Kind::KwTrue)
             || self.check(Kind::KwFalse)

@@ -572,6 +572,54 @@ mod paths {
                     }
                 }
                 SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
+                SK::Get { query, .. } => read(self, query),
+                SK::CopyLob {
+                    source,
+                    target,
+                    target_file,
+                    options,
+                    ..
+                } => {
+                    for e in std::iter::once(source).chain(options) {
+                        read(self, e);
+                    }
+                    if *target_file {
+                        read(self, target);
+                    } else {
+                        self.target(target, id);
+                    }
+                }
+                SK::Color { items, .. } => {
+                    for e in items {
+                        read(self, e);
+                    }
+                }
+                SK::Accumulate { expression, breaks } => {
+                    for e in std::iter::once(expression).chain(breaks) {
+                        read(self, e);
+                    }
+                }
+                SK::Reposition {
+                    query, operands, ..
+                } => {
+                    for e in std::iter::once(query).chain(operands) {
+                        read(self, e);
+                    }
+                }
+                SK::Close {
+                    target,
+                    status,
+                    handle,
+                    ..
+                } => {
+                    read(self, target);
+                    if let Some(e) = status {
+                        self.target(e, id);
+                    }
+                    if let Some(e) = handle {
+                        read(self, e);
+                    }
+                }
                 SK::Update {
                     targets, options, ..
                 }
@@ -582,6 +630,13 @@ mod paths {
                         self.target(e, id);
                     }
                     for e in options {
+                        read(self, e);
+                    }
+                }
+                SK::PromptFor {
+                    targets, options, ..
+                } => {
+                    for e in targets.iter().chain(options) {
                         read(self, e);
                     }
                 }

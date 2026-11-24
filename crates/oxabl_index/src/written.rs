@@ -417,7 +417,7 @@ impl Scan<'_> {
             let part = is_word(kind)
                 || matches!(
                     kind,
-                    Kind::Slash | Kind::IntegerLiteral | Kind::DecimalLiteral
+                    Kind::Slash | Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::DateLiteral
                 )
                 || (kind == Kind::Period
                     && self.touches(next + 1)
@@ -469,6 +469,7 @@ fn is_word(kind: Kind) -> bool {
             | Kind::IntegerLiteral
             | Kind::BigIntLiteral
             | Kind::DecimalLiteral
+            | Kind::DateLiteral
             | Kind::StringLiteral
             | Kind::Plus
             | Kind::Minus
@@ -596,6 +597,18 @@ mod tests {
                 (ReferenceSyntax::Run, "sub/do-it.p"),
                 (ReferenceSyntax::Run, "q.p"),
                 (ReferenceSyntax::Run, "local-proc"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_run_path_ending_in_a_date_constant_names_the_whole_path() {
+        // The lexer reads `10/2` before `.` and a newline as one date constant.
+        assert_eq!(
+            refs("RUN rpt/10/2.\nRUN rpt/1/2/3.\n"),
+            pairs(&[
+                (ReferenceSyntax::Run, "rpt/10/2"),
+                (ReferenceSyntax::Run, "rpt/1/2/3"),
             ])
         );
     }

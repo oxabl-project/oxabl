@@ -16,6 +16,8 @@ pub enum Kind {
     IntegerLiteral,
     BigIntLiteral,
     DecimalLiteral,
+    /// A date constant (`mm/dd/yy`, `mm/dd/yyyy`, `mm/dd`).
+    DateLiteral,
     StringLiteral,
 
     // Punctuation

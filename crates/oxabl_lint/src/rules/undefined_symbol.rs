@@ -276,6 +276,9 @@ impl Visitor<'_> {
             }
             | StatementKind::Set {
                 targets, options, ..
+            }
+            | StatementKind::PromptFor {
+                targets, options, ..
             } => {
                 for e in targets.iter().chain(options) {
                     self.walk_expression(e);
@@ -322,6 +325,57 @@ impl Visitor<'_> {
             StatementKind::CreateWidgetPool { name, .. }
             | StatementKind::DeleteWidgetPool { name, .. } => {
                 if let Some(e) = name {
+                    self.walk_expression(e);
+                }
+            }
+            // A bare name may be a static query, which is not a symbol.
+            StatementKind::Get { query, .. } => {
+                if !matches!(query.kind, ExpressionKind::Identifier(_)) {
+                    self.walk_expression(query);
+                }
+            }
+            StatementKind::Color { items, .. } => {
+                for e in items {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::CopyLob {
+                source,
+                target,
+                options,
+                ..
+            } => {
+                for e in [source, target].into_iter().chain(options) {
+                    self.walk_expression(e);
+                }
+            }
+            StatementKind::Accumulate { expression, breaks } => {
+                for e in std::iter::once(expression).chain(breaks) {
+                    self.walk_expression(e);
+                }
+            }
+            // A bare name may be a static query, which is not a symbol.
+            StatementKind::Reposition {
+                query, operands, ..
+            } => {
+                if !matches!(query.kind, ExpressionKind::Identifier(_)) {
+                    self.walk_expression(query);
+                }
+                for e in operands {
+                    self.walk_expression(e);
+                }
+            }
+            // The target may be a static query or stored procedure name.
+            StatementKind::Close {
+                target,
+                status,
+                handle,
+                ..
+            } => {
+                if !matches!(target.kind, ExpressionKind::Identifier(_)) {
+                    self.walk_expression(target);
+                }
+                for e in status.iter().chain(handle) {
                     self.walk_expression(e);
                 }
             }
@@ -482,6 +536,8 @@ impl Visitor<'_> {
             | StatementKind::IncludeReference { .. }
             | StatementKind::IncludeArgReference { .. }
             | StatementKind::Empty
+            // A frame name is not a symbol.
+            | StatementKind::Clear { .. }
             // Annotation names and attributes are metadata, not symbols.
             | StatementKind::Annotation(_)
             // Recognized-but-unmodelled. Harvested names are resolved
