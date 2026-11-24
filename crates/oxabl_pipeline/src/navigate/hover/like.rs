@@ -115,7 +115,7 @@ impl Navigation<'_, '_> {
         if depth >= MAX_CHAIN {
             return Err(gap("the LIKE chain does not end"));
         }
-        let symbols = &self.semantic.symbols;
+        let symbols = &self.model.semantic.symbols;
         let inherited = match symbols.temp_table_like(symbol) {
             Some(RecordSource::Schema(table)) => {
                 let table = self

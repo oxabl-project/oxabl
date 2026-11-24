@@ -5,8 +5,9 @@
 //! formatting (`document_formatting_provider`, R1), document symbols
 //! (`document_symbol_provider`), folding (`folding_range_provider`), selection
 //! (`selection_range_provider`), workspace symbols (`workspace_symbol_provider`), go to
-//! definition (`definition_provider`), hover (`hover_provider`) and document links
-//! (`document_link_provider`). Push diagnostics require no
+//! definition (`definition_provider`), hover (`hover_provider`), document highlights
+//! (`document_highlight_provider`) and document links (`document_link_provider`). Push
+//! diagnostics require no
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (completion, pull
 //! diagnostics, *range* formatting, …) unset so clients don't offer features we
@@ -38,7 +39,8 @@ pub fn negotiate_position_encoding(caps: &ClientCapabilities) -> PositionEncodin
 
 /// Build the v1 [`ServerCapabilities`]: incremental sync with open/close, the
 /// negotiated position encoding, whole-document formatting (R1), document symbols,
-/// folding, selection, workspace symbols, go to definition, hover and document links.
+/// folding, selection, workspace symbols, go to definition, hover, document highlights and
+/// document links.
 /// Nothing else is advertised — range formatting in particular stays unset (the engine
 /// only formats whole files; see the plan's Scope Boundaries).
 pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities {
@@ -61,6 +63,7 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         workspace_symbol_provider: Some(OneOf::Left(true)),
         definition_provider: Some(OneOf::Left(true)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
         // Each link carries its target, so there is nothing to resolve later.
         document_link_provider: Some(DocumentLinkOptions {
             resolve_provider: Some(false),
@@ -156,6 +159,7 @@ mod tests {
         );
         assert!(caps.completion_provider.is_none());
         assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
+        assert_eq!(caps.document_highlight_provider, Some(OneOf::Left(true)));
         assert_eq!(
             caps.document_link_provider
                 .and_then(|links| links.resolve_provider),

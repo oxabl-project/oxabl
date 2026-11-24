@@ -5,8 +5,8 @@
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
 //! `textDocument/selectionRange`, `workspace/symbol`,
-//! `textDocument/definition`, `textDocument/hover` and `textDocument/documentLink`
-//! (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
+//! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
+//! `textDocument/documentLink` (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
 //! `docs/design/include-context.md`. `oxabl/schema` and `oxabl/schemaTable`
@@ -53,8 +53,9 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDefinition,
-    HoverRequest, Request as _, SelectionRangeRequest, WorkspaceSymbolRequest,
+    DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
+    Formatting, GotoDefinition, HoverRequest, Request as _, SelectionRangeRequest,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -964,6 +965,8 @@ struct Server<'c> {
     debouncer: crate::debounce::Debouncer,
     /// The selected compilation context of each open include.
     contexts: includer_context::Contexts,
+    /// The highlight requests of each open document, so one runs at a time.
+    highlight_turns: navigation::HighlightTurns,
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
@@ -1034,6 +1037,7 @@ impl<'c> Server<'c> {
             syntax: editor_syntax::SyntaxCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
             contexts: includer_context::Contexts::default(),
+            highlight_turns: navigation::HighlightTurns::default(),
             context_events,
             context_results,
             hovers: navigation::HoverGate::default(),
@@ -1091,6 +1095,8 @@ impl<'c> Server<'c> {
                                 self.handle_definition(req)?;
                             } else if req.method == HoverRequest::METHOD {
                                 self.handle_hover(req)?;
+                            } else if req.method == DocumentHighlightRequest::METHOD {
+                                self.handle_document_highlight(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
                                 self.handle_document_link(req)?;
                             } else if req.method == expanded_unit::METHOD {
@@ -1363,6 +1369,7 @@ impl<'c> Server<'c> {
                     let uri = params.text_document.uri;
                     self.documents.close(&uri);
                     self.contexts.forget(&uri);
+                    self.highlight_turns.remove(&uri);
                     self.outlines.invalidate(&uri);
                     self.syntax.invalidate(&uri);
                     self.host.with(|sessions| {
