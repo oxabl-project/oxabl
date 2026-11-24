@@ -217,6 +217,9 @@ enum State {
 struct Copy {
     /// What differs from the current skill; empty when the copy is current.
     problems: Vec<String>,
+    /// The skill files are current but the manifest is absent: an install
+    /// writes it, and `--check` does not count it as stale.
+    unlisted: bool,
     /// Files an earlier install wrote that the skill no longer has.
     remove: Vec<String>,
     /// Files in the directory that oxabl did not write.
@@ -306,6 +309,39 @@ fn writable(dir: &Path) -> Result<(), String> {
     fs::remove_file(&probe).map_err(|e| io_error(&probe, &e))
 }
 
+/// Fails when a directory the install writes into, below `dir`, is a symlink
+/// or not a directory: a write there could leave `dir`.
+fn inside(dir: &Path, files: &[(&str, String)]) -> Result<(), String> {
+    for (name, _) in files {
+        let mut path = dir.to_path_buf();
+        let parents = Path::new(name)
+            .parent()
+            .into_iter()
+            .flat_map(Path::components);
+        for part in parents {
+            path.push(part);
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_dir() => {}
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(format!(
+                        "{} is a symlink inside the skill directory; nothing was written",
+                        path.display()
+                    ));
+                }
+                Ok(_) => {
+                    return Err(format!(
+                        "{} is not a directory; nothing was written",
+                        path.display()
+                    ));
+                }
+                Err(e) if matches!(e.kind(), io::ErrorKind::NotFound) => break,
+                Err(e) => return Err(io_error(&path, &e)),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The files that an earlier install wrote, from the manifest. A directory
 /// with a SKILL.md of oxabl's and no readable manifest is a copy from before
 /// manifests: the files that bear the skill's names are oxabl's, no others.
@@ -340,12 +376,11 @@ fn inspect(dir: &Path, files: &[(&str, String)]) -> Result<State, String> {
             Err(error) => return Err(io_error(&dir.join(name), &error)),
         }
     }
+    let mut unlisted = false;
     match fs::read(dir.join(MANIFEST)) {
         Ok(bytes) if bytes == manifest_text(files).as_bytes() => {}
         Ok(_) => problems.push(format!("{MANIFEST} differs")),
-        Err(error) if matches!(error.kind(), io::ErrorKind::NotFound) => {
-            problems.push(format!("{MANIFEST} is missing"));
-        }
+        Err(error) if matches!(error.kind(), io::ErrorKind::NotFound) => unlisted = true,
         Err(error) => return Err(io_error(&dir.join(MANIFEST), &error)),
     }
     let mut present = Vec::new();
@@ -367,6 +402,7 @@ fn inspect(dir: &Path, files: &[(&str, String)]) -> Result<State, String> {
     }
     Ok(State::Oxabl(Copy {
         problems,
+        unlisted,
         remove,
         others,
     }))
@@ -447,19 +483,29 @@ fn install(args: &InstallArgs) -> Result<ExitCode, String> {
     let writes: Vec<bool> = states
         .iter()
         .map(|state| match state {
-            State::Oxabl(copy) => !args.check && !copy.problems.is_empty(),
+            State::Oxabl(copy) => !args.check && (!copy.problems.is_empty() || copy.unlisted),
             State::Missing | State::Foreign => !args.check && !args.refresh,
         })
         .collect();
     for (real, _) in reals.iter().zip(&writes).filter(|(_, write)| **write) {
         writable(real)?;
+        inside(real, &files)?;
     }
 
     let mut failed = false;
     for ((dir, real), (state, write)) in targets.iter().zip(&reals).zip(states.iter().zip(&writes))
     {
         let mut word = match (state, args.check, args.refresh) {
-            (State::Oxabl(copy), _, _) if copy.problems.is_empty() => "current".to_string(),
+            (State::Oxabl(copy), true, _) if copy.problems.is_empty() => {
+                if copy.unlisted {
+                    format!("current ({MANIFEST} is missing; an install writes it)")
+                } else {
+                    "current".to_string()
+                }
+            }
+            (State::Oxabl(copy), false, _) if copy.problems.is_empty() && !copy.unlisted => {
+                "current".to_string()
+            }
             (State::Oxabl(copy), true, _) => {
                 failed = true;
                 format!("stale ({})", copy.problems.join(", "))
