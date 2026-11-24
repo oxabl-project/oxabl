@@ -11,7 +11,7 @@
 //! A name that does not resolve, or that resolves to more than one thing, has
 //! no hover.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use oxabl_ast::{
     AccessModifier, BufferTarget, DataType, HandleParamKind, ParameterType, Span, Statement,
@@ -29,7 +29,7 @@ use oxabl_workspace::is_include_fragment;
 mod like;
 
 use super::{Navigation, Parsed, Target, search};
-use crate::effects::Routine;
+use crate::effects::{Elsewhere, Routine};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
 use crate::outline::{access_name, children, data_type_name, direction_name};
 use crate::schema_hover::{code, field_markdown, inline, plain, table_markdown};
@@ -51,15 +51,33 @@ pub struct Hover {
 impl Hover {
     /// Add the database effects of the routine the hover names, from
     /// `effects`. Nothing is added when `effects` does not hold the routine.
-    pub fn add_effects(&mut self, effects: &crate::WorkspaceEffects) {
-        if let Some(text) = self
+    /// `unsaved` names the files the summaries read from disk that are open
+    /// with other text: their effects are not known, so none are shown.
+    pub fn add_effects(&mut self, effects: &crate::WorkspaceEffects, unsaved: &[PathBuf]) {
+        let Some(mut text) = self
             .routine
             .as_ref()
             .and_then(|routine| effects.routine_markdown(routine))
-        {
-            self.contents.push_str("\n\n---\n\n");
-            self.contents.push_str(&text);
+        else {
+            return;
+        };
+        if let Some(first) = unsaved.first() {
+            let name = first.file_name().map_or_else(
+                || first.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let more = match unsaved.len() {
+                1 => String::new(),
+                n => format!(" and {} more files", n - 1),
+            };
+            text = format!(
+                "**Database effects**\n\nNot known: {}{more} has unsaved changes. \
+                 Save to see the effects.",
+                inline(&name)
+            );
         }
+        self.contents.push_str("\n\n---\n\n");
+        self.contents.push_str(&text);
     }
 }
 
@@ -173,7 +191,7 @@ impl Navigation<'_, '_> {
                         file: path.clone(),
                         kind: UnitKind::Procedure,
                         name: name.to_string(),
-                        overridable: false,
+                        elsewhere: None,
                     })
                 }
                 Resolution::Resolved(sym) => self.symbol_routine(*sym),
@@ -201,12 +219,12 @@ impl Navigation<'_, '_> {
             let text = self.run.file_system().read(&path).ok()?;
             let parsed = Parsed::of(&text);
             let source = Source::new(&text, &parsed.tokens);
-            let overridable = overridable(&source, &parsed.program.statements, name, None);
+            let elsewhere = method_elsewhere(&source, &parsed.program.statements, name, None);
             return Some(Routine::Unit {
                 file: path,
                 kind: UnitKind::Method,
                 name: name.to_string(),
-                overridable,
+                elsewhere,
             });
         }
         if symbol.declaration == oxabl_ast::NodeId::DUMMY {
@@ -220,20 +238,37 @@ impl Navigation<'_, '_> {
             StatementKind::Method { name, .. } => (UnitKind::Method, name),
             _ => return None,
         };
-        let overridable = kind == UnitKind::Method && {
-            let source = Source::new(&self.expanded.text, &parsed.tokens);
-            overridable(
+        let source = Source::new(&self.expanded.text, &parsed.tokens);
+        let elsewhere = match &found.statement.kind {
+            StatementKind::Method { .. } => method_elsewhere(
                 &source,
                 &parsed.program.statements,
                 &name.name,
                 Some(found.statement.span),
-            )
+            ),
+            StatementKind::Procedure {
+                is_prototype: true,
+                is_external: false,
+                ..
+            } => {
+                let tail = source.prototype_tail(found.statement);
+                let words: Vec<&str> = tail.split_whitespace().collect();
+                if words.len() >= 2
+                    && words[0].eq_ignore_ascii_case("IN")
+                    && words[1].eq_ignore_ascii_case("SUPER")
+                {
+                    Some(Elsewhere::SuperProcedure)
+                } else {
+                    Some(Elsewhere::Handle)
+                }
+            }
+            _ => None,
         };
         Some(Routine::Unit {
             file: self.root_path()?,
             kind,
             name: name.name.clone(),
-            overridable,
+            elsewhere,
         })
     }
 
@@ -695,28 +730,34 @@ fn declares<'a>(
     (name.span == span).then(|| found(None))
 }
 
-/// Whether a call of method `name` of the class in `statements` may run the
-/// body of a subclass instead: the class is not `FINAL`, and a method of that
-/// name (the one at `at`, or any overload) is not `FINAL`, `PRIVATE` or
-/// `STATIC`. An interface, or no class found, counts as overridable.
-fn overridable(source: &Source, statements: &[Statement], name: &str, at: Option<Span>) -> bool {
+/// Whether a call of method `name` of the class in `statements` may run
+/// another body: an interface method's body is its implementation's; a
+/// class method's may be a subclass's when the class is not `FINAL` and a
+/// method of that name (the one at `at`, or any overload) is not `FINAL`,
+/// `PRIVATE` or `STATIC`. No class found counts as an override.
+fn method_elsewhere(
+    source: &Source,
+    statements: &[Statement],
+    name: &str,
+    at: Option<Span>,
+) -> Option<Elsewhere> {
     let class = statements.iter().find(|statement| {
         matches!(
             statement.kind,
             StatementKind::Class { .. } | StatementKind::Interface { .. }
         ) && at.is_none_or(|at| statement.span.start <= at.start && at.end <= statement.span.end)
     });
-    let Some(Statement {
-        kind: StatementKind::Class { is_final, body, .. },
-        ..
-    }) = class
-    else {
-        return true;
+    let body = match class.map(|c| &c.kind) {
+        Some(StatementKind::Class { is_final, body, .. }) => {
+            if *is_final {
+                return None;
+            }
+            body
+        }
+        Some(StatementKind::Interface { .. }) => return Some(Elsewhere::Implementation),
+        _ => return Some(Elsewhere::Override),
     };
-    if *is_final {
-        return false;
-    }
-    body.iter().any(|member| {
+    let overridable = body.iter().any(|member| {
         let StatementKind::Method {
             name: declared,
             access,
@@ -731,7 +772,8 @@ fn overridable(source: &Source, statements: &[Statement], name: &str, at: Option
             && !*is_static
             && *access != AccessModifier::Private
             && !source.method_is_final(member)
-    })
+    });
+    overridable.then_some(Elsewhere::Override)
 }
 
 /// Whether class member `member` declares `name` as a symbol of `kind`.

@@ -189,8 +189,14 @@ code lenses and `TX004` read):
   graph or summary that reached a size limit. A method that a subclass can
   override (its class is not `FINAL`, and it is not `FINAL`, `PRIVATE` or
   `STATIC`) adds "an override in a subclass may run instead of this method":
-  the call graph follows the declared type, and another body can run. A summary
-  with a reason is never
+  the call graph follows the declared type, and another body can run. Other
+  bodies that oxabl does not see give their own reason: an interface method
+  (the implementing class supplies the body), `PROCEDURE p IN SUPER` (a super
+  procedure), `PROCEDURE p IN h` (the procedure that the handle names). A
+  routine that runs a program on an AppServer (`RUN ... ON SERVER`), itself or
+  through what it calls, also gives a reason: that program changes the
+  database, but the summaries leave a remote call out (as `TX004` needs). A
+  summary with a reason is never
   shown as complete: with no effect found it says "No known database effects",
   not "No database effects".
 - No effects are added when the summaries do not hold the routine, or hold two
@@ -201,7 +207,12 @@ The daemon takes the summaries of the open root buffer from its memoized query
 and for a method of another class file, it takes those of that file from
 `file_effect_summaries`, memoized per disk revision of every file the summaries
 read, so a later hover reuses them and a change on disk rebuilds them. Both
-read the files other than the open root from disk, not from open buffers.
+read the files other than the open root from disk, not from open buffers. When
+one of those files is open in the editor with other text than on disk, the
+hover gives no effects and says "Not known: `x` has unsaved changes", because
+the effects of the saved file are not the ones the editor shows. The check
+covers every file that the summaries read, so an unsaved change in any program
+the root reaches also stops it.
 
 ## Document links
 

@@ -86,8 +86,10 @@ you also get, with no setup:
   method or `RUN` target also shows the tables it reads, creates, updates and
   deletes, with the lock of each read, directly and through the routines it
   calls. When a call cannot be followed (`RUN VALUE(...)`, a program that no
-  file supplies), or when a subclass can override the method, the hover says
-  that the list is incomplete.
+  file supplies, `RUN ... ON SERVER`), or when another body may run (a method
+  that a subclass can override, an interface method, `PROCEDURE p IN SUPER`),
+  the hover says that the list is incomplete. While a file it reads has unsaved
+  changes, the hover shows no effects; save the file to see them.
 - **Document links.** Include references, `RUN` targets and `USING` names are
   links to the file each names (`Ctrl+Click`). A name that resolves to no file,
   or to more than one, is not a link.

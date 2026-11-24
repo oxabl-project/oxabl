@@ -1391,13 +1391,17 @@ pub fn compute_navigation(
                                 file_effect_summaries(snapshot, input, schema)
                             }
                         };
+                        // The file the summaries read from its buffer, not disk.
+                        let mut from_buffer = buffer.map(|_| crate::session::canonical_path(root));
                         // A method of another class: the summaries of its file.
                         let file = routine.file();
                         if effects.file(file).is_none() {
                             let input = index.file_for(snapshot, file);
                             effects = file_effect_summaries(snapshot, input, schema);
+                            from_buffer = None;
                         }
-                        hover.add_effects(&effects);
+                        let unsaved = unsaved_sources(&effects, &fs, from_buffer.as_deref());
+                        hover.add_effects(&effects, &unsaved);
                     }
                     let path = search::normalize_lexically(&file);
                     if hover.span.is_some()
@@ -1426,6 +1430,31 @@ pub fn compute_navigation(
         Ok(answer)
     }))
     .ok()
+}
+
+/// The files `effects` read from disk that are open with other text: their
+/// effects are not the ones the editor shows. `from_buffer` was read from its
+/// buffer.
+fn unsaved_sources(
+    effects: &oxabl_pipeline::WorkspaceEffects,
+    fs: &OverlayFs,
+    from_buffer: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut unsaved: Vec<PathBuf> = effects
+        .sources()
+        .filter_map(|path| {
+            let canonical = crate::session::canonical_path(path);
+            if Some(canonical.as_path()) == from_buffer {
+                return None;
+            }
+            let open = fs.overlay.get(&canonical)?;
+            let saved = fs.inner.read(path).ok();
+            (saved.as_deref() != Some(open.as_ref())).then_some(canonical)
+        })
+        .collect();
+    unsaved.sort();
+    unsaved.dedup();
+    unsaved
 }
 
 /// `file` as the expansion of `root` spells it, so a path that reaches it

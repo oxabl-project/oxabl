@@ -65,7 +65,30 @@ const MAIN: &str = "PROCEDURE ReadItems:\n\
     oStock:Fixed().\n\
     DEFINE VARIABLE oBase AS CLASS app.Base NO-UNDO.\n\
     oBase = NEW app.Kid().\n\
-    oBase:Go().\n";
+    oBase:Go().\n\
+    DEFINE VARIABLE oThing AS CLASS app.IThing NO-UNDO.\n\
+    oThing:Ping().\n\
+    DEFINE VARIABLE hLib AS HANDLE NO-UNDO.\n\
+    PROCEDURE pSup IN SUPER:\n\
+    END PROCEDURE.\n\
+    PROCEDURE pLib IN hLib:\n\
+    END PROCEDURE.\n\
+    PROCEDURE pRem:\n\
+    \x20   DEFINE VARIABLE hServer AS HANDLE NO-UNDO.\n\
+    \x20   RUN jobs/archive.p ON SERVER hServer.\n\
+    END PROCEDURE.\n\
+    PROCEDURE pOuter:\n\
+    \x20   RUN pRem.\n\
+    END PROCEDURE.\n\
+    RUN pSup.\n\
+    RUN pLib.\n\
+    RUN pRem.\n\
+    RUN pOuter.\n";
+
+/// An interface: the class that implements it supplies the body.
+const ITHING: &str = "INTERFACE app.IThing:\n\
+    \x20   METHOD PUBLIC VOID Ping().\n\
+    END INTERFACE.\n";
 
 /// A `FINAL` class: no subclass can override its methods.
 const SEALED: &str = "CLASS app.Sealed FINAL:\n\
@@ -122,6 +145,7 @@ impl Workspace {
             ("app/Sealed.cls", SEALED),
             ("app/Base.cls", BASE),
             ("app/Kid.cls", KID),
+            ("app/IThing.cls", ITHING),
         ];
         for (name, text) in files {
             let path = root.join(name);
@@ -362,4 +386,89 @@ fn a_change_on_disk_reaches_the_summaries_of_another_file() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The effects part for a routine with no known effects and these reasons.
+fn unknown_because(reasons: &str) -> String {
+    format!(
+        "**Database effects**\n\nNo known database effects.\n\n\
+         **Incomplete:** effects may be missing: {reasons}."
+    )
+}
+
+#[test]
+fn a_body_that_runs_elsewhere_is_incomplete() {
+    let ws = Workspace::new();
+    let main = ws.root.join("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    let cases = [
+        ("pSup.", "the body runs in a super procedure"),
+        // At the declaration: `RUN pLib` itself gives no hover.
+        (
+            "pLib IN",
+            "the body runs in the procedure that the handle names",
+        ),
+        (
+            ":Ping()",
+            "the class that implements the interface supplies the body",
+        ),
+    ];
+    for (needle, reason) in cases {
+        let hover = markdown(&mut session, &main, MAIN, needle);
+        assert_eq!(
+            effects(&hover),
+            unknown_because(reason),
+            "hover on `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn a_program_run_on_an_appserver_makes_the_summary_incomplete() {
+    let ws = Workspace::new();
+    let main = ws.root.join("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    let reason = "a program run on an AppServer (`RUN ... ON SERVER`)";
+    // Itself, and through a routine it calls.
+    for needle in ["pRem.\nRUN pOuter", "pOuter."] {
+        let hover = markdown(&mut session, &main, MAIN, needle);
+        assert_eq!(
+            effects(&hover),
+            unknown_because(reason),
+            "hover on `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn unsaved_changes_in_a_file_read_from_disk_give_no_effects() {
+    let ws = Workspace::new();
+    let main = ws.root.join("main.p");
+    let stock = ws.root.join("app/Stock.cls");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+    // The class is open with a change that is not saved.
+    session.open(
+        &stock,
+        &STOCK.replace("FIND FIRST Item SHARE-LOCK", "DELETE Item"),
+    );
+
+    let hover = markdown(&mut session, &main, MAIN, ":Count()");
+    assert_eq!(
+        effects(&hover),
+        "**Database effects**\n\nNot known: `Stock.cls` has unsaved changes. Save to see \
+         the effects."
+    );
+    // Open with the saved text, the effects are known.
+    let main_only = ws.root.join("app/Sealed.cls");
+    session.open(&main_only, SEALED);
+    let hover = markdown(&mut session, &main, MAIN, ":Tally()");
+    assert_eq!(
+        effects(&hover),
+        "**Database effects**\n- `Ledger`: read NO-LOCK"
+    );
 }

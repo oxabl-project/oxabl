@@ -41,6 +41,11 @@ pub struct EffectFile {
     callees: HashMap<u32, u32>,
     solved: Arc<Vec<Summary>>,
     names: Arc<Vec<String>>,
+    /// Per summary node: whether it runs a program on an AppServer, itself or
+    /// through what it calls. The summaries leave such a call out.
+    remote: Arc<Vec<bool>>,
+    /// The includes the file's expansion read.
+    includes: Vec<PathBuf>,
     fingerprint: u64,
 }
 
@@ -166,6 +171,7 @@ struct Direct {
     root_units: Vec<Option<oxabl_ast::Span>>,
     root_headers: Vec<Option<u32>>,
     incomplete: Vec<oxabl_effects::EffectUnknown>,
+    includes: Vec<PathBuf>,
     fingerprint: u64,
 }
 
@@ -231,6 +237,7 @@ fn direct(config: &PipelineConfig, path: &Path, expansion: &Expansion) -> Option
     }
     Some(Direct {
         incomplete,
+        includes: expansion.dependency_paths().to_vec(),
         fingerprint: fingerprint(expanded),
         path: key(path),
         effects,
@@ -421,7 +428,13 @@ impl LintPipeline<'_> {
             let mut nodes = Vec::with_capacity(f.effects.units().len());
             let mut names = Vec::with_capacity(f.effects.units().len());
             let mut callees = HashMap::new();
+            let mut remote = Vec::with_capacity(f.effects.units().len());
             for u in f.effects.units() {
+                remote.push(
+                    u.calls
+                        .iter()
+                        .any(|c| c.kind == oxabl_index::calls::CallKind::Remote),
+                );
                 let mut node = Node::of_unit(&f.effects, u, |c| {
                     if c.kind == oxabl_index::calls::CallKind::Remote {
                         None
@@ -442,18 +455,21 @@ impl LintPipeline<'_> {
                     }
                 }
             }
-            (nodes, names, callees)
+            (nodes, names, callees, remote)
         });
         let mut nodes = Vec::with_capacity(size as usize);
         let mut names = Vec::with_capacity(size as usize);
         let mut callees_by_file = Vec::with_capacity(files.len());
-        for (n, s, c) in per_file {
+        let mut remote = Vec::with_capacity(size as usize);
+        for (n, s, c, r) in per_file {
             nodes.extend(n);
             names.extend(s);
             callees_by_file.push(c);
+            remote.extend(r);
         }
         let solved = Arc::new(summary::summarize(&nodes, &summary::graph_of(&nodes)));
         let names = Arc::new(names);
+        let remote = Arc::new(reaches(&nodes, remote));
         let mut out = WorkspaceEffects::default();
         for (fi, (f, callees)) in files.into_iter().zip(callees_by_file).enumerate() {
             let base = bases[fi] as usize;
@@ -478,12 +494,40 @@ impl LintPipeline<'_> {
                     callees,
                     solved: Arc::clone(&solved),
                     names: Arc::clone(&names),
+                    remote: Arc::clone(&remote),
+                    includes: f.includes,
                     fingerprint: f.fingerprint,
                 },
             );
         }
         out
     }
+}
+
+/// Per node: whether it, or a node it calls, is marked in `marked`.
+fn reaches(nodes: &[Node], mut marked: Vec<bool>) -> Vec<bool> {
+    let mut callers: Vec<Vec<u32>> = vec![Vec::new(); nodes.len()];
+    for (caller, node) in nodes.iter().enumerate() {
+        for (callee, _) in &node.calls {
+            if let Callee::Node(callee) = callee
+                && let Some(list) = callers.get_mut(*callee as usize)
+            {
+                list.push(caller as u32);
+            }
+        }
+    }
+    let mut pending: Vec<u32> = (0..nodes.len() as u32)
+        .filter(|n| marked[*n as usize])
+        .collect();
+    while let Some(node) = pending.pop() {
+        for &caller in &callers[node as usize] {
+            if !marked[caller as usize] {
+                marked[caller as usize] = true;
+                pending.push(caller);
+            }
+        }
+    }
+    marked
 }
 
 fn program_of(c: &oxabl_effects::UnitCall) -> Option<&String> {
@@ -540,11 +584,37 @@ pub enum Routine {
         file: PathBuf,
         kind: UnitKind,
         name: String,
-        /// A method a subclass can override, so a call may run another body.
-        overridable: bool,
+        /// Another body than the one the unit declares may run.
+        elsewhere: Option<Elsewhere>,
     },
     /// The main block of the program `file`.
     Program(PathBuf),
+}
+
+/// Why a call of a routine may run another body than the one oxabl sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Elsewhere {
+    /// A method that a subclass can override.
+    Override,
+    /// A method of an interface: the implementing class supplies the body.
+    Implementation,
+    /// `PROCEDURE p IN SUPER`: a super procedure supplies the body.
+    SuperProcedure,
+    /// `PROCEDURE p IN h`: the procedure that the handle names supplies it.
+    Handle,
+}
+
+impl Elsewhere {
+    fn reason(self) -> &'static str {
+        match self {
+            Elsewhere::Override => "an override in a subclass may run instead of this method",
+            Elsewhere::Implementation => {
+                "the class that implements the interface supplies the body"
+            }
+            Elsewhere::SuperProcedure => "the body runs in a super procedure",
+            Elsewhere::Handle => "the body runs in the procedure that the handle names",
+        }
+    }
 }
 
 impl Routine {
@@ -563,18 +633,27 @@ impl WorkspaceEffects {
     /// The database effects of `routine` as Markdown: each table with its
     /// operations and locks, direct effects apart from those through a call,
     /// and why the summary may miss effects. `None` when the summaries do not
-    /// hold the routine, or hold more than one routine of its name.
+    /// hold the routine, or hold more than one routine of its name. A routine
+    /// without a body whose body runs [`Elsewhere`] has no known effects.
     pub fn routine_markdown(&self, routine: &Routine) -> Option<String> {
-        let (file, kind, name, overridable) = match routine {
+        let (file, kind, name, elsewhere) = match routine {
             Routine::Unit {
                 file,
                 kind,
                 name,
-                overridable,
-            } => (file, *kind, Some(name.as_str()), *overridable),
-            Routine::Program(file) => (file, UnitKind::Main, None, false),
+                elsewhere,
+            } => (file, *kind, Some(name.as_str()), *elsewhere),
+            Routine::Program(file) => (file, UnitKind::Main, None, None),
         };
         let effects = self.file(file)?;
+        // A declaration without a body (an interface method) has no unit.
+        let bodiless = elsewhere.map(|elsewhere| {
+            format!(
+                "**Database effects**\n\nNo known database effects.\n\n\
+                 **Incomplete:** effects may be missing: {}.",
+                elsewhere.reason()
+            )
+        });
         let mut matching = effects.effects.units().iter().enumerate().filter(|(_, u)| {
             u.kind == kind
                 && match name {
@@ -585,11 +664,20 @@ impl WorkspaceEffects {
                     None => true,
                 }
         });
-        let (at, _) = matching.next()?;
+        let Some((at, _)) = matching.next() else {
+            return bodiless;
+        };
         if matching.next().is_some() {
             return None;
         }
-        Some(effects.unit_markdown(at, file, overridable))
+        Some(effects.unit_markdown(at, file, elsewhere))
+    }
+
+    /// Every file the summaries read: each analysed file and its includes.
+    pub fn sources(&self) -> impl Iterator<Item = &Path> {
+        self.files.iter().flat_map(|(path, file)| {
+            std::iter::once(path.as_path()).chain(file.includes.iter().map(PathBuf::as_path))
+        })
     }
 }
 
@@ -597,7 +685,7 @@ impl EffectFile {
     /// The effects of unit `at`. Its direct effects come from its summary; each
     /// routine it calls has its lines from the callee's own summary, so a route
     /// lists all that the callee does, also what the unit does itself.
-    fn unit_markdown(&self, at: usize, file: &Path, overridable: bool) -> String {
+    fn unit_markdown(&self, at: usize, file: &Path, elsewhere: Option<Elsewhere>) -> String {
         let summary = &self.summaries()[at];
         let own = (self.summary_range.start + at) as u32;
         let mut lines: BTreeMap<(String, Option<String>), Vec<String>> = BTreeMap::new();
@@ -629,8 +717,11 @@ impl EffectFile {
             }
         }
         let mut reasons: Vec<&str> = summary.partial.iter().map(|p| partial_text(*p)).collect();
-        if overridable {
-            reasons.push("an override in a subclass may run instead of this method");
+        if self.remote.get(own as usize).copied().unwrap_or(true) {
+            reasons.push("a program run on an AppServer (`RUN ... ON SERVER`)");
+        }
+        if let Some(elsewhere) = elsewhere {
+            reasons.push(elsewhere.reason());
         }
         let mut out = String::from("**Database effects**");
         if lines.is_empty() {
