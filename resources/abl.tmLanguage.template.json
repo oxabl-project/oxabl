@@ -327,9 +327,6 @@
             },
             {
               "include": "#preprocessor-references"
-            },
-            {
-              "include": "#include"
             }
           ]
         },
@@ -358,9 +355,6 @@
             },
             {
               "include": "#preprocessor-references"
-            },
-            {
-              "include": "#include"
             }
           ]
         }
