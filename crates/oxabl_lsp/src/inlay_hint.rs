@@ -117,6 +117,7 @@ impl Server<'_> {
     /// Ask the client to ask again: the hints of a file may change without an
     /// edit to it (the configuration, the schema, an include).
     pub(crate) fn refresh_inlay_hints(&mut self) {
+        self.refresh_semantic_tokens();
         if self.inlay.supported && self.inlay.refresh {
             self.inlay.refreshes += 1;
             let id = format!("oxabl-inlay-refresh-{}", self.inlay.refreshes);

@@ -111,7 +111,10 @@ pub use lint::{
     Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun,
     encrypted_root_diagnostics,
 };
-pub use navigate::{Highlight, Hover, Link, Navigation, NavigationModel, Target};
+pub use navigate::{
+    Highlight, Hover, Link, Navigation, NavigationModel, SemanticKind, SemanticModifiers,
+    SemanticToken, Target,
+};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 // Re-exported so a client of navigation and the call hierarchy can name the
 // byte spans their answers carry.

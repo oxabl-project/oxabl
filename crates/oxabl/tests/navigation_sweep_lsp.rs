@@ -301,3 +301,94 @@ fn every_position_gets_a_well_formed_answer() {
         }
     }
 }
+
+/// The `(line, UTF-16 column, length, type, modifiers)` of each token of a
+/// semantic tokens answer.
+fn decode_tokens(data: &Value) -> Vec<(usize, usize, usize, u64, u64)> {
+    let numbers: Vec<u64> = data
+        .as_array()
+        .expect("the data is an array")
+        .iter()
+        .map(|n| n.as_u64().expect("an integer"))
+        .collect();
+    assert_eq!(numbers.len() % 5, 0, "five integers for each token");
+    let (mut line, mut column) = (0usize, 0usize);
+    numbers
+        .chunks(5)
+        .map(|token| {
+            line += token[0] as usize;
+            column = if token[0] == 0 {
+                column + token[1] as usize
+            } else {
+                token[1] as usize
+            };
+            (line, column, token[2] as usize, token[3], token[4])
+        })
+        .collect()
+}
+
+#[test]
+fn semantic_tokens_of_awkward_files_are_well_formed() {
+    let ws = Workspace::new();
+    let caps = json!({"textDocument": {"semanticTokens": {
+        "requests": {"range": true, "full": {"delta": true}},
+        "tokenTypes": [], "tokenModifiers": [], "formats": ["relative"]
+    }}});
+    let mut session = Session::start_with(&ws.root, caps);
+    let legend = &session.initialized["result"]["capabilities"]["semanticTokensProvider"]["legend"];
+    let types = legend["tokenTypes"].as_array().unwrap().len() as u64;
+    let modifiers = legend["tokenModifiers"].as_array().unwrap().len() as u32;
+    for name in ["uses.p", "calls.p", "frag.i"] {
+        let path = ws.root.join(name);
+        let text = ws.text(&path).to_string();
+        session.open(&path, &text);
+        let lines: Vec<&str> = text.split('\n').collect();
+
+        let answer = session.request(
+            "textDocument/semanticTokens/full",
+            json!({"textDocument": {"uri": file_uri(&path)}}),
+        );
+        assert!(answer.get("error").is_none(), "{name}: {answer}");
+        let all = decode_tokens(&answer["result"]["data"]);
+        assert!(!all.is_empty(), "{name}: names resolve");
+        let mut end_of_last = (0, 0);
+        for &(line, column, length, kind, mods) in &all {
+            let context = format!("{name}:{line}:{column}");
+            assert!(line < lines.len(), "{context}: past the end");
+            let units: Vec<u16> = lines[line].encode_utf16().collect();
+            assert!(column + length <= units.len(), "{context}: past its line");
+            assert!(length > 0 && kind < types, "{context}: type {kind}");
+            assert!(mods < (1 << modifiers), "{context}: modifiers {mods}");
+            assert!(
+                (line, column) >= end_of_last,
+                "{context}: overlaps the last"
+            );
+            end_of_last = (line, column + length);
+            let spelled = String::from_utf16(&units[column..column + length]).unwrap();
+            assert!(
+                !spelled.contains([' ', '(', ')', '"', '\'', ':', ',']),
+                "{context}: `{spelled}` is not one name"
+            );
+        }
+
+        // The ranges of the single lines give together what the file gives.
+        let mut joined = Vec::new();
+        for line in 0..lines.len() {
+            let answer = session.request(
+                "textDocument/semanticTokens/range",
+                json!({
+                    "textDocument": {"uri": file_uri(&path)},
+                    "range": {"start": {"line": line, "character": 0},
+                              "end": {"line": line + 1, "character": 0}}
+                }),
+            );
+            assert!(answer.get("error").is_none(), "{name}:{line}: {answer}");
+            joined.extend(
+                decode_tokens(&answer["result"]["data"])
+                    .into_iter()
+                    .map(|(_, column, length, kind, mods)| (line, column, length, kind, mods)),
+            );
+        }
+        assert_eq!(joined, all, "{name}: the lines, one by one");
+    }
+}

@@ -39,8 +39,10 @@ use oxabl_workspace::is_include_fragment;
 use crate::{Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
 
 mod hover;
+mod semantic;
 
 pub use hover::Hover;
+pub use semantic::{SemanticKind, SemanticModifiers, SemanticToken};
 
 /// Where a name is declared: a file, and the declaring name's bytes in it.
 /// `span` is `None` when the target is the file itself (a program, an include).

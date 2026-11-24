@@ -163,6 +163,13 @@ pub mod panic_sites {
     pub const HOVER: &str = "hover";
     /// The language server's inlay hint analysis, for [`hold_if_injected`](super::hold_if_injected).
     pub const LSP_INLAY_HINTS: &str = "lsp.inlay-hints";
+    /// The language server's semantic tokens, for both
+    /// [`hold_if_injected`](super::hold_if_injected) and
+    /// [`panic_if_injected`](super::panic_if_injected).
+    pub const SEMANTIC_TOKENS: &str = "lsp.semantic-tokens";
+    /// The language server's semantic tokens after the analysis, before the
+    /// answer, for [`hold_if_injected`](super::hold_if_injected).
+    pub const SEMANTIC_ANSWER: &str = "lsp.semantic-answer";
 }
 
 /// The marker that holds a site for [`HOLD_TIME`], for a test that needs a

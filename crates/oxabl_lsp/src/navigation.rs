@@ -408,7 +408,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// differs from the file, which the cached analysis does not see. True when
 /// that cannot be told, and when another open document is not on disk: a new
 /// include is not among the dependencies, yet the expansion may read it.
-fn reads_unsaved_include(
+pub(crate) fn reads_unsaved_include(
     snapshot: &AnalysisDatabase,
     buffer: Buffer,
     root: &Path,
