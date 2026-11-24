@@ -2210,7 +2210,7 @@ impl CheckPass<'_> {
             unit.preproc.extend(
                 encrypted
                     .by_source(oxabl_analyze::DiagnosticSource::Preproc)
-                    .map(|c| check_json_diagnostic(&display, &map, c)),
+                    .map(|c| check_json_diagnostic(&display, &map, c, None)),
             );
         }
     }
@@ -2379,7 +2379,7 @@ impl CheckPass<'_> {
                 unit.preproc.extend(
                     result
                         .by_source(oxabl_analyze::DiagnosticSource::Preproc)
-                        .map(|c| check_json_diagnostic(&display, &map, c)),
+                        .map(|c| check_json_diagnostic(&display, &map, c, None)),
                 );
             }
             self.withhold(&display, &mut unit, false);
