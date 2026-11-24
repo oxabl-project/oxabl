@@ -2,7 +2,9 @@
 //! oxabl has, with the group and the default severity it states. The rules
 //! come from the program's own registry (`oxabl::lint::Registry::builtin`).
 //! The codes of the tables of non-lint diagnostics have no registry, so they are
-//! checked against the string literals of the workspace sources.
+//! checked in both directions against the string literals of the non-test
+//! workspace sources: a code in the table that no source names, and a code a
+//! source names that the table lacks.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -140,8 +142,10 @@ fn problems(markdown: &str) -> Vec<String> {
         None => problems.push("rules.md has no `## Other codes` section".into()),
         Some(text) => {
             let sources = workspace_sources();
+            let mut listed = BTreeSet::new();
             for cells in rows(text) {
                 let code = &cells[0];
+                listed.insert(code.clone());
                 if known.contains(code.as_str()) {
                     problems.push(format!(
                         "rules.md lists the lint rule {code} as a non-lint code"
@@ -152,42 +156,161 @@ fn problems(markdown: &str) -> Vec<String> {
                     ));
                 }
             }
+            for code in diagnostic_codes(&sources) {
+                if !listed.contains(&code) && !known.contains(code.as_str()) {
+                    problems.push(format!(
+                        "oxabl names the code {code}, which rules.md does not list"
+                    ));
+                }
+            }
         }
     }
     problems
 }
 
-/// The text of every `.rs` file under the `src` of the workspace crates.
+/// Every `"PARSE001"`, `"PREPROC007"`, `"SEM0001"` or `"SCHEMA0010"` literal.
+fn diagnostic_codes(sources: &str) -> BTreeSet<String> {
+    let mut codes = BTreeSet::new();
+    // A part between two quotes that is code-shaped is a literal: no source
+    // puts such a word between two strings.
+    let parts: Vec<&str> = sources.split('"').collect();
+    for literal in &parts[1..parts.len().saturating_sub(1)] {
+        for prefix in ["PARSE", "PREPROC", "SEM", "SCHEMA"] {
+            if let Some(digits) = literal.strip_prefix(prefix)
+                && !digits.is_empty()
+                && digits.bytes().all(|b| b.is_ascii_digit())
+            {
+                codes.insert((*literal).to_string());
+            }
+        }
+    }
+    codes
+}
+
+/// The text of every `.rs` file under the `src` of the workspace crates,
+/// without the code that only tests compile.
 fn workspace_sources() -> String {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut text = String::new();
-    let mut files = 0;
+    let mut files = Vec::new();
     for entry in fs::read_dir(&crates).unwrap() {
         let src = entry.unwrap().path().join("src");
         if src.is_dir() {
-            files += walk(&src, &mut text);
+            walk(&src, &mut files);
         }
     }
     assert!(
-        files > 50,
-        "found {files} source files under {}: this test needs the workspace checkout",
+        files.len() > 50,
+        "found {} source files under {}: this test needs the workspace checkout",
+        files.len(),
         crates.display()
     );
-    text
+    let texts: Vec<(PathBuf, String)> = files
+        .into_iter()
+        .map(|path| {
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            (path, text)
+        })
+        .collect();
+    let test_files: BTreeSet<PathBuf> = texts
+        .iter()
+        .flat_map(|(path, text)| test_modules(path, text))
+        .collect();
+    let mut sources = String::new();
+    for (path, text) in &texts {
+        let in_test_module = test_files.iter().any(|root| path.starts_with(root));
+        if !in_test_module && !is_test_file(path) {
+            sources.push_str(&without_test_code(text));
+        }
+    }
+    sources
 }
 
-fn walk(dir: &Path, text: &mut String) -> usize {
-    let mut files = 0;
+fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path: PathBuf = entry.unwrap().path();
         if path.is_dir() {
-            files += walk(&path, text);
+            walk(&path, files);
         } else if path.extension().is_some_and(|e| e == "rs") {
-            files += 1;
-            text.push_str(&fs::read_to_string(&path).unwrap_or_default());
+            files.push(path);
         }
     }
-    files
+}
+
+fn is_test_file(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem == "tests" || stem == "test_support")
+}
+
+/// Whether an attribute line gates code on `test`.
+fn is_test_cfg(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("#[cfg(") && line.contains("test") && !line.contains("not(test")
+}
+
+/// The paths of the files and directories of the `mod name;` items that a
+/// test-only attribute gates in `path`.
+fn test_modules(path: &Path, text: &str) -> Vec<PathBuf> {
+    let dir = path.parent().unwrap();
+    let stem = path.file_stem().unwrap();
+    let nested = if matches!(stem.to_str(), Some("lib" | "main" | "mod")) {
+        dir.to_path_buf()
+    } else {
+        dir.join(stem)
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let mut found = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if !is_test_cfg(line) {
+            continue;
+        }
+        let Some(next) = lines.get(index + 1) else {
+            continue;
+        };
+        let item = next.trim().trim_start_matches("pub ");
+        if let Some(name) = item
+            .strip_prefix("mod ")
+            .and_then(|rest| rest.strip_suffix(';'))
+        {
+            found.push(nested.join(format!("{name}.rs")));
+            found.push(nested.join(name));
+        }
+    }
+    found
+}
+
+/// `text` without the items that a test-only attribute gates: a `mod name;`
+/// line, or a braced item up to the closing brace at the attribute's indent.
+fn without_test_code(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept = String::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if !is_test_cfg(line) {
+            kept.push_str(line);
+            kept.push('\n');
+            index += 1;
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        index += 1;
+        let Some(first) = lines.get(index) else {
+            break;
+        };
+        index += 1;
+        if first.trim_end().ends_with(';') && !first.contains('{') {
+            continue;
+        }
+        while index < lines.len() {
+            let item = lines[index];
+            index += 1;
+            if item.len() - item.trim_start().len() == indent && item.trim_start().starts_with('}')
+            {
+                break;
+            }
+        }
+    }
+    kept
 }
 
 fn rules_md() -> String {
@@ -280,5 +403,29 @@ fn a_wrong_group_name_or_severity_is_reported() {
         problems
             .iter()
             .any(|p| p.contains("DB001") && p.contains("find-loops"))
+    );
+}
+
+#[test]
+fn a_non_lint_code_missing_from_rules_md_is_reported() {
+    let md = rules_md();
+    let edited: String = md
+        .lines()
+        .filter(|line| !line.starts_with("| SEM0003 ") && !line.starts_with("| PREPROC010 "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+
+    let problems = problems(&edited);
+
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("names the code SEM0003, which rules.md does not list")),
+        "{problems:?}"
+    );
+    assert!(
+        problems.iter().any(|p| p.contains("PREPROC010")),
+        "{problems:?}"
     );
 }
