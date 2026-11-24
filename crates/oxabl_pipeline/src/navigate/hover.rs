@@ -11,13 +11,14 @@
 //! A name that does not resolve, or that resolves to more than one thing, has
 //! no hover.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use oxabl_ast::{
     AccessModifier, BufferTarget, DataType, HandleParamKind, ParameterType, Span, Statement,
     StatementKind, TempTableField, TypeSource,
 };
 use oxabl_common::VirtualSpan;
+use oxabl_flow::UnitKind;
 use oxabl_lexer::{Kind, Token, tokenize};
 use oxabl_semantic::{
     IndexedFileId, Resolution, ResolvedType, SiteTarget, SymbolId, SymbolKind, UnresolvedReason,
@@ -28,6 +29,7 @@ use oxabl_workspace::is_include_fragment;
 mod like;
 
 use super::{Navigation, Parsed, Target, search};
+use crate::effects::{Elsewhere, Routine};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
 use crate::outline::{access_name, children, data_type_name, direction_name};
 use crate::schema_hover::{code, field_markdown, inline, plain, table_markdown};
@@ -40,6 +42,43 @@ pub struct Hover {
     /// The bytes of the hovered word in the hovered file, when the file writes
     /// it there (not when an include argument or a macro supplied it).
     pub span: Option<Span>,
+    /// The procedure, function, method or program the name means, whose
+    /// database effects a client can add
+    /// ([`WorkspaceEffects::routine_markdown`](crate::WorkspaceEffects::routine_markdown)).
+    pub routine: Option<Routine>,
+}
+
+impl Hover {
+    /// Add the database effects of the routine the hover names, from
+    /// `effects`. Nothing is added when `effects` does not hold the routine.
+    /// `unsaved` names the files the summaries read from disk that are open
+    /// with other text: their effects are not known, so none are shown.
+    pub fn add_effects(&mut self, effects: &crate::WorkspaceEffects, unsaved: &[PathBuf]) {
+        let Some(mut text) = self
+            .routine
+            .as_ref()
+            .and_then(|routine| effects.routine_markdown(routine))
+        else {
+            return;
+        };
+        if let Some(first) = unsaved.first() {
+            let name = first.file_name().map_or_else(
+                || first.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let more = match unsaved.len() {
+                1 => String::new(),
+                n => format!(" and {} more files", n - 1),
+            };
+            text = format!(
+                "**Database effects**\n\nNot known: {}{more} has unsaved changes. \
+                 Save to see the effects.",
+                inline(&name)
+            );
+        }
+        self.contents.push_str("\n\n---\n\n");
+        self.contents.push_str(&text);
+    }
 }
 
 /// Words that may stand between `DEFINE` and what it defines, and between a
@@ -92,9 +131,10 @@ impl Navigation<'_, '_> {
                 continue;
             };
             if let Some(answer) = self.hover_at(virt) {
-                return answer.map(|contents| Hover {
+                return answer.map(|(contents, routine)| Hover {
                     contents,
                     span: self.word_span(&file, virt),
+                    routine,
                 });
             }
         }
@@ -103,18 +143,126 @@ impl Navigation<'_, '_> {
 
     /// `None` when nothing at expanded offset `virt` has an answer,
     /// `Some(None)` when what is there has no hover.
-    fn hover_at(&self, virt: u32) -> Option<Option<String>> {
+    fn hover_at(&self, virt: u32) -> Option<Option<(String, Option<Routine>)>> {
         let answer = self.innermost(
             virt,
-            &|sym| self.symbol_hover(sym),
-            &|target, span| self.site_hover(target, span, virt),
+            &|sym| {
+                self.symbol_hover(sym)
+                    .map(|contents| (contents, self.symbol_routine(sym)))
+            },
+            &|target, span| {
+                self.site_hover(target, span, virt)
+                    .map(|hover| hover.map(|contents| (contents, self.site_routine(target, span))))
+            },
             &Option::is_some,
             || None,
         );
         if answer.is_some() {
             return answer;
         }
-        self.statement_hover(virt).map(Some)
+        self.statement_hover(virt)
+            .map(|contents| Some((contents, None)))
+    }
+
+    /// The routine a site names, as [`Self::site_hover`] reads the site.
+    fn site_routine(&self, target: &SiteTarget, span: VirtualSpan) -> Option<Routine> {
+        let references = &self.semantic.references;
+        match target {
+            SiteTarget::Reference(node) => match references.get(*node)? {
+                Resolution::Resolved(sym) => self.symbol_routine(*sym),
+                Resolution::Unresolved { .. } => None,
+            },
+            SiteTarget::Run(node) => match references.get(*node)? {
+                Resolution::Resolved(sym) if self.semantic.symbols.program_file(*sym).is_some() => {
+                    self.symbol_routine(*sym)
+                }
+                _ if let Some(targets) = self.handle_call_targets(span) => {
+                    let [
+                        Target {
+                            path,
+                            span: Some(declared),
+                        },
+                    ] = targets.as_slice()
+                    else {
+                        return None;
+                    };
+                    let name = self.text(span)?.trim().trim_matches(['"', '\'']);
+                    // The declaration in the handle's program may be a prototype.
+                    let text = self.run.file_system().read(path).ok()?;
+                    let parsed = Parsed::of(&text);
+                    let source = Source::new(&text, &parsed.tokens);
+                    let found = find_declaration(
+                        &parsed.program.statements,
+                        VirtualSpan::new(declared.start, declared.end),
+                    )?;
+                    Some(Routine::Unit {
+                        file: path.clone(),
+                        kind: UnitKind::Procedure,
+                        name: name.to_string(),
+                        elsewhere: procedure_elsewhere(&source, found.statement),
+                    })
+                }
+                Resolution::Resolved(sym) => self.symbol_routine(*sym),
+                Resolution::Unresolved { .. } => None,
+            },
+            SiteTarget::Symbol(sym) => self.symbol_routine(*sym),
+            _ => None,
+        }
+    }
+
+    /// The routine `sym` is: a program, or a procedure, function or method
+    /// declared in the unit or in a class file.
+    fn symbol_routine(&self, sym: SymbolId) -> Option<Routine> {
+        let symbols = &self.semantic.symbols;
+        let symbol = symbols.get(sym);
+        if let Some(file) = symbols.program_file(sym) {
+            return Some(Routine::Program(self.path_of(file)?));
+        }
+        if !matches!(symbol.kind, SymbolKind::Procedure | SymbolKind::Function) {
+            return None;
+        }
+        if let Some(file) = symbols.member_file(sym) {
+            let path = self.path_of(file)?;
+            let name = symbol.name.as_ref();
+            let text = self.run.file_system().read(&path).ok()?;
+            let parsed = Parsed::of(&text);
+            let source = Source::new(&text, &parsed.tokens);
+            let elsewhere = method_elsewhere(&source, &parsed.program.statements, name, None);
+            return Some(Routine::Unit {
+                file: path,
+                kind: UnitKind::Method,
+                name: name.to_string(),
+                elsewhere,
+            });
+        }
+        if symbol.declaration == oxabl_ast::NodeId::DUMMY {
+            return None;
+        }
+        let parsed = self.parsed();
+        let found = find_declaration(&parsed.program.statements, symbol.name_span)?;
+        let (kind, name) = match &found.statement.kind {
+            StatementKind::Procedure { name, .. } => (UnitKind::Procedure, name),
+            StatementKind::Function { name, .. } => (UnitKind::Function, name),
+            StatementKind::Method { name, .. } => (UnitKind::Method, name),
+            _ => return None,
+        };
+        let source = Source::new(&self.expanded.text, &parsed.tokens);
+        let elsewhere = match &found.statement.kind {
+            StatementKind::Method { .. } => method_elsewhere(
+                &source,
+                &parsed.program.statements,
+                &name.name,
+                Some(found.statement.span),
+            ),
+            StatementKind::Procedure { .. } => procedure_elsewhere(&source, found.statement),
+            _ => None,
+        };
+        Some(Routine::Unit {
+            file: self.root_path()?,
+            kind,
+            name: name.name.clone(),
+            elsewhere,
+        })
     }
 
     fn site_hover(
@@ -573,6 +721,77 @@ fn declares<'a>(
         _ => return None,
     };
     (name.span == span).then(|| found(None))
+}
+
+/// Where the body of a `PROCEDURE` prototype runs: `IN SUPER` in a super
+/// procedure, `IN h` in the procedure the handle names. `None` for a
+/// definition with a body, and for `EXTERNAL`, a library entry point that
+/// touches no database.
+fn procedure_elsewhere(source: &Source, statement: &Statement) -> Option<Elsewhere> {
+    let StatementKind::Procedure {
+        is_prototype: true,
+        is_external: false,
+        ..
+    } = &statement.kind
+    else {
+        return None;
+    };
+    let tail = source.prototype_tail(statement);
+    let words: Vec<&str> = tail.split_whitespace().collect();
+    if words.len() >= 2
+        && words[0].eq_ignore_ascii_case("IN")
+        && words[1].eq_ignore_ascii_case("SUPER")
+    {
+        Some(Elsewhere::SuperProcedure)
+    } else {
+        Some(Elsewhere::Handle)
+    }
+}
+
+/// Whether a call of method `name` of the class in `statements` may run
+/// another body: an interface method's body is its implementation's; a
+/// class method's may be a subclass's when the class is not `FINAL` and a
+/// method of that name (the one at `at`, or any overload) is not `FINAL`,
+/// `PRIVATE` or `STATIC`. No class found counts as an override.
+fn method_elsewhere(
+    source: &Source,
+    statements: &[Statement],
+    name: &str,
+    at: Option<Span>,
+) -> Option<Elsewhere> {
+    let class = statements.iter().find(|statement| {
+        matches!(
+            statement.kind,
+            StatementKind::Class { .. } | StatementKind::Interface { .. }
+        ) && at.is_none_or(|at| statement.span.start <= at.start && at.end <= statement.span.end)
+    });
+    let body = match class.map(|c| &c.kind) {
+        Some(StatementKind::Class { is_final, body, .. }) => {
+            if *is_final {
+                return None;
+            }
+            body
+        }
+        Some(StatementKind::Interface { .. }) => return Some(Elsewhere::Implementation),
+        _ => return Some(Elsewhere::Override),
+    };
+    let overridable = body.iter().any(|member| {
+        let StatementKind::Method {
+            name: declared,
+            access,
+            is_static,
+            ..
+        } = &member.kind
+        else {
+            return false;
+        };
+        declared.name.eq_ignore_ascii_case(name)
+            && at.is_none_or(|at| member.span == at)
+            && !*is_static
+            && *access != AccessModifier::Private
+            && !source.method_is_final(member)
+    });
+    overridable.then_some(Elsewhere::Override)
 }
 
 /// Whether class member `member` declares `name` as a symbol of `kind`.

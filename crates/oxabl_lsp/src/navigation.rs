@@ -77,11 +77,27 @@ impl Server<'_> {
             .selected(&uri)
             .cloned()
             .unwrap_or_else(|| path.clone());
-        let query = NavigationQuery::Hover { file: path, offset };
+        let buffer = self.open_buffer(&root);
+        let query = NavigationQuery::Hover {
+            file: path,
+            offset,
+            buffer,
+        };
         let ticket = self.hovers.ticket(&req.id);
         self.spawn_gated(req.id, root, query, Some(ticket), |answer, encoding| {
             serde_json::to_value(hover(answer, encoding))
         })
+    }
+
+    /// The session buffer of the open document at `path`.
+    fn open_buffer(&self, path: &Path) -> Option<oxabl_daemon::db::Buffer> {
+        let uri = self
+            .documents
+            .uris()
+            .find(|uri| uri_to_path(uri).is_some_and(|p| canonical_path(&p) == path))?
+            .clone();
+        self.host
+            .with(|sessions| sessions.get(&self.session_root)?.buffer(uri.as_str()))
     }
 
     pub(crate) fn handle_document_link(&mut self, req: Request) -> anyhow::Result<()> {

@@ -6558,7 +6558,7 @@ impl Parser<'_> {
     /// Parse a METHOD definition.
     ///
     /// ```text
-    /// `METHOD [access] [STATIC] [ABSTRACT] [OVERRIDE] (VOID | return-type) name (params):`
+    /// `METHOD [access] [STATIC] [ABSTRACT] [OVERRIDE] [FINAL] (VOID | return-type) name (params):`
     ///     body
     /// END METHOD.
     /// ```
@@ -6569,7 +6569,7 @@ impl Parser<'_> {
             .parse_access_modifier()
             .unwrap_or(AccessModifier::Public);
 
-        // Parse optional STATIC, ABSTRACT, OVERRIDE flags and access modifiers (in any order).
+        // Parse optional STATIC, ABSTRACT, OVERRIDE, FINAL flags and access modifiers (in any order).
         // ABL allows: METHOD OVERRIDE PROTECTED INTEGER name(...) as well as
         //             METHOD PUBLIC STATIC VOID name(...)
         let mut is_static = false;
@@ -6585,6 +6585,9 @@ impl Parser<'_> {
             } else if self.check(Kind::Override) {
                 self.advance();
                 is_override = true;
+            } else if self.check(Kind::Final) {
+                // `METHOD PUBLIC FINAL ...`: no subclass may override it.
+                self.advance();
             } else if matches!(
                 self.peek().kind,
                 Kind::Public

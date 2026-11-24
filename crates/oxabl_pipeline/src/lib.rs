@@ -78,7 +78,7 @@ pub mod fixtures;
 
 mod effects;
 mod explain;
-pub use effects::{EffectFile, WorkspaceEffects};
+pub use effects::{EffectFile, Elsewhere, Routine, WorkspaceEffects};
 mod config;
 mod format;
 mod includers;

@@ -282,6 +282,14 @@ fn code(text: &str) -> String {
     format!("```abl\n{text}\n```")
 }
 
+/// What a hover adds for a routine that touches no table
+/// (`hover_effects_lsp.rs` tests the effects).
+const NO_EFFECTS: &str = "\n\n---\n\n**Database effects**\n\nNo database effects.";
+
+/// The same for a method that a subclass may override.
+const OVERRIDABLE_NO_EFFECTS: &str = "\n\n---\n\n**Database effects**\n\nNo known database effects.\n\n\
+    **Incomplete:** effects may be missing: an override in a subclass may run instead of this method.";
+
 #[test]
 fn variables_show_type_extent_initial_and_no_undo() {
     let ws = Workspace::new();
@@ -360,17 +368,20 @@ fn routines_show_their_signature() {
     assert_eq!(
         found,
         code("PROCEDURE AddLine (INPUT pcName AS CHARACTER, OUTPUT pdTotal AS DECIMAL)")
+            + NO_EFFECTS
     );
     let found = markdown(&mut session, &main, MAIN, "fnTotal(", 0);
     assert_eq!(
         found,
-        code("FUNCTION fnTotal RETURNS DECIMAL (INPUT piCount AS INTEGER)")
+        code("FUNCTION fnTotal RETURNS DECIMAL (INPUT piCount AS INTEGER)") + NO_EFFECTS
     );
     // A method of the variable's class.
     let found = markdown(&mut session, &main, MAIN, "Area()", 0);
     assert_eq!(
         found,
-        code("METHOD PUBLIC DECIMAL Area ()") + "\n\nDeclared in `app.Circle`."
+        code("METHOD PUBLIC DECIMAL Area ()")
+            + "\n\nDeclared in `app.Circle`."
+            + OVERRIDABLE_NO_EFFECTS
     );
     // An inherited method shows each overload, in the class that declares it.
     let found = markdown(&mut session, &main, MAIN, "Describe()", 0);
@@ -386,12 +397,12 @@ fn routines_show_their_signature() {
     assert_eq!(found, code("CLASS app.Circle INHERITS app.Base"));
     // A program a RUN names.
     let found = markdown(&mut session, &main, MAIN, "util/helper.p", 0);
-    assert_eq!(found, code("RUN util/helper.p"));
+    assert_eq!(found, code("RUN util/helper.p") + NO_EFFECTS);
     // An internal procedure of the program a handle runs.
     let found = markdown(&mut session, &main, MAIN, "Compute IN", 0);
     assert_eq!(
         found,
-        code("PROCEDURE Compute (INPUT piN AS INTEGER)") + "\n\nIn `jobs/tools.p`."
+        code("PROCEDURE Compute (INPUT piN AS INTEGER)") + "\n\nIn `jobs/tools.p`." + NO_EFFECTS
     );
 }
 

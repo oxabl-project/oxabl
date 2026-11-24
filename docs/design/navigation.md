@@ -157,6 +157,66 @@ comment, or a statement whose head is not documented.
 The two schema functions read one `oxabl_schema::Table` and nothing else, so a
 request that shows a whole table (a schema browser) can use the same text.
 
+### Database effects
+
+A hover on a procedure, function, method or `RUN` target also names the routine
+(`Hover::routine`, an `oxabl_pipeline::Routine`). `Hover::add_effects` then adds
+its database effects after a rule, from the transitive effect summaries over the
+call graph (`WorkspaceEffects::routine_markdown`, the summaries that the effect
+code lenses and `TX004` read):
+
+```text
+**Database effects**
+- `Item`: read EXCLUSIVE-LOCK, update
+- `Item` through `ReadItems`: read NO-LOCK
+- `Item` through `archive.p`: read EXCLUSIVE-LOCK, delete
+- `Ledger` through `archive.p`: create
+
+**Incomplete:** effects may be missing: a dynamic call (`RUN VALUE`, ...).
+```
+
+- One line per table and route. A line without `through` is a direct effect
+  of the routine. `through x` names a routine it calls, and lists all that `x`
+  does, directly and through its own calls, from the summary of `x`: also an
+  effect the caller has itself. (The caller's summary keeps one effect per
+  table, operation, lock and depth, so it cannot give the routes whole.)
+- A read gives its lock: `NO-LOCK`, `SHARE-LOCK`, `EXCLUSIVE-LOCK`, or
+  `SHARE-LOCK (default)` when none is written. A table that the schema does
+  not have says so. Temp-tables are not listed.
+- `**Incomplete:**` names every reason the summary may miss effects: a dynamic
+  call, a handle oxabl cannot follow, a program that no file supplies or that
+  several files supply, a unit whose own effects are not all known, and a call
+  graph or summary that reached a size limit. A method that a subclass can
+  override (its class is not `FINAL`, and it is not `FINAL`, `PRIVATE` or
+  `STATIC`) adds "an override in a subclass may run instead of this method":
+  the call graph follows the declared type, and another body can run. Other
+  bodies that oxabl does not see give their own reason: an interface method
+  (the implementing class supplies the body), `PROCEDURE p IN SUPER` (a super
+  procedure), `PROCEDURE p IN h` (the procedure that the handle names), also
+  when the prototype is in the program that `RUN p IN h` runs. A
+  routine that runs a program on an AppServer (`RUN ... ON SERVER`), itself or
+  through what it calls, also gives a reason: that program changes the
+  database, but the summaries leave a remote call out (as `TX004` needs). A
+  summary with a reason is never
+  shown as complete: with no effect found it says "No known database effects",
+  not "No database effects".
+- No effects are added when the summaries do not hold the routine, or hold two
+  routines of its name (method overloads).
+
+The daemon takes the summaries of the open root buffer from its memoized query
+(`effect_summaries`, shared with the code lenses). For a root that is not open,
+and for a method of another class file, it takes those of that file from
+`file_effect_summaries`, memoized per disk revision of every file the summaries
+read, so a later hover reuses them and a change on disk rebuilds them. Both
+read the files other than the open root from disk, not from open buffers. When
+one of those files is open in the editor with other text than on disk, the
+hover gives no effects and says "Not known: `x` has unsaved changes", because
+the effects of the saved file are not the ones the editor shows. The check
+covers every file that the summaries read, so an unsaved change in any program
+the root reaches also stops it, also for a routine that does not reach that
+program. The check goes over the open buffers, not over the files read: the
+set of files read is built once per memoized summary and kept with it.
+
 ## Document links
 
 The links of a file are its own root-level include references, its literal
@@ -202,7 +262,10 @@ expanded unit once more for its call sites (`FileCalls::extract`), and reads
 the outline of each program a handle runs. A hover parses the expanded unit at
 most once more (shared with the call sites), and parses one more file when it
 names a class, an inherited member or a procedure run through a handle. A
-keyword hover scans the documentation table, about 460 entries.
+keyword hover scans the documentation table, about 460 entries. A hover on a
+routine reads the effect summaries: memoized per open buffer revision and per
+disk revision of every other file, but the first one builds the summaries of
+every program the root or class reaches.
 
 Hover requests run one at a time (`HoverGate` in
 `crates/oxabl_lsp/src/navigation.rs`). An editor asks for a hover at each pause

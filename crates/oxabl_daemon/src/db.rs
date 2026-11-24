@@ -1022,6 +1022,38 @@ fn effect_summaries(
     Arc::new(summaries)
 }
 
+/// [`effect_summaries`] for a file that is not an open buffer, read from disk:
+/// the root of a selected include context, or the class file of a method that
+/// a hover names. Memoized per disk revision of each file it read, so a second
+/// hover on the same routine reuses it.
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
+fn file_effect_summaries(
+    db: &dyn AblDatabase,
+    file: IndexedFile,
+    schema: SchemaHandle,
+) -> Arc<oxabl_pipeline::WorkspaceEffects> {
+    let _revision = schema.revision(db);
+    let _environment = db.config().index.environment(db).preprocessor(db);
+    let _disk = file.disk_revision(db);
+    let path = file.path(db).clone();
+    let fs = SummaryFs {
+        inner: Arc::clone(&db.config().fs),
+        paths: Default::default(),
+    };
+    let run = LintPipeline::new(&db.config().pipeline, &fs).with_preprocess(db.config().preprocess);
+    let handle = run.with_file(&path);
+    let summaries = match fs.read(&path) {
+        Ok(text) => handle.build_effect_summaries(&handle.expand(&text), &[]),
+        Err(_) => oxabl_pipeline::WorkspaceEffects::default(),
+    };
+    for path in fs.paths.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        let file = db.config().index.file_for(db, path);
+        let _revision = file.disk_revision(db);
+    }
+    db.unwind_if_revision_cancelled();
+    Arc::new(summaries)
+}
+
 /// Phase two: the shared pipeline's collection over the memoized expansion,
 /// yielding the full root-resolved diagnostic set. Depends on the expansion and
 /// on the schema handle's revision (so schema hot-reload invalidates, R16).
@@ -1280,14 +1312,20 @@ fn analyse_root(
 }
 
 /// What a navigation request asks of one compilation unit.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum NavigationQuery {
     /// The declarations of the name at byte `offset` of `file`, which is the
     /// root or an include its expansion reads.
     Definition { file: PathBuf, offset: u32 },
     /// What the name or keyword at byte `offset` of `file` is, which is the
-    /// root or an include its expansion reads.
-    Hover { file: PathBuf, offset: u32 },
+    /// root or an include its expansion reads. A routine's hover adds its
+    /// database effects, from the memoized summaries of `buffer` when the root
+    /// is open, else from summaries built for this request.
+    Hover {
+        file: PathBuf,
+        offset: u32,
+        buffer: Option<Buffer>,
+    },
     /// The links written in the root itself.
     Links,
 }
@@ -1350,9 +1388,34 @@ pub fn compute_navigation(
                 let file = spelled_as_expanded(&expansion, root, file);
                 answer.definitions = navigation.definitions(&file, *offset);
             }
-            NavigationQuery::Hover { file, offset } => {
+            NavigationQuery::Hover {
+                file,
+                offset,
+                buffer,
+            } => {
                 let file = spelled_as_expanded(&expansion, root, file);
-                if let Some(hover) = navigation.hover(&file, *offset) {
+                if let Some(mut hover) = navigation.hover(&file, *offset) {
+                    if let Some(routine) = hover.routine.clone() {
+                        let index = &snapshot.config().index;
+                        let mut effects = match buffer {
+                            Some(buffer) => effect_summaries(snapshot, *buffer, schema),
+                            None => {
+                                let input = index.file_for(snapshot, root);
+                                file_effect_summaries(snapshot, input, schema)
+                            }
+                        };
+                        // The file the summaries read from its buffer, not disk.
+                        let mut from_buffer = buffer.map(|_| crate::session::canonical_path(root));
+                        // A method of another class: the summaries of its file.
+                        let file = routine.file();
+                        if effects.file(file).is_none() {
+                            let input = index.file_for(snapshot, file);
+                            effects = file_effect_summaries(snapshot, input, schema);
+                            from_buffer = None;
+                        }
+                        let unsaved = unsaved_sources(&effects, &fs, from_buffer.as_deref());
+                        hover.add_effects(&effects, &unsaved);
+                    }
                     let path = search::normalize_lexically(&file);
                     if hover.span.is_some()
                         && let Ok(text) = fs.read(&file)
@@ -1380,6 +1443,27 @@ pub fn compute_navigation(
         Ok(answer)
     }))
     .ok()
+}
+
+/// The files `effects` read from disk that are open with other text: their
+/// effects are not the ones the editor shows. `from_buffer` was read from its
+/// buffer.
+fn unsaved_sources(
+    effects: &oxabl_pipeline::WorkspaceEffects,
+    fs: &OverlayFs,
+    from_buffer: Option<&Path>,
+) -> Vec<PathBuf> {
+    // The open buffers are few; the files the summaries read can be thousands.
+    let mut unsaved: Vec<PathBuf> = fs
+        .overlay
+        .iter()
+        .filter(|(path, _)| Some(path.as_path()) != from_buffer)
+        .filter(|(path, _)| effects.reads(path, &crate::session::canonical_path))
+        .filter(|(path, open)| fs.inner.read(path).ok().as_deref() != Some(open.as_ref()))
+        .map(|(path, _)| path.clone())
+        .collect();
+    unsaved.sort();
+    unsaved
 }
 
 /// `file` as the expansion of `root` spells it, so a path that reaches it
