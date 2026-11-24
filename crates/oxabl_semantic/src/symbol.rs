@@ -577,6 +577,7 @@ struct Navigation {
     member_files: FxHashMap<SymbolId, IndexedFileId>,
     field_tables: FxHashMap<SymbolId, oxabl_schema::TableId>,
     like_field_owners: FxHashMap<VirtualSpan, SymbolId>,
+    unmodelled: Vec<VirtualSpan>,
 }
 
 /// One place the analysed text names something, in expanded coordinates.
@@ -960,6 +961,19 @@ impl SymbolTable {
             .like_field_owners
             .get(&span)
             .copied()
+    }
+
+    pub(crate) fn record_unmodelled_span(&mut self, span: VirtualSpan) {
+        self.side_mut().navigation.unmodelled.push(span);
+    }
+
+    /// The text the parser skipped without modelling (a statement form it
+    /// recognizes but does not model, or the tail of one it models): the names
+    /// in it are not sites. Empty unless the analysis context recorded sites.
+    pub fn unmodelled_spans(&self) -> &[VirtualSpan] {
+        self.side
+            .as_deref()
+            .map_or(&[], |side| side.navigation.unmodelled.as_slice())
     }
 
     /// Record that variable `sym` was hoisted out of block scope `block`.

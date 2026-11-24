@@ -329,10 +329,14 @@ kind.
   `references` entry, so they cannot reach LINT0001 or LINT0003, and they are not offered to
   the table namespaces.
 - The tail's class-shaped runs (`name:member`, `NEW name(`) are offered to the class lookup,
-  as a `Skipped` node's are, from the first harvested name to the statement's end. A run that
+  as a `Skipped` node's are, from the first harvested name to the end of the skipped range
+  (`SkippedTail::span`, the bytes from its first token to its last). A run that
   resolves is a dependency edge; one that cannot be told from a handle or a field degrades
   the edge set.
 - The field is excluded from `PartialEq`, like `id` and `span`.
+- A `FOR` header keeps one buffer. Its joined tables and its `BY`, `WHILE` and `WITH`
+  clauses are a skipped tail, from the end of the first buffer's phrase to the block
+  opener, so a name in them is credited like the names of any other tail.
 
 ## 9. Property body distinguishes absence from emptiness
 

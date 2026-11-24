@@ -99,7 +99,7 @@ pub use outline::{OutlineKind, OutlineSymbol, outline};
 pub use oxabl_ast::Span;
 pub use references::{
     CallItem, CallItemKind, Gap, IncomingCall, ItemKey, Occurrence, Outgoing, OutgoingCall, Reach,
-    Referent, Search, UnitIncoming, UnitReferences, dedupe_spans,
+    Referent, Search, UnitIncoming, UnitReferences, dedupe_spans, fold_gaps,
 };
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};

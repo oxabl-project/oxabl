@@ -2624,12 +2624,17 @@ impl<'a> ResolveWalker<'a> {
     fn walk_statement(&mut self, stmt: &Statement, scope: ScopeId) {
         if let Some(tail) = &stmt.skipped_tail {
             self.credit_unmodelled_names(&tail.names, scope);
-            // A tail runs to the statement's end, and a class-shaped run in it
-            // starts with a harvested name, so the first name bounds the scan.
+            self.note_unmodelled_span(tail.span);
+            // A class-shaped run in the tail starts with a harvested name, so
+            // the first name bounds the scan.
             if let Some(first) = tail.names.first() {
                 let span = Span {
                     start: first.span.start,
-                    end: stmt.span.end,
+                    end: if tail.span == Span::DUMMY {
+                        stmt.span.end
+                    } else {
+                        tail.span.end
+                    },
                 };
                 self.note_unmodelled_class_runs(span, scope);
             }
@@ -3564,6 +3569,7 @@ impl<'a> ResolveWalker<'a> {
                     self.credit_unmodelled_table_names(names, scope);
                 }
                 self.note_unmodelled_schema_tables(names, scope);
+                self.note_unmodelled_span(stmt.span);
                 self.note_unmodelled_class_runs(stmt.span, scope);
             }
         }
@@ -4920,6 +4926,15 @@ impl<'a> ResolveWalker<'a> {
                     reason: UnresolvedReason::External,
                 },
             );
+        }
+    }
+
+    /// Record text the parser skipped, when the context asks for navigation
+    /// sites: the names in it are not sites.
+    fn note_unmodelled_span(&mut self, span: Span) {
+        if self.ctx.record_sites && span != Span::DUMMY {
+            self.symbols
+                .record_unmodelled_span(VirtualSpan::new(span.start, span.end));
         }
     }
 

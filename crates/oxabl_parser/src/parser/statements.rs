@@ -3289,6 +3289,10 @@ impl Parser<'_> {
             self.advance();
         }
 
+        // Everything from here to the block opener is skipped or parsed and
+        // dropped: the joined tables and the BY, WHILE and WITH clauses.
+        let header_tail_start = self.current;
+
         // ABL JOIN: FOR EACH t1 ..., FIRST/EACH/LAST t2 WHERE ... [, ...]
         // Consume additional joined table phrases separated by commas.
         while self.check(Kind::Comma) {
@@ -3400,16 +3404,20 @@ impl Parser<'_> {
                 self.expect_kind(Kind::Colon, "Expected ':' after FOR EACH")?;
             }
         }
+        let tail = self.skipped_tail((header_tail_start, self.current));
         let body = self.parse_block_body()?;
 
-        Ok(self.stmt(StatementKind::ForEach {
-            buffer,
-            of_relation,
-            where_clause,
-            lock_type,
-            on_actions,
-            body,
-        }))
+        Ok(self.stmt_with_tail(
+            StatementKind::ForEach {
+                buffer,
+                of_relation,
+                where_clause,
+                lock_type,
+                on_actions,
+                body,
+            },
+            tail,
+        ))
     }
 
     // parse find statements

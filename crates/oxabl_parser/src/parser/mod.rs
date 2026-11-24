@@ -957,7 +957,18 @@ impl<'a> Parser<'a> {
         // preceded by at least the statement's own first token, so `lo - 1` is
         // in range.
         let names = self.harvest_skipped_names(lo.saturating_sub(1), hi);
-        (!names.is_empty()).then(|| Box::new(SkippedTail { names }))
+        if names.is_empty() {
+            return None;
+        }
+        let last = hi.min(self.tokens.len()).checked_sub(1);
+        let span = match (self.tokens.get(lo), last.and_then(|at| self.tokens.get(at))) {
+            (Some(first), Some(last)) => Span {
+                start: first.start as u32,
+                end: last.end as u32,
+            },
+            _ => Span::DUMMY,
+        };
+        Some(Box::new(SkippedTail { names, span }))
     }
 
     /// [`skip_to_statement_end`](Self::skip_to_statement_end), harvesting the

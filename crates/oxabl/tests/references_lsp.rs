@@ -1754,3 +1754,116 @@ fn an_abbreviated_field_name_is_a_reference() {
         "{found:?}"
     );
 }
+
+const SCHEMA_CONFIG: &str = "[workspace]\nname = \"references\"\n\
+    [workspace.sources]\ninclude_paths = [\".\"]\n\
+    [workspace.schema]\nfiles = [\"db/shop.df\"]\n";
+
+const SHOP_LINES: &str = "ADD TABLE \"Item\"\n  AREA \"Data\"\n\n\
+    ADD FIELD \"ItemNum\" OF \"Item\" AS integer\n  FORMAT \">>>>9\"\n\n\
+    ADD TABLE \"Line\"\n  AREA \"Data\"\n\n\
+    ADD FIELD \"LineNum\" OF \"Line\" AS integer\n  FORMAT \">>>>9\"\n\n";
+
+/// The warnings that the references of `needle` (its first occurrence) give in
+/// a workspace of one program, `text`, and the shop schema.
+fn warnings_in_one_program(text: &str, needle: &str) -> Vec<String> {
+    let ws = Workspace::new(&[
+        ("oxabl.toml", SCHEMA_CONFIG),
+        ("db/shop.df", SHOP_LINES),
+        ("one.p", text),
+    ]);
+    let path = ws.path("one.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, text);
+    let (_, shown, _) = references_logged(&mut session, &path, text, needle, 0);
+    shown
+}
+
+#[test]
+fn a_field_or_buffer_named_in_text_oxabl_does_not_model_says_it_can_miss_uses() {
+    let forms = [
+        (
+            "PROMPT-FOR",
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nPROMPT-FOR Item.ItemNum WITH FRAME f.\n",
+            "Item.ItemNum",
+        ),
+        (
+            "an unmodelled statement",
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nUNDERLINE Item.ItemNum.\n",
+            "Item.ItemNum",
+        ),
+        (
+            "DEFINE FRAME",
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nDEFINE FRAME f Item.ItemNum WITH 1 DOWN.\n",
+            "Item.ItemNum",
+        ),
+        (
+            "a joined FOR EACH",
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\n\
+             FOR EACH Item, EACH Line WHERE Line.LineNum = Item.ItemNum:\nEND.\n",
+            "Item.ItemNum",
+        ),
+        (
+            "BY",
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nFOR EACH Item BY Item.ItemNum:\nEND.\n",
+            "Item.ItemNum",
+        ),
+        (
+            "a temp-table field",
+            "DEFINE TEMP-TABLE ttZ FIELD a AS INTEGER.\nCREATE ttZ.\nttZ.a = 1.\n\
+             UNDERLINE ttZ.a.\n",
+            "ttZ.a = 1",
+        ),
+        (
+            "a buffer",
+            "DEFINE BUFFER bI FOR Item.\nFIND FIRST bI.\nDISPLAY bI.ItemNum.\nUNDERLINE bI.\n",
+            "bI.ItemNum",
+        ),
+    ];
+    for (what, text, needle) in forms {
+        let shown = warnings_in_one_program(text, needle);
+        assert_eq!(shown.len(), 1, "{what}: {shown:?}");
+        assert!(
+            shown[0].contains("does not model") && shown[0].contains("one.p"),
+            "{what}: {shown:?}"
+        );
+    }
+
+    // Skipped text that does not hold the name gives no warning.
+    let shown = warnings_in_one_program(
+        "FIND FIRST Item.\nDISPLAY Item.ItemNum WITH FRAME f TITLE \"t\".\n\
+         PUT UNFORMATTED \"x\".\nFOR EACH Line BY Line.LineNum:\nEND.\n",
+        "Item.ItemNum",
+    );
+    assert_eq!(shown, Vec::<String>::new());
+}
+
+#[test]
+fn damaged_files_give_one_short_gap() {
+    let damaged = "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nIF THEN ELSE DISPLAY.\n";
+    let names: Vec<String> = (0..50).map(|n| format!("dam{n:02}.p")).collect();
+    let mut files: Vec<(&str, &str)> = vec![
+        ("oxabl.toml", SCHEMA_CONFIG),
+        ("db/shop.df", SHOP),
+        ("reads.p", READS),
+    ];
+    files.extend(names.iter().map(|name| (name.as_str(), damaged)));
+    let ws = Workspace::new(&files);
+    let reads = ws.path("reads.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&reads, READS);
+    let (_, shown, logged) = references_logged(&mut session, &reads, READS, "ItemNum", 0);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(
+        shown[0].len() < 300,
+        "{} characters: {shown:?}",
+        shown[0].len()
+    );
+    assert!(
+        shown[0].contains("50 file(s) have parse errors, such as dam"),
+        "{shown:?}"
+    );
+    // The log holds the same text and the standing gap, each short.
+    assert_eq!(logged.len(), 2, "{logged:?}");
+    assert!(logged.iter().all(|line| line.len() < 300), "{logged:?}");
+}

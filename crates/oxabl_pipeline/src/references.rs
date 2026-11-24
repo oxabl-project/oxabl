@@ -51,6 +51,25 @@ pub struct Gap {
     /// True for a gap that every request in the workspace has (the state of
     /// the index, a limit of the analysis), false for one of this referent.
     pub standing: bool,
+    /// Set for a gap that one unit gives, so [`fold_gaps`] can join the gaps
+    /// of many units into one.
+    fold: Option<Fold>,
+}
+
+/// What a unit gap says, and in which file, for [`fold_gaps`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Fold {
+    kind: FoldKind,
+    file: String,
+    count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FoldKind {
+    ParseErrors,
+    Unmodelled(String),
+    Unresolved(String),
+    Unplaced(String),
 }
 
 impl Gap {
@@ -59,6 +78,7 @@ impl Gap {
         Gap {
             reason,
             standing: false,
+            fold: None,
         }
     }
 
@@ -67,8 +87,93 @@ impl Gap {
         Gap {
             reason,
             standing: true,
+            fold: None,
         }
     }
+
+    /// A gap of one file. `count` is how many names or places the file has.
+    fn of_file(kind: FoldKind, file: String, count: usize) -> Gap {
+        let fold = Fold { kind, file, count };
+        Gap {
+            reason: fold.reason(1),
+            standing: false,
+            fold: Some(fold),
+        }
+    }
+}
+
+impl Fold {
+    /// The text for this gap when it covers `files` files; the file is one
+    /// example.
+    fn reason(&self, files: usize) -> String {
+        let (file, count) = (&self.file, self.count);
+        match (&self.kind, files) {
+            (FoldKind::ParseErrors, 1) => {
+                format!("{file} has parse errors: uses in the damaged statements can be missed")
+            }
+            (FoldKind::ParseErrors, _) => format!(
+                "{files} file(s) have parse errors, such as {file}: uses in the damaged \
+                 statements can be missed"
+            ),
+            (FoldKind::Unmodelled(name), 1) => format!(
+                "`{name}` is named in a statement of {file} that oxabl does not model: uses \
+                 there can be missed"
+            ),
+            (FoldKind::Unmodelled(name), _) => format!(
+                "`{name}` is named in a statement that oxabl does not model in {files} \
+                 file(s), such as {file}: uses there can be missed"
+            ),
+            (FoldKind::Unresolved(name), 1) => format!(
+                "{count} name(s) `{name}` in {file} did not resolve, and any of them can mean it"
+            ),
+            (FoldKind::Unresolved(name), _) => format!(
+                "{count} name(s) `{name}` in {files} file(s), such as {file}, did not \
+                 resolve, and any of them can mean it"
+            ),
+            (FoldKind::Unplaced(name), 1) => format!(
+                "{count} place(s) in {file} that name `{name}` come from text no file writes"
+            ),
+            (FoldKind::Unplaced(name), _) => format!(
+                "{count} place(s) in {files} file(s), such as {file}, that name `{name}` \
+                 come from text no file writes"
+            ),
+        }
+    }
+}
+
+/// Join the gaps that many units give for one thing into one gap that counts
+/// the files and names one, so the text of an answer does not grow with the
+/// number of files. Other gaps stay as they are.
+pub fn fold_gaps(gaps: Vec<Gap>) -> Vec<Gap> {
+    let mut out: Vec<Gap> = Vec::new();
+    let mut folded: Vec<(usize, Fold, usize)> = Vec::new();
+    for gap in gaps {
+        let Some(fold) = &gap.fold else {
+            out.push(gap);
+            continue;
+        };
+        match folded
+            .iter_mut()
+            .find(|(_, held, _)| held.kind == fold.kind)
+        {
+            Some((_, held, files)) => {
+                held.count += fold.count;
+                *files += 1;
+            }
+            None => {
+                folded.push((out.len(), fold.clone(), 1));
+                out.push(gap);
+            }
+        }
+    }
+    for (at, fold, files) in folded {
+        out[at] = Gap {
+            reason: fold.reason(files),
+            standing: false,
+            fold: None,
+        };
+    }
+    out
 }
 
 /// Which other files can name a referent.
@@ -705,27 +810,28 @@ impl Navigation<'_, '_> {
             .map(|root| file_name(&root))
             .unwrap_or_default();
         if unplaced > 0 {
-            gaps.push(Gap::of_referent(format!(
-                "{unplaced} place(s) in {root} that name `{}` come from text no file writes",
-                referent.name
-            )));
+            gaps.push(Gap::of_file(
+                FoldKind::Unplaced(referent.name.clone()),
+                root.clone(),
+                unplaced,
+            ));
         }
         if unresolved_names > 0 {
-            gaps.push(Gap::of_referent(format!(
-                "{unresolved_names} name(s) `{}` in {root} did not resolve, and any of them can \
-                 mean it",
-                referent.name
-            )));
+            gaps.push(Gap::of_file(
+                FoldKind::Unresolved(referent.name.clone()),
+                root.clone(),
+                unresolved_names,
+            ));
         }
         if let Some(gap) = self.recovered_gap() {
             gaps.push(gap);
         }
-        if self.named_by_unmodelled_statement(referent) {
-            gaps.push(Gap::of_referent(format!(
-                "`{}` is named in a statement of {root} that oxabl does not model: uses there \
-                 can be missed",
-                referent.name
-            )));
+        if self.named_by_unmodelled_statement(referent) || self.named_in_unmodelled_text(referent) {
+            gaps.push(Gap::of_file(
+                FoldKind::Unmodelled(referent.name.clone()),
+                root.clone(),
+                1,
+            ));
         }
         if referent.reach.iter().any(through_handles) && self.calls().truncated {
             gaps.push(Gap::of_referent(format!(
@@ -745,12 +851,13 @@ impl Navigation<'_, '_> {
     /// statement are not known.
     fn recovered_gap(&self) -> Option<Gap> {
         self.recovered.then(|| {
-            Gap::of_referent(format!(
-                "{} has parse errors: uses in the damaged statements can be missed",
+            Gap::of_file(
+                FoldKind::ParseErrors,
                 self.root_path()
                     .map(|root| file_name(&root))
-                    .unwrap_or_default()
-            ))
+                    .unwrap_or_default(),
+                1,
+            )
         })
     }
 
@@ -767,6 +874,21 @@ impl Navigation<'_, '_> {
                     .iter()
                     .any(|key| referent.keys.contains(key))
         })
+    }
+
+    /// Whether text that the parser skipped without modelling holds the name
+    /// of a referent that is not always written whole (a field, a table, a
+    /// buffer): the uses in it are not sites. A word that is a prefix of the
+    /// name, three letters or more, counts: a field can be abbreviated.
+    fn named_in_unmodelled_text(&self, referent: &Referent) -> bool {
+        !referent.whole_name
+            && self
+                .semantic
+                .symbols
+                .unmodelled_spans()
+                .iter()
+                .filter_map(|span| self.text(*span))
+                .any(|text| holds_name(text, &referent.name))
     }
 
     /// The occurrences of `referent`, how many sites named it in text that
@@ -1616,6 +1738,24 @@ fn contains_folded(text: &str, name: &str) -> bool {
         || text
             .windows(name.len())
             .any(|window| window.eq_ignore_ascii_case(name))
+}
+
+/// Whether `text` has a word that is `name` or, when `name` is one word, an
+/// abbreviation of it. A name with a character that no word holds (a program
+/// path) is looked for as text.
+fn holds_name(text: &str, name: &str) -> bool {
+    let word_char = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '#' | '$' | '%' | '&');
+    if !name.chars().all(word_char) {
+        return contains_folded(text, name);
+    }
+    text.split(|c: char| !word_char(c)).any(|word| {
+        word.eq_ignore_ascii_case(name)
+            || (word.len() >= 3
+                && name
+                    .as_bytes()
+                    .get(..word.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(word.as_bytes())))
+    })
 }
 
 /// Whether other files reach the referent through a handle.

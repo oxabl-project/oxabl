@@ -156,12 +156,23 @@ two kinds.
   pass, it is a gap.
 - A unit with a parse error: the analysis of a damaged statement can lack its
   names. The gap names the file.
-- A variable or other local name that a statement form which oxabl recognizes
-  but does not model names (the names in it are not sites). The gap names the
-  referent and the file.
+- A referent that text which oxabl skips can name. The parser recognizes some
+  statements (`PROMPT-FOR`, `ENABLE`, `DEFINE FRAME`, `UNDERLINE`) and some
+  clauses (the joined tables of a `FOR EACH`, its `BY` and `WHILE`, the tail of
+  `DISPLAY ... WITH FRAME`) but does not model them, so the names in them are
+  not sites. For a variable, the gap shows when the analysis ties a name in
+  skipped text to it. For a field, a table or a buffer, it shows when the
+  skipped text has a word that is the name, or an abbreviation of it of three
+  letters or more. The gap can show when the word means something else. The
+  gap names the referent and the file.
 - A place that names the referent in text no file writes and no reference
   can stand for, and a place that the client cannot be shown because the text
   of its file could not be read.
+
+A gap that many files give (parse errors, skipped text, names that did not
+resolve) is one line that counts the files and names one, for example `50
+file(s) have parse errors, such as dam00.p`. The text of an answer does not
+grow with the number of files.
 
 Like the others, the gaps "no include path is configured" and "the workspace
 index is not ready or out of date" are shown on each request that has them:
@@ -219,8 +230,9 @@ abbreviated or written as a short name or a path) is resolved only at the sites
 whose text holds its name. A class file with no `{` is not expanded to find its
 members: its own outline shows them. So the references of a local variable in a
 unit that calls a method of each of 200 classes cost about 30 ms against 13 ms
-for a unit of that size that calls none (debug build); the test `a_local_name_costs_no_resolution_of_class_calls`
-pins it. So a unit costs about linear time in its sites and calls: the
+for a unit of that size that calls none (debug build); the test
+`a_local_name_costs_no_resolution_of_class_calls` pins it. So a unit costs
+about linear time in its sites and calls: the
 outgoing calls of a program with N variables and N calls take 0.10 to 0.16 s
 for N = 2,000 and 0.9 to 1.2 s for N = 16,000 (release, a loaded machine), and
 the test `outgoing_calls_cost_about_linear_time_in_the_calls` fails when 16
@@ -261,9 +273,12 @@ a searched file whose analysis panics, a procedure a super procedure
 supplies, a name like the referent that did not resolve, a field of a shared
 temp-table), overloads split between a class and its include, a qualified
 temp-table field with no false gap, several requests after one change that
-share one pass, a field of a `LIKE` temp-table, qualified or bare, kept apart from the
-database field, a unit with a parse error and a name in a statement that oxabl
-does not model (both are gaps), an abbreviated field name, a cancel during the workspace pass and
-between files, the cost of outgoing calls as a unit grows, and the cost of a
+share one pass, a field of a `LIKE` temp-table, qualified or bare, kept apart
+from the database field, a unit with a parse error and a name in a statement
+that oxabl does not model (both are gaps), a field, a temp-table field or a
+buffer named in a statement or a clause that oxabl does not model (a gap), 50
+damaged files that give one short gap, an abbreviated field name, a cancel
+during the workspace pass and between files, the cost of outgoing calls as a
+unit grows, and the cost of a
 local name in a unit that calls many classes. The `references` scenario of
 `clients/vscode/test/e2e` shows both features in a real VS Code.

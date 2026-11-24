@@ -23,7 +23,7 @@ use std::time::Duration;
 use oxabl_index::calls::MAX_SITES;
 use oxabl_pipeline::{
     CallItem, Gap, IncomingCall, ItemKey, Occurrence, OutgoingCall, Referent, Target, UnitIncoming,
-    UnitReferences, dedupe_spans,
+    UnitReferences, dedupe_spans, fold_gaps,
 };
 
 use crate::SessionHost;
@@ -245,6 +245,7 @@ pub fn answer_references(
             referent.name
         )));
     }
+    let mut gaps = fold_gaps(gaps);
     let mut seen = Vec::new();
     gaps.retain(|gap| {
         let new = !seen.contains(gap);

@@ -981,6 +981,8 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedTail {
     pub names: Vec<Identifier>,
+    /// The bytes of the skipped range, from its first token to its last.
+    pub span: Span,
 }
 
 impl Statement {
