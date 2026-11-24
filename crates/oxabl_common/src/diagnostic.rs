@@ -165,6 +165,9 @@ impl<'a> SourceResolver<'a> {
 
     /// The trimmed text of a 1-indexed line, for snippet display.
     fn line_text(&self, line: usize) -> Option<&str> {
+        if self.source.is_empty() {
+            return None;
+        }
         let start = self.map.line_start(line)?;
         let end = self.map.line_start(line + 1).unwrap_or(self.source.len());
         Some(self.source[start..end].trim_end_matches(['\n', '\r']))
@@ -227,6 +230,20 @@ mod tests {
 
     use super::*;
     use crate::FileId;
+
+    #[test]
+    fn a_diagnostic_in_an_empty_source_shows_no_source_line() {
+        let span = FileSpan {
+            file: FileId::new(1),
+            span: Span { start: 0, end: 0 },
+        };
+        let resolver = SourceResolver::new(FileId::new(1), "e.p", "");
+        let diag = Diagnostic::warning("X001", "note".to_string(), span);
+        assert_eq!(
+            render_diagnostics(&[diag], &resolver),
+            "e.p:1:1: warning[X001]: note\n"
+        );
+    }
 
     #[test]
     fn error_constructor() {

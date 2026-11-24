@@ -116,41 +116,19 @@ fn an_encrypted_include_gives_the_includer_buffer_one_warning() {
     );
 }
 
-/// Text that parses and would be reformatted, but for the header bytes in its
-/// comment, which make the detector name it encrypted.
+/// The header with plain text after it is not encrypted: the buffer is
+/// analysed, not skipped.
 #[test]
-fn formatting_leaves_alone_text_that_is_named_encrypted() {
+fn the_header_with_plain_text_after_it_is_not_skipped() {
     let dir = tree();
     let mut session = Session::start(dir.path());
-    let format = |session: &mut Session, path: &Path| {
-        session.request(
-            "textDocument/formatting",
-            json!({
-                "textDocument": {"uri": file_uri(path)},
-                "options": {"tabSize": 4, "insertSpaces": true}
-            }),
-        )
-    };
-    let body = "IF TRUE THEN DO:\nMESSAGE \"hi\".\nEND.\n";
-
-    let plain = dir.path().join("plain.p");
-    session.open(&plain, &format!("/* note */\n{body}"));
-    let edits = format(&mut session, &plain);
-    assert_eq!(
-        edits["result"].as_array().map(Vec::len),
-        Some(1),
-        "the control: without the byte the text is reformatted: {edits}"
-    );
-
-    let marked = dir.path().join("marked.p");
-    session.open(
-        &marked,
-        &format!("{}\n{body}", String::from_utf8(HEADER.to_vec()).unwrap()),
-    );
-    let edits = format(&mut session, &marked);
+    let path = dir.path().join("marked.p");
+    let header = String::from_utf8(HEADER.to_vec()).unwrap();
+    session.open(&path, &format!("{header}\nDISPLAY y.\n"));
+    let diagnostics = published(&session, &path);
     assert!(
-        edits["result"].is_null() || edits["result"] == json!([]),
-        "{edits}"
+        diagnostics.iter().all(|d| d["code"] != "SOURCE001"),
+        "{diagnostics:?}"
     );
 }
 

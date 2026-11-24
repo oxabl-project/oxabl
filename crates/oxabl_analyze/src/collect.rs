@@ -1590,7 +1590,63 @@ pub fn collect_from_expanded_with_summaries(
         }
     }
 
-    (Some(sem), out)
+    (Some(sem), without_encrypted_include_gaps(out, expanded))
+}
+
+/// The findings that an encrypted include can make false, taken out.
+///
+/// An encrypted include is not read, and it may declare any name and read any
+/// variable of its includer. So a unit that has one reports no
+/// `unused-variable`, `block-var-used-outside` or `assigned-but-never-read`
+/// finding, and no `undefined-symbol` finding for a name used at or after the
+/// first such include (a name used before it cannot come from it). The
+/// `SOURCE001` warning says that the include was not checked. Findings in an
+/// include are all dropped, as their place in the unit is not known.
+///
+/// The first include site is the first site of any unreadable include, which
+/// is the encrypted include or an earlier one; it errs towards fewer findings.
+fn without_encrypted_include_gaps(
+    mut found: CollectedDiagnostics,
+    expanded: &ExpandedFile,
+) -> CollectedDiagnostics {
+    let encrypted = |d: &&Diagnostic| d.code.0 == oxabl_workspace::ENCRYPTED_CODE;
+    let has_encrypted = expanded
+        .preprocessor_diagnostics()
+        .iter()
+        .chain(expanded.nested_preprocessor_diagnostics())
+        .any(|d| encrypted(&d));
+    if !has_encrypted {
+        return found;
+    }
+    let root = expanded.root;
+    let cutoff = expanded
+        .unreadable_includes()
+        .iter()
+        .filter_map(|include| {
+            let site = if include.site.file == root {
+                include.site
+            } else {
+                *include.via.first()?
+            };
+            (site.file == root).then_some(site.span.start)
+        })
+        .min()
+        .unwrap_or(0);
+    let all_gone = [
+        oxabl_lint::LINT0002,
+        oxabl_lint::LINT0005,
+        oxabl_lint::LINT0006,
+    ];
+    found.diagnostics.retain(|c| {
+        let d = &c.diagnostic;
+        !all_gone.contains(&d.code.0)
+            && !(d.code.0 == oxabl_lint::LINT0001 && d.span.span.end > cutoff)
+    });
+    found.include_origin.retain(|c| {
+        let code = c.diagnostic.code.0;
+        !all_gone.contains(&code) && code != oxabl_lint::LINT0001
+    });
+    found
 }
 
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree
