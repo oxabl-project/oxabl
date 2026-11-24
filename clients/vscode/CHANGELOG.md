@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.12.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.11.0...oxabl_vscode-v0.12.0) (2026-11-24)
+
+
+### Features
+
+* **lsp:** dim inactive preprocessor regions ([cc57d5e](https://github.com/oxabl-project/oxabl/commit/cc57d5efd24bbb6b6880abc6276ec0f7460133f6))
+* **lsp:** find references and the call hierarchy ([4fbab73](https://github.com/oxabl-project/oxabl/commit/4fbab733b91d8594a30071b5515bdd5b1cf73703))
+* **lsp:** folding and selection ranges from the syntax tree ([39ffd97](https://github.com/oxabl-project/oxabl/commit/39ffd97cfc343ee634472870c8d676b42f5200de))
+* **lsp:** highlight the other uses of the name under the cursor ([47df7a5](https://github.com/oxabl-project/oxabl/commit/47df7a5a62c4b76358ef6a7c45a4336014561736))
+* **lsp:** hover with types, signatures, built-in docs and schema fields ([ca50283](https://github.com/oxabl-project/oxabl/commit/ca502838f6343f5f28a225df5e8b64020b304263))
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **lsp:** related locations on unknown-value and handle-leak diagnostics ([2bd42ec](https://github.com/oxabl-project/oxabl/commit/2bd42ec174d6051e58327e78277516accbdb172b))
+* **lsp:** schema browser for the configured .df files ([09e1661](https://github.com/oxabl-project/oxabl/commit/09e166179a76347d56d8e9b173d9e62f8e4865fb))
+* **lsp:** show a routine's database effects on hover ([772b5c6](https://github.com/oxabl-project/oxabl/commit/772b5c6943c456e18f080cb1ab7bc6dc89550e62))
+
+
+### Bug Fixes
+
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **preprocessor:** end an include reference at the first } as the compiler does ([2072df5](https://github.com/oxabl-project/oxabl/commit/2072df58afae02cb78b1861afeeeda065d50ed7a))
+* **vscode:** bound the nesting of comments and include references in the grammar ([66cb2f5](https://github.com/oxabl-project/oxabl/commit/66cb2f524d1f0f29e1084c25d00bbdb22b969751))
+* **vscode:** lead the nested define match with a word boundary, not a look-behind ([96697e0](https://github.com/oxabl-project/oxabl/commit/96697e0983b5401c0f1a94129b5b2cf393532918))
+
+
+### Performance Improvements
+
+* **vscode:** lead keyword rules with a word boundary, not a look-behind ([27de1bb](https://github.com/oxabl-project/oxabl/commit/27de1bbf184cf053cea2e358b64a577c62ca4f66))
+
 ## [0.11.0](https://github.com/oxabl-project/oxabl/compare/oxabl_vscode-v0.10.0...oxabl_vscode-v0.11.0) (2026-11-23)
 
 

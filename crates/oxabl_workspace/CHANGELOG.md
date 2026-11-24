@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.7.0](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.6.2...oxabl_workspace-v3.7.0) (2026-11-24)
+
+
+### Features
+
+* **lsp:** dim inactive preprocessor regions ([cc57d5e](https://github.com/oxabl-project/oxabl/commit/cc57d5efd24bbb6b6880abc6276ec0f7460133f6))
+* **workspace:** detect XCODE-encrypted source and skip it with one message ([a07fa67](https://github.com/oxabl-project/oxabl/commit/a07fa6756fa4dafdd4e408ba36cce8815b90c854))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+
 ## [3.6.2](https://github.com/oxabl-project/oxabl/compare/oxabl_workspace-v3.6.1...oxabl_workspace-v3.6.2) (2026-11-23)
 
 

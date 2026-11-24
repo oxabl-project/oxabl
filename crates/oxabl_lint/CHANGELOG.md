@@ -1,5 +1,51 @@
 # Changelog
 
+## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v5.1.1...oxabl_lint-v6.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB
+* **semantic:** stop SEM0001 false duplicates
+
+### Features
+
+* **lsp:** inlay hints for locks, index, buffer scope and transactions ([5358467](https://github.com/oxabl-project/oxabl/commit/535846717f49af4de07e31280201cd7f76de8cbd))
+* **lsp:** related locations on unknown-value and handle-leak diagnostics ([2bd42ec](https://github.com/oxabl-project/oxabl/commit/2bd42ec174d6051e58327e78277516accbdb172b))
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB ([8e14ef7](https://github.com/oxabl-project/oxabl/commit/8e14ef72ecfac9f8e8d32b62ad5f5aba847158eb))
+
+
+### Bug Fixes
+
+* **lint:** CL004 skips an optional RUN ... IN THIS-PROCEDURE NO-ERROR probe ([36c2e2c](https://github.com/oxabl-project/oxabl/commit/36c2e2c59f1a9cbf4b05247e5695b034e88a024f))
+* **lint:** judge HD005 in an include by the roots of the same run ([2291b21](https://github.com/oxabl-project/oxabl/commit/2291b216ba8f57167689a59f8df8449a4ffe07c0))
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **scope:** the effects of a statement on an inherited buffer or temp-table are attributed ([c27d9e2](https://github.com/oxabl-project/oxabl/commit/c27d9e2c3663a7226f33bbc5ee92398a90f4a3dc))
+* **semantic:** block definitions bind to the routine; record names need no schema ([c45acc6](https://github.com/oxabl-project/oxabl/commit/c45acc640dacda664d39c79cd2bf63d9eeee44d7))
+* **semantic:** stop SEM0001 false duplicates ([619d300](https://github.com/oxabl-project/oxabl/commit/619d300863efacc54cdc85b36a4d853ec032beaf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_effects bumped from 0.3.8 to 0.3.9
+    * oxabl_flow bumped from 0.4.1 to 0.5.0
+    * oxabl_handles bumped from 0.2.10 to 0.3.0
+    * oxabl_index bumped from 5.3.0 to 6.0.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_nulls bumped from 0.2.10 to 0.3.0
+    * oxabl_scope bumped from 0.2.10 to 0.3.0
+    * oxabl_semantic bumped from 5.2.0 to 6.0.0
+  * dev-dependencies
+    * oxabl_index bumped from 5.3.0 to 6.0.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_preprocessor bumped from 0.8.3 to 0.9.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+
 ## [5.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lint-v5.1.0...oxabl_lint-v5.1.1) (2026-11-23)
 
 

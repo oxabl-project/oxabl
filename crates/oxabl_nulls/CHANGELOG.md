@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_nulls-v0.2.10...oxabl_nulls-v0.3.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB
+
+### Features
+
+* **lsp:** related locations on unknown-value and handle-leak diagnostics ([2bd42ec](https://github.com/oxabl-project/oxabl/commit/2bd42ec174d6051e58327e78277516accbdb172b))
+* **parser:** head-parse PROMPT-FOR, GET, CLOSE, REPOSITION, CLEAR, ACCUMULATE, COLOR and COPY-LOB ([8e14ef7](https://github.com/oxabl-project/oxabl/commit/8e14ef72ecfac9f8e8d32b62ad5f5aba847158eb))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_flow bumped from 0.4.1 to 0.5.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_scope bumped from 0.2.10 to 0.3.0
+  * dev-dependencies
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+
 ## [0.2.10](https://github.com/oxabl-project/oxabl/compare/oxabl_nulls-v0.2.9...oxabl_nulls-v0.2.10) (2026-11-23)
 
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## [6.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.3.0...oxabl_index-v6.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** stop SEM0001 false duplicates
+
+### Bug Fixes
+
+* **lint:** CL004 skips an optional RUN ... IN THIS-PROCEDURE NO-ERROR probe ([36c2e2c](https://github.com/oxabl-project/oxabl/commit/36c2e2c59f1a9cbf4b05247e5695b034e88a024f))
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **semantic:** stop SEM0001 false duplicates ([619d300](https://github.com/oxabl-project/oxabl/commit/619d300863efacc54cdc85b36a4d853ec032beaf))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_parser bumped from 4.1.1 to 5.0.0
+    * oxabl_preprocessor bumped from 0.8.3 to 0.9.0
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+    * oxabl_semantic bumped from 5.2.0 to 6.0.0
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.5.0 to 0.6.0
+
 ## [5.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.2.1...oxabl_index-v5.3.0) (2026-11-23)
 
 

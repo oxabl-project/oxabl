@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.3...oxabl_lexer-v2.0.4) (2026-11-24)
+
+
+### Bug Fixes
+
+* **lint:** read date constants as DATE, accept converted INITIAL constants, and place LINT0004 findings ([1baf226](https://github.com/oxabl-project/oxabl/commit/1baf226acce5ae3a89372a1b45835e3f28b9776b))
+* **preprocessor:** end an include reference at the first } as the compiler does ([2072df5](https://github.com/oxabl-project/oxabl/commit/2072df58afae02cb78b1861afeeeda065d50ed7a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+
 ## [2.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.2...oxabl_lexer-v2.0.3) (2026-11-23)
 
 

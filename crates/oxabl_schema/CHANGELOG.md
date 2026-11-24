@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.0](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.5.0...oxabl_schema-v0.6.0) (2026-11-24)
+
+
+### Features
+
+* **lsp:** schema browser for the configured .df files ([09e1661](https://github.com/oxabl-project/oxabl/commit/09e166179a76347d56d8e9b173d9e62f8e4865fb))
+
+
+### Bug Fixes
+
+* **effects:** LIKE temp-tables keep their inherited indexes ([04d70de](https://github.com/oxabl-project/oxabl/commit/04d70de485ec5367caeb3442eae858e21c56783a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 5.0.0 to 6.0.0
+    * oxabl_common bumped from 1.3.1 to 1.4.0
+    * oxabl_lexer bumped from 2.0.3 to 2.0.4
+    * oxabl_workspace bumped from 3.6.2 to 3.7.0
+
 ## [0.5.0](https://github.com/oxabl-project/oxabl/compare/oxabl_schema-v0.4.7...oxabl_schema-v0.5.0) (2026-11-23)
 
 
