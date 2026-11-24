@@ -10,7 +10,7 @@ import { installVsix, launch, makeProfile } from "../lib/vscode.mjs";
 // runtime directory of its own, so no daemon meets one of a running editor.
 //
 //   OXABL_E2E_CRASH_SECONDS   how long the crash-loop scenario watches (default 20)
-//   OXABL_E2E_TYPING_SECONDS  how long the soak scenario types at the speed of a fast typist
+//   OXABL_E2E_TYPING_SECONDS  how long the soak scenario types at key-repeat speed
 //                             (default 30); the window must stay responsive
 //   OXABL_E2E_SOAK_SECONDS    how long the soak scenario then types as fast as it can (default 30)
 //   OXABL_E2E_SOAK_DELAY      milliseconds between the keys of that stress typing (default 5)
@@ -168,7 +168,7 @@ export function fuzzedFile(bytes) {
   return text.slice(0, bytes);
 }
 
-// The longest time the window's main thread may be blocked while a fast typist types.
+// The longest time the window's main thread may be blocked while keys repeat.
 const STALL_LIMIT_MS = 1000;
 // The share of a sample (about 10 s) in which the main thread may be blocked in slices over 100 ms.
 const BLOCKED_SHARE_LIMIT = 0.1;
@@ -176,11 +176,11 @@ const BLOCKED_SHARE_LIMIT = 0.1;
 const ANSWER_LIMIT_MS = 30_000;
 // The status bar language of the large file, by extension.
 const LANGUAGES = { ".p": "ABL", ".c": "C", ".rs": "Rust" };
-// A fast typist or a held key: about 39 characters a second. The window starts to block at about 45.
-const TYPIST_DELAY_MS = 20;
-// Fewer characters a second than this mean the window did not take the keys at the typist's speed
+// Key-repeat speed (a held key or very fast typing): about 39 characters a second. The window starts to block at about 45.
+const REPEAT_DELAY_MS = 20;
+// Fewer characters a second than this mean the window did not take the keys at key-repeat speed
 // (Playwright waits for the window), so it was under less load than the check intends.
-const TYPIST_MIN_CHARS_PER_SECOND = 28;
+const REPEAT_MIN_CHARS_PER_SECOND = 28;
 
 /**
  * Counts in the window how late a 50 ms timer fires: the time the main thread was blocked.
@@ -286,7 +286,7 @@ function numberEnv(name, fallback, min) {
  * host and the server, the number of oxabl processes after each reload, and how long the
  * window's main thread was blocked.
  *
- * First a fast typist types (about 39 characters a second): the window must never be blocked
+ * First text is typed at key-repeat speed (about 39 characters a second): the window must never be blocked
  * longer than STALL_LIMIT_MS, and for no more than BLOCKED_SHARE_LIMIT of the time.
  * Then the scenario types as fast as it can (about 78 characters a second). That rate
  * blocks the window for seconds in any language with a grammar, through VS Code's
@@ -369,34 +369,34 @@ export async function serverSoak(ctx) {
       let worstMax = 0;
       let worstShare = 0;
       let sampled = 0;
-      const typist = async (typed) => {
+      const repeatSample = async (typed) => {
         if (typed === sampled) return;
         sampled = typed;
-        const s = await sample(`typist, after ${typed} insertions`);
+        const s = await sample(`key repeat, after ${typed} insertions`);
         // A window that does not answer, or one that nothing measures, counts as blocked.
         worstMax = Math.max(worstMax, s.stalls?.maxMs ?? Infinity);
         worstShare = Math.max(worstShare, s.stalls ? s.stalls.totalMs / s.elapsedMs : Infinity);
       };
-      const typing = await typeFor(vs.page, typingSeconds, TYPIST_DELAY_MS, typist);
-      await typist(typing.insertions);
+      const typing = await typeFor(vs.page, typingSeconds, REPEAT_DELAY_MS, repeatSample);
+      await repeatSample(typing.insertions);
       const rate = typing.chars / typing.seconds;
       check(
-        `${name}: the window is never blocked longer than ${STALL_LIMIT_MS} ms while a fast typist types`,
+        `${name}: the window is never blocked longer than ${STALL_LIMIT_MS} ms while keys repeat`,
         worstMax <= STALL_LIMIT_MS,
         `blocked for ${worstMax} ms`,
       );
       check(
-        `${name}: the window is blocked less than ${BLOCKED_SHARE_LIMIT * 100}% of the time while a fast typist types`,
+        `${name}: the window is blocked less than ${BLOCKED_SHARE_LIMIT * 100}% of the time while keys repeat`,
         worstShare <= BLOCKED_SHARE_LIMIT,
         `blocked for ${Math.round(worstShare * 100)}% of a sample`,
       );
       check(
-        `${name}: the window takes the keys of a fast typist at ${TYPIST_MIN_CHARS_PER_SECOND} characters a second or more`,
-        rate >= TYPIST_MIN_CHARS_PER_SECOND,
+        `${name}: the window takes the keys at key-repeat speed, ${REPEAT_MIN_CHARS_PER_SECOND} characters a second or more`,
+        rate >= REPEAT_MIN_CHARS_PER_SECOND,
         `${rate.toFixed(1)} characters a second`,
       );
     } else {
-      console.log("!!   server-soak: OXABL_E2E_TYPING_SECONDS=0: the fast typist check does not run");
+      console.log("!!   server-soak: OXABL_E2E_TYPING_SECONDS=0: the key-repeat check does not run");
     }
 
     const hold = process.env.OXABL_E2E_HOLD_KEY;
@@ -406,11 +406,15 @@ export async function serverSoak(ctx) {
       : await typeFor(vs.page, seconds, soakDelay, onStress);
     if (seconds > 0) report({ scenario: name, at: "stress rate", charsPerSecond: Math.round((stress.chars / stress.seconds) * 10) / 10 });
     const typedS = await sample("after typing");
-    check(
-      `${name}: the window answers within ${ANSWER_LIMIT_MS / 1000}s after the stress typing`,
-      typedS.answer !== null,
-      "no answer",
-    );
+    if (seconds > 0) {
+      check(
+        `${name}: the window answers within ${ANSWER_LIMIT_MS / 1000}s after the stress typing`,
+        typedS.answer !== null,
+        "no answer",
+      );
+    } else {
+      console.log("!!   server-soak: OXABL_E2E_SOAK_SECONDS=0: the answer check after the stress typing does not run");
+    }
     check(`${name}: one server and one daemon after typing`, one(typedS.census), counts(typedS.census));
     for (let i = 1; i <= 5; i++) {
       await vs.page.locator(".monaco-editor .view-lines").first().click();
