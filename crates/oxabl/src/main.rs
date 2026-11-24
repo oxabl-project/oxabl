@@ -363,6 +363,13 @@ enum Cli {
     Daemon {
         /// Workspace root this daemon owns.
         workspace_root: PathBuf,
+
+        /// Exit after this long with no client and no background work, and remove
+        /// the registration: `never`, or a whole number with an optional unit `ms`,
+        /// `s`, `m` or `h` (seconds without one). Default `10m`, or the value of
+        /// `OXABL_DAEMON_IDLE_TIMEOUT`.
+        #[arg(long, value_name = "DURATION")]
+        idle_timeout: Option<String>,
     },
     /// Emit the JSON Schema for `oxabl.toml` to stdout.
     ///
@@ -742,7 +749,10 @@ fn dispatch(cli: Cli) -> ExitCode {
             json,
             background,
         }),
-        Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
+        Cli::Daemon {
+            workspace_root,
+            idle_timeout,
+        } => run_daemon(&workspace_root, idle_timeout.as_deref()),
         Cli::Schema => run_schema(),
         Cli::Build {
             plan,
@@ -847,14 +857,25 @@ fn run_lsp() -> ExitCode {
 /// discovery that editor clients already have, so clients do not need to locate a
 /// second binary.
 #[cfg(unix)]
-fn run_daemon(workspace_root: &Path) -> ExitCode {
-    let listener = match oxabl_daemon::Listener::bind(workspace_root) {
-        Ok(listener) => listener,
+fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
+    let idle_timeout = match daemon_idle_timeout(idle_timeout) {
+        Ok(timeout) => timeout,
         Err(error) => {
             eprintln!("oxabl daemon: {error}");
             return ExitCode::FAILURE;
         }
     };
+    let mut listener = match oxabl_daemon::Listener::bind(workspace_root) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("oxabl daemon: {error}");
+            if oxabl_daemon::listener::is_start_lock_held(&error) {
+                return ExitCode::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    listener.set_idle_timeout(idle_timeout);
     let dispatch = std::sync::Arc::new(oxabl_daemon::default_dispatch());
     let host = std::sync::Arc::new(oxabl_daemon::SessionHost::new());
     let serve = std::sync::Arc::new(
@@ -888,8 +909,27 @@ fn run_daemon(workspace_root: &Path) -> ExitCode {
     }
 }
 
+/// The idle timeout from `--idle-timeout`, else from the environment, else the default.
+/// A value that does not parse is an error, not the default.
+#[cfg(unix)]
+fn daemon_idle_timeout(flag: Option<&str>) -> Result<Option<std::time::Duration>, String> {
+    if let Some(value) = flag {
+        return oxabl_daemon::parse_idle_timeout(value)
+            .map_err(|error| format!("--idle-timeout: {error}"));
+    }
+    match std::env::var(oxabl_daemon::IDLE_TIMEOUT_VARIABLE) {
+        Ok(value) => oxabl_daemon::parse_idle_timeout(&value)
+            .map_err(|error| format!("{}: {error}", oxabl_daemon::IDLE_TIMEOUT_VARIABLE)),
+        Err(std::env::VarError::NotPresent) => Ok(Some(oxabl_daemon::DEFAULT_IDLE_TIMEOUT)),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+            "{}: the value is not UTF-8",
+            oxabl_daemon::IDLE_TIMEOUT_VARIABLE
+        )),
+    }
+}
+
 #[cfg(not(unix))]
-fn run_daemon(_workspace_root: &Path) -> ExitCode {
+fn run_daemon(_workspace_root: &Path, _idle_timeout: Option<&str>) -> ExitCode {
     eprintln!("oxabl daemon: Unix domain sockets are not supported on this platform");
     ExitCode::FAILURE
 }

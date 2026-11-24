@@ -533,6 +533,271 @@ fn a_busy_socket_never_lends_its_registration_a_signal() {
     );
 }
 
+/// A daemon exits once it has had no client for its idle timeout, and removes its
+/// registration, its socket and its lock file. A connected client keeps it, however
+/// long the client stays.
+#[test]
+fn an_idle_daemon_exits_and_removes_its_registration() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let mut daemon = ChildGuard(
+        Command::new(OXABL_BIN)
+            .arg("daemon")
+            .arg(root.path())
+            .args(["--idle-timeout", "2s"])
+            .envs(isolated_base(cache.path()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("launch the daemon"),
+    );
+    let registration = wait_for_registration(&registration_path);
+    let mut client = UnixStream::connect(&registration.socket_path).expect("connect a client");
+    client
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("bound the reads");
+    send_handshake(&mut client, 1, root.path());
+    let response: serde_json::Value =
+        serde_json::from_str(&read_frame(&mut client)).expect("a handshake response");
+    assert_eq!(response["result"]["connected_clients"], 1);
+
+    assert!(
+        exits_within(&mut daemon.0, Duration::from_secs(4)).is_none(),
+        "a daemon with a connected client is not idle"
+    );
+    let mut second = UnixStream::connect(&registration.socket_path).expect("connect again");
+    second
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("bound the reads");
+    send_handshake(&mut second, 2, root.path());
+    let response: serde_json::Value =
+        serde_json::from_str(&read_frame(&mut second)).expect("a second handshake response");
+    assert_eq!(
+        response["result"]["connected_clients"], 2,
+        "a daemon with a connected client still takes new clients"
+    );
+    drop(second);
+    drop(client);
+
+    let status = exits_within(&mut daemon.0, Duration::from_secs(15))
+        .expect("the daemon exits after its idle timeout");
+    assert!(status.success(), "an idle exit is a clean exit: {status}");
+    for artifact in registration_artifacts(&registration_path) {
+        assert!(
+            !artifact.exists(),
+            "the idle daemon left {} behind",
+            artifact.display()
+        );
+    }
+}
+
+/// The daemon an editor starts inherits the idle timeout from the environment, and
+/// exits after the editor has gone.
+#[test]
+fn a_daemon_started_by_an_editor_exits_after_the_editor_leaves() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+
+    let editor = Editor::start_with(
+        root.path(),
+        cache.path(),
+        &[("OXABL_DAEMON_IDLE_TIMEOUT", "1s")],
+    );
+    let response = editor.answer();
+    assert_eq!(response["id"], 10);
+    let registration = wait_for_registration(&registration_path);
+    let _daemon = PidGuard(registration.pid);
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        registration_path.exists() && process_exists(registration.pid),
+        "the daemon serves its editor past the idle timeout"
+    );
+
+    editor.leave();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while process_exists(registration.pid) || registration_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon must exit after its editor left"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for artifact in registration_artifacts(&registration_path) {
+        assert!(
+            !artifact.exists(),
+            "the idle daemon left {} behind",
+            artifact.display()
+        );
+    }
+}
+
+/// An idle timeout that does not parse is not replaced by the default: the daemon
+/// refuses to start and names the variable.
+#[test]
+fn an_idle_timeout_that_does_not_parse_refuses_the_start() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let mut daemon = ChildGuard(
+        Command::new(OXABL_BIN)
+            .arg("daemon")
+            .arg(root.path())
+            .envs(isolated_base(cache.path()))
+            .env("OXABL_DAEMON_IDLE_TIMEOUT", "soon")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run the daemon"),
+    );
+    let status = exits_within(&mut daemon.0, Duration::from_secs(10))
+        .expect("a daemon with an idle timeout that does not parse must not start");
+    let mut stderr = String::new();
+    daemon
+        .0
+        .stderr
+        .take()
+        .expect("the daemon's stderr")
+        .read_to_string(&mut stderr)
+        .expect("read the daemon's stderr");
+    assert!(!status.success());
+    assert!(
+        stderr.contains("OXABL_DAEMON_IDLE_TIMEOUT") && stderr.contains("`soon`"),
+        "the refusal names the variable and its value: {stderr}"
+    );
+    assert!(
+        !registration_path_in(root.path(), cache.path()).exists(),
+        "a daemon that refused to start registers nothing"
+    );
+}
+
+/// A daemon that decided to exit closes a client's connection before it answers. The
+/// editor reads that as "no daemon here", starts one and is served by it.
+#[test]
+fn an_editor_refused_by_an_exiting_daemon_starts_another() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let (registration_path, socket) = registration_left_behind(root.path(), cache.path());
+    let exiting = StandIn::start(&socket, StandInMode::RefuseAndExit);
+    let exiting_pid = exiting.0.0.id();
+    rewrite_registration(&registration_path, |registration| {
+        registration["pid"] = serde_json::json!(exiting_pid);
+    });
+
+    let editor = Editor::start(root.path(), cache.path());
+    let response = editor.initialize_response(&registration_path, exiting_pid);
+    assert_eq!(response["id"], 10);
+    let replacement = wait_for_registration(&registration_path);
+    let _replacement = PidGuard(replacement.pid);
+    assert_ne!(
+        replacement.pid, exiting_pid,
+        "a daemon the editor started serves the root"
+    );
+}
+
+/// A daemon an editor starts while another daemon of the root is still exiting loses
+/// the start lock and exits. The editor starts another once the lock is free.
+#[test]
+fn an_editor_starts_another_daemon_when_its_first_loses_the_start_lock() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let registration_path = registration_path_in(root.path(), cache.path());
+    let lock_path = registration_path.with_extension("lock");
+    let directory = lock_path.parent().expect("a registration directory");
+    std::fs::create_dir_all(directory).expect("the registration directory");
+    for level in [directory.parent().expect("the oxabl directory"), directory] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(level, std::fs::Permissions::from_mode(0o700))
+            .expect("a private directory");
+    }
+    // An exiting daemon holds the lock for a moment after its registration is gone.
+    let mut holder = StandIn::start(&lock_path, StandInMode::HoldLock);
+
+    let editor = Editor::start(root.path(), cache.path());
+    let response = editor.initialize_response(&registration_path, 0);
+    assert_eq!(response["id"], 10);
+    let registration = wait_for_registration(&registration_path);
+    let _daemon = PidGuard(registration.pid);
+    assert!(
+        exits_within(&mut holder.0.0, Duration::from_secs(5)).is_some(),
+        "the lock was held while the editor started"
+    );
+}
+
+/// A daemon that fails to start for a reason that repeats is started once, and the
+/// editor is told at once rather than after five starts.
+#[test]
+fn an_editor_starts_a_daemon_that_cannot_start_only_once() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let mut editor = Editor::start_with(
+        root.path(),
+        cache.path(),
+        &[("OXABL_DAEMON_IDLE_TIMEOUT", "soon")],
+    );
+    let status = exits_within(&mut editor.child.0, Duration::from_secs(10))
+        .expect("the editor shim gives up");
+    let stderr = editor.stderr(Duration::from_secs(5));
+    assert!(!status.success());
+    assert_eq!(
+        stderr.matches("is not an idle timeout").count(),
+        1,
+        "one daemon was started, and its error is shown: {stderr}"
+    );
+    assert!(
+        stderr.contains("exited") && !stderr.contains("did not become ready"),
+        "the editor names the exit, not a timeout: {stderr}"
+    );
+}
+
+/// A daemon that closes the editor's connection and stays is not exiting. The editor
+/// says so at once instead of asking it again.
+#[test]
+fn an_editor_refused_by_a_daemon_that_stays_fails_at_once() {
+    let root = tempfile::tempdir().expect("a workspace root");
+    let cache = tempfile::tempdir().expect("a cache root");
+    let (registration_path, socket) = registration_left_behind(root.path(), cache.path());
+    let refusing = StandIn::start(&socket, StandInMode::Refuse);
+    let refusing_pid = refusing.0.0.id();
+    rewrite_registration(&registration_path, |registration| {
+        registration["pid"] = serde_json::json!(refusing_pid);
+    });
+
+    let mut editor = Editor::start(root.path(), cache.path());
+    let status = exits_within(&mut editor.child.0, Duration::from_secs(15))
+        .expect("the editor shim gives up");
+    let stderr = editor.stderr(Duration::from_secs(5));
+    assert!(!status.success());
+    assert!(
+        stderr.contains("not exiting") && stderr.contains(&format!("kill {refusing_pid}")),
+        "the editor names the daemon that stays: {stderr}"
+    );
+    assert!(
+        !stderr.contains("attempt 2"),
+        "a daemon that stays is not asked again: {stderr}"
+    );
+}
+
+/// The registration file and the two files beside it.
+fn registration_artifacts(registration_path: &std::path::Path) -> [std::path::PathBuf; 3] {
+    [
+        registration_path.to_path_buf(),
+        registration_path.with_extension("sock"),
+        registration_path.with_extension("lock"),
+    ]
+}
+
+fn process_exists(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// What the stand-in daemon does on its socket.
 #[derive(Clone, Copy)]
 enum StandInMode {
@@ -542,6 +807,14 @@ enum StandInMode {
     IgnoreTerm,
     /// Takes no connection, with a full queue, so a connect is refused as busy.
     Busy,
+    /// Lets liveness probes go; closes the first connection that sends a frame without
+    /// an answer, removes its socket and exits, as a daemon that decided to exit idle.
+    RefuseAndExit,
+    /// The same without the exit: closes every connection that sends a frame.
+    Refuse,
+    /// Takes the start lock at the path given in place of the socket, holds it for half
+    /// a second and exits, as a daemon that is still exiting.
+    HoldLock,
 }
 
 /// Stands in for a daemon in another process, on `OXABL_STAND_IN_SOCKET`, in the
@@ -562,6 +835,25 @@ fn stand_in_daemon() {
         fn signal(signum: i32, handler: usize) -> usize;
         fn listen(fd: i32, backlog: i32) -> i32;
     }
+    if mode == "hold-lock" {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        unsafe extern "C" {
+            fn flock(fd: i32, operation: i32) -> i32;
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&socket)
+            .expect("open the lock file");
+        // SAFETY: a valid descriptor this function owns; LOCK_EX is 2.
+        assert_eq!(unsafe { flock(file.as_raw_fd(), 2) }, 0, "take the lock");
+        println!("stand-in ready");
+        std::thread::sleep(Duration::from_millis(500));
+        std::process::exit(0);
+    }
     if mode == "ignore-term" {
         // SAFETY: SIG_IGN (1) for SIGTERM (15) installs no handler code.
         unsafe { signal(15, 1) };
@@ -577,6 +869,17 @@ fn stand_in_daemon() {
         println!("stand-in ready");
         loop {
             std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    if mode == "refuse-and-exit" || mode == "refuse" {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+            if stream.read(&mut [0; 1]).is_ok_and(|read| read > 0) && mode != "refuse" {
+                drop(stream);
+                let _ = std::fs::remove_file(&socket);
+                std::process::exit(0);
+            }
         }
     }
     for stream in listener.incoming() {
@@ -604,11 +907,14 @@ impl StandIn {
                     StandInMode::Listen => "listen",
                     StandInMode::IgnoreTerm => "ignore-term",
                     StandInMode::Busy => "busy",
+                    StandInMode::RefuseAndExit => "refuse-and-exit",
+                    StandInMode::Refuse => "refuse",
+                    StandInMode::HoldLock => "hold-lock",
                 },
             )
             .stdin(Stdio::null())
             .stdout(match mode {
-                StandInMode::Busy => Stdio::piped(),
+                StandInMode::Busy | StandInMode::HoldLock => Stdio::piped(),
                 _ => Stdio::null(),
             })
             .stderr(Stdio::null());
@@ -616,7 +922,8 @@ impl StandIn {
         let output = child.stdout.take();
         let stand_in = StandIn(ChildGuard(child));
         if let Some(output) = output {
-            // A connect would wait on the full queue, so the stand-in says when it is.
+            // A connect would wait on the full queue, and a lock has no connect, so the
+            // stand-in says when it is ready.
             let (ready, wait) = mpsc::channel();
             std::thread::spawn(move || {
                 for line in BufReader::new(output).lines() {
@@ -627,7 +934,7 @@ impl StandIn {
                 }
             });
             wait.recv_timeout(Duration::from_secs(10))
-                .expect("the stand-in must fill its queue");
+                .expect("the stand-in must get ready");
             return stand_in;
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -699,9 +1006,18 @@ struct Editor {
 
 impl Editor {
     fn start(root: &std::path::Path, base: &std::path::Path) -> Self {
+        Editor::start_with(root, base, &[])
+    }
+
+    fn start_with(
+        root: &std::path::Path,
+        base: &std::path::Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
         let mut child = Command::new(OXABL_BIN)
             .arg("lsp")
             .envs(isolated_base(base))
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -762,6 +1078,27 @@ impl Editor {
                 panic!("the editor shim did not answer initialize: {stderr}");
             }
         }
+    }
+
+    /// The answer to `initialize`, for an editor that stays.
+    fn answer(&self) -> serde_json::Value {
+        let response = self
+            .answer
+            .recv_timeout(Duration::from_secs(15))
+            .unwrap_or_else(|_| panic!("the editor shim did not answer initialize"));
+        serde_json::from_str(&response).expect("LSP initialize response")
+    }
+
+    /// Close the editor's side, as a closed window does, and wait for the shim to end.
+    fn leave(self) {
+        let Editor {
+            mut child, _input, ..
+        } = self;
+        drop(_input);
+        assert!(
+            exits_within(&mut child.0, Duration::from_secs(10)).is_some(),
+            "the editor shim ends when the editor leaves"
+        );
     }
 
     fn stderr(&self, limit: Duration) -> String {

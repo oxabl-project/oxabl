@@ -106,23 +106,101 @@ fn proxy_to_daemon(connection: &Connection) -> Result<()> {
     let workspace_root = declared_workspace_root(&init)
         .or_else(|| std::env::current_dir().ok())
         .context("finding a workspace root for the daemon")?;
-    let registration = find_or_start_daemon(&workspace_root)?;
-    let stream = UnixStream::connect(&registration.socket_path).with_context(|| {
-        format!(
-            "connecting to the oxabl daemon: {}",
-            registration.socket_path
-        )
-    })?;
-    let (daemon, daemon_threads) = oxabl_daemon::connection_over(stream);
-    daemon
-        .sender
-        .send(first)
-        .context("forwarding LSP initialize to the daemon")?;
-
-    let outcome = proxy_messages(connection, &daemon);
+    // A daemon that exits idle refuses a client that reaches it after it decided: the
+    // connect fails, or the connection closes before the daemon answers. Either means
+    // "no daemon here", so the client looks again and starts one.
+    const ATTEMPTS: u32 = 3;
+    let mut attempt = 1;
+    let (daemon, daemon_threads, answer) = loop {
+        let registration = find_or_start_daemon(&workspace_root)?;
+        match initialize_daemon(&registration, &first) {
+            Ok(joined) => break joined,
+            Err(refusal) if attempt < ATTEMPTS => {
+                // A daemon that refused this client and stays is not exiting: asking it
+                // again gets the same answer.
+                if !wait_for_departure(&workspace_root, registration.pid) {
+                    anyhow::bail!(
+                        "{refusal}, and it still serves the root, so it is not exiting. \
+                         Its stderr may say why; stop it with `kill {}`",
+                        registration.pid
+                    );
+                }
+                eprintln!(
+                    "oxabl lsp: {refusal} (attempt {attempt} of {ATTEMPTS}); looking for the \
+                     daemon again"
+                );
+                attempt += 1;
+            }
+            Err(refusal) => anyhow::bail!("{refusal} (attempt {attempt} of {ATTEMPTS})"),
+        }
+    };
+    let outcome =
+        editor_send(connection, answer).and_then(|()| proxy_messages(connection, &daemon));
     drop(daemon);
     daemon_threads.shutdown();
     outcome
+}
+
+/// Connect to the daemon a registration names, forward the editor's `initialize` and
+/// wait for the daemon's first frame. An error means the daemon did not take this
+/// client.
+#[cfg(unix)]
+fn initialize_daemon(
+    registration: &oxabl_daemon_protocol::Registration,
+    initialize: &Message,
+) -> std::result::Result<(Connection, oxabl_daemon::listener::ClientThreads, Message), String> {
+    let stream = UnixStream::connect(&registration.socket_path).map_err(|error| {
+        format!(
+            "could not connect to the oxabl daemon (pid {}) at {}: {error}",
+            registration.pid, registration.socket_path
+        )
+    })?;
+    let (daemon, daemon_threads) = oxabl_daemon::connection_over(stream);
+    let answer = daemon
+        .sender
+        .send(initialize.clone())
+        .ok()
+        .and_then(|()| daemon.receiver.recv().ok());
+    match answer {
+        Some(answer) => Ok((daemon, daemon_threads, answer)),
+        None => {
+            drop(daemon);
+            daemon_threads.shutdown();
+            Err(format!(
+                "the oxabl daemon (pid {}) closed the connection before it answered \
+                 `initialize`",
+                registration.pid
+            ))
+        }
+    }
+}
+
+/// Wait, for two seconds at most, until the daemon `pid` no longer serves `root`: a
+/// daemon that refused a client because it is exiting is still found until its
+/// registration is gone. Returns whether it went.
+#[cfg(unix)]
+fn wait_for_departure(root: &Path, pid: u32) -> bool {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match oxabl_daemon::discover(root) {
+            oxabl_daemon::Discovery::Live(registration)
+            | oxabl_daemon::Discovery::VersionMismatch(registration)
+                if registration.pid == pid => {}
+            _ => return true,
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// Forward one frame from the daemon to the editor.
+#[cfg(unix)]
+fn editor_send(editor: &Connection, message: Message) -> Result<()> {
+    editor
+        .sender
+        .send(with_null_result(message))
+        .context("the editor connection closed")
 }
 
 #[cfg(not(unix))]
@@ -135,7 +213,10 @@ fn proxy_to_daemon(_connection: &Connection) -> Result<()> {
 /// One loop, not a check followed by a loop, because discovery has four answers and
 /// only one of them may start a daemon:
 ///
-/// * `Absent` — nothing is registered. Start a daemon, once, and keep polling.
+/// * `Absent` — nothing is registered. Start a daemon and keep polling. Start another
+///   only when the one started lost the start lock
+///   ([`oxabl_daemon::listener::EXIT_START_LOCK_HELD`]), which a daemon that is still
+///   exiting idle can hold. Any other exit repeats on every start, so it is reported.
 /// * `Undecided` — the registration could not be read, or the socket could not be
 ///   probed. Neither starting a daemon nor connecting is defensible on that answer, so
 ///   the loop waits. The reason is kept, because a client that runs out of attempts
@@ -157,7 +238,16 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
     const INTERVAL: Duration = Duration::from_millis(20);
 
     let mut deadline = Instant::now() + BUDGET;
+    // A daemon that lost the start lock is started again at most this often, and this
+    // many times.
+    const RESTART_INTERVAL: Duration = Duration::from_millis(250);
+    const STARTS: u32 = 5;
+
     let mut started = false;
+    let mut starts = 0;
+    let mut child: Option<std::process::Child> = None;
+    let mut last_start: Option<Instant> = None;
+    let mut child_exit: Option<std::process::ExitStatus> = None;
     let mut stopping: Option<StaleDaemon> = None;
     // A daemon of another build too busy to be named on its socket: that can clear,
     // so the loop keeps polling and reports it only at the deadline.
@@ -207,18 +297,38 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
             // on the next pass.
             oxabl_daemon::Discovery::Undecided(reason) => refusal = Some(reason),
             oxabl_daemon::Discovery::Absent => {
-                if !started {
+                if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
+                    if status.code()
+                        != Some(i32::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD))
+                    {
+                        anyhow::bail!(
+                            "the oxabl daemon this client started for {} exited ({status}) \
+                             before it served the root; its error is above",
+                            root.display()
+                        );
+                    }
+                    child_exit = Some(status);
+                    child = None;
+                }
+                if child.is_none()
+                    && starts < STARTS
+                    && last_start.is_none_or(|at| at.elapsed() >= RESTART_INTERVAL)
+                {
                     let executable =
                         std::env::current_exe().context("locating the oxabl executable")?;
-                    Command::new(executable)
-                        .arg("daemon")
-                        .arg(root)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::inherit())
-                        .spawn()
-                        .context("starting the oxabl daemon")?;
+                    child = Some(
+                        Command::new(executable)
+                            .arg("daemon")
+                            .arg(root)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::inherit())
+                            .spawn()
+                            .context("starting the oxabl daemon")?,
+                    );
                     started = true;
+                    starts += 1;
+                    last_start = Some(Instant::now());
                 }
             }
         }
@@ -243,11 +353,18 @@ fn find_or_start_daemon(root: &Path) -> Result<oxabl_daemon_protocol::Registrati
     if let Some(busy) = busy {
         anyhow::bail!(busy);
     }
-    match refusal {
-        Some(reason) => {
+    if let Some(status) = child.as_mut().and_then(|child| child.try_wait().ok()?) {
+        child_exit = Some(status);
+    }
+    match (refusal, child_exit) {
+        (Some(reason), _) => {
             anyhow::bail!("the oxabl daemon did not become ready in time: {reason}")
         }
-        None => anyhow::bail!("the oxabl daemon did not become ready in time"),
+        (None, Some(status)) => anyhow::bail!(
+            "the oxabl daemon did not become ready in time: every daemon this \
+             client started found the start lock held (starts: {starts}, last: {status})"
+        ),
+        (None, None) => anyhow::bail!("the oxabl daemon did not become ready in time"),
     }
 }
 
@@ -354,7 +471,7 @@ fn proxy_messages(editor: &Connection, daemon: &Connection) -> Result<()> {
             }
             recv(daemon.receiver) -> message => {
                 let message = message.context("the daemon exited during the editor session")?;
-                editor.sender.send(with_null_result(message)).context("the editor connection closed")?;
+                editor_send(editor, message)?;
             }
         }
     }

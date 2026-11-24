@@ -44,6 +44,7 @@
 pub mod db;
 pub mod dispatch;
 pub mod handshake;
+pub mod idle;
 #[cfg(unix)]
 pub mod listener;
 pub mod methods;
@@ -53,6 +54,7 @@ pub mod session;
 
 pub use dispatch::{ClientContext, Dispatch, MethodError, MethodResult};
 pub use handshake::{default_dispatch, register_handshake};
+pub use idle::{Activity, Busy, DEFAULT_IDLE_TIMEOUT, IDLE_TIMEOUT_VARIABLE, parse_idle_timeout};
 #[cfg(unix)]
 pub use listener::{Listener, Stopper, connection_over};
 pub use methods::register_methods;
