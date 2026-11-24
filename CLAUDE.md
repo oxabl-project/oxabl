@@ -68,6 +68,8 @@ Generated files are written directly to their target locations and include a "DO
 
 `clients/vscode/syntaxes/abl.tmLanguage.json` is generated. Change its structure in `resources/abl.tmLanguage.template.json` (`{{word:NAME}}`, `{{keywords:CATEGORY}}`, `{{boundary}}` and `{{non-boundary}}` placeholders, and `x-nesting-limit` on a rule that includes itself) or the keyword data, then run `cargo run -p oxabl_codegen -- grammar`. The CI job `Grammar drift` fails when the committed grammar is not the generated one. Test it from `clients/vscode`: `pnpm test` (corpus and regex compile), `pnpm run test:grammar` (assertion and snapshot tests), `OXABL_E2E_OXABL=$PWD/../../target/debug/oxabl OXABL_E2E_RUNTIME=<short dir> xvfb-run -a pnpm run test:e2e` (the packaged VSIX in a real VS Code; run `cargo build -p oxabl` first, because the `outline`, `definition` and `folding` scenarios use the real language server and fail without these variables). The categories, the rules and the release and self-update design are in `docs/design/vscode-extension.md`.
 
+The extension's snippets are in `clients/vscode/snippets/abl.json`, with each keyword in a `<<...>>` marker so the extension can write it in the project's keyword case. `crates/oxabl/tests/vscode_snippets.rs` parses every body with oxabl in both cases, and `pnpm test` checks the markers. Keep a keyword outside a marker out of a body.
+
 ### The OpenEdge metaschema catalog
 
 `crates/oxabl_schema/resources/metaschema.df` is a generated `.df` describing

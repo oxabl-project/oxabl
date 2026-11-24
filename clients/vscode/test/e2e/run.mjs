@@ -42,6 +42,7 @@ import { inlayHints } from "./scenarios/inlay-hints.mjs";
 import { inactiveRegions } from "./scenarios/inactive-regions.mjs";
 import { outline } from "./scenarios/outline.mjs";
 import { schema, schemaConfigAbove } from "./scenarios/schema.mjs";
+import { snippets } from "./scenarios/snippets.mjs";
 import { serverCrashLoop, serverSoak } from "./scenarios/server.mjs";
 import {
   updateAuto,
@@ -72,6 +73,7 @@ const SCENARIOS = [
   ["schema-config-above", schemaConfigAbove],
   ["document-highlight", documentHighlight],
   ["folding", folding],
+  ["snippets", snippets],
   ["update-auto", updateAuto],
   ["update-checksum", updateChecksum],
   ["update-notify", updateNotify],

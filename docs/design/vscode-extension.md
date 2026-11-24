@@ -283,6 +283,39 @@ filter, "Open in .df", copy commands and a details page per table. It asks the
 server only after it is visible for the first time, so activation does not
 read the schema. See [schema-browser.md](schema-browser.md).
 
+## Snippets
+
+The snippets are in `clients/vscode/snippets/abl.json`. The file maps each
+prefix to a `description` and a `body` (one string, or an array of lines). The
+body is VS Code snippet syntax with one addition: each keyword is in a
+`<<...>>` marker, for example `<<FIND FIRST>> ${1:Customer}`. The extension
+(`src/snippetCompletion.ts`) offers the snippets as completion items of kind
+Snippet for the language `abl`. It does not use `contributes.snippets`,
+because a contributed file has one keyword case. So the snippets need no
+`oxabl` binary and no schema, but they need the extension to be active.
+
+- The extension writes the marked words in upper case or in lower case. It
+  takes the case from `keyword_case` in `[workspace.style]` of the nearest
+  `oxabl.toml` at or above the file (`keywordCaseOf` in `src/snippets.ts`
+  reads the plain, dotted and inline forms of the key). `Lowercase` gives
+  lower case. `Uppercase`, `Preserve` and no setting give upper case, because
+  `Preserve` has no case to follow. A file that is not on disk gets upper
+  case.
+- Placeholders and choices are never in a marker, except a keyword inside
+  them (`${3:<<CHARACTER>>}`). A sample table or field name is not a keyword.
+- Do not put a keyword outside a marker. A test fails on an upper case word in
+  the lower case text.
+- `crates/oxabl/tests/vscode_snippets.rs` fills the markers and the
+  placeholders of every body, in both cases, and parses the result with oxabl.
+  A `method` body is parsed inside a class.
+- The `snippets` scenario of the end-to-end suite chooses `trycatch` from the
+  suggest widget in a project with and a project without `Lowercase`, with no
+  `oxabl` binary.
+
+Not done yet: server snippets with the real tables and fields of the `.df`.
+The server has no completion provider yet. They belong to code completion,
+which gives one list for snippets and other items.
+
 ## Releases
 
 - Release Please releases the extension as the component `oxabl_vscode`

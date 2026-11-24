@@ -1,0 +1,82 @@
+{
+  "find": {
+    "description": "Find a record and test that it exists",
+    "body": [
+      "<<FIND FIRST>> ${1:Customer} <<NO-LOCK>>",
+      "     <<WHERE>> ${1:Customer}.${2:CustNum} = ${3:value} <<NO-ERROR>>.",
+      "<<IF AVAILABLE>> ${1:Customer} <<THEN DO>>:",
+      "    $0",
+      "<<END>>."
+    ]
+  },
+  "foreach": {
+    "description": "Loop over the records of a table",
+    "body": [
+      "<<FOR EACH>> ${1:Customer} <<NO-LOCK>>",
+      "    <<WHERE>> ${1:Customer}.${2:CustNum} = ${3:value}:",
+      "    $0",
+      "<<END>>."
+    ]
+  },
+  "defvar": {
+    "description": "Define a variable",
+    "body": "<<DEFINE VARIABLE>> ${1:cName} <<AS>> ${2|<<CHARACTER>>,<<INTEGER>>,<<INT64>>,<<DECIMAL>>,<<LOGICAL>>,<<DATE>>,<<DATETIME>>,<<DATETIME-TZ>>,<<HANDLE>>,<<ROWID>>,<<LONGCHAR>>|} <<NO-UNDO>>."
+  },
+  "deftt": {
+    "description": "Define a temp-table with a field and an index",
+    "body": [
+      "<<DEFINE TEMP-TABLE>> ${1:ttOrder} <<NO-UNDO>>",
+      "    <<FIELD>> ${2:OrderNum} <<AS INTEGER>>",
+      "    <<FIELD>> ${3:Name} <<AS CHARACTER>>",
+      "    <<INDEX>> ${4:idxPrimary} <<IS PRIMARY UNIQUE>> ${2:OrderNum}.",
+      "$0"
+    ]
+  },
+  "proc": {
+    "description": "Internal procedure with an input parameter",
+    "body": [
+      "<<PROCEDURE>> ${1:procName}:",
+      "    <<DEFINE INPUT PARAMETER>> ${2:ipValue} <<AS>> ${3:<<CHARACTER>>} <<NO-UNDO>>.",
+      "    $0",
+      "<<END PROCEDURE>>."
+    ]
+  },
+  "function": {
+    "description": "User-defined function",
+    "body": [
+      "<<FUNCTION>> ${1:funcName} <<RETURNS>> ${2:<<CHARACTER>>} (<<INPUT>> ${3:ipValue} <<AS>> ${4:<<CHARACTER>>}):",
+      "    $0",
+      "    <<RETURN>> ${5:?}.",
+      "<<END FUNCTION>>."
+    ]
+  },
+  "method": {
+    "description": "Method of a class",
+    "body": [
+      "<<METHOD PUBLIC>> ${1:<<VOID>>} ${2:methodName} (<<INPUT>> ${3:ipValue} <<AS>> ${4:<<CHARACTER>>}):",
+      "    $0",
+      "<<END METHOD>>."
+    ]
+  },
+  "class": {
+    "description": "Class with block-level error handling",
+    "body": [
+      "<<BLOCK-LEVEL ON ERROR UNDO, THROW>>.",
+      "",
+      "<<CLASS>> ${1:Namespace.ClassName}:",
+      "    $0",
+      "<<END CLASS>>."
+    ]
+  },
+  "trycatch": {
+    "description": "Transaction block that throws and a CATCH block",
+    "body": [
+      "<<DO TRANSACTION ON ERROR UNDO, THROW>>:",
+      "    $0",
+      "    <<CATCH>> ${1:err} <<AS>> ${2:Progress.Lang.Error}:",
+      "        <<MESSAGE>> ${1:err}:GetMessage(1) <<VIEW-AS ALERT-BOX>>.",
+      "    <<END CATCH>>.",
+      "<<END>>."
+    ]
+  }
+}
