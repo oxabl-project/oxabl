@@ -39,8 +39,8 @@ export async function waitForLog(profile, text, before = [], timeout = 30_000) {
   );
 }
 
-// The one place the VS Code under test is pinned.
-export const VSCODE_VERSION = "1.145.2";
+// The one place the VS Code under test is pinned. OXABL_E2E_VSCODE_VERSION runs another version.
+export const VSCODE_VERSION = process.env.OXABL_E2E_VSCODE_VERSION ?? "1.145.2";
 
 export const THEME = "Default Dark Modern";
 
