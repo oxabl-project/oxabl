@@ -57,6 +57,13 @@ you also get, with no setup:
   classes and their members, procedures, functions, temp-tables with their
   fields, variables, buffers and `ON` triggers. The outline reads the file as
   written, so declarations in an include file do not show.
+- **Syntax folding and selection.** Fold blocks, routines, definitions, long
+  statements, comments, preprocessor branches, and the `&ANALYZE-SUSPEND` and
+  `// #region` markers. **Fold All Block Comments** and **Fold All Regions**
+  work. Use **Expand Selection** (`Shift+Alt+Right`) to grow from a token to
+  its expression, statement, block, routine, and file. Both features read the
+  file as written, so text from an include file does not fold. Wrong
+  indentation does not change their ranges.
 - **Go to Symbol in Workspace** (`Ctrl+T`). Finds classes, interfaces,
   procedures, functions, shared variables and files in every ABL file of the
   workspace, also files that are not open, and opens the declaration. An open

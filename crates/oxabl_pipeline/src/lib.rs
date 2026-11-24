@@ -65,6 +65,10 @@
 //! fields, indexes and sequences, for an editor's schema browser, and
 //! [`schema_table`], one table as the browser and the hover show it.
 //!
+//! [`document_syntax`] — the folding ranges and nested selection spans of the
+//! same raw source. One result lets a client share the parse between both
+//! requests. Include text never enters these ranges.
+//!
 //! [`resolve_diagnostic`] and its siblings — the single derivation of line and
 //! column from a byte span, for the byte-offset clients. The language server
 //! deliberately does not use it (R13, KTD5); see [`position`].
@@ -92,6 +96,7 @@ pub mod position;
 mod reverse;
 mod schema_view;
 pub mod schema_hover;
+mod syntax;
 
 pub use config::{
     ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
@@ -116,6 +121,7 @@ pub use reverse::{
     Degraded, Dependent, Dependents, ReverseGraph, Subject, Unanalysed, UnnameableEdge,
     UnresolvedRow, dependency_section,
 };
+pub use syntax::{DocumentSyntax, Fold, FoldKind, document_syntax};
 // Re-exported so a consumer of the reverse query need not also depend on
 // `oxabl_index` to name the edge kind every answer is grouped by.
 pub use oxabl_index::{

@@ -3,7 +3,8 @@
 //! v1 advertises what the diagnostics skeleton implements — incremental text
 //! sync (with open/close) and push `publishDiagnostics` — plus whole-document
 //! formatting (`document_formatting_provider`, R1), document symbols
-//! (`document_symbol_provider`), workspace symbols (`workspace_symbol_provider`), go to
+//! (`document_symbol_provider`), folding (`folding_range_provider`), selection
+//! (`selection_range_provider`), workspace symbols (`workspace_symbol_provider`), go to
 //! definition (`definition_provider`), hover (`hover_provider`) and document links
 //! (`document_link_provider`). Push diagnostics require no
 //! capability field — the server simply sends the notification — so we
@@ -13,7 +14,8 @@
 //! whose workspace enables strict database rules. Dynamic clients register per file.
 
 use lsp_types::{
-    ClientCapabilities, DocumentLinkOptions, HoverProviderCapability, OneOf, PositionEncodingKind,
+    ClientCapabilities, DocumentLinkOptions, FoldingRangeProviderCapability,
+    HoverProviderCapability, OneOf, PositionEncodingKind, SelectionRangeProviderCapability,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 
@@ -36,7 +38,7 @@ pub fn negotiate_position_encoding(caps: &ClientCapabilities) -> PositionEncodin
 
 /// Build the v1 [`ServerCapabilities`]: incremental sync with open/close, the
 /// negotiated position encoding, whole-document formatting (R1), document symbols,
-/// workspace symbols, go to definition, hover and document links.
+/// folding, selection, workspace symbols, go to definition, hover and document links.
 /// Nothing else is advertised — range formatting in particular stays unset (the engine
 /// only formats whole files; see the plan's Scope Boundaries).
 pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities {
@@ -54,6 +56,8 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
         // no region concept and bails whole-file.
         document_formatting_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
+        folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         definition_provider: Some(OneOf::Left(true)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -135,6 +139,14 @@ mod tests {
         // …but range formatting is not (whole-file engine, no region concept).
         assert!(caps.document_range_formatting_provider.is_none());
         assert_eq!(caps.document_symbol_provider, Some(OneOf::Left(true)));
+        assert_eq!(
+            caps.folding_range_provider,
+            Some(FoldingRangeProviderCapability::Simple(true))
+        );
+        assert_eq!(
+            caps.selection_range_provider,
+            Some(SelectionRangeProviderCapability::Simple(true))
+        );
         assert_eq!(caps.workspace_symbol_provider, Some(OneOf::Left(true)));
         // No other feature is advertised.
         assert!(caps.code_lens_provider.is_none());

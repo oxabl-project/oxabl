@@ -27,6 +27,7 @@ These are the current high-priority goals for oxabl tooling. As it stands, oxabl
   - sub-millisecond time for single file operations
   - format/lint on save
   - document outline (`textDocument/documentSymbol`): the Outline view, breadcrumbs and "Go to Symbol in File", from `oxabl_pipeline::outline` on the raw buffer (`docs/design/document-outline.md`)
+  - folding and expand selection (`textDocument/foldingRange`, `textDocument/selectionRange`): syntax ranges from `oxabl_pipeline::document_syntax` on the raw buffer (`docs/design/folding-selection.md`)
   - Status: Experimental; usable in-editor via the sideloadable VS Code extension (`clients/vscode/`)
 - Formatter
   - Format ABL code from the CLI or LSP
@@ -352,9 +353,9 @@ With `diagnostics = false`, the language server publishes an empty list for each
 
 **An `oxabl.toml` that oxabl cannot read turns both features off.** The language server then publishes no diagnostics and returns no formatting edits until the file is fixed. It sends one `window/showMessage` warning that names the problem, and it keeps the `window/logMessage` lines. A project that turned a feature off does not get it back from a typo.
 
-**With no `oxabl.toml` at all, the language server turns both features off,** and the CLI keeps both on. An editor offers only what needs no setup, the document outline, until a project adds an `oxabl.toml`. So installing the CLI for the outline does not start formatting or linting code that no project configured. The server shows no message about it.
+**With no `oxabl.toml` at all, the language server turns both features off,** and the CLI keeps both on. An editor offers only what needs no setup: the document outline, folding, and selection ranges. So installing the CLI for these features does not start formatting or linting code that no project configured. The server shows no message about it.
 
-A project that wants only the highlighting and the outline in the editor turns both off:
+A project that wants only the highlighting, outline, folding, and selection ranges in the editor turns both off:
 
 ```toml
 [workspace]

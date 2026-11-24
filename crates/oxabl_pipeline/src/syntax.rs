@@ -1,0 +1,912 @@
+//! Syntax ranges for editor folding and selection expansion.
+//!
+//! The input is the raw buffer. Every span therefore maps directly to the
+//! source, including both branches of a preprocessor conditional. Include
+//! references stay references: their expanded text never enters these ranges.
+
+use oxabl_ast::{
+    CreateTarget, DataType, Expression, ExpressionKind, OnAction, OnKind, ParameterType, PreprocIf,
+    Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeSource,
+};
+use oxabl_common::{InternalPanic, catch_panic, panic_if_injected, panic_sites};
+use oxabl_lexer::{Kind, Token};
+
+/// The LSP folding-range kind, without a dependency on a client protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldKind {
+    Comment,
+    Region,
+}
+
+/// One source range that an editor can fold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fold {
+    pub span: Span,
+    pub kind: Option<FoldKind>,
+}
+
+/// The most ranges in one selection chain. This keeps its JSON below the
+/// recursion limit of an editor client.
+const MAX_SELECTION_RANGES: usize = 32;
+
+/// The syntax facts that folding and selection requests share for one buffer.
+#[derive(Debug)]
+pub struct DocumentSyntax {
+    folds: Vec<Fold>,
+    statements: Vec<Span>,
+    expressions: Vec<Span>,
+    words: Vec<Span>,
+    file: Span,
+}
+
+/// Lex and parse `source`, then collect all editor ranges in one walk.
+///
+/// Recovered statements and expressions remain available after parse errors.
+/// `Err` means a contained internal panic, not an empty syntax tree.
+pub fn document_syntax(source: &str) -> Result<DocumentSyntax, InternalPanic> {
+    catch_panic(|| {
+        panic_if_injected(panic_sites::SYNTAX, source);
+        DocumentSyntax::new(source)
+    })
+}
+
+impl DocumentSyntax {
+    fn new(source: &str) -> Self {
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        let mut builder = Builder {
+            source,
+            tokens: &tokens,
+            folds: Vec::new(),
+            statements: Vec::new(),
+            expressions: Vec::new(),
+        };
+        walk_statements(&mut builder, &program.statements);
+        builder.comments_and_markers();
+        builder.preproc_branches();
+        let mut folds = builder.folds;
+        // Source order, outer first; an equal span occurs once.
+        folds.sort_by_key(|fold| (fold.span.start, std::cmp::Reverse(fold.span.end)));
+        folds.dedup_by_key(|fold| fold.span);
+        sort_levels(&mut builder.statements);
+        sort_levels(&mut builder.expressions);
+        let words = tokens
+            .iter()
+            .filter(|token| !matches!(token.kind, Kind::Comment | Kind::Eof))
+            .map(token_span)
+            .filter(|span| valid_span(source, *span))
+            .collect();
+        DocumentSyntax {
+            folds,
+            statements: builder.statements,
+            expressions: builder.expressions,
+            words,
+            file: Span {
+                start: 0,
+                end: source.len() as u32,
+            },
+        }
+    }
+
+    /// Folding ranges in source order.
+    pub fn folds(&self) -> &[Fold] {
+        &self.folds
+    }
+
+    /// The chain at `offset`, from the innermost range to the whole file.
+    /// Equal ranges occur once, and every range contains the previous one.
+    pub fn selection(&self, offset: u32) -> Vec<Span> {
+        let mut out = Vec::new();
+        if let Some(word) = self.word_at(offset) {
+            push_level(&mut out, word);
+        }
+        for span in self
+            .expressions
+            .iter()
+            .chain(&self.statements)
+            .filter(|span| contains_offset(**span, offset))
+        {
+            push_level(&mut out, *span);
+        }
+        push_level(&mut out, self.file);
+        if out.len() > MAX_SELECTION_RANGES {
+            let file = out.pop().expect("the file ends every chain");
+            out.truncate(MAX_SELECTION_RANGES - 1);
+            out.push(file);
+        }
+        out
+    }
+
+    fn word_at(&self, offset: u32) -> Option<Span> {
+        let at = self.words.partition_point(|span| span.start <= offset);
+        self.words
+            .get(at)
+            .filter(|span| contains_offset(**span, offset))
+            .or_else(|| at.checked_sub(1).and_then(|i| self.words.get(i)))
+            .filter(|span| contains_offset(**span, offset))
+            .copied()
+    }
+}
+
+fn sort_levels(spans: &mut Vec<Span>) {
+    spans.sort_by_key(|span| (span.end - span.start, span.start, span.end));
+    spans.dedup();
+}
+
+fn push_level(out: &mut Vec<Span>, span: Span) {
+    if out.last().is_some_and(|previous| *previous == span) {
+        return;
+    }
+    if out.last().is_none_or(|previous| contains(span, *previous)) {
+        out.push(span);
+    }
+}
+
+fn contains(outer: Span, inner: Span) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+fn contains_offset(span: Span, offset: u32) -> bool {
+    span.start <= offset && offset <= span.end
+}
+
+fn valid_span(source: &str, span: Span) -> bool {
+    span.start < span.end
+        && span.end as usize <= source.len()
+        && source.is_char_boundary(span.start as usize)
+        && source.is_char_boundary(span.end as usize)
+}
+
+struct Builder<'a> {
+    source: &'a str,
+    tokens: &'a [Token],
+    folds: Vec<Fold>,
+    statements: Vec<Span>,
+    expressions: Vec<Span>,
+}
+
+impl<'a> Builder<'a> {
+    fn push_fold(&mut self, span: Span, kind: Option<FoldKind>) {
+        let span = trim_trailing_space(self.source, span);
+        if !valid_span(self.source, span)
+            || !self.source[span.start as usize..span.end as usize]
+                .bytes()
+                .any(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            return;
+        }
+        self.folds.push(Fold { span, kind });
+    }
+
+    fn tokens_in(&self, span: Span) -> &'a [Token] {
+        let lo = self
+            .tokens
+            .partition_point(|token| token.start < span.start as usize);
+        let n = self.tokens[lo..].partition_point(|token| token.start < span.end as usize);
+        &self.tokens[lo..lo + n]
+    }
+
+    fn is_define(&self, statement: &Statement) -> bool {
+        self.tokens_in(statement.span)
+            .iter()
+            .find(|token| token.kind != Kind::Comment)
+            .is_some_and(|token| token.kind == Kind::Define)
+    }
+
+    fn define_runs(&mut self, statements: &[Statement]) {
+        let mut run: Option<(u32, u32, usize)> = None;
+        for statement in statements {
+            if self.is_define(statement) {
+                match run.as_mut() {
+                    Some((_, end, count)) => {
+                        *end = statement.span.end;
+                        *count += 1;
+                    }
+                    None => run = Some((statement.span.start, statement.span.end, 1)),
+                }
+            } else {
+                self.define_run(run.take());
+            }
+        }
+        self.define_run(run);
+    }
+
+    fn define_run(&mut self, run: Option<(u32, u32, usize)>) {
+        if let Some((start, end, count)) = run
+            && count > 1
+        {
+            self.push_fold(Span { start, end }, None);
+        }
+    }
+
+    /// Each `&IF`, `&ELSEIF` and `&ELSE` branch, from the tokens, so a
+    /// conditional that the parser did not read as a statement still folds.
+    /// A branch ends before the directive that closes it.
+    fn preproc_branches(&mut self) {
+        // The start of the open branch of each open `&IF`, innermost last.
+        let mut open: Vec<u32> = Vec::new();
+        for token in self.tokens {
+            let start = token.start as u32;
+            match token.kind {
+                Kind::PreprocIf => open.push(start),
+                Kind::PreprocElseif | Kind::PreprocElse => {
+                    if let Some(branch) = open.last_mut() {
+                        let previous = std::mem::replace(branch, start);
+                        self.push_fold(
+                            Span {
+                                start: previous,
+                                end: start,
+                            },
+                            Some(FoldKind::Region),
+                        );
+                    }
+                }
+                Kind::PreprocEndif => {
+                    if let Some(previous) = open.pop() {
+                        self.push_fold(
+                            Span {
+                                start: previous,
+                                end: start,
+                            },
+                            Some(FoldKind::Region),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `span` without its last line when that line starts with the `END` that
+    /// closes the statement, so the `END` stays visible in a folded block.
+    fn without_end_line(&self, span: Span) -> Span {
+        let tokens = self.tokens_in(span);
+        let Some(last) = tokens.iter().rposition(|token| token.kind != Kind::Comment) else {
+            return span;
+        };
+        let line_start = self.source[..tokens[last].start]
+            .rfind('\n')
+            .map_or(0, |at| at + 1) as u32;
+        if line_start <= span.start {
+            return span;
+        }
+        let first_on_line = tokens[..=last]
+            .iter()
+            .rev()
+            .take_while(|token| token.start as u32 >= line_start)
+            .filter(|token| token.kind != Kind::Comment)
+            .last();
+        if first_on_line.is_some_and(|token| token.kind == Kind::End) {
+            Span {
+                start: span.start,
+                end: line_start,
+            }
+        } else {
+            span
+        }
+    }
+
+    fn comments_and_markers(&mut self) {
+        let mut open = Vec::new();
+        for token in self.tokens {
+            if token.kind != Kind::Comment {
+                continue;
+            }
+            let span = token_span(token);
+            let Some(text) = self.source.get(token.start..token.end) else {
+                continue;
+            };
+            if text.starts_with("/*") {
+                self.push_fold(span, Some(FoldKind::Comment));
+                continue;
+            }
+            let marker = analyze_marker(text).or_else(|| region_marker(text));
+            match marker {
+                Some((Marker::Start, family)) => open.push((span.start, family)),
+                Some((Marker::End, family)) => {
+                    if let Some(at) = open
+                        .iter()
+                        .rposition(|(_, open_family)| *open_family == family)
+                    {
+                        let (start, _) = open.remove(at);
+                        self.push_fold(
+                            Span {
+                                start,
+                                end: span.end,
+                            },
+                            Some(FoldKind::Region),
+                        );
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+impl Visitor for Builder<'_> {
+    fn statement_list(&mut self, statements: &[Statement]) {
+        self.define_runs(statements);
+    }
+
+    fn statement(&mut self, statement: &Statement) {
+        if valid_span(self.source, statement.span) {
+            self.statements.push(statement.span);
+        }
+        // The branches of a conditional fold on their own (`preproc_branches`).
+        if !matches!(statement.kind, StatementKind::PreprocIf(_)) {
+            let span = self.without_end_line(statement.span);
+            self.push_fold(span, None);
+        }
+    }
+
+    fn expression(&mut self, expression: &Expression) {
+        if valid_span(self.source, expression.span) {
+            self.expressions.push(expression.span);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MarkerFamily {
+    Analyze,
+    Region,
+}
+
+enum Marker {
+    Start,
+    End,
+}
+
+fn analyze_marker(text: &str) -> Option<(Marker, MarkerFamily)> {
+    let text = text.trim_start();
+    directive(text, "&ANALYZE-SUSPEND")
+        .then_some((Marker::Start, MarkerFamily::Analyze))
+        .or_else(|| {
+            directive(text, "&ANALYZE-RESUME").then_some((Marker::End, MarkerFamily::Analyze))
+        })
+}
+
+fn region_marker(text: &str) -> Option<(Marker, MarkerFamily)> {
+    let text = text.strip_prefix("//")?.trim_start();
+    directive(text, "#region")
+        .then_some((Marker::Start, MarkerFamily::Region))
+        .or_else(|| directive(text, "#endregion").then_some((Marker::End, MarkerFamily::Region)))
+}
+
+fn directive(text: &str, wanted: &str) -> bool {
+    text.get(..wanted.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(wanted))
+        && text[wanted.len()..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace)
+}
+
+fn trim_trailing_space(source: &str, mut span: Span) -> Span {
+    while span.end > span.start
+        && source
+            .as_bytes()
+            .get(span.end as usize - 1)
+            .is_some_and(u8::is_ascii_whitespace)
+    {
+        span.end -= 1;
+    }
+    span
+}
+
+fn token_span(token: &Token) -> Span {
+    Span {
+        start: token.start as u32,
+        end: token.end as u32,
+    }
+}
+
+trait Visitor {
+    fn statement_list(&mut self, _statements: &[Statement]) {}
+    fn statement(&mut self, statement: &Statement);
+    fn expression(&mut self, expression: &Expression);
+}
+
+fn walk_statements(v: &mut impl Visitor, statements: &[Statement]) {
+    v.statement_list(statements);
+    for statement in statements {
+        walk_statement(v, statement);
+    }
+}
+
+fn walk_opt(v: &mut impl Visitor, expression: Option<&Expression>) {
+    if let Some(expression) = expression {
+        walk_expression(v, expression);
+    }
+}
+
+fn walk_statement(v: &mut impl Visitor, statement: &Statement) {
+    v.statement(statement);
+    match &statement.kind {
+        StatementKind::VariableDeclaration {
+            initial_value,
+            type_source,
+            ..
+        } => {
+            walk_type_source(v, type_source);
+            walk_opt(v, initial_value.as_ref());
+        }
+        StatementKind::VariableDeclarationList(body) => walk_statements(v, body),
+        StatementKind::DefineTempTable { fields, .. } => {
+            for field in fields {
+                walk_type_source(v, &field.type_source);
+                for expression in field.initial_value.iter().flatten() {
+                    walk_expression(v, expression);
+                }
+            }
+        }
+        StatementKind::Property {
+            data_type,
+            get_body,
+            set_body,
+            set_parameters,
+            ..
+        } => {
+            walk_data_type(v, data_type);
+            walk_statements(v, set_parameters);
+            for body in [get_body, set_body].into_iter().flatten() {
+                walk_statements(v, body);
+            }
+        }
+        StatementKind::Procedure { body, .. }
+        | StatementKind::Class { body, .. }
+        | StatementKind::Interface { body, .. }
+        | StatementKind::Destructor { body }
+        | StatementKind::Finally { body }
+        | StatementKind::Catch { body, .. }
+        | StatementKind::Block(body) => walk_statements(v, body),
+        StatementKind::Function {
+            return_type,
+            body,
+            prototype_parameters,
+            ..
+        } => {
+            walk_data_type(v, return_type);
+            walk_statements(v, prototype_parameters);
+            walk_statements(v, body);
+        }
+        StatementKind::Method {
+            return_type,
+            parameters,
+            body,
+            ..
+        } => {
+            if let Some(data_type) = return_type {
+                walk_data_type(v, data_type);
+            }
+            walk_statements(v, parameters);
+            walk_statements(v, body);
+        }
+        StatementKind::Constructor {
+            parameters, body, ..
+        } => {
+            walk_statements(v, parameters);
+            walk_statements(v, body);
+        }
+        StatementKind::DefineEvent { parameters, .. } => walk_statements(v, parameters),
+        StatementKind::DefineParameter { param_type, .. } => {
+            if let ParameterType::Variable { type_source, .. } = param_type {
+                walk_type_source(v, type_source);
+            }
+        }
+        StatementKind::Do {
+            from,
+            to,
+            by,
+            while_condition,
+            on_actions,
+            body,
+            ..
+        } => {
+            for expression in [from, to, by, while_condition].into_iter().flatten() {
+                walk_expression(v, expression);
+            }
+            for expression in on_actions {
+                walk_expression(v, expression);
+            }
+            walk_statements(v, body);
+        }
+        StatementKind::Repeat {
+            while_condition,
+            on_actions,
+            body,
+        } => {
+            walk_opt(v, while_condition.as_ref());
+            for expression in on_actions {
+                walk_expression(v, expression);
+            }
+            walk_statements(v, body);
+        }
+        StatementKind::ForEach {
+            where_clause,
+            on_actions,
+            body,
+            ..
+        } => {
+            walk_opt(v, where_clause.as_ref());
+            for expression in on_actions {
+                walk_expression(v, expression);
+            }
+            walk_statements(v, body);
+        }
+        StatementKind::Find {
+            key_value,
+            where_clause,
+            ..
+        } => {
+            walk_opt(v, key_value.as_ref());
+            walk_opt(v, where_clause.as_ref());
+        }
+        StatementKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            walk_expression(v, condition);
+            walk_statement(v, then_branch);
+            if let Some(else_branch) = else_branch {
+                walk_statement(v, else_branch);
+            }
+        }
+        StatementKind::Case {
+            expression,
+            when_branches,
+            otherwise,
+        } => {
+            walk_expression(v, expression);
+            for branch in when_branches {
+                for value in &branch.values {
+                    walk_expression(v, value);
+                }
+                walk_statements(v, &branch.body);
+            }
+            if let Some(otherwise) = otherwise {
+                walk_statements(v, otherwise);
+            }
+        }
+        StatementKind::Label { body, .. } => walk_statement(v, body),
+        StatementKind::On { kind } => match kind {
+            OnKind::UiEvent { action, .. } | OnKind::DbEvent { action, .. } => {
+                walk_on_action(v, action)
+            }
+            OnKind::KeyRemap { .. } => {}
+        },
+        StatementKind::PreprocIf(preproc) => {
+            walk_expression(v, &preproc.condition);
+            walk_statements(v, &preproc.then_branch);
+            for (condition, branch) in &preproc.elseif_branches {
+                walk_expression(v, condition);
+                walk_statements(v, branch);
+            }
+            if let Some(branch) = &preproc.else_branch {
+                walk_statements(v, branch);
+            }
+        }
+        StatementKind::PreprocMessage { expression } => walk_expression(v, expression),
+        StatementKind::Assignment { target, value } => {
+            walk_expression(v, target);
+            walk_expression(v, value);
+        }
+        StatementKind::Assign { assignments } | StatementKind::BufferCopy { assignments, .. } => {
+            for pair in assignments {
+                walk_expression(v, &pair.target);
+                walk_expression(v, &pair.value);
+            }
+        }
+        StatementKind::ExpressionStatement(expression)
+        | StatementKind::Throw(expression)
+        | StatementKind::ReleaseObject {
+            target: expression, ..
+        } => walk_expression(v, expression),
+        StatementKind::DeleteObject {
+            target,
+            extra_targets,
+            ..
+        } => {
+            walk_expression(v, target);
+            for expression in extra_targets {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::CreateWidgetPool { name, .. }
+        | StatementKind::DeleteWidgetPool { name, .. } => walk_opt(v, name.as_ref()),
+        StatementKind::Return(expression) => walk_opt(v, expression.as_ref()),
+        StatementKind::Display { items, .. } => {
+            for item in items {
+                walk_expression(v, &item.expression);
+                walk_opt(v, item.when_condition.as_ref());
+            }
+        }
+        StatementKind::Message { items, .. }
+        | StatementKind::Put { items, .. }
+        | StatementKind::Form { items, .. }
+        | StatementKind::Enable { items }
+        | StatementKind::WaitFor { widgets: items }
+        | StatementKind::Disable { items }
+        | StatementKind::Hide { items, .. }
+        | StatementKind::View { items, .. } => {
+            for expression in items {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Export {
+            delimiter, items, ..
+        }
+        | StatementKind::Import {
+            delimiter,
+            targets: items,
+            ..
+        } => {
+            for expression in delimiter.iter().chain(items) {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Update {
+            targets, options, ..
+        }
+        | StatementKind::Set {
+            targets, options, ..
+        } => {
+            for expression in targets.iter().chain(options) {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Pause {
+            duration: first,
+            message: second,
+        }
+        | StatementKind::Apply {
+            event: first,
+            target: second,
+        } => {
+            for expression in first.iter().chain(second) {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Down { lines, .. } | StatementKind::Up { lines, .. } => {
+            walk_opt(v, lines.as_ref());
+        }
+        StatementKind::Run {
+            target,
+            arguments,
+            in_handle,
+            persistent_handle,
+            async_handle,
+            event_procedure,
+            ..
+        } => {
+            if let oxabl_ast::RunTarget::Dynamic(expression) = target {
+                walk_expression(v, expression);
+            }
+            for argument in arguments {
+                walk_expression(v, &argument.expression);
+            }
+            for expression in [in_handle, persistent_handle, async_handle, event_procedure]
+                .into_iter()
+                .flatten()
+            {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::Publish {
+            event_name,
+            from_handle,
+            arguments,
+        } => {
+            walk_expression(v, event_name);
+            walk_opt(v, from_handle.as_ref());
+            for argument in arguments {
+                walk_expression(v, &argument.expression);
+            }
+        }
+        StatementKind::Subscribe {
+            subscriber,
+            event_name,
+            target,
+            ..
+        } => {
+            walk_opt(v, subscriber.as_ref());
+            walk_expression(v, event_name);
+            if let SubscribeTarget::InHandle(handle) = target {
+                walk_expression(v, handle);
+            }
+        }
+        StatementKind::Unsubscribe {
+            subscriber,
+            event_name,
+            in_handle,
+        } => {
+            for expression in [subscriber, event_name, in_handle].into_iter().flatten() {
+                walk_expression(v, expression);
+            }
+        }
+        StatementKind::StreamIo { operation, .. } => match operation {
+            StreamOperation::From(target) | StreamOperation::To { target, .. } => {
+                if let Some(expression) = target.expression() {
+                    walk_expression(v, expression);
+                }
+            }
+            StreamOperation::Through(expression) => walk_expression(v, expression),
+            StreamOperation::Close => {}
+        },
+        StatementKind::Create { target, .. } => {
+            if let CreateTarget::Handle {
+                handle,
+                widget_pool,
+                class,
+                assignments,
+                triggers,
+                connect,
+                for_table,
+                ..
+            } = target
+            {
+                walk_expression(v, handle);
+                walk_opt(v, for_table.as_ref());
+                walk_opt(v, widget_pool.as_ref());
+                walk_opt(v, class.as_ref());
+                walk_opt(
+                    v,
+                    connect.as_ref().and_then(|connect| connect.file.as_ref()),
+                );
+                for assignment in assignments {
+                    walk_expression(v, &assignment.value);
+                }
+                for trigger in triggers {
+                    walk_on_action(v, &trigger.action);
+                }
+            }
+        }
+        StatementKind::DefineFrame { fields, .. } => {
+            for field in fields {
+                walk_type_source(v, &field.type_source);
+            }
+        }
+        StatementKind::TriggerProcedure {
+            new_value,
+            old_value_param,
+            ..
+        } => {
+            for parameter in [new_value, old_value_param].into_iter().flatten() {
+                walk_data_type(v, &parameter.data_type);
+            }
+        }
+        StatementKind::DefineBuffer { .. }
+        | StatementKind::DefineDataset { .. }
+        | StatementKind::DefineDataSource { .. }
+        | StatementKind::DefineStream { .. }
+        | StatementKind::DefineWidget { .. }
+        | StatementKind::PreprocDefine { .. }
+        | StatementKind::PreprocUndefine { .. }
+        | StatementKind::Using { .. }
+        | StatementKind::Delete { .. }
+        | StatementKind::Release { .. }
+        | StatementKind::Validate { .. }
+        | StatementKind::BufferCompare { .. }
+        | StatementKind::IncludeReference { .. }
+        | StatementKind::IncludeArgReference { .. }
+        | StatementKind::Leave(_)
+        | StatementKind::Next(_)
+        | StatementKind::Empty
+        | StatementKind::Annotation(_)
+        | StatementKind::Skipped { .. } => {}
+    }
+}
+
+fn walk_on_action(v: &mut impl Visitor, action: &OnAction) {
+    match action {
+        OnAction::Block(body) => walk_statement(v, body),
+        OnAction::PersistentRun {
+            in_handle,
+            arguments,
+            ..
+        } => {
+            for expression in in_handle.iter().chain(arguments) {
+                walk_expression(v, expression);
+            }
+        }
+        OnAction::Revert => {}
+    }
+}
+
+fn walk_type_source(v: &mut impl Visitor, source: &TypeSource) {
+    if let TypeSource::Explicit(data_type) = source {
+        walk_data_type(v, data_type);
+    }
+}
+
+fn walk_data_type(v: &mut impl Visitor, data_type: &DataType) {
+    if let DataType::PreprocIf(preproc) = data_type {
+        walk_expression(v, &preproc.condition);
+        walk_data_type(v, &preproc.then_branch);
+        for (condition, branch) in &preproc.elseif_branches {
+            walk_expression(v, condition);
+            walk_data_type(v, branch);
+        }
+        if let Some(branch) = &preproc.else_branch {
+            walk_data_type(v, branch);
+        }
+    }
+}
+
+fn walk_expression(v: &mut impl Visitor, expression: &Expression) {
+    v.expression(expression);
+    match &expression.kind {
+        ExpressionKind::Literal(_)
+        | ExpressionKind::Identifier(_)
+        | ExpressionKind::IncludeReference { .. }
+        | ExpressionKind::IncludeArgReference { .. }
+        | ExpressionKind::PreprocReference(_) => {}
+        ExpressionKind::Add(left, right)
+        | ExpressionKind::Minus(left, right)
+        | ExpressionKind::Multiply(left, right)
+        | ExpressionKind::Divide(left, right)
+        | ExpressionKind::Modulo(left, right)
+        | ExpressionKind::Equal(left, right)
+        | ExpressionKind::NotEqual(left, right)
+        | ExpressionKind::LessThan(left, right)
+        | ExpressionKind::LessThanOrEqual(left, right)
+        | ExpressionKind::GreaterThan(left, right)
+        | ExpressionKind::GreaterThanOrEqual(left, right)
+        | ExpressionKind::Begins(left, right)
+        | ExpressionKind::Matches(left, right)
+        | ExpressionKind::Contains(left, right)
+        | ExpressionKind::And(left, right)
+        | ExpressionKind::Or(left, right)
+        | ExpressionKind::ArrayAccess {
+            array: left,
+            index: right,
+        } => {
+            walk_expression(v, left);
+            walk_expression(v, right);
+        }
+        ExpressionKind::Negate(inner)
+        | ExpressionKind::Not(inner)
+        | ExpressionKind::MemberAccess { object: inner, .. }
+        | ExpressionKind::FieldAccess {
+            qualifier: inner, ..
+        } => walk_expression(v, inner),
+        ExpressionKind::IfThenElse(condition, then_expression, else_expression) => {
+            walk_expression(v, condition);
+            walk_expression(v, then_expression);
+            walk_expression(v, else_expression);
+        }
+        ExpressionKind::FunctionCall { arguments, .. } | ExpressionKind::New { arguments, .. } => {
+            for argument in arguments {
+                walk_expression(v, argument);
+            }
+        }
+        ExpressionKind::MethodCall {
+            object, arguments, ..
+        } => {
+            walk_expression(v, object);
+            for argument in arguments {
+                walk_expression(v, argument);
+            }
+        }
+        ExpressionKind::PreprocIf(preproc) => {
+            walk_expression_preproc(v, preproc);
+        }
+        ExpressionKind::CanFind { where_clause, .. } => {
+            walk_opt(v, where_clause.as_deref());
+        }
+    }
+}
+
+fn walk_expression_preproc(v: &mut impl Visitor, preproc: &PreprocIf<Expression>) {
+    walk_expression(v, &preproc.condition);
+    walk_expression(v, &preproc.then_branch);
+    for (condition, branch) in &preproc.elseif_branches {
+        walk_expression(v, condition);
+        walk_expression(v, branch);
+    }
+    if let Some(branch) = &preproc.else_branch {
+        walk_expression(v, branch);
+    }
+}
