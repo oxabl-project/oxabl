@@ -338,10 +338,18 @@ impl<'a> Walker<'a> {
 
             // ---- Streams / Frames / Events --------------------------------
             StatementKind::DefineStream { name } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Streams, SymbolKind::Stream);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(
+                    stmt,
+                    routine,
+                    name,
+                    NamespaceId::Streams,
+                    SymbolKind::Stream,
+                );
             }
             StatementKind::DefineFrame { name, fields, .. } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Frames, SymbolKind::Frame);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(stmt, routine, name, NamespaceId::Frames, SymbolKind::Frame);
                 self.declare_frame_fields(stmt, scope, fields);
             }
             StatementKind::Form { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
@@ -350,7 +358,8 @@ impl<'a> Walker<'a> {
             }
             StatementKind::Message { fields, .. } => self.declare_frame_fields(stmt, scope, fields),
             StatementKind::DefineWidget { name } => {
-                self.declare_simple(stmt, scope, name, NamespaceId::Values, SymbolKind::Widget);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_simple(stmt, routine, name, NamespaceId::Values, SymbolKind::Widget);
             }
             StatementKind::DefineEvent {
                 access,
@@ -432,7 +441,8 @@ impl<'a> Walker<'a> {
                 let like = like_table
                     .as_ref()
                     .and_then(|t| self.record_source_of(t, scope));
-                self.declare_temp_table(stmt, scope, name, fields, like, flags);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_temp_table(stmt, routine, name, fields, like, flags);
             }
 
             // ---- Buffer ---------------------------------------------------
@@ -456,7 +466,8 @@ impl<'a> Walker<'a> {
                         .filter(|s| matches!(s, RecordSource::TempTable(_))),
                 };
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
-                self.declare_buffer(stmt, scope, name, flags, source);
+                let routine = self.tree.var_binding_scope(scope);
+                self.declare_buffer(stmt, routine, name, flags, source);
             }
 
             // ---- Dataset / Data-source ------------------------------------
@@ -470,7 +481,7 @@ impl<'a> Walker<'a> {
                 let flags = shared_flags(*is_shared, *is_new_shared, *is_new_global_shared);
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Values,
                     SymbolKind::Dataset,
@@ -482,7 +493,7 @@ impl<'a> Walker<'a> {
             StatementKind::DefineDataSource { name, .. } => {
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Values,
                     SymbolKind::DataSource,
@@ -499,9 +510,12 @@ impl<'a> Walker<'a> {
                 is_prototype,
                 ..
             } => {
+                // The routine is the external procedure's, also when the
+                // statement sits in a block. The body scope stays a child of
+                // `scope`, where the resolve pass looks for it.
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Procedures,
                     SymbolKind::Procedure,
@@ -530,9 +544,10 @@ impl<'a> Walker<'a> {
                 } else {
                     SymbolFlags::empty()
                 };
+                // Bound like a `PROCEDURE`: to the routine, not the block.
                 self.declare(
                     stmt,
-                    scope,
+                    self.tree.var_binding_scope(scope),
                     name,
                     NamespaceId::Functions,
                     SymbolKind::Function,
@@ -917,6 +932,8 @@ impl<'a> Walker<'a> {
             ParameterDirection::InputOutput => SymbolFlags::PARAM_INPUT_OUT,
             ParameterDirection::Return => SymbolFlags::PARAM_RETURN,
         };
+        // A parameter belongs to its routine, also when defined in a block.
+        let routine = self.tree.var_binding_scope(scope);
         match param_type {
             ParameterType::Variable {
                 name,
@@ -930,7 +947,7 @@ impl<'a> Walker<'a> {
                 let flags = dir_flag | flag_if(*no_undo, SymbolFlags::NO_UNDO);
                 self.declare(
                     stmt,
-                    scope,
+                    routine,
                     name,
                     NamespaceId::Values,
                     SymbolKind::Parameter,
@@ -943,7 +960,7 @@ impl<'a> Walker<'a> {
                 // `DEFINE PARAMETER BUFFER b FOR <table>` — link the backing
                 // record like any other buffer-introducing site.
                 let source = self.record_source_of(target, scope);
-                self.declare_buffer(stmt, scope, name, dir_flag, source);
+                self.declare_buffer(stmt, routine, name, dir_flag, source);
             }
             ParameterType::Handle { kind, name, .. } => {
                 // All four handle-ish forms declare the same way — a `HANDLE`
@@ -955,7 +972,7 @@ impl<'a> Walker<'a> {
                 let table_like = matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
                 self.declare(
                     stmt,
-                    scope,
+                    routine,
                     name,
                     NamespaceId::Values,
                     SymbolKind::Parameter,
@@ -3702,6 +3719,14 @@ impl<'a> ResolveWalker<'a> {
                         }
                     }
                 }
+                // The operand of `AVAILABLE` and its siblings is a record.
+                if is_record_operand_function(&name.name)
+                    && !matches!(self.references.get(expr.id), Some(Resolution::Resolved(_)))
+                    && let [arg] = arguments.as_slice()
+                    && matches!(arg.kind, ExpressionKind::Identifier(_))
+                {
+                    self.soften_record_miss_without_schema(arg.id);
+                }
             }
             ExpressionKind::MethodCall {
                 object,
@@ -3837,6 +3862,7 @@ impl<'a> ResolveWalker<'a> {
                     &[NamespaceId::Buffers, NamespaceId::Tables],
                     AccessMode::Read,
                 );
+                self.soften_record_miss_without_schema(expr.id);
                 if let Some(w) = where_clause {
                     self.walk_expression(w, scope, AccessMode::Read);
                 }
@@ -4983,6 +5009,28 @@ impl<'a> ResolveWalker<'a> {
                 Resolution::Unresolved {
                     name,
                     reason: UnresolvedReason::External,
+                },
+            );
+        }
+    }
+
+    /// With no schema loaded, a record name that nothing in scope declares may
+    /// be a database table, as in `FIND` or `FOR EACH`: record the miss as
+    /// `NoSchema`, not `NotInScope`.
+    fn soften_record_miss_without_schema(&mut self, expr_id: NodeId) {
+        if self.ctx.schema_loaded {
+            return;
+        }
+        if let Some(Resolution::Unresolved {
+            name,
+            reason: UnresolvedReason::NotInScope,
+        }) = self.references.get(expr_id).cloned()
+        {
+            self.references.insert(
+                expr_id,
+                Resolution::Unresolved {
+                    name,
+                    reason: UnresolvedReason::NoSchema,
                 },
             );
         }
@@ -6765,6 +6813,35 @@ fn pseudo_function_target(name: &str) -> Option<(usize, AccessMode)> {
     } else {
         None
     }
+}
+
+/// Built-ins whose single operand names a record or buffer, with their
+/// abbreviations.
+fn is_record_operand_function(name: &str) -> bool {
+    // (keyword, shortest abbreviation)
+    const RECORD_FUNCTIONS: &[(&str, usize)] = &[
+        ("ambiguous", 5),
+        ("available", 5),
+        ("buffer-group-id", 15),
+        ("buffer-group-name", 17),
+        ("buffer-partition-id", 19),
+        ("buffer-tenant-id", 16),
+        ("buffer-tenant-name", 18),
+        ("current-changed", 15),
+        ("data-source-modified", 20),
+        ("error", 5),
+        ("locked", 6),
+        ("new", 3),
+        ("recid", 5),
+        ("record-length", 13),
+        ("rejected", 8),
+        ("row-state", 9),
+        ("rowid", 5),
+    ];
+    RECORD_FUNCTIONS.iter().any(|(keyword, shortest)| {
+        (*shortest..=keyword.len()).contains(&name.len())
+            && keyword.as_bytes()[..name.len()].eq_ignore_ascii_case(name.as_bytes())
+    })
 }
 
 /// Built-ins whose single operand names a stream.
@@ -9174,8 +9251,7 @@ mod tests {
         assert_eq!(symbols.get(*sym).kind, SymbolKind::Buffer);
     }
 
-    #[test]
-    fn resolve_can_find_unknown_buffer_is_not_in_scope() {
+    fn can_find_ghost() -> (Vec<Statement>, NodeId) {
         let cf = expr_n(ExpressionKind::CanFind {
             find_type: oxabl_ast::FindType::First,
             buffer: id("ghost"),
@@ -9184,12 +9260,31 @@ mod tests {
             no_error: false,
         });
         let cf_id = cf.id;
-        let stmts = vec![stmt_n(StatementKind::ExpressionStatement(cf))];
-        let (_t, _s, refs, _) = run_full(&stmts);
+        (vec![stmt_n(StatementKind::ExpressionStatement(cf))], cf_id)
+    }
+
+    #[test]
+    fn resolve_can_find_unknown_buffer_under_a_schema_is_not_in_scope() {
+        let (stmts, cf_id) = can_find_ghost();
+        let schema = test_schema();
+        let (_t, _s, refs, _) = run_full_with_schema(&stmts, &schema);
         assert!(matches!(
             resolution_of(&refs, cf_id),
             Resolution::Unresolved {
                 reason: UnresolvedReason::NotInScope,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resolve_can_find_unknown_buffer_without_a_schema_is_no_schema() {
+        let (stmts, cf_id) = can_find_ghost();
+        let (_t, _s, refs, _) = run_full(&stmts);
+        assert!(matches!(
+            resolution_of(&refs, cf_id),
+            Resolution::Unresolved {
+                reason: UnresolvedReason::NoSchema,
                 ..
             }
         ));
@@ -11456,5 +11551,59 @@ mod unmodelled_names_tests {
         assert!(opens_with_end("."));
         assert!(!opens_with_end(":x"));
         assert!(!opens_with_end(".5"));
+    }
+}
+
+#[cfg(test)]
+mod block_definition_tests {
+    use super::*;
+    use oxabl_common::FileId;
+    use oxabl_schema::Schema;
+
+    /// The scope kind each symbol of `kinds` is declared in, by name.
+    fn declared_in(source: &str, kinds: &[SymbolKind]) -> Vec<(String, ScopeKind)> {
+        let schema = Schema::empty();
+        let ctx = AnalysisContext::new(FileId::UNKNOWN, source, &schema);
+        let tokens = oxabl_lexer::tokenize(source);
+        let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+        assert!(program.errors.is_empty(), "{:?}", program.errors);
+        let (tree, symbols, _, _) = declare_pass(&program.statements, &ctx);
+        let mut found: Vec<(String, ScopeKind)> = symbols
+            .iter()
+            .filter(|(_, sym)| kinds.contains(&sym.kind))
+            .map(|(_, sym)| (sym.name.to_string(), tree.get(sym.declared_in).kind))
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
+    }
+
+    /// Streams, datasets, data-sources and procedures written in a block are
+    /// declared in the routine around it, as the other definitions are.
+    #[test]
+    fn stream_dataset_data_source_and_procedure_in_a_block_bind_to_the_routine() {
+        let source = "DO:\n\
+                      DEFINE STREAM s-out.\n\
+                      DEFINE TEMP-TABLE tt NO-UNDO FIELD a AS INTEGER.\n\
+                      DEFINE DATASET ds FOR tt.\n\
+                      DEFINE QUERY q FOR tt.\n\
+                      DEFINE DATA-SOURCE src FOR QUERY q.\n\
+                      PROCEDURE inner:\n\
+                      END PROCEDURE.\n\
+                      END.\n";
+        let kinds = [
+            SymbolKind::Stream,
+            SymbolKind::Dataset,
+            SymbolKind::DataSource,
+            SymbolKind::Procedure,
+        ];
+        assert_eq!(
+            declared_in(source, &kinds),
+            [
+                ("ds".to_string(), ScopeKind::File),
+                ("inner".to_string(), ScopeKind::File),
+                ("s-out".to_string(), ScopeKind::File),
+                ("src".to_string(), ScopeKind::File),
+            ]
+        );
     }
 }
