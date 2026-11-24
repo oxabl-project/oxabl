@@ -253,7 +253,7 @@ impl Server<'_> {
                     {
                         let _ = sender.send(Message::Response(Response::new_err(
                             id,
-                            ErrorCode::RequestCanceled as i32,
+                            ErrorCode::ContentModified as i32,
                             "oxabl-lsp: a newer highlight replaced this one".to_string(),
                         )));
                         return;
@@ -387,9 +387,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Whether the expansion of `buffer` reads an include whose open buffer differs
-/// from the file, which the cached analysis does not see. True when that cannot
-/// be told.
+/// Whether the expansion of `buffer` may read an include whose open buffer
+/// differs from the file, which the cached analysis does not see. True when
+/// that cannot be told, and when another open document is not on disk: a new
+/// include is not among the dependencies, yet the expansion may read it.
 fn reads_unsaved_include(
     snapshot: &AnalysisDatabase,
     buffer: Buffer,
@@ -404,11 +405,12 @@ fn reads_unsaved_include(
         .map(|(path, text)| (canonical_path(path), text))
         .filter(|(path, _)| path != root)
         .collect();
-    dependencies.iter().any(|path| {
-        open.get(&canonical_path(path)).is_some_and(|text| {
-            std::fs::read_to_string(path).map_or(true, |saved| saved != text.as_ref())
+    open.keys().any(|path| !path.exists())
+        || dependencies.iter().any(|path| {
+            open.get(&canonical_path(path)).is_some_and(|text| {
+                std::fs::read_to_string(path).map_or(true, |saved| saved != text.as_ref())
+            })
         })
-    })
 }
 
 fn invalid(id: RequestId, message: &str) -> Response {

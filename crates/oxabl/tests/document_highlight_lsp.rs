@@ -92,6 +92,9 @@ const LOOPS: &str = "FIND FIRST Customer NO-LOCK.\n\
 /// A program whose variable an include declares only in its unsaved buffer.
 const UNSAVED_MAIN: &str = "{unsaved.i}\nb = 1.\nb = b + 1.\n";
 
+/// A program whose include exists only as an open, unsaved document.
+const FRESH_MAIN: &str = "{fresh.i}\nb = 1.\nb = b + 1.\n";
+
 const KINDS: &str = "DEFINE TEMP-TABLE ttOrder NO-UNDO\n\
     \x20   FIELD OrderId AS INTEGER\n\
     \x20   FIELD Qty AS INTEGER.\n\
@@ -146,6 +149,7 @@ impl Workspace {
             ("loops.p", LOOPS),
             ("unsaved.p", UNSAVED_MAIN),
             ("unsaved.i", "/* nothing yet */\n"),
+            ("fresh.p", FRESH_MAIN),
             ("app/Greeter.cls", GREETER),
             ("app/Base.cls", BASE),
         ];
@@ -700,6 +704,69 @@ fn an_unsaved_include_counts_as_it_does_for_go_to_definition() {
 }
 
 #[test]
+fn an_include_with_no_file_yet_counts_as_it_does_for_go_to_definition() {
+    let ws = Workspace::new();
+    let main = ws.path("fresh.p");
+    let include = ws.path("fresh.i");
+    assert!(!include.exists());
+    let mut session = Session::start(&ws.root);
+    session.open(&main, FRESH_MAIN);
+    assert_eq!(
+        highlights(&mut session, &main, FRESH_MAIN, "b = 1", 0),
+        Vec::new()
+    );
+    session.open(&include, "DEFINE VARIABLE b AS INTEGER NO-UNDO.\n");
+
+    let found = highlights(&mut session, &main, FRESH_MAIN, "b = 1", 0);
+    assert_eq!(
+        found,
+        expected(&[(1, "b", 'W'), (2, "b", 'W'), (2, "b", 'R')])
+    );
+}
+
+#[test]
+fn a_burst_of_highlights_on_a_large_file_replaces_the_older_ones() {
+    let ws = Workspace::new();
+    let big = ws.path("big.p");
+    let mut text = String::from("DEFINE VARIABLE iCount AS INTEGER NO-UNDO.\niCount = 1.\n");
+    for n in 0..2000 {
+        text.push_str(&format!(
+            "PROCEDURE p{n}:\n    DEFINE VARIABLE iLocal AS INTEGER NO-UNDO.\n    iLocal = iCount + {n}.\nEND PROCEDURE.\n"
+        ));
+    }
+    std::fs::write(&big, &text).unwrap();
+    let mut session = Session::start(&ws.root);
+    session.open(&big, &text);
+
+    let (line, character) = utf16_at(&text, nth(&text, "iCount = 1", 0) + 1);
+    let params = json!({
+        "textDocument": {"uri": file_uri(&big)},
+        "position": {"line": line, "character": character}
+    });
+    let answers = session.request_all("textDocument/documentHighlight", vec![params; 30]);
+    let (last, older) = answers.split_last().unwrap();
+    assert_eq!(
+        last["result"].as_array().map(Vec::len),
+        Some(2002),
+        "the newest request is answered: {last}"
+    );
+    for answer in older {
+        assert!(
+            answer["result"].is_array() || answer["error"]["code"] == json!(-32801),
+            "an older request is answered or replaced: {answer}"
+        );
+    }
+    let replaced = older
+        .iter()
+        .filter(|answer| answer["error"]["code"] == json!(-32801))
+        .count();
+    assert!(
+        replaced > 0,
+        "a burst on a file that takes long to analyse replaces older requests"
+    );
+}
+
+#[test]
 fn a_burst_of_highlights_answers_the_newest() {
     let ws = Workspace::new();
     let main = ws.path("main.p");
@@ -723,7 +790,7 @@ fn a_burst_of_highlights_answers_the_newest() {
     for answer in older {
         assert!(
             answer["result"].as_array().map(Vec::len) == Some(wanted.len())
-                || answer["error"]["code"] == json!(-32800),
+                || answer["error"]["code"] == json!(-32801),
             "an older request is answered or cancelled: {answer}"
         );
     }
