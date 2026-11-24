@@ -1218,6 +1218,15 @@ impl Problem<'_> {
                     f.forget(i, UNKNOWN);
                 }
             }
+            S::CopyLob {
+                target,
+                target_file: false,
+                ..
+            } => {
+                if let Some(i) = self.variable(target) {
+                    f.forget(i, UNKNOWN);
+                }
+            }
             // These run triggers, which may write the locals other units write.
             S::WaitFor { .. } | S::Apply { .. } | S::Enable { .. } | S::PromptFor { .. } => {
                 self.forget_call_writes(f)
@@ -1752,6 +1761,11 @@ fn analyze_inspect(
             S::Close {
                 status: Some(t), ..
             } => write(t),
+            S::CopyLob {
+                target,
+                target_file: false,
+                ..
+            } => write(target),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {
@@ -1846,6 +1860,11 @@ fn analyze_inspect(
             S::Close {
                 status: Some(t), ..
             } => record(t),
+            S::CopyLob {
+                target,
+                target_file: false,
+                ..
+            } => record(target),
             S::Run { arguments, .. } | S::Publish { arguments, .. } => {
                 for a in arguments {
                     if a.direction != ParameterDirection::Input {

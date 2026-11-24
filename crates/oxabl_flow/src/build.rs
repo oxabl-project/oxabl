@@ -1513,6 +1513,7 @@ impl<'a> Builder<'a> {
             | SK::Clear { .. }
             | SK::Accumulate { .. }
             | SK::Color { .. }
+            | SK::CopyLob { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }

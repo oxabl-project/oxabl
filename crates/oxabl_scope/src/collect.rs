@@ -513,6 +513,7 @@ impl<'a> Collector<'a> {
             | SK::Clear { .. }
             | SK::Accumulate { .. }
             | SK::Color { .. }
+            | SK::CopyLob { .. }
             | SK::Import { .. }
             | SK::Export { .. }
             | SK::Put { .. }

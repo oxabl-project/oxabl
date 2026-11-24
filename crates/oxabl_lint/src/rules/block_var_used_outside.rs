@@ -573,6 +573,22 @@ mod paths {
                 }
                 SK::Down { lines: Some(e), .. } | SK::Up { lines: Some(e), .. } => read(self, e),
                 SK::Get { query, .. } => read(self, query),
+                SK::CopyLob {
+                    source,
+                    target,
+                    target_file,
+                    options,
+                    ..
+                } => {
+                    for e in std::iter::once(source).chain(options) {
+                        read(self, e);
+                    }
+                    if *target_file {
+                        read(self, target);
+                    } else {
+                        self.target(target, id);
+                    }
+                }
                 SK::Color { items, .. } => {
                     for e in items {
                         read(self, e);

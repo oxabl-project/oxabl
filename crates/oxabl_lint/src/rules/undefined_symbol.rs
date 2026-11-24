@@ -339,6 +339,16 @@ impl Visitor<'_> {
                     self.walk_expression(e);
                 }
             }
+            StatementKind::CopyLob {
+                source,
+                target,
+                options,
+                ..
+            } => {
+                for e in [source, target].into_iter().chain(options) {
+                    self.walk_expression(e);
+                }
+            }
             StatementKind::Accumulate { expression, breaks } => {
                 for e in std::iter::once(expression).chain(breaks) {
                     self.walk_expression(e);

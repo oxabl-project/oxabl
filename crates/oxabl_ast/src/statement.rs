@@ -413,6 +413,27 @@ pub enum StatementKind {
         items: Vec<Expression>,
     },
 
+    /// COPY-LOB statement — copies a large object between a file, a variable or
+    /// a field.
+    ///
+    /// `COPY-LOB [FROM] [FILE | OBJECT] source [STARTING AT n] [FOR n] TO
+    /// [FILE | OBJECT] target [OVERLAY AT n [TRIM] | APPEND] [CONVERT ...]
+    /// [NO-ERROR]`. A form whose source or target does not parse leaves the
+    /// statement [`StatementKind::Skipped`].
+    CopyLob {
+        source: Expression,
+        /// `FILE` was written before the source: it names a file.
+        source_file: bool,
+        target: Expression,
+        /// `FILE` was written before the target: it names a file, which is
+        /// written, and the target expression is read.
+        target_file: bool,
+        /// The expressions of `STARTING AT`, `FOR`, `OVERLAY AT` and the code
+        /// pages, in source order.
+        options: Vec<Expression>,
+        no_error: bool,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an

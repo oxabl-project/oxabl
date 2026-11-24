@@ -278,6 +278,16 @@ impl Visitor<'_> {
                 }
             }
             StatementKind::Get { query, .. } => self.walk_expression(query),
+            StatementKind::CopyLob {
+                source,
+                target,
+                options,
+                ..
+            } => {
+                for e in [source, target].into_iter().chain(options) {
+                    self.walk_expression(e);
+                }
+            }
             StatementKind::Color { items, .. } => {
                 for e in items {
                     self.walk_expression(e);

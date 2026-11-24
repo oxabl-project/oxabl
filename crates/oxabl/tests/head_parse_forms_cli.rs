@@ -36,6 +36,8 @@ const DECL_STORED: &str =
     "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\nDEFINE VARIABLE v-st AS INTEGER NO-UNDO.\n";
 const DECL_INT: &str = "DEFINE VARIABLE v-x AS INTEGER NO-UNDO.\n";
 const DECL_FRAME: &str = "DEFINE FRAME f-x WITH SIDE-LABELS.\n";
+const DECL_LOBS: &str =
+    "DEFINE VARIABLE v-x AS LONGCHAR NO-UNDO.\nDEFINE VARIABLE v-y AS LONGCHAR NO-UNDO.\n";
 const DECL_HANDLE: &str = "DEFINE VARIABLE v-x AS HANDLE NO-UNDO.\n";
 
 const FORMS: &[Form] = &[
@@ -87,6 +89,16 @@ const FORMS: &[Form] = &[
         credits: true,
         statement: "ACCUMULATE v-x (TOTAL COUNT).",
         undefined: Some("ACCUMULATE v-x (TOTAL BY v-nope)."),
+        bare: None,
+    },
+    Form {
+        name: "COPY-LOB",
+        decls: DECL_LOBS,
+        credits: true,
+        statement: "COPY-LOB FROM OBJECT v-x STARTING AT 1 FOR 10 TO OBJECT v-y APPEND NO-ERROR.",
+        undefined: Some(
+            "COPY-LOB FROM OBJECT v-nope STARTING AT 1 FOR 10 TO OBJECT v-y APPEND NO-ERROR.",
+        ),
         bare: None,
     },
     Form {

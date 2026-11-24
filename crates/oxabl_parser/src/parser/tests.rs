@@ -15250,3 +15250,70 @@ fn color_without_display_or_prompt_stays_skipped() {
     let stmts = assert_parses_clean("COLOR v-a.");
     assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
 }
+
+#[test]
+fn copy_lob_is_head_parsed_with_source_target_and_options() {
+    for (source, source_file, target_file, options, no_error) in [
+        ("COPY-LOB FROM v-a TO v-b.", false, false, 0, false),
+        ("COPY-LOB v-a TO v-b.", false, false, 0, false),
+        (
+            "COPY-LOB FROM FILE v-path TO OBJECT v-b NO-ERROR.",
+            true,
+            false,
+            0,
+            true,
+        ),
+        (
+            "COPY-LOB FROM v-a TO FILE \"out.txt\" APPEND.",
+            false,
+            true,
+            0,
+            false,
+        ),
+        (
+            "COPY-LOB FROM OBJECT v-a STARTING AT v-s FOR v-n TO v-b OVERLAY AT v-o TRIM.",
+            false,
+            false,
+            3,
+            false,
+        ),
+        (
+            "COPY-LOB FROM v-a TO v-b CONVERT TARGET CODEPAGE \"utf-8\" SOURCE CODEPAGE v-cp NO-ERROR.",
+            false,
+            false,
+            2,
+            true,
+        ),
+        (
+            "COPY-LOB FROM v-a TO v-b NO-CONVERT.",
+            false,
+            false,
+            0,
+            false,
+        ),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::CopyLob {
+            source_file: sf,
+            target_file: tf,
+            options: o,
+            no_error: n,
+            ..
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected CopyLob, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(
+            (*sf, *tf, o.len(), *n),
+            (source_file, target_file, options, no_error),
+            "{source}: {o:?}"
+        );
+        assert!(tail_names(&stmts[0]).is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn a_copy_lob_without_to_stays_skipped() {
+    let stmts = assert_parses_clean("COPY-LOB FROM v-a.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
+}

@@ -255,6 +255,16 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
             }
         }
         StatementKind::Get { query, .. } => walk_expression(v, query),
+        StatementKind::CopyLob {
+            source,
+            target,
+            options,
+            ..
+        } => {
+            for e in [source, target].into_iter().chain(options) {
+                walk_expression(v, e);
+            }
+        }
         StatementKind::Color { items, .. } => {
             for e in items {
                 walk_expression(v, e);

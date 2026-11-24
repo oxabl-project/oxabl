@@ -3412,6 +3412,25 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
+            StatementKind::CopyLob {
+                source,
+                target,
+                target_file,
+                options,
+                ..
+            } => {
+                self.walk_expression(source, scope, AccessMode::Read);
+                // An `APPEND` or `OVERLAY` target is read too.
+                let mode = if *target_file {
+                    AccessMode::Read
+                } else {
+                    AccessMode::ReadWrite
+                };
+                self.walk_expression(target, scope, mode);
+                for e in options {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
             StatementKind::Get { query, .. } => self.walk_lenient_operand(query, scope),
             StatementKind::Reposition {
                 query, operands, ..

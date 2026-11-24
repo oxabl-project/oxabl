@@ -383,6 +383,16 @@ impl<'a> CheckWalker<'a> {
             StatementKind::Get { query, .. } => {
                 self.check_expression(query, scope);
             }
+            StatementKind::CopyLob {
+                source,
+                target,
+                options,
+                ..
+            } => {
+                for e in [source, target].into_iter().chain(options) {
+                    self.check_expression(e, scope);
+                }
+            }
             StatementKind::Color { items, .. } => {
                 for e in items {
                     self.check_expression(e, scope);

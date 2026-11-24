@@ -677,8 +677,7 @@ impl Parser<'_> {
         // Uses skip_to_statement_end() (not skip_to_period()) to avoid stopping at
         // '.' field-access separators inside expressions like doc_data.body_text.
         if self.check(Kind::CopyLob) {
-            let (_, hi) = self.skip_to_statement_end();
-            return Ok(self.skipped_stmt(hi));
+            return self.parse_copy_lob_statement();
         }
 
         // PUT [STREAM s] [UNFORMATTED] expr ... — head-parsed; options stay a skipped tail.
@@ -4767,6 +4766,109 @@ impl Parser<'_> {
         }
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Color { stream_name, items }, tail))
+    }
+
+    /// `COPY-LOB [FROM] [FILE | OBJECT] source [STARTING AT n] [FOR n] TO
+    /// [FILE | OBJECT] target [OVERLAY AT n [TRIM] | APPEND]
+    /// [NO-CONVERT | CONVERT [TARGET CODEPAGE cp] [SOURCE CODEPAGE cp]]
+    /// [NO-ERROR]`. A source or target that does not parse leaves the statement
+    /// skipped.
+    fn parse_copy_lob_statement(&mut self) -> ParseResult<Statement> {
+        let word = |p: &Self, text: &str| {
+            let t = p.peek();
+            p.source[t.start..t.end].eq_ignore_ascii_case(text)
+        };
+        self.advance(); // consume COPY-LOB
+        if self.check(Kind::From) {
+            self.advance();
+        }
+        let source_file = self.check(Kind::File);
+        if source_file || self.check(Kind::Object) {
+            self.advance();
+        }
+        let source_stop = |k: Kind| matches!(k, Kind::To | Kind::KwFor);
+        let mut options = Vec::new();
+        let mut head = self.parse_head_item(source_stop);
+        // `STARTING AT n` and `FOR n`.
+        loop {
+            if head.is_some() && word(self, "starting") && self.check_at(1, Kind::At) {
+                self.advance();
+                self.advance();
+            } else if head.is_some() && self.check(Kind::KwFor) {
+                self.advance();
+            } else {
+                break;
+            }
+            match self.parse_head_item(source_stop) {
+                Some(e) => options.push(e),
+                None => {
+                    head = None;
+                    break;
+                }
+            }
+        }
+        let (Some(source), true) = (head, self.check(Kind::To)) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        self.advance(); // consume TO
+        let target_file = self.check(Kind::File);
+        if target_file || self.check(Kind::Object) {
+            self.advance();
+        }
+        let target_stop = |k: Kind| matches!(k, Kind::Overlay | Kind::Append | Kind::NoError);
+        let Some(target) = self.parse_head_item(target_stop) else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let mut no_error = false;
+        loop {
+            if self.check(Kind::Overlay) && self.check_at(1, Kind::At) {
+                self.advance();
+                self.advance();
+                match self.parse_head_item(|k| k == Kind::Trim) {
+                    Some(e) => options.push(e),
+                    None => break,
+                }
+                if self.check(Kind::Trim) {
+                    self.advance();
+                }
+            } else if self.check(Kind::Append) || word(self, "no-convert") {
+                self.advance();
+            } else if word(self, "convert") {
+                self.advance();
+                // `TARGET CODEPAGE cp` and `SOURCE CODEPAGE cp`, in either order.
+                while (word(self, "target") || word(self, "source"))
+                    && self.peek_nth_non_comment(2).kind != Kind::Period
+                {
+                    self.advance();
+                    if word(self, "codepage") {
+                        self.advance();
+                    }
+                    match self.parse_head_item(|_| false) {
+                        Some(e) => options.push(e),
+                        None => break,
+                    }
+                }
+            } else if self.check(Kind::NoError) {
+                no_error = true;
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(
+            StatementKind::CopyLob {
+                source,
+                source_file,
+                target,
+                target_file,
+                options,
+                no_error,
+            },
+            tail,
+        ))
     }
 
     /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query
