@@ -120,6 +120,11 @@ The answer never guesses:
   in the file, so it is not shown.
 - A `FUNCTION ... FORWARD` declaration is not a use of its function: the cursor
   on it gives none, and the cursor on a call does not mark it.
+- The resolver does not read the tables after the first one of a `FOR EACH`
+  header (`FOR EACH a, EACH b WHERE ...` and `OF`). A name in the `WHERE` or
+  `OF` of such a table is not a use, so the cursor on it gives none, and the
+  cursor on the first table does not mark it. Go to definition has the same
+  gap. The list is then not complete.
 
 VS Code marks the same word as plain text when the server answers `null`. That
 fallback is the editor's own.
@@ -143,9 +148,9 @@ fields through `[workspace.schema]`. No request depends on
 `highlight_cost.rs` of `oxabl_pipeline` counts the file system operations of a
 highlight in a unit with 300 `RUN ... IN h`. A test of `oxabl_daemon::db` counts
 the executions of the memoized queries over five cursor moves.
-`document_highlight_lsp.rs` also pins an unsaved include, and that the newest of
-a burst of requests is answered. That only one analysis runs at a time depends on
-timing and is not pinned.
+`document_highlight_lsp.rs` also pins an unsaved include, a new include that has
+no file yet, and that the newest of a burst of requests is answered while older
+ones, on a large file, are replaced.
 `navigation_sweep_lsp.rs` asks for a definition and for highlights at every position of
 files full of awkward names (a table and field of one name, keywords, hyphens,
 non-ASCII, a 200-character name, a `.df` that breaks off) and wants a
@@ -175,8 +180,8 @@ A highlight comes on every cursor move, so it has a bound:
   recorded sites. An edit makes the next highlight analyse again. The model
   also keeps the call sites (`FileCalls`) after the first `RUN` that needs
   them. Includes are read from disk, as for diagnostics. When the unit reads
-  an include whose open buffer differs from the file, the request is analysed
-  as go to definition is, with the open buffers over the disk, so both answer
+  an include whose open buffer differs from the file, or another open document
+  has no file on disk, the request is analysed as go to definition is, with the open buffers over the disk, so both answer
   from the same text.
 - Diagnostics do not record sites, so their own resolve pass is not the one a
   highlight uses. Recording sites in every diagnostics run would add a push for
@@ -189,5 +194,5 @@ A highlight comes on every cursor move, so it has a bound:
 - An include with a selected compilation context is analysed in its root for
   each request, as go to definition does, and is not memoized.
 - The highlights of one document run one at a time. A request that waits while
-  a newer one comes is answered `RequestCancelled` without an analysis, so a
-  held arrow key runs at most the analysis in progress and the newest one.
+  a newer one comes is answered `ContentModified` (-32801) without an analysis,
+  so a held arrow key runs at most the analysis in progress and the newest one.
