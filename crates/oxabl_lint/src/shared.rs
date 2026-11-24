@@ -17,6 +17,9 @@ use oxabl_semantic::AnalysisContext;
 #[derive(Default)]
 pub struct RunShared<'a> {
     summaries: Option<&'a dyn CalleeSummaries>,
+    reach: Option<&'a dyn crate::rules::security::reach::SecurityReach>,
+    /// Where each include expansion starts, with its path.
+    includes: &'a [(u32, std::path::PathBuf)],
     /// The scopes will be analysed: the CFGs of every unit serve the dynamic
     /// objects too.
     share_flow: Cell<bool>,
@@ -29,6 +32,8 @@ pub struct RunShared<'a> {
     nulls: OnceCell<FileNulls>,
     null_values: OnceCell<FileNulls>,
     null_fields: OnceCell<FileNulls>,
+    taint: OnceCell<crate::rules::security::taint::FileTaint>,
+    reach_facts: OnceCell<crate::rules::security::reach::FileFacts>,
 }
 
 /// Answers in expanded byte coordinates. Missing and partial answers are Unknown.
@@ -41,6 +46,48 @@ impl<'a> RunShared<'a> {
     pub fn with_summaries(mut self, summaries: &'a dyn CalleeSummaries) -> Self {
         self.summaries = Some(summaries);
         self
+    }
+
+    /// Supply the reachability answers of this file.
+    pub fn with_reach(
+        mut self,
+        reach: &'a dyn crate::rules::security::reach::SecurityReach,
+    ) -> Self {
+        self.reach = Some(reach);
+        self
+    }
+
+    /// Supply where each include expansion starts in the expanded text, with
+    /// the path it was read from.
+    pub fn with_includes(mut self, includes: &'a [(u32, std::path::PathBuf)]) -> Self {
+        self.includes = includes;
+        self
+    }
+
+    /// The reachability answers of this file, when the client has them.
+    pub fn reach(&self) -> Option<&'a dyn crate::rules::security::reach::SecurityReach> {
+        self.reach
+    }
+
+    /// Where each include expansion starts, with its path.
+    pub fn includes(&self) -> &'a [(u32, std::path::PathBuf)] {
+        self.includes
+    }
+
+    /// The reachability facts of the file, read once.
+    pub fn reach_facts(
+        &self,
+        program: &[Statement],
+        ctx: &AnalysisContext,
+    ) -> &crate::rules::security::reach::FileFacts {
+        self.reach_facts.get_or_init(|| {
+            crate::rules::security::reach::file_facts(
+                program,
+                ctx,
+                self,
+                ctx.lint_severities.security(),
+            )
+        })
     }
 
     /// Note whether the run will analyse the scopes too.
@@ -160,7 +207,7 @@ impl<'a> RunShared<'a> {
         })
     }
 
-    pub(crate) fn tokens<'s>(&'s self, ctx: &'s AnalysisContext) -> &'s [oxabl_lexer::Token] {
+    pub fn tokens<'s>(&'s self, ctx: &'s AnalysisContext) -> &'s [oxabl_lexer::Token] {
         if !ctx.tokens.is_empty() {
             return ctx.tokens;
         }
@@ -168,7 +215,20 @@ impl<'a> RunShared<'a> {
             .get_or_init(|| oxabl_lexer::tokenize(ctx.source))
     }
 
-    fn flow(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileFlow {
+    /// The taint facts of the file, analysed once under the context's
+    /// security options.
+    pub(crate) fn taint(
+        &self,
+        program: &[Statement],
+        ctx: &AnalysisContext,
+    ) -> &crate::rules::security::taint::FileTaint {
+        self.taint.get_or_init(|| {
+            crate::rules::security::taint::analyze(program, ctx, self.flow(program, ctx))
+        })
+    }
+
+    /// The control-flow graphs of the file's units, built once.
+    pub fn flow(&self, program: &[Statement], ctx: &AnalysisContext) -> &FileFlow {
         self.flow.get_or_init(|| {
             oxabl_flow::build_file_tokens(
                 program,

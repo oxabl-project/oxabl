@@ -65,6 +65,8 @@
 //! Graph access, reachability, path search and block exits are methods on
 //! [`Cfg`]. [`dominators`] has dominator and post-dominator trees, and
 //! [`dataflow`] a worklist solver for forward and backward analyses.
+//! [`provenance`] is a fact type for "which sources may this value come from",
+//! and [`Cfg::nodes_at`] finds the program point of a source offset.
 //! [`FileFlow::dump`] renders a stable text form for snapshot tests.
 //!
 //! A question about one block needs one unit: [`UnitBuilder`] says which unit
@@ -75,6 +77,7 @@ pub mod dataflow;
 pub mod dominators;
 mod dump;
 mod model;
+pub mod provenance;
 mod query;
 mod tokens;
 

@@ -1,0 +1,6 @@
+/* expect: 2 */
+&GLOBAL-DEFINE OUT PUT STREAM WebStream UNFORMATTED
+DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+
+{&OUT} "<h1>" pcName "</h1>".
+PUT STREAM WebStream UNFORMATTED "<b>" + pcName + "</b>".

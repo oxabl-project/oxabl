@@ -45,7 +45,7 @@
 //! (`StatementKind::Skipped`) cannot be seen; `RUN` itself is always modelled,
 //! so in practice nothing is lost.
 
-use oxabl_ast::{ExpressionKind, Literal, RunTarget, Statement, StatementKind};
+use oxabl_ast::{Expression, ExpressionKind, Literal, RunTarget, Statement, StatementKind};
 use oxabl_common::{Diagnostic, Severity};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
@@ -71,6 +71,20 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
     v.diags
 }
 
+/// The target of a `RUN VALUE(...)` whose callee is not a bare string literal,
+/// or `None` for any other statement.
+pub(crate) fn dynamic_target(stmt: &Statement) -> Option<&Expression> {
+    let StatementKind::Run {
+        target: RunTarget::Dynamic(target),
+        ..
+    } = &stmt.kind
+    else {
+        return None;
+    };
+    // `RUN VALUE("prog.p")` still names its callee.
+    (!matches!(&target.kind, ExpressionKind::Literal(Literal::String(_)))).then_some(target)
+}
+
 struct RunValues<'a> {
     ctx: &'a AnalysisContext<'a>,
     diags: Vec<Diagnostic>,
@@ -78,15 +92,7 @@ struct RunValues<'a> {
 
 impl Visitor for RunValues<'_> {
     fn statement(&mut self, stmt: &Statement) -> bool {
-        if let StatementKind::Run {
-            target: RunTarget::Dynamic(target),
-            ..
-        } = &stmt.kind
-        {
-            // `RUN VALUE("prog.p")` still names its callee.
-            if matches!(&target.kind, ExpressionKind::Literal(Literal::String(_))) {
-                return true;
-            }
+        if let Some(target) = dynamic_target(stmt) {
             let span = if target.span.start < target.span.end {
                 target.span
             } else {

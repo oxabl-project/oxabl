@@ -67,6 +67,15 @@ pub struct Diagnostic {
     pub span: FileSpan,
     pub labels: Vec<Label>,
     pub help: Option<String>,
+    /// How an entry point reaches the finding, for the `security` rules when
+    /// entry points are configured.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reach: Option<Box<crate::Reachability>>,
+    /// Other places of the same finding, which are not a path: the further
+    /// decisions of one `client-identity` finding. SARIF `relatedLocations`.
+    /// Boxed to keep `Diagnostic` small; read it with [`Diagnostic::related`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub related: Option<Box<Vec<Label>>>,
 }
 
 impl Diagnostic {
@@ -79,6 +88,8 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            reach: None,
+            related: None,
         }
     }
 
@@ -91,6 +102,8 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            reach: None,
+            related: None,
         }
     }
 
@@ -103,6 +116,8 @@ impl Diagnostic {
             span,
             labels: Vec::new(),
             help: None,
+            reach: None,
+            related: None,
         }
     }
 
@@ -110,6 +125,11 @@ impl Diagnostic {
     pub fn with_label(mut self, span: FileSpan, message: String) -> Self {
         self.labels.push(Label { span, message });
         self
+    }
+
+    /// The other places of the finding (not a path).
+    pub fn related(&self) -> &[Label] {
+        self.related.as_deref().map_or(&[], Vec::as_slice)
     }
 
     /// Add a help/suggestion string to this diagnostic.

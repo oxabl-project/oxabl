@@ -1,0 +1,2 @@
+hSock:READ(mBuf, 1, 4096, READ-EXACT-NUM).
+hSock:READ(mBuf, 1, MIN(iLen, 65536), READ-EXACT-NUM).

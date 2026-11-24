@@ -46,8 +46,9 @@
 //! turns it on even when its group is off; setting it to *off* turns it off.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::Severity;
+use crate::{SecurityOptions, Severity};
 
 /// One layer of lint settings: per-rule severities and group toggles.
 ///
@@ -178,6 +179,8 @@ pub struct LintSeverityMap {
     scopes: Vec<LintScope>,
     /// Scoped layers already selected by [`for_path`](Self::for_path).
     applied: Vec<LintLayer>,
+    /// The options of the security rules. Global: scopes do not change them.
+    security: Arc<SecurityOptions>,
 }
 
 impl LintSeverityMap {
@@ -249,7 +252,18 @@ impl LintSeverityMap {
             base: self.base.clone(),
             scopes: Vec::new(),
             applied,
+            security: self.security.clone(),
         }
+    }
+
+    /// The options of the security rules.
+    pub fn security(&self) -> &SecurityOptions {
+        &self.security
+    }
+
+    /// Replace the options of the security rules.
+    pub fn set_security(&mut self, options: SecurityOptions) {
+        self.security = Arc::new(options);
     }
 
     /// True if nothing is configured (all rules at their defaults).

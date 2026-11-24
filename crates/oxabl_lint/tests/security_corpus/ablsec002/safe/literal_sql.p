@@ -1,0 +1,4 @@
+DEFINE VARIABLE hProc AS HANDLE NO-UNDO.
+
+RUN STORED-PROC send-sql-statement hProc = PROC-HANDLE NO-ERROR ("SELECT COUNT(*) FROM orders").
+RUN STORED-PROC send-sql-statement hProc = PROC-HANDLE NO-ERROR ("SELECT " + "1").

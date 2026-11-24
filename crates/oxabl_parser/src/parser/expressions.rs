@@ -498,7 +498,7 @@ impl Parser<'_> {
         // Optional ABL extent range syntax: [start FOR count]
         if self.check(Kind::KwFor) {
             self.advance(); // consume FOR
-            self.parse_expression().ok(); // consume the count
+            self.drop_expression(); // consume the count
         }
 
         self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
@@ -1262,7 +1262,7 @@ impl Parser<'_> {
             if self.check(Kind::By) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
-                    self.nested(Self::parse_postfix).ok();
+                    self.drop_postfix();
                 }
                 // Optional label (integer or string) identifying the break level
                 if matches!(self.peek().kind, Kind::IntegerLiteral | Kind::StringLiteral) {

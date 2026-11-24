@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "entries": [
+    { "kind": "REST", "name": "GET /orders/{id}", "program": "web/orders.p", "procedure": "get-order" },
+    { "kind": "REST", "name": "DELETE /orders/{id}", "program": "web/orders.p", "procedure": "delete-order" },
+    { "kind": "REST", "name": "POST /admin/purge", "program": "web/admin.p" },
+    { "kind": "WebSpeed", "name": "/report.w", "program": "web/report.p" },
+    { "kind": "WebSpeed", "name": "/profile.w", "program": "web/profile.p" },
+    { "kind": "WebSpeed", "name": "/export.w", "program": "web/export.p" },
+    { "kind": "REST", "name": "GET /api/me", "program": "web/me.p" },
+    { "kind": "REST", "name": "POST /invoices", "class": "app.InvoiceService", "method": "Create" },
+    { "kind": "REST", "name": "GET /status", "class": "app.StatusService", "auth": true },
+    { "kind": "WebSpeed", "name": "/app", "program": "web/front.p" }
+  ]
+}

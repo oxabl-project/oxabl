@@ -1,0 +1,4 @@
+&GLOBAL-DEFINE BASE "FOR EACH Customer"
+DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+
+hQuery:QUERY-PREPARE({&BASE} + " WHERE Customer.Name = 'A'").

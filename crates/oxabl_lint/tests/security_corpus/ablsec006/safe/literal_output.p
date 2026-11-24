@@ -1,0 +1,5 @@
+&GLOBAL-DEFINE OUT PUT STREAM WebStream UNFORMATTED
+DEFINE VARIABLE cName AS CHARACTER NO-UNDO.
+
+{&OUT} "<p>Welcome</p>" SKIP.
+PUT STREAM WebStream UNFORMATTED "<p>" + "static" + "</p>".

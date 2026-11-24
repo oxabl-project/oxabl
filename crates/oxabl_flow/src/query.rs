@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use oxabl_ast::NodeId;
+use oxabl_ast::{NodeId, Span};
 
 use crate::dataflow::BitSet;
 use crate::model::*;
@@ -92,6 +92,30 @@ impl Cfg {
     /// of another unit or a definition (`PROCEDURE`, `METHOD`, ...).
     pub fn nodes_of(&self, stmt: NodeId) -> &[NodeIx] {
         self.stmt_nodes.get(&stmt).map_or(&[], |v| v.as_slice())
+    }
+
+    /// The nodes of the innermost statement or block header whose span holds
+    /// the byte offset `at`: where an expression at `at` is evaluated. Several
+    /// nodes for a statement in a `FINALLY`, none when no statement of this
+    /// unit holds `at`.
+    pub fn nodes_at(&self, at: u32) -> Vec<NodeIx> {
+        let holds = |s: Span| s.start <= at && at < s.end;
+        let mut best: Option<Span> = None;
+        for n in &self.nodes {
+            if matches!(n.kind, NodeKind::Stmt | NodeKind::Head)
+                && holds(n.span)
+                && best.is_none_or(|b| n.span.end - n.span.start < b.end - b.start)
+            {
+                best = Some(n.span);
+            }
+        }
+        let Some(best) = best else {
+            return Vec::new();
+        };
+        self.nodes()
+            .filter(|(_, n)| matches!(n.kind, NodeKind::Stmt | NodeKind::Head) && n.span == best)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// The block a block statement (or the unit statement) opens.

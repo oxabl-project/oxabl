@@ -1,0 +1,2 @@
+hBuf:BATCH-SIZE = 100.
+hDs:FILL().

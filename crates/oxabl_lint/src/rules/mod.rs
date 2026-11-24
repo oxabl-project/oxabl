@@ -22,6 +22,7 @@ pub mod persistent_procedure_leak;
 pub mod procedure_wide_transaction;
 pub mod run_value;
 pub mod scope_widened;
+pub mod security;
 pub mod shared_state;
 pub mod signature_mismatch;
 pub mod transaction_spans_call;
@@ -112,3 +113,9 @@ pub const NL001: &str = "NL001";
 
 /// Diagnostic code for `unknown-propagation` (NL002).
 pub const NL002: &str = "NL002";
+// Codes of the `security` group; ABLSEC006 and later are added on new lines.
+pub use security::{
+    ABLSEC001, ABLSEC002, ABLSEC003, ABLSEC004, ABLSEC005, ABLSEC006, ABLSEC007, ABLSEC008,
+    ABLSEC009, ABLSEC010, ABLSEC011, ABLSEC012, ABLSEC013, ABLSEC014, ABLSEC015, ABLSEC016,
+    ABLSEC017,
+};

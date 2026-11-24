@@ -82,10 +82,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
-    BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, SkippedText, UnresolvedInclude,
-    analyze_from_expanded, collect_from_expanded_with_summaries, expand_source_with,
+    BranchDirective, CollectedDiagnostic, CollectedDiagnostics, CrossFile, DiagnosticSource,
+    DirectInclude, ExpandedFile, IncludeOriginDiagnostic, RuleSelection, SkippedText,
+    UnresolvedInclude, analyze_from_expanded, collect_from_expanded_with, expand_source_with,
 };
+use oxabl_lint::security::reach::SecurityReach;
 
 use oxabl_common::{
     Diagnostic, FileId, InternalPanic, catch_panic, panic_if_injected, panic_sites,
@@ -497,6 +498,7 @@ pub struct LintPipeline<'a> {
     /// [`report_include_findings`]: LintPipeline::report_include_findings
     include_runs: Arc<Mutex<HashMap<PathBuf, Option<Arc<IncludeAlone>>>>>,
     summaries: Arc<Mutex<Option<Arc<crate::WorkspaceEffects>>>>,
+    reach: Arc<Mutex<Option<Arc<crate::WorkspaceReach>>>>,
     known_files: &'a [PathBuf],
     /// The analyses of conditional include targets, kept across the files of a
     /// [`SharedRun`]; `None` for any other handle, which analyses each target
@@ -574,6 +576,7 @@ impl<'a> SharedRun<'a> {
             conditional_closure: false,
             include_runs: Arc::default(),
             summaries: Arc::default(),
+            reach: Arc::default(),
             known_files: self.known_files,
             closures: Some(&self.closures),
         }
@@ -766,6 +769,7 @@ impl<'a> LintPipeline<'a> {
             conditional_closure: false,
             include_runs: Arc::default(),
             summaries: Arc::default(),
+            reach: Arc::default(),
             known_files: &[],
             closures: None,
         }
@@ -947,6 +951,7 @@ impl<'a> LintPipeline<'a> {
             conditional_closure: self.conditional_closure,
             include_runs: Arc::clone(&self.include_runs),
             summaries: Arc::clone(&self.summaries),
+            reach: Arc::clone(&self.reach),
             known_files: self.known_files,
             closures: self.closures,
         }
@@ -956,6 +961,27 @@ impl<'a> LintPipeline<'a> {
     pub fn with_effect_summaries(self, summaries: Arc<crate::WorkspaceEffects>) -> Self {
         *self.summaries.lock().unwrap_or_else(|e| e.into_inner()) = Some(summaries);
         self
+    }
+
+    /// Supply the run's reachability of the entry points, built once with
+    /// [`build_security_reach`](Self::build_security_reach). Without it the
+    /// security findings carry no reachability and ABLSEC011 and ABLSEC012 are
+    /// silent: the graph is not built for one file.
+    pub fn with_security_reach(self, reach: Arc<crate::WorkspaceReach>) -> Self {
+        *self.reach.lock().unwrap_or_else(|e| e.into_inner()) = Some(reach);
+        self
+    }
+
+    /// The run's reachability, when one was supplied and it was built from
+    /// the same text of this file.
+    fn security_reach(&self, expansion: &Expansion) -> Option<Arc<crate::WorkspaceReach>> {
+        let cache = self.reach.lock().unwrap_or_else(|e| e.into_inner());
+        let reach = cache.as_ref()?;
+        let path = self.file().unwrap_or(Path::new(""));
+        if reach.reaches(path) && !reach.file(path).matches(expansion) {
+            return None;
+        }
+        Some(Arc::clone(reach))
     }
 
     /// Whether a strict rule that reads database effects is enabled for this file
@@ -1638,8 +1664,15 @@ impl<'a> LintPipeline<'a> {
                     .as_ref()
                     .and_then(|s| s.file(self.file().unwrap_or(Path::new(""))))
                     .map(|f| f as &dyn oxabl_lint::CalleeSummaries);
+                let reach = self
+                    .security_reach_enabled()
+                    .then(|| self.security_reach(expansion))
+                    .flatten();
+                let reach = reach
+                    .as_ref()
+                    .map(|r| r.file(self.file().unwrap_or(Path::new(""))) as &dyn SecurityReach);
                 let (semantic, diagnostics) = self.with_run_index(|index| {
-                    collect_from_expanded_with_summaries(
+                    collect_from_expanded_with(
                         expanded,
                         &self.config.schema,
                         self.config.schema_loaded,
@@ -1647,7 +1680,10 @@ impl<'a> LintPipeline<'a> {
                         index,
                         source_context,
                         selection,
-                        provider,
+                        CrossFile {
+                            summaries: provider,
+                            reach,
+                        },
                     )
                 });
                 LintResult::computed(semantic.map(Box::new), diagnostics, dependency_paths)

@@ -41,7 +41,8 @@
 //!   line of the flagged span, each with whitespace runs collapsed and ASCII
 //!   letters folded to lower case, so a change of keyword case (`DEFINE` to
 //!   `define`) keeps the match. A finding reported inside an include has no
-//!   text in the root file, so its message is hashed instead. A finding in an
+//!   text in the root file, so its message is hashed instead, without the
+//!   reachability note that `(reachable from ...)` appends. A finding in an
 //!   include file that was checked as a file of its own (strict rules that are
 //!   context-free) is keyed by that include's path like any other file.
 //! - `occurrence` numbers findings that share `path`, `code` and `hash`, in
@@ -57,6 +58,18 @@
 //! in the file, which would make every edit that moves code change the file.
 //! The hash makes the case rare: it needs the same text on both lines.
 //!
+//! # The SARIF fingerprint
+//!
+//! `partialFingerprints["oxablFinding/v1"]` is `F:occurrence`. `F` is the
+//! 64-bit FNV-1a hash, as 16 lower-case hex digits, of
+//! `code + "\0" + path + "\0" + hash`, and `path`, `hash` and `occurrence` are
+//! those of the finding's baseline entry.
+//!
+//! A finding that `--include-findings` reports in an include file `I` takes
+//! the same steps over the text of `I`, with occurrence 0 and `path` set to
+//! `I + "\0" + root` (the workspace-relative path of `I`, then the root as the
+//! run names it).
+//!
 //! # Versions
 //!
 //! Version 2 folds the case of the hashed text. A version 1 file hashes it
@@ -64,11 +77,12 @@
 //! reports an error that names the fix, which is to delete the file and record
 //! it again with `--update-baseline`.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
-use oxabl_analyze::CollectedDiagnostics;
+use oxabl_analyze::{CollectedDiagnostic, CollectedDiagnostics};
 use oxabl_common::Diagnostic;
 use oxabl_pipeline::ROOT_FILE_ID;
 use serde::{Deserialize, Serialize};
@@ -218,6 +232,22 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
+/// The workspace root for a run over `target`: the directory holding
+/// `oxabl.toml`, else the directory of `fallback`, else the target itself.
+pub fn workspace_root(target: &Path, fallback: Option<&Path>) -> PathBuf {
+    let target = absolute(target);
+    let start = if target.is_dir() {
+        target.clone()
+    } else {
+        target.parent().map_or(target.clone(), Path::to_path_buf)
+    };
+    oxabl_workspace::find_workspace_root(&start).unwrap_or_else(|| {
+        fallback
+            .and_then(|f| absolute(f).parent().map(Path::to_path_buf))
+            .unwrap_or(start)
+    })
+}
+
 /// One `check` run's use of a baseline file.
 ///
 /// Shared by the run's worker threads: the file and its entries are read-only,
@@ -249,17 +279,7 @@ impl Run {
             Err(e) if update && e.kind() == std::io::ErrorKind::NotFound => Baseline::default(),
             Err(e) => return Err(format!("cannot read baseline {}: {e}", file.display())),
         };
-        let target = absolute(target);
-        let start = if target.is_dir() {
-            target.clone()
-        } else {
-            target.parent().map_or(target.clone(), Path::to_path_buf)
-        };
-        let root = oxabl_workspace::find_workspace_root(&start).unwrap_or_else(|| {
-            absolute(file)
-                .parent()
-                .map_or_else(|| start.clone(), Path::to_path_buf)
-        });
+        let root = workspace_root(target, Some(file));
         Ok(Run {
             file: file.to_path_buf(),
             update,
@@ -269,23 +289,28 @@ impl Run {
         })
     }
 
-    /// Record the findings of one checked file and keep only those the
-    /// baseline does not cover. With `--update-baseline` nothing is kept: every
-    /// finding is about to be recorded. A file outside the root has no
-    /// baseline path, so all its findings are kept and none is recorded.
-    pub fn filter(
+    /// Record the findings of one checked file. Returns those the baseline
+    /// does not cover, and those it covers. With `--update-baseline` nothing is
+    /// kept: every finding is about to be recorded, and none is covered. A file
+    /// outside the root has no baseline path, so all its findings are kept and
+    /// none is recorded.
+    pub fn split(
         &self,
         file: &Path,
         source: &str,
         mut reported: CollectedDiagnostics,
-    ) -> CollectedDiagnostics {
+    ) -> (CollectedDiagnostics, Vec<CollectedDiagnostic>) {
         let Some(path) = relative_path(&self.root, file) else {
             self.tally().outside_root += reported.diagnostics.len();
-            return reported;
+            return (reported, Vec::new());
         };
         let entries = fingerprint(&path, source, reported.all().map(|c| &c.diagnostic));
-        let mut keep = entries.iter().map(|e| !self.baseline.contains(e));
-        reported.diagnostics.retain(|_| keep.next().unwrap_or(true));
+        let (kept, covered): (Vec<_>, Vec<_>) = std::mem::take(&mut reported.diagnostics)
+            .into_iter()
+            .enumerate()
+            .partition(|(i, _)| !self.baseline.contains(&entries[*i]));
+        reported.diagnostics = kept.into_iter().map(|(_, d)| d).collect();
+        let covered: Vec<CollectedDiagnostic> = covered.into_iter().map(|(_, d)| d).collect();
         let new = reported.diagnostics.len();
         {
             let mut tally = self.tally();
@@ -296,8 +321,9 @@ impl Run {
         }
         if self.update {
             reported.diagnostics.clear();
+            return (reported, Vec::new());
         }
-        reported
+        (reported, covered)
     }
 
     fn tally(&self) -> std::sync::MutexGuard<'_, Tally> {
@@ -372,6 +398,13 @@ pub fn fingerprint<'a>(
         .into_iter()
         .map(|e| e.expect("every index is filled"))
         .collect()
+}
+
+/// A stable identity for an entry: the rule, path and flagged text, plus the
+/// occurrence among identical findings. No line number goes in.
+pub fn finding_fingerprint(entry: &Entry) -> String {
+    let id = format!("{}\0{}\0{}", entry.code, entry.path, entry.hash);
+    format!("{:016x}:{}", fnv1a(&id), entry.occurrence)
 }
 
 /// The workspace-relative spelling of `file` under `root`, with `/`, or `None`
@@ -460,7 +493,7 @@ fn lexical(path: &Path) -> PathBuf {
 /// The text a diagnostic's hash is taken over.
 fn content(source: &str, d: &Diagnostic) -> String {
     if d.span.file != ROOT_FILE_ID {
-        return normalize(&d.message);
+        return normalize(&message_without_reach(d));
     }
     let start = (d.span.span.start as usize).min(source.len());
     let end = (d.span.span.end as usize).clamp(start, source.len());
@@ -472,6 +505,17 @@ fn content(source: &str, d: &Diagnostic) -> String {
     let flagged = source.get(start..end).unwrap_or_default();
     let flagged = flagged.lines().next().unwrap_or_default();
     format!("{}\0{}", normalize(line), normalize(flagged))
+}
+
+/// The message of a finding without the reachability note at its end.
+fn message_without_reach(d: &Diagnostic) -> Cow<'_, str> {
+    match d.reach.as_deref() {
+        Some(r) => match d.message.strip_suffix(&format!(" ({r})")) {
+            Some(m) => Cow::Borrowed(m),
+            None => Cow::Borrowed(&d.message),
+        },
+        None => Cow::Borrowed(&d.message),
+    }
 }
 
 /// Whitespace runs collapsed and ASCII letters folded: ABL keywords are
@@ -609,6 +653,18 @@ mod tests {
     fn a_wrong_version_or_shape_is_an_error() {
         assert!(Baseline::parse("{\"version\": 3, \"entries\": []}").is_err());
         assert!(Baseline::parse("[]").is_err());
+    }
+
+    #[test]
+    fn an_include_finding_hashes_its_message_without_the_reach_note() {
+        let mut d = diag("ABLSEC011", BEFORE, "a AS", 0);
+        d.span.file = oxabl_common::FileId::new(7);
+        let plain = fingerprint("a.p", BEFORE, [&d]);
+        let reach =
+            oxabl_common::Reachability::of(oxabl_common::ReachStatus::Unreachable, Vec::new());
+        d.message = format!("{} ({reach})", d.message);
+        d.reach = Some(Box::new(reach));
+        assert_eq!(fingerprint("a.p", BEFORE, [&d])[0].hash, plain[0].hash);
     }
 
     #[test]

@@ -1,0 +1,3 @@
+INPUT THROUGH ls -l.
+INPUT THROUGH VALUE("date" + " +%Y").
+OUTPUT THROUGH lpr.

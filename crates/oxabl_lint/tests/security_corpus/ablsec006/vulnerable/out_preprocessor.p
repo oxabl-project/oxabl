@@ -1,0 +1,6 @@
+/* expect: 2 */
+&GLOBAL-DEFINE OUT PUT STREAM WebStream UNFORMATTED
+DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+
+{&OUT} "<p>Hello, " pcName "</p>".
+{&OUT} pcName SKIP.

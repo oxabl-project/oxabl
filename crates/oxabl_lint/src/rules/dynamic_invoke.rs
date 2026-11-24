@@ -90,7 +90,7 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
 /// The canonical spelling of a dynamic-call keyword, or `None`.
 ///
 /// `DYNAMIC-FUNCTION` may be abbreviated down to `DYNAMIC-FUNC`.
-fn dynamic_name(text: &str) -> Option<&'static str> {
+pub(crate) fn dynamic_name(text: &str) -> Option<&'static str> {
     const FUNCTION: &str = "DYNAMIC-FUNCTION";
     if text.len() >= "DYNAMIC-FUNC".len()
         && text.len() <= FUNCTION.len()

@@ -123,7 +123,15 @@ impl Parser<'_> {
         // No statement is inside an expression, so no chain is open here; a
         // chain left open by an error is closed.
         self.chain = 0;
-        let mut stmt = self.parse_statement_inner()?;
+        let mark = self.unmodelled.len();
+        let mut stmt = match self.parse_statement_inner() {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                self.unmodelled.truncate(mark);
+                return Err(e);
+            }
+        };
+        self.take_unmodelled(mark, &mut stmt);
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
         Ok(stmt)
@@ -997,7 +1005,7 @@ impl Parser<'_> {
                     }
                     if self.check(Kind::When) {
                         self.advance();
-                        self.parse_expression().ok();
+                        self.drop_expression();
                     }
                     assignments.push(AssignPair {
                         target,
@@ -1349,7 +1357,7 @@ impl Parser<'_> {
                 self.peek().kind,
                 Kind::KwAs | Kind::Like | Kind::NoUndo | Kind::Period
             ) {
-                self.parse_expression().ok();
+                self.drop_expression();
             }
         }
 
@@ -1655,7 +1663,7 @@ impl Parser<'_> {
                 // Consume optional INIT value before AS/LIKE (some code specifies INIT first)
                 if self.check(Kind::Initial) {
                     self.advance();
-                    self.parse_expression().ok();
+                    self.drop_expression();
                 }
                 // NO-UNDO may appear before AS/LIKE (e.g. DEF INPUT PARAM p NO-UNDO LIKE t.f)
                 let mut no_undo = self.check(Kind::NoUndo);
@@ -1687,7 +1695,7 @@ impl Parser<'_> {
                         Kind::Initial => {
                             self.advance(); // consume INIT/INITIAL
                             // Consume the initial value expression
-                            self.parse_expression().ok();
+                            self.drop_expression();
                         }
                         Kind::Extent => {
                             self.advance(); // consume EXTENT
@@ -2620,7 +2628,7 @@ impl Parser<'_> {
                 self.advance(); // consume STOP-AFTER
                 // Consume the duration expression (may be integer literal or identifier)
                 if !self.check(Kind::Colon) && !self.at_end() {
-                    self.parse_expression().ok();
+                    self.drop_expression();
                 }
             }
         }
@@ -2664,10 +2672,12 @@ impl Parser<'_> {
         // The WITH clause can contain many frame options; consume everything until the
         // ':' or '.' that opens the block body.
         if self.check(Kind::With) {
+            let lo = self.current;
             self.advance(); // consume WITH
             while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
                 self.advance();
             }
+            self.note_unmodelled(lo, self.current);
         }
 
         // Accept either ':' or '.' to open the DO body (legacy ABL uses '.')
@@ -2812,16 +2822,20 @@ impl Parser<'_> {
         }
         if self.check(Kind::Equals) {
             self.advance(); // consume =
-            self.parse_expression().ok(); // from value
+            let notes = self.unmodelled.len();
+            self.drop_expression(); // from value
             if self.check(Kind::To) {
                 self.advance(); // consume TO
-                self.parse_expression().ok(); // to value
+                self.drop_expression(); // to value
                 if self.check(Kind::By) {
                     self.advance(); // consume BY
-                    self.parse_expression().ok(); // by value
+                    self.drop_expression(); // by value
                 }
+                // The loop variable is written too.
+                self.note_unmodelled(saved_pos, self.current);
                 return true;
             }
+            self.unmodelled.truncate(notes);
         }
         self.current = saved_pos; // not a counting loop; backtrack
         false
@@ -2974,9 +2988,30 @@ impl Parser<'_> {
             on_actions.extend(self.parse_block_on_phrases());
         }
 
-        // Optional PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]
-        // Multiple tables may be comma-joined: PRESELECT EACH t1 NO-LOCK, EACH t2 NO-LOCK
+        self.skip_preselect_phrases();
+
+        // Expect colon (or period for legacy code)
+        if self.check(Kind::Period) {
+            self.advance();
+        } else {
+            self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
+        }
+
+        let body = self.parse_block_body()?;
+
+        Ok(self.stmt(StatementKind::Repeat {
+            while_condition,
+            on_actions,
+            body,
+        }))
+    }
+
+    /// `PRESELECT EACH/FIRST/LAST table [lock] [WHERE cond] [lock]` of
+    /// `REPEAT`, with comma-joined tables and a `BY` list. It has no place in
+    /// the node: each clause is noted unmodelled whole.
+    fn skip_preselect_phrases(&mut self) {
         while self.check(Kind::Preselect) {
+            let clause = self.current;
             self.advance(); // consume PRESELECT
             // Inner loop: handle comma-joined table entries
             loop {
@@ -3000,7 +3035,7 @@ impl Parser<'_> {
                 // optional WHERE clause
                 if self.check(Kind::KwWhere) {
                     self.advance();
-                    self.parse_expression().ok();
+                    self.drop_expression();
                 }
                 // lock type may also appear after WHERE
                 self.parse_lock_type();
@@ -3027,25 +3062,11 @@ impl Parser<'_> {
             while self.check(Kind::By) {
                 self.advance(); // consume BY
                 if Self::can_be_identifier(self.peek().kind) {
-                    self.parse_postfix().ok(); // consume break field
+                    self.drop_postfix(); // consume break field
                 }
             }
+            self.note_unmodelled(clause, self.current);
         }
-
-        // Expect colon (or period for legacy code)
-        if self.check(Kind::Period) {
-            self.advance();
-        } else {
-            self.expect_kind(Kind::Colon, "Expected ':' after REPEAT")?;
-        }
-
-        let body = self.parse_block_body()?;
-
-        Ok(self.stmt(StatementKind::Repeat {
-            while_condition,
-            on_actions,
-            body,
-        }))
     }
 
     /// Consume the `ERROR` modifier of `RETURN ERROR`; it lexes as an identifier.
@@ -3293,6 +3314,9 @@ impl Parser<'_> {
         // ABL JOIN: FOR EACH t1 ..., FIRST/EACH/LAST t2 WHERE ... [, ...]
         // Consume additional joined table phrases separated by commas.
         while self.check(Kind::Comma) {
+            // The joined phrase has no place in the node: it is noted unmodelled
+            // whole, its buffer and its `WHERE` with it.
+            let phrase = self.current;
             self.advance(); // consume ','
             // Optional qualifier (EACH, FIRST, LAST, NEXT, PREV) for joined table
             if self.check(Kind::Each)
@@ -3327,7 +3351,7 @@ impl Parser<'_> {
             // optional WHERE clause
             if self.check(Kind::KwWhere) {
                 self.advance();
-                self.parse_expression().ok();
+                self.drop_expression();
             }
             // trailing lock, USE-INDEX, NO-WAIT
             self.parse_lock_type();
@@ -3340,6 +3364,7 @@ impl Parser<'_> {
             if self.check(Kind::NoWait) {
                 self.advance();
             }
+            self.note_unmodelled(phrase, self.current);
         }
 
         let mut on_actions = Vec::new();
@@ -3354,7 +3379,7 @@ impl Parser<'_> {
                 self.advance(); // consume BY
                 // consume the sort field expression (stops at ':' or '.')
                 if !self.check(Kind::Colon) && !self.check(Kind::Period) {
-                    self.parse_expression().ok();
+                    self.drop_expression();
                 }
                 // Optional DESCENDING / ASCENDING
                 if self.check(Kind::Descending) || self.check(Kind::Ascending) {
@@ -3362,7 +3387,7 @@ impl Parser<'_> {
                 }
             } else if self.check(Kind::KwWhile) {
                 self.advance(); // consume WHILE
-                self.parse_expression().ok(); // parse the condition
+                self.drop_expression(); // parse the condition
             } else if self.check(Kind::Transaction) {
                 self.advance();
             } else if self.check(Kind::On) {
@@ -3376,10 +3401,12 @@ impl Parser<'_> {
         // The WITH clause can contain many frame options; consume everything until the
         // ':' or '.' that opens the block body.
         if self.check(Kind::With) {
+            let lo = self.current;
             self.advance(); // consume WITH
             while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
                 self.advance();
             }
+            self.note_unmodelled(lo, self.current);
         }
 
         // ABL accepts either ':' or '.' to start the FOR EACH body.
@@ -3392,9 +3419,11 @@ impl Parser<'_> {
             self.advance(); // consume ':'
         } else {
             // Skip unrecognized tokens (e.g. condition from {&preproc} expansion) until ':' or '.'
+            let lo = self.current;
             while !self.at_end() && !self.check(Kind::Colon) && !self.check(Kind::Period) {
                 self.advance();
             }
+            self.note_unmodelled(lo, self.current);
             if self.check(Kind::Period) {
                 self.advance();
             } else {
@@ -3974,12 +4003,14 @@ impl Parser<'_> {
                 in_handle = Some(self.parse_run_in_handle()?);
             } else if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
                 // ON SERVER name — or ON handle (AppServer targeting)
+                let lo = self.current;
                 self.advance(); // consume ON
                 let next_is_server = self.check(Kind::Server);
                 self.advance(); // consume SERVER or handle name
                 if next_is_server && Self::can_be_identifier(self.peek().kind) {
                     self.advance(); // consume server name after SERVER keyword
                 }
+                self.note_unmodelled(lo, self.current);
             } else if self.check(Kind::Persistent) {
                 self.advance();
                 persistent = true;
@@ -4006,10 +4037,12 @@ impl Parser<'_> {
                 }
             } else if self.check(Kind::Set) {
                 // Standalone SET handle (e.g. RUN VALUE(...) SET hHandle ...)
+                let lo = self.current;
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
                     self.advance();
                 }
+                self.note_unmodelled(lo, self.current);
             } else {
                 break;
             }
@@ -4080,6 +4113,7 @@ impl Parser<'_> {
         };
 
         // Handle any remaining modifiers after the arg list
+        let modifiers = self.current;
         loop {
             if self.check(Kind::On) && Self::can_be_identifier(self.peek_at(1).kind) {
                 self.advance();
@@ -4106,6 +4140,7 @@ impl Parser<'_> {
                 break;
             }
         }
+        self.note_unmodelled(modifiers, self.current);
 
         // parse optional NO-ERROR
         let no_error = if self.check(Kind::NoError) {
@@ -4902,7 +4937,7 @@ impl Parser<'_> {
             // Also handles WHEN cond WITH/FRAME/. where there is no following display item.
             if self.check(Kind::When) {
                 self.advance(); // consume WHEN
-                self.parse_expression().ok(); // parse the condition
+                self.drop_expression(); // parse the condition
                 // If we're now at a statement terminator, the WHEN was trailing; restart loop
                 // so the outer while condition can exit cleanly.
                 if self.check(Kind::With)
@@ -4936,7 +4971,7 @@ impl Parser<'_> {
                     // AT column-number or @ column-reference
                     self.advance();
                     if !self.check(Kind::Period) && !self.check(Kind::With) {
-                        self.parse_expression().ok();
+                        self.drop_expression();
                     }
                 } else if self.check(Kind::ViewAs) {
                     // VIEW-AS widget-type [SIZE[CHARS] n BY m] — consume widget descriptor
@@ -5082,6 +5117,7 @@ impl Parser<'_> {
 
         // Parse optional VIEW-AS ALERT-BOX clause — skip over without failing
         if self.check(Kind::ViewAs) {
+            let lo = self.current;
             self.advance(); // consume VIEW-AS
             // Skip tokens until we hit SET, UPDATE, or period
             while !self.check(Kind::Set)
@@ -5091,6 +5127,7 @@ impl Parser<'_> {
             {
                 self.advance();
             }
+            self.note_unmodelled(lo, self.current);
         }
 
         // Parse optional SET or UPDATE variable list
@@ -5235,7 +5272,7 @@ impl Parser<'_> {
             // Optional WHEN condition: field = expr WHEN condition
             if self.check(Kind::When) {
                 self.advance(); // consume WHEN
-                self.parse_expression().ok(); // consume condition
+                self.drop_expression(); // consume condition
             }
             assignments.push(AssignPair { target, value });
         }
@@ -6260,7 +6297,7 @@ impl Parser<'_> {
                         | Kind::PackagePrivate
                         | Kind::PackageProtected
                 ) {
-                    self.parse_expression().ok();
+                    self.drop_expression();
                 }
             } else {
                 break;
@@ -6952,17 +6989,29 @@ impl Parser<'_> {
         }
         let buffer = self.parse_record_name()?;
         // Skip optional VALIDATE(...) clause: DELETE table VALIDATE(true, "msg").
+        // The node has no place for its condition: it is noted unmodelled.
         if self.check(Kind::Validate) {
+            let lo = self.current;
             self.advance(); // consume VALIDATE
             if self.check(Kind::LeftParen) {
                 self.advance();
-                while !self.check(Kind::RightParen) && !self.check(Kind::Period) && !self.at_end() {
+                let mut depth = 0usize;
+                while !(depth == 0 && self.check(Kind::RightParen))
+                    && !self.check(Kind::Period)
+                    && !self.at_end()
+                {
+                    match self.peek().kind {
+                        Kind::LeftParen => depth += 1,
+                        Kind::RightParen => depth -= 1,
+                        _ => {}
+                    }
                     self.advance();
                 }
                 if self.check(Kind::RightParen) {
                     self.advance();
                 }
             }
+            self.note_unmodelled(lo, self.current);
         }
         let no_error = self.parse_no_error();
         self.expect_period("Expected '.' after DELETE statement")?;

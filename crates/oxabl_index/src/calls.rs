@@ -734,6 +734,181 @@ fn expression_calls(source: &str, tokens: &[Token], decls: &Decls, out: &mut Vec
     }
 }
 
+/// A call into a class that the file names: `NEW pkg.Cls(...)`, `o:m(...)`
+/// where the file declares `o` as `pkg.Cls` (a variable, parameter or
+/// property), and the static call `pkg.Cls:m(...)`. The class is as written,
+/// for the caller to resolve through the file's `USING` imports.
+///
+/// [`FileCalls`] lists a method call on an object as Unknown; for the sites
+/// here, the class says what it is. A chain `o:a():b()` names the class of its
+/// first link only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectCall {
+    /// The method name, or the class name of a `NEW`. A method call has the
+    /// same `at` as its [`CallSite`].
+    pub at: Span,
+    pub class: String,
+    /// `None` for a `NEW`.
+    pub method: Option<String>,
+}
+
+/// The calls into classes that a parsed file names.
+pub fn object_calls(program: &[Statement], source: &str, tokens: &[Token]) -> Vec<ObjectCall> {
+    let mut types: Vec<(String, String)> = Vec::new();
+    let mut declared: Vec<String> = Vec::new();
+    let mut add = |name: &str, ty: Option<&str>| {
+        let name = name.to_ascii_lowercase();
+        match ty {
+            Some(t) => types.push((name, t.to_string())),
+            None => declared.push(name),
+        }
+    };
+    let parameter = |p: &Statement, add: &mut dyn FnMut(&str, Option<&str>)| {
+        if let StatementKind::DefineParameter {
+            param_type:
+                ParameterType::Variable {
+                    name, type_source, ..
+                },
+            ..
+        } = &p.kind
+        {
+            add(&name.name, explicit_class(type_source));
+        }
+    };
+    walk(program, &mut |s| match &s.kind {
+        StatementKind::VariableDeclaration {
+            name, type_source, ..
+        } => add(&name.name, explicit_class(type_source)),
+        StatementKind::DefineParameter { .. } => parameter(s, &mut add),
+        StatementKind::Property {
+            name, data_type, ..
+        } => add(&name.name, data_type.class_name()),
+        StatementKind::Method { parameters, .. }
+        | StatementKind::Constructor { parameters, .. } => {
+            for p in parameters {
+                parameter(p, &mut add);
+            }
+        }
+        StatementKind::DefineBuffer { name, .. } | StatementKind::DefineTempTable { name, .. } => {
+            add(&name.name, None)
+        }
+        _ => {}
+    });
+    let type_of = |name: &str| {
+        let key = name.to_ascii_lowercase();
+        types
+            .iter()
+            .find(|(n, _)| *n == key)
+            .map(|(_, t)| t.clone())
+    };
+    let toks: Vec<&Token> = tokens
+        .iter()
+        .take_while(|t| t.kind != Kind::Eof)
+        .filter(|t| t.kind != Kind::Comment)
+        .collect();
+    let word = |i: usize| {
+        toks.get(i).is_some_and(|t| {
+            t.kind != Kind::StringLiteral
+                && text(source, t)
+                    .bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        })
+    };
+    let adjacent = |i: usize| i + 1 < toks.len() && toks[i].end == toks[i + 1].start;
+    let span_of = |a: usize, b: usize| Span {
+        start: toks[a].start as u32,
+        end: toks[b].end as u32,
+    };
+    // The dotted name that starts at `i`: its text and its last token.
+    let dotted_from = |i: usize| -> Option<(String, usize)> {
+        if !word(i) {
+            return None;
+        }
+        let mut name = text(source, toks[i]).to_string();
+        let mut j = i;
+        while adjacent(j) && toks[j + 1].kind == Kind::Period && adjacent(j + 1) && word(j + 2) {
+            name.push('.');
+            name.push_str(text(source, toks[j + 2]));
+            j += 2;
+        }
+        Some((name, j))
+    };
+    let mut out = Vec::new();
+    for i in 0..toks.len() {
+        match toks[i].kind {
+            Kind::New => {
+                if let Some((class, last)) = dotted_from(i + 1)
+                    && toks
+                        .get(last + 1)
+                        .is_some_and(|t| t.kind == Kind::LeftParen)
+                {
+                    out.push(ObjectCall {
+                        at: span_of(i + 1, last),
+                        class,
+                        method: None,
+                    });
+                }
+            }
+            Kind::Colon if i > 0 && adjacent(i) && adjacent(i - 1) && word(i + 1) => {
+                if !toks.get(i + 2).is_some_and(|t| t.kind == Kind::LeftParen) {
+                    continue;
+                }
+                // Walk back over a dotted receiver; it must start the chain.
+                let mut first = i - 1;
+                if !word(first) {
+                    continue;
+                }
+                while first >= 2
+                    && toks[first - 1].kind == Kind::Period
+                    && adjacent(first - 1)
+                    && adjacent(first - 2)
+                    && word(first - 2)
+                {
+                    first -= 2;
+                }
+                if first > 0
+                    && adjacent(first - 1)
+                    && matches!(toks[first - 1].kind, Kind::Colon | Kind::DoubleColon)
+                {
+                    continue;
+                }
+                let receiver: String = (first..i)
+                    .map(|k| text(source, toks[k]))
+                    .collect::<Vec<_>>()
+                    .join("");
+                let class = if first == i - 1 {
+                    match type_of(&receiver) {
+                        Some(t) => t,
+                        None => continue,
+                    }
+                } else {
+                    let root = text(source, toks[first]).to_ascii_lowercase();
+                    if declared.contains(&root) || type_of(&root).is_some() {
+                        continue;
+                    }
+                    receiver
+                };
+                out.push(ObjectCall {
+                    at: span_of(i + 1, i + 1),
+                    class,
+                    method: Some(text(source, toks[i + 1]).to_string()),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The class of an `AS [CLASS] name` declaration.
+fn explicit_class(t: &TypeSource) -> Option<&str> {
+    match t {
+        TypeSource::Explicit(d) => d.class_name(),
+        TypeSource::Like { .. } => None,
+    }
+}
+
 /// Visit every statement, nested bodies included, in source order.
 fn walk(stmts: &[Statement], f: &mut impl FnMut(&Statement)) {
     for s in stmts {

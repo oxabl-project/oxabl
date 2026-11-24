@@ -14,10 +14,12 @@ use rust_decimal::Decimal;
 mod builtins;
 mod callable;
 mod kind;
+mod reserved;
 use crate::{kind::match_keyword, oxabl_atom::OxablAtom};
 pub use builtins::{BUILTIN_FUNCTIONS, is_builtin_function};
 pub use callable::{CALLABLE_FUNCTION_KINDS, is_callable_kind};
 pub use kind::Kind;
+pub use reserved::{RESERVED_KEYWORDS, is_reserved_keyword};
 
 /// Tokenize ABL source code into a vector of tokens.
 ///
@@ -994,6 +996,20 @@ mod tests {
         ] {
             let tokens = collect_tokens(source);
             assert_eq!(tokens[0].kind, kind, "{source}");
+        }
+    }
+
+    #[test]
+    fn reserved_keywords_are_sorted_and_name_only_reserved_words() {
+        assert!(
+            RESERVED_KEYWORDS.windows(2).all(|w| w[0] < w[1]),
+            "RESERVED_KEYWORDS must be sorted and deduped for binary_search"
+        );
+        for name in ["define", "def", "can-do", "header", "true"] {
+            assert!(is_reserved_keyword(name), "`{name}` is reserved");
+        }
+        for name in ["extent", "server", "method", "size", "total", "today"] {
+            assert!(!is_reserved_keyword(name), "`{name}` is not reserved");
         }
     }
 

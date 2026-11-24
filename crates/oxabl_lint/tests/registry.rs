@@ -94,6 +94,8 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
                 Severity::Info
             ),
             ("LINT0006", "assigned-but-never-read", "default", warning),
+            ("LINT0007", "invalid-suppression", "default", warning),
+            ("LINT0008", "unused-suppression", "default", Severity::Info),
             ("CL001", "run-value", "strict.calls", warning),
             ("CL002", "dynamic-invoke", "strict.calls", warning),
             ("CL003", "signature-mismatch", "strict.calls", warning),
@@ -148,13 +150,37 @@ fn the_builtin_registry_enumerates_every_rule_with_metadata() {
             ("NL002", "unknown-propagation", "strict.nulls", warning),
             ("NL003", "field-after-failed-find", "strict.nulls", warning),
             ("NL004", "nullable-db-field", "strict.nulls", warning),
+            ("ABLSEC001", "dynamic-query", "security", error),
+            ("ABLSEC002", "foreign-sql", "security", error),
+            ("ABLSEC003", "os-command", "security", error),
+            ("ABLSEC004", "dynamic-code", "security", error),
+            ("ABLSEC005", "path-traversal", "security", warning),
+            ("ABLSEC006", "xss-output", "security", warning),
+            ("ABLSEC007", "header-injection", "security", warning),
+            ("ABLSEC008", "hardcoded-secret", "security", error),
+            ("ABLSEC009", "weak-crypto", "security", warning),
+            ("ABLSEC013", "information-leak", "security", warning),
+            ("ABLSEC014", "unsafe-deserialization", "security", warning),
+            ("ABLSEC015", "untrusted-xml", "security", Severity::Info),
+            (
+                "ABLSEC016",
+                "resource-exhaustion",
+                "security",
+                Severity::Info
+            ),
+            ("ABLSEC017", "integrity-bypass", "security", warning),
+            ("ABLSEC010", "client-identity", "security", warning),
+            ("ABLSEC011", "missing-authorization", "security", warning),
+            ("ABLSEC012", "cross-request-state", "security", warning),
         ]
     );
     for rule in registry.rules() {
         let m = rule.meta();
-        let strict = m.group.starts_with("strict.");
+        let strict = m.group.starts_with("strict.") || m.group == "security";
         assert!(!m.description.is_empty(), "{}", m.code);
-        assert_eq!(m.context_free, strict, "{}", m.code);
+        // The rules that read the entry-point graph depend on other files.
+        let graph = matches!(m.code, "ABLSEC011" | "ABLSEC012");
+        assert_eq!(m.context_free, strict && !graph, "{}", m.code);
         assert_eq!(
             m.use_site_in_includer,
             m.group == "strict.handles"
@@ -203,7 +229,7 @@ fn the_strict_rules_run_only_when_their_group_or_rule_is_enabled() {
 }
 
 #[test]
-fn the_builtin_groups_are_default_plus_six_opt_in_strict_groups() {
+fn the_builtin_groups_are_default_plus_six_opt_in_strict_groups_and_security() {
     let names: Vec<_> = BUILTIN_GROUPS.iter().map(|g| g.name).collect();
     assert_eq!(
         names,
@@ -215,6 +241,7 @@ fn the_builtin_groups_are_default_plus_six_opt_in_strict_groups() {
             "strict.handles",
             "strict.nulls",
             "strict.calls",
+            "security",
         ]
     );
     for group in BUILTIN_GROUPS {

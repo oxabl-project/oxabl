@@ -3,6 +3,7 @@ mod cached;
 mod config;
 mod discovery;
 mod encoding;
+mod entry_points;
 mod file_system;
 mod include_paths;
 mod observations;
@@ -15,16 +16,18 @@ pub use build_config::{
 };
 pub use cached::CachedFileSystem;
 pub use config::{
-    FeaturesConfig, LintConfig, LintOverride, LintRuleSettings, LintSeverity, PreprocessorConfig,
-    RejectedLintPattern, RunExtensions, WorkspaceConfig, default_root_extensions,
-    default_run_extensions, normalize_root_extensions, normalize_run_extension,
-    normalize_run_extensions,
+    FeaturesConfig, LintConfig, LintOverride, LintRuleSettings, LintSeverity,
+    ParameterSourcesSetting, PreprocessorConfig, RejectedLintPattern, RunExtensions,
+    SecurityConfig, SecurityModeSetting, SecurityReachConfig, SecurityValidatorConfig,
+    WorkspaceConfig, default_root_extensions, default_run_extensions, normalize_root_extensions,
+    normalize_run_extension, normalize_run_extensions,
 };
 pub use discovery::{
     ROOT_EXTENSIONS, discover_path, discover_path_in, is_include_fragment, is_root_file,
     is_root_file_in, walk_directory, walk_directory_in, walk_include_fragments,
 };
 pub use encoding::{DecodedSource, SourceDecoding, SourceEncoding};
+pub use entry_points::parse_entry_points;
 pub use file_system::{EncodedFileSystem, FileSystem, InMemoryFileSystem, RealFileSystem};
 pub use include_paths::{
     DLC_SOURCES_VARIABLE, IncludeEntry, dlc_sources, find_workspace_root, include_entry,

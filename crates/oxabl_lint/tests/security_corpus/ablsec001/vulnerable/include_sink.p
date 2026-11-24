@@ -1,0 +1,5 @@
+/* expect: 1 */
+DEFINE VARIABLE cWhere AS CHARACTER NO-UNDO.
+DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+
+{sec001_prepare.i}

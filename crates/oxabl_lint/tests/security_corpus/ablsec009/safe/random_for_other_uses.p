@@ -1,0 +1,4 @@
+DEFINE VARIABLE iDice AS INTEGER NO-UNDO.
+
+iDice = RANDOM(1, 6).
+iPick = RANDOM(1, iCount).

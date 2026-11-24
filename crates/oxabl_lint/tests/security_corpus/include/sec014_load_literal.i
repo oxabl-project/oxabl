@@ -1,0 +1,1 @@
+oObj = oSer:Deserialize("~{~}").

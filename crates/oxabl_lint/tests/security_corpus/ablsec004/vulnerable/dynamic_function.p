@@ -1,0 +1,6 @@
+/* expect: 2 */
+DEFINE INPUT PARAMETER pcName AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cResult AS CHARACTER NO-UNDO.
+
+cResult = DYNAMIC-FUNCTION(pcName, 1).
+cResult = DYNAMIC-FUNCTION("calc-" + pcName).
