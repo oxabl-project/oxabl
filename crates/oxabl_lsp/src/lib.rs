@@ -693,6 +693,8 @@ struct Server<'c> {
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
+    /// Hover requests, one at a time, the stale ones dropped.
+    hovers: navigation::HoverGate,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -753,6 +755,7 @@ impl<'c> Server<'c> {
             contexts: includer_context::Contexts::default(),
             context_events,
             context_results,
+            hovers: navigation::HoverGate::default(),
         }
     }
 
@@ -977,6 +980,15 @@ impl<'c> Server<'c> {
             self.lenses.invalidate();
         }
         match not.method.as_str() {
+            "$/cancelRequest" => {
+                if let Ok(params) = serde_json::from_value::<lsp_types::CancelParams>(not.params) {
+                    let id = match params.id {
+                        lsp_types::NumberOrString::Number(n) => RequestId::from(n),
+                        lsp_types::NumberOrString::String(s) => RequestId::from(s),
+                    };
+                    self.hovers.cancel(&id);
+                }
+            }
             DidOpenTextDocument::METHOD => {
                 if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
                 {

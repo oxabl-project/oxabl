@@ -14,7 +14,7 @@ use session::{Session, file_uri};
 
 const CONFIG: &str = "[workspace]\nname = \"hover\"\n\
     [workspace.sources]\ninclude_paths = [\".\", \"lib\"]\n\
-    [workspace.schema]\nfiles = [\"db/shop.df\"]\n";
+    [workspace.schema]\nfiles = [\"db/shop.df\", \"db/extra.df\"]\n";
 
 const SCHEMA: &str = "ADD TABLE \"Item\"\n  AREA \"Data\"\n  LABEL \"Stock item\"\n\
     \x20 DESCRIPTION \"One thing the shop sells\"\n\n\
@@ -25,7 +25,14 @@ const SCHEMA: &str = "ADD TABLE \"Item\"\n  AREA \"Data\"\n  LABEL \"Stock item\
     ADD INDEX \"ItemNum\" ON \"Item\"\n  AREA \"Index\"\n  UNIQUE\n  PRIMARY\n\
     \x20 INDEX-FIELD \"ItemNum\" ASCENDING\n\n\
     ADD INDEX \"DescrNum\" ON \"Item\"\n  AREA \"Index\"\n\
-    \x20 INDEX-FIELD \"Descr\" ASCENDING\n  INDEX-FIELD \"ItemNum\" ASCENDING\n\n";
+    \x20 INDEX-FIELD \"Descr\" ASCENDING\n  INDEX-FIELD \"ItemNum\" ASCENDING\n\n\
+    ADD TABLE \"Ledger\"\n  AREA \"Data\"\n\n\
+    ADD FIELD \"Code\" OF \"Ledger\" AS character\n  LABEL \"``a`b\"\n\n\
+    ADD FIELD \"Poison\" OF \"Ledger\" AS character\n\n";
+
+/// A second `.df` that gives `Ledger.Poison` another type, so the loader
+/// knows no type for it.
+const EXTRA_SCHEMA: &str = "ADD FIELD \"Poison\" OF \"Ledger\" AS integer\n\n";
 
 const DEFS: &str = "/* shared definitions */\n\
     DEFINE VARIABLE gcShared AS CHARACTER NO-UNDO INITIAL \"abc\".\n";
@@ -60,6 +67,18 @@ const MAIN: &str = "{defs.i}\n\
     RUN jobs/tools.p PERSISTENT SET hTools.\n\
     RUN Compute IN hTools (INPUT 1).\n\
     MESSAGE SESSION:DATE-FORMAT.\n\
+    FIND FIRST Ledger NO-LOCK NO-ERROR.\n\
+    MESSAGE Ledger.Code Ledger.Poison.\n\
+    DEFINE VARIABLE cFence AS CHARACTER INITIAL \"```\" NO-UNDO.\n\
+    cFence = \"x\".\n\
+    dTotal = fnSup(1).\n\
+    RUN LoadLines (INPUT TABLE ttLine BIND).\n\
+    oShape:Tag = \"x\".\n\
+    oShape:Size = 1.\n\
+    FUNCTION fnSup RETURNS INTEGER (INPUT p AS INTEGER) IN SUPER.\n\
+    PROCEDURE LoadLines:\n\
+    \x20   DEFINE INPUT PARAMETER TABLE FOR ttLine BIND.\n\
+    END PROCEDURE.\n\
     /* a comment */\n\
     PROCEDURE AddLine:\n\
     \x20   DEFINE INPUT  PARAMETER pcName  AS CHARACTER NO-UNDO.\n\
@@ -78,6 +97,12 @@ const BASE: &str = "CLASS app.Base:\n\
     END CLASS.\n";
 
 const CIRCLE: &str = "CLASS app.Circle INHERITS app.Base:\n\
+    \x20   DEFINE PUBLIC PROPERTY Tag AS CHARACTER NO-UNDO\n\
+    \x20       GET.\n\
+    \x20       PRIVATE SET.\n\
+    \x20   DEFINE PUBLIC PROPERTY Size AS &IF DEFINED(WIDE) &THEN INT64 &ELSE INTEGER &ENDIF NO-UNDO\n\
+    \x20       GET.\n\
+    \x20       SET.\n\
     \x20   DEFINE PUBLIC PROPERTY Radius AS DECIMAL INITIAL 1 NO-UNDO\n\
     \x20       GET.\n\
     \x20       SET.\n\
@@ -85,6 +110,9 @@ const CIRCLE: &str = "CLASS app.Circle INHERITS app.Base:\n\
     \x20       RETURN Radius * Radius * 3.\n\
     \x20   END METHOD.\n\
     END CLASS.\n";
+
+/// An include opened alone that uses names of its includer.
+const FRAG: &str = "interval = 1.\ncompare = 2.\ncText = SUBSTRING(cText, 1, 2).\n";
 
 /// A root that declares a name an include then uses.
 const CTX: &str = "DEFINE VARIABLE iBefore AS INTEGER NO-UNDO.\n{uses.i}\n";
@@ -106,11 +134,13 @@ impl Workspace {
         let files: &[(&str, &str)] = &[
             ("oxabl.toml", CONFIG),
             ("db/shop.df", SCHEMA),
+            ("db/extra.df", EXTRA_SCHEMA),
             ("defs.i", DEFS),
             ("main.p", MAIN),
             ("util/helper.p", "MESSAGE \"helper\".\n"),
             ("jobs/tools.p", TOOLS),
             ("ctx.p", CTX),
+            ("frag.i", FRAG),
             ("uses.i", USES),
             ("dup.p", "MESSAGE \"one\".\n"),
             ("lib/dup.p", "MESSAGE \"two\".\n"),
@@ -298,13 +328,13 @@ fn routines_show_their_signature() {
     let found = markdown(&mut session, &main, MAIN, "Area()", 0);
     assert_eq!(
         found,
-        code("METHOD PUBLIC DECIMAL Area") + "\n\nDeclared in `app.Circle`."
+        code("METHOD PUBLIC DECIMAL Area ()") + "\n\nDeclared in `app.Circle`."
     );
     // An inherited method shows each overload, in the class that declares it.
     let found = markdown(&mut session, &main, MAIN, "Describe()", 0);
     assert_eq!(
         found,
-        code("METHOD PUBLIC VOID Describe")
+        code("METHOD PUBLIC VOID Describe ()")
             + "\n\n"
             + &code("METHOD PUBLIC VOID Describe (INPUT pcHow AS CHARACTER)")
             + "\n\nDeclared in `app.Base`."
@@ -333,7 +363,7 @@ fn a_property_shows_its_declaration() {
     let found = markdown(&mut session, &circle, CIRCLE, "Radius *", 0);
     assert_eq!(
         found,
-        code("DEFINE PUBLIC PROPERTY Radius AS DECIMAL INITIAL 1 NO-UNDO")
+        code("DEFINE PUBLIC PROPERTY Radius AS DECIMAL INITIAL 1 NO-UNDO GET. SET.")
     );
 }
 
@@ -503,6 +533,92 @@ fn an_include_in_a_root_context_resolves_through_the_root() {
     assert!(selected.get("error").is_none(), "{selected}");
     let found = markdown(&mut session, &uses, USES, "iBefore", 0);
     assert_eq!(found, code("DEFINE VARIABLE iBefore AS INTEGER NO-UNDO"));
+}
+
+#[test]
+fn qualifiers_that_change_a_call_are_kept() {
+    let ws = Workspace::new();
+    let main = ws.path("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    let found = markdown(&mut session, &main, MAIN, "fnSup(1)", 0);
+    assert_eq!(
+        found,
+        code("FUNCTION fnSup RETURNS INTEGER (INPUT p AS INTEGER) IN SUPER")
+    );
+    let found = markdown(&mut session, &main, MAIN, "LoadLines (", 0);
+    assert!(
+        found.starts_with(&code("PROCEDURE LoadLines (INPUT TABLE FOR ttLine BIND)")),
+        "{found}"
+    );
+    let found = markdown(&mut session, &main, MAIN, "Tag = ", 0);
+    assert_eq!(
+        found,
+        code("DEFINE PUBLIC PROPERTY Tag AS CHARACTER NO-UNDO GET. PRIVATE SET.")
+            + "\n\nDeclared in `app.Circle`."
+    );
+}
+
+#[test]
+fn a_type_the_preprocessor_chooses_is_not_shown_as_a_type() {
+    let ws = Workspace::new();
+    let main = ws.path("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    let found = markdown(&mut session, &main, MAIN, "Size = ", 0);
+    assert_eq!(
+        found,
+        code("DEFINE PUBLIC PROPERTY Size NO-UNDO GET. SET.")
+            + "\n\nAn `&IF` chooses the type."
+            + "\n\nDeclared in `app.Circle`."
+    );
+    // A schema field whose two `.df` files disagree on its type.
+    let found = markdown(&mut session, &main, MAIN, "Poison.", 0);
+    assert_eq!(
+        found,
+        code("FIELD Ledger.Poison") + "\n\nType: unknown\n\nIn no index."
+    );
+}
+
+#[test]
+fn backticks_in_source_and_schema_text_do_not_break_the_markdown() {
+    let ws = Workspace::new();
+    let main = ws.path("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+
+    let found = markdown(&mut session, &main, MAIN, "cFence = ", 0);
+    assert_eq!(
+        found,
+        "````abl\nDEFINE VARIABLE cFence AS CHARACTER INITIAL \"```\" NO-UNDO\n````"
+    );
+    let found = markdown(&mut session, &main, MAIN, "Code Ledger", 0);
+    assert_eq!(
+        found,
+        code("FIELD Ledger.Code AS CHARACTER") + "\n\nLabel: ``` ``a`b ```\n\nIn no index."
+    );
+}
+
+#[test]
+fn an_include_alone_does_not_guess_built_in_functions() {
+    let ws = Workspace::new();
+    let frag = ws.path("frag.i");
+    let mut session = Session::start(&ws.root);
+    session.open(&frag, FRAG);
+
+    // Names of the includer that are also built-in function names.
+    for needle in ["interval =", "compare ="] {
+        assert_eq!(
+            hover(&mut session, &frag, FRAG, needle, 0),
+            None,
+            "`{needle}` may be a variable of the includer"
+        );
+    }
+    // A call is still the built-in function.
+    let found = markdown(&mut session, &frag, FRAG, "SUBSTRING(", 0);
+    assert!(found.starts_with("**SUBSTRING function**"), "{found}");
 }
 
 #[test]

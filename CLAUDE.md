@@ -62,7 +62,7 @@ cargo run -p oxabl_codegen -- keyword-docs # Writes keyword_docs.rs (hover's sta
 cargo run -p oxabl_codegen -- summary
 ```
 
-Generated files are written directly to their target locations and include a "DO NOT EDIT" header.
+Generated files are written directly to their target locations and include a "DO NOT EDIT" header. The CI job `Grammar drift` also regenerates `crates/oxabl_pipeline/src/keyword_docs.rs` and fails when the committed file is not the generated one.
 
 ### The VS Code grammar
 

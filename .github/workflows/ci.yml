@@ -246,6 +246,12 @@ jobs:
         run: cargo run -p oxabl_codegen -- grammar
       - name: Assert no drift
         run: git diff --exit-code -- clients/vscode/syntaxes/
+      # Hover's statement and function documentation table is generated from
+      # the same keyword data.
+      - name: Regenerate keyword docs
+        run: cargo run -p oxabl_codegen -- keyword-docs
+      - name: Assert no keyword docs drift
+        run: git diff --exit-code -- crates/oxabl_pipeline/src/keyword_docs.rs
 
   vscode-client:
     name: VS Code client

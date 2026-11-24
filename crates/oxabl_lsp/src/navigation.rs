@@ -7,9 +7,16 @@
 //! context is analysed in that root for go to definition and hover; otherwise
 //! an include is analysed alone. A failed analysis answers with an error, never with an
 //! empty answer that reads as "no definition".
+//!
+//! Hover requests run one at a time ([`HoverGate`]). A hover that a newer one
+//! replaced before it started, or that the client cancelled with
+//! `$/cancelRequest`, answers `RequestCanceled` and computes nothing: an editor
+//! asks for a hover at each pause of the pointer, and only the last one counts.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
@@ -71,7 +78,8 @@ impl Server<'_> {
             .cloned()
             .unwrap_or_else(|| path.clone());
         let query = NavigationQuery::Hover { file: path, offset };
-        self.spawn_navigation(req.id, root, query, |answer, encoding| {
+        let ticket = self.hovers.ticket(&req.id);
+        self.spawn_gated(req.id, root, query, Some(ticket), |answer, encoding| {
             serde_json::to_value(hover(answer, encoding))
         })
     }
@@ -98,10 +106,19 @@ impl Server<'_> {
         id: RequestId,
         root: PathBuf,
         query: NavigationQuery,
-        render: fn(
-            NavigationAnswer,
-            &PositionEncodingKind,
-        ) -> serde_json::Result<serde_json::Value>,
+        render: Render,
+    ) -> anyhow::Result<()> {
+        self.spawn_gated(id, root, query, None, render)
+    }
+
+    /// [`Self::spawn_navigation`], behind `ticket` when there is one.
+    fn spawn_gated(
+        &mut self,
+        id: RequestId,
+        root: PathBuf,
+        query: NavigationQuery,
+        ticket: Option<HoverTicket>,
+        render: Render,
     ) -> anyhow::Result<()> {
         let Some((snapshot, schema, overlay)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
@@ -125,6 +142,21 @@ impl Server<'_> {
                 let sender = sender.clone();
                 let id = id.clone();
                 move || {
+                    let _running = match &ticket {
+                        Some(ticket) => match ticket.start() {
+                            Some(guard) => Some(guard),
+                            None => {
+                                let _ = sender.send(Message::Response(Response::new_err(
+                                    id,
+                                    ErrorCode::RequestCanceled as i32,
+                                    "oxabl-lsp: a newer hover or the client cancelled this one"
+                                        .to_string(),
+                                )));
+                                return;
+                            }
+                        },
+                        None => None,
+                    };
                     let answered = oxabl_common::catch_panic(|| {
                         compute_navigation(&snapshot, schema, &root, overlay, &query)
                             .map(|answer| answer.map(|answer| render(answer, &encoding)))
@@ -164,6 +196,65 @@ impl Server<'_> {
         }
         Ok(())
     }
+}
+
+type Render = fn(NavigationAnswer, &PositionEncodingKind) -> serde_json::Result<serde_json::Value>;
+
+/// Runs hover requests one at a time and drops the ones nobody waits for.
+#[derive(Clone, Default)]
+pub(crate) struct HoverGate {
+    inner: Arc<GateInner>,
+}
+
+#[derive(Default)]
+struct GateInner {
+    /// The number of the newest hover request.
+    latest: AtomicU64,
+    /// Each hover request not yet started, and whether the client cancelled it.
+    pending: Mutex<HashMap<RequestId, bool>>,
+    /// Held while a hover computes.
+    running: Mutex<()>,
+}
+
+/// One hover request's place in the [`HoverGate`].
+pub(crate) struct HoverTicket {
+    inner: Arc<GateInner>,
+    id: RequestId,
+    number: u64,
+}
+
+impl HoverGate {
+    pub(crate) fn ticket(&self, id: &RequestId) -> HoverTicket {
+        let number = self.inner.latest.fetch_add(1, Ordering::SeqCst) + 1;
+        lock(&self.inner.pending).insert(id.clone(), false);
+        HoverTicket {
+            inner: Arc::clone(&self.inner),
+            id: id.clone(),
+            number,
+        }
+    }
+
+    /// `$/cancelRequest` for `id`. Only a hover not yet started is affected.
+    pub(crate) fn cancel(&self, id: &RequestId) {
+        if let Some(cancelled) = lock(&self.inner.pending).get_mut(id) {
+            *cancelled = true;
+        }
+    }
+}
+
+impl HoverTicket {
+    /// Wait for the hovers before this one, then the guard to compute under;
+    /// `None` when a newer hover came or the client cancelled this one.
+    fn start(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        let guard = lock(&self.inner.running);
+        let cancelled = lock(&self.inner.pending).remove(&self.id).unwrap_or(false);
+        let newest = self.inner.latest.load(Ordering::SeqCst) == self.number;
+        (newest && !cancelled).then_some(guard)
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn invalid(id: RequestId, message: &str) -> Response {

@@ -1,5 +1,6 @@
-//! Go to definition and hover at every offset of files full of awkward names, through the
-//! real `oxabl lsp` and its daemon: tables and fields that share a name, names
+//! Go to definition at every offset, and hover at every offset that can give
+//! another answer, of files full of awkward names, through the real
+//! `oxabl lsp` and its daemon: tables and fields that share a name, names
 //! that are keywords, hyphens, digits, non-ASCII and very long names, a field
 //! the table lacks, a `.df` that breaks off, and fragments opened alone.
 //!
@@ -139,6 +140,33 @@ fn positions(text: &str) -> Vec<(usize, usize)> {
     all
 }
 
+/// The positions of `text` a hover sweep asks about: each start and end of a
+/// run of ASCII name characters, and every other position but those inside a
+/// run of spaces. A position inside a name answers as its start does. The
+/// server answers one hover at a time, so the sweep sends them one by one.
+fn hover_positions(text: &str) -> Vec<(usize, usize)> {
+    let word =
+        |c: Option<&char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_');
+    let mut kept = Vec::new();
+    for (line, content) in text.split('\n').enumerate() {
+        let chars: Vec<char> = content.chars().collect();
+        let mut utf16 = 0;
+        for at in 0..=chars.len() {
+            let before = at.checked_sub(1).and_then(|k| chars.get(k));
+            let here = chars.get(at);
+            let inside_word = word(before) && word(here);
+            let inside_space = before == Some(&' ') && here == Some(&' ');
+            if !inside_word && !inside_space {
+                kept.push((line, utf16));
+            }
+            if let Some(c) = here {
+                utf16 += c.len_utf16();
+            }
+        }
+    }
+    kept
+}
+
 /// The UTF-16 width of each line of the file `uri` names.
 #[track_caller]
 fn line_widths(ws: &Workspace, uri: &str) -> Vec<usize> {
@@ -173,7 +201,7 @@ fn every_position_gets_a_well_formed_answer() {
         let text = ws.text(&path).to_string();
         session.open(&path, &text);
         let positions = positions(&text);
-        let params: Vec<Value> = positions
+        let params = positions
             .iter()
             .map(|(line, character)| {
                 json!({
@@ -182,7 +210,7 @@ fn every_position_gets_a_well_formed_answer() {
                 })
             })
             .collect();
-        let answers = session.request_all("textDocument/definition", params.clone());
+        let answers = session.request_all("textDocument/definition", params);
         for ((line, character), answer) in positions.iter().zip(answers) {
             let context = format!("{name}:{line}:{character}");
             assert!(answer.get("error").is_none(), "{context}: {answer}");
@@ -197,8 +225,20 @@ fn every_position_gets_a_well_formed_answer() {
                 other => panic!("{context}: {other}"),
             }
         }
-        let answers = session.request_all("textDocument/hover", params);
-        for ((line, character), answer) in positions.iter().zip(answers) {
+        let hovered = hover_positions(&text);
+        let answers: Vec<Value> = hovered
+            .iter()
+            .map(|(line, character)| {
+                session.request(
+                    "textDocument/hover",
+                    json!({
+                        "textDocument": {"uri": file_uri(&path)},
+                        "position": {"line": line, "character": character}
+                    }),
+                )
+            })
+            .collect();
+        for ((line, character), answer) in hovered.iter().zip(answers) {
             let context = format!("{name}:{line}:{character} hover");
             assert!(answer.get("error").is_none(), "{context}: {answer}");
             let result = &answer["result"];

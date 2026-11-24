@@ -71,9 +71,9 @@ name is declared when that helps.
 
 | The name is | Hover |
 | --- | --- |
-| A variable, parameter or property | `DEFINE ... VARIABLE x AS t EXTENT n INITIAL v NO-UNDO` as declared; a parameter also names its procedure, function or method; a `LIKE` type also gives the type it resolves to |
+| A variable, parameter or property | `DEFINE ... VARIABLE x AS t EXTENT n INITIAL v NO-UNDO`; a parameter also names its procedure, function or method; a table or dataset parameter keeps `APPEND`, `BIND`, `BY-VALUE` and `BY-REFERENCE`; a property gives its `GET` and `SET` with their access modifier; a `LIKE` type also gives the type it resolves to |
 | A temp-table field | `FIELD f AS t ...` and its temp-table |
-| An internal procedure, function or method | Its signature with each parameter; an inherited method gives each overload and the class that declares it |
+| An internal procedure, function or method | Its signature with each parameter (a method always with its `()`); a declaration without a body keeps what follows its parameters (`IN SUPER`, `IN h`, `FORWARD`, `MAP TO`, `EXTERNAL`); an inherited method gives each overload and the class that declares it |
 | `RUN p IN h` | The signature of `p` in the program the handle runs, when its text declares `p` once |
 | A program (`RUN x.p`) | `RUN x.p`, the path relative to its include path entry |
 | A class name | The class header with `INHERITS` and `IMPLEMENTS` |
@@ -85,7 +85,15 @@ The declaration text comes from the parsed declaration, not from the symbol
 table: the expanded unit is lexed and parsed once more on the first request that
 needs it, and a class file or a program is parsed when the hover names a member
 or a procedure in it. `EXTENT` and `INITIAL` are read from the tokens of the
-declaration, as written.
+declaration, as written. The hover is a summary of the declaration, not a copy
+of it: options that do not change what a name holds or what a call does
+(`FORMAT`, `LABEL`, `VIEW-AS`, `SERIALIZE-NAME`, ...) are left out.
+
+A type that an `&IF` chooses has no one name, so the hover writes no `AS`
+part and says "An `&IF` chooses the type." A schema field whose type the
+loader could not settle (two `.df` files that disagree) says "Type: unknown".
+Code blocks and code spans use a fence longer than any run of backticks in the
+text, so source and schema text cannot break the Markdown.
 
 The documentation data is `crates/oxabl_pipeline/src/keyword_docs.rs`, which
 `cargo run -p oxabl_codegen -- keyword-docs` writes from
@@ -94,7 +102,9 @@ handle with its title and URL, and each abbreviation of a function. The index
 holds no descriptions, so a keyword hover gives the title, the kind and the
 link. A built-in function shows its page when the cursor is on the name of a
 call the analysis left to the runtime (an unresolved name of the built-in
-function registry). A statement keyword shows its page when it is one of the
+function registry). In an include analysed alone the analysis leaves every name
+of the includer unresolved, so there the name must be written as a call
+(`name(`): a bare `interval` may be a variable of the includer. A statement keyword shows its page when it is one of the
 first words of a statement: the longest documented head wins, and the words
 between `DEFINE` and what it defines (`NEW`, `SHARED`, `PRIVATE`, `INPUT`, ...)
 are passed over, so `DEFINE INPUT PARAMETER` is the `DEFINE PARAMETER` page.
@@ -129,10 +139,13 @@ fields through `[workspace.schema]`. No request depends on
 
 `crates/oxabl/tests/definition_lsp.rs` and `document_link_lsp.rs` pin the
 targets, and `hover_lsp.rs` pins the hover text of each kind of name.
-`navigation_sweep_lsp.rs` asks for a definition and a hover at every position of
-files full of awkward names (a table and field of one name, keywords, hyphens,
-non-ASCII, a 200-character name, a `.df` that breaks off) and wants a
-well-formed answer with no error each time, with every range inside its file.
+`navigation_sweep_lsp.rs` asks for a definition at every position, and a hover
+at every position that can give another answer (each start and end of a name,
+and each other character outside a run of spaces), of files full of awkward
+names (a table and field of one name, keywords, hyphens, non-ASCII, a
+200-character name, a `.df` that breaks off), and wants a well-formed answer
+with no error each time, with every range inside its file. It sends the hovers
+one at a time, because the server drops a hover that a newer one replaced.
 The `navigate` fuzz target (`fuzz/README.md`) does the same on fuzzed input.
 
 Every answer goes through the `oxabl lsp` proxy, which restores a `null`
@@ -148,6 +161,13 @@ expanded unit once more for its call sites (`FileCalls::extract`), and reads
 the outline of each program a handle runs. A hover parses the expanded unit at
 most once more (shared with the call sites), and parses one more file when it
 names a class, an inherited member or a procedure run through a handle. A
-keyword hover scans the documentation table, about 460 entries. The
+keyword hover scans the documentation table, about 460 entries.
+
+Hover requests run one at a time (`HoverGate` in
+`crates/oxabl_lsp/src/navigation.rs`). An editor asks for a hover at each pause
+of the pointer, and only the last one counts: a hover that a newer one replaced
+before it started, or that the client cancelled with `$/cancelRequest`, answers
+`RequestCanceled` (-32800) and computes nothing. A hover that has started runs
+to its end. `crates/oxabl/tests/hover_cancel_lsp.rs` tests both. The
 resolve pass of every other run records no site: the check of the flag is its
 whole cost.

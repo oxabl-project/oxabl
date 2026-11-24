@@ -36,12 +36,11 @@ pub fn table_markdown(table: &Table) -> String {
 /// A field of `table`: its type, format, label, initial value and
 /// description, and the indexes of `table` it takes part in.
 pub fn field_markdown(table: &Table, field: &Field) -> String {
-    let mut line = format!(
-        "FIELD {}.{} AS {}",
-        table.display_name,
-        field.display_name,
-        type_name(&field.data_type)
-    );
+    let mut line = format!("FIELD {}.{}", table.display_name, field.display_name);
+    let typed = type_name(&field.data_type);
+    if let Some(type_name) = &typed {
+        line.push_str(&format!(" AS {type_name}"));
+    }
     match field.extent {
         Some(0) => line.push_str(" EXTENT"),
         Some(n) => line.push_str(&format!(" EXTENT {n}")),
@@ -49,6 +48,9 @@ pub fn field_markdown(table: &Table, field: &Field) -> String {
     }
     let mut out = code(&line);
     let mut facts = Vec::new();
+    if typed.is_none() {
+        facts.push("Type: unknown".to_string());
+    }
     if let Some(format) = non_empty(&field.format) {
         facts.push(format!("Format: {}", inline(format)));
     }
@@ -118,8 +120,9 @@ fn index_lines(out: &mut String, indexes: &[&Index]) {
     }
 }
 
-/// The ABL keyword of a schema type.
-fn type_name(data_type: &SchemaType) -> String {
+/// The ABL keyword of a schema type; `None` for a type the `.df` did not
+/// give in a form oxabl reads.
+fn type_name(data_type: &SchemaType) -> Option<String> {
     let name = match data_type {
         SchemaType::Integer => "INTEGER",
         SchemaType::Int64 => "INT64",
@@ -136,26 +139,39 @@ fn type_name(data_type: &SchemaType) -> String {
         SchemaType::Rowid => "ROWID",
         SchemaType::Blob => "BLOB",
         SchemaType::Clob => "CLOB",
-        SchemaType::Unknown(written) => return written.as_ref().to_ascii_uppercase(),
-        SchemaType::Error => "?",
+        SchemaType::Unknown(written) => return Some(written.as_ref().to_ascii_uppercase()),
+        SchemaType::Error => return None,
     };
-    name.to_string()
+    Some(name.to_string())
 }
 
 fn non_empty(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
 
-/// An ABL code block.
+/// An ABL code block. Its fence is longer than any run of backticks in
+/// `text`, so no text closes it.
 pub(crate) fn code(text: &str) -> String {
-    format!("```abl\n{text}\n```")
+    let fence = "`".repeat((longest_backtick_run(text) + 1).max(3));
+    format!("{fence}abl\n{text}\n{fence}")
 }
 
-/// `text` as a Markdown code span, on one line.
+/// `text` as a Markdown code span, on one line. The fence is longer than any
+/// run of backticks in the text, and a space pads a text that starts or ends
+/// with a backtick.
 pub(crate) fn inline(text: &str) -> String {
     let text = one_line(text);
-    let fence = if text.contains('`') { "``" } else { "`" };
-    format!("{fence}{text}{fence}")
+    let fence = "`".repeat(longest_backtick_run(&text) + 1);
+    let pad = if text.starts_with('`') || text.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    format!("{fence}{pad}{text}{pad}{fence}")
+}
+
+fn longest_backtick_run(text: &str) -> usize {
+    text.split(|c| c != '`').map(str::len).max().unwrap_or(0)
 }
 
 /// `text` as plain Markdown on one line, with the characters that Markdown

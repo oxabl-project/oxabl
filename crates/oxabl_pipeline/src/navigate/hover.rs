@@ -23,6 +23,8 @@ use oxabl_semantic::{
     IndexedFileId, Resolution, ResolvedType, SiteTarget, SymbolId, SymbolKind, UnresolvedReason,
 };
 
+use oxabl_workspace::is_include_fragment;
+
 use super::{Navigation, Parsed, Target, search};
 use crate::keyword_docs::{DocKind, FUNCTION_ABBREVIATIONS, KEYWORD_DOCS, KeywordDoc};
 use crate::outline::{access_name, children, data_type_name, direction_name};
@@ -254,9 +256,23 @@ impl Navigation<'_, '_> {
     }
 
     /// A built-in function, when the cursor is on its name.
+    ///
+    /// The name must be written as a call (`name(`), or the unit must be a
+    /// compilation unit: an include analysed alone leaves every name of its
+    /// includer unresolved, so a bare `interval` there may be a variable.
     fn builtin_function_hover(&self, name: &str, span: VirtualSpan, virt: u32) -> Option<String> {
         let token = self.token_at(virt)?;
         if token.start != span.start as usize {
+            return None;
+        }
+        let tokens = &self.parsed().tokens;
+        let at = tokens.partition_point(|t| t.start < token.start);
+        let called = tokens[at + 1..]
+            .iter()
+            .find(|t| t.kind != Kind::Comment)
+            .is_some_and(|t| t.kind == Kind::LeftParen);
+        let alone = self.run.file().is_some_and(is_include_fragment);
+        if !called && alone {
             return None;
         }
         let name = full_function_name(name);
@@ -419,6 +435,19 @@ pub(super) struct Declaration<'a> {
 }
 
 impl Declaration<'_> {
+    /// Whether an `&IF` chooses the declared type.
+    fn chosen_type(&self) -> bool {
+        let property = match &self.statement.kind {
+            StatementKind::Property { data_type, .. } => Some(data_type),
+            _ => None,
+        };
+        let explicit = match self.statement_kind_type_source() {
+            Some(TypeSource::Explicit(data_type)) => Some(data_type),
+            _ => property,
+        };
+        matches!(explicit, Some(DataType::PreprocIf(_)))
+    }
+
     fn statement_kind_type_source(&self) -> Option<&TypeSource> {
         if let Some(field) = self.field {
             return Some(&field.type_source);
@@ -741,11 +770,14 @@ impl<'t> Source<'t> {
         ))
     }
 
-    /// `AS INTEGER` or `LIKE Customer.Name`.
+    /// ` AS INTEGER` or ` LIKE Customer.Name`; empty for a type that an
+    /// `&IF` chooses, which has no one name.
     fn type_text(type_source: &TypeSource) -> String {
         match type_source {
-            TypeSource::Explicit(data_type) => format!("AS {}", type_name(data_type)),
-            TypeSource::Like { source } => format!("LIKE {}", source.name),
+            TypeSource::Explicit(data_type) => type_name(data_type)
+                .map(|name| format!(" AS {name}"))
+                .unwrap_or_default(),
+            TypeSource::Like { source } => format!(" LIKE {}", source.name),
         }
     }
 
@@ -758,7 +790,7 @@ impl<'t> Source<'t> {
         {
             let options = (field.name.span.end, field.span.end.max(field.name.span.end));
             let mut line = format!(
-                "FIELD {} {}",
+                "FIELD {}{}",
                 field.name.name,
                 Self::type_text(&field.type_source)
             );
@@ -793,7 +825,7 @@ impl<'t> Source<'t> {
                 }
                 push_access(&mut line, *access, *is_static);
                 line.push_str(&format!(
-                    " VARIABLE {} {}",
+                    " VARIABLE {}{}",
                     name.name,
                     Self::type_text(type_source)
                 ));
@@ -833,9 +865,15 @@ impl<'t> Source<'t> {
                         ParameterType::Buffer { name, target } => {
                             format!("DEFINE PARAMETER BUFFER {} FOR {}", name.name, target.name)
                         }
-                        _ => format!(
-                            "DEFINE {direction} PARAMETER {}",
-                            self.parameter_tail(param_type)
+                        ParameterType::Handle { name, .. } => format!(
+                            "DEFINE {direction} PARAMETER {}{}",
+                            self.parameter_tail(param_type),
+                            self.passing(name.span.end, span.end)
+                        ),
+                        ParameterType::Variable { name, .. } => format!(
+                            "DEFINE {direction} PARAMETER {}{}",
+                            self.parameter_tail(param_type),
+                            self.extent(name.span.end, span.end).unwrap_or_default()
                         ),
                     }
                 };
@@ -858,17 +896,17 @@ impl<'t> Source<'t> {
             } => {
                 let mut line = String::from("DEFINE");
                 push_access(&mut line, Some(*access), *is_static);
-                line.push_str(&format!(
-                    " PROPERTY {} AS {}",
-                    name.name,
-                    type_name(data_type)
-                ));
+                line.push_str(&format!(" PROPERTY {}", name.name));
+                if let Some(type_name) = type_name(data_type) {
+                    line.push_str(&format!(" AS {type_name}"));
+                }
                 let end = self.options_end(name.span.end, span.end);
                 line.push_str(&self.extent(name.span.end, end).unwrap_or_default());
                 line.push_str(&self.initial(name.span.end, end).unwrap_or_default());
                 if *no_undo {
                     line.push_str(" NO-UNDO");
                 }
+                line.push_str(&self.accessors(statement));
                 code(&line)
             }
             StatementKind::Procedure { .. }
@@ -918,6 +956,9 @@ impl<'t> Source<'t> {
             }
             _ => return None,
         };
+        if found.chosen_type() {
+            return Some(format!("{text}\n\nAn `&IF` chooses the type."));
+        }
         Some(text)
     }
 
@@ -939,10 +980,11 @@ impl<'t> Source<'t> {
                 } else {
                     prototype_parameters
                 };
-                (
-                    format!("FUNCTION {} RETURNS {}", name.name, type_name(return_type)),
-                    parameters_of(list),
-                )
+                let mut head = format!("FUNCTION {}", name.name);
+                if let Some(returns) = type_name(return_type) {
+                    head.push_str(&format!(" RETURNS {returns}"));
+                }
+                (head, parameters_of(list))
             }
             StatementKind::Method {
                 access,
@@ -962,8 +1004,19 @@ impl<'t> Source<'t> {
                 if *is_override {
                     head.push_str(" OVERRIDE");
                 }
-                let returns = return_type.as_ref().map_or("VOID".to_string(), type_name);
-                head.push_str(&format!(" {returns} {}", name.name));
+                if self.method_is_final(statement) {
+                    head.push_str(" FINAL");
+                }
+                match return_type {
+                    None => head.push_str(" VOID"),
+                    Some(data_type) => {
+                        if let Some(returns) = type_name(data_type) {
+                            head.push(' ');
+                            head.push_str(&returns);
+                        }
+                    }
+                }
+                head.push_str(&format!(" {}", name.name));
                 (head, parameters_of(parameters))
             }
             _ => return None,
@@ -972,14 +1025,127 @@ impl<'t> Source<'t> {
             .into_iter()
             .filter_map(|p| self.parameter(p))
             .collect();
+        let tail = self.prototype_tail(statement);
+        let is_method = matches!(statement.kind, StatementKind::Method { .. });
         if parameters.is_empty() {
-            return Some(head);
+            let parens = if is_method { " ()" } else { "" };
+            return Some(format!("{head}{parens}{tail}"));
         }
-        let one_line = format!("{head} ({})", parameters.join(", "));
+        let one_line = format!("{head} ({}){tail}", parameters.join(", "));
         if one_line.chars().count() <= SIGNATURE_WIDTH {
             return Some(one_line);
         }
-        Some(format!("{head} (\n    {})", parameters.join(",\n    ")))
+        Some(format!(
+            "{head} (\n    {}){tail}",
+            parameters.join(",\n    ")
+        ))
+    }
+
+    /// What a declaration without an ABL body writes after its parameters,
+    /// as written: ` IN SUPER`, ` FORWARD`, ` MAP TO x IN h`,
+    /// ` EXTERNAL "lib.so" CDECL`. Empty for a definition with a body.
+    fn prototype_tail(&self, statement: &Statement) -> String {
+        let (name, prototype) = match &statement.kind {
+            StatementKind::Procedure {
+                name,
+                is_prototype,
+                is_external,
+                ..
+            } => (name, *is_prototype || *is_external),
+            StatementKind::Function { name, body, .. } => (name, body.is_empty()),
+            _ => return String::new(),
+        };
+        if !prototype {
+            return String::new();
+        }
+        let mut depth = 0usize;
+        let mut start = None;
+        let mut end = statement.span.end;
+        for (_, token) in self.tokens_in(name.span.end, statement.span.end) {
+            match token.kind {
+                Kind::LeftParen => depth += 1,
+                Kind::RightParen => depth = depth.saturating_sub(1),
+                Kind::Colon | Kind::Period if depth == 0 => {
+                    end = token.start as u32;
+                    break;
+                }
+                _ => {}
+            }
+            let text = self.token_text(token);
+            let opens = token.kind == Kind::External
+                || token.kind == Kind::KwIn
+                || ["FORWARD", "MAP"]
+                    .iter()
+                    .any(|w| text.eq_ignore_ascii_case(w));
+            if depth == 0 && start.is_none() && opens {
+                start = Some(token.start as u32);
+            }
+        }
+        match start {
+            Some(start) if start < end => {
+                let written = self.slice(Span { start, end });
+                format!(
+                    " {}",
+                    written.split_whitespace().collect::<Vec<_>>().join(" ")
+                )
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Whether the header of a `METHOD` writes `FINAL`.
+    fn method_is_final(&self, statement: &Statement) -> bool {
+        let StatementKind::Method { name, .. } = &statement.kind else {
+            return false;
+        };
+        self.tokens_in(statement.span.start, name.span.start)
+            .any(|(_, t)| t.kind == Kind::Final)
+    }
+
+    /// ` GET. PRIVATE SET.`: the accessors of a property, each with the access
+    /// modifier written before it.
+    fn accessors(&self, statement: &Statement) -> String {
+        let StatementKind::Property {
+            name,
+            get_body,
+            set_body,
+            ..
+        } = &statement.kind
+        else {
+            return String::new();
+        };
+        let mut out = String::new();
+        let mut from = self.options_end(name.span.end, statement.span.end);
+        for (body, kind, word) in [(get_body, Kind::Get, "GET"), (set_body, Kind::Set, "SET")] {
+            let Some(body) = body else {
+                continue;
+            };
+            let tokens: Vec<(usize, &Token)> = self.tokens_in(from, statement.span.end).collect();
+            let Some(at) = tokens.iter().position(|(_, t)| t.kind == kind) else {
+                continue;
+            };
+            out.push(' ');
+            if at > 0
+                && matches!(
+                    tokens[at - 1].1.kind,
+                    Kind::Private
+                        | Kind::Protected
+                        | Kind::Public
+                        | Kind::PackagePrivate
+                        | Kind::PackageProtected
+                )
+            {
+                out.push_str(&self.token_text(tokens[at - 1].1).to_ascii_uppercase());
+                out.push(' ');
+            }
+            out.push_str(word);
+            out.push('.');
+            // The next accessor starts after this one's body.
+            from = body
+                .last()
+                .map_or(tokens[at].1.end as u32, |last| last.span.end);
+        }
+        out
     }
 
     /// A parameter as a signature writes it: `INPUT a AS CHARACTER`.
@@ -999,12 +1165,16 @@ impl<'t> Source<'t> {
             direction_name(direction),
             self.parameter_tail(param_type)
         );
-        if let ParameterType::Variable { name, .. } = param_type {
-            text.push_str(
+        match param_type {
+            ParameterType::Variable { name, .. } => text.push_str(
                 &self
                     .extent(name.span.end, statement.span.end)
                     .unwrap_or_default(),
-            );
+            ),
+            ParameterType::Handle { name, .. } => {
+                text.push_str(&self.passing(name.span.end, statement.span.end));
+            }
+            ParameterType::Buffer { .. } => {}
         }
         Some(text)
     }
@@ -1018,9 +1188,9 @@ impl<'t> Source<'t> {
                 let type_text = Self::type_text(type_source);
                 // The parser names an unnamed prototype parameter `$N`.
                 if name.name.starts_with('$') {
-                    type_text
+                    type_text.trim_start().to_string()
                 } else {
-                    format!("{} {type_text}", name.name)
+                    format!("{}{type_text}", name.name)
                 }
             }
             ParameterType::Handle { kind, name, .. } => match kind {
@@ -1033,6 +1203,24 @@ impl<'t> Source<'t> {
                 format!("BUFFER {} FOR {}", name.name, target.name)
             }
         }
+    }
+}
+
+impl Source<'_> {
+    /// ` APPEND BIND BY-VALUE BY-REFERENCE` as written after a table or
+    /// dataset parameter's name, in `from..to`.
+    fn passing(&self, from: u32, to: u32) -> String {
+        let mut out = String::new();
+        for (_, token) in self.tokens_in(from, to) {
+            if matches!(
+                token.kind,
+                Kind::Append | Kind::Bind | Kind::ByValue | Kind::ByReference
+            ) {
+                out.push(' ');
+                out.push_str(&self.token_text(token).to_ascii_uppercase());
+            }
+        }
+        out
     }
 }
 
@@ -1085,7 +1273,7 @@ fn push_access(line: &mut String, access: Option<AccessModifier>, is_static: boo
     }
 }
 
-/// The type as ABL writes it; `?` for a type an `&IF` chooses.
-fn type_name(data_type: &DataType) -> String {
-    data_type_name(data_type).unwrap_or_else(|| "?".to_string())
+/// The type as ABL writes it; `None` for a type an `&IF` chooses.
+fn type_name(data_type: &DataType) -> Option<String> {
+    data_type_name(data_type)
 }
