@@ -104,7 +104,16 @@ pub struct Navigation<'s, 'a> {
     declarations: OnceCell<(Vec<SymbolId>, SpanIndex)>,
     /// The `RUN` navigation sites, by start.
     pub(crate) run_sites: OnceCell<Vec<usize>>,
+    /// The methods of the expanded unit: the folded name at each name's
+    /// span, and the name spans of each folded name.
+    methods: OnceCell<Methods>,
 }
+
+/// See [`Navigation::methods`].
+type Methods = (
+    HashMap<(u32, u32), String>,
+    HashMap<String, Vec<VirtualSpan>>,
+);
 
 /// One declaration of an expanded file: the name, the outline kind, the kind
 /// of the symbol that holds it, and where the name is written.
@@ -188,6 +197,7 @@ impl<'a> LintPipeline<'a> {
             site_index: OnceCell::new(),
             declarations: OnceCell::new(),
             run_sites: OnceCell::new(),
+            methods: OnceCell::new(),
         })
     }
 }
@@ -373,35 +383,84 @@ impl Navigation<'_, '_> {
             && let Some(path) = self.path_of(file)
         {
             let name = symbols.get(sym).name.as_ref();
-            if self.member_spans(&path, name).is_empty() {
-                // Written in an include of the class: the expansion places it.
-                let expanded: Vec<Key> = self
-                    .expanded_declarations(&path)
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|(found, kind, parent, _)| {
-                        found.eq_ignore_ascii_case(name)
-                            && is_member_kind(*kind)
-                            && matches!(
-                                parent,
-                                Some(
-                                    OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum
-                                )
-                            )
+            // Each overload: those the class file writes, and those its
+            // includes write, which only the expansion places.
+            let mut keys: Vec<Key> = self
+                .member_spans(&path, name)
+                .into_iter()
+                .map(|span| {
+                    Key::At(Target {
+                        path: path.clone(),
+                        span: Some(span),
                     })
-                    .map(|(_, _, _, target)| Key::At(target.clone()))
-                    .collect();
-                if !expanded.is_empty() {
-                    return expanded;
+                })
+                .collect();
+            for (found, kind, parent, target) in self
+                .expanded_declarations(&path)
+                .as_deref()
+                .unwrap_or_default()
+            {
+                let member = found.eq_ignore_ascii_case(name)
+                    && is_member_kind(*kind)
+                    && matches!(
+                        parent,
+                        Some(OutlineKind::Class | OutlineKind::Interface | OutlineKind::Enum)
+                    );
+                let key = Key::At(target.clone());
+                if member && !keys.contains(&key) {
+                    keys.push(key);
                 }
-                return vec![Key::Member {
+            }
+            if keys.is_empty() {
+                keys.push(Key::Member {
                     class: path,
                     name: name.to_ascii_lowercase(),
-                }];
+                });
+            }
+            return keys;
+        }
+        let symbol = symbols.get(sym);
+        if symbol.declaration != NodeId::DUMMY {
+            // A method of this unit's class: each overload, also one an
+            // include writes.
+            let (at_span, by_name) = self.unit_methods();
+            if let Some(name) = at_span.get(&(symbol.name_span.start, symbol.name_span.end)) {
+                let mut keys: Vec<Key> = Vec::new();
+                for span in by_name.get(name).into_iter().flatten() {
+                    if let Some(place) = self.place(*span) {
+                        let key = Key::At(place);
+                        if !keys.contains(&key) {
+                            keys.push(key);
+                        }
+                    }
+                }
+                if !keys.is_empty() {
+                    return keys;
+                }
             }
         }
         self.symbol_targets(sym).into_iter().map(Key::At).collect()
+    }
+
+    /// The methods of the expanded unit, indexed once.
+    fn unit_methods(&self) -> &Methods {
+        self.methods.get_or_init(|| {
+            let mut at_span = HashMap::new();
+            let mut by_name: HashMap<String, Vec<VirtualSpan>> = HashMap::new();
+            for routine in self.routines() {
+                if routine.kind != OutlineKind::Method {
+                    continue;
+                }
+                let name = routine.name.to_ascii_lowercase();
+                let span = routine.selection_span;
+                at_span.insert((span.start, span.end), name.clone());
+                by_name.entry(name).or_default().push(VirtualSpan {
+                    start: span.start,
+                    end: span.end,
+                });
+            }
+            (at_span, by_name)
+        })
     }
 
     /// What the name at a site refers to. `None` when the site has no answer,

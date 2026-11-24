@@ -342,8 +342,16 @@ pub fn reference_graph(
     let mut workspace = ensure_workspace(host, root, false)?;
     let mut freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
     if matches!(freshness.state, IndexState::Stale { .. }) {
-        workspace = ensure_workspace(host, root, true)?;
+        // One forced pass at a time for a root. A request that waited for
+        // another's checks again: that pass can have made the index current.
+        let gate = forced_pass_gate(root);
+        let _forcing = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        workspace = ensure_workspace(host, root, false)?;
         freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
+        if matches!(freshness.state, IndexState::Stale { .. }) {
+            workspace = ensure_workspace(host, root, true)?;
+            freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
+        }
     }
     let gaps = match freshness.state {
         IndexState::Ready => Vec::new(),
@@ -361,6 +369,16 @@ pub fn reference_graph(
         graph: Arc::clone(&workspace.graph),
         gaps,
     }))
+}
+
+/// The lock that one forced pass of a workspace root holds.
+fn forced_pass_gate(root: &Path) -> Arc<Mutex<()>> {
+    static GATES: std::sync::LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut gates = GATES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(gates.entry(root.to_path_buf()).or_default())
 }
 
 /// How long a references search reuses a walk for added files.

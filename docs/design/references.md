@@ -63,7 +63,11 @@ waits for a place, and between two files. The request answers
 The search starts from a current workspace pass. It reuses a walk for added
 files for at most one second (a poll of `oxabl/freshness` reuses one for two),
 so a file written more than a second ago is found or the pass is run again, and
-expanding many call hierarchy nodes does not walk the workspace each time.
+expanding many call hierarchy nodes does not walk the workspace each time. One
+forced pass runs at a time for a workspace root: a request that finds the index
+out of date while another rebuilds it waits for that pass and checks again, so
+several requests after one change share one pass, also when they are
+cancelled.
 
 `includeDeclaration` adds the declarations of the referent. A program has no
 declaration.
@@ -141,7 +145,9 @@ two kinds.
 - A class member whose declaration is not placed.
 - Names spelled like the referent (`name`, `x.name`, `x:name`) that did not
   resolve in a searched unit, such as an unqualified database field that the
-  analysis does not tie to its table: any of them can mean it.
+  analysis does not tie to its table: any of them can mean it. A place that
+  another site resolves (the qualified `tt.field` of a temp-table) is not
+  counted.
 - No include path is configured: other files are not searched. This is the
   refusal of `oxabl/impact`.
 - The workspace index is not ready or out of date. A pass whose files changed
@@ -151,8 +157,9 @@ two kinds.
   can stand for, and a place that the client cannot be shown because the text
   of its file could not be read.
 
-The last two leave out or date the whole search of other files, so they are
-shown on each request that has them.
+Like the others, the gaps "no include path is configured" and "the workspace
+index is not ready or out of date" are shown on each request that has them:
+they leave out or date the whole search of other files.
 
 **Standing gaps** are the same for every request in the workspace, and each
 says that only a part of the search can be short:
@@ -183,8 +190,10 @@ most visible place that it can without a message on every request:
 
 - A dynamic call (`RUN VALUE`, `DYNAMIC-FUNCTION`, `DYNAMIC-INVOKE`, `PUBLISH`)
   can call any routine. Outgoing calls show it; incoming calls cannot.
-- A method call refers to each overload of the name, so the references of one
-  overload include the calls of the others.
+- A method call refers to each overload of the name, also an overload that an
+  include of the class writes, so the references of one overload include the
+  calls of the others. From a call, each overload's declaration is listed; from
+  one declaration, only that one.
 - `NEW` (a constructor call) is not an outgoing call.
 - The units that use a shared variable are not searched (a gap says so).
 - Text in an `&IF` branch that the preprocessor did not take is not analysed.
@@ -236,6 +245,8 @@ date on disk, and the gaps (no include path, a file with an incomplete
 dependency set, logged once per session, a unit with more than 20000 calls,
 a searched file whose analysis panics, a procedure a super procedure
 supplies, a name like the referent that did not resolve, a field of a shared
-temp-table), a cancel during the workspace pass and between files, and the
+temp-table), overloads split between a class and its include, a qualified
+temp-table field with no false gap, several requests after one change that
+share one pass, a cancel during the workspace pass and between files, and the
 cost of outgoing calls as a unit grows. The `references` scenario of
 `clients/vscode/test/e2e` shows both features in a real VS Code.

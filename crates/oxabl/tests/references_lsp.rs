@@ -841,6 +841,47 @@ fn a_member_written_in_an_include_of_its_class_is_one_member() {
     }
 }
 
+/// One overload of `Inc` in the class text, one in its include.
+const MIXED_SPLIT: &str = "CLASS app.Mixed:\n{mixed-members.i}\n\
+    METHOD PUBLIC VOID Inc(INPUT p AS INTEGER):\nEND METHOD.\n\
+    METHOD PUBLIC VOID Go():\n    Inc().\nEND METHOD.\nEND CLASS.\n";
+
+#[test]
+fn overloads_in_the_class_and_in_its_include_are_one_member() {
+    let ws = Workspace::new(&[
+        ("oxabl.toml", CONFIG),
+        ("app/Mixed.cls", MIXED_SPLIT),
+        ("mixed-members.i", MIXED_MEMBERS),
+        ("mixer.p", MIXER),
+    ]);
+    let mixer = ws.path("mixer.p");
+    let mixed = ws.path("app/Mixed.cls");
+    let members = ws.path("mixed-members.i");
+    let expected = sorted(vec![
+        location(&mixer, MIXER, "Inc", 0),
+        location(&mixed, MIXED_SPLIT, "Inc", 0),
+        location(&mixed, MIXED_SPLIT, "Inc", 1),
+        location(&members, MIXED_MEMBERS, "Inc", 0),
+    ]);
+    let mut session = Session::start(&ws.root);
+    // A call refers to each overload, so each declaration is listed.
+    for (file, text, needle) in [(&mixer, MIXER, "Inc"), (&mixed, MIXED_SPLIT, "Inc()")] {
+        session.open(file, text);
+        let (found, shown, _) = references_logged(&mut session, file, text, needle, 0);
+        assert_eq!(found, expected, "from {}", file.display());
+        assert_eq!(shown, Vec::<String>::new(), "from {}", file.display());
+    }
+    // A declaration is one overload: each call, and only its own declaration.
+    session.open(&members, MIXED_MEMBERS);
+    let (found, shown, _) = references_logged(&mut session, &members, MIXED_MEMBERS, "Inc", 0);
+    let own: Vec<Value> = expected
+        .into_iter()
+        .filter(|place| *place != location(&mixed, MIXED_SPLIT, "Inc", 0))
+        .collect();
+    assert_eq!(found, own);
+    assert_eq!(shown, Vec::<String>::new());
+}
+
 const PROCS: &str = "PROCEDURE incProc:\nEND PROCEDURE.\n";
 const LIBRARY: &str = "{procs.i}\nRUN incProc.\n";
 const CALLER: &str = "DEFINE VARIABLE hLib AS HANDLE NO-UNDO.\n\
@@ -1238,6 +1279,48 @@ fn timed_references(
 }
 
 #[test]
+fn requests_on_a_stale_index_share_one_pass() {
+    let ws = long_pass_workspace();
+    let caller = ws.path("a0000.p");
+    let text = std::fs::read_to_string(&caller).unwrap();
+    let mut session = Session::start(&ws.root);
+    session.open(&caller, &text);
+    let (answer, first) = timed_references(&mut session, &caller, &text, None);
+    assert!(answer.get("error").is_none(), "{answer}");
+
+    // One file changes on disk; four requests come at once.
+    let changed = ws.path("b0000.p");
+    let mut body = std::fs::read_to_string(&changed).unwrap();
+    body.push_str("iWork = 2.\n");
+    std::fs::write(&changed, body).unwrap();
+    let mut params = position(&caller, &text, "doWork", 0);
+    params["context"] = json!({"includeDeclaration": true});
+    let ids: Vec<u64> = (0..4).map(|_| 9_000 + next_id()).collect();
+    let started = std::time::Instant::now();
+    for id in &ids {
+        session.send(json!({
+            "jsonrpc": "2.0", "id": id, "method": "textDocument/references", "params": params
+        }));
+    }
+    let mut left = ids.clone();
+    while !left.is_empty() {
+        let message = session.wait_for(|_| true);
+        if let Some(at) = left.iter().position(|id| message["id"] == json!(id))
+            && message.get("method").is_none()
+        {
+            assert!(message.get("error").is_none(), "{message}");
+            left.remove(at);
+        }
+    }
+    let all = started.elapsed();
+    eprintln!("the first answer took {first:?}, four after a change {all:?}");
+    assert!(
+        all < first * 5 / 2,
+        "four requests took {all:?}, one pass and a search {first:?}"
+    );
+}
+
+#[test]
 fn a_cancel_stops_the_wait_for_the_workspace_pass() {
     let ws = long_pass_workspace();
     let caller = ws.path("a0000.p");
@@ -1332,11 +1415,33 @@ fn a_field_of_a_shared_temp_table_is_said_to_be_short() {
     session.open(&path, SHARED_TT);
     let (found, shown, _) = references_logged(&mut session, &path, SHARED_TT, "amount = 1", 0);
     assert_eq!(found.len(), 2, "{found:?}");
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    assert!(
-        shown[0].contains("`amount` is a field of the shared temp-table `ttShared`"),
-        "{shown:?}"
+    // That gap alone: the joined message hides no other one.
+    assert_eq!(
+        shown,
+        vec![
+            "oxabl: references may be incomplete: `amount` is a field of the shared \
+             temp-table `ttShared`: other programs that define it SHARED are not searched"
+                .to_string()
+        ]
     );
+}
+
+const LOCAL_TT: &str = "DEFINE TEMP-TABLE tt NO-UNDO\n    FIELD amount AS INTEGER.\n\
+    CREATE tt.\ntt.amount = 1.\nDISPLAY tt.amount.\n";
+
+#[test]
+fn a_qualified_field_of_a_local_temp_table_is_complete() {
+    let ws = Workspace::new(&[("oxabl.toml", CONFIG), ("tt.p", LOCAL_TT)]);
+    let path = ws.path("tt.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&path, LOCAL_TT);
+    let (found, shown, logged) = references_logged(&mut session, &path, LOCAL_TT, "amount = 1", 0);
+    let expected: Vec<Value> = (0..3)
+        .map(|n| location(&path, LOCAL_TT, "amount", n))
+        .collect();
+    assert_eq!(found, sorted(expected));
+    assert_eq!(shown, Vec::<String>::new());
+    assert_eq!(logged, Vec::<String>::new());
 }
 
 /// A program with `n` variables and `n` calls of one function.

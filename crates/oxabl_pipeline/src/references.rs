@@ -683,17 +683,22 @@ impl Navigation<'_, '_> {
         let symbols = &self.semantic.symbols;
         let mut found: Vec<Occurrence> = Vec::new();
         let mut unplaced = 0;
-        let mut unresolved: Vec<VirtualSpan> = Vec::new();
+        // Names spelled like the referent, by the place they name: whether
+        // some site there resolved. A qualified name (`tt.field`) can have a
+        // resolved site and an unresolved one for one place.
+        let mut spelled: HashMap<(u32, u32), bool> = HashMap::new();
         for site in symbols.sites() {
             let named = self.site_keys(&site.target, site.span);
-            if matches!(site.target, SiteTarget::Reference(_))
-                && named.as_ref().is_none_or(Vec::is_empty)
+            let resolved = named.as_ref().is_some_and(|keys| !keys.is_empty());
+            // A resolved site of any kind marks its place; only a reference
+            // that did not resolve can leave one unresolved.
+            if (resolved || matches!(site.target, SiteTarget::Reference(_)))
                 && self.spells(site.span, &referent.name)
             {
                 let span = self.narrow(site.span, &referent.name);
-                if !unresolved.contains(&span) {
-                    unresolved.push(span);
-                }
+                *spelled.entry((span.start, span.end)).or_default() |= resolved;
+            }
+            if !resolved {
                 continue;
             }
             let Some(named) = named else {
@@ -744,7 +749,8 @@ impl Navigation<'_, '_> {
             key(a).cmp(&key(b)).then(b.declaration.cmp(&a.declaration))
         });
         found.dedup_by(|later, kept| later.place == kept.place);
-        (found, unplaced, unresolved.len())
+        let unresolved = spelled.values().filter(|resolved| !**resolved).count();
+        (found, unplaced, unresolved)
     }
 
     /// Whether the text at `span` is `name`, or a qualified name that ends in
@@ -1336,7 +1342,7 @@ impl Navigation<'_, '_> {
     }
 
     /// The routines of the expanded unit, outlined once.
-    fn routines(&self) -> &[OutlineSymbol] {
+    pub(crate) fn routines(&self) -> &[OutlineSymbol] {
         &self.routine_tree().0
     }
 
