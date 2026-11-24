@@ -31,7 +31,7 @@ use oxabl_index::calls::{
 use oxabl_index::search::{self, NameKind};
 use oxabl_schema::{FieldResolution, TableId};
 use oxabl_semantic::{
-    IndexName, IndexedFileId, Resolution, Semantic, SiteTarget, SourceContext, SymbolId,
+    IndexName, IndexedFileId, Resolution, ScopeKind, Semantic, SiteTarget, SourceContext, SymbolId,
     SymbolKind, UnresolvedReason,
 };
 use oxabl_workspace::is_include_fragment;
@@ -472,11 +472,15 @@ impl Navigation<'_, '_> {
         if let Some(table) = symbols.field_table(sym) {
             return Some(self.field_identity(table, symbol.name.as_ref()));
         }
-        // Only the default buffer of a table is the table. A buffer the code
-        // declares (`DEFINE BUFFER`, the implicit buffer of `FOR EACH`) is its
-        // own record scope, whatever it is named.
+        // Only the default buffer of a table is the table. `FOR EACH` of a
+        // database table scopes that buffer to its block, so its symbol is the
+        // table too. A buffer the code declares (`DEFINE BUFFER`, a parameter
+        // buffer) is its own record scope, whatever it is named.
         if symbol.declaration == NodeId::DUMMY {
             return self.table_named(symbol).map(Identity::Table);
+        }
+        if let Some(table) = symbol.table_id.filter(|_| self.scopes_its_block(symbol)) {
+            return Some(Identity::Table(table));
         }
         Some(Identity::Declared(sym))
     }
@@ -761,6 +765,15 @@ impl Navigation<'_, '_> {
         (matches!(symbol.kind, SymbolKind::Buffer | SymbolKind::TempTable)
             && (symbol.declaration == NodeId::DUMMY || self.names_its_table(symbol)))
         .then_some(table)
+    }
+
+    /// Whether `symbol` is the buffer of a `FOR EACH`: the resolver declares it
+    /// in the block that the statement opens.
+    fn scopes_its_block(&self, symbol: &oxabl_semantic::Symbol) -> bool {
+        let scope = self.model.semantic.scope_tree.get(symbol.declared_in);
+        symbol.kind == SymbolKind::Buffer
+            && scope.kind == ScopeKind::Block
+            && scope.owner_node == symbol.declaration
     }
 
     /// Whether a buffer's name is the name of the table it reads, so the name at

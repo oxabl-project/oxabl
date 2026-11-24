@@ -4,13 +4,18 @@
 //! Each analyses one compilation unit on a worker thread with the open buffers
 //! over the disk ([`compute_navigation`]) and render its byte spans in the
 //! negotiated position encoding. A highlight of an open file that is its own
-//! root is answered from the cached analysis ([`compute_highlights`]). An open include with a selected compilation
-//! context is analysed in that root for go to definition; otherwise an include
-//! is analysed alone. A failed analysis answers with an error, never with an
-//! empty answer that reads as "no definition".
+//! root, and that reads no include with unsaved changes, is answered from the
+//! cached analysis ([`compute_highlights`]). The highlights of one document run
+//! one at a time, and a request that a newer one replaced while it waited is
+//! cancelled. An open include with a selected compilation context is analysed
+//! in that root; otherwise an include is analysed alone. A failed analysis
+//! answers with an error, never with an empty answer that reads as "no
+//! definition".
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
@@ -18,11 +23,24 @@ use lsp_types::{
     DocumentLinkParams, GotoDefinitionParams, Location, PositionEncodingKind, Range,
 };
 use oxabl_daemon::canonical_path;
-use oxabl_daemon::db::{NavigationAnswer, NavigationQuery, compute_highlights, compute_navigation};
+use oxabl_daemon::db::{
+    AnalysisDatabase, Buffer, NavigationAnswer, NavigationQuery, buffer_dependencies,
+    compute_highlights, compute_navigation,
+};
 use ropey::Rope;
 
 use crate::position::{byte_to_position, position_to_byte};
 use crate::{Server, path_to_uri, uri_to_path};
+
+/// The highlight requests of each open document.
+pub(crate) type HighlightTurns = HashMap<lsp_types::Uri, Arc<HighlightTurn>>;
+
+/// The newest highlight request of a document, and the lock its analysis holds.
+#[derive(Default)]
+pub(crate) struct HighlightTurn {
+    latest: AtomicU64,
+    running: Mutex<()>,
+}
 
 impl Server<'_> {
     pub(crate) fn handle_definition(&mut self, req: Request) -> anyhow::Result<()> {
@@ -46,7 +64,7 @@ impl Server<'_> {
             .cloned()
             .unwrap_or_else(|| path.clone());
         let query = NavigationQuery::Definition { file: path, offset };
-        self.spawn_navigation(req.id, root, None, query, |answer, encoding| {
+        self.spawn_navigation(req.id, root, None, None, query, |answer, encoding| {
             serde_json::to_value(locations(answer, encoding))
         })
     }
@@ -74,10 +92,17 @@ impl Server<'_> {
         // The open file as its own root is answered from the analysis that
         // diagnostics share; an include analysed in a selected root is not.
         let own_buffer = (root == path).then(|| uri.as_str().to_string());
+        let turn = self.highlight_turns.entry(uri).or_default().clone();
+        let mine = turn.latest.fetch_add(1, Ordering::SeqCst) + 1;
         let query = NavigationQuery::Highlights { file: path, offset };
-        self.spawn_navigation(req.id, root, own_buffer, query, |answer, encoding| {
-            serde_json::to_value(highlights(answer, encoding))
-        })
+        self.spawn_navigation(
+            req.id,
+            root,
+            own_buffer,
+            Some((turn, mine)),
+            query,
+            |answer, encoding| serde_json::to_value(highlights(answer, encoding)),
+        )
     }
 
     pub(crate) fn handle_document_link(&mut self, req: Request) -> anyhow::Result<()> {
@@ -94,6 +119,7 @@ impl Server<'_> {
             req.id,
             root,
             None,
+            None,
             NavigationQuery::Links,
             |answer, encoding| serde_json::to_value(links(answer, encoding)),
         )
@@ -101,12 +127,14 @@ impl Server<'_> {
 
     /// Answer a navigation request on a worker thread. The response goes
     /// straight to the client. With a `buffer` key, a highlight query uses the
-    /// open buffer's cached analysis.
+    /// open buffer's cached analysis. With a `turn`, the request waits for the
+    /// one before it and is cancelled when a newer one came meanwhile.
     fn spawn_navigation(
         &mut self,
         id: RequestId,
         root: PathBuf,
         buffer: Option<String>,
+        turn: Option<(Arc<HighlightTurn>, u64)>,
         query: NavigationQuery,
         render: fn(
             NavigationAnswer,
@@ -136,9 +164,24 @@ impl Server<'_> {
                 let sender = sender.clone();
                 let id = id.clone();
                 move || {
+                    let _running = turn.as_ref().map(|(turn, _)| {
+                        turn.running.lock().unwrap_or_else(PoisonError::into_inner)
+                    });
+                    if let Some((turn, mine)) = &turn
+                        && turn.latest.load(Ordering::SeqCst) != *mine
+                    {
+                        let _ = sender.send(Message::Response(Response::new_err(
+                            id,
+                            ErrorCode::RequestCanceled as i32,
+                            "oxabl-lsp: a newer highlight replaced this one".to_string(),
+                        )));
+                        return;
+                    }
                     let answered = oxabl_common::catch_panic(|| {
                         let answer = match (&query, buffer) {
-                            (NavigationQuery::Highlights { offset, .. }, Some(buffer)) => {
+                            (NavigationQuery::Highlights { offset, .. }, Some(buffer))
+                                if !reads_unsaved_include(&snapshot, buffer, &root, &overlay) =>
+                            {
                                 compute_highlights(&snapshot, buffer, schema, *offset)
                             }
                             _ => compute_navigation(&snapshot, schema, &root, overlay, &query),
@@ -180,6 +223,30 @@ impl Server<'_> {
         }
         Ok(())
     }
+}
+
+/// Whether the expansion of `buffer` reads an include whose open buffer differs
+/// from the file, which the cached analysis does not see. True when that cannot
+/// be told.
+fn reads_unsaved_include(
+    snapshot: &AnalysisDatabase,
+    buffer: Buffer,
+    root: &Path,
+    overlay: &HashMap<PathBuf, Arc<str>>,
+) -> bool {
+    let Some(dependencies) = buffer_dependencies(snapshot, buffer) else {
+        return true;
+    };
+    let open: HashMap<PathBuf, &Arc<str>> = overlay
+        .iter()
+        .map(|(path, text)| (canonical_path(path), text))
+        .filter(|(path, _)| path != root)
+        .collect();
+    dependencies.iter().any(|path| {
+        open.get(&canonical_path(path)).is_some_and(|text| {
+            std::fs::read_to_string(path).map_or(true, |saved| saved != text.as_ref())
+        })
+    })
 }
 
 fn invalid(id: RequestId, message: &str) -> Response {

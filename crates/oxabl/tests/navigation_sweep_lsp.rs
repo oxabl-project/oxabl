@@ -182,7 +182,11 @@ fn every_position_gets_a_well_formed_answer() {
                 })
             })
             .collect();
-        let highlights = session.request_all("textDocument/documentHighlight", params.clone());
+        // One at a time: a newer highlight of a document cancels one that waits.
+        let highlights: Vec<Value> = params
+            .iter()
+            .map(|params| session.request("textDocument/documentHighlight", params.clone()))
+            .collect();
         for ((line, character), answer) in positions.iter().zip(highlights) {
             let context = format!("{name}:{line}:{character} highlights");
             assert!(answer.get("error").is_none(), "{context}: {answer}");

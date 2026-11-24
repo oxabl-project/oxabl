@@ -80,6 +80,18 @@ const BUFFERS: &str = "FIND FIRST Customer NO-LOCK.\n\
     \x20   DISPLAY Customer.Name.\n\
     END PROCEDURE.\n";
 
+/// `FOR EACH` of a database table uses the table's default buffer, as the
+/// `FIND` before it and the `DISPLAY` after it do.
+const LOOPS: &str = "FIND FIRST Customer NO-LOCK.\n\
+    FOR EACH Customer NO-LOCK:\n\
+    \x20   DISPLAY Customer.Name.\n\
+    END.\n\
+    DISPLAY Customer.Name.\n\
+    FOR EACH Customer NO-LOCK: END.\n";
+
+/// A program whose variable an include declares only in its unsaved buffer.
+const UNSAVED_MAIN: &str = "{unsaved.i}\nb = 1.\nb = b + 1.\n";
+
 const KINDS: &str = "DEFINE TEMP-TABLE ttOrder NO-UNDO\n\
     \x20   FIELD OrderId AS INTEGER\n\
     \x20   FIELD Qty AS INTEGER.\n\
@@ -131,6 +143,9 @@ impl Workspace {
             ("lib/dup.p", "MESSAGE \"two\".\n"),
             ("once.p", "MESSAGE \"once\".\n"),
             ("buffers.p", BUFFERS),
+            ("loops.p", LOOPS),
+            ("unsaved.p", UNSAVED_MAIN),
+            ("unsaved.i", "/* nothing yet */\n"),
             ("app/Greeter.cls", GREETER),
             ("app/Base.cls", BASE),
         ];
@@ -321,15 +336,43 @@ fn a_field_shows_its_uses_through_every_buffer() {
         expected(&[(11, "Name", 'R'), (14, "Name", 'R')]),
         "the field, not the buffer in front of it"
     );
-    // The qualifier names the implicit buffer of `FOR EACH`, which is its own
-    // buffer: not the table that `DEFINE BUFFER ... FOR` names.
-    let found = highlights(&mut session, &main, MAIN, "Customer.Name", 0);
-    assert_eq!(
-        found,
-        expected(&[(10, "Customer", 'R'), (11, "Customer", 'R')])
-    );
-    let found = highlights(&mut session, &main, MAIN, "Customer.\n", 0);
-    assert_eq!(found, expected(&[(2, "Customer", 'R')]));
+    // The qualifier is the table, and it names the table's default buffer,
+    // which `FOR EACH` uses.
+    let table = expected(&[
+        (2, "Customer", 'R'),
+        (10, "Customer", 'R'),
+        (11, "Customer", 'R'),
+    ]);
+    for needle in ["Customer.Name", "Customer.\n", "Customer NO-LOCK"] {
+        let found = highlights(&mut session, &main, MAIN, needle, 0);
+        assert_eq!(found, table, "highlights of `{needle}`");
+    }
+}
+
+#[test]
+fn the_buffer_of_for_each_is_the_default_buffer_of_its_table() {
+    let ws = Workspace::new();
+    let loops = ws.path("loops.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&loops, LOOPS);
+
+    let all = expected(&[
+        (0, "Customer", 'R'),
+        (1, "Customer", 'R'),
+        (2, "Customer", 'R'),
+        (4, "Customer", 'R'),
+        (5, "Customer", 'R'),
+    ]);
+    for (needle, occurrence) in [
+        ("Customer NO-LOCK", 0),
+        ("Customer NO-LOCK", 1),
+        ("Customer NO-LOCK", 2),
+        ("Customer.Name", 0),
+        ("Customer.Name", 1),
+    ] {
+        let found = highlights(&mut session, &loops, LOOPS, needle, occurrence);
+        assert_eq!(found, all, "highlights of `{needle}` #{occurrence}");
+    }
 }
 
 #[test]
@@ -633,4 +676,55 @@ fn an_edit_is_seen_by_the_next_highlight() {
         highlights(&mut session, &scopes, &edited, "iA = 1", 0),
         expected(&[(0, "iA", 'W'), (1, "iA", 'W'), (2, "iA", 'R'),])
     );
+}
+
+#[test]
+fn an_unsaved_include_counts_as_it_does_for_go_to_definition() {
+    let ws = Workspace::new();
+    let main = ws.path("unsaved.p");
+    let include = ws.path("unsaved.i");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, UNSAVED_MAIN);
+    // The memoized analysis of the program, before the include is open.
+    assert_eq!(
+        highlights(&mut session, &main, UNSAVED_MAIN, "b = 1", 0),
+        Vec::new()
+    );
+    session.open(&include, "DEFINE VARIABLE b AS INTEGER NO-UNDO.\n");
+
+    let found = highlights(&mut session, &main, UNSAVED_MAIN, "b = 1", 0);
+    assert_eq!(
+        found,
+        expected(&[(1, "b", 'W'), (2, "b", 'W'), (2, "b", 'R')])
+    );
+}
+
+#[test]
+fn a_burst_of_highlights_answers_the_newest() {
+    let ws = Workspace::new();
+    let main = ws.path("main.p");
+    let mut session = Session::start(&ws.root);
+    session.open(&main, MAIN);
+    let wanted = highlights(&mut session, &main, MAIN, "iCount = 1", 0);
+    assert!(!wanted.is_empty());
+
+    let (line, character) = utf16_at(MAIN, nth(MAIN, "iCount = 1", 0) + 1);
+    let params = json!({
+        "textDocument": {"uri": file_uri(&main)},
+        "position": {"line": line, "character": character}
+    });
+    let answers = session.request_all("textDocument/documentHighlight", vec![params; 30]);
+    let (last, older) = answers.split_last().unwrap();
+    assert_eq!(
+        last["result"].as_array().map(Vec::len),
+        Some(wanted.len()),
+        "the newest request is answered: {last}"
+    );
+    for answer in older {
+        assert!(
+            answer["result"].as_array().map(Vec::len) == Some(wanted.len())
+                || answer["error"]["code"] == json!(-32800),
+            "an older request is answered or cancelled: {answer}"
+        );
+    }
 }
