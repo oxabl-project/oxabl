@@ -18,7 +18,9 @@ const FILES = {
   "dim.p":
     '&IF OPSYS = "WIN32" &THEN\nMESSAGE "windows only".\n&ELSE\nMESSAGE "unix build".\n&ENDIF\n' +
     '&IF SEARCH("x.p") <> ? &THEN\nMESSAGE "guessed branch".\n&ENDIF\n',
-  "shared.i": '&IF "{&flavour}" = "red" &THEN\nMESSAGE "red flavour".\n&ELSE\nMESSAGE "other flavour".\n&ENDIF\n',
+  "shared.i":
+    '&IF "{&flavour}" = "red" &THEN\nMESSAGE "red flavour".\n&ELSE\nMESSAGE "other flavour".\n&ENDIF\n' +
+    '&IF OPSYS = "VMS" &THEN\nMESSAGE "vms only".\n&ENDIF\n',
   "red.p": "&SCOPED-DEFINE flavour red\n{shared.i}\n",
 };
 
@@ -119,21 +121,22 @@ export async function inactiveRegions(ctx) {
     dimmed = await dimmedAre(page, ['MESSAGE "windows only".'], 30_000);
     check(`${name}: oxabl.inactiveRegions.enable true dims again`, dimmed.ok, dimmed.seen);
 
-    // 3. Alone, the include does not know `flavour`, so nothing is dimmed. In red.p, the `&ELSE` is.
+    // 3. Alone, the include does not know `flavour`: only the `OPSYS` branch is dimmed. In red.p, the `&ELSE` is too.
+    const VMS = 'MESSAGE "vms only".';
     await openFile(page, "shared.i");
     await waitFor("fragment mode", async () => (await statusTexts(page)).some((t) => t.includes("oxabl: fragment")), {
       timeout: 60_000,
       interval: 200,
     }).catch(() => {});
-    dimmed = await dimmedAre(page, [], 10_000);
-    check(`${name}: an include alone dims nothing that its includer decides`, dimmed.ok, dimmed.seen);
+    dimmed = await dimmedAre(page, [VMS]);
+    check(`${name}: an include alone dims only what its includer cannot change`, dimmed.ok, dimmed.seen);
     await choose(page, "red.p");
-    dimmed = await dimmedAre(page, ['MESSAGE "other flavour".']);
+    dimmed = await dimmedAre(page, ['MESSAGE "other flavour".', VMS]);
     check(`${name}: in red.p the include's other branch is dimmed`, dimmed.ok, dimmed.seen);
     await screenshot(page, `${name}-include`);
     await choose(page, "Fragment mode");
-    dimmed = await dimmedAre(page, []);
-    check(`${name}: back in fragment mode nothing is dimmed`, dimmed.ok, dimmed.seen);
+    dimmed = await dimmedAre(page, [VMS]);
+    check(`${name}: back in fragment mode only the OPSYS branch is dimmed`, dimmed.ok, dimmed.seen);
   } finally {
     await vs.close();
     await sleep(1500);

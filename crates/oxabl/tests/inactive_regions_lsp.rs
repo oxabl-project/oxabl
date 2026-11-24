@@ -14,7 +14,12 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use session::{Session, file_uri};
 
-const BASE: &str = "[workspace]\nname = \"p\"\n[workspace.sources]\ninclude_paths = [\".\"]\n";
+/// A project that states none of the compile environment.
+const UNSET: &str = "[workspace]\nname = \"p\"\n[workspace.sources]\ninclude_paths = [\".\"]\n";
+
+/// A project that states `opsys`.
+const BASE: &str = "[workspace]\nname = \"p\"\n[workspace.sources]\ninclude_paths = [\".\"]\n\
+[workspace.preprocessor]\nopsys = \"UNIX\"\n";
 
 fn asks() -> Value {
     json!({"textDocument": {"inactiveRegionsCapabilities": {"inactiveRegions": true}}})
@@ -92,7 +97,7 @@ MESSAGE \"inner\".\n\
 
 #[test]
 fn nested_branches_follow_the_configured_compile_environment() {
-    let windows = format!("{BASE}[workspace.preprocessor]\nopsys = \"WIN32\"\n");
+    let windows = format!("{UNSET}[workspace.preprocessor]\nopsys = \"WIN32\"\n");
     let dir = project(&windows, &[("nested.p", NESTED)]);
     let path = dir.path().join("nested.p");
     let mut session = Session::start_with(dir.path(), asks());
@@ -105,7 +110,7 @@ fn nested_branches_follow_the_configured_compile_environment() {
     );
     drop(session);
 
-    // The default environment is a Unix compile: the other branch is taken.
+    // A Unix compile takes the other branch.
     let dir = project(BASE, &[("nested.p", NESTED)]);
     let path = dir.path().join("nested.p");
     let mut session = Session::start_with(dir.path(), asks());
@@ -169,7 +174,7 @@ fn a_condition_oxabl_cannot_decide_leaves_its_branches_undimmed() {
 
     // With the version stated, the first chain and what depends on it are
     // decided. The `SEARCH` is still a guess.
-    let stated = format!("{BASE}[workspace.preprocessor]\nproversion = \"12.8\"\n");
+    let stated = format!("{BASE}proversion = \"12.8\"\n");
     let dir = project(&stated, &[("guesses.p", GUESSES)]);
     let path = dir.path().join("guesses.p");
     let mut session = Session::start_with(dir.path(), asks());
@@ -314,25 +319,165 @@ MESSAGE \"shadowed\".\n\
 }
 
 #[test]
+fn a_compile_environment_name_the_project_does_not_set_decides_nothing() {
+    let text = "&IF \"{&WINDOW-SYSTEM}\" = \"TTY\" &THEN\n\
+MESSAGE \"tty\".\n\
+&ELSE\n\
+MESSAGE \"gui\".\n\
+&ENDIF\n\
+&IF OPSYS = \"WIN32\" &THEN\n\
+MESSAGE \"windows\".\n\
+&ENDIF\n\
+&IF \"{&BATCH-MODE}\" = \"no\" &THEN\n\
+MESSAGE \"interactive\".\n\
+&ENDIF\n\
+&IF \"{&PROCESS-ARCHITECTURE}\" = \"32\" &THEN\n\
+MESSAGE \"32-bit\".\n\
+&ENDIF\n";
+    // The defaults describe a common compile, not this project's.
+    let dir = project(UNSET, &[("env.p", text)]);
+    let path = dir.path().join("env.p");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, text);
+    assert_eq!(next_regions(&session, &path), vec![]);
+    drop(session);
+
+    // The same values, stated, are facts.
+    let stated = format!(
+        "{UNSET}[workspace.preprocessor]\nopsys = \"UNIX\"\nwindow-system = \"TTY\"\n\
+         batch-mode = true\nprocess-architecture = 64\n"
+    );
+    let dir = project(&stated, &[("env.p", text)]);
+    let path = dir.path().join("env.p");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, text);
+    assert_eq!(
+        next_regions(&session, &path),
+        vec![(3, 0, 4, 0), (6, 0, 7, 0), (9, 0, 10, 0), (12, 0, 13, 0)]
+    );
+}
+
+#[test]
+fn a_reference_inside_a_reference_is_expanded_from_the_inside_out() {
+    let text = "&GLOBAL-DEFINE OPEN-QUERY-F-Main yes\n\
+&SCOPED-DEFINE FRAME-NAME F-Main\n\
+&IF \"{&OPEN-QUERY-{&FRAME-NAME}}\" = \"yes\" &THEN\n\
+MESSAGE \"a\".\n\
+&ELSE\n\
+MESSAGE \"b\".\n\
+&ENDIF\n\
+&IF PROVERSION >= \"12\" &THEN\n\
+&SCOPED-DEFINE PART F-Main\n\
+&ENDIF\n\
+&IF \"{&OPEN-QUERY-{&PART}}\" = \"yes\" &THEN\n\
+MESSAGE \"c\".\n\
+&ELSE\n\
+MESSAGE \"d\".\n\
+&ENDIF\n";
+    let dir = project(BASE, &[("nested-ref.p", text)]);
+    let path = dir.path().join("nested-ref.p");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, text);
+    // The first chain takes `a`. The second reads `PART`, which a guessed
+    // branch defines, through the inner reference.
+    assert_eq!(next_regions(&session, &path), vec![(5, 0, 6, 0)]);
+}
+
+#[test]
+fn a_chain_inside_an_unclosed_if_is_not_decided() {
+    let text = "&IF OPSYS = \"VMS\" &THEN\n\
+MESSAGE \"before\".\n\
+&ENDIF\n\
+&IF OPSYS = \"UNIX\" &THEN\n\
+&IF OPSYS = \"VMS\" &THEN\n\
+MESSAGE \"x\".\n\
+&ENDIF\n\
+MESSAGE \"y\".\n";
+    let dir = project(BASE, &[("unclosed.p", text)]);
+    let path = dir.path().join("unclosed.p");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&path, text);
+    assert_eq!(next_regions(&session, &path), vec![(1, 0, 2, 0)]);
+}
+
+#[test]
+fn an_include_the_run_did_not_expand_leaves_the_includes_regions_undecided() {
+    let inc = "&IF \"{&mode}\" = \"b\" &THEN\nMESSAGE \"b\".\n&ENDIF\n";
+    let dir = project(
+        BASE,
+        &[
+            ("inc.i", inc),
+            ("once.p", "{inc.i &mode=a}\n"),
+            (
+                "guessed.p",
+                "{inc.i &mode=a}\n&IF PROVERSION >= \"12\" &THEN\n{inc.i &mode=b}\n&ENDIF\n",
+            ),
+            (
+                "searched.p",
+                "{mid.i}\n&IF SEARCH(\"x.p\") <> ? &THEN\n{inc.i &mode=b}\n&ENDIF\n",
+            ),
+            ("mid.i", "{inc.i &mode=a}\n"),
+        ],
+    );
+    let inc_path = dir.path().join("inc.i");
+    let mut session = Session::start_with(dir.path(), asks());
+    session.open(&inc_path, inc);
+    next_regions(&session, &inc_path);
+
+    // Expanded once with `mode` a: the branch is not compiled.
+    select(&mut session, &inc_path, Some(&dir.path().join("once.p")));
+    regions_where(&session, &inc_path, |r| r == [(1, 0, 2, 0)]);
+
+    // A 12.x compile expands it again with `mode` b, so the branch may compile.
+    for root in ["guessed.p", "searched.p"] {
+        select(&mut session, &inc_path, Some(&dir.path().join(root)));
+        assert_eq!(next_regions(&session, &inc_path), vec![], "in {root}");
+    }
+}
+
+#[test]
 fn a_client_that_does_not_ask_gets_no_regions() {
     let dir = project(BASE, &[("nested.p", NESTED)]);
     let path = dir.path().join("nested.p");
     let mut session = Session::start(dir.path());
     session.open(&path, NESTED);
-    // The regions go out before the diagnostics of the same analysis.
-    let end = Instant::now() + Duration::from_secs(60);
-    loop {
-        let left = end.saturating_duration_since(Instant::now());
-        let message = session
-            .try_next(left)
-            .expect("the diagnostics of the open buffer");
+    let uri = json!(file_uri(&path));
+    let no_regions = |message: &Value| {
         assert_ne!(
             message["method"],
             json!("textDocument/inactiveRegions"),
             "{message}"
         );
-        if message["method"] == json!("textDocument/publishDiagnostics") {
-            break;
+    };
+    // The open, then an edit with its debounced analysis, then a quiet second.
+    let mut publishes = 0;
+    let end = Instant::now() + Duration::from_secs(60);
+    while publishes < 2 {
+        let left = end.saturating_duration_since(Instant::now());
+        let message = session
+            .try_next(left)
+            .expect("the diagnostics of the buffer");
+        no_regions(&message);
+        if message["method"] == json!("textDocument/publishDiagnostics")
+            && message["params"]["uri"] == uri
+        {
+            publishes += 1;
+            if publishes == 1 {
+                session.send(json!({
+                    "jsonrpc": "2.0", "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": {"uri": file_uri(&path), "version": 2},
+                        "contentChanges": [{"text": format!("{NESTED}MESSAGE \"more\".\n")}]
+                    }
+                }));
+            }
+        }
+    }
+    let quiet = Instant::now() + Duration::from_secs(1);
+    while let Some(left) = quiet.checked_duration_since(Instant::now()) {
+        match session.try_next(left) {
+            Some(message) => no_regions(&message),
+            None => break,
         }
     }
 }

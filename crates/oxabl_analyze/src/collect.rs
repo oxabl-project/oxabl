@@ -41,8 +41,8 @@ use oxabl_common::{Diagnostic, FileId, FileSpan, LintSeverityMap, Severity};
 use oxabl_lexer::tokenize;
 use oxabl_parser::Parser;
 use oxabl_preprocessor::{
-    BranchState, ConditionalBranch, Preprocessor, ResolvedInclude, SkippedInclude, SkippedText,
-    SpanNode, TextLoss, UnreadableInclude, UnresolvedInclude,
+    BranchState, IfBranch, Preprocessor, ResolvedInclude, SkippedInclude, SkippedText, SpanNode,
+    TextLoss, UnreadableInclude, UnresolvedInclude,
 };
 use oxabl_schema::Schema;
 use oxabl_semantic::{
@@ -436,9 +436,11 @@ pub struct ExpandedFile {
     /// The text of each file that holds a stretch of `skipped_text`.
     skipped_sources: Vec<(FileId, Arc<str>)>,
     /// Every branch of every `&IF` chain, at any depth.
-    branches: Vec<ConditionalBranch>,
+    branches: Vec<IfBranch>,
     /// The path of each include expansion, by the file id of its text.
     include_files: Vec<(FileId, PathBuf)>,
+    /// Whether an include the compiler may expand was not expanded.
+    missed_expansion: bool,
     /// Places, at any depth, where the preprocessor dropped text or decided a
     /// branch without the facts to decide it.
     text_losses: Vec<TextLoss>,
@@ -542,11 +544,20 @@ impl ExpandedFile {
     /// [`Self::inactive_regions`] in the bytes of the include files whose path
     /// `is_file` accepts. A branch is listed only when it is not compiled, as a
     /// decided fact, in every expansion of the include.
+    ///
+    /// Empty when the run did not expand an include that the compiler may
+    /// expand (`PreprocessedFile::missed_expansion`): that expansion could be
+    /// one more of the include, one that compiles the branch.
     pub fn inactive_regions_in(&self, is_file: impl Fn(&Path) -> bool) -> Vec<Span> {
-        let files: Vec<FileId> = self
+        if self.missed_expansion {
+            return Vec::new();
+        }
+        // `is_file` may ask the file system, so once per path, not per expansion.
+        let mut verdicts: HashMap<&Path, bool> = HashMap::new();
+        let files: std::collections::HashSet<FileId> = self
             .include_files
             .iter()
-            .filter(|(_, path)| is_file(path))
+            .filter(|(_, path)| *verdicts.entry(path).or_insert_with(|| is_file(path)))
             .map(|(file, _)| *file)
             .collect();
         inactive_regions(
@@ -945,6 +956,7 @@ pub fn expand_source_with(
             skipped_sources: Vec::new(),
             branches: Vec::new(),
             include_files: Vec::new(),
+            missed_expansion: false,
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
@@ -1086,6 +1098,7 @@ pub fn expand_source_with(
                 skipped_sources,
                 branches: pf.branches.clone(),
                 include_files: pf.include_files.clone(),
+                missed_expansion: pf.missed_expansion,
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
@@ -1101,7 +1114,7 @@ pub fn expand_source_with(
 
 /// The bodies of `branches` that are not taken in every branch listed with the
 /// same body, sorted and merged.
-fn inactive_regions<'a>(branches: impl Iterator<Item = &'a ConditionalBranch>) -> Vec<Span> {
+fn inactive_regions<'a>(branches: impl Iterator<Item = &'a IfBranch>) -> Vec<Span> {
     let mut bodies: Vec<(u32, u32, bool)> = branches
         .filter(|branch| branch.body.span.start < branch.body.span.end)
         .map(|branch| {
@@ -1980,6 +1993,7 @@ mod tests {
             skipped_sources: Vec::new(),
             branches: Vec::new(),
             include_files: Vec::new(),
+            missed_expansion: false,
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),

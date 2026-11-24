@@ -975,9 +975,10 @@ impl<'c> Server<'c> {
                     return;
                 };
                 let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
-                if let Some(regions) = res.inactive_regions {
-                    self.publish_inactive_regions(&res.uri, res.version, regions);
-                }
+                // No regions from this analysis clear the old ones, which belong
+                // to other text.
+                let regions = res.inactive_regions.unwrap_or_default();
+                self.publish_inactive_regions(&res.uri, res.version, regions);
                 self.publish(res.uri.clone(), lsp_diags, Some(res.version));
             }
         }
@@ -1340,10 +1341,9 @@ impl<'c> Server<'c> {
         };
         if let Some(doc) = self.documents.get(uri) {
             let lsp_diags = to_lsp_diagnostics(&collected, &doc.rope, &self.encoding);
-            if let Some(regions) = &analysis.inactive_regions {
-                let regions = regions.iter().map(|span| (span.start, span.end));
-                self.publish_inactive_regions(uri, version, regions);
-            }
+            let regions = analysis.inactive_regions.as_deref().unwrap_or_default();
+            let regions = regions.iter().map(|span| (span.start, span.end));
+            self.publish_inactive_regions(uri, version, regions);
             self.publish(uri.clone(), lsp_diags, Some(version));
         }
     }

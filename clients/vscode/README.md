@@ -106,8 +106,10 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   context decides. In fragment mode, a condition on a name that the includer
   can set is not decided. A branch whose condition oxabl cannot decide is never
   dimmed: a function that it does not model (such as `SEARCH`), `PROVERSION`
-  with no `proversion` set, or a name that an include it cannot read can
-  define. Set `oxabl.inactiveRegions.enable` to `false` to turn the dimming
+  with no `proversion` set, a name that an include it cannot read can define,
+  or `OPSYS`, `WINDOW-SYSTEM`, `BATCH-MODE` or `PROCESS-ARCHITECTURE` when
+  `oxabl.toml` does not set `opsys`, `window-system`, `batch-mode` or
+  `process-architecture`. Their defaults do not dim anything. Set `oxabl.inactiveRegions.enable` to `false` to turn the dimming
   off.
 - **Expanded compilation unit.** **oxabl: Show Expanded Compilation Unit**
   opens a read-only view beside the file: the source oxabl parsed after

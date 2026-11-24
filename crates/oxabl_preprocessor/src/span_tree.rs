@@ -182,15 +182,12 @@ pub enum BranchState {
 /// [`crate::Preprocessor::with_includer_unknown`], a name the run did not set
 /// itself is not known either.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConditionalBranch {
+pub struct IfBranch {
     pub directive: BranchDirective,
     /// The text the branch holds: from the end of its directive to the start of
     /// the next directive of its chain, or to the end of the file when the chain
     /// is not closed. In the coordinates of the file that holds it.
     pub body: FileSpan,
-    /// The enclosing include sites that led here, outermost first. Empty in the
-    /// file being processed.
-    pub via: Vec<FileSpan>,
     pub state: BranchState,
 }
 
@@ -281,9 +278,14 @@ pub struct PreprocessedFile {
     pub skipped_text: Vec<SkippedText>,
     /// Every branch of every `&IF` chain, at any depth, in the order the
     /// branches end.
-    pub branches: Vec<ConditionalBranch>,
+    pub branches: Vec<IfBranch>,
     /// The path of each include expansion, by the file id of its text.
     pub include_files: Vec<(FileId, PathBuf)>,
+    /// Whether an include the compiler may expand was not expanded: written in
+    /// a branch chosen on a guess, or dropped because it could not be read, closed
+    /// a cycle, or passed the depth or expansion limit. Then [`Self::branches`]
+    /// lacks the branches of that expansion, whichever file it is.
+    pub missed_expansion: bool,
     /// Every place, at any depth, where text was dropped or a branch was chosen
     /// without the facts to choose it.
     pub text_losses: Vec<TextLoss>,
@@ -323,6 +325,7 @@ impl PreprocessedFile {
             skipped_text: Vec::new(),
             branches: Vec::new(),
             include_files: Vec::new(),
+            missed_expansion: false,
             text_losses: Vec::new(),
             elided: Vec::new(),
             diagnostics,

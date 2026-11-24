@@ -59,11 +59,19 @@ A condition is undecided when:
   error, or a mixed comparison (`PREPROC010`, for example `SEARCH`);
 - it reads a predefined name that has no value (`PREPROC009`, for example
   `PROVERSION` with no `proversion` under `[workspace.preprocessor]`);
-- it reads a name (`{&name}` or `DEFINED(name)`) whose value is not known.
+- it reads a name (`{&name}` or `DEFINED(name)`) whose value is not known;
+- it reads a compile-environment name that `oxabl.toml` does not set (see
+  below).
+
+A reference inside a reference (`{&OPEN-QUERY-{&FRAME-NAME}}`) is expanded
+from the inside out, as the AVM does: the inner value becomes part of the outer
+name. Both names must be known.
 
 All branches of an undecided `&IF` are undecided. For an undecided `&ELSEIF`,
 the branches before it keep their state and the rest of the chain is
-undecided. Every chain inside an undecided branch is undecided too.
+undecided. Every chain inside an undecided branch is undecided too. An `&IF`
+that is never closed is undecided, and so is every chain that opens after it,
+closed or not.
 
 A name is not known:
 
@@ -89,6 +97,21 @@ The compile environment is that of the diagnostics: `[workspace.preprocessor]`
 in `oxabl.toml` gives `OPSYS`, `WINDOW-SYSTEM`, `PROVERSION` and the other
 predefined names.
 
+### Defaults of the compile environment
+
+`opsys`, `window-system`, `batch-mode` and `process-architecture` have
+defaults (a 64-bit Unix batch compile with a TTY UI). The diagnostics decide
+the branches on these defaults with no warning: a parse must take one branch.
+The dimming does not. A default describes a common compile, not the compile
+of this project, and a dimmed branch tells the reader "this code is not
+compiled". So a key that `oxabl.toml` does not set is not known: `{&OPSYS}`,
+`{&WINDOW-SYSTEM}`, `{&BATCH-MODE}`, `{&PROCESS-ARCHITECTURE}`, and the `OPSYS`
+function when `opsys` is not set, leave their branches undimmed. Without this,
+the GUI branch of every `&IF "{&WINDOW-SYSTEM}" = "TTY"` would be dimmed in a
+project that never said it compiles for TTY. Set the keys to dim these
+branches. `PreprocessorConfig::stated` records which keys the configuration
+sets (`oxabl.toml` and, for `oxabl build`, the overlay).
+
 ## Includes
 
 - **A root context.** In an include with a selected root
@@ -96,7 +119,12 @@ predefined names.
   expansion, in the include's own bytes
   (`oxabl_daemon::db::ContextDiagnostics::inactive_regions`). When the root
   expands the include more than once, a branch is a region only when no
-  expansion compiles it and every expansion decides it.
+  expansion compiles it and every expansion decides it. When the run did not
+  expand an include that the compiler may expand (`PreprocessedFile::missed_expansion`:
+  an include, or a reference that can hold one, in a branch chosen on a guess,
+  or an include dropped because it could not be read, closed a cycle, or
+  passed the depth or expansion limit), that expansion could be one more of
+  the include, so the include gets no regions at all.
 - **Fragment mode.** An include opened alone is preprocessed with
   `Preprocessor::with_includer_unknown`. The includer can set any name, the
   predefined ones too, and pass any argument. So a condition that reads a name
@@ -107,16 +135,22 @@ predefined names.
 
 - The regions come with the diagnostics. With `diagnostics = false` under
   `[workspace.features]`, or with no `oxabl.toml`, the server sends no regions
-  (an empty list when the diagnostics are off).
+  (an empty list when the diagnostics are off). When the diagnostics publish
+  and the regions of the same analysis are lost (a cancelled read), the server
+  sends an empty list, so old regions do not stay on new text.
 - A chain on one line (`&IF a &THEN x &ELSE y &ENDIF`) dims only the text
   between its directives.
 - A file whose preprocessing fails has no regions.
+- An include whose root missed an expansion gets no regions, even when the
+  missed text cannot reach it. The run cannot tell.
 
 ## VS Code
 
 `clients/vscode/src/inactiveRegions.ts` asks for the notification and keeps the
-last regions of each document. It paints them in each visible editor of the
-document, and again when an editor shows the document. The setting
+last regions of each document with the document version they are for
+(`regionStore.ts`). It paints them in each visible editor of the document, and
+again when an editor shows the document, but only while the document has that
+version: after an edit the old regions go away until the next publish. The setting
 `oxabl.inactiveRegions.enable` (default `true`) turns the dimming off and on
 with no restart. The e2e scenario `inactive-regions` tests it with the real
 server.
@@ -125,6 +159,10 @@ server.
 
 `crates/oxabl/tests/inactive_regions_lsp.rs` drives the real `oxabl lsp` over
 stdio: nested chains under two compile environments, an edit, undecided
-conditions, a name that an unread include can define, an undefine and the end
-of an include's scope, an include under three includer contexts and in
-fragment mode, and a client that does not ask.
+conditions, compile-environment names the project does and does not set, a
+reference inside a reference, a chain inside an unclosed `&IF`, a name that an
+unread include can define, an undefine and the end of an include's scope, an
+include under three includer contexts and in fragment mode, an include whose
+root misses an expansion of it, and a client that does not ask (an open and an
+edit). `clients/vscode/src/regionStore.test.ts` tests that old regions are not
+painted on new text.

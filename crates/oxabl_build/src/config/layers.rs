@@ -105,8 +105,12 @@ impl Layers {
                 overlay.path.display()
             )));
         }
-        Value::Table(merged)
+        Value::Table(merged.clone())
             .try_into::<WorkspaceConfig>()
+            .map(|mut config| {
+                config.note_stated(&merged);
+                config
+            })
             .map_err(|e| {
                 let name = match self.base {
                     Some(_) => "oxabl.toml merged with the overlay",

@@ -36,7 +36,9 @@ pub struct Evaluation {
     pub value: bool,
     pub gaps: Vec<Gap>,
     /// Whether the condition asks `DEFINED` about a name that
-    /// [`Environment::known`] does not know, after `{&name}` expansion.
+    /// [`Environment::known`] does not know, after `{&name}` expansion, or,
+    /// with [`Environment::known`] set, reads the `OPSYS` function while the
+    /// configuration does not set `opsys`.
     pub reads_unknown_name: bool,
 }
 
@@ -84,7 +86,7 @@ pub struct Evaluation {
 pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
     let expanded = expand_refs(condition, env.vars);
     let tokens = tokenize(&expanded);
-    let reads_unknown_name = env.known.is_some_and(|known| {
+    let mut reads_unknown_name = env.known.is_some_and(|known| {
         tokens
             .iter()
             .any(|token| matches!(token, CondToken::Defined(name) if !known(name)))
@@ -104,12 +106,14 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
         env,
         gaps: Vec::new(),
         guesses: 0,
+        read_opsys: false,
     };
     let value = parser.parse_or();
     if parser.pos < tokens.len() {
         parser.invalid(format!("unexpected {}", describe(&tokens[parser.pos])));
     }
     let value = parser.truth(&value);
+    reads_unknown_name |= env.known.is_some() && parser.read_opsys && !env.config.stated.opsys;
     Evaluation {
         value,
         gaps: parser.gaps,
@@ -119,25 +123,43 @@ pub fn evaluate(condition: &str, env: &Environment<'_>) -> Evaluation {
 
 /// Expand `{&name}` references in the condition string.
 fn expand_refs<'a>(input: &'a str, vars: &PreprocVarTable) -> Cow<'a, str> {
+    expand_refs_with(input, vars, |_| {})
+}
+
+/// Expand `{&name}` references in `input`, calling `visit` with each name
+/// looked up. A reference whose name holds another (`{&a-{&b}}`) is expanded
+/// from the inside out, as the AVM does: the inner value becomes part of the
+/// outer name. An undefined name expands to nothing. A value is not scanned
+/// again.
+pub(crate) fn expand_refs_with<'a>(
+    input: &'a str,
+    vars: &PreprocVarTable,
+    mut visit: impl FnMut(&str),
+) -> Cow<'a, str> {
     if find_var_ref(input).is_none() {
         return Cow::Borrowed(input);
     }
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(open) = find_var_ref(rest) {
-        let Some(close) = rest[open..].find('}') else {
+    let mut text = input.to_string();
+    let mut from = 0;
+    while let Some(open) = find_var_ref(&text[from..]).map(|at| from + at) {
+        let Some(close) = text[open..].find('}').map(|at| open + at) else {
             break;
         };
-        result.push_str(&rest[..open]);
-        if let Some(val) = vars.get(&rest[open + 2..open + close]) {
-            result.push_str(val);
-        }
-        // If not defined, expand to empty string (ABL behaviour)
-        rest = &rest[open + close + 1..];
+        // The innermost reference that this `}` closes.
+        let inner = text[open + 2..close]
+            .rfind("{&")
+            .map_or(open, |at| open + 2 + at);
+        let name = &text[inner + 2..close];
+        visit(name);
+        let value = vars.get(name).map(|v| v.to_string()).unwrap_or_default();
+        text.replace_range(inner..=close, &value);
+        from = if inner == open {
+            open + value.len()
+        } else {
+            open
+        };
     }
-    result.push_str(rest);
-    Cow::Owned(result)
+    Cow::Owned(text)
 }
 
 /// The offset of the first `{&` in `text`.
@@ -539,6 +561,8 @@ struct CondParser<'a> {
     /// How many times a guess was made, counting repeats that `gaps` folds. A
     /// [`Gap::Invalid`] is no guess and is not counted.
     guesses: usize,
+    /// Whether the `OPSYS` function was read.
+    read_opsys: bool,
 }
 
 impl<'a> CondParser<'a> {
@@ -788,7 +812,10 @@ impl<'a> CondParser<'a> {
         let upper = name.to_ascii_uppercase();
         if self.peek() != Some(&CondToken::LParen) {
             return match upper.as_str() {
-                "OPSYS" => CondValue::Str(self.env.config.opsys.clone()),
+                "OPSYS" => {
+                    self.read_opsys = true;
+                    CondValue::Str(self.env.config.opsys.clone())
+                }
                 "PROVERSION" => match self.env.config.proversion.as_deref() {
                     Some(version) => CondValue::Str(version.to_string()),
                     None => {

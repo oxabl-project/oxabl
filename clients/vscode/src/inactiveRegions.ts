@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import type { LanguageClient, StaticFeature } from "vscode-languageclient/node";
 
+import { RegionStore } from "./regionStore";
+
 /** The notification the server pushes, in the shape clangd uses. */
 export const METHOD = "textDocument/inactiveRegions";
 
@@ -30,8 +32,8 @@ export class InactiveRegions implements vscode.Disposable {
     opacity: OPACITY,
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
   });
-  /** The last regions of each document, by URI. */
-  private readonly regions = new Map<string, vscode.Range[]>();
+  /** The last regions of each document, by URI, with their version. */
+  private readonly regions = new RegionStore<vscode.Range>();
   private readonly subscriptions: vscode.Disposable[];
 
   constructor() {
@@ -39,6 +41,12 @@ export class InactiveRegions implements vscode.Disposable {
       this.decoration,
       vscode.window.onDidChangeVisibleTextEditors(() => this.paintAll()),
       vscode.workspace.onDidCloseTextDocument((document) => this.regions.delete(document.uri.toString())),
+      // An edit moves the text under the regions; the next publish brings new ones.
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        if (event.contentChanges.length > 0) {
+          this.repaint(event.document.uri.toString());
+        }
+      }),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("oxabl.inactiveRegions")) {
           this.paintAll();
@@ -81,8 +89,13 @@ export class InactiveRegions implements vscode.Disposable {
     }
     this.regions.set(
       uri,
+      document.version,
       params.regions.map((r) => new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character)),
     );
+    this.repaint(uri);
+  }
+
+  private repaint(uri: string): void {
     for (const editor of vscode.window.visibleTextEditors) {
       if (editor.document.uri.toString() === uri) {
         this.paint(editor);
@@ -97,7 +110,8 @@ export class InactiveRegions implements vscode.Disposable {
   }
 
   private paint(editor: vscode.TextEditor): void {
-    const ranges = enabled() ? (this.regions.get(editor.document.uri.toString()) ?? []) : [];
+    const document = editor.document;
+    const ranges = enabled() ? this.regions.get(document.uri.toString(), document.version) : [];
     editor.setDecorations(this.decoration, ranges);
   }
 

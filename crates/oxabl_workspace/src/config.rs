@@ -342,7 +342,8 @@ impl LintConfig {
 /// on. A static analyzer has no such machine, so the environment is stated here
 /// and every `&IF` over one of these names is decided against it. The defaults
 /// describe a 64-bit Unix batch compile with a character (TTY) UI; set the keys
-/// to describe the environment your code is really compiled in.
+/// to describe the environment your code is really compiled in. The editor
+/// dims an inactive branch only on a key that is set.
 ///
 /// `{&FILE-NAME}`, `{&LINE-NUMBER}` and `{&SEQUENCE}` are computed from the
 /// source and take no configuration.
@@ -407,6 +408,43 @@ pub struct PreprocessorConfig {
     /// The `DBTYPE` of a connected database, by logical name, for example
     /// `{ ledger = "ORACLE" }`. A database that is not named here is `PROGRESS`.
     pub database_types: BTreeMap<String, String>,
+
+    /// Which of the keys with a default the configuration sets. Set when
+    /// `oxabl.toml` is read, never from a key of its own.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub stated: StatedEnvironment,
+}
+
+/// The keys of [`PreprocessorConfig`] with a default that the configuration
+/// sets. A default describes a common compile, not the one of this project, so
+/// a client that shows a branch as decided asks this first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatedEnvironment {
+    pub opsys: bool,
+    pub window_system: bool,
+    pub batch_mode: bool,
+    pub process_architecture: bool,
+}
+
+impl StatedEnvironment {
+    /// Every key set, for a configuration built in code.
+    pub const ALL: StatedEnvironment = StatedEnvironment {
+        opsys: true,
+        window_system: true,
+        batch_mode: true,
+        process_architecture: true,
+    };
+
+    /// The keys that `table`, a `[workspace.preprocessor]` table, sets.
+    pub fn of(table: &toml::Table) -> StatedEnvironment {
+        StatedEnvironment {
+            opsys: table.contains_key("opsys"),
+            window_system: table.contains_key("window-system"),
+            batch_mode: table.contains_key("batch-mode"),
+            process_architecture: table.contains_key("process-architecture"),
+        }
+    }
 }
 
 impl Default for PreprocessorConfig {
@@ -420,6 +458,7 @@ impl Default for PreprocessorConfig {
             databases: None,
             inferred_databases: None,
             database_types: BTreeMap::new(),
+            stated: StatedEnvironment::default(),
         }
     }
 }
@@ -660,7 +699,22 @@ impl WorkspaceConfig {
     /// Returns a human-readable error string on parse failure rather than
     /// panicking, so callers can surface it as a diagnostic.
     pub fn from_toml(source: &str) -> Result<Self, String> {
-        toml::from_str(source).map_err(|e| format!("failed to parse oxabl.toml: {e}"))
+        let mut config: Self =
+            toml::from_str(source).map_err(|e| format!("failed to parse oxabl.toml: {e}"))?;
+        if let Ok(table) = source.parse::<toml::Table>() {
+            config.note_stated(&table);
+        }
+        Ok(config)
+    }
+
+    /// Record which `[workspace.preprocessor]` keys `root`, the whole
+    /// configuration table this was parsed from, sets.
+    pub fn note_stated(&mut self, root: &toml::Table) {
+        let table = root
+            .get("workspace")
+            .and_then(|w| w.get("preprocessor"))
+            .and_then(toml::Value::as_table);
+        self.workspace.preprocessor.stated = table.map(StatedEnvironment::of).unwrap_or_default();
     }
 
     /// Read and parse `oxabl.toml` from a project root directory.

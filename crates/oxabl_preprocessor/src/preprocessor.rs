@@ -8,9 +8,9 @@ use oxabl_common::{Diagnostic, FileId, FileSpan};
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
 use crate::PreprocVarTable;
-use crate::condition::{Environment, Gap, evaluate, find_var_ref, skip_comment};
+use crate::condition::{Environment, Gap, evaluate, expand_refs_with, find_var_ref, skip_comment};
 use crate::span_tree::{
-    BranchDirective, BranchState, ConditionalBranch, ElidedKind, ElidedReference, PreprocessedFile,
+    BranchDirective, BranchState, ElidedKind, ElidedReference, IfBranch, PreprocessedFile,
     ResolvedInclude, SkippedBranch, SkippedInclude, SkippedText, SpanNode, TextLoss, TextLossKind,
     UnreadableInclude, UnresolvedInclude,
 };
@@ -192,11 +192,9 @@ impl<'fs> Preprocessor<'fs> {
             skipped_text: Vec::new(),
             branches: Vec::new(),
             include_files: Vec::new(),
-            knowledge: Knowledge {
-                includer_unknown: self.includer_unknown,
-                ..Knowledge::default()
-            },
+            knowledge: Knowledge::new(self.includer_unknown, &predefined.config),
             region_decided: true,
+            missed_expansion: false,
             args_uncertain: self.includer_unknown,
             text_losses: Vec::new(),
             elided: Vec::new(),
@@ -237,6 +235,7 @@ impl<'fs> Preprocessor<'fs> {
         processed.skipped_text = ctx.skipped_text;
         processed.branches = ctx.branches;
         processed.include_files = ctx.include_files;
+        processed.missed_expansion = ctx.missed_expansion;
         processed.text_losses = ctx.text_losses;
         processed.elided = ctx.elided;
         Ok(processed)
@@ -307,13 +306,15 @@ struct ProcessContext<'a> {
     /// Stretches of text in branches that were not taken.
     skipped_text: Vec<SkippedText>,
     /// Every branch of every `&IF` chain, with what is known of it.
-    branches: Vec<ConditionalBranch>,
+    branches: Vec<IfBranch>,
     /// The path of each include expansion, by the file id of its text.
     include_files: Vec<(FileId, PathBuf)>,
     /// Which names have a value the run knows.
     knowledge: Knowledge,
     /// Whether every enclosing branch, through the include sites, is decided.
     region_decided: bool,
+    /// See [`PreprocessedFile::missed_expansion`].
+    missed_expansion: bool,
     /// Whether the arguments of the include being expanded read a name that is
     /// not known.
     args_uncertain: bool,
@@ -386,6 +387,7 @@ impl ProcessContext<'_> {
             );
         }
         self.knowledge.all_uncertain = true;
+        self.missed_expansion = true;
         self.text_losses.push(TextLoss {
             kind: TextLossKind::ExpansionLimit,
             site,
@@ -637,6 +639,7 @@ impl ProcessContext<'_> {
                                         (true, false) => BranchState::NotTaken,
                                     },
                                     body_start: directive.end,
+                                    branches_from: self.branches.len(),
                                 });
                                 emitting = emitting && cond_result;
                                 self.region_decided = region_decided(base_decided, &if_stack);
@@ -883,6 +886,7 @@ impl ProcessContext<'_> {
                                         site: include_site,
                                     });
                                     self.knowledge.all_uncertain = true;
+                                    self.missed_expansion = true;
                                     self.elide(ElidedKind::Include, include_site);
                                     i = ref_end;
                                     chunk_start = i as u32;
@@ -905,6 +909,11 @@ impl ProcessContext<'_> {
                                 if expanded.is_none() {
                                     // Text the run never read may define any name.
                                     self.knowledge.all_uncertain = true;
+                                    // A file that exists and did not arrive (unreadable,
+                                    // a cycle, the expansion limit) may include any other.
+                                    if self.unresolved_includes.len() == unresolved_before {
+                                        self.missed_expansion = true;
+                                    }
                                 }
                                 if let Some((path, children)) = expanded {
                                     nodes.push(SpanNode::Include {
@@ -1048,7 +1057,12 @@ impl ProcessContext<'_> {
         }
 
         // Warn about unclosed &IF. Its branches end with the file, which no
-        // compiler accepts, so none of them is decided.
+        // compiler accepts, so none of them is decided, nor any chain inside one.
+        if let Some(outer) = if_stack.first() {
+            for branch in &mut self.branches[outer.branches_from..] {
+                branch.state = BranchState::Undecided;
+            }
+        }
         for state in if_stack.iter_mut().rev() {
             state.state = BranchState::Undecided;
             self.close_branch(file, state, len);
@@ -1077,7 +1091,7 @@ impl ProcessContext<'_> {
 
     /// Record the branch `state` opened, which ends at byte `end` of `file`.
     fn close_branch(&mut self, file: FileId, state: &IfState, end: usize) {
-        self.branches.push(ConditionalBranch {
+        self.branches.push(IfBranch {
             directive: state.directive,
             body: FileSpan {
                 file,
@@ -1086,7 +1100,6 @@ impl ProcessContext<'_> {
                     end: end as u32,
                 },
             },
-            via: self.site_stack.clone(),
             state: state.state,
         });
     }
@@ -1100,18 +1113,11 @@ impl ProcessContext<'_> {
         if self.knowledge.knows_all() {
             return false;
         }
-        let mut rest = text;
-        while let Some(open) = find_var_ref(rest) {
-            let Some(close) = rest[open..].find('}') else {
-                break;
-            };
-            let name = rest[open + 2..open + close].trim_ascii_end();
-            if !self.knowledge.is_known(name) {
-                return true;
-            }
-            rest = &rest[open + close + 1..];
-        }
-        false
+        let mut unknown = false;
+        expand_refs_with(text, &self.vars, |name| {
+            unknown |= !self.knowledge.is_known(name.trim_ascii_end());
+        });
+        unknown
     }
 
     /// Update what is known of `name` for a define or undefine whose value is
@@ -1159,9 +1165,13 @@ impl ProcessContext<'_> {
         else {
             return;
         };
-        if !self.region_decided && contains_ignore_case(text, "{&sequence") {
-            // A guessed branch may count one more `{&SEQUENCE}`.
-            self.knowledge.forget("SEQUENCE");
+        if !self.region_decided && text.contains('{') {
+            // A guessed branch may count one more `{&SEQUENCE}`, and a reference
+            // in it may expand to an include.
+            if contains_ignore_case(text, "{&sequence") {
+                self.knowledge.forget("SEQUENCE");
+            }
+            self.missed_expansion = true;
         }
         self.skipped_text.push(SkippedText {
             site: FileSpan {
@@ -1196,8 +1206,10 @@ impl ProcessContext<'_> {
         let name = written_include_name(inner);
         let computed_name = name.contains('{');
         if !self.region_decided {
-            // Text the run never read may define any name.
+            // Text the run never read may define any name, and the compiler may
+            // expand it.
             self.knowledge.all_uncertain = true;
+            self.missed_expansion = true;
         }
         self.skipped_includes.push(SkippedInclude {
             name,
@@ -1328,10 +1340,15 @@ impl ProcessContext<'_> {
         let mut copied = 0;
         let mut rest = condition;
         let mut rest_at = 0;
-        while let Some(open) = find_var_ref(rest) {
-            let Some(close_rel) = rest[open..].find('}') else {
+        while let Some(mut open) = find_var_ref(rest) {
+            let Some(mut close_rel) = rest[open..].find('}') else {
                 break;
             };
+            // In `{&a-{&b}}` the name `b` is the one this `}` closes.
+            if let Some(inner) = rest[open + 2..open + close_rel].rfind("{&") {
+                open += 2 + inner;
+                close_rel -= 2 + inner;
+            }
             let reference = &rest[open..=open + close_rel];
             let name = &reference[2..reference.len() - 1];
             let reference_at = rest_at + open;
@@ -1438,6 +1455,7 @@ impl ProcessContext<'_> {
         // of the run.
         let name = parse_include_name(&rest[..rest.find(['{', '}', '\n']).unwrap_or(rest.len())]);
         self.knowledge.all_uncertain = true;
+        self.missed_expansion = true;
         let site = FileSpan {
             file,
             span: Span {
@@ -2062,6 +2080,8 @@ struct IfState {
     state: BranchState,
     /// Where the text of the current branch starts.
     body_start: usize,
+    /// How many branches the run had recorded when the chain opened.
+    branches_from: usize,
 }
 
 /// Whether the region inside `if_stack` is decided, in a source whose site is
@@ -2107,6 +2127,28 @@ struct Saved {
 }
 
 impl Knowledge {
+    /// What is known at the start of a run. A predefined name whose value is
+    /// only a default of the configuration is not known.
+    fn new(includer_unknown: bool, config: &PreprocessorConfig) -> Self {
+        let mut knowledge = Knowledge {
+            includer_unknown,
+            ..Knowledge::default()
+        };
+        let stated = config.stated;
+        for (name, set) in [
+            ("opsys", stated.opsys),
+            ("window-system", stated.window_system),
+            ("batch-mode", stated.batch_mode),
+            ("process-architecture", stated.process_architecture),
+        ] {
+            if !set {
+                knowledge.uncertain.insert(name.to_string());
+                knowledge.ever_uncertain.insert(name.to_string());
+            }
+        }
+        knowledge
+    }
+
     /// Whether every name is known, as in a root whose branches are all
     /// decided.
     fn knows_all(&self) -> bool {
@@ -2120,8 +2162,21 @@ impl Knowledge {
         if !self.includer_unknown && self.uncertain.is_empty() {
             return true;
         }
-        let name = name.to_ascii_lowercase();
-        !self.uncertain.contains(&name) && (!self.includer_unknown || self.set.contains(&name))
+        // Folded on the stack: this runs for each name a condition reads.
+        let mut buf = [0u8; 64];
+        let folded;
+        let name = match buf.get_mut(..name.len()) {
+            Some(slot) => {
+                slot.copy_from_slice(name.as_bytes());
+                slot.make_ascii_lowercase();
+                std::str::from_utf8(slot).unwrap_or(name)
+            }
+            None => {
+                folded = name.to_ascii_lowercase();
+                &folded
+            }
+        };
+        !self.uncertain.contains(name) && (!self.includer_unknown || self.set.contains(name))
     }
 
     /// `name` was defined, as a scoped name or an argument when `scoped`, to
