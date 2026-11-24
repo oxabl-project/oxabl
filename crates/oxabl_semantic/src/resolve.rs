@@ -292,6 +292,15 @@ pub fn declare_pass(
 /// The `&IF` statement and arm index a declaration sits in, outermost first.
 type ArmPath = Vec<(NodeId, u32)>;
 
+/// Whether two arm paths sit in different arms of one `&IF`, so only one of
+/// them compiles.
+fn exclusive(a: &ArmPath, b: &ArmPath) -> bool {
+    a.iter().any(|(pif, arm)| {
+        b.iter()
+            .any(|(other, other_arm)| other == pif && other_arm != arm)
+    })
+}
+
 struct Walker<'a> {
     ctx: &'a AnalysisContext<'a>,
     tree: ScopeTree,
@@ -301,9 +310,11 @@ struct Walker<'a> {
     arm_path: ArmPath,
     /// Arm path of each symbol declared inside an `&IF` arm.
     decl_arms: FxHashMap<SymbolId, ArmPath>,
-    /// Directions of the `DATASET FOR` parameters that name a dataset of the
-    /// same scope, so a repeated direction still reports a duplicate.
-    dataset_param_dirs: FxHashSet<(SymbolId, u32)>,
+    /// The kind of each `TABLE FOR` / `DATASET FOR` parameter, and the arm
+    /// path of each direction it was given (also a `DATASET FOR` that names a
+    /// dataset of the scope), so a direction repeated where both can compile
+    /// still reports a duplicate.
+    table_params: FxHashMap<SymbolId, (HandleParamKind, Vec<(u32, ArmPath)>)>,
 }
 
 impl<'a> Walker<'a> {
@@ -318,20 +329,16 @@ impl<'a> Walker<'a> {
             diagnostics: Vec::new(),
             arm_path: Vec::new(),
             decl_arms: FxHashMap::default(),
-            dataset_param_dirs: FxHashSet::default(),
+            table_params: FxHashMap::default(),
         }
     }
 
     /// Whether `prior` and a declaration made now sit in different arms of one
     /// `&IF`. Only one such arm is compiled, so they cannot collide.
     fn in_exclusive_arm(&self, prior: SymbolId) -> bool {
-        self.decl_arms.get(&prior).is_some_and(|prior_path| {
-            prior_path.iter().any(|(pif, arm)| {
-                self.arm_path
-                    .iter()
-                    .any(|(cur_pif, cur_arm)| cur_pif == pif && cur_arm != arm)
-            })
-        })
+        self.decl_arms
+            .get(&prior)
+            .is_some_and(|prior_path| exclusive(prior_path, &self.arm_path))
     }
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
@@ -1013,7 +1020,7 @@ impl<'a> Walker<'a> {
                 if table_like && self.names_existing_table_or_dataset(scope, name, kind, dir_flag) {
                     return;
                 }
-                self.declare(
+                let id = self.declare(
                     stmt,
                     routine,
                     name,
@@ -1023,6 +1030,10 @@ impl<'a> Walker<'a> {
                     dir_flag | flag_if(table_like, SymbolFlags::PARAM_TABLE_LIKE),
                     None,
                 );
+                if let Some(id) = id.filter(|_| table_like) {
+                    let dirs = vec![(dir_flag.bits(), self.arm_path.clone())];
+                    self.table_params.insert(id, (*kind, dirs));
+                }
             }
         }
     }
@@ -1030,8 +1041,8 @@ impl<'a> Walker<'a> {
     /// True when a `TABLE FOR` / `DATASET FOR` parameter declares nothing:
     /// the scope holds the dataset it names, or a parameter of this name in
     /// another direction. That parameter then also carries the new direction.
-    /// A repeat of a direction already seen is a real duplicate and is not
-    /// absorbed.
+    /// A direction already seen in an arm that can compile with this one, or
+    /// a parameter of the other kind, is a real duplicate and is not absorbed.
     fn names_existing_table_or_dataset(
         &mut self,
         scope: ScopeId,
@@ -1044,13 +1055,27 @@ impl<'a> Walker<'a> {
             return false;
         };
         let sym = self.symbols.get(prior);
-        if sym.kind == SymbolKind::Dataset && *kind == HandleParamKind::Dataset {
-            return self.dataset_param_dirs.insert((prior, dir_flag.bits()));
-        }
-        if !sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) || sym.flags.contains(dir_flag) {
+        let names_dataset = sym.kind == SymbolKind::Dataset && *kind == HandleParamKind::Dataset;
+        if !names_dataset && !sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) {
             return false;
         }
-        self.symbols.get_mut(prior).flags |= dir_flag;
+        let (prior_kind, dirs) = self
+            .table_params
+            .entry(prior)
+            .or_insert_with(|| (*kind, Vec::new()));
+        if *prior_kind != *kind {
+            return false;
+        }
+        let repeated = dirs
+            .iter()
+            .any(|(dir, path)| *dir == dir_flag.bits() && !exclusive(path, &self.arm_path));
+        if repeated {
+            return false;
+        }
+        dirs.push((dir_flag.bits(), self.arm_path.clone()));
+        if !names_dataset {
+            self.symbols.get_mut(prior).flags |= dir_flag;
+        }
         true
     }
 
@@ -11506,6 +11531,60 @@ mod preproc_arm_tests {
             .filter(|d| d.code.0 == diagnostics::SEM0001)
             .map(|d| d.message)
             .collect()
+    }
+
+    #[test]
+    fn a_table_for_direction_in_both_preproc_arms_is_not_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   &IF DEFINED(X) <> 0 &THEN\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt APPEND.\n\
+                   &ELSE\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   &ENDIF\n";
+        assert_eq!(sem0001_messages(src), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_dataset_for_direction_in_both_preproc_arms_is_not_a_duplicate() {
+        let head = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                    DEFINE DATASET ds FOR tt.\n";
+        for (first, arms) in [
+            (
+                "DEFINE INPUT PARAMETER DATASET FOR ds.\n",
+                ["OUTPUT", "OUTPUT"],
+            ),
+            ("", ["INPUT", "INPUT"]),
+        ] {
+            let src = format!(
+                "{head}{first}&IF DEFINED(X) <> 0 &THEN\n\
+                 DEFINE {} PARAMETER DATASET FOR ds.\n\
+                 &ELSE\n\
+                 DEFINE {} PARAMETER DATASET FOR ds.\n\
+                 &ENDIF\n",
+                arms[0], arms[1]
+            );
+            assert_eq!(sem0001_messages(&src), Vec::<String>::new(), "{src}");
+        }
+    }
+
+    #[test]
+    fn a_direction_repeated_in_one_arm_is_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   &IF DEFINED(X) <> 0 &THEN\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   &ENDIF\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn a_table_for_and_a_dataset_for_of_one_name_are_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER DATASET FOR tt.\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
     }
 
     #[test]
