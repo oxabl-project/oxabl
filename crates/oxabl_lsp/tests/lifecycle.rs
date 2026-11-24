@@ -73,7 +73,8 @@ fn handshake_advertises_only_incremental_sync_and_push_diagnostics() {
     }
     // Push diagnostics need no capability; pull diagnostics must NOT be offered.
     assert!(caps.diagnostic_provider.is_none());
-    // Navigation is advertised: go to definition, hover, highlights and document links.
+    // Navigation is advertised: go to definition, hover, highlights, document links, find
+    // references and the call hierarchy.
     assert_eq!(caps.definition_provider, Some(OneOf::Left(true)));
     assert_eq!(
         caps.hover_provider,
@@ -81,10 +82,15 @@ fn handshake_advertises_only_incremental_sync_and_push_diagnostics() {
     );
     assert_eq!(caps.document_highlight_provider, Some(OneOf::Left(true)));
     assert!(caps.document_link_provider.is_some());
+    assert_eq!(caps.references_provider, Some(OneOf::Left(true)));
+    assert_eq!(
+        caps.call_hierarchy_provider,
+        Some(lsp_types::CallHierarchyServerCapability::Simple(true))
+    );
     // No other feature advertised.
     assert!(caps.completion_provider.is_none());
-    assert!(caps.references_provider.is_none());
     assert!(caps.rename_provider.is_none());
+    assert!(caps.implementation_provider.is_none());
 
     // Clean shutdown.
     client

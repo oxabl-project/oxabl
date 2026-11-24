@@ -33,6 +33,7 @@ import {
 } from "./scenarios/build.mjs";
 import { highlightCls, highlightP, markdown } from "./scenarios/highlight.mjs";
 import { definition } from "./scenarios/definition.mjs";
+import { references } from "./scenarios/references.mjs";
 import { documentHighlight } from "./scenarios/document-highlight.mjs";
 import { folding } from "./scenarios/folding.mjs";
 import { expandedUnit } from "./scenarios/expanded-unit.mjs";
@@ -65,6 +66,7 @@ const SCENARIOS = [
   ["expanded-unit", expandedUnit],
   ["inactive-regions", inactiveRegions],
   ["definition", definition],
+  ["references", references],
   ["inlay-hints", inlayHints],
   ["schema", schema],
   ["schema-config-above", schemaConfigAbove],

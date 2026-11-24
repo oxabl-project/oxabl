@@ -6,7 +6,9 @@
 //! (`document_symbol_provider`), folding (`folding_range_provider`), selection
 //! (`selection_range_provider`), workspace symbols (`workspace_symbol_provider`), go to
 //! definition (`definition_provider`), hover (`hover_provider`), document highlights
-//! (`document_highlight_provider`) and document links (`document_link_provider`). Push
+//! (`document_highlight_provider`), document links (`document_link_provider`), find
+//! references (`references_provider`) and the call hierarchy
+//! (`call_hierarchy_provider`). Push
 //! diagnostics require no
 //! capability field — the server simply sends the notification — so we
 //! deliberately leave every other capability (completion, pull
@@ -18,9 +20,10 @@
 //! of `oxabl.toml` needs no new registration.
 
 use lsp_types::{
-    ClientCapabilities, DocumentLinkOptions, FoldingRangeProviderCapability,
-    HoverProviderCapability, OneOf, PositionEncodingKind, SelectionRangeProviderCapability,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    CallHierarchyServerCapability, ClientCapabilities, DocumentLinkOptions,
+    FoldingRangeProviderCapability, HoverProviderCapability, OneOf, PositionEncodingKind,
+    SelectionRangeProviderCapability, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 
 /// Negotiate a position encoding (KTD4): prefer UTF-8 when the client's
@@ -42,8 +45,8 @@ pub fn negotiate_position_encoding(caps: &ClientCapabilities) -> PositionEncodin
 
 /// Build the v1 [`ServerCapabilities`]: incremental sync with open/close, the
 /// negotiated position encoding, whole-document formatting (R1), document symbols,
-/// folding, selection, workspace symbols, go to definition, hover, document highlights and
-/// document links.
+/// folding, selection, workspace symbols, go to definition, hover, document highlights,
+/// document links, find references and the call hierarchy.
 /// Nothing else is advertised — range formatting in particular stays unset (the engine
 /// only formats whole files; see the plan's Scope Boundaries).
 pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities {
@@ -72,6 +75,8 @@ pub fn server_capabilities(encoding: PositionEncodingKind) -> ServerCapabilities
             resolve_provider: Some(false),
             work_done_progress_options: Default::default(),
         }),
+        references_provider: Some(OneOf::Left(true)),
+        call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         // Explicitly leave every other capability unset so clients don't offer
         // features v1 doesn't implement (R2).
         ..Default::default()
@@ -171,5 +176,11 @@ mod tests {
             Some(false)
         );
         assert!(caps.diagnostic_provider.is_none());
+        assert_eq!(caps.references_provider, Some(OneOf::Left(true)));
+        assert_eq!(
+            caps.call_hierarchy_provider,
+            Some(CallHierarchyServerCapability::Simple(true))
+        );
+        assert!(caps.implementation_provider.is_none());
     }
 }

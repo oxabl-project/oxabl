@@ -576,6 +576,8 @@ struct Navigation {
     class_files: FxHashMap<SymbolId, IndexedFileId>,
     member_files: FxHashMap<SymbolId, IndexedFileId>,
     field_tables: FxHashMap<SymbolId, oxabl_schema::TableId>,
+    like_field_owners: FxHashMap<VirtualSpan, SymbolId>,
+    unmodelled: Vec<VirtualSpan>,
     /// Calls resolved as built-in functions in a class with an ancestor whose
     /// members were not read, which may declare a method of that name.
     maybe_member_calls: FxHashSet<NodeId>,
@@ -961,6 +963,38 @@ impl SymbolTable {
             .copied()
     }
 
+    pub(crate) fn record_like_field_owner(&mut self, span: VirtualSpan, temp_table: SymbolId) {
+        self.side_mut()
+            .navigation
+            .like_field_owners
+            .insert(span, temp_table);
+    }
+
+    /// The temp-table whose copy of a database field the unqualified name at
+    /// `span` is, when the name resolved to one. Kept only when the analysis
+    /// context recorded sites.
+    pub fn like_field_owner(&self, span: VirtualSpan) -> Option<SymbolId> {
+        self.side
+            .as_deref()?
+            .navigation
+            .like_field_owners
+            .get(&span)
+            .copied()
+    }
+
+    pub(crate) fn record_unmodelled_span(&mut self, span: VirtualSpan) {
+        self.side_mut().navigation.unmodelled.push(span);
+    }
+
+    /// The text the parser skipped without modelling (a statement form it
+    /// recognizes but does not model, or the tail of one it models): the names
+    /// in it are not sites. Empty unless the analysis context recorded sites.
+    pub fn unmodelled_spans(&self) -> &[VirtualSpan] {
+        self.side
+            .as_deref()
+            .map_or(&[], |side| side.navigation.unmodelled.as_slice())
+    }
+
     /// Record that variable `sym` was hoisted out of block scope `block`.
     pub fn record_block_defined(&mut self, sym: SymbolId, block: ScopeId) {
         self.block_defined.insert(sym, block);
@@ -1014,6 +1048,16 @@ impl SymbolTable {
         }
         let tt = self.records.as_deref()?.buffer_for.get(&sym)?;
         Some(RecordSource::TempTable(*tt))
+    }
+
+    /// The temp-table whose records `sym` reads: the temp-table itself, or
+    /// the temp-table a buffer was defined for. `None` for a record of a
+    /// schema table, and for a buffer whose table is unknown.
+    pub fn temp_table_of(&self, sym: SymbolId) -> Option<SymbolId> {
+        match self.record_source(sym)? {
+            RecordSource::TempTable(temp_table) => Some(temp_table),
+            RecordSource::Schema(_) => None,
+        }
     }
 
     /// The scope holding `temp_table`'s own `FIELD` symbols.

@@ -2742,12 +2742,20 @@ impl<'a> ResolveWalker<'a> {
     fn walk_statement(&mut self, stmt: &Statement, scope: ScopeId) {
         if let Some(tail) = &stmt.skipped_tail {
             self.credit_unmodelled_names(&tail.names, scope);
-            // A tail runs to the statement's end, and a class-shaped run in it
-            // starts with a harvested name, so the first name bounds the scan.
+            self.note_unmodelled_span(tail.span);
+            for span in &tail.dropped {
+                self.note_unmodelled_span(*span);
+            }
+            // A class-shaped run in the tail starts with a harvested name, so
+            // the first name bounds the scan.
             if let Some(first) = tail.names.first() {
                 let span = Span {
                     start: first.span.start,
-                    end: stmt.span.end,
+                    end: if tail.span == Span::DUMMY {
+                        stmt.span.end
+                    } else {
+                        tail.span.end
+                    },
                 };
                 self.note_unmodelled_class_runs(span, scope);
             }
@@ -2786,6 +2794,16 @@ impl<'a> ResolveWalker<'a> {
                         type_source: TypeSource::Like { source },
                         ..
                     } => self.note_like_source(source, scope, false),
+                    ParameterType::Handle {
+                        kind: HandleParamKind::Table,
+                        name,
+                        ..
+                    } => self.note_named_table(name, scope, false),
+                    ParameterType::Handle {
+                        kind: HandleParamKind::Dataset,
+                        name,
+                        ..
+                    } => self.note_named_dataset(name, scope),
                     _ => {}
                 }
             }
@@ -2813,7 +2831,24 @@ impl<'a> ResolveWalker<'a> {
                 let (BufferTarget::Table(t) | BufferTarget::TempTable(t)) = target;
                 self.credit_buffer_target(name, t, scope);
             }
-            StatementKind::DefineDataset { .. } => {}
+            StatementKind::DefineDataset {
+                buffers,
+                data_relations,
+                parent_id_relations,
+                ..
+            } => {
+                let relation_buffers = data_relations
+                    .iter()
+                    .flat_map(|r| [&r.parent_buffer, &r.child_buffer])
+                    .chain(
+                        parent_id_relations
+                            .iter()
+                            .flat_map(|r| [&r.parent_buffer, &r.child_buffer]),
+                    );
+                for buffer in buffers.iter().chain(relation_buffers) {
+                    self.note_named_table(buffer, scope, true);
+                }
+            }
             StatementKind::DefineDataSource { source_buffers, .. } => {
                 for buffer in source_buffers {
                     self.resolve_record_ident(
@@ -3779,6 +3814,7 @@ impl<'a> ResolveWalker<'a> {
                     self.credit_unmodelled_table_names(names, scope);
                 }
                 self.note_unmodelled_schema_tables(names, scope);
+                self.note_unmodelled_span(stmt.span);
                 self.note_unmodelled_class_runs(stmt.span, scope);
             }
         }
@@ -4992,13 +5028,13 @@ impl<'a> ResolveWalker<'a> {
                     None => opaque = true,
                 }
             }
-            let mut exact: SmallVec<[FieldHit; 1]> = SmallVec::new();
-            let mut prefix: SmallVec<[FieldHit; 1]> = SmallVec::new();
+            let mut exact: SmallVec<[(RecordSource, FieldHit); 1]> = SmallVec::new();
+            let mut prefix: SmallVec<[(RecordSource, FieldHit); 1]> = SmallVec::new();
             let mut ambiguous = false;
             for r in records {
                 match self.record_field(r, atom) {
-                    RecordField::Exact(hit) => exact.push(hit),
-                    RecordField::Prefix(hit) => prefix.push(hit),
+                    RecordField::Exact(hit) => exact.push((r, hit)),
+                    RecordField::Prefix(hit) => prefix.push((r, hit)),
                     RecordField::Ambiguous => ambiguous = true,
                     RecordField::NotFound => {}
                 }
@@ -5015,7 +5051,18 @@ impl<'a> ResolveWalker<'a> {
                 return BareField::Unknown;
             }
             return match (hits.as_slice(), ambiguous) {
-                ([hit], false) => BareField::Field(self.field_hit_symbol(hit.clone(), atom, id)),
+                ([(record, hit)], false) => {
+                    let sym = self.field_hit_symbol(hit.clone(), atom, id);
+                    // A temp-table's copy of a database field is not the
+                    // database field: navigation needs the temp-table.
+                    if let (RecordSource::TempTable(tt), FieldHit::Schema(..)) = (record, hit)
+                        && self.ctx.record_sites
+                    {
+                        self.symbols
+                            .record_like_field_owner(identifier_span(id), *tt);
+                    }
+                    BareField::Field(sym)
+                }
                 _ => BareField::Ambiguous,
             };
         }
@@ -5156,6 +5203,15 @@ impl<'a> ResolveWalker<'a> {
                     reason: UnresolvedReason::External,
                 },
             );
+        }
+    }
+
+    /// Record text the parser skipped, when the context asks for navigation
+    /// sites: the names in it are not sites.
+    fn note_unmodelled_span(&mut self, span: Span) {
+        if self.ctx.record_sites && span != Span::DUMMY {
+            self.symbols
+                .record_unmodelled_span(VirtualSpan::new(span.start, span.end));
         }
     }
 
@@ -5454,6 +5510,38 @@ impl<'a> ResolveWalker<'a> {
         let sym = self.synth_table_buffer_symbol(tid, &atom, id);
         self.note_site_as(id.span, SiteTarget::Symbol(sym), mode);
         Some(sym)
+    }
+
+    /// Note the temp-table, buffer or (with `schema`) schema table that a
+    /// declaration names (`TABLE FOR tt`, `DEFINE DATASET ds FOR tt`), for
+    /// navigation. No read is credited.
+    fn note_named_table(&mut self, id: &Identifier, scope: ScopeId, schema: bool) {
+        if !self.ctx.record_sites {
+            return;
+        }
+        match self.lookup_statement_ident(id, scope, &[NamespaceId::Buffers, NamespaceId::Tables]) {
+            Some(sym) => self.note_site(id.span, SiteTarget::Symbol(sym)),
+            None if schema => {
+                self.schema_default_buffer(id);
+            }
+            None => {}
+        }
+    }
+
+    /// Note the dataset that `DATASET FOR ds` names. The parameter takes the
+    /// name in the same scope, so the search starts past the parameters.
+    fn note_named_dataset(&mut self, id: &Identifier, scope: ScopeId) {
+        if !self.ctx.record_sites {
+            return;
+        }
+        let atom = fold_atom(&id.name);
+        let dataset = self.tree.ancestors(scope).find_map(|at| {
+            let sym = self.tree.get(at).get_in(NamespaceId::Values, &atom)?;
+            (self.symbols.get(sym).kind == SymbolKind::Dataset).then_some(sym)
+        });
+        if let Some(sym) = dataset {
+            self.note_site(id.span, SiteTarget::Symbol(sym));
+        }
     }
 
     /// Note the table a declaration copies with `LIKE`: the table of

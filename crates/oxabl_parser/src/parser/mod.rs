@@ -215,6 +215,9 @@ pub struct Parser<'a> {
     /// Whether the cursor is in the body of an INTERFACE, where a METHOD
     /// signature ends at its period and has no body.
     in_interface: bool,
+    /// Token ranges read and dropped since the last statement was built; the
+    /// next [`stmt`](Self::stmt) takes them into its [`SkippedTail`].
+    dropped: Vec<(usize, usize)>,
     /// Token indexes after a `CREATE` whose parse failed and was skipped. A
     /// failed CREATE is parsed again when a block around it rewinds, and its
     /// trigger blocks hold the CREATEs after it, so without this the work
@@ -248,6 +251,7 @@ impl<'a> Parser<'a> {
             too_deep_recorded: false,
             limit_error: None,
             in_interface: false,
+            dropped: Vec::new(),
             failed_creates: HashSet::new(),
         }
     }
@@ -345,7 +349,54 @@ impl<'a> Parser<'a> {
     pub(crate) fn stmt(&mut self, kind: StatementKind) -> Statement {
         // The span defaults to DUMMY here; the `parse_statement` funnel
         // overwrites it with the real full-extent span (KTD2).
-        Statement::with_id(self.node_ids.alloc(), Span::DUMMY, kind)
+        let mut stmt = Statement::with_id(self.node_ids.alloc(), Span::DUMMY, kind);
+        if !self.dropped.is_empty() {
+            stmt.skipped_tail = Some(Box::new(SkippedTail {
+                names: Vec::new(),
+                span: Span::DUMMY,
+                dropped: self.take_dropped(),
+            }));
+        }
+        stmt
+    }
+
+    /// Record the tokens from `lo` to the cursor as read and dropped.
+    #[inline(never)]
+    pub(crate) fn note_dropped(&mut self, lo: usize) {
+        let hi = self.current;
+        if hi <= lo {
+            return;
+        }
+        match self.dropped.last_mut() {
+            Some(last) if last.1 >= lo => last.1 = last.1.max(hi),
+            _ => self.dropped.push((lo, hi)),
+        }
+    }
+
+    /// [`parse_expression`](Self::parse_expression) for an expression the
+    /// statement does not keep.
+    pub(crate) fn parse_expression_dropped(&mut self) {
+        let lo = self.current;
+        self.parse_expression().ok();
+        self.note_dropped(lo);
+    }
+
+    fn take_dropped(&mut self) -> Vec<Span> {
+        let ranges = std::mem::take(&mut self.dropped);
+        ranges
+            .into_iter()
+            .filter_map(|(lo, hi)| self.token_span(lo, hi))
+            .collect()
+    }
+
+    /// The bytes from the start of token `lo` to the end of token `hi - 1`.
+    fn token_span(&self, lo: usize, hi: usize) -> Option<Span> {
+        let first = self.tokens.get(lo)?;
+        let last = self.tokens.get(hi.min(self.tokens.len()).checked_sub(1)?)?;
+        Some(Span {
+            start: first.start as u32,
+            end: last.end as u32,
+        })
     }
 
     /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) for a node that is not a
@@ -991,16 +1042,12 @@ impl<'a> Parser<'a> {
                 )
             })
         };
-        let (Some(first), Some(last)) = (tokens.first(), tokens.last()) else {
-            return None;
-        };
+        let span = self.token_span(lo, hi)?;
         (!names.is_empty() || dynamic()).then(|| {
             Box::new(SkippedTail {
                 names,
-                span: Span {
-                    start: first.start as u32,
-                    end: last.end as u32,
-                },
+                span,
+                dropped: Vec::new(),
             })
         })
     }
@@ -1020,7 +1067,14 @@ impl<'a> Parser<'a> {
         tail: Option<Box<SkippedTail>>,
     ) -> Statement {
         let mut stmt = self.stmt(kind);
-        stmt.skipped_tail = tail;
+        match (stmt.skipped_tail.as_deref_mut(), tail) {
+            (Some(dropped), Some(mut tail)) => {
+                tail.dropped = std::mem::take(&mut dropped.dropped);
+                stmt.skipped_tail = Some(tail);
+            }
+            (_, tail @ Some(_)) => stmt.skipped_tail = tail,
+            _ => {}
+        }
         stmt
     }
 
@@ -2387,7 +2441,7 @@ impl<'a> Parser<'a> {
             // Consume optional array subscript: LIKE table.field[n]
             if self.check(Kind::LeftBracket) {
                 self.advance(); // consume '['
-                self.parse_expression().ok();
+                self.parse_expression_dropped();
                 if self.check(Kind::RightBracket) {
                     self.advance();
                 }

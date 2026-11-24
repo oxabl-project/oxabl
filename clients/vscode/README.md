@@ -80,6 +80,27 @@ you also get, with no setup:
   and `table.field` go to the `.df`. A name that two files on the include path
   supply shows both. A name that does not resolve, or that is computed at run
   time (`RUN VALUE(...)`), goes nowhere.
+- **Find All References** (`Shift+Alt+F12`, or `Shift+F12` to peek). Lists
+  each use of the name at the cursor, with the same resolution as Go to
+  Definition. A local name is searched in its file and in the includes the
+  file uses. A program, an internal procedure, a function, a class or a
+  method is also searched in the other files that can name it, also files
+  that are not open: the files that `RUN` the program, and the files that name
+  the class, a database field in the files that read its table, and a name
+  declared in an include in each file that includes it. When the list can be
+  short because of this name, a warning says why: for example a call through a
+  handle that oxabl cannot follow, a shared variable, no include path, or a
+  workspace index that is not ready. A reason that holds for the whole
+  workspace and leaves out only a part of the search (a file that oxabl could
+  not analyse) is written once to the `oxabl language server` output instead.
+- **Call hierarchy** (`Shift+Alt+H`). Shows the callers of a procedure,
+  function, method or program, and the `RUN`, function and method calls it
+  makes. On a name that is no routine, or on a keyword, it shows the routine
+  that holds the cursor, or else the program. A call whose target is known only
+  at run time (`RUN VALUE(...)`, `DYNAMIC-FUNCTION`, `PUBLISH`, a handle oxabl
+  cannot follow) shows as a call with no icon and the detail
+  `unresolved: ...`. When the list can be short, its first entry is
+  `incomplete`, with the reason.
 - **Hover.** Point at a name to see what it is: a variable, parameter or
   property with its type, `EXTENT`, `INITIAL` and `NO-UNDO`; the signature of
   an internal procedure, function or method (each overload of an inherited

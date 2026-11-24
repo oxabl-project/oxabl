@@ -314,6 +314,76 @@ pub fn includer_contexts(
     Ok(Ok(IncluderContexts { roots, gaps }))
 }
 
+/// The workspace dependency graph for a references search, and why it can be
+/// short.
+pub struct ReferenceGraph {
+    pub graph: Arc<ReverseGraph>,
+    /// Why the graph may not describe the workspace as it is now. Empty when
+    /// the pass is current.
+    pub gaps: Vec<String>,
+}
+
+/// The dependency graph of `root`'s workspace, for finding the files that can
+/// name a program, a routine, a class or a member.
+///
+/// `Ok(Err(reason))` when the workspace cannot know, as for
+/// [`includer_contexts`]. A pass whose files changed after it ran is run again
+/// once. Blocks until a workspace pass is current, so callers keep it off the
+/// LSP thread.
+pub fn reference_graph(
+    host: &SessionHost,
+    root: &Path,
+) -> Result<Result<ReferenceGraph, String>, MethodError> {
+    if let Some(reason) = cross_file_refusal(root) {
+        return Ok(Err(reason));
+    }
+    // A walk for added files is reused for a shorter time than a poll's, so
+    // a file added a moment ago is seen without a walk per request.
+    let mut workspace = ensure_workspace(host, root, false)?;
+    let mut freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
+    if matches!(freshness.state, IndexState::Stale { .. }) {
+        // One forced pass at a time for a root. A request that waited for
+        // another's checks again: that pass can have made the index current.
+        let gate = forced_pass_gate(root);
+        let _forcing = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        workspace = ensure_workspace(host, root, false)?;
+        freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
+        if matches!(freshness.state, IndexState::Stale { .. }) {
+            workspace = ensure_workspace(host, root, true)?;
+            freshness = workspace_freshness_within(&workspace, REFERENCE_WALK_INTERVAL);
+        }
+    }
+    let gaps = match freshness.state {
+        IndexState::Ready => Vec::new(),
+        IndexState::Indexing { indexed, total } => vec![format!(
+            "the workspace index is not ready: {indexed} of {total} files are indexed"
+        )],
+        IndexState::Stale { changed_files } => vec![format!(
+            "the workspace index is out of date: {changed_files} file(s) changed after it was built"
+        )],
+        IndexState::Superseded { attempts, .. } => vec![format!(
+            "the workspace index is out of date: edits replaced each of {attempts} passes"
+        )],
+    };
+    Ok(Ok(ReferenceGraph {
+        graph: Arc::clone(&workspace.graph),
+        gaps,
+    }))
+}
+
+/// The lock that one forced pass of a workspace root holds.
+fn forced_pass_gate(root: &Path) -> Arc<Mutex<()>> {
+    static GATES: std::sync::LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut gates = GATES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(gates.entry(root.to_path_buf()).or_default())
+}
+
+/// How long a references search reuses a walk for added files.
+const REFERENCE_WALK_INTERVAL: Duration = Duration::from_secs(1);
+
 /// The best `limit` matches for `query`, and how many matched in total (R19).
 ///
 /// Bounded in the work it does, not only in what it returns. A type-ahead query sends
@@ -1089,6 +1159,12 @@ fn provenance(session: &crate::Session) -> Provenance {
 /// that also named a file count would invite the reader to treat the file count as
 /// the whole story.
 fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
+    workspace_freshness_within(workspace, ADDED_FILE_WALK_INTERVAL)
+}
+
+/// [`workspace_freshness`], reusing a walk for added files only when it is
+/// younger than `interval`.
+fn workspace_freshness_within(workspace: &WorkspaceSnapshot, interval: Duration) -> Freshness {
     Freshness {
         state: match workspace.superseded {
             Some(superseded) => IndexState::Superseded {
@@ -1106,7 +1182,7 @@ fn workspace_freshness(workspace: &WorkspaceSnapshot) -> Freshness {
                     // Every stamp is clean, which is exactly when a file the pass
                     // never saw is the only thing left that could make the workspace
                     // stale — it is in no stamp, so no stamp can report it.
-                    match added_since_pass(workspace) {
+                    match added_since_pass(workspace, interval) {
                         AddedFiles::None => IndexState::Ready,
                         AddedFiles::Some(count) => IndexState::Stale {
                             changed_files: count,
@@ -1163,14 +1239,14 @@ enum AddedFiles {
 /// continuously — so without the limit the common case would be a full directory walk
 /// per poll, and the gate would be admitting the walk on exactly the path it was
 /// supposed to protect.
-fn added_since_pass(workspace: &WorkspaceSnapshot) -> AddedFiles {
+fn added_since_pass(workspace: &WorkspaceSnapshot, interval: Duration) -> AddedFiles {
     let mut walk = workspace
         .added_files
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let counted = match walk.last_ran {
-        Some(last) if last.elapsed() < ADDED_FILE_WALK_INTERVAL => walk.last_count,
+        Some(last) if last.elapsed() < interval => walk.last_count,
         _ => {
             let Ok(files) = discover_path_in(&workspace.root, &workspace.config.root_extensions)
             else {

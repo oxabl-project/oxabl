@@ -94,6 +94,7 @@ mod outline;
 #[cfg(test)]
 mod parity;
 pub mod position;
+mod references;
 mod reverse;
 pub mod schema_hover;
 mod schema_view;
@@ -112,6 +113,13 @@ pub use lint::{
 };
 pub use navigate::{Highlight, Hover, Link, Navigation, NavigationModel, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
+// Re-exported so a client of navigation and the call hierarchy can name the
+// byte spans their answers carry.
+pub use oxabl_ast::Span;
+pub use references::{
+    CallItem, CallItemKind, Gap, IncomingCall, ItemKey, Occurrence, Outgoing, OutgoingCall, Reach,
+    Referent, Search, UnitIncoming, UnitReferences, dedupe_spans, fold_gaps,
+};
 pub use schema_view::{
     SchemaDatabase, SchemaField, SchemaIndex, SchemaIndexField, SchemaProblem, SchemaSequence,
     SchemaTable, SchemaView, TextPosition, TextRange, schema_database, schema_table, schema_view,

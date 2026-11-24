@@ -6,7 +6,8 @@
 //! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
 //! `textDocument/selectionRange`, `workspace/symbol`,
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
-//! `textDocument/documentLink` (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses and
+//! `textDocument/documentLink` (see `docs/design/navigation.md`), and `textDocument/references` and the call
+//! hierarchy (see `docs/design/references.md`). Strict database rules can also enable effect code lenses and
 //! database inlay hints (`docs/design/inlay-hints.md`). An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
@@ -41,6 +42,7 @@ mod includer_context;
 mod inlay_hint;
 mod navigation;
 pub mod position;
+mod references;
 mod schema;
 mod workspace_symbol;
 
@@ -58,8 +60,9 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
+    CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
     DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
-    Formatting, GotoDefinition, HoverRequest, InlayHintRequest, Request as _,
+    Formatting, GotoDefinition, HoverRequest, InlayHintRequest, References, Request as _,
     SelectionRangeRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
@@ -995,6 +998,9 @@ struct Server<'c> {
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
     /// Hover requests, one at a time, the stale ones dropped.
     hovers: navigation::HoverGate,
+    /// The references and call hierarchy requests in flight, and the gaps
+    /// already logged.
+    references: references::InFlight,
     /// The generation of the newest `oxabl/schema` request; an older one stops.
     schema_requests: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -1071,6 +1077,7 @@ impl<'c> Server<'c> {
             context_events,
             context_results,
             hovers: navigation::HoverGate::default(),
+            references: references::InFlight::default(),
             schema_requests: Default::default(),
         }
     }
@@ -1131,6 +1138,14 @@ impl<'c> Server<'c> {
                                 self.handle_document_highlight(req)?;
                             } else if req.method == DocumentLinkRequest::METHOD {
                                 self.handle_document_link(req)?;
+                            } else if req.method == References::METHOD {
+                                self.handle_references(req)?;
+                            } else if req.method == CallHierarchyPrepare::METHOD {
+                                self.handle_prepare_call_hierarchy(req)?;
+                            } else if req.method == CallHierarchyIncomingCalls::METHOD {
+                                self.handle_incoming_calls(req)?;
+                            } else if req.method == CallHierarchyOutgoingCalls::METHOD {
+                                self.handle_outgoing_calls(req)?;
                             } else if req.method == expanded_unit::METHOD {
                                 self.handle_expanded_unit(req)?;
                             } else if req.method == includer_context::LIST_METHOD {
@@ -1331,13 +1346,14 @@ impl<'c> Server<'c> {
             self.lenses.invalidate();
         }
         match not.method.as_str() {
-            "$/cancelRequest" => {
+            lsp_types::notification::Cancel::METHOD => {
                 if let Ok(params) = serde_json::from_value::<lsp_types::CancelParams>(not.params) {
                     let id = match params.id {
                         lsp_types::NumberOrString::Number(n) => RequestId::from(n),
                         lsp_types::NumberOrString::String(s) => RequestId::from(s),
                     };
                     self.hovers.cancel(&id);
+                    self.references.cancel(&id);
                 }
             }
             DidOpenTextDocument::METHOD => {

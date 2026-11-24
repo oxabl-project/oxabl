@@ -48,6 +48,7 @@ pub mod idle;
 #[cfg(unix)]
 pub mod listener;
 pub mod methods;
+pub mod references;
 pub mod registry;
 pub mod server;
 pub mod session;

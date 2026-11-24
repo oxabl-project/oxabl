@@ -498,7 +498,7 @@ impl Parser<'_> {
         // Optional ABL extent range syntax: [start FOR count]
         if self.check(Kind::KwFor) {
             self.advance(); // consume FOR
-            self.parse_expression().ok(); // consume the count
+            self.parse_expression_dropped(); // consume the count
         }
 
         self.expect_kind(Kind::RightBracket, "Expected ']' after array index")?;
@@ -1028,7 +1028,9 @@ impl Parser<'_> {
             // Optional OF table — related-record syntax: CAN-FIND(child OF parent)
             if self.check(Kind::Of) {
                 self.advance(); // consume OF
+                let lo = self.current;
                 self.parse_identifier().ok(); // consume parent table name
+                self.note_dropped(lo);
             }
 
             // The record-phrase options may come in any order; the first explicit
@@ -1282,7 +1284,9 @@ impl Parser<'_> {
             if self.check(Kind::By) {
                 self.advance();
                 if Self::can_be_identifier(self.peek().kind) {
+                    let lo = self.current;
                     self.nested(Self::parse_postfix).ok();
+                    self.note_dropped(lo);
                 }
                 // Optional label (integer or string) identifying the break level
                 if matches!(self.peek().kind, Kind::IntegerLiteral | Kind::StringLiteral) {

@@ -1087,8 +1087,13 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedTail {
     pub names: Vec<Identifier>,
-    /// The source of the tail, for a rule that lexes it.
+    /// The bytes of the skipped range, from its first token to its last; the
+    /// source of the tail, for a rule that lexes it.
     pub span: Span,
+    /// Ranges the parser read and dropped (a `FIELDS` or `EXCEPT` list, an
+    /// expression it did not keep): names in them are not sites. They are
+    /// not harvested into `names`.
+    pub dropped: Vec<Span>,
 }
 
 impl Statement {

@@ -322,17 +322,27 @@ STREAM`/`DEFINE FRAME` options and the stream-I/O option tails keep their real
 `StatementKind`. The identifiers of the range they skipped ride on the wrapper, not the
 kind.
 
-- **Invariant:** the field is `None` unless the lexical filter kept at least one name, and
-  it never changes which `StatementKind` a form produces.
+- **Invariant:** the field is `None` unless the lexical filter kept at least one name or the
+  parser dropped a range (`SkippedTail::dropped`), and it never changes which
+  `StatementKind` a form produces.
+- `SkippedTail::dropped` holds the ranges that the parser read and did not keep: a `FIELDS`
+  or `EXCEPT` list, an expression it parsed and dropped, the tokens a `DEFINE TEMP-TABLE`
+  skips. The next statement built takes them, so a range can ride on a statement inside the
+  block that it belongs to. The names in them are not harvested and not credited. Only the
+  navigation gap of the references search reads them.
 - **Invariant:** the names get the same treatment as a `Skipped` node's — a silent,
   non-counting lookup that can only mark a symbol as unjudgeable. They never produce a
   `references` entry, so they cannot reach LINT0001 or LINT0003, and they are not offered to
   the table namespaces.
 - The tail's class-shaped runs (`name:member`, `NEW name(`) are offered to the class lookup,
-  as a `Skipped` node's are, from the first harvested name to the statement's end. A run that
+  as a `Skipped` node's are, from the first harvested name to the end of the skipped range
+  (`SkippedTail::span`, the bytes from its first token to its last). A run that
   resolves is a dependency edge; one that cannot be told from a handle or a field degrades
   the edge set.
 - The field is excluded from `PartialEq`, like `id` and `span`.
+- A `FOR` header keeps one buffer. Its joined tables and its `BY`, `WHILE` and `WITH`
+  clauses are a skipped tail, from the end of the first buffer's phrase to the block
+  opener, so a name in them is credited like the names of any other tail.
 
 ## 9. Property body distinguishes absence from emptiness
 
