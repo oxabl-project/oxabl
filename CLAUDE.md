@@ -157,6 +157,8 @@ Generates:
 
 Every job in `ci.yml` and `codspeed.yml` has a `timeout-minutes` of about three times its usual run time, so a hung step (such as a toolchain setup that never returns) fails in minutes, not after GitHub's six-hour default. Raise a job's limit when it grows; do not remove it.
 
+Every workflow sets up Rust with the local action `.github/actions/setup-rust`: the runner's own `rustup` installs the toolchain, `actions/cache` restores the cargo registry, and `cargo install --locked` builds the cargo binaries a job needs, each pinned as `name@version` and cached after the first build. It calls no GitHub API and uses no third-party action; `moonrepo/setup-rust`, which it replaced, hung for the whole job timeout when `cargo-binstall` met GitHub's API rate limit. Raise a pinned binary's version in the workflow that names it. Target directories are not cached: one is several GB, and a set of them passes the repository's cache limit and evicts itself.
+
 ### Automated Releases (`.github/workflows/release.yml`)
 
 Uses [Release Please](https://github.com/googleapis/release-please) for fully automated versioning and changelogs. Use conventional commits.

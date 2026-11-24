@@ -1,0 +1,102 @@
+name: Set up Rust
+description: >-
+  Install a Rust toolchain with the runner's own rustup, restore cargo's
+  registry, and install pinned cargo binaries from crates.io. It calls no
+  GitHub API and uses no third-party action.
+
+inputs:
+  toolchain:
+    description: The toolchain to install and make the default (stable, nightly, 1.90.0).
+    default: stable
+  components:
+    description: Comma-separated rustup components (clippy, rustfmt).
+    default: ""
+  targets:
+    description: Comma-separated rustup targets (wasm32-unknown-unknown).
+    default: ""
+  bins:
+    description: >-
+      Comma-separated cargo binaries, each pinned as name@version
+      (cargo-fuzz@0.13.2). They are built once with `cargo install --locked`
+      and then restored from the cache.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install the toolchain
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+        COMPONENTS: ${{ inputs.components }}
+        TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        args=(--profile minimal --no-self-update)
+        IFS=', ' read -ra list <<<"$COMPONENTS"
+        for c in "${list[@]}"; do [ -n "$c" ] && args+=(--component "$c"); done
+        IFS=', ' read -ra list <<<"$TARGETS"
+        for t in "${list[@]}"; do [ -n "$t" ] && args+=(--target "$t"); done
+        rustup toolchain install "$TOOLCHAIN" "${args[@]}"
+        rustup default "$TOOLCHAIN"
+        # CI builds once, so incremental data only costs time and disk.
+        echo "CARGO_INCREMENTAL=0" >>"$GITHUB_ENV"
+        echo "CARGO_TERM_COLOR=always" >>"$GITHUB_ENV"
+        rustc --version --verbose
+
+    # Only the registry is cached. A target directory is several GB per job,
+    # so a set of them passes the repository's cache limit and evicts itself.
+    - name: Restore the cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: cargo-registry-${{ runner.os }}-
+
+    - name: Name the cargo binaries
+      id: bins
+      if: inputs.bins != ''
+      shell: bash
+      env:
+        BINS: ${{ inputs.bins }}
+      run: |
+        set -euo pipefail
+        IFS=', ' read -ra list <<<"$BINS"
+        paths=()
+        for b in "${list[@]}"; do
+          [ -n "$b" ] || continue
+          case "$b" in
+            *@*) ;;
+            *) echo "::error::bin '$b' has no version; write it as name@version" >&2; exit 1 ;;
+          esac
+          paths+=("$HOME/.cargo/bin/${b%@*}")
+        done
+        {
+          echo "key=cargo-bins-${{ runner.os }}-${ImageOS:-unknown}-$(printf '%s\n' "${list[@]}" | sort | tr '\n' '+')"
+          echo "paths<<EOF"
+          printf '%s\n' "${paths[@]}"
+          echo "EOF"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Restore the cargo binaries
+      id: bins-cache
+      if: inputs.bins != ''
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.bins.outputs.paths }}
+        key: ${{ steps.bins.outputs.key }}
+
+    - name: Install the cargo binaries
+      if: inputs.bins != '' && steps.bins-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        BINS: ${{ inputs.bins }}
+      run: |
+        set -euo pipefail
+        IFS=', ' read -ra list <<<"$BINS"
+        for b in "${list[@]}"; do
+          [ -n "$b" ] && cargo install --locked "$b"
+        done

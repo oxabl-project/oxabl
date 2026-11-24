@@ -19,9 +19,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       - run: cargo check --workspace
       # The fake AVM stands in for Progress, so it must not share a codec with oxabl.
       - name: The fake AVM depends on no oxabl crate
@@ -79,9 +79,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       - run: cargo test --workspace
 
   remote-cache:
@@ -90,9 +90,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       # The tests start the real cache server and drive its admin tool and member
       # command line, built at the revision that Cargo.toml pins. The script builds
       # them only when the cached directory does not hold that revision.
@@ -117,9 +117,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       # The tests copy the built binary and update the copy from a fake GitHub
       # on a loopback port.
       - run: cargo test -p oxabl --features self-update --locked --test self_update
@@ -131,9 +131,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       - run: shellcheck scripts/install.sh
       # The tests run the script against a fake GitHub on a loopback port. dash
       # is /bin/sh on Ubuntu, so this runs the script as a plain POSIX shell.
@@ -167,11 +167,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
           components: rustfmt
-          cache: false
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -180,9 +179,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
           components: clippy
       - run: cargo clippy --workspace -- -D warnings
 
@@ -192,9 +191,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
           components: clippy, rustfmt
       # The cargo-fuzz targets are outside the workspace, so the jobs above do not
       # build them. This keeps them compiling; running them needs nightly and
@@ -208,9 +207,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
           targets: wasm32-unknown-unknown
       - run: cargo build -p oxabl_wasm --target wasm32-unknown-unknown --release
 
@@ -220,9 +219,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       # The VS Code client's oxabl.toml JSON Schema is generated from the Rust
       # config structs. Regenerate it and fail if the committed copy has drifted.
       - name: Regenerate schema
@@ -236,9 +235,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       # The extension's TextMate grammar is generated from
       # resources/abl.tmLanguage.template.json and the keyword data. Regenerate
       # it and fail if the committed copy has drifted.
@@ -290,9 +289,9 @@ jobs:
         working-directory: clients/vscode
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       # The outline scenario runs the real language server.
       - name: Build oxabl
         working-directory: .

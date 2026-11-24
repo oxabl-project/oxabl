@@ -53,9 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       - run: cargo build --workspace --release
       - run: cargo test --workspace --release
 
@@ -66,9 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: moonrepo/setup-rust@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          channel: stable
+          toolchain: stable
       # The script waits out crates.io rate limits for up to 30 minutes, on top
       # of however long verifying and uploading every crate takes. This is a
       # backstop for a run that is stuck rather than waiting, and it has to be
