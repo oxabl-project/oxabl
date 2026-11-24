@@ -32,11 +32,14 @@
 //! - no other file of the workspace directory names it. Every file is read:
 //!   include files, files with another extension (trigger files), files in a
 //!   hidden directory, notes. The `oxabl.toml`, the baseline file and binary
-//!   files (a NUL byte at the start, unless the file starts with a UTF-16 mark)
-//!   are not read. A file over 8 MiB that is not binary cannot be read and
-//!   keeps every finding;
+//!   files (a NUL byte in the first 4 KiB, unless the file starts with a UTF-16
+//!   mark) are not read. A file over 8 MiB that is not binary, or that the
+//!   configured encoding cannot decode, cannot be read and keeps every finding;
 //! - no file that is not a root has an include whose name is computed
-//!   (`{{&n}.i}`), and the workspace holds no symbolic link;
+//!   (`{{&n}.i}`) or longer than 1 KiB, and the workspace holds no symbolic
+//!   link;
+//! - no root that a file which is not a root names has a computed include
+//!   name, which that file can steer to any include;
 //! - every root was read, preprocessed and parsed without errors, and no include
 //!   of any root failed to resolve, could not be read or did not arrive;
 //! - every root that reaches the file creates at least one of the objects that
@@ -88,6 +91,9 @@ enum Root {
         /// An include of the root did not arrive, or an include file lies
         /// outside the workspace.
         gap: bool,
+        /// The root's text has an include whose name is computed, which an
+        /// includer that is not a root can steer to any file.
+        computed: bool,
     },
 }
 
@@ -289,12 +295,14 @@ impl<'a> IncluderPools<'a> {
         parts.sort_unstable_by_key(|(i, _)| *i);
 
         let mut facts = Facts::default();
+        let mut computing = Vec::new();
         for (i, part) in parts {
             let Root::Done {
                 includes,
                 named,
                 recovered,
                 gap,
+                computed,
             } = part
             else {
                 facts.blind = true;
@@ -302,6 +310,9 @@ impl<'a> IncluderPools<'a> {
             };
             facts.blind |= gap;
             let root = normalize_lexically(&self.roots[i]);
+            if computed {
+                computing.push(root.clone());
+            }
             for include in named {
                 facts
                     .named_by_roots
@@ -320,6 +331,11 @@ impl<'a> IncluderPools<'a> {
         if !facts.blind {
             self.scan_elsewhere(&(self.run)(), &mut facts);
         }
+        // A root with a computed include name that an unseen file includes
+        // may include any file.
+        facts.blind |= computing
+            .iter()
+            .any(|root| base_name(root).is_some_and(|n| facts.names_elsewhere.contains(&n)));
         facts
     }
 
@@ -344,7 +360,7 @@ impl<'a> IncluderPools<'a> {
                         .iter()
                         .any(|e| !normalize_lexically(e.path).starts_with(ws))
                 });
-            let names = include_names(&source).names;
+            let IncludeNames { names, computed } = include_names(&source);
             let named: HashSet<PathBuf> = self
                 .wanted
                 .iter()
@@ -364,6 +380,7 @@ impl<'a> IncluderPools<'a> {
                     named,
                     recovered: false,
                     gap,
+                    computed,
                 };
             }
 
@@ -396,6 +413,7 @@ impl<'a> IncluderPools<'a> {
                 named,
                 recovered: !program.errors.is_empty(),
                 gap,
+                computed,
             }
         })
         .unwrap_or(Root::Failed)
@@ -508,30 +526,46 @@ fn read_source_text(pipeline: &LintPipeline<'_>, path: &Path) -> Option<String> 
 struct IncludeNames {
     /// The lower-case file name of each `{name ...}` reference.
     names: HashSet<String>,
-    /// A reference whose name is computed, such as `{{&n}.i}`.
+    /// A reference whose name is computed, such as `{{&n}.i}`, or too long
+    /// to be a file name.
     computed: bool,
 }
+
+/// The longest reference read as a file name.
+const NAME_LIMIT: usize = 1024;
 
 /// Read the `{name ...}` references of `text`. A reference to a preprocessor
 /// name (`{&name}`) is not an include. A name in quotes may hold spaces. The
 /// scan does not skip comments or strings, so it can name more than the
-/// compiler includes, never less.
+/// compiler includes, never less. Each byte is passed over a bounded number of
+/// times, also in a run of `{`.
 fn include_names(text: &str) -> IncludeNames {
     let mut out = IncludeNames::default();
+    // The end of the unquoted name that starts at `start`: the next space or
+    // `}`. The starts only grow, so one search serves every start before it.
+    let mut name_end = 0;
     for (open, _) in text.match_indices('{') {
-        let rest = text[open + 1..].trim_start();
-        let token = match rest.chars().next() {
+        let rest = &text[open + 1..];
+        let start = open + 1 + (rest.len() - rest.trim_start().len());
+        let end = match text[start..].chars().next() {
             Some(q @ ('"' | '\'')) => {
-                let inner = &rest[1..];
-                &inner[..inner.find([q, '}']).unwrap_or(inner.len())]
+                let inner = start + 1;
+                let limit = floor_char_boundary(text, inner + NAME_LIMIT + 1);
+                inner + text[inner..limit].find([q, '}']).unwrap_or(limit - inner)
             }
             _ => {
-                &rest[..rest
-                    .find(|c: char| c.is_whitespace() || c == '}')
-                    .unwrap_or(rest.len())]
+                if name_end < start {
+                    name_end = start
+                        + text[start..]
+                            .find(|c: char| c.is_whitespace() || c == '}')
+                            .unwrap_or(text.len() - start);
+                }
+                name_end
             }
         };
-        if names_by_reference(token) || token.contains('\u{FFFD}') {
+        let quoted = matches!(text[start..].chars().next(), Some('"' | '\''));
+        let token = &text[if quoted { start + 1 } else { start }..end];
+        if token.len() > NAME_LIMIT || names_by_reference(token) || token.contains('\u{FFFD}') {
             out.computed = true;
         } else if !token.starts_with('&')
             && let Some(last) = token.rsplit(['/', '\\']).next()
@@ -540,6 +574,15 @@ fn include_names(text: &str) -> IncludeNames {
         }
     }
     out
+}
+
+/// The largest char boundary of `text` at or below `at`.
+fn floor_char_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 /// Whether `token` holds a reference that can build a file name: `{&name}`,

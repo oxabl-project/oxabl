@@ -414,11 +414,15 @@ in two directories are never judged: each is named by the roots of the other. Th
   spaces. Text files are read with the encoding of `[workspace.sources]`. A non-root file that
   names a root (for example a trigger file that includes `lib.p`) keeps the finding of every include
   that the root reaches. The `oxabl.toml`, the baseline
-  file and binary files (a NUL byte at the start, unless the file starts with a UTF-16 mark) are not
-  read. A text file over 8 MiB cannot be read and keeps every finding;
+  file and binary files (a NUL byte in the first 4 KiB, unless the file starts with a UTF-16 mark) are
+  not read. A text file over 8 MiB, or one that the configured encoding cannot decode, cannot be read
+  and keeps every finding;
 - no file that is not a root has a reference that holds a preprocessor name or an argument
   (`{{&n}.i}`, `{{1}.i}`, `{{*}.i}`); other uses of `{{` (`${{ x }}` in a workflow file, compact JSON)
-  do not count, and the workspace has no symbolic link (the walk follows links and the scan does not);
+  do not count, and the workspace has no symbolic link (the walk follows links and the scan does not).
+  A reference longer than 1 KiB is no file name and counts as such a reference;
+- no root that a file which is not a root names has such a reference: the unseen includer can define
+  the name or pass the argument, so the root may include any file;
 - every root was analysed and parsed without errors, and no include of any root failed to resolve,
   could not be read or did not arrive (such an include may include anything, so a workspace needs all
   its includes to resolve);

@@ -459,3 +459,43 @@ fn includes_with_the_same_base_name_in_two_directories_keep_the_note() {
     fs::write(dir.path().join("b.p"), "{other/search.i}\n").unwrap();
     assert_kept(dir.path(), "same base name");
 }
+
+/// A root with a computed include name can include the fragment when a file
+/// that is not a root includes the root with the name defined.
+#[test]
+fn a_root_that_computes_a_name_for_an_unseen_includer_keeps_the_note() {
+    let by_define = "&IF DEFINED(inc) &THEN\n{{&inc}}\n&ENDIF\n";
+    let dir = tree(&[
+        ("search.p", POOLED),
+        ("wrap.p", by_define),
+        (
+            "x.t",
+            "&GLOBAL-DEFINE inc search.i\n{wrap.p}\nRUN search-records.\n",
+        ),
+    ]);
+    assert_kept(dir.path(), "a computed name defined by an unseen includer");
+    let by_argument = "&IF \"{1}\" <> \"\" &THEN\n{{1}}\n&ENDIF\n";
+    let dir = tree(&[
+        ("search.p", POOLED),
+        ("wrap.p", by_argument),
+        ("x.t", "{wrap.p search.i}\nRUN search-records.\n"),
+    ]);
+    assert_kept(dir.path(), "a computed name passed by an unseen includer");
+}
+
+/// The scan of a file reads each reference once: a long run of `{` costs no
+/// more than a file of its size.
+#[test]
+fn a_long_run_of_braces_is_read_in_linear_time() {
+    let braces = "{".repeat(200_000);
+    let dir = tree(&[("search.p", POOLED), ("big.txt", &braces)]);
+    let started = std::time::Instant::now();
+    let found = hd005(dir.path(), ".");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "took {elapsed:?}"
+    );
+    // A token that long is no file name: the run keeps the note.
+    assert_eq!(found.len(), 1, "{found:?}");
+}
