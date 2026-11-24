@@ -1,18 +1,27 @@
-//! `textDocument/definition` and `textDocument/documentLink`.
+//! `textDocument/definition`, `textDocument/hover` and
+//! `textDocument/documentLink`.
 //!
-//! Both analyse one compilation unit on a worker thread with the open buffers
+//! Each analyses one compilation unit on a worker thread with the open buffers
 //! over the disk ([`compute_navigation`]) and render its byte spans in the
 //! negotiated position encoding. An open include with a selected compilation
-//! context is analysed in that root for go to definition; otherwise an include
-//! is analysed alone. A failed analysis answers with an error, never with an
+//! context is analysed in that root for go to definition and hover; otherwise
+//! an include is analysed alone. A failed analysis answers with an error, never with an
 //! empty answer that reads as "no definition".
+//!
+//! Hover requests run one at a time ([`HoverGate`]). A hover that a newer one
+//! replaced before it started, or that the client cancelled with
+//! `$/cancelRequest`, answers `RequestCanceled` and computes nothing: an editor
+//! asks for a hover at each pause of the pointer, and only the last one counts.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
-    DocumentLink, DocumentLinkParams, GotoDefinitionParams, Location, PositionEncodingKind, Range,
+    DocumentLink, DocumentLinkParams, GotoDefinitionParams, Hover, HoverContents, HoverParams,
+    Location, MarkupContent, MarkupKind, PositionEncodingKind, Range,
 };
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::db::{NavigationAnswer, NavigationQuery, compute_navigation};
@@ -48,6 +57,49 @@ impl Server<'_> {
         })
     }
 
+    pub(crate) fn handle_hover(&mut self, req: Request) -> anyhow::Result<()> {
+        let params: HoverParams = match serde_json::from_value(req.params) {
+            Ok(params) => params,
+            Err(error) => return self.respond(invalid(req.id, &error.to_string())),
+        };
+        let position = params.text_document_position_params;
+        let uri = position.text_document.uri;
+        let Some(path) = uri_to_path(&uri) else {
+            return self.respond(invalid(req.id, &format!("{} is not a file", uri.as_str())));
+        };
+        let Some(document) = self.documents.get(&uri) else {
+            return self.respond(invalid(req.id, &format!("{} is not open", uri.as_str())));
+        };
+        let offset = position_to_byte(&document.rope, position.position, &self.encoding) as u32;
+        let path = canonical_path(&path);
+        let root = self
+            .contexts
+            .selected(&uri)
+            .cloned()
+            .unwrap_or_else(|| path.clone());
+        let buffer = self.open_buffer(&root);
+        let query = NavigationQuery::Hover {
+            file: path,
+            offset,
+            buffer,
+        };
+        let ticket = self.hovers.ticket(&req.id);
+        self.spawn_gated(req.id, root, query, Some(ticket), |answer, encoding| {
+            serde_json::to_value(hover(answer, encoding))
+        })
+    }
+
+    /// The session buffer of the open document at `path`.
+    fn open_buffer(&self, path: &Path) -> Option<oxabl_daemon::db::Buffer> {
+        let uri = self
+            .documents
+            .uris()
+            .find(|uri| uri_to_path(uri).is_some_and(|p| canonical_path(&p) == path))?
+            .clone();
+        self.host
+            .with(|sessions| sessions.get(&self.session_root)?.buffer(uri.as_str()))
+    }
+
     pub(crate) fn handle_document_link(&mut self, req: Request) -> anyhow::Result<()> {
         let params: DocumentLinkParams = match serde_json::from_value(req.params) {
             Ok(params) => params,
@@ -70,10 +122,19 @@ impl Server<'_> {
         id: RequestId,
         root: PathBuf,
         query: NavigationQuery,
-        render: fn(
-            NavigationAnswer,
-            &PositionEncodingKind,
-        ) -> serde_json::Result<serde_json::Value>,
+        render: Render,
+    ) -> anyhow::Result<()> {
+        self.spawn_gated(id, root, query, None, render)
+    }
+
+    /// [`Self::spawn_navigation`], behind `ticket` when there is one.
+    fn spawn_gated(
+        &mut self,
+        id: RequestId,
+        root: PathBuf,
+        query: NavigationQuery,
+        ticket: Option<HoverTicket>,
+        render: Render,
     ) -> anyhow::Result<()> {
         let Some((snapshot, schema, overlay)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
@@ -97,6 +158,21 @@ impl Server<'_> {
                 let sender = sender.clone();
                 let id = id.clone();
                 move || {
+                    let _running = match &ticket {
+                        Some(ticket) => match ticket.start() {
+                            Some(guard) => Some(guard),
+                            None => {
+                                let _ = sender.send(Message::Response(Response::new_err(
+                                    id,
+                                    ErrorCode::RequestCanceled as i32,
+                                    "oxabl-lsp: a newer hover or the client cancelled this one"
+                                        .to_string(),
+                                )));
+                                return;
+                            }
+                        },
+                        None => None,
+                    };
                     let answered = oxabl_common::catch_panic(|| {
                         compute_navigation(&snapshot, schema, &root, overlay, &query)
                             .map(|answer| answer.map(|answer| render(answer, &encoding)))
@@ -138,6 +214,87 @@ impl Server<'_> {
     }
 }
 
+type Render = fn(NavigationAnswer, &PositionEncodingKind) -> serde_json::Result<serde_json::Value>;
+
+/// Runs hover requests one at a time and drops the ones nobody waits for.
+#[derive(Clone, Default)]
+pub(crate) struct HoverGate {
+    inner: Arc<GateInner>,
+}
+
+#[derive(Default)]
+struct GateInner {
+    /// The number of the newest hover request.
+    latest: AtomicU64,
+    /// Each hover request not yet started, and whether the client cancelled it.
+    pending: Mutex<HashMap<RequestId, bool>>,
+    /// Held while a hover computes.
+    running: Mutex<()>,
+}
+
+/// One hover request's place in the [`HoverGate`].
+pub(crate) struct HoverTicket {
+    inner: Arc<GateInner>,
+    id: RequestId,
+    number: u64,
+    /// Whether [`HoverTicket::start`] ran.
+    started: std::sync::atomic::AtomicBool,
+}
+
+impl HoverGate {
+    pub(crate) fn ticket(&self, id: &RequestId) -> HoverTicket {
+        let number = self.inner.latest.fetch_add(1, Ordering::SeqCst) + 1;
+        lock(&self.inner.pending).insert(id.clone(), false);
+        HoverTicket {
+            inner: Arc::clone(&self.inner),
+            id: id.clone(),
+            number,
+            started: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// `$/cancelRequest` for `id`. Only a hover not yet started is affected.
+    pub(crate) fn cancel(&self, id: &RequestId) {
+        if let Some(cancelled) = lock(&self.inner.pending).get_mut(id) {
+            *cancelled = true;
+        }
+    }
+}
+
+impl HoverTicket {
+    /// Wait for the hovers before this one, then the guard to compute under;
+    /// `None` when a newer hover came or the client cancelled this one.
+    fn start(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        let guard = lock(&self.inner.running);
+        self.started.store(true, Ordering::SeqCst);
+        let cancelled = lock(&self.inner.pending).remove(&self.id).unwrap_or(false);
+        let newest = self.inner.latest.load(Ordering::SeqCst) == self.number;
+        (newest && !cancelled).then_some(guard)
+    }
+}
+
+impl Drop for HoverTicket {
+    /// A ticket that never started (no session, no thread) leaves no trace: it
+    /// is no longer pending, and no longer the newest, so it cancels no hover
+    /// queued before it.
+    fn drop(&mut self) {
+        if self.started.load(Ordering::SeqCst) {
+            return;
+        }
+        lock(&self.inner.pending).remove(&self.id);
+        let _ = self.inner.latest.compare_exchange(
+            self.number,
+            self.number - 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn invalid(id: RequestId, message: &str) -> Response {
     Response::new_err(
         id,
@@ -162,6 +319,22 @@ fn locations(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Optio
         })
         .collect();
     (!locations.is_empty()).then_some(locations)
+}
+
+/// The hover as Markdown. `None` (JSON `null`) when there is none.
+fn hover(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Option<Hover> {
+    let (path, hover) = answer.hover.as_ref()?;
+    let mut ropes = Ropes::new(&answer.texts);
+    let range = hover
+        .span
+        .and_then(|span| ropes.range(path, (span.start, span.end), encoding));
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover.contents.clone(),
+        }),
+        range,
+    })
 }
 
 fn links(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Vec<DocumentLink> {
@@ -212,5 +385,32 @@ impl<'t> Ropes<'t> {
             byte_to_position(rope, start as usize, encoding),
             byte_to_position(rope, end as usize, encoding),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ticket_that_never_starts_does_not_replace_an_older_one() {
+        let gate = HoverGate::default();
+        let older = gate.ticket(&RequestId::from(1));
+        let failed = gate.ticket(&RequestId::from(2));
+        drop(failed);
+        assert!(older.start().is_some(), "the older hover must still run");
+        assert!(lock(&gate.inner.pending).is_empty());
+    }
+
+    #[test]
+    fn a_newer_ticket_and_a_cancel_stop_a_waiting_one() {
+        let gate = HoverGate::default();
+        let replaced = gate.ticket(&RequestId::from(1));
+        let cancelled = gate.ticket(&RequestId::from(2));
+        let newest = gate.ticket(&RequestId::from(3));
+        gate.cancel(&RequestId::from(2));
+        assert!(replaced.start().is_none());
+        assert!(cancelled.start().is_none());
+        assert!(newest.start().is_some());
     }
 }

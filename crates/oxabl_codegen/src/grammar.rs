@@ -5,6 +5,8 @@
 //! the keyword `NAME` and each of its legal abbreviations, and
 //! `{{keywords:CATEGORY}}` a regex for every spelling in a category. Both are
 //! built as a trie of lower-case spellings, for use inside `(?i)` patterns.
+//! `{{boundary}}` and `{{non-boundary}}` lead a pattern that must not follow a
+//! word character, before a word character and before any other character.
 //!
 //! Keywords are the union of the HTML keyword index, the reserved list and the
 //! `[[add]]` overrides, less the `[[remove]]` overrides. Only plain words take
@@ -508,6 +510,8 @@ impl Keywords {
                     out.push_str(&trie_regex(spellings));
                 }
                 Some(("word", name)) => out.push_str(&self.word(name)?),
+                None if placeholder == "boundary" => out.push_str(BOUNDARY),
+                None if placeholder == "non-boundary" => out.push_str(NON_BOUNDARY),
                 _ => return Err(format!("unknown placeholder {{{{{placeholder}}}}}")),
             }
             rest = &after[end + 2..];
@@ -535,6 +539,102 @@ impl Keywords {
     }
 }
 
+/// `\b` with the six characters that Oniguruma's `\b` takes as word
+/// characters and its `[\w]` does not (`²`, `³`, `¹`, `¼`, `½`, `¾`). Before a
+/// word character it accepts what `(?<![\w])` accepts. A pattern that starts
+/// with a look-behind is tried at every position of a line; one that starts
+/// with `\b` is not, which makes tokenizing about twice as fast.
+const BOUNDARY: &str = r"(?:\b|(?<=[\x{b2}\x{b3}\x{b9}\x{bc}-\x{be}]))";
+/// `{{boundary}}` before a character that is not a word character.
+const NON_BOUNDARY: &str = r"(?:\B|(?<=[\x{b2}\x{b3}\x{b9}\x{bc}-\x{be}]))";
+/// The template key that bounds the nesting of a self-recursive rule.
+const NESTING_LIMIT: &str = "x-nesting-limit";
+
+/// Replaces each repository rule `name` that has `"x-nesting-limit": N` with
+/// N copies: `name` includes `name-2` where it included itself, `name-2`
+/// includes `name-3`, and so on. Copy N matches the rule's `begin` where it
+/// included itself, so the rule stack holds at most N of them and an opener
+/// past that depth is consumed whole as plain text: `/*/*` past the limit
+/// must not read as `/` `*/` `*`.
+fn bound_nesting(grammar: &mut Value) -> Result<(), String> {
+    let Some(repository) = grammar.get_mut("repository").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let limited: Vec<String> = repository
+        .iter()
+        .filter(|(_, rule)| rule.get(NESTING_LIMIT).is_some())
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in limited {
+        let mut rule = repository.remove(&name).expect("listed above");
+        let limit = rule
+            .as_object_mut()
+            .and_then(|r| r.remove(NESTING_LIMIT))
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n >= 2)
+            .ok_or_else(|| format!("{name}: {NESTING_LIMIT} must be an integer of 2 or more"))?;
+        let own = format!("#{name}");
+        let begin = rule
+            .get("begin")
+            .cloned()
+            .ok_or_else(|| format!("{name}: has {NESTING_LIMIT} but no begin"))?;
+        let opener = serde_json::json!({ "match": begin });
+        if !includes(&rule, &own) {
+            return Err(format!(
+                "{name}: has {NESTING_LIMIT} but does not include itself"
+            ));
+        }
+        for depth in 1..=limit {
+            let copy_name = if depth == 1 {
+                name.clone()
+            } else {
+                format!("{name}-{depth}")
+            };
+            if repository.contains_key(&copy_name) {
+                return Err(format!(
+                    "{name}: the nesting copy {copy_name} is already a rule"
+                ));
+            }
+            let mut copy = rule.clone();
+            let next = if depth < limit {
+                serde_json::json!({ "include": format!("#{name}-{}", depth + 1) })
+            } else {
+                opener.clone()
+            };
+            retarget(&mut copy, &own, &next);
+            repository.insert(copy_name, copy);
+        }
+    }
+    Ok(())
+}
+
+fn is_include_of(value: &Value, target: &str) -> bool {
+    value.get("include").and_then(Value::as_str) == Some(target)
+}
+
+fn includes(value: &Value, target: &str) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(|v| includes(v, target)),
+        Value::Object(map) => {
+            is_include_of(value, target) || map.values().any(|v| includes(v, target))
+        }
+        _ => false,
+    }
+}
+
+/// Replaces every `{"include": from}` with `to`.
+fn retarget(value: &mut Value, from: &str, to: &Value) {
+    if is_include_of(value, from) {
+        *value = to.clone();
+        return;
+    }
+    match value {
+        Value::Array(items) => items.iter_mut().for_each(|v| retarget(v, from, to)),
+        Value::Object(map) => map.values_mut().for_each(|v| retarget(v, from, to)),
+        _ => {}
+    }
+}
+
 /// Fills `template` from the keyword data in `resources` and returns the
 /// grammar JSON.
 pub fn generate(resources: &Path, template: &Path) -> Result<String, String> {
@@ -548,6 +648,7 @@ pub fn generate(resources: &Path, template: &Path) -> Result<String, String> {
     let mut grammar: Value = serde_json::from_str(&text)
         .map_err(|e| format!("cannot parse {}: {e}", template.display()))?;
     keywords.fill_value(&mut grammar)?;
+    bound_nesting(&mut grammar)?;
 
     let mut json = serde_json::to_string_pretty(&grammar).map_err(|e| e.to_string())?;
     json.push('\n');

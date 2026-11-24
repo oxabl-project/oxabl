@@ -59,15 +59,22 @@
 //! creates that an include wrote and reports at its own first create, even
 //! when an include creates earlier. The include reports its own when it is
 //! checked. An include may count on a pool that its includer creates, so a
-//! finding in an include says so and is lower confidence.
+//! finding in an include says so and is lower confidence. `oxabl check <dir>`
+//! then judges the finding by the roots of the same run
+//! (`oxabl_pipeline::IncluderPools`), using [`counts`] on each root's own
+//! analysis.
 
 use oxabl_ast::Statement;
 use oxabl_common::{Diagnostic, Severity};
-use oxabl_handles::{FileHandles, Placement};
+use oxabl_handles::{FileHandles, Object, Placement};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD005;
-use super::handle_support::{not_judged, warning, with_fragment_note};
+use super::handle_support::{describe, not_judged, warning, with_fragment_note};
+use super::syntactic::file_span;
+
+/// The most other creates shown as related locations.
+const MAX_OTHERS: usize = 8;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "missing-widget-pool";
@@ -83,6 +90,12 @@ pub fn run(program: &[Statement], _sem: &Semantic, ctx: &AnalysisContext) -> Vec
     check(&oxabl_handles::analyze_file(program, ctx.source), ctx)
 }
 
+/// Whether the rule counts `o`: its kind goes into a widget pool, no pool of
+/// the file holds it, and it does not escape.
+pub fn counts(o: &Object) -> bool {
+    o.kind.uses_widget_pool() && o.placement == Placement::Unscoped && o.escapes.is_empty()
+}
+
 /// The findings over an analysed file.
 pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
     if not_judged(ctx) {
@@ -91,12 +104,7 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
     let unpooled: Vec<_> = handles
         .objects()
         .map(|(_, o)| o)
-        .filter(|o| {
-            o.kind.uses_widget_pool()
-                && o.placement == Placement::Unscoped
-                && o.escapes.is_empty()
-                && !ctx.in_include(o.create.span)
-        })
+        .filter(|o| counts(o) && !ctx.in_include(o.create.span))
         .collect();
     let Some(first) = unpooled.iter().min_by_key(|o| o.create.span.start) else {
         return Vec::new();
@@ -118,6 +126,20 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
             .to_string(),
         first.create.span,
     );
+    let mut others: Vec<_> = unpooled
+        .iter()
+        .filter(|o| o.create.span != first.create.span)
+        .collect();
+    others.sort_by_key(|o| o.create.span.start);
+    let shown = others.len().min(MAX_OTHERS);
+    let mut d = d;
+    for (k, o) in others.iter().take(shown).enumerate() {
+        let mut message = format!("{} is also created with no widget pool", describe(o));
+        if k + 1 == shown && others.len() > shown {
+            message.push_str(&format!(" (and {} more)", others.len() - shown));
+        }
+        d = d.with_label(file_span(ctx, o.create.span), message);
+    }
     vec![with_fragment_note(
         d,
         ctx.source_context.is_include_fragment(),

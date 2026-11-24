@@ -340,8 +340,13 @@ impl Server<'_> {
                 let Some(doc) = self.documents.get(&res.uri) else {
                     return;
                 };
-                let diagnostics =
-                    context_to_lsp_diagnostics(&outcome, &res.root, &doc.rope, &self.encoding);
+                let diagnostics = context_to_lsp_diagnostics(
+                    &outcome,
+                    &res.root,
+                    &doc.rope,
+                    &self.encoding,
+                    self.related_information.then_some(&res.uri),
+                );
                 let regions = outcome
                     .inactive_regions
                     .iter()

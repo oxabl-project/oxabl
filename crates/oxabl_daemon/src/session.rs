@@ -916,6 +916,8 @@ pub struct SessionHost {
     /// the root can bind a host it was handed, and so a second binding cannot widen
     /// what a running daemon accepts.
     bound_root: Arc<std::sync::OnceLock<PathBuf>>,
+    /// The clients and background work that keep a daemon from exiting idle.
+    activity: Arc<crate::idle::Activity>,
 }
 
 impl Clone for SessionHost {
@@ -923,6 +925,7 @@ impl Clone for SessionHost {
         SessionHost {
             sessions: Arc::clone(&self.sessions),
             bound_root: Arc::clone(&self.bound_root),
+            activity: Arc::clone(&self.activity),
         }
     }
 }
@@ -938,7 +941,13 @@ impl SessionHost {
         SessionHost {
             sessions: Arc::new(std::sync::Mutex::new(Sessions::new())),
             bound_root: Arc::new(std::sync::OnceLock::new()),
+            activity: Arc::default(),
         }
+    }
+
+    /// The clients and background work of the daemon this host serves.
+    pub fn activity(&self) -> &Arc<crate::idle::Activity> {
+        &self.activity
     }
 
     /// Record the one workspace root this host serves (R26).

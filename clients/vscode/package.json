@@ -40,6 +40,8 @@
     "onCommand:oxabl.build",
     "onCommand:oxabl.selectIncluderContext",
     "onCommand:oxabl.showExpandedUnit",
+    "onCommand:oxabl.schema.refresh",
+    "onCommand:oxabl.schema.filter",
     "onCommand:oxabl.cancelBuild",
     "onCommand:oxabl.showBuildLog"
   ],
@@ -76,6 +78,46 @@
       {
         "command": "oxabl.showExpandedUnit",
         "title": "oxabl: Show Expanded Compilation Unit"
+      },
+      {
+        "command": "oxabl.schema.refresh",
+        "title": "oxabl: Refresh Schema",
+        "shortTitle": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oxabl.schema.filter",
+        "title": "oxabl: Filter Schema",
+        "shortTitle": "Filter",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "oxabl.schema.clearFilter",
+        "title": "oxabl: Clear Schema Filter",
+        "shortTitle": "Clear Filter",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "oxabl.schema.open",
+        "title": "Open in .df",
+        "category": "oxabl",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "oxabl.schema.copyName",
+        "title": "Copy Name",
+        "category": "oxabl"
+      },
+      {
+        "command": "oxabl.schema.copyQualifiedName",
+        "title": "Copy table.field",
+        "category": "oxabl"
+      },
+      {
+        "command": "oxabl.schema.showTable",
+        "title": "Show Table Details",
+        "category": "oxabl",
+        "icon": "$(preview)"
       }
     ],
     "languages": [
@@ -186,6 +228,85 @@
       "evenBetterToml.schema.associations": {
         "**/oxabl.toml": "./schemas/oxabl.schema.json"
       }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "oxabl.schema",
+          "name": "ABL Schema",
+          "icon": "$(database)",
+          "contextualTitle": "oxabl",
+          "when": "oxabl.schema.available"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "oxabl.schema.filter",
+          "when": "view == oxabl.schema",
+          "group": "navigation@1"
+        },
+        {
+          "command": "oxabl.schema.clearFilter",
+          "when": "view == oxabl.schema && oxabl.schema.filtered",
+          "group": "navigation@2"
+        },
+        {
+          "command": "oxabl.schema.refresh",
+          "when": "view == oxabl.schema",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "oxabl.schema.showTable",
+          "when": "view == oxabl.schema && viewItem == table",
+          "group": "inline"
+        },
+        {
+          "command": "oxabl.schema.showTable",
+          "when": "view == oxabl.schema && viewItem =~ /^(table|field|index)$/",
+          "group": "1_open@1"
+        },
+        {
+          "command": "oxabl.schema.open",
+          "when": "view == oxabl.schema && viewItem =~ /^(database|table|field|index|sequence|problem)$/",
+          "group": "1_open@2"
+        },
+        {
+          "command": "oxabl.schema.copyName",
+          "when": "view == oxabl.schema && viewItem =~ /^(database|table|field|index|sequence)$/",
+          "group": "2_copy@1"
+        },
+        {
+          "command": "oxabl.schema.copyQualifiedName",
+          "when": "view == oxabl.schema && viewItem == field",
+          "group": "2_copy@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "oxabl.schema.open",
+          "when": "false"
+        },
+        {
+          "command": "oxabl.schema.copyName",
+          "when": "false"
+        },
+        {
+          "command": "oxabl.schema.copyQualifiedName",
+          "when": "false"
+        },
+        {
+          "command": "oxabl.schema.showTable",
+          "when": "false"
+        },
+        {
+          "command": "oxabl.schema.clearFilter",
+          "when": "oxabl.schema.filtered"
+        }
+      ]
     }
   },
   "scripts": {

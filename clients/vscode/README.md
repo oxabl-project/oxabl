@@ -57,6 +57,13 @@ you also get, with no setup:
   classes and their members, procedures, functions, temp-tables with their
   fields, variables, buffers and `ON` triggers. The outline reads the file as
   written, so declarations in an include file do not show.
+- **Syntax folding and selection.** Fold blocks, routines, definitions, long
+  statements, comments, preprocessor branches, and the `&ANALYZE-SUSPEND` and
+  `// #region` markers. **Fold All Block Comments** and **Fold All Regions**
+  work. Use **Expand Selection** (`Shift+Alt+Right`) to grow from a token to
+  its expression, statement, block, routine, and file. Both features read the
+  file as written, so text from an include file does not fold. Wrong
+  indentation does not change their ranges.
 - **Go to Symbol in Workspace** (`Ctrl+T`). Finds classes, interfaces,
   procedures, functions, shared variables and files in every ABL file of the
   workspace, also files that are not open, and opens the declaration. An open
@@ -73,6 +80,23 @@ you also get, with no setup:
   and `table.field` go to the `.df`. A name that two files on the include path
   supply shows both. A name that does not resolve, or that is computed at run
   time (`RUN VALUE(...)`), goes nowhere.
+- **Hover.** Point at a name to see what it is: a variable, parameter or
+  property with its type, `EXTENT`, `INITIAL` and `NO-UNDO`; the signature of
+  an internal procedure, function or method (each overload of an inherited
+  method); a class header; a table or field from the schema with its format,
+  label and the indexes it takes part in; a temp-table with its fields and
+  indexes, including those it takes with `LIKE` (and a note when the source is
+  not in the loaded schema). A built-in function, a statement
+  keyword and a system handle show their name and a link to the Progress
+  documentation. A name declared in an include file works. A name that does
+  not resolve, or that two files supply, shows nothing. A procedure, function,
+  method or `RUN` target also shows the tables it reads, creates, updates and
+  deletes, with the lock of each read, directly and through the routines it
+  calls. When a call cannot be followed (`RUN VALUE(...)`, a program that no
+  file supplies, `RUN ... ON SERVER`), or when another body may run (a method
+  that a subclass can override, an interface method, `PROCEDURE p IN SUPER`),
+  the hover says that the list is incomplete. While a file it reads has unsaved
+  changes, the hover shows no effects; save the file to see them.
 - **Document links.** Include references, `RUN` targets and `USING` names are
   links to the file each names (`Ctrl+Click`). A name that resolves to no file,
   or to more than one, is not a link.
@@ -80,7 +104,7 @@ you also get, with no setup:
   Local names need no setup. Programs, includes and classes are found through
   `include_paths` under `[workspace.sources]` in `oxabl.toml`, and tables and
   fields through `[workspace.schema]`. Text in an `&IF` branch that is not
-  compiled has no definition and no link.
+  compiled has no definition, no hover and no link.
 
 A folder with an `oxabl.toml` is a project. A project also gets:
 
@@ -88,7 +112,10 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   that it cannot format safely byte for byte unchanged.
 - **Live diagnostics.** Lint and semantic diagnostics show in the Problems
   panel. The rule severities come from `oxabl.toml`. An edit to `oxabl.toml`
-  applies at once, with no reload.
+  applies at once, with no reload. A finding of the `strict.handles` and
+  `strict.nulls` rules lists the statements on its path under it, such as
+  the `FIND ... NO-ERROR` that may leave a buffer empty or the create of a
+  handle that leaks. Click one to go to it, also in an include file.
 - **Include context.** An include file (`.i`) has no meaning alone: a
   variable it declares is used or unused only in a file that includes it. An
   open include starts in fragment mode, and the status bar says
@@ -128,6 +155,21 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   edits of the file and of its includes, and a change of `oxabl.toml`, refresh
   the view. The top of the view says when the expansion is reduced (an include
   that was not found, a cyclic include, the depth limit) or failed.
+
+- **ABL Schema view.** The Explorer has an **ABL Schema** view of the `.df`
+  files that `[workspace.schema]` in `oxabl.toml` names, with no database
+  connection: each file is a database, with its tables, their fields and
+  indexes, and its sequences. The filter button (or **oxabl: Filter Schema**)
+  keeps the tables and fields whose name, label or description holds the text,
+  and a table also by its dump name; it ignores case. Click a field, index or
+  sequence to open the `.df` at its `ADD` line. The context menu has **Open in
+  .df**, **Copy Name** and **Copy table.field**. The icon on a table opens a
+  page with its fields and indexes. The view follows changes of the `.df`
+  files and of `oxabl.toml`, also outside the workspace folder. With no
+  schema configured, the view says why. A warning above the tree names a
+  schema directory without a `.df`, and a database with problems (an
+  `UPDATE`, `DROP` or `RENAME` that oxabl does not apply, a field of an
+  unknown table) shows them at its top.
 
 Without an `oxabl.toml`, the language server does not format and does not
 report diagnostics, and it shows no message about it. Add an `oxabl.toml` to

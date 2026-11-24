@@ -2,7 +2,7 @@
 
 use oxabl_lint::delete_not_in_finally::run;
 
-use super::{check, help, lines};
+use super::{check, help, labels, lines};
 
 #[test]
 fn reports_a_delete_on_the_success_path_only() {
@@ -21,7 +21,13 @@ END PROCEDURE.
     assert!(message.contains("hQuery:QUERY-PREPARE"), "{message}");
     assert!(help(&diags[0]).contains("FINALLY"));
     assert_eq!(lines(src, &[diags[0].clone()]).len(), 1);
-    assert_eq!(diags[0].labels.len(), 1);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [
+            (4, "an error here skips the delete".to_string()),
+            (3, "the query in `hQuery` is created here".to_string()),
+        ]
+    );
 }
 
 #[test]

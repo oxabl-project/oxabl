@@ -2,7 +2,7 @@
 
 use oxabl_lint::memptr_not_freed::run;
 
-use super::{check, check_fragment, help, lines};
+use super::{check, check_fragment, help, labels, lines};
 
 #[test]
 fn reports_a_memptr_never_set_back_to_zero() {
@@ -145,4 +145,21 @@ PROCEDURE work:
 END PROCEDURE.
 ";
     assert_eq!(lines(src, &check(run, src)), [6]);
+}
+
+#[test]
+fn a_finding_relates_the_statement_before_the_exit() {
+    let src = "\
+PROCEDURE p:
+    DEFINE VARIABLE m AS MEMPTR NO-UNDO.
+    SET-SIZE(m) = 16.
+    MESSAGE \"sized\".
+END PROCEDURE.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(4, "path ends after `MESSAGE \"sized\"`".to_string())]
+    );
 }

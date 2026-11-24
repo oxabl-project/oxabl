@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -165,6 +165,36 @@ enum Cli {
         /// array.
         #[arg(long, conflicts_with = "baseline")]
         include_findings: bool,
+
+        /// Fail (exit 1) when a root is encrypted (XCODE), or reaches an
+        /// encrypted include, and so is not checked. An encrypted include file
+        /// of a walked directory is only warned about.
+        ///
+        /// Off by default: such a root is reported with the warning `SOURCE001`
+        /// and the run passes. With the flag, a run that skipped a file cannot
+        /// look like a run that checked it.
+        #[arg(long)]
+        fail_on_encrypted: bool,
+        /// Print counts per rule and per file, and not each finding.
+        ///
+        /// The text output lists the rules by count, then the files with the most
+        /// findings (`--summary-top` of them). It counts the findings that the
+        /// run reports: with `--baseline`, the new ones; with
+        /// `--include-findings`, those too, by the include file. The exit code
+        /// does not change. `--json` keeps `diagnostics` and adds a `summary`
+        /// object. Not combinable with `--watch`.
+        #[arg(long, conflicts_with = "watch")]
+        summary: bool,
+
+        /// How many files `--summary` lists.
+        #[arg(
+            long,
+            requires = "summary",
+            value_name = "N",
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
+        summary_top: u32,
 
         /// Number of files analysed at once. Defaults to the available cores;
         /// `1` analyses one file at a time.
@@ -363,6 +393,13 @@ enum Cli {
     Daemon {
         /// Workspace root this daemon owns.
         workspace_root: PathBuf,
+
+        /// Exit after this long with no client and no background work, and remove
+        /// the registration: `never`, or a whole number with an optional unit `ms`,
+        /// `s`, `m` or `h` (seconds without one). Default `10m`, or the value of
+        /// `OXABL_DAEMON_IDLE_TIMEOUT`.
+        #[arg(long, value_name = "DURATION")]
+        idle_timeout: Option<String>,
     },
     /// Emit the JSON Schema for `oxabl.toml` to stdout.
     ///
@@ -527,7 +564,9 @@ struct JsonErrorPattern {
 /// - `PREPROC008` unterminated include reference
 /// - `PREPROC009` predefined name without a value in an `&IF` condition
 /// - `PREPROC010` part of an `&IF` condition the preprocessor does not evaluate
+/// - `PREPROC013` a substituted value that ends with `~`
 /// - `PREPROC002` unclosed `&IF` (inline/`skip_to_eol` regressions; #65 gate)
+/// - `SOURCE001` encrypted source, or an include that is encrypted (not checked)
 ///
 /// Rendering is delegated to [`render_diagnostics`] with a [`SourceResolver`]
 /// over the root file: root-file diagnostics get a `path:line:col` position and
@@ -657,6 +696,9 @@ fn dispatch(cli: Cli) -> ExitCode {
             baseline,
             update_baseline,
             include_findings,
+            fail_on_encrypted,
+            summary,
+            summary_top,
             jobs,
             watch,
         } => {
@@ -670,6 +712,7 @@ fn dispatch(cli: Cli) -> ExitCode {
                     no_lint,
                     no_format,
                     include_findings,
+                    fail_on_encrypted,
                     jobs,
                 });
             }
@@ -686,6 +729,8 @@ fn dispatch(cli: Cli) -> ExitCode {
                 no_format,
                 baseline.as_deref().map(|file| (file, update_baseline)),
                 include_findings,
+                fail_on_encrypted,
+                summary.then_some(summary_top as usize),
                 jobs,
             )
         }
@@ -742,7 +787,10 @@ fn dispatch(cli: Cli) -> ExitCode {
             json,
             background,
         }),
-        Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
+        Cli::Daemon {
+            workspace_root,
+            idle_timeout,
+        } => run_daemon(&workspace_root, idle_timeout.as_deref()),
         Cli::Schema => run_schema(),
         Cli::Build {
             plan,
@@ -847,14 +895,25 @@ fn run_lsp() -> ExitCode {
 /// discovery that editor clients already have, so clients do not need to locate a
 /// second binary.
 #[cfg(unix)]
-fn run_daemon(workspace_root: &Path) -> ExitCode {
-    let listener = match oxabl_daemon::Listener::bind(workspace_root) {
-        Ok(listener) => listener,
+fn run_daemon(workspace_root: &Path, idle_timeout: Option<&str>) -> ExitCode {
+    let idle_timeout = match daemon_idle_timeout(idle_timeout) {
+        Ok(timeout) => timeout,
         Err(error) => {
             eprintln!("oxabl daemon: {error}");
             return ExitCode::FAILURE;
         }
     };
+    let mut listener = match oxabl_daemon::Listener::bind(workspace_root) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("oxabl daemon: {error}");
+            if oxabl_daemon::listener::is_start_lock_held(&error) {
+                return ExitCode::from(oxabl_daemon::listener::EXIT_START_LOCK_HELD);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    listener.set_idle_timeout(idle_timeout);
     let dispatch = std::sync::Arc::new(oxabl_daemon::default_dispatch());
     let host = std::sync::Arc::new(oxabl_daemon::SessionHost::new());
     let serve = std::sync::Arc::new(
@@ -888,8 +947,27 @@ fn run_daemon(workspace_root: &Path) -> ExitCode {
     }
 }
 
+/// The idle timeout from `--idle-timeout`, else from the environment, else the default.
+/// A value that does not parse is an error, not the default.
+#[cfg(unix)]
+fn daemon_idle_timeout(flag: Option<&str>) -> Result<Option<std::time::Duration>, String> {
+    if let Some(value) = flag {
+        return oxabl_daemon::parse_idle_timeout(value)
+            .map_err(|error| format!("--idle-timeout: {error}"));
+    }
+    match std::env::var(oxabl_daemon::IDLE_TIMEOUT_VARIABLE) {
+        Ok(value) => oxabl_daemon::parse_idle_timeout(&value)
+            .map_err(|error| format!("{}: {error}", oxabl_daemon::IDLE_TIMEOUT_VARIABLE)),
+        Err(std::env::VarError::NotPresent) => Ok(Some(oxabl_daemon::DEFAULT_IDLE_TIMEOUT)),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+            "{}: the value is not UTF-8",
+            oxabl_daemon::IDLE_TIMEOUT_VARIABLE
+        )),
+    }
+}
+
 #[cfg(not(unix))]
-fn run_daemon(_workspace_root: &Path) -> ExitCode {
+fn run_daemon(_workspace_root: &Path, _idle_timeout: Option<&str>) -> ExitCode {
     eprintln!("oxabl daemon: Unix domain sockets are not supported on this platform");
     ExitCode::FAILURE
 }
@@ -1143,6 +1221,14 @@ fn format_one<'a>(
     let messages = &mut result.messages;
     let stored = match decoding.read_file(file) {
         Ok(stored) => stored,
+        Err(e) if oxabl_workspace::is_encrypted(&e) => {
+            // Never rewritten. `--stdout` still hands back the file as it is.
+            let _ = writeln!(messages, "{}: {e}", file.display());
+            if stdout {
+                result.stdout = Some(std::fs::read(file));
+            }
+            return result;
+        }
         Err(e) => {
             let _ = writeln!(messages, "error: cannot read {}: {e}", file.display());
             result.io_error = true;
@@ -1226,6 +1312,14 @@ struct CheckJsonReport {
     /// was, so ordinary walks keep their JSON.
     #[serde(skip_serializing_if = "is_zero")]
     include_files_checked: usize,
+    /// How many roots were encrypted and so not checked; they are not in
+    /// `files_checked`. Omitted when none was.
+    #[serde(skip_serializing_if = "is_zero")]
+    encrypted_files: usize,
+    /// How many roots reach encrypted source, so every finding of theirs is
+    /// withheld; they are not in `files_checked` either. Omitted when none did.
+    #[serde(skip_serializing_if = "is_zero")]
+    withheld_files: usize,
     /// Whether lint findings are reported (`false` under `--no-lint`), so an
     /// empty `diagnostics` cannot be misread as "clean". The pipeline itself runs
     /// either way — parse and semantic diagnostics are never suppressed (A1).
@@ -1250,6 +1344,9 @@ struct CheckJsonReport {
     /// only.
     #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<baseline::Report>,
+    /// Present only with `--summary`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<CheckJsonSummary>,
 }
 
 /// One lint finding, carrying the pipeline's **byte** span and, when the span is
@@ -1280,6 +1377,126 @@ struct CheckJsonDiagnostic {
     start: Option<CheckJsonPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end: Option<CheckJsonPosition>,
+    /// The related locations of the finding, such as the statement that may
+    /// give a variable `?`. Present since version 4, when there are any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related: Vec<CheckJsonRelated>,
+    /// The checked files that include this file, for a finding in an include.
+    /// Present since version 5. The baseline key does not read it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    includers: Option<CheckJsonIncluders>,
+}
+
+/// A related location of a finding, in the file that holds it: the checked
+/// file or an include. `start` and `end` are omitted when that file cannot be
+/// read.
+#[derive(Serialize)]
+struct CheckJsonRelated {
+    path: String,
+    message: String,
+    span: CheckJsonSpan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<CheckJsonPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<CheckJsonPosition>,
+}
+
+/// The files a finding's labels may point into, each with its display path
+/// and text when known.
+struct LabelPlaces {
+    files: Vec<(FileId, String, Option<String>)>,
+}
+
+impl LabelPlaces {
+    /// The places of a finding in the text `own` (`None` when it cannot be
+    /// read), and of `label_files`, in the text the analysis read.
+    fn new(
+        own: (FileId, &str, Option<&str>),
+        root: &str,
+        label_files: &[oxabl_analyze::LabelFile],
+    ) -> Self {
+        let mut files = vec![(own.0, own.1.to_string(), own.2.map(str::to_owned))];
+        for f in label_files {
+            if f.file != own.0 {
+                let text = f.text.as_deref().map(str::to_owned);
+                files.push((f.file, display_path::spell(&f.path, root), text));
+            }
+        }
+        LabelPlaces { files }
+    }
+
+    /// Add the text-mode places to `resolver`, whose own file is the first.
+    fn resolver<'a>(&self, own_text: &'a str) -> SourceResolver<'a> {
+        let (file, path, text) = &self.files[0];
+        let file = if text.is_some() {
+            *file
+        } else {
+            FileId::UNKNOWN
+        };
+        let mut resolver = SourceResolver::new(file, path.clone(), own_text);
+        for (file, path, text) in &self.files[1..] {
+            resolver = resolver.with_file(*file, path.clone(), text.as_deref());
+        }
+        resolver
+    }
+
+    fn rows(&self, d: &Diagnostic) -> Vec<CheckJsonRelated> {
+        d.labels
+            .iter()
+            .filter_map(|label| {
+                let (_, path, text) = self.files.iter().find(|(f, ..)| *f == label.span.file)?;
+                let resolved = text
+                    .as_deref()
+                    .map(|text| position::resolve_file_span(&SourceMap::new(text), &label.span));
+                Some(CheckJsonRelated {
+                    path: path.clone(),
+                    message: label.message.clone(),
+                    span: CheckJsonSpan {
+                        start: label.span.span.start,
+                        end: label.span.span.end,
+                    },
+                    start: resolved.map(|r| r.start.into()),
+                    end: resolved.map(|r| r.end.into()),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The programs of the run that include a file: how many, and the first few as
+/// `path:line` of the `{...}` site that brings the include in, sorted by path
+/// then line. The count is of the files that this run checked, so a program
+/// outside the checked tree is not in it.
+#[derive(Serialize, Clone, Default)]
+struct CheckJsonIncluders {
+    count: usize,
+    first: Vec<String>,
+    /// The checked programs whose includes are not known, so `count` is a
+    /// lower bound. Omitted when it is 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    unknown: usize,
+}
+
+/// Counts of a run's findings, for `--summary`.
+#[derive(Serialize)]
+struct CheckJsonSummary {
+    findings: usize,
+    /// How many files have a finding. `by_file` lists only the first few.
+    files: usize,
+    by_rule: Vec<CheckJsonRuleCount>,
+    by_file: Vec<CheckJsonFileCount>,
+}
+
+#[derive(Serialize)]
+struct CheckJsonRuleCount {
+    code: String,
+    count: usize,
+}
+
+#[derive(Serialize)]
+struct CheckJsonFileCount {
+    path: String,
+    count: usize,
 }
 
 /// One finding in an include, as a result for one root's compilation unit.
@@ -1304,6 +1521,8 @@ struct CheckJsonIncludeFinding {
     start: Option<CheckJsonPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     end: Option<CheckJsonPosition>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related: Vec<CheckJsonRelated>,
     expansions: Vec<CheckJsonExpansion>,
 }
 
@@ -1415,6 +1634,8 @@ fn run_check(
     no_format: bool,
     baseline_file: Option<(&Path, bool)>,
     include_findings: bool,
+    fail_on_encrypted: bool,
+    summary: Option<usize>,
     jobs: usize,
 ) -> ExitCode {
     // Config once, not once per file: a resolution reads `oxabl.toml` and every
@@ -1542,19 +1763,69 @@ fn run_check(
         return ExitCode::from(2);
     }
 
+    // Judging needs the roots of the whole workspace: the walk starts at the
+    // directory of `oxabl.toml` and every include path lies below it. Only a
+    // fragment that text-wise creates something can report HD005.
+    let workspace = std::path::absolute(path)
+        .ok()
+        .filter(|abs| oxabl_workspace::find_workspace_root(abs).as_deref() == Some(abs.as_path()))
+        .filter(|abs| {
+            let up = |p: &PathBuf| p.components().any(|c| c == std::path::Component::ParentDir);
+            config
+                .include_paths
+                .iter()
+                .all(|p| p.starts_with(abs) && !up(p))
+                // Resolved against each root's directory: an absolute path must
+                // lie below the workspace, a relative one must not climb out.
+                && config
+                    .root_relative_include_paths
+                    .iter()
+                    .all(|p| if p.is_absolute() { p.starts_with(abs) } else { true } && !up(p))
+        });
+    let judged: Vec<PathBuf> = if workspace.is_some() {
+        fragments
+            .iter()
+            .filter(|(file, key)| {
+                lint.with_file(key).rule_enabled(oxabl_lint::HD005)
+                    && read_source(file, config.decoding)
+                        .is_ok_and(|text| text.to_ascii_lowercase().contains("create"))
+            })
+            .map(|(_, key)| key.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let skip: Vec<PathBuf> = baseline_file
+        .into_iter()
+        .filter_map(|(file, _)| std::path::absolute(file).ok())
+        .collect();
+    let pools =
+        oxabl_pipeline::IncluderPools::new(&indexed, &judged, jobs, workspace, &skip, || {
+            LintPipeline::new(&config, &fs)
+                .with_preprocess(preprocess)
+                .with_shared_producers(&producers)
+        });
+    pools.prepare();
+    let judge = |include: &Path, result: oxabl_pipeline::LintResult| pools.judge(include, result);
     let pass = CheckPass {
         json_output,
+        summary: summary.is_some(),
         diagnostics: channels.diagnostics,
         no_lint,
         no_format: !channels.format,
         include_findings,
+        pools: Some(&judge),
+        fail_on_encrypted,
         baseline: baseline.as_ref(),
         format: &format,
         decoding: config.decoding,
+        collect_includers: preprocess && !fragments.is_empty(),
+        includers: std::sync::OnceLock::new(),
     };
     // Files first, then include fragments, so the output order is the serial
-    // order whatever the thread count.
-    let tasks: Vec<Task<'_>> = files
+    // order whatever the thread count. The fragments run as a second batch:
+    // they need the roots' include lists.
+    let root_tasks: Vec<Task<'_>> = files
         .iter()
         .zip(&indexed)
         .map(|(file, indexed_path)| Task {
@@ -1562,11 +1833,14 @@ fn run_check(
             indexed_path,
             fragment: false,
         })
-        .chain(fragments.iter().map(|(file, indexed_path)| Task {
+        .collect();
+    let fragment_tasks: Vec<Task<'_>> = fragments
+        .iter()
+        .map(|(file, indexed_path)| Task {
             file,
             indexed_path,
             fragment: true,
-        }))
+        })
         .collect();
 
     // TX004 asks for the summaries of its callees. Built once over the walk and
@@ -1580,24 +1854,39 @@ fn run_check(
         None => lint,
     };
 
-    let mut totals = Totals::default();
-    run_ordered(
-        jobs.min(tasks.len()),
-        config.decoding,
-        &lint,
-        || {
-            let handle = LintPipeline::new(&config, &fs)
-                .with_preprocess(preprocess)
-                .with_shared_producers(&producers);
-            match &summaries {
-                Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
-                None => handle,
-            }
-        },
-        &tasks,
-        |lint, texts, task| pass.run(lint, texts, task),
-        |unit| totals.absorb(unit),
-    );
+    let mut totals = Totals {
+        includers: pass.collect_includers.then(|| {
+            IncludersBuilder::new(
+                fragments
+                    .iter()
+                    .map(|(_, indexed_path)| indexed_path.as_path()),
+                files.len(),
+            )
+        }),
+        ..Totals::default()
+    };
+    for (tasks, last) in [(&root_tasks, false), (&fragment_tasks, true)] {
+        if last && let Some(builder) = totals.includers.take() {
+            let _ = pass.includers.set(builder.finish());
+        }
+        run_ordered(
+            jobs.min(tasks.len()),
+            config.decoding,
+            &lint,
+            || {
+                let handle = LintPipeline::new(&config, &fs)
+                    .with_preprocess(preprocess)
+                    .with_shared_producers(&producers);
+                match &summaries {
+                    Some(s) => handle.with_effect_summaries(std::sync::Arc::clone(s)),
+                    None => handle,
+                }
+            },
+            tasks,
+            |lint, texts, task| pass.run(lint, texts, task),
+            |unit| totals.absorb(unit),
+        );
+    }
     let Totals {
         diagnostics,
         preproc,
@@ -1607,7 +1896,13 @@ fn run_check(
         fragment_roots,
         include_diagnostics,
         include_files_checked,
+        encrypted_files,
+        withheld_files,
+        includers: _,
     } = totals;
+    let not_checked = encrypted_files + withheld_files;
+
+    let summary = summary.map(|top| summarize(&diagnostics, &include_diagnostics, top));
 
     let baseline = match baseline.map(|run| run.finish(channels.diagnostics && !no_lint)) {
         None => None,
@@ -1630,9 +1925,14 @@ fn run_check(
             // 2: `preproc_diagnostics` became `preproc`, matching `analyze`'s
             // envelope, and its rows gained a `path` (D1).
             // 3: a diagnostic row carries its `help` line when it has one.
-            version: 3,
-            files_checked: files.len(),
+            // 4: a diagnostic row carries its `related` locations.
+            // 5: a finding in an include carries its `includers`, and `summary`
+            // is there with `--summary`.
+            version: 5,
+            files_checked: files.len() - not_checked,
             include_files_checked,
+            encrypted_files,
+            withheld_files,
             lint_enabled: channels.diagnostics && !no_lint,
             diagnostics,
             format_enabled: channels.format,
@@ -1646,6 +1946,7 @@ fn run_check(
             include_diagnostics,
             failures,
             baseline,
+            summary,
         };
         match serde_json::to_string_pretty(&report) {
             Ok(s) => println!("{s}"),
@@ -1660,6 +1961,10 @@ fn run_check(
             report.format.drifted_count,
             report.failures.len(),
         );
+    }
+
+    if let Some(summary) = &summary {
+        print!("{}", render_summary(summary));
     }
 
     // The drift channel: the paths first, the count as a trailing total (R14),
@@ -1690,11 +1995,20 @@ fn run_check(
         && drifted.is_empty()
         && failures.is_empty()
     {
-        let plural = if files.len() == 1 { "file" } else { "files" };
+        let checked = files.len() - not_checked;
+        let plural = if checked == 1 { "file" } else { "files" };
         let includes = match include_files_checked {
             0 => String::new(),
             1 => " and 1 include file".to_string(),
             n => format!(" and {n} include files"),
+        };
+        let encrypted = match encrypted_files {
+            0 => String::new(),
+            n => format!(" ({n} encrypted, not checked)"),
+        };
+        let withheld = match withheld_files {
+            0 => String::new(),
+            n => format!(" ({n} reaching encrypted source, not checked)"),
         };
         let lint_channel = if !channels.diagnostics {
             "diagnostics off"
@@ -1711,8 +2025,7 @@ fn run_check(
             "no drift"
         };
         println!(
-            "checked {} {plural}{includes}: {lint_channel}, {format_channel}",
-            files.len()
+            "checked {checked} {plural}{includes}{encrypted}{withheld}: {lint_channel}, {format_channel}"
         );
     }
 
@@ -1833,6 +2146,13 @@ struct Unit {
     unjudged: usize,
     fragment_root: Option<String>,
     include_file_checked: bool,
+    encrypted: bool,
+    /// The unit reaches encrypted source, so its findings are withheld.
+    withheld: bool,
+    /// The root's display path and, for each include it read, the include's
+    /// path and the line of the root's `{...}` site. Only when the run looks
+    /// for includers.
+    includes: Option<(String, Vec<(PathBuf, usize)>)>,
 }
 
 /// The run's report, built from its units in file order.
@@ -1846,11 +2166,17 @@ struct Totals {
     fragment_roots: Vec<String>,
     include_diagnostics: Vec<CheckJsonIncludeFinding>,
     include_files_checked: usize,
+    encrypted_files: usize,
+    withheld_files: usize,
+    includers: Option<IncludersBuilder>,
 }
 
 impl Totals {
     fn absorb(&mut self, unit: Unit) {
         unit.output.flush();
+        if let (Some(builder), Some((root, includes))) = (&mut self.includers, unit.includes) {
+            builder.add(&root, includes);
+        }
         self.diagnostics.extend(unit.diagnostics);
         self.preproc.extend(unit.preproc);
         self.failures.extend(unit.failures);
@@ -1859,6 +2185,8 @@ impl Totals {
         self.fragment_roots.extend(unit.fragment_root);
         self.include_diagnostics.extend(unit.include_diagnostics);
         self.include_files_checked += usize::from(unit.include_file_checked);
+        self.encrypted_files += usize::from(unit.encrypted);
+        self.withheld_files += usize::from(unit.withheld);
     }
 }
 
@@ -1870,20 +2198,41 @@ struct Task<'a> {
     fragment: bool,
 }
 
+/// Judges the lint result of an include fragment by the roots of the walk.
+type Judge<'a> =
+    dyn Fn(&Path, oxabl_pipeline::LintResult) -> oxabl_pipeline::LintResult + Sync + 'a;
+
 /// The settings of one `check` run, read by every worker.
 struct CheckPass<'a> {
     json_output: bool,
+    /// `--summary`: the findings are counted, not printed.
+    summary: bool,
     /// Whether the diagnostics channel runs at all (`[workspace.features]`).
     diagnostics: bool,
     no_lint: bool,
     no_format: bool,
     include_findings: bool,
+    /// What the roots of the walk say about the widget pools of its include
+    /// fragments. `None` leaves each fragment judged alone.
+    pools: Option<&'a Judge<'a>>,
+    fail_on_encrypted: bool,
     baseline: Option<&'a baseline::Run>,
     format: &'a FormatPipeline,
     decoding: SourceDecoding,
+    /// Whether the roots note their includes, because an include file is
+    /// checked too.
+    collect_includers: bool,
+    /// Set once every root has run; the include files read it.
+    includers: std::sync::OnceLock<Includers>,
 }
 
 impl CheckPass<'_> {
+    /// Whether the findings stay off stdout: `--json` and `--summary` print a
+    /// document of their own.
+    fn quiet(&self) -> bool {
+        self.json_output || self.summary
+    }
+
     fn run(&self, lint: &LintPipeline<'_>, texts: &mut IncludeTexts, task: &Task<'_>) -> Unit {
         if task.fragment {
             self.fragment(lint, task.file, task.indexed_path)
@@ -1903,6 +2252,10 @@ impl CheckPass<'_> {
         let display = file.display().to_string();
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
+            Err(e) if oxabl_workspace::is_encrypted(&e) => {
+                self.report_encrypted(file, &mut unit, true);
+                return unit;
+            }
             Err(e) => {
                 // Report and continue (R24): one unreadable file must not cost
                 // the caller every other file's findings.
@@ -1950,6 +2303,54 @@ impl CheckPass<'_> {
         unit
     }
 
+    /// An encrypted file: its one `SOURCE001` warning, in the channel of the
+    /// preprocessor warnings. No other finding is reported and the file is not
+    /// format-checked. The bytes were detected by the read, so nothing is read
+    /// or detected again. The warning does not depend on `--no-preprocess`: the
+    /// file is skipped either way. Only a `root` is counted, and only a root
+    /// fails the run under `--fail-on-encrypted`; an include file of a walk is
+    /// only warned about.
+    fn report_encrypted(&self, file: &Path, unit: &mut Unit, root: bool) {
+        unit.encrypted = root;
+        let display = file.display().to_string();
+        if root && self.fail_on_encrypted {
+            unit.output.err(format!(
+                "error: {display}: encrypted, not checked (--fail-on-encrypted)\n"
+            ));
+            unit.failures.push(CheckJsonFailure {
+                path: display.clone(),
+                reason: "encrypted, not checked".to_string(),
+            });
+        }
+        let encrypted = oxabl_pipeline::encrypted_root_diagnostics();
+        // The warning has no position in the text, so no text is shown.
+        surface_collected_preproc(file, "", &encrypted, &mut unit.output);
+        if self.json_output {
+            let map = SourceMap::new("");
+            unit.preproc.extend(
+                encrypted
+                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                    .map(|c| check_json_diagnostic(&display, &map, c, None)),
+            );
+        }
+    }
+
+    /// A unit that reaches encrypted source: its findings are withheld and the
+    /// note is already reported. Only a `root` is counted, and only a root
+    /// fails the run under `--fail-on-encrypted`.
+    fn withhold(&self, display: &str, unit: &mut Unit, root: bool) {
+        unit.withheld = root;
+        if root && self.fail_on_encrypted {
+            unit.output.err(format!(
+                "error: {display}: reaches encrypted source, not checked (--fail-on-encrypted)\n"
+            ));
+            unit.failures.push(CheckJsonFailure {
+                path: display.to_string(),
+                reason: "reaches encrypted source, not checked".to_string(),
+            });
+        }
+    }
+
     /// The diagnostics channel of one root: its parse, preprocessor, semantic and
     /// lint findings.
     fn diagnose(
@@ -1969,7 +2370,20 @@ impl CheckPass<'_> {
         // the bytes just read are what is being analysed, and resolving a name
         // to the same file on disk would attribute it to itself as a foreign
         // dependency.
-        let result = lint.with_file(indexed_path).run(source);
+        let (result, origins) = if self.collect_includers {
+            lint.with_file(indexed_path)
+                .run_with_include_origins(source)
+        } else {
+            (lint.with_file(indexed_path).run(source), None)
+        };
+        if let Some(origins) = origins {
+            let map = SourceMap::new(source);
+            let lines = origins
+                .into_iter()
+                .map(|origin| (origin.path, map.lookup(origin.site.start as usize).0))
+                .collect();
+            unit.includes = Some((display.clone(), lines));
+        }
         if let Some(panic) = result.failure() {
             unit.output
                 .err(format!("error: analysis failed on {display}: {panic}\n"));
@@ -1983,6 +2397,7 @@ impl CheckPass<'_> {
             // coverage warnings, not findings, and never move the exit code: an
             // elided include still parses.
             surface_collected_preproc(file, source, result.diagnostics(), &mut unit.output);
+            let withheld = reaches_encrypted(&result);
             // Machine-readable, through the *same* row builder the findings use
             // (D1): an entry names its file, so two files losing coverage on
             // different includes are two distinguishable entries.
@@ -1998,8 +2413,15 @@ impl CheckPass<'_> {
                 if collected.peek().is_some() {
                     let map = SourceMap::new(source);
                     unit.preproc
-                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
+                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c, None)));
                 }
+            }
+
+            // Nothing was judged: the baseline must not see the file, or its
+            // entries would read as fixed.
+            if withheld {
+                self.withhold(&display, unit, true);
+                return;
             }
 
             // `--no-lint` is a **filter on the reported set**, exactly as it is
@@ -2012,22 +2434,22 @@ impl CheckPass<'_> {
             } else {
                 reported
             };
-            report_findings(
-                &display,
-                indexed_path,
-                source,
-                reported,
-                self.baseline,
-                self.json_output,
-                unit,
-            );
+            report_findings(self, &display, indexed_path, source, reported, None, unit);
 
             if self.include_findings {
                 let mut shown = result.include_origin().to_vec();
                 if self.no_lint {
                     shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
                 }
-                report_include_findings(&display, source, &shown, texts, self.json_output, unit);
+                report_include_findings(
+                    &display,
+                    source,
+                    &shown,
+                    &result.diagnostics().label_files,
+                    texts,
+                    self.quiet(),
+                    unit,
+                );
             }
 
             // The unjudged-symbol note is a statement about the *count-gated lint
@@ -2055,6 +2477,10 @@ impl CheckPass<'_> {
         let display = file.display().to_string();
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
+            Err(e) if oxabl_workspace::is_encrypted(&e) => {
+                self.report_encrypted(file, &mut unit, false);
+                return unit;
+            }
             Err(e) => {
                 unit.output
                     .err(format!("error: cannot read {display}: {e}\n"));
@@ -2066,6 +2492,10 @@ impl CheckPass<'_> {
             }
         };
         let result = lint.with_file(indexed_path).run_context_free(&source);
+        let result = match self.pools {
+            Some(judge) => judge(indexed_path, result),
+            None => result,
+        };
         if let Some(panic) = result.failure() {
             unit.output
                 .err(format!("error: analysis failed on {display}: {panic}\n"));
@@ -2075,18 +2505,39 @@ impl CheckPass<'_> {
             });
             return unit;
         }
+        if reaches_encrypted(&result) {
+            surface_collected_preproc(file, &source, result.diagnostics(), &mut unit.output);
+            if self.json_output {
+                let map = SourceMap::new(&source);
+                unit.preproc.extend(
+                    result
+                        .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                        .map(|c| check_json_diagnostic(&display, &map, c, None)),
+                );
+            }
+            self.withhold(&display, &mut unit, false);
+            return unit;
+        }
         unit.include_file_checked = true;
+        let includers = self.includers.get().map(|found| found.of(indexed_path));
         report_findings(
+            self,
             &display,
             indexed_path,
             &source,
             result.into_diagnostics(),
-            self.baseline,
-            self.json_output,
+            includers.as_ref(),
             &mut unit,
         );
         unit
     }
+}
+
+/// Whether the unit reached encrypted source, so its findings were withheld.
+fn reaches_encrypted(result: &oxabl_pipeline::LintResult) -> bool {
+    result
+        .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+        .any(|c| c.diagnostic.code.0 == oxabl_workspace::ENCRYPTED_CODE)
 }
 
 /// Run `work` over `tasks` on `jobs` threads and hand every unit to `absorb`
@@ -2178,31 +2629,278 @@ fn in_task_order<'t, T: Sync, S, R: Send>(
 /// Apply the baseline to one file's findings, then print them (text mode) and
 /// add them to the report rows.
 fn report_findings(
+    pass: &CheckPass<'_>,
     display: &str,
     indexed_path: &Path,
     source: &str,
     reported: CollectedDiagnostics,
-    baseline: Option<&baseline::Run>,
-    json_output: bool,
+    includers: Option<&CheckJsonIncluders>,
     unit: &mut Unit,
 ) {
-    let reported = match baseline {
+    let quiet = pass.quiet();
+    let reported = match pass.baseline {
         Some(run) => run.filter(indexed_path, source, reported),
         None => reported,
     };
     if reported.diagnostics.is_empty() {
         return;
     }
-    if !json_output {
-        let resolver = SourceResolver::new(ROOT_FILE_ID, display.to_string(), source);
-        let rendered: Vec<Diagnostic> = reported.all().map(|c| c.diagnostic.clone()).collect();
-        unit.output.out(render_diagnostics(&rendered, &resolver));
+    let places = LabelPlaces::new(
+        (ROOT_FILE_ID, display, Some(source)),
+        display,
+        &reported.label_files,
+    );
+    if !quiet {
+        let resolver = places.resolver(source);
+        match includers.filter(|found| found.count > 0 || found.unknown > 0) {
+            // The note follows its own finding, so each one renders alone.
+            Some(found) => {
+                for collected in reported.all() {
+                    let one = std::slice::from_ref(&collected.diagnostic);
+                    unit.output.out(render_diagnostics(one, &resolver));
+                    unit.output.out(includers_note(found));
+                }
+            }
+            None => {
+                let rendered: Vec<Diagnostic> =
+                    reported.all().map(|c| c.diagnostic.clone()).collect();
+                unit.output.out(render_diagnostics(&rendered, &resolver));
+            }
+        }
     }
     let map = SourceMap::new(source);
     for collected in reported.all() {
-        unit.diagnostics
-            .push(check_json_diagnostic(display, &map, collected));
+        let mut row = check_json_diagnostic(display, &map, collected, Some(&places));
+        row.includers = includers.cloned();
+        unit.diagnostics.push(row);
     }
+}
+
+/// The text line for a finding in an include that others include.
+fn includers_note(found: &CheckJsonIncluders) -> String {
+    let plural = |n: usize| if n == 1 { "file" } else { "files" };
+    let unknown = format!(
+        "the includes of {} checked {} are not known",
+        found.unknown,
+        plural(found.unknown)
+    );
+    match (found.count, found.unknown) {
+        (count, 0) => format!(
+            "  note: included by {count} {}, e.g. {}\n",
+            plural(count),
+            found.first.join(", ")
+        ),
+        (0, _) => format!("  note: includers not known: {unknown}\n"),
+        (count, _) => format!(
+            "  note: included by at least {count} {}, e.g. {}; {unknown}\n",
+            plural(count),
+            found.first.join(", ")
+        ),
+    }
+}
+
+/// How many includer sites a finding lists.
+const INCLUDERS_SHOWN: usize = 3;
+
+/// A `{...}` site in a program that includes a file.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct IncluderSite {
+    path: String,
+    line: usize,
+}
+
+#[derive(Default)]
+struct Found {
+    count: usize,
+    first: Vec<IncluderSite>,
+}
+
+impl Found {
+    /// Keep the `INCLUDERS_SHOWN` smallest sites, whatever the order of `add`.
+    fn add(&mut self, site: IncluderSite) {
+        self.count += 1;
+        let at = self.first.partition_point(|shown| shown < &site);
+        if at < INCLUDERS_SHOWN {
+            self.first.insert(at, site);
+            self.first.truncate(INCLUDERS_SHOWN);
+        }
+    }
+}
+
+fn canonical_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The programs that include each include file of the walk, by canonical path.
+#[derive(Default)]
+struct Includers {
+    found: HashMap<PathBuf, Found>,
+    /// The roots whose includes are not known: unread, failed, or with an
+    /// include that did not arrive.
+    unknown: usize,
+}
+
+impl Includers {
+    /// What `file` has: no includer among the checked files gives a count of 0.
+    fn of(&self, file: &Path) -> CheckJsonIncluders {
+        let mut out = CheckJsonIncluders {
+            unknown: self.unknown,
+            ..CheckJsonIncluders::default()
+        };
+        if let Some(found) = self.found.get(&canonical_or_self(file)) {
+            out.count = found.count;
+            out.first = found
+                .first
+                .iter()
+                .map(|site| format!("{}:{}", site.path, site.line))
+                .collect();
+        }
+        out
+    }
+}
+
+/// Collects, root by root, which of the walk's include files each one reads.
+struct IncludersBuilder {
+    wanted: HashSet<PathBuf>,
+    canonical: HashMap<PathBuf, PathBuf>,
+    found: Includers,
+    /// The roots of the walk not yet added.
+    pending: usize,
+}
+
+impl IncludersBuilder {
+    /// A builder for a walk of `roots` roots. A root never added counts as
+    /// unknown.
+    fn new<'p>(include_files: impl Iterator<Item = &'p Path>, roots: usize) -> Self {
+        IncludersBuilder {
+            wanted: include_files.map(canonical_or_self).collect(),
+            canonical: HashMap::new(),
+            found: Includers::default(),
+            pending: roots,
+        }
+    }
+
+    /// Add a root and the includes it read, each with the line of its site. A
+    /// root counts once for a file, with its first site.
+    fn add(&mut self, root: &str, includes: Vec<(PathBuf, usize)>) {
+        self.pending -= 1;
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for (path, line) in includes {
+            let key = self
+                .canonical
+                .entry(path)
+                .or_insert_with_key(|path| canonical_or_self(path));
+            if !self.wanted.contains(key) || !seen.insert(key.clone()) {
+                continue;
+            }
+            self.found
+                .found
+                .entry(key.clone())
+                .or_default()
+                .add(IncluderSite {
+                    path: root.to_string(),
+                    line,
+                });
+        }
+    }
+
+    fn finish(mut self) -> Includers {
+        self.found.unknown = self.pending;
+        self.found
+    }
+}
+
+/// Count `diagnostics` and `include_diagnostics` per rule and per file. Rules
+/// and files go by count, then by name; `top` files are listed.
+fn summarize(
+    diagnostics: &[CheckJsonDiagnostic],
+    include_diagnostics: &[CheckJsonIncludeFinding],
+    top: usize,
+) -> CheckJsonSummary {
+    let mut rules: HashMap<&str, usize> = HashMap::new();
+    // A file goes by its canonical path and is shown as first spelled: an
+    // include row and a fragment row spell one file two ways.
+    let mut canonical: HashMap<&str, PathBuf> = HashMap::new();
+    let mut files: HashMap<PathBuf, (&str, usize)> = HashMap::new();
+    let mut seen: HashSet<(PathBuf, &str, u32, u32)> = HashSet::new();
+    let rows = diagnostics
+        .iter()
+        .map(|d| (false, d.code.as_str(), d.path.as_str(), &d.span))
+        .chain(
+            include_diagnostics
+                .iter()
+                .map(|d| (true, d.code.as_str(), d.path.as_str(), &d.span)),
+        );
+    let mut findings = 0;
+    for (in_include, code, path, span) in rows {
+        let key = canonical
+            .entry(path)
+            .or_insert_with(|| canonical_or_self(Path::new(path)))
+            .clone();
+        // A finding in an include counts once, whatever the number of
+        // includers and whether the fragment's own run reports it too.
+        if !seen.insert((key.clone(), code, span.start, span.end)) && in_include {
+            continue;
+        }
+        findings += 1;
+        *rules.entry(code).or_default() += 1;
+        files.entry(key).or_insert((path, 0)).1 += 1;
+    }
+    let files: HashMap<&str, usize> = files.into_values().collect();
+    fn ranked(counts: HashMap<&str, usize>) -> Vec<(String, usize)> {
+        let mut rows: Vec<(String, usize)> = counts
+            .into_iter()
+            .map(|(name, count)| (name.to_string(), count))
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        rows
+    }
+    let file_total = files.len();
+    CheckJsonSummary {
+        findings,
+        files: file_total,
+        by_rule: ranked(rules)
+            .into_iter()
+            .map(|(code, count)| CheckJsonRuleCount { code, count })
+            .collect(),
+        by_file: ranked(files)
+            .into_iter()
+            .take(top)
+            .map(|(path, count)| CheckJsonFileCount { path, count })
+            .collect(),
+    }
+}
+
+/// The text of `--summary`. A run with no finding prints nothing: the run's
+/// "no findings" line says so.
+fn render_summary(summary: &CheckJsonSummary) -> String {
+    if summary.findings == 0 {
+        return String::new();
+    }
+    let mut out = format!(
+        "{} {} in {} {}\n\nby rule:\n",
+        summary.findings,
+        if summary.findings == 1 {
+            "finding"
+        } else {
+            "findings"
+        },
+        summary.files,
+        if summary.files == 1 { "file" } else { "files" },
+    );
+    for rule in &summary.by_rule {
+        out.push_str(&format!("  {:>7}  {}\n", rule.count, rule.code));
+    }
+    let shown = summary.by_file.len();
+    if shown < summary.files {
+        out.push_str(&format!("\nby file (top {shown} of {}):\n", summary.files));
+    } else {
+        out.push_str("\nby file:\n");
+    }
+    for file in &summary.by_file {
+        out.push_str(&format!("  {:>7}  {}\n", file.count, file.path));
+    }
+    out
 }
 
 /// Include files read for `--include-findings`, each at most once per worker.
@@ -2264,27 +2962,31 @@ fn report_include_findings(
     root: &str,
     root_source: &str,
     found: &[oxabl_analyze::IncludeOriginDiagnostic],
+    label_files: &[oxabl_analyze::LabelFile],
     texts: &mut IncludeTexts,
     json_output: bool,
     unit: &mut Unit,
 ) {
     for finding in found {
         let display = display_path::spell(&finding.path, root);
-        let mut diagnostic = finding.diagnostic.clone();
-        diagnostic.span.file = ROOT_FILE_ID;
+        let diagnostic = finding.diagnostic.clone();
         let text = texts.get(&finding.path).map(str::to_owned);
+        let mut places = LabelPlaces::new(
+            (diagnostic.span.file, &display, text.as_deref()),
+            root,
+            label_files,
+        );
+        places.files.push((
+            ROOT_FILE_ID,
+            root.to_string(),
+            Some(root_source.to_string()),
+        ));
         if !json_output {
-            let resolver = SourceResolver::new(
-                if text.is_some() {
-                    ROOT_FILE_ID
-                } else {
-                    FileId::UNKNOWN
-                },
-                display.clone(),
-                text.as_deref().unwrap_or(""),
-            );
-            unit.output
-                .out(render_diagnostics(&[diagnostic.clone()], &resolver));
+            let resolver = places.resolver(text.as_deref().unwrap_or(""));
+            unit.output.out(render_diagnostics(
+                std::slice::from_ref(&diagnostic),
+                &resolver,
+            ));
             for expansion in &finding.expansions {
                 // Each site is in the file that wrote it: the root, then the
                 // include before it in the chain.
@@ -2364,6 +3066,7 @@ fn report_include_findings(
             },
             start: resolved.map(|r| r.start.into()),
             end: resolved.map(|r| r.end.into()),
+            related: places.rows(&diagnostic),
             expansions,
         });
     }
@@ -2379,6 +3082,7 @@ fn check_json_diagnostic(
     path: &str,
     map: &SourceMap,
     collected: &oxabl_analyze::CollectedDiagnostic,
+    places: Option<&LabelPlaces>,
 ) -> CheckJsonDiagnostic {
     let d = &collected.diagnostic;
     let resolved = (d.span.file == ROOT_FILE_ID).then(|| position::resolve_diagnostic(map, d));
@@ -2395,6 +3099,8 @@ fn check_json_diagnostic(
         },
         start: resolved.map(|r| r.start.into()),
         end: resolved.map(|r| r.end.into()),
+        related: places.map(|p| p.rows(d)).unwrap_or_default(),
+        includers: None,
     }
 }
 
@@ -2784,7 +3490,8 @@ fn parse_file_with_preprocess(
 
     // Surface loud preprocessor diagnostics — errors plus PREPROC007
     // (unresolvable include), PREPROC008 (unterminated include), PREPROC009
-    // (valueless predefined name), PREPROC010 (unevaluated condition) and PREPROC002 (unclosed &IF) — so true
+    // (valueless predefined name), PREPROC010 (unevaluated condition), PREPROC013
+    // (substituted value ending with `~`) and PREPROC002 (unclosed &IF) — so true
     // preproc problems aren't hidden. Other warnings stay quiet.
     let messages = render_preproc_diagnostics(path, &source, file_id, &preprocessed.diagnostics);
 

@@ -3,6 +3,7 @@
 //! keyword a block's `END` takes under `end_with_type`.
 
 use oxabl_ast::{OnAction, OnKind, Span, Statement, StatementKind};
+use oxabl_lexer::{Kind, Token};
 
 /// Return the direct child statements of a block-bearing statement in source
 /// order, or `None` for a leaf (non-block) statement.
@@ -214,6 +215,109 @@ pub(crate) fn children_with_deltas<'a>(
     // Guarantee source order regardless of field declaration order.
     out.sort_by_key(|(s, _)| s.span.start);
     Some(out)
+}
+
+/// A computed `GET` or `SET` accessor of a property, as byte offsets: the first
+/// token of its head (an access modifier, or the `GET`/`SET` keyword), its `:`,
+/// and its `END`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Accessor {
+    pub head: usize,
+    pub colon: usize,
+    pub end: usize,
+}
+
+/// The computed accessors of a `DEFINE PROPERTY` statement, in source order.
+/// An auto accessor (`GET.`) has no body and no entry. The AST keeps no spans
+/// for the accessors, so they are read from the tokens of the statement that
+/// are outside the accessor bodies.
+pub(crate) fn property_accessors(stmt: &Statement, toks: &[Token]) -> Vec<Accessor> {
+    let StatementKind::Property {
+        get_body, set_body, ..
+    } = &stmt.kind
+    else {
+        return Vec::new();
+    };
+    let mut bodies: Vec<Span> = get_body
+        .iter()
+        .chain(set_body.iter())
+        .flatten()
+        .map(|s| s.span)
+        .filter(|s| *s != Span::DUMMY)
+        .collect();
+    bodies.sort_by_key(|s| s.start);
+
+    let (lo, hi) = (stmt.span.start as usize, stmt.span.end as usize);
+    let from = toks.partition_point(|t| t.start < lo);
+    let mut code: Vec<&Token> = Vec::new();
+    let mut b = 0;
+    for t in toks[from..].iter().take_while(|t| t.start < hi) {
+        if matches!(t.kind, Kind::Comment | Kind::Eof) {
+            continue;
+        }
+        while b < bodies.len() && (bodies[b].end as usize) <= t.start {
+            b += 1;
+        }
+        if b < bodies.len() && (bodies[b].start as usize) <= t.start {
+            continue;
+        }
+        code.push(t);
+    }
+
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < code.len() {
+        let t = code[i];
+        let after_end = i > 0 && code[i - 1].kind == Kind::End;
+        if matches!(t.kind, Kind::Get | Kind::Set) && !after_end {
+            // Skip the parameter list of `GET(...)` / `SET(...)`.
+            let mut j = i + 1;
+            if code.get(j).is_some_and(|p| p.kind == Kind::LeftParen) {
+                let mut depth = 0usize;
+                while let Some(p) = code.get(j) {
+                    j += 1;
+                    match p.kind {
+                        Kind::LeftParen => depth += 1,
+                        Kind::RightParen => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(colon) = code.get(j).filter(|c| c.kind == Kind::Colon)
+                && let Some(k) = (j + 1..code.len()).find(|&k| code[k].kind == Kind::End)
+            {
+                let head = match i.checked_sub(1).map(|p| code[p]) {
+                    Some(m) if is_access_modifier(m.kind) => m.start,
+                    _ => t.start,
+                };
+                out.push(Accessor {
+                    head,
+                    colon: colon.start,
+                    end: code[k].start,
+                });
+                i = k + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn is_access_modifier(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Public
+            | Kind::Private
+            | Kind::Protected
+            | Kind::PackagePrivate
+            | Kind::PackageProtected
+    )
 }
 
 /// The trigger-block statement of an `ON` statement, if it has one.

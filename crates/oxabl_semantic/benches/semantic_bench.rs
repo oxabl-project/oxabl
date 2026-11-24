@@ -59,7 +59,7 @@ DEFINE VARIABLE lv-flag AS LOGICAL NO-UNDO.
 DEFINE VARIABLE lv-key AS CHARACTER NO-UNDO.
 
 UNDERLINE lv-total.
-COLOR DISPLAY NORMAL lv-name WITH FRAME f-detail.
+UNDERLINE lv-name lv-city.
 FORM lv-total FORMAT ">>>,>>9" WITH FRAME f-detail.
 EXPORT lv-name lv-city lv-total.
 EXPORT DELIMITER "," lv-line lv-flag.
@@ -67,14 +67,14 @@ ENABLE lv-name lv-city WITH FRAME f-detail.
 DISABLE lv-name WITH FRAME f-detail.
 UPDATE lv-name lv-city WITH FRAME f-detail.
 SET lv-name lv-city WITH FRAME f-detail.
-PROMPT-FOR lv-key WITH FRAME f-prompt.
+NEXT-PROMPT lv-key WITH FRAME f-prompt.
 APPLY "CHOOSE" TO btn-ok IN FRAME f-detail.
 WAIT-FOR "CHOOSE" OF btn-ok.
 GET-KEY-VALUE SECTION "app" KEY "path" VALUE lv-key.
 IMPORT DELIMITER "," lv-name lv-city lv-total.
-ACCUMULATE lv-total (TOTAL).
+GET-KEY-VALUE SECTION "app" KEY "last" VALUE lv-name.
 NEXT-PROMPT lv-name WITH FRAME f-detail.
-CLEAR FRAME f-detail.
+STATUS INPUT lv-name.
 UNDERLINE lv-total lv-count lv-name lv-city.
 EXPORT lv-name lv-city lv-total lv-count lv-line lv-flag lv-key.
 ENABLE lv-name lv-city WITH FRAME f-detail.

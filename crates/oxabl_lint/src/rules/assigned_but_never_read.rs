@@ -227,6 +227,10 @@ impl Visitor<'_> {
                     self.record_target(target);
                 }
             }
+            StatementKind::Close {
+                status: Some(status),
+                ..
+            } => self.record_target(status),
             StatementKind::Run {
                 persistent_handle,
                 async_handle,
@@ -627,6 +631,7 @@ mod tests {
                         name: id("out"),
                         type_source: TypeSource::Explicit(DataType::Integer),
                         no_undo: false,
+                        extent: None,
                     },
                 }),
                 assign("out", 40),

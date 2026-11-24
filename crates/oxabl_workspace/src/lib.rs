@@ -3,6 +3,7 @@ mod cached;
 mod config;
 mod discovery;
 mod encoding;
+mod encrypted;
 mod file_system;
 mod include_paths;
 mod observations;
@@ -25,6 +26,11 @@ pub use discovery::{
     is_root_file_in, walk_directory, walk_directory_in, walk_include_fragments,
 };
 pub use encoding::{DecodedSource, SourceDecoding, SourceEncoding};
+pub use encrypted::{
+    ENCRYPTED_CODE, EncryptedSource, HEAD_LEN as ENCRYPTED_HEAD_LEN,
+    include_note as encrypted_include_note, is_encrypted, looks_encrypted, may_be_encrypted,
+    read_head as read_encrypted_head,
+};
 pub use file_system::{EncodedFileSystem, FileSystem, InMemoryFileSystem, RealFileSystem};
 pub use include_paths::{
     DLC_SOURCES_VARIABLE, IncludeEntry, dlc_sources, find_workspace_root, include_entry,

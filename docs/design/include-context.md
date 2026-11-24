@@ -56,6 +56,10 @@ counts, and nothing is written to disk. It uses the snapshot's cross-file index.
 It is not memoized: it runs again when the include, the root, an include of the
 root, the configuration or the schema changes.
 
+The related locations of a finding (`relatedInformation`) point at the root
+or at the physical include file that holds each one, at a position in the
+text that the analysis read.
+
 A root that gives no answer for the include gives one warning at the start of
 the include that says why: the root cannot be read, its preprocessing failed,
 or it no longer includes the file.

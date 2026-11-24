@@ -2,7 +2,7 @@
 
 use oxabl_lint::handle_not_deleted::run;
 
-use super::{check, check_fragment, help, lines};
+use super::{check, check_fragment, help, labels, lines};
 
 #[test]
 fn reports_an_object_lost_on_an_early_return() {
@@ -425,4 +425,34 @@ PROCEDURE query:
 END PROCEDURE.
 ";
     assert_eq!(lines(src, &check(run, src)), [24]);
+}
+
+#[test]
+fn a_finding_relates_the_exit_or_the_create() {
+    let src = "\
+DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+DEFINE VARIABLE lStop AS LOGICAL NO-UNDO.
+CREATE QUERY hQuery.
+IF lStop THEN RETURN.
+DELETE OBJECT hQuery.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(4, "path ends after `RETURN`".to_string())]
+    );
+
+    let src = "\
+DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+CREATE QUERY hQuery.
+CREATE QUERY hQuery.
+DELETE OBJECT hQuery.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(2, "the query in `hQuery` is created here".to_string())]
+    );
 }
