@@ -77,6 +77,7 @@ mod explain;
 pub use effects::{EffectFile, WorkspaceEffects};
 mod config;
 mod format;
+mod keyword_docs;
 mod lint;
 mod navigate;
 mod outline;
@@ -84,6 +85,7 @@ mod outline;
 mod parity;
 pub mod position;
 mod reverse;
+pub mod schema_hover;
 
 pub use config::{
     ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
@@ -91,7 +93,7 @@ pub use config::{
 };
 pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
-pub use navigate::{Link, Navigation, Target};
+pub use navigate::{Hover, Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};

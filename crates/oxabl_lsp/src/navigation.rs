@@ -1,10 +1,11 @@
-//! `textDocument/definition` and `textDocument/documentLink`.
+//! `textDocument/definition`, `textDocument/hover` and
+//! `textDocument/documentLink`.
 //!
-//! Both analyse one compilation unit on a worker thread with the open buffers
+//! Each analyses one compilation unit on a worker thread with the open buffers
 //! over the disk ([`compute_navigation`]) and render its byte spans in the
 //! negotiated position encoding. An open include with a selected compilation
-//! context is analysed in that root for go to definition; otherwise an include
-//! is analysed alone. A failed analysis answers with an error, never with an
+//! context is analysed in that root for go to definition and hover; otherwise
+//! an include is analysed alone. A failed analysis answers with an error, never with an
 //! empty answer that reads as "no definition".
 
 use std::collections::HashMap;
@@ -12,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
-    DocumentLink, DocumentLinkParams, GotoDefinitionParams, Location, PositionEncodingKind, Range,
+    DocumentLink, DocumentLinkParams, GotoDefinitionParams, Hover, HoverContents, HoverParams,
+    Location, MarkupContent, MarkupKind, PositionEncodingKind, Range,
 };
 use oxabl_daemon::canonical_path;
 use oxabl_daemon::db::{NavigationAnswer, NavigationQuery, compute_navigation};
@@ -45,6 +47,32 @@ impl Server<'_> {
         let query = NavigationQuery::Definition { file: path, offset };
         self.spawn_navigation(req.id, root, query, |answer, encoding| {
             serde_json::to_value(locations(answer, encoding))
+        })
+    }
+
+    pub(crate) fn handle_hover(&mut self, req: Request) -> anyhow::Result<()> {
+        let params: HoverParams = match serde_json::from_value(req.params) {
+            Ok(params) => params,
+            Err(error) => return self.respond(invalid(req.id, &error.to_string())),
+        };
+        let position = params.text_document_position_params;
+        let uri = position.text_document.uri;
+        let Some(path) = uri_to_path(&uri) else {
+            return self.respond(invalid(req.id, &format!("{} is not a file", uri.as_str())));
+        };
+        let Some(document) = self.documents.get(&uri) else {
+            return self.respond(invalid(req.id, &format!("{} is not open", uri.as_str())));
+        };
+        let offset = position_to_byte(&document.rope, position.position, &self.encoding) as u32;
+        let path = canonical_path(&path);
+        let root = self
+            .contexts
+            .selected(&uri)
+            .cloned()
+            .unwrap_or_else(|| path.clone());
+        let query = NavigationQuery::Hover { file: path, offset };
+        self.spawn_navigation(req.id, root, query, |answer, encoding| {
+            serde_json::to_value(hover(answer, encoding))
         })
     }
 
@@ -162,6 +190,22 @@ fn locations(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Optio
         })
         .collect();
     (!locations.is_empty()).then_some(locations)
+}
+
+/// The hover as Markdown. `None` (JSON `null`) when there is none.
+fn hover(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Option<Hover> {
+    let (path, hover) = answer.hover.as_ref()?;
+    let mut ropes = Ropes::new(&answer.texts);
+    let range = hover
+        .span
+        .and_then(|span| ropes.range(path, (span.start, span.end), encoding));
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover.contents.clone(),
+        }),
+        range,
+    })
 }
 
 fn links(answer: NavigationAnswer, encoding: &PositionEncodingKind) -> Vec<DocumentLink> {

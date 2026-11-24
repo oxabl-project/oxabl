@@ -1,9 +1,9 @@
-# Navigation: go to definition and document links
+# Navigation: go to definition, hover and document links
 
-`oxabl lsp` answers `textDocument/definition` and `textDocument/documentLink`.
-Both analyse one compilation unit per request and give answers in the bytes of
-physical files: a declaration written in an include is placed in the include,
-never in the expanded text.
+`oxabl lsp` answers `textDocument/definition`, `textDocument/hover` and
+`textDocument/documentLink`. Each analyses one compilation unit per request and
+gives answers in the bytes of physical files: a declaration written in an
+include is placed in the include, never in the expanded text.
 
 ## Where the answer comes from
 
@@ -61,28 +61,75 @@ with the call around it.
 - **Link to an ambiguous file.** A document link is made only for a name that
   resolves to exactly one file.
 
+## Hover
+
+`Navigation::hover` (in `crates/oxabl_pipeline/src/navigate/hover.rs`) finds
+the name at the cursor with the same walk as go to definition
+(`Navigation::innermost`), so the two never disagree about what a name means.
+The answer is short Markdown: one ABL code block, and a line that says where the
+name is declared when that helps.
+
+| The name is | Hover |
+| --- | --- |
+| A variable, parameter or property | `DEFINE ... VARIABLE x AS t EXTENT n INITIAL v NO-UNDO` as declared; a parameter also names its procedure, function or method; a `LIKE` type also gives the type it resolves to |
+| A temp-table field | `FIELD f AS t ...` and its temp-table |
+| An internal procedure, function or method | Its signature with each parameter; an inherited method gives each overload and the class that declares it |
+| `RUN p IN h` | The signature of `p` in the program the handle runs, when its text declares `p` once |
+| A program (`RUN x.p`) | `RUN x.p`, the path relative to its include path entry |
+| A class name | The class header with `INHERITS` and `IMPLEMENTS` |
+| A table, a buffer named like its table | Its label, description, number of fields and indexes (`oxabl_pipeline::schema_hover::table_markdown`) |
+| A schema field | Its type, format, label, initial value, description and the indexes it takes part in (`schema_hover::field_markdown`) |
+| A built-in function, statement keyword or system handle | Its title in the Progress documentation and a link to the page |
+
+The declaration text comes from the parsed declaration, not from the symbol
+table: the expanded unit is lexed and parsed once more on the first request that
+needs it, and a class file or a program is parsed when the hover names a member
+or a procedure in it. `EXTENT` and `INITIAL` are read from the tokens of the
+declaration, as written.
+
+The documentation data is `crates/oxabl_pipeline/src/keyword_docs.rs`, which
+`cargo run -p oxabl_codegen -- keyword-docs` writes from
+`resources/abl_keyword_index.json`: each statement, built-in function and system
+handle with its title and URL, and each abbreviation of a function. The index
+holds no descriptions, so a keyword hover gives the title, the kind and the
+link. A built-in function shows its page when the cursor is on the name of a
+call the analysis left to the runtime (an unresolved name of the built-in
+function registry). A statement keyword shows its page when it is one of the
+first words of a statement: the longest documented head wins, and the words
+between `DEFINE` and what it defines (`NEW`, `SHARED`, `PRIVATE`, `INPUT`, ...)
+are passed over, so `DEFINE INPUT PARAMETER` is the `DEFINE PARAMETER` page.
+
+No hover is given for a name that does not resolve, a name with several
+candidates (an ambiguous `RUN` target or class), an include reference, a
+comment, or a statement whose head is not documented.
+
+The two schema functions read one `oxabl_schema::Table` and nothing else, so a
+request that shows a whole table (a schema browser) can use the same text.
+
 ## Document links
 
 The links of a file are its own root-level include references, its literal
 `RUN` targets that resolve to a program, and its `USING` names that resolve to a
 class. A wildcard `USING` has no link. Text in an `&IF` branch that the
-preprocessor did not take is not analysed, so it has no link and no definition.
+preprocessor did not take is not analysed, so it has no link, no definition and
+no hover.
 
 ## Includes and configuration
 
 An open include with a selected compilation context (see
-`docs/design/include-context.md`) is analysed in that root for go to definition.
-Without one, and always for its links, the include is analysed alone.
+`docs/design/include-context.md`) is analysed in that root for go to definition
+and hover. Without one, and always for its links, the include is analysed alone.
 
 Local names need no setup. `RUN` targets, include files, classes and inherited
 members are found through `[workspace.sources].include_paths`, and tables and
-fields through `[workspace.schema]`. Neither request depends on
+fields through `[workspace.schema]`. No request depends on
 `[workspace.features]`.
 
 ## Tests
 
 `crates/oxabl/tests/definition_lsp.rs` and `document_link_lsp.rs` pin the
-targets. `navigation_sweep_lsp.rs` asks for a definition at every position of
+targets, and `hover_lsp.rs` pins the hover text of each kind of name.
+`navigation_sweep_lsp.rs` asks for a definition and a hover at every position of
 files full of awkward names (a table and field of one name, keywords, hyphens,
 non-ASCII, a 200-character name, a `.df` that breaks off) and wants a
 well-formed answer with no error each time, with every range inside its file.
@@ -98,6 +145,9 @@ Each request expands, parses and resolves the unit again (no type check), with
 the open buffers over the disk, on a worker thread. Nothing is memoized. A
 request on a `RUN` target that is not a program also lexes and parses the
 expanded unit once more for its call sites (`FileCalls::extract`), and reads
-the outline of each program a handle runs. The
+the outline of each program a handle runs. A hover parses the expanded unit at
+most once more (shared with the call sites), and parses one more file when it
+names a class, an inherited member or a procedure run through a handle. A
+keyword hover scans the documentation table, about 460 entries. The
 resolve pass of every other run records no site: the check of the flag is its
 whole cost.

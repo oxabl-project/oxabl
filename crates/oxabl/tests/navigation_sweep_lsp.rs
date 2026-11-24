@@ -1,11 +1,12 @@
-//! Go to definition at every offset of files full of awkward names, through the
+//! Go to definition and hover at every offset of files full of awkward names, through the
 //! real `oxabl lsp` and its daemon: tables and fields that share a name, names
 //! that are keywords, hyphens, digits, non-ASCII and very long names, a field
 //! the table lacks, a `.df` that breaks off, and fragments opened alone.
 //!
 //! Every answer must be a well-formed response with no error, and every
 //! location must name a file of the workspace and a range inside it. The
-//! targets themselves are `definition_lsp.rs`'s business.
+//! targets themselves are `definition_lsp.rs`'s business, the hover text
+//! `hover_lsp.rs`'s.
 
 #![cfg(unix)]
 
@@ -172,7 +173,7 @@ fn every_position_gets_a_well_formed_answer() {
         let text = ws.text(&path).to_string();
         session.open(&path, &text);
         let positions = positions(&text);
-        let params = positions
+        let params: Vec<Value> = positions
             .iter()
             .map(|(line, character)| {
                 json!({
@@ -181,7 +182,7 @@ fn every_position_gets_a_well_formed_answer() {
                 })
             })
             .collect();
-        let answers = session.request_all("textDocument/definition", params);
+        let answers = session.request_all("textDocument/definition", params.clone());
         for ((line, character), answer) in positions.iter().zip(answers) {
             let context = format!("{name}:{line}:{character}");
             assert!(answer.get("error").is_none(), "{context}: {answer}");
@@ -194,6 +195,28 @@ fn every_position_gets_a_well_formed_answer() {
                     }
                 }
                 other => panic!("{context}: {other}"),
+            }
+        }
+        let answers = session.request_all("textDocument/hover", params);
+        for ((line, character), answer) in positions.iter().zip(answers) {
+            let context = format!("{name}:{line}:{character} hover");
+            assert!(answer.get("error").is_none(), "{context}: {answer}");
+            let result = &answer["result"];
+            if result.is_null() {
+                continue;
+            }
+            assert_eq!(result["contents"]["kind"], json!("markdown"), "{context}");
+            let value = result["contents"]["value"].as_str().unwrap_or_default();
+            assert!(
+                !value.trim().is_empty(),
+                "{context}: an empty hover, not null"
+            );
+            if !result["range"].is_null() {
+                assert_inside(
+                    &ws,
+                    &json!({"uri": file_uri(&path), "range": result["range"]}),
+                    &context,
+                );
             }
         }
         let answer = session.request(

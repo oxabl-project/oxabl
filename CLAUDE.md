@@ -56,6 +56,7 @@ cargo run -p oxabl_codegen -- atoms    # Writes build.rs (complete file)
 cargo run -p oxabl_codegen -- callable # Writes callable.rs (is_callable_kind)
 cargo run -p oxabl_codegen -- builtins # Writes builtins.rs (built-in function registry)
 cargo run -p oxabl_codegen -- grammar  # Writes the VS Code extension's TextMate grammar
+cargo run -p oxabl_codegen -- keyword-docs # Writes keyword_docs.rs (hover's statement and function docs)
 
 # Show statistics without writing files
 cargo run -p oxabl_codegen -- summary
@@ -97,7 +98,7 @@ See `crates/oxabl_schema/METASCHEMA.md`.
 ### Workspace Structure
 
 - `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary. Its `self-update` cargo feature (off by default, like `remote-cache`; the release binary has both) adds `oxabl self-update` and the background check of a managed binary (`src/self_update/`: the GitHub reader, the install procedure, the install record, the schedule). It reuses the `reqwest` and `rustls` stack that `remote-cache` links, so no second HTTP stack. `scripts/install.sh` is the installer and shares the install record (`install.json`) with the updater and the VS Code extension
-- `crates/oxabl_pipeline` - The shared lint and format run every client drives, the document outline (`outline`, see `docs/design/document-outline.md`), and go to definition and document links (`navigation`, see `docs/design/navigation.md`); sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
+- `crates/oxabl_pipeline` - The shared lint and format run every client drives, the document outline (`outline`, see `docs/design/document-outline.md`), go to definition, hover and document links (`navigation`, see `docs/design/navigation.md`), and the schema text of a table or field (`schema_hover`); sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
 - `crates/oxabl_index` - Cross-file fact extraction, the in-run batch index and the static call graph; sits *beneath* `oxabl_pipeline`
 - `crates/oxabl_daemon` - The session core: one salsa instance per workspace root, serving several clients; the **only** crate that may know about salsa
 - `crates/oxabl_daemon_protocol` - Wire types and the contract version for the daemon's `oxabl/*` methods; depends on serde and nothing else

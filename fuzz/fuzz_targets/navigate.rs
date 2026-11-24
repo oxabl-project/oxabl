@@ -7,10 +7,10 @@ use oxabl_pipeline::{LintPipeline, PipelineConfig, Target};
 use oxabl_schema::SchemaLoader;
 use oxabl_workspace::{FileSystem, InMemoryFileSystem};
 
-// Go to definition and document links (docs/design/navigation.md) on a fuzzed
-// file, a fuzzed `.df` and a fuzzed include, in a small workspace: they never
-// panic, every target is a file of the workspace, and every span is inside the
-// file it names and on character boundaries.
+// Go to definition, hover and document links (docs/design/navigation.md) on a
+// fuzzed file, a fuzzed `.df` and a fuzzed include, in a small workspace: they
+// never panic, every target is a file of the workspace, and every span is
+// inside the file it names and on character boundaries.
 //
 // Input: `source \0 schema \0 include`, each part optional.
 fuzz_target!(|data: &[u8]| {
@@ -65,6 +65,19 @@ fn check(data: &[u8]) {
         for offset in offsets(text) {
             for target in navigation.definitions(file, offset) {
                 check_target(&fs, &target, file, offset);
+            }
+            if let Some(hover) = navigation.hover(file, offset) {
+                assert!(
+                    !hover.contents.trim().is_empty(),
+                    "an empty hover: {hover:?}"
+                );
+                let span = hover.span.map(|span| Target {
+                    path: file.clone(),
+                    span: Some(span),
+                });
+                if let Some(target) = span {
+                    check_target(&fs, &target, file, offset);
+                }
             }
         }
     }
