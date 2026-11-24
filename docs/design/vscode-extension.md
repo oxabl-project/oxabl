@@ -29,6 +29,12 @@ how each part works and why.
 - Two placeholders start a pattern that must not follow a word character:
   `{{boundary}}` before a word character and `{{non-boundary}}` before
   another character (`&`, `.`). See the rule about look-behinds below.
+- A repository rule that includes itself can have `"x-nesting-limit": N`.
+  Codegen then writes N copies of the rule (`name`, `name-2`, … `name-N`).
+  Each copy includes the next where the rule included itself, and the last
+  copy does not include itself. So the rule stack holds at most N of them.
+  Codegen fails when the rule does not include itself, when N is less than 2,
+  or when a copy's name is already a rule.
 
 ### Keyword data
 
@@ -105,6 +111,18 @@ how each part works and why.
   word characters and its `[\w]` does not, so a plain `\b` would change the
   tokens after them (`test/grammar/cases/boundaries.p`). A test in
   `corpus.test.ts` fails when a pattern starts with a look-behind.
+- Block comments and include references nest. Each opener pushes a rule, so
+  without a limit, damaged text (`/*` or `{` many times) makes the rule stack
+  deep and each line slower than the one before it. `comment-block` and
+  `include` have `"x-nesting-limit": 50`. The `include` rule keeps its
+  argument patterns in `include-arguments`, so its 50 copies stay small.
+- A `&GLOBAL-DEFINE` or `&SCOPED-DEFINE` in the value of another one is a
+  `match`, not a second `begin`. Otherwise each continued line
+  (`&SCOPED-DEFINE a ~`) pushes one more define rule.
+- The `record-names` rule starts with `\b(?<![#$%&.-])`, not
+  `(?<![\w#$%&.-])`. Before a letter the two match the same, but Oniguruma
+  tries a pattern that starts with a look-behind at every position: the rule
+  cost about 20% more time that way, and 3% with `\b`.
 
 ### Known limits
 
@@ -120,6 +138,11 @@ how each part works and why.
   correction: the parser and the semantic model know what each name is.
 - The grammar scopes three integer literals joined by `/` with no spaces
   (`10/2/3`) as a date, the same as `12/31/2026`.
+- The grammar counts at most 50 nested block comments and 50 nested include
+  references. Past that depth, `/*` is comment text and `{` is argument
+  text, and each `*/` or `}` closes one of the 50 levels. So in a comment
+  nested deeper than 50 levels, the highlighting ends the comment too early.
+  The compiler has no such limit. Real files nest fewer than 10 levels.
 
 ### Tests
 
@@ -131,12 +154,16 @@ From `clients/vscode`:
   compiles: nested comments, comment markers in strings, escapes, numbers,
   preprocessor names and blocks nested six deep. Open it to see the
   highlighting.
-- `pnpm test` — includes `test/grammar/corpus.test.ts`: every regex
+- `pnpm test` — includes `test/grammar/nesting.test.ts`: nested comments
+  and include references keep their scopes up to the limit of 50 levels, and
+  the rule stack stops at it. It also includes `test/grammar/corpus.test.ts`: every regex
   compiles, and every ABL file in the repository tokenizes within a time
   budget, on vscode-textmate 9 and vscode-oniguruma 2, the engine VS Code
   uses, and no `match` or `begin` regex starts with a look-behind. It also includes `test/grammar/fuzz.test.ts`: pathological shapes,
   random token runs and mutated corpus files must stay inside a time budget
-  per line and per file and a rule-stack depth. The time budgets grow on a
+  per line and per file and a rule-stack depth of 64. Every shape runs at
+  sizes up to 10,000 (`OXABL_FUZZ_SCALE`), the deep shapes (`/*`, `{` and
+  `&SCOPED-DEFINE a ~` many times) too. The time budgets grow on a
   slow machine: a calibration scan that does not use the grammar sets the
   factor. `OXABL_FUZZ_SECONDS` makes a longer run, `OXABL_FUZZ_SEED` replays
   one.
