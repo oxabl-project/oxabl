@@ -166,7 +166,8 @@ enum Cli {
         #[arg(long, conflicts_with = "baseline")]
         include_findings: bool,
 
-        /// Fail (exit 1) when a root is encrypted (XCODE) and so not checked.
+        /// Fail (exit 1) when a root is encrypted (XCODE) and so not checked. An
+        /// encrypted include file of a walked directory is only warned about.
         ///
         /// Off by default: an encrypted file is reported with the warning
         /// `SOURCE001` and the run passes. With the flag, a run that skipped a
@@ -2116,7 +2117,7 @@ impl CheckPass<'_> {
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
             Err(e) if oxabl_workspace::is_encrypted(&e) => {
-                self.report_encrypted(file, &mut unit);
+                self.report_encrypted(file, &mut unit, true);
                 return unit;
             }
             Err(e) => {
@@ -2170,11 +2171,13 @@ impl CheckPass<'_> {
     /// preprocessor warnings. No other finding is reported and the file is not
     /// format-checked. The bytes were detected by the read, so nothing is read
     /// or detected again. The warning does not depend on `--no-preprocess`: the
-    /// file is skipped either way.
-    fn report_encrypted(&self, file: &Path, unit: &mut Unit) {
-        unit.encrypted = true;
+    /// file is skipped either way. Only a `root` is counted, and only a root
+    /// fails the run under `--fail-on-encrypted`; an include file of a walk is
+    /// only warned about.
+    fn report_encrypted(&self, file: &Path, unit: &mut Unit, root: bool) {
+        unit.encrypted = root;
         let display = file.display().to_string();
-        if self.fail_on_encrypted {
+        if root && self.fail_on_encrypted {
             unit.output.err(format!(
                 "error: {display}: encrypted, not checked (--fail-on-encrypted)\n"
             ));
@@ -2302,7 +2305,7 @@ impl CheckPass<'_> {
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
             Err(e) if oxabl_workspace::is_encrypted(&e) => {
-                self.report_encrypted(file, &mut unit);
+                self.report_encrypted(file, &mut unit, false);
                 return unit;
             }
             Err(e) => {

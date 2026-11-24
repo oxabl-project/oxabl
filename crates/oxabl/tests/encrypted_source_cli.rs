@@ -214,16 +214,40 @@ fn text_with_a_utf_16_byte_order_mark_is_not_taken_for_encrypted() {
     assert!(!stderr(&out).contains("SOURCE001"), "{}", stderr(&out));
 }
 
+/// Random bytes without the header are not called encrypted: when in doubt the
+/// file is read, and its problems are reported as for any unreadable source.
 #[test]
-fn a_file_without_the_header_is_found_by_its_bytes() {
+fn a_file_without_the_header_is_read_normally() {
     let tmp = tree("");
     fs::write(tmp.path().join("bare.p"), headerless_bytes()).unwrap();
     let out = run(tmp.path(), &["check", "--json", "bare.p"]);
+    assert!(!stderr(&out).contains("SOURCE001"), "{}", stderr(&out));
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(report["encrypted_files"], 1, "{report}");
-    let preproc = report["preproc"].as_array().unwrap();
-    assert_eq!(preproc.len(), 1, "every counted file is reported: {report}");
-    assert_eq!(preproc[0]["code"], "SOURCE001");
+    assert!(report.get("encrypted_files").is_none(), "{report}");
+    assert_eq!(out.status.code(), Some(1), "an unreadable file still fails");
+}
+
+/// A short include of raw printer escapes is readable: its names reach the
+/// includer, and it is checked as source.
+#[test]
+fn an_include_of_printer_escapes_is_not_taken_for_encrypted() {
+    let tmp = tree("");
+    let prn: Vec<u8> = (0..8)
+        .flat_map(|i| format!("&GLOBAL-DEFINE P{i} \"\x1b{}\"\n", char::from(65 + i)).into_bytes())
+        .collect();
+    fs::write(tmp.path().join("prn.i"), prn).unwrap();
+    fs::write(
+        tmp.path().join("c.p"),
+        "{prn.i}\nDEFINE VARIABLE q AS CHARACTER NO-UNDO.\nq = {&P1}.\nMESSAGE q.\n",
+    )
+    .unwrap();
+    for target in ["prn.i", "c.p"] {
+        let out = run(tmp.path(), &["check", "--no-format", target]);
+        let all = format!("{}{}", stderr(&out), String::from_utf8_lossy(&out.stdout));
+        assert!(!all.contains("SOURCE001"), "{target}: {all}");
+        assert!(!all.contains("PARSE"), "{target}: {all}");
+        assert_eq!(out.status.code(), Some(0), "{target}: {all}");
+    }
 }
 
 /// Readable source with a printer escape in a string is not encrypted: it is
@@ -325,4 +349,117 @@ fn an_encrypted_include_does_not_make_the_includer_report_undefined_symbols() {
         String::from_utf8_lossy(&plain.stdout)
     );
     assert!(plain_all.contains("LINT0001"), "{plain_all}");
+}
+
+fn strict_walk(roots: &[(&str, &str)], includes: &[&str]) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"t\"\n[workspace.sources]\ninclude_paths = [\"src\"]\n\
+         [workspace.lint]\nenable = [\"strict\"]\n",
+    )
+    .unwrap();
+    fs::create_dir(tmp.path().join("src")).unwrap();
+    for (name, text) in roots {
+        fs::write(tmp.path().join("src").join(name), text).unwrap();
+    }
+    for name in includes {
+        fs::write(tmp.path().join("src").join(name), encrypted_bytes()).unwrap();
+    }
+    tmp
+}
+
+/// Encrypted include files of a walk are warned about once each. They are not
+/// roots: they are not counted, and they do not fail the run.
+#[test]
+fn encrypted_include_files_of_a_walk_are_warned_about_and_not_counted() {
+    for fail_flag in [false, true] {
+        let tmp = strict_walk(&[("r.p", "MESSAGE 1.\n")], &["a.i", "b.i"]);
+        let mut args = vec!["check", "--json", "--no-format"];
+        if fail_flag {
+            args.push("--fail-on-encrypted");
+        }
+        args.push("src");
+        let out = run(tmp.path(), &args);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["files_checked"], 1, "{report}");
+        assert!(report.get("encrypted_files").is_none(), "{report}");
+        let rows = report["preproc"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{report}");
+        assert!(rows.iter().all(|r| r["code"] == "SOURCE001"));
+        assert_eq!(report["failures"], serde_json::json!([]));
+    }
+    let tmp = strict_walk(&[("r.p", "MESSAGE 1.\n")], &["a.i", "b.i"]);
+    let out = run(tmp.path(), &["check", "--no-format", "src"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("checked 1 file"), "{stdout}");
+    assert!(!stdout.contains("encrypted, not checked)"), "{stdout}");
+}
+
+/// Roots and include files together: only the roots are counted.
+#[test]
+fn a_walk_counts_encrypted_roots_apart_from_encrypted_include_files() {
+    let tmp = strict_walk(&[("r.p", "MESSAGE 1.\n")], &["a.i"]);
+    fs::write(tmp.path().join("src/e.p"), encrypted_bytes()).unwrap();
+    let out = run(tmp.path(), &["check", "--json", "--no-format", "src"]);
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["files_checked"], 1, "{report}");
+    assert_eq!(report["encrypted_files"], 1, "{report}");
+    assert_eq!(report["preproc"].as_array().unwrap().len(), 2, "{report}");
+}
+
+#[test]
+fn the_warning_of_an_encrypted_root_shows_no_empty_source_line() {
+    let tmp = tree("");
+    let err = stderr(&run(tmp.path(), &["check", "enc.p"]));
+    assert!(err.contains("enc.p:1:1: warning[SOURCE001]"), "{err}");
+    assert!(!err.contains(" | "), "{err}");
+}
+
+fn check_text(dir: &Path, file: &str) -> (Option<i32>, String) {
+    let out = run(dir, &["check", "--no-format", file]);
+    let all = format!("{}{}", stderr(&out), String::from_utf8_lossy(&out.stdout));
+    (out.status.code(), all)
+}
+
+/// The include may read the variables of its includer and write to them, so
+/// nothing is called unused or never read.
+#[test]
+fn an_encrypted_include_makes_no_unused_or_never_read_claim() {
+    let tmp = tree("");
+    fs::write(
+        tmp.path().join("d.p"),
+        "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\nDEFINE VARIABLE w AS CHARACTER NO-UNDO.\n\
+         w = \"x\".\n{enc.i}\n",
+    )
+    .unwrap();
+    let (code, all) = check_text(tmp.path(), "d.p");
+    assert_eq!(code, Some(0), "{all}");
+    assert!(all.contains("SOURCE001"), "{all}");
+    for lint in ["LINT0002", "LINT0005", "LINT0006"] {
+        assert!(!all.contains(lint), "{lint}: {all}");
+    }
+    fs::write(
+        tmp.path().join("e.p"),
+        "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\nw = \"x\".\n",
+    )
+    .unwrap();
+    let (_, all) = check_text(tmp.path(), "e.p");
+    assert!(all.contains("LINT0002"), "the control: {all}");
+}
+
+/// A name used before the include cannot come from it.
+#[test]
+fn a_name_used_before_an_encrypted_include_is_still_undefined() {
+    let tmp = tree("");
+    fs::write(
+        tmp.path().join("b.p"),
+        "MESSAGE before-name.\n{enc.i}\nMESSAGE after-name.\n",
+    )
+    .unwrap();
+    let (code, all) = check_text(tmp.path(), "b.p");
+    assert_eq!(code, Some(1), "{all}");
+    assert!(all.contains("before-name"), "{all}");
+    assert!(!all.contains("after-name"), "{all}");
 }

@@ -6,14 +6,18 @@
 //!
 //! No published format exists. A wrong "encrypted" hides a readable file from
 //! every check, and a wrong "plain" only costs a parse error, so the detector
-//! is strict. It names a file encrypted on one of two signals:
+//! is strict. A file is encrypted only when both hold:
 //!
-//! * the file starts with the 10 header bytes of the encrypted files seen so
-//!   far ([`HEADER`]), or
-//! * the first [`HEAD_LEN`] bytes look random: at least [`MIN_CONTROLS`] control
-//!   bytes, and at least one in [`MAX_GAP`] bytes. About one byte in ten of
-//!   random data is a control byte. Plain source has a few at most (a printer
-//!   escape in a string, a stray end-of-file byte).
+//! * it starts with the 10 header bytes of the encrypted files seen so far
+//!   ([`HEADER`]), and
+//! * its first [`HEAD_LEN`] bytes have the profile of random data: at least
+//!   [`MIN_DISTINCT`] different control byte values, and at least one control
+//!   byte in [`MAX_GAP`] bytes. Random data holds about one control byte in
+//!   ten, spread over most of the 27 values. Plain source repeats one or two
+//!   (a printer escape, a stray end-of-file byte).
+//!
+//! A file with another header, a short file and a file that is plain text with
+//! control bytes are all read as source.
 //!
 //! Tab, line feed, form feed, carriage return and NUL do not count as control
 //! bytes: white space is plain, and NUL is what text in UTF-16 holds.
@@ -36,11 +40,11 @@ pub const HEAD_LEN: usize = 512;
 /// The first bytes of the encrypted files seen so far.
 pub const HEADER: [u8; 10] = [0x13, 0x59, 0x2f, 0x25, 0x07, 0x09, 0x31, 0x49, 0x3b, 0x25];
 
-/// The least number of control bytes a file without the header holds.
-pub const MIN_CONTROLS: usize = 8;
+/// The least number of different control byte values in a file that is
+/// encrypted.
+pub const MIN_DISTINCT: usize = 6;
 
-/// A file without the header holds a control byte in at least one byte in this
-/// many.
+/// An encrypted file holds a control byte in at least one byte in this many.
 pub const MAX_GAP: usize = 50;
 
 /// Whether `head`, the first bytes of a file, are the start of encrypted
@@ -48,14 +52,18 @@ pub const MAX_GAP: usize = 50;
 /// [`HEAD_LEN`] bytes are read. A file the rules do not name is plain.
 pub fn looks_encrypted(head: &[u8]) -> bool {
     let head = &head[..head.len().min(HEAD_LEN)];
-    if head.starts_with(&HEADER) {
-        return true;
+    if !head.starts_with(&HEADER) {
+        return false;
     }
-    let controls = head
-        .iter()
-        .filter(|&&byte| byte < 0x20 && !matches!(byte, 0 | b'\t' | b'\n' | b'\r' | 0x0C))
-        .count();
-    controls >= MIN_CONTROLS && controls * MAX_GAP >= head.len()
+    let mut seen = 0u32;
+    let mut controls = 0usize;
+    for &byte in head {
+        if byte < 0x20 && !matches!(byte, 0 | b'\t' | b'\n' | b'\r' | 0x0C) {
+            seen |= 1 << byte;
+            controls += 1;
+        }
+    }
+    seen.count_ones() as usize >= MIN_DISTINCT && controls * MAX_GAP >= head.len()
 }
 
 /// Whether `head` may be the start of encrypted source: a byte below `0x20`
@@ -121,22 +129,34 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_known_header_is_encrypted() {
-        assert!(looks_encrypted(&HEADER));
+    /// The header, then random bytes: the shape of an encrypted file.
+    fn encrypted(len: usize) -> Vec<u8> {
         let mut bytes = HEADER.to_vec();
-        bytes.extend(b"MESSAGE 1.");
-        assert!(looks_encrypted(&bytes));
+        bytes.extend(random(len - HEADER.len()));
+        bytes
     }
 
     #[test]
-    fn random_bytes_are_encrypted_from_200_bytes_on() {
-        for len in [200, 256, 511, 512, 4096] {
-            for seed in 0..20u8 {
-                let mut bytes = random(len + usize::from(seed));
-                bytes[0] = 0x41 + seed;
-                assert!(looks_encrypted(&bytes), "len {len} seed {seed}");
-            }
+    fn the_header_and_random_bytes_are_encrypted() {
+        for len in [100, 200, 511, 512, 4096] {
+            assert!(looks_encrypted(&encrypted(len)), "len {len}");
+        }
+    }
+
+    #[test]
+    fn the_header_alone_is_not_enough() {
+        assert!(!looks_encrypted(&HEADER));
+        let mut bytes = HEADER.to_vec();
+        bytes.extend(b"MESSAGE 1.\n");
+        assert!(!looks_encrypted(&bytes));
+    }
+
+    #[test]
+    fn random_bytes_without_the_header_are_read_as_source() {
+        for seed in 0..20u8 {
+            let mut bytes = random(600);
+            bytes[0] = 0x41 + seed;
+            assert!(!looks_encrypted(&bytes), "seed {seed}");
         }
     }
 
@@ -148,26 +168,41 @@ mod tests {
     }
 
     #[test]
-    fn a_few_stray_control_bytes_do_not_make_source_encrypted() {
+    fn plain_text_with_control_bytes_is_not_encrypted() {
         let escape = b"DEFINE VARIABLE x AS CHARACTER NO-UNDO.\nx = \"\x1bE\".\nPUT CONTROL x.\n";
         assert!(!looks_encrypted(escape));
         assert!(!looks_encrypted(b"MESSAGE 1.\x1a"));
-        assert!(!looks_encrypted(b"MESSAGE\x1a 1."));
-        let mut many = b"MESSAGE \"".to_vec();
-        many.extend([0x07; MIN_CONTROLS - 1]);
-        many.extend(b"\".\n");
-        assert!(!looks_encrypted(&many));
-        // Enough control bytes, but too sparse in a full block.
-        let mut sparse = vec![b'a'; HEAD_LEN];
-        for at in 0..MIN_CONTROLS {
-            sparse[at * 60] = 0x07;
+        // A short include of printer codes: dense, but one value.
+        let printer: Vec<u8> = (0..8)
+            .flat_map(|i| {
+                format!("&GLOBAL-DEFINE P{i} \"\x1b{}\"\n", char::from(65 + i)).into_bytes()
+            })
+            .collect();
+        assert!(!looks_encrypted(&printer));
+        // The header, and dense, but plain text after it with a few values.
+        let mut marked = HEADER.to_vec();
+        marked.extend(printer.iter().cycle().take(300));
+        assert!(!looks_encrypted(&marked));
+    }
+
+    #[test]
+    fn the_profile_needs_both_variety_and_density() {
+        // Variety, but sparse in a full block.
+        let mut sparse = HEADER.to_vec();
+        sparse.resize(HEAD_LEN, b'a');
+        for (at, value) in [1u8, 2, 3, 4, 5, 6, 8, 11].into_iter().enumerate() {
+            sparse[20 + at * 50] = value;
         }
         assert!(!looks_encrypted(&sparse));
-        for at in 0..MIN_CONTROLS {
-            sparse[at * 60] = 0x07;
-            sparse[at * 60 + 1] = 0x07;
+        for (at, value) in [1u8, 2, 3, 4, 5, 6, 8, 11].into_iter().enumerate() {
+            sparse[21 + at * 50] = value;
+            sparse[22 + at * 50] = value;
         }
-        assert!(looks_encrypted(&sparse), "16 in 512 is dense enough");
+        assert!(looks_encrypted(&sparse));
+        // Density, but too few values.
+        let mut few = HEADER.to_vec();
+        few.extend([0x1b, 0x07, 0x1b, 0x07, 0x1a].repeat(30));
+        assert!(!looks_encrypted(&few));
     }
 
     #[test]
@@ -198,9 +233,10 @@ mod tests {
     }
 
     #[test]
-    fn a_control_byte_after_the_first_block_is_not_read() {
-        let mut bytes = vec![b'a'; HEAD_LEN];
-        bytes.extend([0x07; 100]);
+    fn control_bytes_after_the_first_block_are_not_read() {
+        let mut bytes = HEADER.to_vec();
+        bytes.resize(HEAD_LEN, b'a');
+        bytes.extend(random(2000));
         assert!(!looks_encrypted(&bytes));
     }
 
