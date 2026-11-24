@@ -807,6 +807,17 @@ impl Parser<'_> {
             return self.parse_clear_statement();
         }
 
+        // COLOR [STREAM s] {DISPLAY | PROMPT} ... — head-parsed. Another COLOR
+        // statement stays a skipped statement.
+        if self.check(Kind::Color) {
+            let next = self.peek_at(1);
+            let prompt = next.kind == Kind::Identifier
+                && self.source[next.start..next.end].eq_ignore_ascii_case("prompt");
+            if matches!(next.kind, Kind::Display | Kind::Stream) || prompt {
+                return self.parse_color_statement();
+            }
+        }
+
         // GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT] — head-parsed.
         if self.check(Kind::Get)
             && matches!(
@@ -849,7 +860,7 @@ impl Parser<'_> {
             // CONNECT/DISCONNECT — database connection management statements.
             || self.check(Kind::Connect)
             || self.check(Kind::Disconnect)
-            // COLOR statement — terminal color settings (e.g. COLOR DISPLAY NORMAL ... WITH FRAME name.)
+            // Any COLOR statement that is not COLOR [STREAM s] {DISPLAY | PROMPT}.
             || self.check(Kind::Color)
             // READKEY [PAUSE n]. — reads next keypress from keyboard.
             || self.check(Kind::Readkey)
@@ -4697,6 +4708,65 @@ impl Parser<'_> {
         }
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::Accumulate { expression, breaks }, tail))
+    }
+
+    /// `COLOR [STREAM s] {DISPLAY | PROMPT} {color | VALUE(expr)} [field]...
+    /// [frame-phrase]`. A color is `NORMAL`, `INPUT`, `MESSAGES` or `fg[/bg]`;
+    /// its words are dropped. The list of fields ends at the first token that is
+    /// not a name.
+    fn parse_color_statement(&mut self) -> ParseResult<Statement> {
+        self.advance(); // consume COLOR
+        let Ok(stream_name) = self.parse_stream_head() else {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        };
+        let word = self.peek();
+        let usage = word.kind == Kind::Display
+            || (word.kind == Kind::Identifier
+                && self.source[word.start..word.end].eq_ignore_ascii_case("prompt"));
+        if !usage {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+        self.advance(); // consume DISPLAY / PROMPT
+        let mut items = Vec::new();
+        if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
+            let mark = self.current;
+            match self.parse_head_item(|_| false) {
+                Some(e) => items.push(e),
+                None => self.current = mark,
+            }
+        } else if Self::can_be_identifier(self.peek().kind)
+            || self.check(Kind::StringLiteral)
+            || self.check(Kind::Input)
+        {
+            self.advance(); // the color, or its foreground
+            while self.check(Kind::Slash) && Self::can_be_identifier(self.peek_at(1).kind) {
+                self.advance();
+                self.advance();
+            }
+        }
+        while Self::can_be_identifier(self.peek().kind) && !self.check(Kind::With) {
+            let mark = self.current;
+            match self.parse_head_item(|k| k == Kind::With) {
+                Some(e)
+                    if matches!(
+                        e.kind,
+                        ExpressionKind::Identifier(_)
+                            | ExpressionKind::FieldAccess { .. }
+                            | ExpressionKind::ArrayAccess { .. }
+                    ) =>
+                {
+                    items.push(e)
+                }
+                _ => {
+                    self.current = mark;
+                    break;
+                }
+            }
+        }
+        let tail = self.skip_tail_to_statement_end();
+        Ok(self.stmt_with_tail(StatementKind::Color { stream_name, items }, tail))
     }
 
     /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query

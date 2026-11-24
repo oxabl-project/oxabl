@@ -255,6 +255,11 @@ fn walk_statement(v: &mut impl Visitor, stmt: &Statement) {
             }
         }
         StatementKind::Get { query, .. } => walk_expression(v, query),
+        StatementKind::Color { items, .. } => {
+            for e in items {
+                walk_expression(v, e);
+            }
+        }
         StatementKind::Accumulate { expression, breaks } => {
             for e in std::iter::once(expression).chain(breaks) {
                 walk_expression(v, e);

@@ -402,6 +402,17 @@ pub enum StatementKind {
         breaks: Vec<Expression>,
     },
 
+    /// COLOR statement — sets the terminal colors of fields.
+    ///
+    /// `COLOR [STREAM s] {DISPLAY | PROMPT} color [field]...`. The color
+    /// words are not symbols and are dropped; a `VALUE(expression)` color is
+    /// kept. The frame phrase stays in [`Statement::skipped_tail`].
+    Color {
+        stream_name: Option<Identifier>,
+        /// The `VALUE(...)` color, if any, then the fields, in source order.
+        items: Vec<Expression>,
+    },
+
     /// APPLY statement — sends an event to a widget or procedure.
     ///
     /// The event and target expressions are modelled; a target that is not an

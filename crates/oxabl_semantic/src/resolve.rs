@@ -3399,6 +3399,19 @@ impl<'a> ResolveWalker<'a> {
                     self.walk_expression(e, scope, AccessMode::Read);
                 }
             }
+            StatementKind::Color { stream_name, items } => {
+                if let Some(s) = stream_name {
+                    self.resolve_statement_ident(
+                        s,
+                        scope,
+                        &[NamespaceId::Streams],
+                        AccessMode::Read,
+                    );
+                }
+                for e in items {
+                    self.walk_expression(e, scope, AccessMode::Read);
+                }
+            }
             StatementKind::Get { query, .. } => self.walk_lenient_operand(query, scope),
             StatementKind::Reposition {
                 query, operands, ..

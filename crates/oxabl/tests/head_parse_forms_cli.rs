@@ -90,6 +90,14 @@ const FORMS: &[Form] = &[
         bare: None,
     },
     Form {
+        name: "COLOR",
+        decls: DECL_X,
+        credits: true,
+        statement: "COLOR DISPLAY NORMAL v-x WITH FRAME f-main.",
+        undefined: Some("COLOR DISPLAY NORMAL v-nope WITH FRAME f-main."),
+        bare: None,
+    },
+    Form {
         name: "CLEAR",
         decls: DECL_FRAME,
         credits: false,

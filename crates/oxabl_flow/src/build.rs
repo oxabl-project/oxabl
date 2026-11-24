@@ -1512,6 +1512,7 @@ impl<'a> Builder<'a> {
             | SK::Reposition { .. }
             | SK::Clear { .. }
             | SK::Accumulate { .. }
+            | SK::Color { .. }
             | SK::Enable { .. }
             | SK::Disable { .. }
             | SK::Hide { .. }

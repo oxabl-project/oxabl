@@ -221,7 +221,7 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
 - Around thirty statement forms are matched by their leading keyword and then skipped
   wholesale by one of the four skip helpers (`skip_to_period`, `skip_to_statement_end`,
   `skip_to_statement_end_editing_aware`, `skip_to_statement_end_triggers_aware`):
-  `COPY-LOB`, `COLOR`, embedded SQL, and the rest.
+  `COPY-LOB`, `READKEY`, embedded SQL, and the rest.
 - **Invariant:** these emit `Statement::Skipped`, never `Empty`. The distinction is
   load-bearing — these forms carry real variable traffic in both directions, so a consumer
   that reasons about whether a variable was touched must not read them as "nothing happened".
@@ -291,7 +291,7 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   operands earn a head-parse, path-shaped ones earn an empty name list.
 
 - **`PUT`, `EXPORT`, `IMPORT`, `PAUSE`, `DOWN`, `UP`, `FORM`, `UPDATE`, `SET`, `ENABLE`,
-  `DISABLE`, `HIDE`, `VIEW`, `APPLY`, `WAIT-FOR`, `PROMPT-FOR`, `GET`, `CLOSE`, `REPOSITION`, `CLEAR` and `ACCUMULATE` are head-parsed** into their own
+  `DISABLE`, `HIDE`, `VIEW`, `APPLY`, `WAIT-FOR`, `PROMPT-FOR`, `GET`, `CLOSE`, `REPOSITION`, `CLEAR`, `ACCUMULATE` and `COLOR` are head-parsed** into their own
   variants. The stream, the delimiter, the item expressions, the `PAUSE` duration
   and message and the `DOWN`/`UP` line count are modelled; the option clauses after them
   (`FORMAT`, `EXCEPT`, `NO-LOBS`, `IN WINDOW`, the frame phrase, ...) ride on
@@ -301,7 +301,7 @@ Two distinct "the parser produced no structure here" cases, kept apart on purpos
   or `name LIKE field` declares a frame field: it goes to `fields`, not `items`, and the
   list goes on. In the other forms it still ends the list.
   **Invariant:** an `IMPORT` or `SET` target is credited as a write, an `UPDATE` target as
-  a read and a write, and every other head operand (a `PROMPT-FOR` target too) as a read. The query of `GET` and `REPOSITION` and the target of `CLOSE QUERY` or `CLOSE STORED-PROCEDURE` are reads that make no diagnostic on a miss, because a static query or stored procedure name is not a declared symbol. An `ACCUMULATE` whose expression is not one name or an expression that ends before the parenthesis stays `Skipped`. The frame of `CLEAR FRAME f` is a read in the frame name space. The `field = PROC-STATUS` of `CLOSE STORED-PROCEDURE` is a write. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
+  a read and a write, and every other head operand (a `PROMPT-FOR` target too) as a read. The query of `GET` and `REPOSITION` and the target of `CLOSE QUERY` or `CLOSE STORED-PROCEDURE` are reads that make no diagnostic on a miss, because a static query or stored procedure name is not a declared symbol. The color words of `COLOR` are not symbols and are dropped. A `COLOR` that is not `COLOR [STREAM s] DISPLAY | PROMPT` stays `Skipped`. An `ACCUMULATE` whose expression is not one name or an expression that ends before the parenthesis stays `Skipped`. The frame of `CLEAR FRAME f` is a read in the frame name space. The `field = PROC-STATUS` of `CLOSE STORED-PROCEDURE` is a write. A head the parser cannot model (`STREAM-HANDLE h`) leaves the rest of the statement
   in the tail; the form never falls back to `Skipped`.
 
 - **Frame fields are declarations.** The `name AS type` / `name LIKE field` items of a

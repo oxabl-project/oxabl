@@ -11857,7 +11857,7 @@ fn skipped_harvest_keeps_spaced_division_operands() {
 /// the widget and frame names survive.
 #[test]
 fn skipped_color_harvests_widget_and_frame_not_the_string() {
-    let names = harvest(r#"COLOR DISPLAY "CHOOSE" btn-ok WITH FRAME f-main."#);
+    let names = harvest(r#"COLOR "CHOOSE" btn-ok WITH FRAME f-main."#);
     assert!(names.contains(&"btn-ok".to_string()), "got {names:?}");
     assert!(names.contains(&"f-main".to_string()), "got {names:?}");
     assert!(!names.iter().any(|n| n.contains("CHOOSE")), "got {names:?}");
@@ -15210,4 +15210,43 @@ fn an_accumulate_the_head_cannot_split_stays_skipped() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn color_is_head_parsed_with_the_fields_and_a_value_color() {
+    for (source, stream, items) in [
+        ("COLOR DISPLAY NORMAL v-a v-b WITH FRAME f.", false, 2),
+        ("COLOR PROMPT INPUT v-a.", false, 1),
+        ("COLOR DISPLAY MESSAGES.", false, 0),
+        ("COLOR DISPLAY blue/white v-a.", false, 1),
+        ("COLOR DISPLAY BRIGHT-RED/WHITE tbl.fld.", false, 1),
+        (
+            "COLOR DISPLAY VALUE(v-color) v-a v-b WITH FRAME f.",
+            false,
+            3,
+        ),
+        ("COLOR STREAM s1 DISPLAY NORMAL v-a.", true, 1),
+        (
+            r#"COLOR DISPLAY "CHOOSE" btn-ok WITH FRAME f-main."#,
+            false,
+            1,
+        ),
+    ] {
+        let stmts = assert_parses_clean(source);
+        let StatementKind::Color {
+            stream_name,
+            items: i,
+        } = &stmts[0].kind
+        else {
+            panic!("{source}: expected Color, got {:?}", stmts[0].kind);
+        };
+        assert_eq!(stream_name.is_some(), stream, "{source}");
+        assert_eq!(i.len(), items, "{source}: {i:?}");
+    }
+}
+
+#[test]
+fn color_without_display_or_prompt_stays_skipped() {
+    let stmts = assert_parses_clean("COLOR v-a.");
+    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
 }
