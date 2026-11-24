@@ -527,6 +527,7 @@ struct JsonErrorPattern {
 /// - `PREPROC008` unterminated include reference
 /// - `PREPROC009` predefined name without a value in an `&IF` condition
 /// - `PREPROC010` part of an `&IF` condition the preprocessor does not evaluate
+/// - `PREPROC013` a substituted value that ends with `~`
 /// - `PREPROC002` unclosed `&IF` (inline/`skip_to_eol` regressions; #65 gate)
 ///
 /// Rendering is delegated to [`render_diagnostics`] with a [`SourceResolver`]
@@ -2784,7 +2785,8 @@ fn parse_file_with_preprocess(
 
     // Surface loud preprocessor diagnostics — errors plus PREPROC007
     // (unresolvable include), PREPROC008 (unterminated include), PREPROC009
-    // (valueless predefined name), PREPROC010 (unevaluated condition) and PREPROC002 (unclosed &IF) — so true
+    // (valueless predefined name), PREPROC010 (unevaluated condition), PREPROC013
+    // (substituted value ending with `~`) and PREPROC002 (unclosed &IF) — so true
     // preproc problems aren't hidden. Other warnings stay quiet.
     let messages = render_preproc_diagnostics(path, &source, file_id, &preprocessed.diagnostics);
 
