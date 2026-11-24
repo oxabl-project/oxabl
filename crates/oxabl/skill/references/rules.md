@@ -85,13 +85,17 @@ These are not lint rules: `[workspace.lint]` does not configure them.
 | PREPROC009 | A predefined name without a value used in a condition (set it in `[workspace.preprocessor]`). |
 | PREPROC010 | A part of an `&IF` condition the evaluator does not model. |
 | PREPROC011 | Preprocessor expansion limit exceeded; nothing more is expanded. |
+| PREPROC012 | A `~{` in an include argument that is never closed: the compiler stops with error 374. |
+| PREPROC013 | A substituted value that ends with `~`: the compiler joins it with the text after it, which oxabl does not model. |
 | SCHEMA0001 | A `.df` file that does not parse. |
 | SCHEMA0010 | Duplicate table across merged `.df` files (last one wins). |
 | SCHEMA0011 | Duplicate field within a table. |
 | SCHEMA0012 | A field type that conflicts across merged `.df` files. |
+| SCHEMA0020 | An `UPDATE`, `CHANGE`, `DROP` or `RENAME` directive in a `.df` that the loader skips (schema browser). |
+| SCHEMA0021 | A `.df` path that is not UTF-8 (schema browser). |
 | SCHEMA0030 | A schema path outside the workspace root. |
 | SCHEMA0031 | Too many tables or fields (resource cap). |
 
-The coverage warnings `PREPROC002`, `PREPROC007`, `PREPROC008`, `PREPROC009` and `PREPROC010` do not change the exit code of `oxabl check`: a file whose only problem is a missing include exits 0. They print on stderr, also with `--json`, where they are in the `preproc` array, not in `diagnostics`.
+The coverage warnings `PREPROC002`, `PREPROC007`, `PREPROC008`, `PREPROC009`, `PREPROC010` and `PREPROC013` do not change the exit code of `oxabl check`: a file whose only problem is a missing include exits 0. They print on stderr, also with `--json`, where they are in the `preproc` array, not in `diagnostics`.
 
 Docs: https://docs.oxabl.org/toolchain/commands/check/
