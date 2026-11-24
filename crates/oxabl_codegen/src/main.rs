@@ -615,6 +615,8 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
     output.push_str("    IntegerLiteral,\n");
     output.push_str("    BigIntLiteral,\n");
     output.push_str("    DecimalLiteral,\n");
+    output.push_str("    /// A date constant (`mm/dd/yy`, `mm/dd/yyyy`, `mm/dd`).\n");
+    output.push_str("    DateLiteral,\n");
     output.push_str("    StringLiteral,\n");
     output.push('\n');
 
@@ -631,6 +633,7 @@ pub fn generate_kind_enum(keywords: &[Keyword]) -> String {
         "IntegerLiteral",
         "BigIntLiteral",
         "DecimalLiteral",
+        "DateLiteral",
         "StringLiteral",
     ] {
         seen_variants.insert(name.to_string());

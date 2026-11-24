@@ -4693,6 +4693,7 @@ impl Parser<'_> {
             Kind::StringLiteral
             | Kind::IntegerLiteral
             | Kind::DecimalLiteral
+            | Kind::DateLiteral
             | Kind::Question
             | Kind::LeftParen
             | Kind::Minus => true,
@@ -4713,6 +4714,7 @@ impl Parser<'_> {
             Kind::StringLiteral
                 | Kind::IntegerLiteral
                 | Kind::DecimalLiteral
+                | Kind::DateLiteral
                 | Kind::Preprop
                 | Kind::IncludeArgReference
         )
@@ -5710,7 +5712,10 @@ impl Parser<'_> {
             && self.peek_at(1).kind == Kind::Identifier
             && self.peek_at(1).start == self.peek().end
             && self.source[self.peek_at(1).start..].starts_with('\\');
-        let numeric_start = matches!(first, Kind::IntegerLiteral | Kind::DecimalLiteral);
+        let numeric_start = matches!(
+            first,
+            Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::DateLiteral
+        );
         if !Self::is_word_kind(first)
             && first != Kind::Slash
             && !leading_dot
@@ -5819,7 +5824,11 @@ impl Parser<'_> {
     /// Whether the token `offset` ahead can start a `RUN` path component.
     fn at_segment_start_at(&self, offset: usize) -> bool {
         let kind = self.peek_at(offset).kind;
-        Self::is_word_kind(kind) || matches!(kind, Kind::IntegerLiteral | Kind::DecimalLiteral)
+        Self::is_word_kind(kind)
+            || matches!(
+                kind,
+                Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::DateLiteral
+            )
     }
 
     fn at_segment_start(&self) -> bool {
@@ -7714,6 +7723,7 @@ impl Parser<'_> {
                     | Kind::Period
                     | Kind::IntegerLiteral
                     | Kind::DecimalLiteral
+                    | Kind::DateLiteral
             )
     }
 

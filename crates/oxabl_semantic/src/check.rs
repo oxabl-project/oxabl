@@ -735,6 +735,7 @@ fn literal_type(lit: &Literal) -> ResolvedType {
         Literal::Decimal(_) => ResolvedType::Primitive(Decimal),
         Literal::String(_) => ResolvedType::Primitive(Character),
         Literal::Boolean(_) => ResolvedType::Primitive(Logical),
+        Literal::Date(_) => ResolvedType::Primitive(Date),
         Literal::Unknown(_) => ResolvedType::Unknown,
     }
 }

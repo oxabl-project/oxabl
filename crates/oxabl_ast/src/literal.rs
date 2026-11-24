@@ -12,6 +12,9 @@ pub enum Literal {
 
     Boolean(BooleanLiteral),
 
+    /// A date constant (`02/01/2026`).
+    Date(DateLiteral),
+
     /// The ABL unknown value literal (`?`).
     Unknown(UnknownLiteral),
 }
@@ -46,6 +49,16 @@ pub struct BooleanLiteral {
     pub span: Span,
 
     pub value: bool, // True/False/Yes/No
+}
+
+/// A date constant: digit runs joined by `/` with no whitespace (`mm/dd/yy`,
+/// `mm/dd/yyyy`, `mm/dd`). The order of the parts follows the `-d` startup
+/// parameter, so the literal keeps its spelling and not a date value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DateLiteral {
+    pub span: Span,
+
+    pub text: String,
 }
 
 /// The ABL unknown value literal (`?`).

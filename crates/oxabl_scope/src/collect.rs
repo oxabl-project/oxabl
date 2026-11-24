@@ -809,6 +809,7 @@ impl<'a> Collector<'a> {
                 | Kind::IntegerLiteral
                 | Kind::BigIntLiteral
                 | Kind::DecimalLiteral
+                | Kind::DateLiteral
                 | Kind::Question => i += 1,
                 Kind::KwIf => return None,
                 k if is_word(k, self.text(&self.tokens[i])) => i = self.skip_name(&self.tokens, i),
@@ -1922,6 +1923,7 @@ fn is_word(kind: Kind, text: &str) -> bool {
             | Kind::IntegerLiteral
             | Kind::BigIntLiteral
             | Kind::DecimalLiteral
+            | Kind::DateLiteral
             | Kind::Preprop
             | Kind::Invalid
     ) && text

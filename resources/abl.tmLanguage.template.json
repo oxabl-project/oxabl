@@ -379,7 +379,7 @@
       "patterns": [
         {
           "name": "constant.numeric.date.abl",
-          "match": "{{boundary}}(?<![#$%&])\\d{1,4}/\\d{1,2}/\\d{1,4}(?![\\w#$%&])"
+          "match": "{{boundary}}(?<![#$%&])\\d+/\\d+(?:/\\d+)?(?![\\w#$%&/]|\\.\\w)"
         },
         {
           "name": "constant.numeric.decimal.abl",

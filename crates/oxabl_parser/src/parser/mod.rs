@@ -1222,14 +1222,18 @@ impl<'a> Parser<'a> {
                 self.advance(); // colon
                 self.advance(); // suffix identifier
             }
-        } else if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
-            // FORMAT 9999, FORMAT 99.99, or FORMAT 99/99/9999 — numeric format masks
+        } else if self.check(Kind::DateLiteral) {
+            // FORMAT 99/99/9999 — the lexer reads the date mask as one date constant
             self.advance();
-            // Consume any trailing /integer or /decimal pairs (date format: 99/99/9999)
+        } else if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
+            // FORMAT 9999 or FORMAT 99.99 — numeric format masks
+            self.advance();
+            // Consume trailing `/` parts. The lexer reads the last three runs of
+            // a mask with four or more (`9/99/99/99`) as one date constant.
             while self.check(Kind::Slash) {
                 if matches!(
                     self.peek_at(1).kind,
-                    Kind::IntegerLiteral | Kind::DecimalLiteral
+                    Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::DateLiteral
                 ) {
                     self.advance(); // consume '/'
                     self.advance(); // consume the number
@@ -1716,6 +1720,7 @@ impl<'a> Parser<'a> {
                 | Kind::Colon
                 | Kind::IntegerLiteral
                 | Kind::DecimalLiteral
+                | Kind::DateLiteral
                 | Kind::StringLiteral
                 | Kind::KwTrue
                 | Kind::KwFalse

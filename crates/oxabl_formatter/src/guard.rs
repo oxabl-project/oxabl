@@ -38,7 +38,11 @@ struct Tok<'a> {
 fn is_literal(kind: Kind) -> bool {
     matches!(
         kind,
-        Kind::IntegerLiteral | Kind::BigIntLiteral | Kind::DecimalLiteral | Kind::StringLiteral
+        Kind::IntegerLiteral
+            | Kind::BigIntLiteral
+            | Kind::DecimalLiteral
+            | Kind::DateLiteral
+            | Kind::StringLiteral
     )
 }
 

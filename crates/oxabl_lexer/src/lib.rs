@@ -454,6 +454,11 @@ impl<'a> Lexer<'a> {
                     value = TokenValue::Decimal(if neg { -decimal } else { decimal });
                 }
             }
+            // The value of a date constant depends on the `-d` startup
+            // parameter, so the token keeps its spelling.
+            Kind::DateLiteral => {
+                value = TokenValue::String(OxablAtom::from(&self.source[start..end]));
+            }
             Kind::StringLiteral => {
                 // use +1 and -1 to remove the quotes from our string literal
                 // NOTE - We store escaped characters (~n) as-is to retain
@@ -722,6 +727,13 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
 
+        if matches!(self.peek(), Some('/'))
+            && let Some(rest) = self.date_literal_rest()
+        {
+            self.chars = rest;
+            return Kind::DateLiteral;
+        }
+
         // Check for decimal point followed by digit
         if matches!(self.peek(), Some('.')) {
             // Need to peek TWO ahead - clone the iterator
@@ -747,6 +759,50 @@ impl<'a> Lexer<'a> {
         }
 
         Kind::IntegerLiteral
+    }
+
+    /// The rest of a date constant (`mm/dd`, `mm/dd/yy`, `mm/dd/yyyy`) after its
+    /// first digits, when the next char is `/`. The compiler reads digit runs
+    /// joined by `/` with no whitespace as one DATE constant, so `10/2` is a
+    /// date and `10 / 2` is a division. A run that goes on into a word char,
+    /// another `/` or a `.digit` is not taken (a path segment such as
+    /// `rpt/2024/01/x.p`, or a form the compiler rejects): `None` leaves the
+    /// iterator where it was.
+    fn date_literal_rest(&self) -> Option<Chars<'a>> {
+        let bytes = self.chars.as_str().as_bytes();
+        let digits_from = |i: usize| {
+            bytes
+                .get(i..)
+                .map_or(0, |b| b.iter().take_while(|b| b.is_ascii_digit()).count())
+        };
+        if bytes.first() != Some(&b'/') {
+            return None;
+        }
+        let day = digits_from(1);
+        if day == 0 {
+            return None;
+        }
+        let mut i = 1 + day;
+        if bytes.get(i) == Some(&b'/') {
+            let year = digits_from(i + 1);
+            if year == 0 {
+                return None;
+            }
+            i += 1 + year;
+        }
+        match bytes.get(i) {
+            Some(b'/' | b'_' | b'#' | b'$' | b'%' | b'&') => return None,
+            Some(b) if b.is_ascii_alphanumeric() => return None,
+            Some(b'.')
+                if bytes
+                    .get(i + 1)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_') =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+        Some(self.chars.as_str()[i..].chars())
     }
 
     /// Returns true if the next char is `-` and the char after it is not a digit,
@@ -1892,6 +1948,76 @@ end."#;
         let tokens = collect_tokens(source);
         assert_eq!(tokens[0].kind, Kind::DecimalLiteral);
         assert_eq!(tokens[0].value, TokenValue::None);
+    }
+
+    fn kinds_and_texts(source: &str) -> Vec<(Kind, &str)> {
+        collect_tokens(source)
+            .iter()
+            .filter(|t| t.kind != Kind::Eof)
+            .map(|t| (t.kind, &source[t.start..t.end]))
+            .collect()
+    }
+
+    #[test]
+    fn digits_joined_by_slashes_are_one_date_literal() {
+        for (source, date) in [
+            ("d = 02/01/2026.", "02/01/2026"),
+            ("d = 2/1/26.", "2/1/26"),
+            ("d = 1/2/3.", "1/2/3"),
+            ("d = 10/2.", "10/2"),
+            ("d = 1/1/2026 + 1.", "1/1/2026"),
+        ] {
+            let tokens = kinds_and_texts(source);
+            assert_eq!(tokens[2], (Kind::DateLiteral, date), "{source}");
+            let token = &collect_tokens(source)[2];
+            assert_eq!(token.value, TokenValue::String(OxablAtom::from(date)));
+        }
+        assert_eq!(
+            kinds_and_texts("02/01/2026.").last(),
+            Some(&(Kind::Period, "."))
+        );
+    }
+
+    #[test]
+    fn slashes_with_whitespace_are_division() {
+        assert_eq!(
+            kinds_and_texts("x = 10 / 2 / 5."),
+            [
+                (Kind::Identifier, "x"),
+                (Kind::Equals, "="),
+                (Kind::IntegerLiteral, "10"),
+                (Kind::Slash, "/"),
+                (Kind::IntegerLiteral, "2"),
+                (Kind::Slash, "/"),
+                (Kind::IntegerLiteral, "5"),
+                (Kind::Period, "."),
+            ]
+        );
+        for source in ["x = 10/ 2.", "x = 10 /2.", "x = 10/x.", "x = 10/(2)."] {
+            assert!(
+                kinds_and_texts(source)
+                    .iter()
+                    .all(|(k, _)| *k != Kind::DateLiteral),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn digit_path_segments_are_not_date_literals() {
+        for source in [
+            "RUN rpt/2024/01/x.p.",
+            "RUN 2024/01.p.",
+            "RUN a/1/2/3/b.p.",
+            "d = 1/2/3x.",
+        ] {
+            assert!(
+                kinds_and_texts(source)
+                    .iter()
+                    .all(|(k, _)| *k != Kind::DateLiteral),
+                "{source}"
+            );
+        }
     }
 
     #[test]
