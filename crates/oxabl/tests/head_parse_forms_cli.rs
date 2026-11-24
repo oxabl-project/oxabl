@@ -110,6 +110,14 @@ const FORMS: &[Form] = &[
         bare: None,
     },
     Form {
+        name: "COLOR DISPLAY",
+        decls: DECL_X,
+        credits: true,
+        statement: "COLOR DISPLAY MESSAGES PROMPT NORMAL v-x.",
+        undefined: Some("COLOR DISPLAY VALUE(\"x\") PROMPT VALUE(\"y\") v-nope."),
+        bare: Some("COLOR DISPLAY NORMAL PROMPT INPUT v-x WITH FRAME f-main."),
+    },
+    Form {
         name: "CLEAR",
         decls: DECL_FRAME,
         credits: false,
@@ -217,5 +225,68 @@ fn the_formatter_keeps_the_form_stable() {
             "{}: the statement was lost:\n{first}",
             f.name
         );
+    }
+}
+
+/// The codes `oxabl check` reports for `source` in a project with the lint
+/// groups `groups` on, one per finding.
+fn codes_with(groups: &str, source: &str) -> Vec<String> {
+    let (tmp, _) = project(source);
+    fs::write(
+        tmp.path().join("oxabl.toml"),
+        format!("[workspace]\nname = \"p\"\n[workspace.lint]\nenable = [{groups}]\n"),
+    )
+    .unwrap();
+    let mut cmd = oxabl();
+    let out = cmd
+        .current_dir(tmp.path())
+        .args(["check", "--no-format", "--json", "main.p"])
+        .output()
+        .unwrap();
+    let json: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stderr)));
+    json["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap().to_string())
+        .collect()
+}
+
+const MAYBE_NO_RECORD: &str = "DEFINE TEMP-TABLE tt NO-UNDO FIELD k AS INTEGER FIELD n AS CHARACTER INDEX ik k.\n\
+                               DEFINE VARIABLE v-x AS CHARACTER NO-UNDO.\n\
+                               FIND FIRST tt NO-ERROR.\n";
+
+/// COLOR names the widgets of its fields; it does not read the record. A
+/// `VALUE(...)` color is read.
+#[test]
+fn color_fields_are_not_record_reads() {
+    for (statement, nl003) in [
+        ("COLOR DISPLAY NORMAL tt.n.", 0),
+        ("COLOR DISPLAY NORMAL PROMPT INPUT tt.n WITH FRAME f.", 0),
+        ("COLOR DISPLAY VALUE(tt.n) v-x.", 1),
+        ("DISPLAY tt.n.", 1),
+    ] {
+        let codes = codes_with(
+            "\"strict.nulls\"",
+            &format!("{MAYBE_NO_RECORD}{statement}\n"),
+        );
+        let found = codes.iter().filter(|c| *c == "NL003").count();
+        assert_eq!(found, nl003, "{statement}: {codes:?}");
+    }
+}
+
+/// A dynamic call in the options or the EDITING block of a head-parsed form
+/// is reported.
+#[test]
+fn a_dynamic_call_in_the_tail_of_a_form_is_reported() {
+    for statement in [
+        "PROMPT-FOR v-x EDITING: v-x = DYNAMIC-FUNCTION(\"f\"). END.",
+        "PROMPT-FOR v-x WITH FRAME f TITLE DYNAMIC-FUNCTION(\"t\").",
+        "COLOR DISPLAY NORMAL v-x WITH FRAME f TITLE DYNAMIC-FUNCTION(\"t2\").",
+    ] {
+        let codes = codes_with("\"strict.calls\"", &format!("{DECL_X}{statement}\n"));
+        let found = codes.iter().filter(|c| *c == "CL002").count();
+        assert_eq!(found, 1, "{statement}: {codes:?}");
     }
 }

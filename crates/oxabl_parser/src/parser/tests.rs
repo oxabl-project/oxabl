@@ -15227,6 +15227,13 @@ fn color_is_head_parsed_with_the_fields_and_a_value_color() {
         ),
         ("COLOR STREAM s1 DISPLAY NORMAL v-a.", true, 1),
         (
+            "COLOR DISPLAY NORMAL PROMPT INPUT v-a WITH FRAME f.",
+            false,
+            1,
+        ),
+        ("COLOR DISPLAY MESSAGES PROMPT NORMAL v-a v-b.", false, 2),
+        ("COLOR DISPLAY VALUE(c) PROMPT VALUE(d) v-a.", false, 3),
+        (
             r#"COLOR DISPLAY "CHOOSE" btn-ok WITH FRAME f-main."#,
             false,
             1,
@@ -15247,8 +15254,18 @@ fn color_is_head_parsed_with_the_fields_and_a_value_color() {
 
 #[test]
 fn color_without_display_or_prompt_stays_skipped() {
-    let stmts = assert_parses_clean("COLOR v-a.");
-    assert!(matches!(stmts[0].kind, StatementKind::Skipped { .. }));
+    for source in [
+        "COLOR v-a.",
+        "COLOR DISPLAY.",
+        "COLOR DISPLAY NORMAL PROMPT.",
+    ] {
+        let stmts = assert_parses_clean(source);
+        assert!(
+            matches!(stmts[0].kind, StatementKind::Skipped { .. }),
+            "{source}: {:?}",
+            stmts[0].kind
+        );
+    }
 }
 
 #[test]

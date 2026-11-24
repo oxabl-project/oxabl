@@ -404,12 +404,12 @@ pub enum StatementKind {
 
     /// COLOR statement — sets the terminal colors of fields.
     ///
-    /// `COLOR [STREAM s] {DISPLAY | PROMPT} color [field]...`. The color
-    /// words are not symbols and are dropped; a `VALUE(expression)` color is
-    /// kept. The frame phrase stays in [`Statement::skipped_tail`].
+    /// `COLOR [STREAM s] {DISPLAY | PROMPT} color [PROMPT color] [field]...`.
+    /// The color words are not symbols and are dropped; a `VALUE(expression)`
+    /// color is kept. The frame phrase stays in [`Statement::skipped_tail`].
     Color {
         stream_name: Option<Identifier>,
-        /// The `VALUE(...)` color, if any, then the fields, in source order.
+        /// The `VALUE(...)` colors, then the fields, in source order.
         items: Vec<Expression>,
     },
 
@@ -1087,6 +1087,8 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedTail {
     pub names: Vec<Identifier>,
+    /// The source of the tail, for a rule that lexes it.
+    pub span: Span,
 }
 
 impl Statement {

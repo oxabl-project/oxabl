@@ -734,6 +734,29 @@ fn widget(
             | Kind::WaitFor,
         ) => true,
         Some(Kind::Apply) => toks[first..at].iter().any(|t| t.kind == Kind::To),
+        // COLOR names the widgets of its fields; a `VALUE(...)` color is read.
+        Some(Kind::Color) => {
+            let mut depth = 0usize;
+            let mut in_value = false;
+            for (i, t) in toks.iter().enumerate().take(at).skip(first) {
+                match t.kind {
+                    Kind::LeftParen => {
+                        if depth == 0 && i > 0 && toks[i - 1].kind == Kind::Value {
+                            in_value = true;
+                        }
+                        depth += 1;
+                    }
+                    Kind::RightParen => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            in_value = false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            !in_value
+        }
         _ => false,
     }
 }

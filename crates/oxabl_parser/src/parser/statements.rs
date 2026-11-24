@@ -4663,40 +4663,48 @@ impl Parser<'_> {
         Ok(self.stmt_with_tail(StatementKind::Accumulate { expression, breaks }, tail))
     }
 
-    /// `COLOR [STREAM s] {DISPLAY | PROMPT} {color | VALUE(expr)} [field]...
-    /// [frame-phrase]`. A color is `NORMAL`, `INPUT`, `MESSAGES` or `fg[/bg]`;
-    /// its words are dropped. The list of fields ends at the first token that is
-    /// not a name.
+    /// `COLOR [STREAM s] {DISPLAY | PROMPT} {color | VALUE(expr)} [PROMPT
+    /// {color | VALUE(expr)}] [field]... [frame-phrase]`. A color is `NORMAL`,
+    /// `INPUT`, `MESSAGES`, a string or `fg[/bg]`; its words are dropped. A
+    /// phrase whose color does not parse leaves the statement skipped. The list
+    /// of fields ends at the first token that is not a name.
     fn parse_color_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume COLOR
         let Ok(stream_name) = self.parse_stream_head() else {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         };
-        let word = self.peek();
-        let usage = word.kind == Kind::Display
-            || (word.kind == Kind::Identifier
-                && self.source[word.start..word.end].eq_ignore_ascii_case("prompt"));
-        if !usage {
+        let usage = |p: &Self| {
+            let word = p.peek();
+            word.kind == Kind::Display
+                || (word.kind == Kind::Identifier
+                    && p.source[word.start..word.end].eq_ignore_ascii_case("prompt"))
+        };
+        if !usage(self) {
             let (_, hi) = self.skip_to_statement_end();
             return Ok(self.skipped_stmt(hi));
         }
-        self.advance(); // consume DISPLAY / PROMPT
         let mut items = Vec::new();
-        if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
-            let mark = self.current;
-            match self.parse_head_item(|_| false) {
-                Some(e) => items.push(e),
-                None => self.current = mark,
-            }
-        } else if Self::can_be_identifier(self.peek().kind)
-            || self.check(Kind::StringLiteral)
-            || self.check(Kind::Input)
-        {
-            self.advance(); // the color, or its foreground
-            while self.check(Kind::Slash) && Self::can_be_identifier(self.peek_at(1).kind) {
-                self.advance();
-                self.advance();
+        while usage(self) {
+            self.advance(); // consume DISPLAY / PROMPT
+            let color = if self.check(Kind::Value) && self.check_at(1, Kind::LeftParen) {
+                self.parse_head_item(|_| false).map(|e| items.push(e))
+            } else if Self::can_be_identifier(self.peek().kind)
+                || self.check(Kind::StringLiteral)
+                || self.check(Kind::Input)
+            {
+                self.advance(); // the color, or its foreground
+                while self.check(Kind::Slash) && Self::can_be_identifier(self.peek_at(1).kind) {
+                    self.advance();
+                    self.advance();
+                }
+                Some(())
+            } else {
+                None
+            };
+            if color.is_none() {
+                let (_, hi) = self.skip_to_statement_end();
+                return Ok(self.skipped_stmt(hi));
             }
         }
         while Self::can_be_identifier(self.peek().kind) && !self.check(Kind::With) {
