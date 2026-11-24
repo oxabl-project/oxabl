@@ -795,53 +795,13 @@ impl Parser<'_> {
             return Ok(self.skipped_stmt(hi));
         }
 
-        // CLEAR [FRAME f] [ALL] [NO-PAUSE] — head-parsed. A name after CLEAR
-        // that is none of these is not this statement.
-        if self.check(Kind::Clear)
-            && matches!(
-                self.peek_at(1).kind,
-                Kind::Frame | Kind::All | Kind::NoPause | Kind::Period
-            )
-        {
-            return self.parse_clear_statement();
-        }
-
-        // COLOR [STREAM s] {DISPLAY | PROMPT} ... — head-parsed. Another COLOR
-        // statement stays a skipped statement.
-        if self.check(Kind::Color) {
-            let next = self.peek_at(1);
-            let prompt = next.kind == Kind::Identifier
-                && self.source[next.start..next.end].eq_ignore_ascii_case("prompt");
-            if matches!(next.kind, Kind::Display | Kind::Stream) || prompt {
-                return self.parse_color_statement();
-            }
-        }
-
-        // GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT] — head-parsed.
-        if self.check(Kind::Get)
-            && matches!(
-                self.peek_at(1).kind,
-                Kind::First | Kind::Next | Kind::Prev | Kind::Last | Kind::Current
-            )
-        {
-            return self.parse_get_statement();
-        }
-
-        // CLOSE QUERY q / CLOSE STORED-PROCEDURE p — head-parsed.
-        if self.check(Kind::Close) {
-            let next = self.peek_at(1);
-            let stored = next.kind == Kind::Identifier
-                && self.source[next.start..next.end]
-                    .get(..11)
-                    .is_some_and(|w| w.eq_ignore_ascii_case("stored-proc"));
-            if next.kind == Kind::Query || stored {
-                return self.parse_close_statement(stored);
-            }
-        }
-
-        // ACCUMULATE expr (aggregate [BY group]...) — head-parsed.
-        if self.check(Kind::Accumulate) || self.check(Kind::Accum) {
-            return self.parse_accumulate_statement();
+        // CLEAR / COLOR / GET / CLOSE / ACCUMULATE — head-parsed. One test here
+        // keeps the dispatch cost of every other statement down.
+        if matches!(
+            self.peek().kind,
+            Kind::Clear | Kind::Color | Kind::Get | Kind::Close | Kind::Accumulate | Kind::Accum
+        ) {
+            return self.parse_clear_color_get_close_accumulate();
         }
 
         if self.check(Kind::OsDir)
@@ -849,18 +809,12 @@ impl Parser<'_> {
             || self.check(Kind::Disable)
             || self.check(Kind::Open)
             || self.check(Kind::Status)
-            || self.check(Kind::Get) // GET with no query position
-            || self.check(Kind::Clear)
             // FORMAT/FORM expr. — standalone field display-format spec (e.g. after DEFINE PARAMETER).
             || self.check(Kind::Format)
             || self.check(Kind::Form)
-            // CLOSE DATASET/BROWSE and any other form that is not QUERY or STORED-PROCEDURE.
-            || self.check(Kind::Close)
             // CONNECT/DISCONNECT — database connection management statements.
             || self.check(Kind::Connect)
             || self.check(Kind::Disconnect)
-            // Any COLOR statement that is not COLOR [STREAM s] {DISPLAY | PROMPT}.
-            || self.check(Kind::Color)
             // READKEY [PAUSE n]. — reads next keypress from keyboard.
             || self.check(Kind::Readkey)
             // GET-KEY-VALUE section "s" key "k" value var. — Windows registry read.
@@ -4869,6 +4823,52 @@ impl Parser<'_> {
             },
             tail,
         ))
+    }
+
+    /// The statements that start with `CLEAR`, `COLOR`, `GET`, `CLOSE` or
+    /// `ACCUMULATE`. A spelling that is none of the head-parsed forms (`GET` of a
+    /// property, `CLOSE DATASET`, `COLOR v`) is skipped.
+    #[inline(never)]
+    fn parse_clear_color_get_close_accumulate(&mut self) -> ParseResult<Statement> {
+        let next = self.peek_at(1);
+        match self.peek().kind {
+            Kind::Clear
+                if matches!(
+                    next.kind,
+                    Kind::Frame | Kind::All | Kind::NoPause | Kind::Period
+                ) =>
+            {
+                return self.parse_clear_statement();
+            }
+            Kind::Color => {
+                let prompt = next.kind == Kind::Identifier
+                    && self.source[next.start..next.end].eq_ignore_ascii_case("prompt");
+                if matches!(next.kind, Kind::Display | Kind::Stream) || prompt {
+                    return self.parse_color_statement();
+                }
+            }
+            Kind::Get
+                if matches!(
+                    next.kind,
+                    Kind::First | Kind::Next | Kind::Prev | Kind::Last | Kind::Current
+                ) =>
+            {
+                return self.parse_get_statement();
+            }
+            Kind::Close => {
+                let stored = next.kind == Kind::Identifier
+                    && self.source[next.start..next.end]
+                        .get(..11)
+                        .is_some_and(|w| w.eq_ignore_ascii_case("stored-proc"));
+                if next.kind == Kind::Query || stored {
+                    return self.parse_close_statement(stored);
+                }
+            }
+            Kind::Accumulate | Kind::Accum => return self.parse_accumulate_statement(),
+            _ => {}
+        }
+        let (_, hi) = self.skip_to_statement_end();
+        Ok(self.skipped_stmt(hi))
     }
 
     /// `GET {FIRST | NEXT | PREV | LAST | CURRENT} query [lock] [NO-WAIT]`. A query
