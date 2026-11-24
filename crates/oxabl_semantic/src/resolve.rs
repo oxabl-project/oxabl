@@ -28,9 +28,9 @@ use std::sync::Arc;
 
 use oxabl_ast::{
     AccessModifier, BufferTarget, CreateTarget, DataType, Expression, ExpressionKind, FrameField,
-    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterType,
-    RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget, TypeArguments,
-    TypeSource, UsingSource,
+    HandleParamKind, Identifier, NodeId, OnAction, OnKind, ParameterDirection, ParameterExtent,
+    ParameterType, RunTarget, Span, Statement, StatementKind, StreamOperation, SubscribeTarget,
+    TypeArguments, TypeSource, UsingSource,
 };
 use oxabl_common::{Diagnostic, VirtualSpan};
 use oxabl_lexer::is_builtin_function;
@@ -68,10 +68,20 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
                 ParameterDirection::Return => "return",
             };
             let shape = match param_type {
-                ParameterType::Variable { type_source, .. } => match type_source {
-                    TypeSource::Explicit(ty) => format!("value:{}", canonical_data_type(ty)),
+                ParameterType::Variable {
+                    type_source,
+                    extent,
+                    ..
+                } => match type_source {
+                    TypeSource::Explicit(ty) => {
+                        format!("value:{}{}", canonical_data_type(ty), extent_key(*extent))
+                    }
                     TypeSource::Like { source } => {
-                        format!("like:{}", source.name.to_ascii_lowercase())
+                        format!(
+                            "like:{}{}",
+                            source.name.to_ascii_lowercase(),
+                            extent_key(*extent)
+                        )
                     }
                 },
                 ParameterType::Handle { kind, passing, .. } => format!(
@@ -85,6 +95,18 @@ fn method_signature(parameters: &[Statement]) -> Vec<String> {
             Some(format!("{direction}:{shape}"))
         })
         .collect()
+}
+
+/// Part of a method signature: array and scalar parameters differ, and so do
+/// arrays of different sizes. An extent the parser cannot read matches nothing,
+/// so an unknown size never reports a duplicate.
+fn extent_key(extent: Option<ParameterExtent>) -> String {
+    match extent {
+        None => String::new(),
+        Some(ParameterExtent::Indeterminate) => "[]".to_string(),
+        Some(ParameterExtent::Fixed(n)) => format!("[{n}]"),
+        Some(ParameterExtent::Unresolved(span)) => format!("[?{}]", span.start),
+    }
 }
 
 fn canonical_data_type(ty: &DataType) -> String {
@@ -270,6 +292,15 @@ pub fn declare_pass(
 /// The `&IF` statement and arm index a declaration sits in, outermost first.
 type ArmPath = Vec<(NodeId, u32)>;
 
+/// Whether two arm paths sit in different arms of one `&IF`, so only one of
+/// them compiles.
+fn exclusive(a: &ArmPath, b: &ArmPath) -> bool {
+    a.iter().any(|(pif, arm)| {
+        b.iter()
+            .any(|(other, other_arm)| other == pif && other_arm != arm)
+    })
+}
+
 struct Walker<'a> {
     ctx: &'a AnalysisContext<'a>,
     tree: ScopeTree,
@@ -279,6 +310,11 @@ struct Walker<'a> {
     arm_path: ArmPath,
     /// Arm path of each symbol declared inside an `&IF` arm.
     decl_arms: FxHashMap<SymbolId, ArmPath>,
+    /// The kind of each `TABLE FOR` / `DATASET FOR` parameter, and the arm
+    /// path of each direction it was given (also a `DATASET FOR` that names a
+    /// dataset of the scope), so a direction repeated where both can compile
+    /// still reports a duplicate.
+    table_params: FxHashMap<SymbolId, (HandleParamKind, Vec<(u32, ArmPath)>)>,
 }
 
 impl<'a> Walker<'a> {
@@ -293,19 +329,16 @@ impl<'a> Walker<'a> {
             diagnostics: Vec::new(),
             arm_path: Vec::new(),
             decl_arms: FxHashMap::default(),
+            table_params: FxHashMap::default(),
         }
     }
 
     /// Whether `prior` and a declaration made now sit in different arms of one
     /// `&IF`. Only one such arm is compiled, so they cannot collide.
     fn in_exclusive_arm(&self, prior: SymbolId) -> bool {
-        self.decl_arms.get(&prior).is_some_and(|prior_path| {
-            prior_path.iter().any(|(pif, arm)| {
-                self.arm_path
-                    .iter()
-                    .any(|(cur_pif, cur_arm)| cur_pif == pif && cur_arm != arm)
-            })
-        })
+        self.decl_arms
+            .get(&prior)
+            .is_some_and(|prior_path| exclusive(prior_path, &self.arm_path))
     }
 
     fn walk_block(&mut self, stmts: &[Statement], scope: ScopeId) {
@@ -339,13 +372,23 @@ impl<'a> Walker<'a> {
             // ---- Streams / Frames / Events --------------------------------
             StatementKind::DefineStream { name } => {
                 let routine = self.tree.var_binding_scope(scope);
-                self.declare_simple(
-                    stmt,
-                    routine,
-                    name,
-                    NamespaceId::Streams,
-                    SymbolKind::Stream,
-                );
+                // The compiler accepts a stream defined twice in one scope, as
+                // when the file and an include both define it.
+                let atom = fold_atom(&name.name);
+                if self
+                    .tree
+                    .get(routine)
+                    .get_in(NamespaceId::Streams, &atom)
+                    .is_none()
+                {
+                    self.declare_simple(
+                        stmt,
+                        routine,
+                        name,
+                        NamespaceId::Streams,
+                        SymbolKind::Stream,
+                    );
+                }
             }
             StatementKind::DefineFrame { name, fields, .. } => {
                 let routine = self.tree.var_binding_scope(scope);
@@ -939,6 +982,7 @@ impl<'a> Walker<'a> {
                 name,
                 type_source,
                 no_undo,
+                ..
             } => {
                 let data_type = match type_source {
                     TypeSource::Explicit(dt) => Some(ResolvedType::from_data_type(dt)),
@@ -970,7 +1014,13 @@ impl<'a> Walker<'a> {
                 // can tell them from the `*-HANDLE` forms, whose names really
                 // are handle values. See `SymbolFlags::PARAM_TABLE_LIKE`.
                 let table_like = matches!(kind, HandleParamKind::Table | HandleParamKind::Dataset);
-                self.declare(
+                // `INPUT` and `OUTPUT TABLE FOR t` in one scope name the same
+                // table twice, and `DATASET FOR ds` names the dataset `ds`:
+                // neither declares a new name.
+                if table_like && self.names_existing_table_or_dataset(scope, name, kind, dir_flag) {
+                    return;
+                }
+                let id = self.declare(
                     stmt,
                     routine,
                     name,
@@ -980,8 +1030,53 @@ impl<'a> Walker<'a> {
                     dir_flag | flag_if(table_like, SymbolFlags::PARAM_TABLE_LIKE),
                     None,
                 );
+                if let Some(id) = id.filter(|_| table_like) {
+                    let dirs = vec![(dir_flag.bits(), self.arm_path.clone())];
+                    self.table_params.insert(id, (*kind, dirs));
+                }
             }
         }
+    }
+
+    /// True when a `TABLE FOR` / `DATASET FOR` parameter declares nothing:
+    /// the scope holds the dataset it names, or a parameter of this name in
+    /// another direction. That parameter then also carries the new direction.
+    /// A direction already seen in an arm that can compile with this one, or
+    /// a parameter of the other kind, is a real duplicate and is not absorbed.
+    fn names_existing_table_or_dataset(
+        &mut self,
+        scope: ScopeId,
+        name: &Identifier,
+        kind: &HandleParamKind,
+        dir_flag: SymbolFlags,
+    ) -> bool {
+        let atom = fold_atom(&name.name);
+        let Some(prior) = self.tree.get(scope).get_in(NamespaceId::Values, &atom) else {
+            return false;
+        };
+        let sym = self.symbols.get(prior);
+        let names_dataset = sym.kind == SymbolKind::Dataset && *kind == HandleParamKind::Dataset;
+        if !names_dataset && !sym.flags.contains(SymbolFlags::PARAM_TABLE_LIKE) {
+            return false;
+        }
+        let (prior_kind, dirs) = self
+            .table_params
+            .entry(prior)
+            .or_insert_with(|| (*kind, Vec::new()));
+        if *prior_kind != *kind {
+            return false;
+        }
+        let repeated = dirs
+            .iter()
+            .any(|(dir, path)| *dir == dir_flag.bits() && !exclusive(path, &self.arm_path));
+        if repeated {
+            return false;
+        }
+        dirs.push((dir_flag.bits(), self.arm_path.clone()));
+        if !names_dataset {
+            self.symbols.get_mut(prior).flags |= dir_flag;
+        }
+        true
     }
 
     fn declare_temp_table(
@@ -7186,6 +7281,7 @@ mod tests {
                 name: id(name),
                 type_source: TypeSource::Explicit(ty),
                 no_undo: false,
+                extent: None,
             },
         })
     }
@@ -8768,6 +8864,7 @@ mod tests {
                 name: id("h"),
                 type_source: TypeSource::Explicit(DataType::Handle),
                 no_undo: false,
+                extent: None,
             },
         })]);
         let h = find_symbol(&tree, &symbols, NamespaceId::Values, "h").unwrap();
@@ -10960,6 +11057,7 @@ mod tests {
                     name: id("ttItem"),
                     type_source: TypeSource::Explicit(DataType::Integer),
                     no_undo: false,
+                    extent: None,
                 },
             }),
         ];
@@ -11433,6 +11531,60 @@ mod preproc_arm_tests {
             .filter(|d| d.code.0 == diagnostics::SEM0001)
             .map(|d| d.message)
             .collect()
+    }
+
+    #[test]
+    fn a_table_for_direction_in_both_preproc_arms_is_not_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   &IF DEFINED(X) <> 0 &THEN\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt APPEND.\n\
+                   &ELSE\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   &ENDIF\n";
+        assert_eq!(sem0001_messages(src), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_dataset_for_direction_in_both_preproc_arms_is_not_a_duplicate() {
+        let head = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                    DEFINE DATASET ds FOR tt.\n";
+        for (first, arms) in [
+            (
+                "DEFINE INPUT PARAMETER DATASET FOR ds.\n",
+                ["OUTPUT", "OUTPUT"],
+            ),
+            ("", ["INPUT", "INPUT"]),
+        ] {
+            let src = format!(
+                "{head}{first}&IF DEFINED(X) <> 0 &THEN\n\
+                 DEFINE {} PARAMETER DATASET FOR ds.\n\
+                 &ELSE\n\
+                 DEFINE {} PARAMETER DATASET FOR ds.\n\
+                 &ENDIF\n",
+                arms[0], arms[1]
+            );
+            assert_eq!(sem0001_messages(&src), Vec::<String>::new(), "{src}");
+        }
+    }
+
+    #[test]
+    fn a_direction_repeated_in_one_arm_is_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   &IF DEFINED(X) <> 0 &THEN\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER TABLE FOR tt.\n\
+                   &ENDIF\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
+    }
+
+    #[test]
+    fn a_table_for_and_a_dataset_for_of_one_name_are_a_duplicate() {
+        let src = "DEFINE TEMP-TABLE tt NO-UNDO FIELD f AS INTEGER.\n\
+                   DEFINE INPUT PARAMETER TABLE FOR tt.\n\
+                   DEFINE OUTPUT PARAMETER DATASET FOR tt.\n";
+        assert_eq!(sem0001_messages(src).len(), 1);
     }
 
     #[test]

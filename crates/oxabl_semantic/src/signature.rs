@@ -9,10 +9,9 @@
 //! `docs/design/strict-analysis-open-questions.md`, section 10.
 
 use oxabl_ast::{
-    HandleParamKind, ParameterDirection, ParameterType, PreprocIf, Span, Statement, StatementKind,
+    HandleParamKind, ParameterDirection, ParameterType, PreprocIf, Statement, StatementKind,
     TypeSource,
 };
-use oxabl_lexer::{Kind, Token};
 
 use crate::index::IndexName;
 use crate::types::{PrimitiveTy, ResolvedType};
@@ -79,9 +78,8 @@ pub struct ProgramSignatures {
 }
 
 impl ProgramSignatures {
-    /// The parameters `statements` define. `tokens` are the tokens the
-    /// statements were parsed from.
-    pub fn of(statements: &[Statement], tokens: &[Token]) -> Self {
+    /// The parameters `statements` define.
+    pub fn of(statements: &[Statement]) -> Self {
         let mut out = ProgramSignatures::default();
         let class = statements.iter().any(|s| {
             matches!(
@@ -94,11 +92,11 @@ impl ProgramSignatures {
         if class || statements.is_empty() {
             return out;
         }
-        let (main, written) = collect(statements, tokens);
+        let (main, written) = collect(statements);
         out.main = main;
         out.main_written = written;
         let mut found = Vec::new();
-        procedures(statements, tokens, &mut found);
+        procedures(statements, &mut found);
         for (name, list, written) in found {
             out.procedures.push((name.clone(), list));
             out.procedures_written.push((name, written));
@@ -146,9 +144,9 @@ impl ProgramSignatures {
 
 /// The parameters one block defines, or `None` when something hides part of
 /// the list, and how many parameter statements the block's own text holds.
-fn collect(statements: &[Statement], tokens: &[Token]) -> (Option<Signature>, usize) {
+fn collect(statements: &[Statement]) -> (Option<Signature>, usize) {
     let mut params = Vec::new();
-    let known = collect_into(statements, tokens, &mut params);
+    let known = collect_into(statements, &mut params);
     let written = params.len();
     let signature = known.then_some(Signature {
         params,
@@ -160,7 +158,7 @@ fn collect(statements: &[Statement], tokens: &[Token]) -> (Option<Signature>, us
 /// Add the parameters of `statements` to `params`, looking inside a `DO` block
 /// and a label. Returns `false` when something hides part of the list: an
 /// include, a conditional or a loop body that holds a parameter.
-fn collect_into(statements: &[Statement], tokens: &[Token], params: &mut Vec<Param>) -> bool {
+fn collect_into(statements: &[Statement], params: &mut Vec<Param>) -> bool {
     let mut known = true;
     for s in statements {
         match &s.kind {
@@ -168,7 +166,7 @@ fn collect_into(statements: &[Statement], tokens: &[Token], params: &mut Vec<Par
                 direction,
                 param_type,
             } => {
-                if let Some(p) = param(direction, param_type, s.span, tokens) {
+                if let Some(p) = param(direction, param_type) {
                     params.push(p);
                 }
             }
@@ -176,7 +174,7 @@ fn collect_into(statements: &[Statement], tokens: &[Token], params: &mut Vec<Par
                 known = false;
             }
             StatementKind::PreprocIf(branches) if hides_parameters(branches) => known = false,
-            StatementKind::Block(body) => known &= collect_into(body, tokens, params),
+            StatementKind::Block(body) => known &= collect_into(body, params),
             StatementKind::Do {
                 from: None,
                 to: None,
@@ -185,9 +183,9 @@ fn collect_into(statements: &[Statement], tokens: &[Token], params: &mut Vec<Par
                 on_actions,
                 body,
                 ..
-            } if on_actions.is_empty() => known &= collect_into(body, tokens, params),
+            } if on_actions.is_empty() => known &= collect_into(body, params),
             StatementKind::Label { body, .. } => {
-                known &= collect_into(std::slice::from_ref(&**body), tokens, params);
+                known &= collect_into(std::slice::from_ref(&**body), params);
             }
             // A loop or a condition that defines a parameter: how many
             // times it runs is a run-time fact.
@@ -240,11 +238,7 @@ fn hides_parameters(branches: &PreprocIf<Vec<Statement>>) -> bool {
 }
 
 /// The internal procedures of `statements`, nested `&IF` branches included.
-fn procedures(
-    statements: &[Statement],
-    tokens: &[Token],
-    out: &mut Vec<(IndexName, Option<Signature>, usize)>,
-) {
+fn procedures(statements: &[Statement], out: &mut Vec<(IndexName, Option<Signature>, usize)>) {
     for s in statements {
         match &s.kind {
             StatementKind::Procedure {
@@ -257,17 +251,17 @@ fn procedures(
                 if let Some(entry) = out.iter_mut().find(|(n, _, _)| *n == key) {
                     entry.1 = None;
                 } else {
-                    let (list, written) = collect(body, tokens);
+                    let (list, written) = collect(body);
                     out.push((key, list, written));
                 }
             }
             StatementKind::PreprocIf(branches) => {
-                procedures(&branches.then_branch, tokens, out);
+                procedures(&branches.then_branch, out);
                 for (_, b) in &branches.elseif_branches {
-                    procedures(b, tokens, out);
+                    procedures(b, out);
                 }
                 if let Some(b) = &branches.else_branch {
-                    procedures(b, tokens, out);
+                    procedures(b, out);
                 }
             }
             _ => {}
@@ -277,12 +271,7 @@ fn procedures(
 
 /// One `DEFINE ... PARAMETER` statement as a parameter, or `None` for a
 /// `RETURN` parameter, which no argument fills.
-fn param(
-    direction: &ParameterDirection,
-    param_type: &ParameterType,
-    span: Span,
-    tokens: &[Token],
-) -> Option<Param> {
+fn param(direction: &ParameterDirection, param_type: &ParameterType) -> Option<Param> {
     let mode = match direction {
         ParameterDirection::Input => ParamMode::Input,
         ParameterDirection::Output => ParamMode::Output,
@@ -290,8 +279,12 @@ fn param(
         ParameterDirection::Return => return None,
     };
     let shape = match param_type {
-        ParameterType::Variable { type_source, .. } => {
-            let array = tokens_in(tokens, span).any(|t| t.kind == Kind::Extent);
+        ParameterType::Variable {
+            type_source,
+            extent,
+            ..
+        } => {
+            let array = extent.is_some();
             ParamShape::Scalar(match type_source {
                 TypeSource::Explicit(t) if !array => match ResolvedType::from_data_type(t) {
                     ResolvedType::Primitive(p) => Some(p),
@@ -311,14 +304,6 @@ fn param(
     Some(Param { mode, shape })
 }
 
-/// Significant tokens within `span`.
-fn tokens_in(tokens: &[Token], span: Span) -> impl Iterator<Item = &Token> {
-    let from = tokens.partition_point(|t| t.start < span.start as usize);
-    tokens[from..]
-        .iter()
-        .take_while(move |t| t.end <= span.end as usize && t.kind != Kind::Eof)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,7 +311,7 @@ mod tests {
     fn signatures(source: &str) -> ProgramSignatures {
         let tokens = oxabl_lexer::tokenize(source);
         let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
-        ProgramSignatures::of(&program.statements, &tokens)
+        ProgramSignatures::of(&program.statements)
     }
 
     fn scalar(mode: ParamMode, ty: Option<PrimitiveTy>) -> Param {

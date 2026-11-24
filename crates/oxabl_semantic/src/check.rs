@@ -1461,6 +1461,7 @@ mod tests {
                 name: ident("n"),
                 type_source: TypeSource::Explicit(DataType::Integer),
                 no_undo: false,
+                extent: None,
             },
         });
         let pid = param.id;
