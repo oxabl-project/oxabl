@@ -67,7 +67,11 @@ use oxabl_handles::{FileHandles, Placement};
 use oxabl_semantic::{AnalysisContext, Semantic};
 
 use super::HD005;
-use super::handle_support::{not_judged, warning, with_fragment_note};
+use super::handle_support::{describe, not_judged, warning, with_fragment_note};
+use super::syntactic::file_span;
+
+/// The most other creates shown as related locations.
+const MAX_OTHERS: usize = 8;
 
 /// Kebab-case rule name.
 pub const NAME: &str = "missing-widget-pool";
@@ -118,6 +122,20 @@ pub fn check(handles: &FileHandles, ctx: &AnalysisContext) -> Vec<Diagnostic> {
             .to_string(),
         first.create.span,
     );
+    let mut others: Vec<_> = unpooled
+        .iter()
+        .filter(|o| o.create.span != first.create.span)
+        .collect();
+    others.sort_by_key(|o| o.create.span.start);
+    let shown = others.len().min(MAX_OTHERS);
+    let mut d = d;
+    for (k, o) in others.iter().take(shown).enumerate() {
+        let mut message = format!("{} is also created with no widget pool", describe(o));
+        if k + 1 == shown && others.len() > shown {
+            message.push_str(&format!(" (and {} more)", others.len() - shown));
+        }
+        d = d.with_label(file_span(ctx, o.create.span), message);
+    }
     vec![with_fragment_note(
         d,
         ctx.source_context.is_include_fragment(),

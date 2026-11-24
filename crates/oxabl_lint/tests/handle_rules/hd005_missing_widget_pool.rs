@@ -2,7 +2,7 @@
 
 use oxabl_lint::missing_widget_pool::run;
 
-use super::{check, check_fragment, help, lines};
+use super::{check, check_fragment, help, labels, lines};
 
 #[test]
 fn reports_once_at_the_first_unpooled_create() {
@@ -167,4 +167,25 @@ CREATE QUERY hQ1.
 ";
     let src = format!("{included}MESSAGE \"x\".\n");
     assert!(super::check_with_include(run, &src, included.len() as u32).is_empty());
+}
+
+#[test]
+fn a_finding_relates_the_other_unpooled_creates() {
+    let src = "\
+DEFINE VARIABLE hQuery AS HANDLE NO-UNDO.
+DEFINE VARIABLE hBuffer AS HANDLE NO-UNDO.
+CREATE QUERY hQuery.
+CREATE BUFFER hBuffer FOR TABLE \"customer\".
+DELETE OBJECT hQuery.
+DELETE OBJECT hBuffer.
+";
+    let diags = check(run, src);
+    assert_eq!(lines(src, &diags), [3]);
+    assert_eq!(
+        labels(src, &diags[0]),
+        [(
+            4,
+            "the buffer in `hBuffer` is also created with no widget pool".to_string()
+        )]
+    );
 }

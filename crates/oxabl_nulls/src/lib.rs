@@ -6,6 +6,14 @@
 //! [`FileNulls::value_before`] separates known values, possible `?` values,
 //! Unknown and unreachable points.
 //!
+//! The first use of each variable and kind also carries its sources
+//! ([`ValueUse::sources`]): the declaration, the unit start, assignments (the
+//! pair, in an `ASSIGN`), tests and record reads on the paths that bring the
+//! `?` to it, found by a walk back from the use over the solved facts. The
+//! walks of one unit share a work budget that counts the statements they
+//! replay. A use whose walk goes past it, or meets a `?` it cannot account
+//! for, gets no sources.
+//!
 //! [`FileNulls::with_fields`] adds a second solve over the database fields the
 //! schema starts at `?` (`INITIAL ?`, not `MANDATORY`): a field read is a
 //! possible source of `?` until a guard, a write or a record change says
@@ -64,7 +72,7 @@ mod fuzz;
 mod model;
 mod values;
 pub use fields::FieldSources;
-pub use values::{ValueState, ValueUse};
+pub use values::{ValueSource, ValueSourceKind, ValueState, ValueUse};
 
 pub use model::{FailedFind, MissingRecord};
 
@@ -101,10 +109,7 @@ impl FileNulls {
     /// The first use of [`values`](Self::values) per unit, variable and kind:
     /// the uses after it repeat the same source.
     pub fn first_values(&self) -> impl Iterator<Item = &ValueUse> {
-        let mut seen = rustc_hash::FxHashSet::default();
-        self.values
-            .iter()
-            .filter(move |u| seen.insert((u.unit, u.name.to_ascii_lowercase(), u.propagation)))
+        values::first_uses(&self.values)
     }
 
     /// Uses of database fields that may hold `?`, in source order: a field
@@ -118,10 +123,7 @@ impl FileNulls {
     /// The first use of [`field_values`](Self::field_values) per unit, field
     /// and kind.
     pub fn first_field_values(&self) -> impl Iterator<Item = &ValueUse> {
-        let mut seen = rustc_hash::FxHashSet::default();
-        self.field_values
-            .iter()
-            .filter(move |u| seen.insert((u.unit, u.name.to_ascii_lowercase(), u.propagation)))
+        values::first_uses(&self.field_values)
     }
 
     /// Read a local variable before a node. Names are case insensitive.
