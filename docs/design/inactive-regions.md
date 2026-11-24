@@ -187,7 +187,9 @@ last regions of each document with the document version they are for
 again when an editor shows the document, but only while the document has that
 version. An edit makes a new version, and the regions of the old one are kept
 for it only when the edit cannot change a decision: one insertion of text with
-no `& { } / * " ' ~`, on lines that hold none of them after the edit. Then the
+no `& { } / * " ' ~`, on lines that hold none of them after the edit. The
+line must not continue a directive from an earlier line: an `&IF` or `&ELSEIF`
+with no `&THEN` yet, or a definition after a `~` at the end of a line. Then the
 regions move with the text, and a region that the insertion touches goes. Any
 other edit (a removal, a replacement, a directive line, several changes at
 once) removes the regions until the next publish. An edit away from a region

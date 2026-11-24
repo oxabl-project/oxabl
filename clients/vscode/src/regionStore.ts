@@ -53,11 +53,32 @@ export function shiftRegions(regions: Region[], edit: Edit): Region[] {
 const DECIDING = /[&{}\/*"'~]/;
 
 /**
+ * Whether the line `line` sits inside a directive that began on an earlier
+ * line: an `&IF` or `&ELSEIF` with no `&THEN` yet, or a definition whose value
+ * continues after a `~` at the end of a line. `lineAt` reads the new text.
+ */
+function insideOpenDirective(line: number, lineAt: (line: number) => string): boolean {
+  let tail = "";
+  for (let k = line - 1; k >= 0; k--) {
+    const text = lineAt(k);
+    if (text.trimEnd().endsWith("~")) {
+      return true;
+    }
+    tail = `${text}\n${tail}`;
+    if (text.trimStart().startsWith("&")) {
+      return /^\s*&\s*(if|elseif)\b/i.test(text) && !/&\s*then/i.test(tail);
+    }
+  }
+  return false;
+}
+
+/**
  * Whether `edit` cannot change a branch decision, so the regions of the text
  * before it still hold for the text after it. Only an insertion qualifies:
  * removed text is not known. Neither the inserted text nor the lines that hold
  * it after the edit (`lineAt`, in the new text) may hold a character that
- * changes a decision.
+ * changes a decision, and the first of them may not continue a directive that
+ * began on an earlier line.
  */
 export function keepsDecisions(edit: Edit, lineAt: (line: number) => string): boolean {
   const { start, end } = edit.range;
@@ -70,7 +91,7 @@ export function keepsDecisions(edit: Edit, lineAt: (line: number) => string): bo
       return false;
     }
   }
-  return true;
+  return !insideOpenDirective(start.line, lineAt);
 }
 
 /**

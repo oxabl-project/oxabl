@@ -21,6 +21,7 @@ const FILES = {
   "shared.i":
     '&IF "{&flavour}" = "red" &THEN\nMESSAGE "red flavour".\n&ELSE\nMESSAGE "other flavour".\n&ENDIF\n' +
     '&IF OPSYS = "VMS" &THEN\nMESSAGE "vms only".\n&ENDIF\n',
+  "cond.p": 'MESSAGE "before".\n&IF 1 = 1 AND\n    2 = 3 AND\n    3 = 3 &THEN\nMESSAGE "multi".\n&ENDIF\n',
   "red.p": "&SCOPED-DEFINE flavour red\n{shared.i}\n",
 };
 
@@ -137,6 +138,19 @@ export async function inactiveRegions(ctx) {
     await choose(page, "Fragment mode");
     dimmed = await dimmedAre(page, [VMS]);
     check(`${name}: back in fragment mode only the OPSYS branch is dimmed`, dimmed.ok, dimmed.seen);
+
+    // 4. Typing on the middle line of a multi-line condition changes the decision, and the dimming follows.
+    await openFile(page, "cond.p");
+    dimmed = await dimmedAre(page, ['MESSAGE "multi".']);
+    check(`${name}: a false multi-line condition dims its branch`, dimmed.ok, dimmed.seen);
+    await page.keyboard.press("Control+G");
+    await page.locator(".quick-input-widget input").first().waitFor({ state: "visible" });
+    await page.keyboard.type("3");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Home");
+    await page.keyboard.type("NOT ");
+    dimmed = await dimmedAre(page, []);
+    check(`${name}: typing NOT on the middle line of the condition removes the dimming`, dimmed.ok, dimmed.seen);
   } finally {
     await vs.close();
     await sleep(1500);

@@ -112,9 +112,10 @@ A folder with an `oxabl.toml` is a project. A project also gets:
   `process-architecture`, or `DBTYPE` of a database that `database-types` does
   not name. Their defaults do not dim anything. An include gets no dimming when
   a root that includes it has an include that oxabl cannot find. While you
-  type plain text, the dimming stays; an edit of a directive line, a removal or
-  a paste with `&`, `{`, a comment or a quote removes it until oxabl has read
-  the new text. Set `oxabl.inactiveRegions.enable` to `false` to turn the
+  type plain text, the dimming stays; an edit of a directive line, a removal, a
+  paste with `&`, `{`, a comment or a quote, or text inside a multi-line `&IF`
+  condition or a definition that continues after `~` removes it until oxabl
+  has read the new text. Set `oxabl.inactiveRegions.enable` to `false` to turn the
   dimming off.
 - **Expanded compilation unit.** **oxabl: Show Expanded Compilation Unit**
   opens a read-only view beside the file: the source oxabl parsed after
