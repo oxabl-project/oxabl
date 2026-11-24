@@ -9,6 +9,9 @@ come from the oxabl source (`oxabl_lint` rule registry).
 Name a rule by code or by kebab name in `[workspace.lint]`:
 
 ```toml
+[workspace]
+name = "acme"
+
 [workspace.lint]
 enable = ["strict.locks"]      # a group; "strict" turns on every strict.* group
 unused-variable = "info"       # by name

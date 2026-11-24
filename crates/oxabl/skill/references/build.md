@@ -14,6 +14,9 @@ Read this when you must compile ABL, read a build's results, or set up
 - OpenEdge (an AVM) the command can start: on the host or in a container.
 
 ```toml
+[workspace]
+name = "acme"
+
 [build]
 rcode = "beside-source"
 

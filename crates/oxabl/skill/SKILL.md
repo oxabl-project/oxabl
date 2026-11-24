@@ -12,11 +12,23 @@ OpenEdge. Run `oxabl <cmd> --help` when a flag is unclear: it is the reference.
 
 ## After you edit ABL
 
-Run this loop on each file you changed, until `check` exits 0:
+Before you edit a file, record what it already has, so you can tell your
+findings from old ones:
+
+```sh
+oxabl check src/orders/post.p --json
+oxabl format src/orders/post.p --check
+```
+
+After the edit, run `check` again and fix the findings your change added.
+Stop when `check` exits 0, or when it reports only the findings it reported
+before. Do not fix old findings unless the task asks. Run `format` on the file
+only when `format --check` passed before your edit (the project keeps it
+formatted) or the person asks; else it puts unrelated layout changes in the
+diff.
 
 ```sh
 oxabl format src/orders/post.p
-oxabl check src/orders/post.p --json
 ```
 
 - `format` and `check` take **one** path: a file or a directory. Run them once
@@ -98,6 +110,8 @@ exits 2 and says so. Then do not invent one: run `oxabl check` and
   path you pass; `build` the nearest above the current directory (or `--root`).
   Relative paths in it are relative to its directory.
 - With no `oxabl.toml`, defaults apply: no include paths, no schema.
+- A new `oxabl.toml` needs `[workspace]` with `name = "..."`; without it
+  every command exits 2 (`missing field name`).
 - `-I DIR` (repeatable) adds include directories before
   `[workspace.sources].include_paths`. `--schema PATH` (a `.df` or a directory
   of them) replaces `[workspace.schema].files`.
