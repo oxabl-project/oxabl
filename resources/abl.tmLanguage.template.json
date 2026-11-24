@@ -140,7 +140,7 @@
               "include": "#line-continuation"
             },
             {
-              "match": "(?i)(?<![\\w#$%&-])({{word:&GLOBAL-DEFINE}}|{{word:&SCOPED-DEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
+              "match": "(?i){{non-boundary}}(?<![#$%&-])({{word:&GLOBAL-DEFINE}}|{{word:&SCOPED-DEFINE}})(?![\\w#$%&-])(?:\\s+([A-Za-z_][\\w#$%&-]*))?",
               "captures": {
                 "1": {
                   "name": "keyword.control.directive.define.abl"
