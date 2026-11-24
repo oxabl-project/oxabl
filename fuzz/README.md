@@ -41,13 +41,16 @@ fuzz/target/release/slowest -n 10 fuzz/corpus/lint/*   # the slowest inputs of a
 
 Findings land in `fuzz/artifacts/<target>`; minimise one with
 `cargo +nightly fuzz tmin <target> <file>`. `fuzz/findings/` keeps the minimised
-inputs of the findings in the table below.
+inputs of the findings in the table below. `crates/oxabl/tests/format_stability.rs`
+formats each input of `findings/format` twice through `oxabl format --stdout`
+and fails when the second pass changes the output.
 
 | Input | Target | Result |
 | --- | --- | --- |
 | `findings/parser/stack-overflow-nested-parens-6kb` | `lint`, `format`, `preprocess_parse` | Stack overflow in the expression parser. |
 | `findings/parser/stack-overflow-18kb` | same | Stack overflow in the statement parser. |
-| `findings/format/bare-cr-not-stable.abl` | `format` | The first format gives `"\r\n"`, the second `""`. |
+| `findings/format/bare-cr-not-stable.abl` | `format` | The first format gives `"\r\n"`, the second `""`: the formatter kept a `\r` at the end of a line, and the line ending it wrote after it made a new `\r\n`. The formatter now reads a run of `\r` before a `\n` as part of the line ending, as the lexer reads `\r` as whitespace. |
+| `findings/format/string-newline-lone-period.abl` | `format` | The first format indents the lone `.` by one space, the second removes it. The statement `F` starts on a line that begins inside the string, so that line keeps its bytes, but its continuation line moved as if the line moved to its depth. A continuation line now moves by nothing when the first line of its statement keeps its bytes. |
 | `findings/daemon/stack-overflow-from-edits.cls` | `oxabl lsp` (see `scripts/soak`) | 416 `(` in a document kill the daemon. |
 | `findings/daemon/macro-doubling-1gb.p` | `oxabl check` | 28 `&SCOPED-DEFINE` lines that double each other: 1.3 GB, and 3 GB at 30 lines. |
 | `findings/outline/define-no-valid-symbol-6b` | `outline` | `&scop` plus a vertical tab: the `PreprocessorDefine` name is only whitespace, so `clean_name` gives `None` and the walker's `debug_assert` in `make` fires. |
