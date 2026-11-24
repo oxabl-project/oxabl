@@ -36,6 +36,10 @@ use oxabl_workspace::is_include_fragment;
 
 use crate::{Expansion, LintPipeline, OutlineKind, OutlineSymbol, outline};
 
+mod hover;
+
+pub use hover::Hover;
+
 /// Where a name is declared: a file, and the declaring name's bytes in it.
 /// `span` is `None` when the target is the file itself (a program, an include).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +101,9 @@ pub struct Navigation<'s, 'a> {
     /// Where the parser first recovered from an error in the expanded text.
     pub(crate) recovered: Option<VirtualSpan>,
     file_of: &'s dyn Fn(IndexedFileId) -> Option<PathBuf>,
+    /// The expanded unit lexed and parsed again, on the first request that
+    /// needs its statements.
+    parsed: OnceCell<Parsed>,
     /// The unit's calls, extracted on the first `RUN` site asked about.
     calls: OnceCell<FileCalls>,
     /// The outline of each file read for an answer, by path. `None` when the
@@ -172,6 +179,20 @@ impl SpanIndex {
     }
 }
 
+/// One text lexed and parsed.
+struct Parsed {
+    tokens: Vec<oxabl_lexer::Token>,
+    program: oxabl_parser::Program,
+}
+
+impl Parsed {
+    fn of(text: &str) -> Parsed {
+        let tokens = oxabl_lexer::tokenize(text);
+        let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
+        Parsed { tokens, program }
+    }
+}
+
 impl<'a> LintPipeline<'a> {
     /// Analyse `expansion` for navigation. `None` when its preprocessing failed.
     ///
@@ -207,6 +228,7 @@ impl<'a> LintPipeline<'a> {
             semantic,
             recovered,
             file_of,
+            parsed: OnceCell::new(),
             calls: OnceCell::new(),
             outlines: RefCell::new(HashMap::new()),
             routines: OnceCell::new(),
@@ -344,11 +366,61 @@ impl Navigation<'_, '_> {
     /// The targets of the innermost name at expanded offset `virt`. `None` when
     /// no name there has an answer, `Some(empty)` when the name has no target.
     fn answer_at(&self, virt: u32) -> Option<Vec<Key>> {
-        let symbols = &self.semantic.symbols;
-        let all = symbols.sites();
+        self.innermost(
+            virt,
+            &|sym| self.declaration_keys(sym),
+            &|target, span| self.site_keys(target, span),
+            &|keys| !keys.is_empty(),
+            Vec::new,
+        )
+    }
+
+    /// What the innermost name at expanded offset `virt` refers to, as
+    /// `symbol` and `site` answer for it. `found` tells an answer from an
+    /// answer of "nothing"; `nothing` makes the latter. `None` when no name
+    /// there has an answer.
+    fn innermost<T>(
+        &self,
+        virt: u32,
+        symbol: &dyn Fn(SymbolId) -> T,
+        site: &dyn Fn(&SiteTarget, VirtualSpan) -> Option<T>,
+        found: &dyn Fn(&T) -> bool,
+        nothing: fn() -> T,
+    ) -> Option<T> {
+        let all = self.semantic.symbols.sites();
         let site_index = self.site_index();
         let mut sites: Vec<_> = site_index.holding(virt).map(|at| &all[at]).collect();
         sites.sort_by_key(|site| (site.span.end - site.span.start, site.span.start));
+        let declaration = self.declaration_at(virt);
+        // Sites of one length name one thing; the first with an answer wins, and
+        // one that answers "nothing" only stops the search when none has one.
+        let mut at = 0;
+        while at < sites.len() {
+            let length = sites[at].span.end - sites[at].span.start;
+            if let Some((sym, symbol_at)) = declaration
+                && symbol_at.name_span.end - symbol_at.name_span.start <= length
+            {
+                return Some(symbol(sym));
+            }
+            let mut answered = false;
+            while at < sites.len() && sites[at].span.end - sites[at].span.start == length {
+                match site(&sites[at].target, sites[at].span) {
+                    Some(answer) if found(&answer) => return Some(answer),
+                    Some(_) => answered = true,
+                    None => {}
+                }
+                at += 1;
+            }
+            if answered {
+                return Some(nothing());
+            }
+        }
+        declaration.map(|(sym, _)| symbol(sym))
+    }
+
+    /// The declaration whose own name holds expanded offset `virt`.
+    fn declaration_at(&self, virt: u32) -> Option<(SymbolId, &oxabl_semantic::Symbol)> {
+        let symbols = &self.semantic.symbols;
         let (declared, declaration_index) = self.declarations.get_or_init(|| {
             let declared: Vec<SymbolId> = symbols
                 .iter()
@@ -368,35 +440,15 @@ impl Navigation<'_, '_> {
             );
             (declared, index)
         });
-        let declaration = declaration_index
+        declaration_index
             .holding(virt)
             .map(|at| (declared[at], symbols.get(declared[at])))
-            .min_by_key(|(sym, symbol)| (symbol.name_span.end - symbol.name_span.start, sym.raw()));
-        let declared_keys = || declaration.map(|(sym, _)| self.declaration_keys(sym));
-        // Sites of one length name one thing; the first with a target wins, and
-        // one that answers "nothing" only stops the search when none has one.
-        let mut at = 0;
-        while at < sites.len() {
-            let length = sites[at].span.end - sites[at].span.start;
-            if let Some((_, symbol)) = declaration
-                && symbol.name_span.end - symbol.name_span.start <= length
-            {
-                return declared_keys();
-            }
-            let mut answered = false;
-            while at < sites.len() && sites[at].span.end - sites[at].span.start == length {
-                match self.site_keys(&sites[at].target, sites[at].span) {
-                    Some(keys) if !keys.is_empty() => return Some(keys),
-                    Some(_) => answered = true,
-                    None => {}
-                }
-                at += 1;
-            }
-            if answered {
-                return Some(Vec::new());
-            }
-        }
-        declared_keys()
+            .min_by_key(|(sym, symbol)| (symbol.name_span.end - symbol.name_span.start, sym.raw()))
+    }
+
+    /// The expanded unit, lexed and parsed once.
+    fn parsed(&self) -> &Parsed {
+        self.parsed.get_or_init(|| Parsed::of(&self.expanded.text))
     }
 
     /// The navigation sites, indexed by start once.
@@ -628,13 +680,22 @@ impl Navigation<'_, '_> {
         }
     }
 
+    /// The places of a `RUN p IN h` whose name is at `span`, as
+    /// [`handle_call_keys`](Self::handle_call_keys) finds them.
+    pub(crate) fn handle_call_targets(&self, span: VirtualSpan) -> Option<Vec<Target>> {
+        self.handle_call_keys(span)
+            .map(|keys| dedupe(keys.into_iter().map(Key::into_target).collect()))
+    }
+
     /// The calls of the expanded unit, extracted once.
     pub(crate) fn calls(&self) -> &FileCalls {
         self.calls.get_or_init(|| {
-            let text = &self.expanded.text;
-            let tokens = oxabl_lexer::tokenize(text);
-            let program = oxabl_parser::Parser::new(&tokens, text).parse_program();
-            FileCalls::extract(&program.statements, text, &tokens)
+            let parsed = self.parsed();
+            FileCalls::extract(
+                &parsed.program.statements,
+                &self.expanded.text,
+                &parsed.tokens,
+            )
         })
     }
 
@@ -868,20 +929,21 @@ impl Navigation<'_, '_> {
         if let Some(table) = symbols.field_table(sym) {
             return self.field_target(table, symbol.name.as_ref());
         }
-        let table_named = matches!(symbol.kind, SymbolKind::Buffer | SymbolKind::TempTable)
-            && symbol.table_id.is_some()
-            && (symbol.declaration == NodeId::DUMMY || self.names_its_table(symbol));
-        if table_named {
-            return symbol
-                .table_id
-                .and_then(|table| self.table_target(table))
-                .into_iter()
-                .collect();
+        if let Some(table) = self.table_of(symbol) {
+            return self.table_target(table).into_iter().collect();
         }
         if symbol.declaration == NodeId::DUMMY {
             return Vec::new();
         }
         self.place(symbol.name_span).into_iter().collect()
+    }
+
+    /// The schema table a buffer means: one the analysis made for a table name
+    /// (`FOR EACH customer`), or one named like the table it reads.
+    fn table_of(&self, symbol: &oxabl_semantic::Symbol) -> Option<oxabl_schema::TableId> {
+        let table_named = matches!(symbol.kind, SymbolKind::Buffer | SymbolKind::TempTable)
+            && (symbol.declaration == NodeId::DUMMY || self.names_its_table(symbol));
+        symbol.table_id.filter(|_| table_named)
     }
 
     /// Whether a buffer's name is the name of the table it reads, so the name at

@@ -1022,6 +1022,38 @@ fn effect_summaries(
     Arc::new(summaries)
 }
 
+/// [`effect_summaries`] for a file that is not an open buffer, read from disk:
+/// the root of a selected include context, or the class file of a method that
+/// a hover names. Memoized per disk revision of each file it read, so a second
+/// hover on the same routine reuses it.
+#[salsa::tracked(returns(clone), no_eq, lru = 16)]
+fn file_effect_summaries(
+    db: &dyn AblDatabase,
+    file: IndexedFile,
+    schema: SchemaHandle,
+) -> Arc<oxabl_pipeline::WorkspaceEffects> {
+    let _revision = schema.revision(db);
+    let _environment = db.config().index.environment(db).preprocessor(db);
+    let _disk = file.disk_revision(db);
+    let path = file.path(db).clone();
+    let fs = SummaryFs {
+        inner: Arc::clone(&db.config().fs),
+        paths: Default::default(),
+    };
+    let run = LintPipeline::new(&db.config().pipeline, &fs).with_preprocess(db.config().preprocess);
+    let handle = run.with_file(&path);
+    let summaries = match fs.read(&path) {
+        Ok(text) => handle.build_effect_summaries(&handle.expand(&text), &[]),
+        Err(_) => oxabl_pipeline::WorkspaceEffects::default(),
+    };
+    for path in fs.paths.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        let file = db.config().index.file_for(db, path);
+        let _revision = file.disk_revision(db);
+    }
+    db.unwind_if_revision_cancelled();
+    Arc::new(summaries)
+}
+
 /// Phase two: the shared pipeline's collection over the memoized expansion,
 /// yielding the full root-resolved diagnostic set. Depends on the expansion and
 /// on the schema handle's revision (so schema hot-reload invalidates, R16).
@@ -1124,6 +1156,9 @@ pub fn compute_diagnostics(
 pub struct ContextDiagnostics {
     /// The semantic and lint findings in the include, with spans in its own bytes.
     pub findings: Vec<oxabl_analyze::IncludeOriginDiagnostic>,
+    /// The files the labels of `findings` point into: the root, and each
+    /// include of the expansion, with the text the analysis read.
+    pub label_files: Vec<oxabl_analyze::LabelFile>,
     /// Why the root gives no answer for the include, when it gives none.
     pub failure: Option<String>,
     /// The root and every include its expansion read, for the watcher.
@@ -1155,20 +1190,30 @@ pub fn compute_context_diagnostics(
         match analysed {
             Ok(unit) => {
                 let dependencies = unit.dependencies();
-                let findings = unit
+                let findings: Vec<_> = unit
                     .diagnostics
                     .include_origin
                     .into_iter()
                     .filter(|finding| crate::session::canonical_path(&finding.path) == target)
                     .collect();
+                let mut label_files = unit.diagnostics.label_files;
+                if let Some(expanded) = unit.expansion.expanded() {
+                    label_files.push(oxabl_analyze::LabelFile {
+                        file: expanded.root_file(),
+                        path: unit.root.clone(),
+                        text: unit.sources.get(&unit.root).cloned(),
+                    });
+                }
                 ContextDiagnostics {
                     findings,
+                    label_files,
                     failure: None,
                     dependencies,
                 }
             }
             Err((reason, dependencies)) => ContextDiagnostics {
                 findings: Vec::new(),
+                label_files: Vec::new(),
                 failure: Some(reason),
                 dependencies,
             },
@@ -1267,11 +1312,20 @@ fn analyse_root(
 }
 
 /// What a navigation request asks of one compilation unit.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum NavigationQuery {
     /// The declarations of the name at byte `offset` of `file`, which is the
     /// root or an include its expansion reads.
     Definition { file: PathBuf, offset: u32 },
+    /// What the name or keyword at byte `offset` of `file` is, which is the
+    /// root or an include its expansion reads. A routine's hover adds its
+    /// database effects, from the memoized summaries of `buffer` when the root
+    /// is open, else from summaries built for this request.
+    Hover {
+        file: PathBuf,
+        offset: u32,
+        buffer: Option<Buffer>,
+    },
     /// The links written in the root itself.
     Links,
 }
@@ -1282,6 +1336,8 @@ pub enum NavigationQuery {
 pub struct NavigationAnswer {
     pub definitions: Vec<oxabl_pipeline::Target>,
     pub links: Vec<oxabl_pipeline::Link>,
+    /// The hover, and the file its span is in.
+    pub hover: Option<(PathBuf, oxabl_pipeline::Hover)>,
     pub texts: HashMap<PathBuf, Arc<str>>,
 }
 
@@ -1302,6 +1358,43 @@ pub fn compute_navigation(
             NavigationQuery::Definition { file, offset } => {
                 let file = unit.spelled(file);
                 answer.definitions = unit.navigation.definitions(&file, *offset);
+            }
+            NavigationQuery::Hover {
+                file,
+                offset,
+                buffer,
+            } => {
+                let file = unit.spelled(file);
+                if let Some(mut hover) = unit.navigation.hover(&file, *offset) {
+                    if let Some(routine) = hover.routine.clone() {
+                        let index = &snapshot.config().index;
+                        let mut effects = match buffer {
+                            Some(buffer) => effect_summaries(snapshot, *buffer, schema),
+                            None => {
+                                let input = index.file_for(snapshot, root);
+                                file_effect_summaries(snapshot, input, schema)
+                            }
+                        };
+                        // The file the summaries read from its buffer, not disk.
+                        let mut from_buffer = buffer.map(|_| crate::session::canonical_path(root));
+                        // A method of another class: the summaries of its file.
+                        let file = routine.file();
+                        if effects.file(file).is_none() {
+                            let input = index.file_for(snapshot, file);
+                            effects = file_effect_summaries(snapshot, input, schema);
+                            from_buffer = None;
+                        }
+                        let unsaved = unsaved_sources(&effects, unit.fs, from_buffer.as_deref());
+                        hover.add_effects(&effects, &unsaved);
+                    }
+                    let path = search::normalize_lexically(&file);
+                    if hover.span.is_some()
+                        && let Some(text) = unit.read(&file)
+                    {
+                        answer.texts.insert(path.clone(), text);
+                    }
+                    answer.hover = Some((path, hover));
+                }
             }
             NavigationQuery::Links => {
                 answer.links = unit.navigation.links();
@@ -1330,7 +1423,7 @@ pub struct NavigationUnit<'n, 's, 'a> {
     pub source: Arc<str>,
     root: &'n Path,
     expansion: &'n Expansion,
-    fs: &'n dyn FileSystem,
+    fs: &'n OverlayFs,
 }
 
 impl NavigationUnit<'_, '_, '_> {
@@ -1397,6 +1490,27 @@ pub fn with_navigation<T>(
         }))
     }))
     .ok()
+}
+
+/// The files `effects` read from disk that are open with other text: their
+/// effects are not the ones the editor shows. `from_buffer` was read from its
+/// buffer.
+fn unsaved_sources(
+    effects: &oxabl_pipeline::WorkspaceEffects,
+    fs: &OverlayFs,
+    from_buffer: Option<&Path>,
+) -> Vec<PathBuf> {
+    // The open buffers are few; the files the summaries read can be thousands.
+    let mut unsaved: Vec<PathBuf> = fs
+        .overlay
+        .iter()
+        .filter(|(path, _)| Some(path.as_path()) != from_buffer)
+        .filter(|(path, _)| effects.reads(path, &crate::session::canonical_path))
+        .filter(|(path, open)| fs.inner.read(path).ok().as_deref() != Some(open.as_ref()))
+        .map(|(path, _)| path.clone())
+        .collect();
+    unsaved.sort();
+    unsaved
 }
 
 /// `file` as the expansion of `root` spells it, so a path that reaches it
@@ -1876,6 +1990,52 @@ mod tests {
     fn bump(db: &mut AnalysisDatabase, path: &str) -> bool {
         let index = Arc::clone(&db.config().index);
         index.bump(db, Path::new(path))
+    }
+
+    /// A label in an include carries the include's text as the expansion read
+    /// it, so a client places it against the same bytes even after the file
+    /// changes on disk before the watcher reports it.
+    #[test]
+    fn a_label_in_an_include_keeps_the_text_the_expansion_read() {
+        let first = "DEFINE VARIABLE dup-v AS INTEGER NO-UNDO.\n";
+        let fs = EditableFs::new(&[("/src/dup.i", first)]);
+        let db = AnalysisDatabase::new(searching_config(Arc::clone(&fs) as Arc<dyn FileSystem>));
+        let buffer = Buffer::new(
+            &db,
+            "{dup.i}\nDEFINE VARIABLE dup-v AS INTEGER NO-UNDO.\nMESSAGE dup-v.\n".to_string(),
+            Some(PathBuf::from("/src/dup.p")),
+        );
+        let schema = SchemaHandle::new(&db, 0);
+        let label_text = |d: &CollectedDiagnostics| {
+            let found = d
+                .all()
+                .find(|c| c.diagnostic.code.0 == "SEM0001")
+                .expect("the root declares the name again");
+            let label = &found.diagnostic.labels[0];
+            let file = d
+                .label_files
+                .iter()
+                .find(|f| f.file == label.span.file)
+                .expect("the label's file is listed");
+            assert_eq!(file.path, PathBuf::from("/src/dup.i"));
+            let text = file.text.as_deref().expect("the text the expansion read");
+            text[label.span.span.start as usize..label.span.span.end as usize].to_string()
+        };
+        assert_eq!(
+            label_text(&compute_diagnostics(&db, buffer, schema).unwrap()),
+            "dup-v"
+        );
+
+        // Saved elsewhere, not yet reported: the memoized answer still holds
+        // the bytes its offsets are in.
+        fs.write(
+            "/src/dup.i",
+            "/* a longer first line */\nDEFINE VARIABLE dup-v AS INTEGER.\n",
+        );
+        assert_eq!(
+            label_text(&compute_diagnostics(&db, buffer, schema).unwrap()),
+            "dup-v"
+        );
     }
 
     /// AE4 at the substrate level: the child resolves against the parent, the

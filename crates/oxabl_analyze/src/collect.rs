@@ -116,6 +116,21 @@ pub struct CollectedDiagnostics {
     ///
     /// [`RuleMeta::use_site_in_includer`]: oxabl_lint::RuleMeta::use_site_in_includer
     pub include_findings: Vec<IncludeFinding>,
+    /// The physical include file of each label that points into an include,
+    /// by the file id of the label's span, each id once, with its text as the
+    /// expansion read it. A label in the root has the root's id and no row
+    /// here. A label in text that no file on disk wrote (a `{&name}` value) is
+    /// dropped.
+    pub label_files: Vec<LabelFile>,
+}
+
+/// A file that a label points into, with the text its byte offsets are in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelFile {
+    pub file: FileId,
+    pub path: PathBuf,
+    /// The text the analysis read; `None` when it is not known.
+    pub text: Option<Arc<str>>,
 }
 
 /// A finding whose anchor is in an include file, with where it would show.
@@ -132,7 +147,7 @@ pub struct CollectedDiagnostics {
 #[non_exhaustive]
 pub struct IncludeFinding {
     /// The finding at the root's `{...}` site that brought the include in.
-    /// Labels that are not in the root are dropped.
+    /// Its labels are placed as [`CollectedDiagnostics::label_files`] says.
     pub diagnostic: Diagnostic,
     /// The include file that holds the anchor.
     pub path: PathBuf,
@@ -149,6 +164,7 @@ impl CollectedDiagnostics {
             parse_recovered: false,
             include_origin: Vec::new(),
             include_findings: Vec::new(),
+            label_files: Vec::new(),
         }
     }
 
@@ -195,6 +211,7 @@ impl CollectedDiagnostics {
             } else {
                 self.include_findings.clone()
             },
+            label_files: self.label_files.clone(),
         }
     }
 }
@@ -203,13 +220,21 @@ impl CollectedDiagnostics {
 /// consumers share it): all errors, plus the always-loud warnings PREPROC007
 /// (unresolvable include — symbol loss), PREPROC008 (unterminated include
 /// reference), PREPROC009 (predefined name without a value in a condition),
-/// PREPROC010 (condition part the evaluator does not model) and PREPROC002
-/// (unclosed `&IF`).
+/// PREPROC010 (condition part the evaluator does not model), PREPROC013 (a
+/// substituted value ending with `~`) and PREPROC002 (unclosed `&IF`), and
+/// SOURCE001 (encrypted source, which is not checked).
+/// PREPROC012 (an unclosed `~{` in an include argument) is an error.
 pub fn is_loud(d: &Diagnostic) -> bool {
     matches!(d.severity, Severity::Error)
         || matches!(
             d.code.0,
-            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009" | "PREPROC010"
+            "PREPROC002"
+                | "PREPROC007"
+                | "PREPROC008"
+                | "PREPROC009"
+                | "PREPROC010"
+                | "PREPROC013"
+                | oxabl_workspace::ENCRYPTED_CODE
         )
 }
 
@@ -410,6 +435,8 @@ pub struct ExpandedFile {
     /// The path of each include file the expansion read, by the file id its
     /// chunks carry.
     file_paths: Vec<(u32, PathBuf)>,
+    /// The text of each file of `file_paths`, as the expansion read it.
+    file_texts: Vec<(FileId, Arc<str>)>,
     /// Include references that resolved to no file and that the root names itself:
     /// written in the root, or reached only through `{&var}` substitutions the root
     /// writes. For the second kind `site` is the substitution, in the root's own
@@ -476,6 +503,17 @@ impl ExpandedFile {
 
     /// Include references written in an included file that named no locatable
     /// file, at any depth below the root.
+    /// Whether some include text is missing from the expansion: an include
+    /// that does not resolve or cannot be read, a lossy decode, or an elided
+    /// include.
+    pub fn lost_include_text(&self) -> bool {
+        !self.unresolved_includes().is_empty()
+            || !self.nested_unresolved_includes().is_empty()
+            || !self.unreadable_includes().is_empty()
+            || !self.text_losses().is_empty()
+            || !self.elided_include_offsets().is_empty()
+    }
+
     pub fn nested_unresolved_includes(&self) -> &[UnresolvedInclude] {
         &self.nested_unresolved_includes
     }
@@ -589,6 +627,15 @@ impl ExpandedFile {
             .iter()
             .find(|(known, _)| *known == file.raw())
             .map(|(_, path)| path.as_path())
+    }
+
+    /// The text of an include expansion's file id, as the expansion read it.
+    /// `None` for the root and for an id this expansion did not read.
+    pub fn file_text(&self, file: FileId) -> Option<&Arc<str>> {
+        self.file_texts
+            .iter()
+            .find(|(known, _)| *known == file)
+            .map(|(_, text)| text)
     }
 
     /// The loud preprocessor diagnostics written in includes, such as a cyclic
@@ -911,6 +958,7 @@ pub fn expand_source_with(
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
+            file_texts: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),
@@ -950,7 +998,7 @@ pub fn expand_source_with(
             let mut preproc: Vec<Diagnostic> = pf
                 .diagnostics
                 .iter()
-                .filter(|d| is_loud(d) && d.span.file == root)
+                .filter(|d| is_loud(d) && d.span.file == root && !is_encrypted_note(d))
                 .cloned()
                 .collect();
             // An unresolvable include *below* the root elides symbols from this
@@ -965,7 +1013,7 @@ pub fn expand_source_with(
             let nested_preproc = pf
                 .diagnostics
                 .iter()
-                .filter(|d| is_loud(d) && d.span.file != root)
+                .filter(|d| is_loud(d) && d.span.file != root && !is_encrypted_note(d))
                 .cloned()
                 .collect();
             let mut direct_includes = Vec::new();
@@ -1005,7 +1053,7 @@ pub fn expand_source_with(
                     nested_unresolved_includes.push(include.clone());
                 }
             }
-            let unreadable_includes = pf
+            let unreadable_includes: Vec<UnreadableInclude> = pf
                 .unreadable_includes
                 .iter()
                 .map(
@@ -1019,6 +1067,14 @@ pub fn expand_source_with(
                     },
                 )
                 .collect();
+            let file_texts = file_paths
+                .iter()
+                .filter_map(|(file, _)| {
+                    let file = FileId::new(*file);
+                    Some((file, Arc::clone(pf.source(file)?)))
+                })
+                .collect();
+            preproc.extend(encrypted_include_note(&unreadable_includes, root));
             let mut skipped_sources: Vec<(FileId, Arc<str>)> = Vec::new();
             for skipped in &pf.skipped_text {
                 let file = skipped.site.file;
@@ -1047,16 +1103,33 @@ pub fn expand_source_with(
                 skipped_includes: pf.skipped_includes.clone(),
                 skipped_text: pf.skipped_text.clone(),
                 skipped_sources,
+                file_texts,
                 text_losses: pf.text_losses.clone(),
                 elided_offsets: pf.elided_offsets(),
                 elided_include_offsets: pf.elided_include_offsets(),
                 root,
             })
         }
-        Err(diags) => Err(diags
-            .into_iter()
-            .filter(|d| is_loud(d) && d.span.file == root)
-            .collect()),
+        // A unit that reaches encrypted source is reported as that alone.
+        Err(diags) => match diags.iter().find(|d| is_encrypted_note(d)) {
+            Some(note) => {
+                let mut note = note.clone();
+                if note.span.file != root {
+                    // No include chain here, so the note sits at the start of
+                    // the root. A nested note has only been seen through the
+                    // `Ok` arm, which anchors it from the chain.
+                    note.span = FileSpan {
+                        file: root,
+                        span: Span { start: 0, end: 0 },
+                    };
+                }
+                Err(vec![note])
+            }
+            None => Err(diags
+                .into_iter()
+                .filter(|d| is_loud(d) && d.span.file == root)
+                .collect()),
+        },
     }
 }
 
@@ -1584,8 +1657,74 @@ pub fn collect_from_expanded_with_summaries(
             Err(_) => {}
         }
     }
+    out.label_files = label_files(&out, expanded);
 
-    (Some(sem), out)
+    (
+        Some(sem),
+        without_findings_of_encrypted_reach(out, expanded),
+    )
+}
+
+fn is_encrypted_note(d: &Diagnostic) -> bool {
+    d.code.0 == oxabl_workspace::ENCRYPTED_CODE
+}
+
+/// The one `SOURCE001` finding of a unit that reaches encrypted source, at any
+/// include depth, or `None` when it reaches none.
+///
+/// It names the first encrypted include, and is anchored on the `{...}`
+/// reference in the root's own bytes that leads to it: the reference itself, or
+/// for a nested include the outermost reference of its chain.
+fn encrypted_include_note(unreadable: &[UnreadableInclude], root: FileId) -> Option<Diagnostic> {
+    let mut encrypted = unreadable.iter().filter(|include| include.encrypted);
+    let first = encrypted.next()?;
+    let more = encrypted
+        .map(|include| &include.path)
+        .filter(|path| **path != first.path)
+        .collect::<HashSet<_>>()
+        .len();
+    let nested = first.site.file != root;
+    let anchor = if nested {
+        first.via.first().copied().filter(|site| site.file == root)
+    } else {
+        Some(first.site)
+    }
+    .unwrap_or(FileSpan {
+        file: root,
+        span: Span { start: 0, end: 0 },
+    });
+    let mut message = oxabl_workspace::encrypted_include_note(&first.name);
+    if nested {
+        message.push_str(" (reached through this include)");
+    }
+    if more > 0 {
+        message.push_str(&format!(" (and {more} more encrypted)"));
+    }
+    Some(Diagnostic::warning(
+        oxabl_workspace::ENCRYPTED_CODE,
+        message,
+        anchor,
+    ))
+}
+
+/// A unit that reaches encrypted source reports that and nothing else.
+///
+/// An encrypted include is not read, so any finding of the unit may depend on
+/// it: it may declare names, define temp-tables and preprocessor names, and
+/// read or write the variables of its includer. A finding in the readable text
+/// can be false, and its absence proves nothing. The unit is withheld whole:
+/// parse, semantic and lint findings, and findings of readable includes.
+fn without_findings_of_encrypted_reach(
+    found: CollectedDiagnostics,
+    expanded: &ExpandedFile,
+) -> CollectedDiagnostics {
+    match expanded.preproc.iter().find(|d| is_encrypted_note(d)) {
+        Some(note) => CollectedDiagnostics::new(vec![CollectedDiagnostic {
+            diagnostic: note.clone(),
+            source: DiagnosticSource::Preproc,
+        }]),
+        None => found,
+    }
 }
 
 /// Builds [`CollectedDiagnostics::include_origin`], folding findings that agree
@@ -1635,14 +1774,7 @@ impl IncludeRows {
             return;
         }
         d.span = FileSpan { file, span };
-        d.labels
-            .retain_mut(|label| match expanded.resolve_span(label.span.span) {
-                Some(fs) => {
-                    label.span = fs;
-                    true
-                }
-                None => false,
-            });
+        d.labels.retain_mut(|label| resolve_label(label, expanded));
         self.seen.insert(key, out.include_origin.len());
         out.include_origin.push(IncludeOriginDiagnostic {
             diagnostic: d,
@@ -1755,18 +1887,55 @@ fn include_finding(d: &Diagnostic, expanded: &ExpandedFile) -> Option<IncludeFin
     };
     diagnostic
         .labels
-        .retain_mut(|label| match expanded.resolve_span(label.span.span) {
-            Some(fs) => {
-                label.span = fs;
-                true
-            }
-            None => false,
-        });
+        .retain_mut(|label| resolve_label(label, expanded));
     Some(IncludeFinding {
         diagnostic,
         path: path.to_path_buf(),
         span,
     })
+}
+
+/// Place `label` in the bytes of the file that wrote it: the root, or the
+/// physical include file. `false` for text that no file on disk wrote.
+fn resolve_label(label: &mut oxabl_common::Label, expanded: &ExpandedFile) -> bool {
+    let at = label.span.span;
+    if let Some(fs) = expanded.resolve_span(at) {
+        label.span = fs;
+        return true;
+    }
+    match expanded.resolve_include_origin(at) {
+        Some((_, file, span)) if expanded.file_path(file).is_some() => {
+            label.span = FileSpan { file, span };
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The [`CollectedDiagnostics::label_files`] of `out`.
+fn label_files(out: &CollectedDiagnostics, expanded: &ExpandedFile) -> Vec<LabelFile> {
+    let mut files: Vec<LabelFile> = Vec::new();
+    let labels = out
+        .diagnostics
+        .iter()
+        .map(|c| &c.diagnostic)
+        .chain(out.include_origin.iter().map(|c| &c.diagnostic))
+        .chain(out.include_findings.iter().map(|c| &c.diagnostic))
+        .flat_map(|d| &d.labels);
+    for label in labels {
+        let file = label.span.file;
+        if file == expanded.root || files.iter().any(|known| known.file == file) {
+            continue;
+        }
+        if let Some(path) = expanded.file_path(file) {
+            files.push(LabelFile {
+                file,
+                path: path.to_path_buf(),
+                text: expanded.file_text(file).cloned(),
+            });
+        }
+    }
+    files
 }
 
 /// Resolve a diagnostic's expanded span (and label spans) to root coordinates,
@@ -1779,14 +1948,7 @@ fn resolve_diagnostic(
         return Err(d);
     };
     d.span = span;
-    d.labels
-        .retain_mut(|label| match expanded.resolve_span(label.span.span) {
-            Some(fs) => {
-                label.span = fs;
-                true
-            }
-            None => false,
-        });
+    d.labels.retain_mut(|label| resolve_label(label, expanded));
     Ok(d)
 }
 
@@ -1928,6 +2090,7 @@ mod tests {
             skipped_includes: Vec::new(),
             skipped_text: Vec::new(),
             skipped_sources: Vec::new(),
+            file_texts: Vec::new(),
             text_losses: Vec::new(),
             elided_offsets: Vec::new(),
             elided_include_offsets: Vec::new(),

@@ -157,6 +157,31 @@ pub mod panic_sites {
     pub const LSP_INDEX: &str = "lsp.index";
     /// The shared document outline.
     pub const OUTLINE: &str = "outline";
+    /// The shared folding and selection ranges.
+    pub const SYNTAX: &str = "syntax";
+    /// Hover, for [`hold_if_injected`](super::hold_if_injected).
+    pub const HOVER: &str = "hover";
+}
+
+/// The marker that holds a site for [`HOLD_TIME`], for a test that needs a
+/// request to be still running when the next one arrives:
+/// `OXABL-TEST-HOLD:<site>` in the source, as with [`TEST_PANIC_MARKER`].
+pub const TEST_HOLD_MARKER: &str = "OXABL-TEST-HOLD";
+
+/// How long [`hold_if_injected`] waits.
+pub const HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Sleep [`HOLD_TIME`] when `source` carries this `site`'s hold marker. A no-op
+/// unless the test-only `test-panics` feature is enabled.
+#[inline]
+pub fn hold_if_injected(site: &str, source: &str) {
+    #[cfg(feature = "test-panics")]
+    if source.contains(&format!("{TEST_HOLD_MARKER}:{site}")) {
+        std::thread::sleep(HOLD_TIME);
+    }
+
+    #[cfg(not(feature = "test-panics"))]
+    let _ = (site, source);
 }
 
 /// Panic when `source` carries this `site`'s injection marker.

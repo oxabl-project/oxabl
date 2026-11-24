@@ -15,8 +15,8 @@ mod tests;
 use oxabl_ast::{
     AccessModifier, Comment, CommentKind, DataType, Expression, ExpressionKind, GenericClass,
     HandleParamKind, HandlePassingOptions, Identifier, NodeId, NodeIdAllocator, ParameterDirection,
-    ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument, TypeArguments,
-    TypeSource,
+    ParameterExtent, ParameterType, SkippedTail, Span, Statement, StatementKind, TypeArgument,
+    TypeArguments, TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
 use std::collections::HashSet;
@@ -1025,22 +1025,31 @@ impl<'a> Parser<'a> {
     /// range the helper returned rather than from the statement's first token:
     /// the tail starts after tokens the caller already modelled, so none of its
     /// tokens is a dispatch keyword to drop. `None` when the filter keeps
-    /// nothing, which is the common case, so the node stays allocation-free.
+    /// nothing and the tail holds no dynamic-call keyword, which is the common
+    /// case, so the node stays allocation-free.
     #[inline(never)]
     pub(crate) fn skipped_tail(&self, (lo, hi): (usize, usize)) -> Option<Box<SkippedTail>> {
         // `harvest_skipped_names` drops the token at its `lo`; a tail is always
         // preceded by at least the statement's own first token, so `lo - 1` is
         // in range.
         let names = self.harvest_skipped_names(lo.saturating_sub(1), hi);
-        if names.is_empty() {
-            return None;
-        }
-        let span = self.token_span(lo, hi).unwrap_or(Span::DUMMY);
-        Some(Box::new(SkippedTail {
-            names,
-            span,
-            dropped: Vec::new(),
-        }))
+        let tokens = self.tokens.get(lo..hi).unwrap_or_default();
+        let dynamic = || {
+            tokens.iter().any(|t| {
+                matches!(
+                    t.kind,
+                    Kind::DynamicFunction | Kind::DynamicInvoke | Kind::DynamicNew
+                )
+            })
+        };
+        let span = self.token_span(lo, hi)?;
+        (!names.is_empty() || dynamic()).then(|| {
+            Box::new(SkippedTail {
+                names,
+                span,
+                dropped: Vec::new(),
+            })
+        })
     }
 
     /// [`skip_to_statement_end`](Self::skip_to_statement_end), harvesting the
@@ -1288,14 +1297,18 @@ impl<'a> Parser<'a> {
                 self.advance(); // colon
                 self.advance(); // suffix identifier
             }
-        } else if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
-            // FORMAT 9999, FORMAT 99.99, or FORMAT 99/99/9999 — numeric format masks
+        } else if self.check(Kind::DateLiteral) {
+            // FORMAT 99/99/9999 — the lexer reads the date mask as one date constant
             self.advance();
-            // Consume any trailing /integer or /decimal pairs (date format: 99/99/9999)
+        } else if self.check(Kind::IntegerLiteral) || self.check(Kind::DecimalLiteral) {
+            // FORMAT 9999 or FORMAT 99.99 — numeric format masks
+            self.advance();
+            // Consume trailing `/` parts. The lexer reads the last three runs of
+            // a mask with four or more (`9/99/99/99`) as one date constant.
             while self.check(Kind::Slash) {
                 if matches!(
                     self.peek_at(1).kind,
-                    Kind::IntegerLiteral | Kind::DecimalLiteral
+                    Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::DateLiteral
                 ) {
                     self.advance(); // consume '/'
                     self.advance(); // consume the number
@@ -1782,6 +1795,7 @@ impl<'a> Parser<'a> {
                 | Kind::Colon
                 | Kind::IntegerLiteral
                 | Kind::DecimalLiteral
+                | Kind::DateLiteral
                 | Kind::StringLiteral
                 | Kind::KwTrue
                 | Kind::KwFalse
@@ -2288,15 +2302,7 @@ impl<'a> Parser<'a> {
                 if self.looks_like_type_only_param() {
                     let type_start = self.current_span().start;
                     let data_type = self.parse_data_type()?;
-                    if self.check(Kind::Extent) {
-                        self.advance();
-                        if self.check(Kind::IntegerLiteral)
-                            || self.check(Kind::Preprop)
-                            || self.check(Kind::IncludeArgReference)
-                        {
-                            self.advance();
-                        }
-                    }
+                    let extent = self.parse_extent_clause();
                     let no_undo = if self.check(Kind::NoUndo) {
                         self.advance();
                         true
@@ -2320,6 +2326,7 @@ impl<'a> Parser<'a> {
                                 name,
                                 type_source: TypeSource::Explicit(data_type),
                                 no_undo,
+                                extent,
                             },
                         },
                     ));
@@ -2331,7 +2338,10 @@ impl<'a> Parser<'a> {
                 }
 
                 let name = self.parse_identifier()?;
-                let type_source = self.parse_type_source()?;
+                let (type_source, mut extent) = self.parse_type_source_with_extent()?;
+                if matches!(type_source, TypeSource::Like { .. }) {
+                    extent = self.parse_extent_clause();
+                }
                 let no_undo = if self.check(Kind::NoUndo) {
                     self.advance();
                     true
@@ -2347,6 +2357,7 @@ impl<'a> Parser<'a> {
                             name,
                             type_source,
                             no_undo,
+                            extent,
                         },
                     },
                 ));
@@ -2415,6 +2426,15 @@ impl<'a> Parser<'a> {
     /// Parse `AS type | LIKE field` for DEFINE VARIABLE and DEFINE PARAMETER contexts.
     /// Consumes the `AS` or `LIKE` keyword and the following type/identifier.
     fn parse_type_source(&mut self) -> ParseResult<TypeSource> {
+        self.parse_type_source_with_extent()
+            .map(|(source, _)| source)
+    }
+
+    /// Like [`Self::parse_type_source`], also returning the `EXTENT` clause
+    /// that follows an `AS` type.
+    fn parse_type_source_with_extent(
+        &mut self,
+    ) -> ParseResult<(TypeSource, Option<ParameterExtent>)> {
         if self.check(Kind::Like) {
             self.advance(); // consume LIKE
             let source = self.parse_qualified_identifier()?;
@@ -2426,21 +2446,41 @@ impl<'a> Parser<'a> {
                     self.advance();
                 }
             }
-            Ok(TypeSource::Like { source })
+            Ok((TypeSource::Like { source }, None))
         } else {
             self.expect_kind(Kind::KwAs, "Expected AS or LIKE")?;
             let data_type = self.parse_data_type()?;
-            // Consume optional EXTENT [n] clause (e.g. AS CHAR EXTENT 2 or AS HANDLE EXTENT {&N})
-            if self.check(Kind::Extent) {
+            let extent = self.parse_extent_clause();
+            Ok((TypeSource::Explicit(data_type), extent))
+        }
+    }
+
+    /// Consume an optional `EXTENT [n]` clause (`AS CHAR EXTENT 2`,
+    /// `AS HANDLE EXTENT {&N}`).
+    fn parse_extent_clause(&mut self) -> Option<ParameterExtent> {
+        if !self.check(Kind::Extent) {
+            return None;
+        }
+        self.advance();
+        let tok = self.peek().clone();
+        let span = Span {
+            start: tok.start as u32,
+            end: tok.end as u32,
+        };
+        match tok.kind {
+            Kind::IntegerLiteral => {
                 self.advance();
-                if self.check(Kind::IntegerLiteral)
-                    || self.check(Kind::Preprop)
-                    || self.check(Kind::IncludeArgReference)
-                {
-                    self.advance();
-                }
+                Some(
+                    self.source[tok.start..tok.end]
+                        .parse::<u32>()
+                        .map_or(ParameterExtent::Unresolved(span), ParameterExtent::Fixed),
+                )
             }
-            Ok(TypeSource::Explicit(data_type))
+            Kind::Preprop | Kind::IncludeArgReference => {
+                self.advance();
+                Some(ParameterExtent::Unresolved(span))
+            }
+            _ => Some(ParameterExtent::Indeterminate),
         }
     }
 

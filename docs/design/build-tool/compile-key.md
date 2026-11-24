@@ -1149,6 +1149,14 @@ the superclass. The key needs no table of its own: the schema identity is in eve
 ([Schema identity](#schema-identity)). A change to the table changes the key of the
 subclass, and a change to any other table changes it too.
 
+The effects analysis follows the same rule. `FIND`, `CREATE`, `FOR EACH` and the other
+record statements of a subclass name the inherited buffer or temp-table, so their database
+effects belong to its table ([B9](../strict-analysis-open-questions.md)). A member that the
+subclass cannot reach gives no table: the effect is Unknown. So does every table name in a
+class whose chain has a superclass that oxabl cannot read: that class may define a temp-table
+of the name. A buffer is bound in the class that declares it: a temp-table of a class below
+that class does not hide the table.
+
 **An include is judged in its includer's context.** K1 to K4 read the analyses of the
 unit and of the class sources in its closure only. A closure file reached only through
 include edges contributes nothing of its own standalone analysis, even when it is also a

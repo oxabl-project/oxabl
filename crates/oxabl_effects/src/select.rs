@@ -4,6 +4,7 @@
 use std::ops::Range;
 
 use oxabl_lexer::Kind;
+use oxabl_schema::{EffectiveIndex, EffectiveTable};
 
 use crate::model::{Access, IndexChoice, IndexReason, IndexUnknown, TieBreak};
 use crate::phrase::{Phrase, Reader};
@@ -28,21 +29,7 @@ pub(crate) struct TableInfo {
 
 impl TableInfo {
     pub fn from_schema(t: &oxabl_schema::Table) -> TableInfo {
-        TableInfo {
-            fields: t.fields.iter().map(|f| f.name.to_string()).collect(),
-            indexes: t
-                .indexes
-                .iter()
-                .map(|i| Idx {
-                    name: i.display_name.clone(),
-                    unique: i.unique,
-                    primary: i.primary,
-                    word: i.word,
-                    inactive: i.inactive,
-                    components: i.fields.iter().map(|f| f.name.to_string()).collect(),
-                })
-                .collect(),
-        }
+        EffectiveTable::from_schema(t).into()
     }
 
     /// The folded field a name means: exact, else a unique prefix.
@@ -55,6 +42,50 @@ impl TableInfo {
         match (it.next(), it.next()) {
             (Some(f), None) => Some(f),
             _ => None,
+        }
+    }
+}
+
+impl From<EffectiveTable> for TableInfo {
+    fn from(table: EffectiveTable) -> TableInfo {
+        TableInfo {
+            fields: table
+                .fields
+                .iter()
+                .map(|f| f.to_ascii_lowercase())
+                .collect(),
+            indexes: table
+                .indexes
+                .into_iter()
+                .map(|i| Idx {
+                    name: i.name,
+                    unique: i.unique,
+                    primary: i.primary,
+                    word: i.word,
+                    inactive: i.inactive,
+                    components: i.fields.iter().map(|f| f.to_ascii_lowercase()).collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<TableInfo> for EffectiveTable {
+    fn from(table: TableInfo) -> EffectiveTable {
+        EffectiveTable {
+            fields: table.fields,
+            indexes: table
+                .indexes
+                .into_iter()
+                .map(|i| EffectiveIndex {
+                    name: i.name,
+                    primary: i.primary,
+                    unique: i.unique,
+                    word: i.word,
+                    inactive: i.inactive,
+                    fields: i.components,
+                })
+                .collect(),
         }
     }
 }
@@ -117,7 +148,11 @@ impl Context<'_> {
         let kind = self.reader.toks[r.start].kind;
         if matches!(
             kind,
-            Kind::StringLiteral | Kind::IntegerLiteral | Kind::DecimalLiteral | Kind::BigIntLiteral
+            Kind::StringLiteral
+                | Kind::IntegerLiteral
+                | Kind::DecimalLiteral
+                | Kind::BigIntLiteral
+                | Kind::DateLiteral
         ) {
             return None;
         }
@@ -147,6 +182,7 @@ impl Context<'_> {
                         | Kind::IntegerLiteral
                         | Kind::DecimalLiteral
                         | Kind::BigIntLiteral
+                        | Kind::DateLiteral
                 )
             {
                 let (end, name) = self.reader.name(i);

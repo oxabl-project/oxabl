@@ -428,3 +428,64 @@ fn document_symbol_fails_the_request_when_the_outline_panics() {
     shutdown(&client);
     assert!(handle.join().unwrap().unwrap());
 }
+
+/// A panic in the syntax pass fails both folding and selection requests, never
+/// an empty list, and the loop keeps answering.
+#[test]
+fn folding_and_selection_fail_the_request_when_the_syntax_pass_panics() {
+    let (server, client) = Connection::memory();
+    let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
+
+    let _project = handshake(&client);
+
+    let uri = Uri::from_str("file:///panic-syntax.p").unwrap();
+    open(&client, &uri, &panicking_source(panic_sites::SYNTAX));
+
+    let requests = [
+        (
+            8,
+            "textDocument/foldingRange",
+            serde_json::json!({ "textDocument": { "uri": uri.as_str() } }),
+        ),
+        (
+            9,
+            "textDocument/selectionRange",
+            serde_json::json!({
+                "textDocument": { "uri": uri.as_str() },
+                "positions": [{ "line": 0, "character": 0 }]
+            }),
+        ),
+    ];
+    for (id, method, params) in requests {
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: RequestId::from(id),
+                method: method.to_string(),
+                params,
+            }))
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            let now = std::time::Instant::now();
+            assert!(now < deadline, "no {method} response arrived");
+            match client.receiver.recv_timeout(deadline - now) {
+                Ok(Message::Response(resp)) if resp.id == RequestId::from(id) => {
+                    let error = resp
+                        .error
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("a syntax panic must fail {method}: {resp:?}"));
+                    assert_eq!(error.code, lsp_server::ErrorCode::RequestFailed as i32);
+                    assert!(resp.result.is_none(), "no result with the error: {resp:?}");
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => panic!("no {method} response arrived"),
+            }
+        }
+    }
+
+    shutdown(&client);
+    assert!(handle.join().unwrap().unwrap());
+}

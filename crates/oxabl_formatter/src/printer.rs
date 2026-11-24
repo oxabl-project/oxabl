@@ -20,6 +20,11 @@
 //! - an **own-line comment** line takes the depth attachment assigned it
 //!   (leading → the led node's depth; dangling → the block's body depth).
 //!
+//! A property's `GET():` / `SET(...):` head is a continuation line of the
+//! `DEFINE PROPERTY`, so it keeps the author's alignment. The accessor's body
+//! goes one level below the column of that head, and its `END GET.` /
+//! `END SET.` to the column of the head.
+//!
 //! This is generic over *every* `StatementKind` with no per-construct emitter,
 //! preserves existing intra-statement line breaks by construction (the
 //! no-movement boundary), and makes interior/trailing comments a non-event —
@@ -36,7 +41,7 @@ use oxabl_style::StyleGuide;
 use crate::attach::CommentMap;
 use crate::ir::LineBuf;
 use crate::keywords;
-use crate::tree::{children_with_deltas, is_prefix_wrapper, typed_end_keyword};
+use crate::tree::{children_with_deltas, is_prefix_wrapper, property_accessors, typed_end_keyword};
 
 /// A physical source line with its measured leading indent and content
 /// (leading whitespace and line terminator stripped).
@@ -50,6 +55,12 @@ struct SrcLine {
 
 /// Split `source` into physical lines, measuring each line's leading-indent
 /// width (spaces count 1, tabs count `size`) and stripping the terminator.
+///
+/// Only `\n` ends a line, as in the lexer, which reads `\r` as whitespace. A
+/// run of `\r` before the `\n` is part of the terminator: a `\r` kept at the
+/// end of the content would join the emitted line ending into a new `\r\n`,
+/// and a second pass would read the line differently. A leading `\r` is
+/// leading whitespace of no width, so a line of only whitespace is blank.
 fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
     let bytes = source.as_bytes();
     let n = bytes.len();
@@ -61,7 +72,7 @@ fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
             j += 1;
         }
         let mut end = j;
-        if end > i && bytes[end - 1] == b'\r' {
+        while end > i && bytes[end - 1] == b'\r' {
             end -= 1;
         }
         let mut k = i;
@@ -76,6 +87,7 @@ fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
                     cols += size;
                     k += 1;
                 }
+                b'\r' => k += 1,
                 _ => break,
             }
         }
@@ -88,6 +100,34 @@ fn split_lines(source: &str, size: usize) -> Vec<SrcLine> {
         i = j + 1;
     }
     lines
+}
+
+/// A computed property accessor by line, with the depth the printer's walk
+/// gives its body statements.
+struct AccessorLines {
+    head: usize,
+    head_line: usize,
+    colon_line: usize,
+    end_line: usize,
+    body_depth: usize,
+    /// First line of the `DEFINE PROPERTY` statement.
+    property_line: usize,
+    /// The head, or the `END`, is the first code token on its line, so it
+    /// governs the line's indent.
+    head_leads: bool,
+    end_leads: bool,
+}
+
+/// Is the token at `offset` the first code token on its line?
+fn leads_line(toks: &[Token], line_starts: &[usize], offset: usize) -> bool {
+    let at = toks.partition_point(|t| t.start < offset);
+    toks[..at]
+        .iter()
+        .rev()
+        .find(|t| t.kind != Kind::Comment)
+        .is_none_or(|t| {
+            line_index(line_starts, t.end.saturating_sub(1)) < line_index(line_starts, offset)
+        })
 }
 
 fn line_index(line_starts: &[usize], offset: usize) -> usize {
@@ -115,6 +155,7 @@ fn collect(
     typed_ends: &mut Vec<(usize, &'static str)>,
     block_ends: &mut Vec<(usize, usize)>,
     head_depth: &mut HashMap<NodeId, usize>,
+    accessors: &mut Vec<AccessorLines>,
     toks: &[Token],
 ) {
     let fl = line_index(line_starts, stmt.span.start as usize);
@@ -129,6 +170,18 @@ fn collect(
     }
     if let Some(ty) = typed_end_keyword(&stmt.kind) {
         typed_ends.push((ll, ty));
+    }
+    for a in property_accessors(stmt, toks) {
+        accessors.push(AccessorLines {
+            head: a.head,
+            head_line: line_index(line_starts, a.head),
+            colon_line: line_index(line_starts, a.colon),
+            end_line: line_index(line_starts, a.end),
+            body_depth: depth + 1,
+            property_line: fl,
+            head_leads: leads_line(toks, line_starts, a.head),
+            end_leads: leads_line(toks, line_starts, a.end),
+        });
     }
     // A statement starts its own line when the token before it (comments aside)
     // ends on an earlier line, e.g. the `THEN` of a `WHEN` branch.
@@ -151,7 +204,9 @@ fn collect(
         // is just their branch's last physical line — which, for a wrapped
         // multi-line non-block branch, must keep its continuation indent rather
         // than be snapped to the wrapper's depth (issue #98).
-        if !is_prefix_wrapper(&stmt.kind) {
+        // A property has no closer of its own either: each computed accessor
+        // owns an `END`, which the accessor pass in `print` places.
+        if !is_prefix_wrapper(&stmt.kind) && !matches!(stmt.kind, StatementKind::Property { .. }) {
             block_ends.push((ll, depth));
         }
         // Each child nests by its own delta: normally +1, but a prefix wrapper
@@ -174,6 +229,7 @@ fn collect(
                 typed_ends,
                 block_ends,
                 head_depth,
+                accessors,
                 toks,
             );
         }
@@ -236,6 +292,7 @@ pub(crate) fn print(
     let mut typed_ends: Vec<(usize, &'static str)> = Vec::new();
     let mut block_ends: Vec<(usize, usize)> = Vec::new();
     let mut head_depth: HashMap<NodeId, usize> = HashMap::new();
+    let mut accessors: Vec<AccessorLines> = Vec::new();
 
     for stmt in &program.statements {
         collect(
@@ -248,6 +305,7 @@ pub(crate) fn print(
             &mut typed_ends,
             &mut block_ends,
             &mut head_depth,
+            &mut accessors,
             toks,
         );
     }
@@ -274,6 +332,48 @@ pub(crate) fn print(
         }
     }
 
+    // Protected lines: physical lines that *begin inside* a multi-line token
+    // whose interior bytes are significant — a string literal or an
+    // `{include}`/preprocessor reference. The line-based reindent would rewrite
+    // their leading whitespace, which lands inside the token and trips the
+    // semantic guard (#95). Leave them verbatim. A line `l` begins inside token
+    // `t` iff `t.start < line_starts[l] < t.end`, i.e. `l` is strictly after the
+    // token's first line and no later than its last. Comments are trivia (the
+    // guard ignores them), so they keep their existing delta-preserving reindent.
+    //
+    // Line endings are still normalized to the file's dominant ending at flush, so
+    // a multi-line token whose interior newline differs from that dominant ending
+    // (e.g. an interior `\r\n` in a mostly-`\n` file) trips the guard and bails —
+    // fails safe (file returned unchanged), not corrupted.
+    //
+    // Fast path: only a token that actually spans a newline can protect a line,
+    // and single-line tokens are the overwhelming majority — so gate the two
+    // line-index binary searches behind a cheap newline scan of the token's
+    // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
+    let src_bytes = source.as_bytes();
+    let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
+    // Lines whose line ending is inside such a token.
+    let mut ends_inside = vec![false; n];
+    for t in toks {
+        if t.kind == Kind::Eof {
+            break;
+        }
+        if t.kind == Kind::Comment || t.end <= t.start {
+            continue;
+        }
+        if !src_bytes[t.start..t.end].contains(&b'\n') {
+            continue;
+        }
+        let sl = line_index(&line_starts, t.start);
+        let el = line_index(&line_starts, t.end - 1);
+        for slot in protected[(sl + 1).min(n)..(el + 1).min(n)].iter_mut() {
+            *slot = true;
+        }
+        for slot in ends_inside[sl.min(n)..el.min(n)].iter_mut() {
+            *slot = true;
+        }
+    }
+
     // Absolute indent per line from the structural walk. Start-lines snap to
     // their depth; continuation lines delta-preserve the innermost covering
     // statement's alignment.
@@ -286,8 +386,9 @@ pub(crate) fn print(
             // That line sits at the shallowest depth of any statement starting
             // on it, which is shallower than the statement's own depth when it
             // follows `IF … THEN` or `ELSE` on the same line.
-            // A tab-sensitive first line keeps its indent, so it moves by nothing.
-            let first = if tab_at[fl].is_some() {
+            // A protected first line (tab-sensitive, or starting inside a
+            // multi-line string) keeps its indent, so it moves by nothing.
+            let first = if protected[fl] {
                 leadings[fl]
             } else {
                 starter[fl].unwrap_or(0) * size
@@ -331,13 +432,13 @@ pub(crate) fn print(
                     == line_index(&line_starts, span_start)
             })
     };
-    let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, depth: usize| {
+    let set_comment = |indent: &mut [usize], span_start: usize, span_end: usize, col: usize| {
         let cfl = line_index(&line_starts, span_start);
         if code_before_on_line(span_start) {
             return;
         }
         let cll = line_index(&line_starts, span_end.saturating_sub(1));
-        let delta = depth as isize * size as isize - leadings[cfl] as isize;
+        let delta = col as isize - leadings[cfl] as isize;
         for l in cfl..=cll {
             if starter[l].is_some() {
                 continue;
@@ -360,14 +461,14 @@ pub(crate) fn print(
                     .is_some_and(|t| matches!(t.kind, Kind::When | Kind::Otherwise))
             });
             let depth = before_branch_head.copied().unwrap_or(d);
-            set_comment(&mut indent, c.span.start as usize, end, depth);
+            set_comment(&mut indent, c.span.start as usize, end, depth * size);
         }
         for c in &nc.dangling {
             set_comment(
                 &mut indent,
                 c.span.start as usize,
                 c.span.end as usize,
-                d + 1,
+                (d + 1) * size,
             );
         }
     }
@@ -375,51 +476,75 @@ pub(crate) fn print(
         set_comment(&mut indent, c.span.start as usize, c.span.end as usize, 0);
     }
 
+    // Property accessors: the walk puts the body one level below the property,
+    // but `GET():` / `SET(...):` is a continuation line that keeps the author's
+    // alignment, also when a body statement starts on it. Move each body to one
+    // level below the column of its head, put its `END` at that column, and
+    // own-line comments just before the head at that column too. A head or
+    // `END` that follows other code on its line (`END GET. SET(...):`) takes
+    // the column of that line, so source order matters: the `END GET.` line is
+    // placed before the `SET` reads its column.
+    for a in &accessors {
+        let col = if protected[a.head_line] {
+            leadings[a.head_line]
+        } else if a.head_leads {
+            let pl = a.property_line;
+            let moved = if protected[pl] {
+                0
+            } else {
+                indent[pl] as isize - leadings[pl] as isize
+            };
+            let col = (leadings[a.head_line] as isize + moved).max(0) as usize;
+            indent[a.head_line] = col;
+            col
+        } else {
+            indent[a.head_line]
+        };
+        let shift = (col + size) as isize - (a.body_depth * size) as isize;
+        if a.end_line > a.colon_line {
+            for slot in &mut indent[a.colon_line + 1..a.end_line] {
+                *slot = (*slot as isize + shift).max(0) as usize;
+            }
+            indent[a.end_line] = if a.end_leads {
+                col
+            } else {
+                (indent[a.end_line] as isize + shift).max(0) as usize
+            };
+        }
+        let first = program
+            .comments
+            .partition_point(|c| (c.span.end as usize) <= a.head);
+        for c in program.comments[..first].iter().rev() {
+            let end = c.span.end as usize;
+            let at = toks.partition_point(|t| t.start < end);
+            let next_code = toks[at..].iter().find(|t| t.kind != Kind::Comment);
+            if next_code.is_none_or(|t| t.start != a.head) {
+                break;
+            }
+            set_comment(&mut indent, c.span.start as usize, end, col);
+        }
+    }
+
     let content_starts: Vec<usize> = lines.iter().map(|l| l.content_start).collect();
     let mut content: Vec<String> = lines.into_iter().map(|l| l.content).collect();
+    // A line ending inside a token is part of its value: `split_lines` took
+    // every `\r` before the `\n` as the terminator, but the emitted line ending
+    // supplies only the `\n` and at most one `\r`. Keep the others.
+    for l in (0..n).filter(|&l| ends_inside[l]) {
+        let nl = line_starts[l + 1] - 1;
+        let end = if nl > content_starts[l] && src_bytes[nl - 1] == b'\r' {
+            nl - 1
+        } else {
+            nl
+        };
+        content[l] = source[content_starts[l]..end].to_string();
+    }
 
     // `toks` is the caller's single tokenization of `source`, shared with the
     // semantic guard so the file is lexed once, not twice (the protected-line
-    // scan below and the keyword transform both consume it). A single pass keeps
+    // scan above and the keyword transform both consume it). A single pass keeps
     // multi-line tokens (strings, includes, block comments) intact as one token
     // each.
-
-    // Protected lines: physical lines that *begin inside* a multi-line token
-    // whose interior bytes are significant — a string literal or an
-    // `{include}`/preprocessor reference. The line-based reindent would rewrite
-    // their leading whitespace, which lands inside the token and trips the
-    // semantic guard (#95). Leave them verbatim. A line `l` begins inside token
-    // `t` iff `t.start < line_starts[l] < t.end`, i.e. `l` is strictly after the
-    // token's first line and no later than its last. Comments are trivia (the
-    // guard ignores them), so they keep their existing delta-preserving reindent.
-    //
-    // Line endings are still normalized to the file's dominant ending at flush, so
-    // a multi-line token whose interior newline differs from that dominant ending
-    // (e.g. an interior `\r\n` in a mostly-`\n` file) trips the guard and bails —
-    // fails safe (file returned unchanged), not corrupted.
-    //
-    // Fast path: only a token that actually spans a newline can protect a line,
-    // and single-line tokens are the overwhelming majority — so gate the two
-    // line-index binary searches behind a cheap newline scan of the token's
-    // bytes. This keeps the whole scan ~O(source) instead of O(tokens · log lines).
-    let src_bytes = source.as_bytes();
-    let mut protected: Vec<bool> = tab_at.iter().map(Option::is_some).collect();
-    for t in toks {
-        if t.kind == Kind::Eof {
-            break;
-        }
-        if t.kind == Kind::Comment || t.end <= t.start {
-            continue;
-        }
-        if !src_bytes[t.start..t.end].contains(&b'\n') {
-            continue;
-        }
-        let sl = line_index(&line_starts, t.start);
-        let el = line_index(&line_starts, t.end - 1);
-        for slot in protected[(sl + 1).min(n)..(el + 1).min(n)].iter_mut() {
-            *slot = true;
-        }
-    }
 
     // Keyword recasing/abbreviation (U5) — driven by the whole-source
     // tokenization so multi-line block comments stay a single comment token and

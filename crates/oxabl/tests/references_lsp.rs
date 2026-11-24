@@ -1783,8 +1783,8 @@ fn warnings_in_one_program(text: &str, needle: &str) -> Vec<String> {
 fn a_field_or_buffer_named_in_text_oxabl_does_not_model_says_it_can_miss_uses() {
     let forms = [
         (
-            "PROMPT-FOR",
-            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nPROMPT-FOR Item.ItemNum WITH FRAME f.\n",
+            "CHOOSE",
+            "FIND FIRST Item.\nDISPLAY Item.ItemNum.\nCHOOSE ROW Item.ItemNum.\n",
             "Item.ItemNum",
         ),
         (

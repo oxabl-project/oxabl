@@ -83,8 +83,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, SkippedText, UnresolvedInclude,
-    analyze_from_expanded, collect_from_expanded_with_summaries, expand_source_with,
+    ExpandedFile, IncludeOrigin, IncludeOriginDiagnostic, RuleSelection, SkippedText,
+    UnresolvedInclude, analyze_from_expanded, collect_from_expanded_with_summaries,
+    expand_source_with,
 };
 
 use oxabl_common::{
@@ -215,6 +216,30 @@ impl Expansion {
     }
 }
 
+/// The one finding of an encrypted root: no parse, preprocessor or lint finding
+/// follows, since the text is not ABL.
+fn encrypted_diagnostic() -> Diagnostic {
+    Diagnostic::warning(
+        oxabl_workspace::ENCRYPTED_CODE,
+        oxabl_workspace::EncryptedSource.to_string(),
+        oxabl_common::FileSpan {
+            file: ROOT_FILE_ID,
+            span: oxabl_ast::Span { start: 0, end: 0 },
+        },
+    )
+    .with_help("the XCODE key is needed to read this file".to_string())
+}
+
+/// What a run reports for a root that is encrypted: the one `SOURCE001`
+/// finding, as [`LintPipeline::run`] gives it. A client that already knows the
+/// file is encrypted, from its bytes, reports this without a second detection.
+pub fn encrypted_root_diagnostics() -> CollectedDiagnostics {
+    CollectedDiagnostics::new(vec![CollectedDiagnostic {
+        diagnostic: encrypted_diagnostic(),
+        source: DiagnosticSource::Preproc,
+    }])
+}
+
 /// One lint run's outcome, kept private so a [`LintResult`] cannot be built into
 /// a contradictory state (diagnostics *and* a panic).
 enum Outcome {
@@ -281,6 +306,14 @@ impl LintResult {
     fn failed(panic: InternalPanic) -> Self {
         LintResult {
             outcome: Outcome::Failed(panic),
+        }
+    }
+
+    /// The diagnostics of a completed run, to change them in place.
+    pub(crate) fn diagnostics_mut(&mut self) -> Option<&mut CollectedDiagnostics> {
+        match &mut self.outcome {
+            Outcome::Computed { diagnostics, .. } => Some(diagnostics),
+            Outcome::Failed(_) => None,
         }
     }
 
@@ -975,6 +1008,22 @@ impl<'a> LintPipeline<'a> {
         })
     }
 
+    /// Whether the rule `code` is enabled for this file and diagnostics are on
+    /// in `[workspace.features]`.
+    pub fn rule_enabled(&self, code: &str) -> bool {
+        if !self.config.features.diagnostics {
+            return false;
+        }
+        let severities = self
+            .file()
+            .map(|p| self.config.lint_severities.for_path(p))
+            .unwrap_or_else(|| self.config.lint_severities.clone());
+        let registry = oxabl_lint::Registry::builtin_shared();
+        registry
+            .rules()
+            .any(|r| r.meta().code == code && registry.severity_for(r, &severities).is_some())
+    }
+
     /// Whether TX004 is enabled for this file. This query computes no effects.
     pub fn callee_summaries_enabled(&self) -> bool {
         let severities = self
@@ -1514,6 +1563,12 @@ impl<'a> LintPipeline<'a> {
         // through `run` must be contained, and the same panic through `expand`
         // must escape.
         panic_if_injected(panic_sites::ANALYZE, source);
+        if oxabl_workspace::looks_encrypted(source.as_bytes()) {
+            return Expansion {
+                inner: Err(vec![encrypted_diagnostic()]),
+                search_base: None,
+            };
+        }
         let search_base = self.config.search_base(self.file(), source);
         Expansion {
             inner: expand_source_with(
@@ -1690,6 +1745,17 @@ impl<'a> LintPipeline<'a> {
     /// therefore *unprotected*; that client's recovery is a panic hook plus
     /// instance reset, which lives outside this crate.
     pub fn run(&self, source: &str) -> LintResult {
+        self.run_with_include_origins(source).0
+    }
+
+    /// [`run`](Self::run), and the include files the expansion read with the
+    /// root-level site of each. `None` when the includes are not all known: on
+    /// a failed run, a fatal preprocessing failure, with preprocessing off, and
+    /// when an include did not resolve, could not be read or was elided.
+    pub fn run_with_include_origins(
+        &self,
+        source: &str,
+    ) -> (LintResult, Option<Vec<IncludeOrigin>>) {
         match catch_panic(|| {
             let expansion = self.expand(source);
             let result = self.collect(&expansion);
@@ -1698,10 +1764,20 @@ impl<'a> LintPipeline<'a> {
             } else {
                 result
             };
-            self.report_include_findings(result)
+            let origins = expansion
+                .expanded()
+                .filter(|expanded| {
+                    self.preprocess
+                        && expanded.unresolved_includes().is_empty()
+                        && expanded.nested_unresolved_includes().is_empty()
+                        && expanded.unreadable_includes().is_empty()
+                        && expanded.elided_include_offsets().is_empty()
+                })
+                .map(|expanded| expanded.include_origins().to_vec());
+            (self.report_include_findings(result), origins)
         }) {
-            Ok(result) => result,
-            Err(panic) => LintResult::failed(panic),
+            Ok(run) => run,
+            Err(panic) => (LintResult::failed(panic), None),
         }
     }
 }

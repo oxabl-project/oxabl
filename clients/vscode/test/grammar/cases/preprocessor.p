@@ -119,3 +119,26 @@
     MESSAGE "{inc.i}".
 //            ^^^^^ - string.unquoted.include.abl
 
+// the first } ends an include reference, also inside quotes
+    {a.i x '}' y'.
+//         ^ meta.preprocessor.include.abl string.quoted.single.abl
+//          ^ meta.preprocessor.include.abl punctuation.definition.include.end.abl
+//           ^^^^ string.quoted.single.abl - meta.preprocessor.include.abl
+    {a.i x "a~"b" y}Z
+//         ^^^^ meta.preprocessor.include.abl string.quoted.double.abl
+//             ^ meta.preprocessor.include.abl string.unquoted.argument.abl
+//              ^^^ meta.preprocessor.include.abl string.quoted.double.abl
+//                 ^ meta.preprocessor.include.abl punctuation.definition.include.end.abl
+//                  ^ - meta.preprocessor.include.abl
+    {inc.i &a="{&x}" b}
+//               ^ meta.preprocessor.include.abl string.quoted.double.abl variable.other.constant.preprocessor.abl
+//                   ^ meta.preprocessor.include.abl string.unquoted.argument.abl
+//                    ^ meta.preprocessor.include.abl punctuation.definition.include.end.abl
+// ~} does not end an include reference
+    {a.i x a~}b "c~}d" y}Z
+//         ^ meta.preprocessor.include.abl string.unquoted.argument.abl
+//          ^^ meta.preprocessor.include.abl constant.character.escape.abl
+//            ^ meta.preprocessor.include.abl string.unquoted.argument.abl
+//                ^^ meta.preprocessor.include.abl string.quoted.double.abl constant.character.escape.abl
+//                      ^ meta.preprocessor.include.abl punctuation.definition.include.end.abl
+//                       ^ - meta.preprocessor.include.abl

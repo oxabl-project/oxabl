@@ -52,7 +52,8 @@ impl BufferKind {
 pub enum Table {
     /// A table of the loaded schema.
     Database(String),
-    /// A temp-table of the file.
+    /// A temp-table of the file, or one a superclass defines (`no_undo` is
+    /// then `false`: the index does not give it).
     TempTable { name: String, no_undo: bool },
     /// Neither: the schema is not loaded, or does not have the table. Taken
     /// to be a database table when no schema is loaded.
@@ -72,6 +73,47 @@ impl Table {
     pub fn is_temp_table(&self) -> bool {
         matches!(self, Table::TempTable { .. })
     }
+}
+
+/// What an inherited record member is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InheritedKind {
+    TempTable,
+    Buffer,
+}
+
+/// The table an inherited record stands for in the subclass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InheritedTable {
+    /// A temp-table, by its name. Whether it is `NO-UNDO` is not known here:
+    /// the buffer reports `false`.
+    TempTable(String),
+    /// A table of the schema, by the name the superclass wrote.
+    Named(String),
+    /// A table the subclass cannot name, such as a `PRIVATE` temp-table of the
+    /// superclass: the answer is Unknown, whatever the schema holds.
+    Unknown(String),
+}
+
+/// A buffer or temp-table a class inherits from a superclass, by the folded
+/// name a subclass writes for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritedRecord {
+    pub name: String,
+    pub kind: InheritedKind,
+    pub table: InheritedTable,
+}
+
+/// The buffers and temp-tables a class inherits. A name the file does not
+/// define resolves to one of these before it resolves to a table of the
+/// schema. The default is a class that inherits nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Inherited {
+    pub records: Vec<InheritedRecord>,
+    /// A superclass the analysis could not read may define any other name: a
+    /// name the file does not define, and no record here has, is an Unknown
+    /// table, not a table of the schema.
+    pub opaque: bool,
 }
 
 /// How a scope comes about.

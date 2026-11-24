@@ -1,5 +1,5 @@
 use super::registry_run::codes_of;
-use super::{check, check_no_schema, lines};
+use super::{check, check_no_schema, labels, lines};
 use oxabl_common::LintSeverityMap;
 use oxabl_lint::{unknown_in_comparison as comparison, unknown_propagation as propagation};
 
@@ -316,4 +316,154 @@ DO i = 1 TO NUM-ENTRIES(c):\n\
 END.\n\
 MESSAGE c + \"x\".\n";
     assert_eq!(lines(src, &check(propagation::run, src)), [6]);
+}
+
+fn owned(expected: &[(usize, &str)]) -> Vec<(usize, String)> {
+    expected.iter().map(|(l, m)| (*l, m.to_string())).collect()
+}
+
+#[test]
+fn a_finding_relates_where_the_unknown_value_comes_from() {
+    let src = "DEFINE VARIABLE d AS DATE NO-UNDO.\n\
+DEFINE VARIABLE n AS INTEGER NO-UNDO.\n\
+DEFINE VARIABLE k AS INTEGER NO-UNDO.\n\
+IF k > 1 THEN n = ?.\n\
+IF d < TODAY THEN MESSAGE 1.\n\
+IF n > 1 THEN MESSAGE 1.\n\
+k = n * 2.\n\
+PROCEDURE q:\n\
+    DEFINE INPUT PARAMETER p AS INTEGER NO-UNDO.\n\
+    IF p = ? THEN MESSAGE p + 1.\n\
+END PROCEDURE.\n";
+    let found = check_no_schema(comparison::run, src);
+    assert_eq!(lines(src, &found), [5, 6]);
+    assert_eq!(
+        labels(src, &found[0]),
+        owned(&[(1, "`d` starts as `?` here")])
+    );
+    assert_eq!(
+        labels(src, &found[1]),
+        owned(&[(4, "this may assign `?` to `n`")])
+    );
+    let found = check_no_schema(propagation::run, src);
+    assert_eq!(lines(src, &found), [7, 10]);
+    assert_eq!(
+        labels(src, &found[0]),
+        owned(&[(4, "this may assign `?` to `n`")])
+    );
+    assert_eq!(
+        labels(src, &found[1]),
+        owned(&[(10, "`p` may be `?` after this test")])
+    );
+}
+
+#[test]
+fn a_finding_shows_eight_sources_and_counts_the_rest() {
+    let mut src = "DEFINE VARIABLE n AS INTEGER NO-UNDO.\n\
+DEFINE INPUT PARAMETER k AS INTEGER NO-UNDO.\n"
+        .to_string();
+    for i in 1..=10 {
+        src.push_str(&format!("IF k = {i} THEN n = ?.\n"));
+    }
+    src.push_str("IF n > 1 THEN MESSAGE 1.\n");
+    let found = check_no_schema(comparison::run, &src);
+    let related = labels(&src, &found[0]);
+    assert_eq!(
+        related.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+        [3, 4, 5, 6, 7, 8, 9, 10]
+    );
+    assert_eq!(related[0].1, "this may assign `?` to `n`");
+    assert_eq!(related[7].1, "this may assign `?` to `n` (and 2 more)");
+}
+
+/// The text of each label of `d`.
+fn label_texts<'s>(src: &'s str, d: &oxabl_common::Diagnostic) -> Vec<&'s str> {
+    d.labels
+        .iter()
+        .map(|l| &src[l.span.span.start as usize..l.span.span.end as usize])
+        .collect()
+}
+
+#[test]
+fn a_use_inside_an_assign_relates_the_earlier_pair_that_wrote_it() {
+    let head = "DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.\n\
+DEFINE VARIABLE x AS INTEGER NO-UNDO.\n\
+DEFINE VARIABLE y AS INTEGER NO-UNDO.\n\
+IF n = 1 THEN x = ?.\n";
+    // `x = 5` overwrites the `?` of line 4; the `?` comes from `x = ?`.
+    let src = format!("{head}ASSIGN x = 5 y = x + 1 x = ? y = x + 2.\n");
+    let found = check_no_schema(propagation::run, &src);
+    assert_eq!(lines(&src, &found), [5]);
+    assert_eq!(
+        labels(&src, &found[0]),
+        owned(&[(5, "this may assign `?` to `x`")])
+    );
+    assert_eq!(label_texts(&src, &found[0]), ["x = ?"]);
+
+    let src = format!("{head}ASSIGN x = ? y = x + 1.\n");
+    let found = check_no_schema(propagation::run, &src);
+    assert_eq!(label_texts(&src, &found[0]), ["x = ?"]);
+
+    // A pair that keeps the old value leaves the earlier source on the path.
+    let src = format!("{head}ASSIGN x = x + 1 y = x * 2.\n");
+    let found = check_no_schema(propagation::run, &src);
+    assert_eq!(lines(&src, &found), [5]);
+    assert_eq!(label_texts(&src, &found[0]), ["x = ?"]);
+    assert_eq!(
+        labels(&src, &found[0]),
+        owned(&[(4, "this may assign `?` to `x`")])
+    );
+}
+
+#[test]
+fn a_test_that_makes_the_value_unknown_is_related_beside_an_assignment() {
+    let src = "PROCEDURE q:\n\
+    DEFINE INPUT PARAMETER p AS INTEGER NO-UNDO.\n\
+    DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.\n\
+    IF n = 1 THEN p = ?.\n\
+    IF p = ? THEN MESSAGE p + 1.\n\
+END PROCEDURE.\n";
+    let found = check_no_schema(propagation::run, src);
+    assert_eq!(lines(src, &found), [5]);
+    assert_eq!(
+        labels(src, &found[0]),
+        owned(&[
+            (4, "this may assign `?` to `p`"),
+            (5, "`p` may be `?` after this test"),
+        ])
+    );
+    assert_eq!(label_texts(src, &found[0]), ["p = ?", "p = ?"]);
+
+    let src = "DEFINE INPUT PARAMETER p AS INTEGER NO-UNDO.\n\
+DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.\n\
+IF n = 1 THEN p = ?.\n\
+IF p = ? THEN MESSAGE p * 2.\n";
+    let found = check_no_schema(propagation::run, src);
+    assert_eq!(
+        labels(src, &found[0]),
+        owned(&[
+            (3, "this may assign `?` to `p`"),
+            (4, "`p` may be `?` after this test"),
+        ])
+    );
+}
+
+#[test]
+fn a_few_hundred_variables_in_straight_line_code_all_get_their_sources() {
+    let n = 250;
+    let mut src = String::new();
+    for v in 0..n {
+        src.push_str(&format!("DEFINE VARIABLE v{v} AS DATE NO-UNDO.\n"));
+    }
+    for v in 0..n {
+        src.push_str(&format!("IF v{v} > TODAY THEN MESSAGE {v}.\n"));
+    }
+    let found = check_no_schema(comparison::run, &src);
+    assert_eq!(found.len(), n);
+    for (v, d) in found.iter().enumerate() {
+        assert_eq!(
+            labels(&src, d),
+            owned(&[(v + 1, &format!("`v{v}` starts as `?` here"))]),
+        );
+    }
 }

@@ -18,15 +18,16 @@
 //! other, and the refusal names both numbers so the mismatch is diagnosable from
 //! one message. Bump it whenever a type here changes shape.
 //!
-//! The current contract is 5. It is not compatible with 4: there is no
+//! The current contract is 6. It is not compatible with 5: there is no
 //! negotiation step and no window in which the two interoperate, so a client and
 //! a daemon have to be built from the same contract and deployed together. A
 //! client that finds a daemon speaking another contract is refused at the
 //! handshake rather than allowed to proceed on a guess.
 //!
 //! One contract spans many builds, and a daemon answers with its own code, so a
-//! registration also names the build ([`Registration::daemon_version`]): a daemon
-//! that outlived an upgrade reads `oxabl.toml` with the older rules.
+//! registration also names the build ([`Registration::daemon_version`] and
+//! [`Registration::build`]): a daemon that outlived an upgrade reads `oxabl.toml`
+//! with the older rules.
 //!
 //! # Unsourceable values
 //!
@@ -54,7 +55,7 @@ use serde::{Deserialize, Serialize};
 /// Bump on any shape change to a type in this crate. There is no negotiation and
 /// no compatibility window: both products are pre-1.0 and are built together, so a
 /// mismatch means one side is stale and should be told so rather than accommodated.
-pub const CONTRACT_VERSION: u32 = 5;
+pub const CONTRACT_VERSION: u32 = 6;
 
 /// The `oxabl/*` method names, as they travel.
 pub mod method {
@@ -596,6 +597,16 @@ pub struct Registration {
     /// another build.
     #[serde(default)]
     pub daemon_version: String,
+    /// The identity of the executable that runs the daemon: a hash of its bytes, in
+    /// hex. Two builds with one version number have two identities. Empty when the
+    /// daemon could not read its own executable.
+    #[serde(default)]
+    pub build: String,
+    /// When the executable was written, in milliseconds since the Unix epoch, or 0
+    /// when unknown. It orders two builds that have one version: a client replaces a
+    /// daemon that is not newer than itself.
+    #[serde(default)]
+    pub build_modified_ms: u64,
 }
 
 /// The directory the daemon's registration, socket and lock live in.
@@ -1190,6 +1201,8 @@ mod tests {
             contract_version: CONTRACT_VERSION,
             workspace_root: "/proj".to_string(),
             daemon_version: "0.5.11".to_string(),
+            build: "0123456789abcdef".to_string(),
+            build_modified_ms: 1_700_000_000_000,
         };
         assert_eq!(roundtrip(&registration), registration);
     }

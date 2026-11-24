@@ -566,9 +566,13 @@ fn freshness(
     if let Some(progress) = claimed {
         let host = host.clone();
         let root = root.to_path_buf();
+        // Taken before the spawn, so the daemon cannot go idle between the answer to
+        // this request and the start of the pass.
+        let busy = host.activity().work();
         oxabl_common::stack::builder()
             .name("oxabl-workspace-pass".to_string())
             .spawn(move || {
+                let _busy = busy;
                 if let Err(error) = run_claimed_workspace_pass(&host, &root, progress) {
                     eprintln!("oxabl daemon: workspace pass failed: {error}");
                 }

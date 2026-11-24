@@ -742,6 +742,7 @@ impl Parser<'_> {
         if self.check(Kind::IntegerLiteral)
             || self.check(Kind::BigIntLiteral)
             || self.check(Kind::DecimalLiteral)
+            || self.check(Kind::DateLiteral)
             || self.check(Kind::StringLiteral)
             || self.check(Kind::KwTrue)
             || self.check(Kind::KwFalse)
@@ -809,7 +810,7 @@ impl Parser<'_> {
             return self.parse_function_call(name);
         }
         if self.check(Kind::New) {
-            self.advance(); // consume NEW
+            let new_token = self.advance().clone(); // consume NEW
 
             // Parse dotted class name (e.g., "app.Widget", "api.text", "Progress.Lang.Error").
             // Use is_word_kind() so keyword-named namespaces/types (e.g. api.text) are accepted.
@@ -821,11 +822,14 @@ impl Parser<'_> {
             }
             let start = self.peek().start;
             self.advance(); // consume first name component
+            // A qualified name has no space around its periods: in
+            // `l = NEW customer.` the period ends the statement.
             while self.check(Kind::Period)
+                && self.token_at(self.current - 1).end == self.peek().start
                 && self
                     .tokens
                     .get(self.current + 1)
-                    .is_some_and(|t| Self::is_word_kind(t.kind))
+                    .is_some_and(|t| Self::is_word_kind(t.kind) && t.start == self.peek().end)
             {
                 self.advance(); // consume '.'
                 self.advance(); // consume next component
@@ -838,15 +842,31 @@ impl Parser<'_> {
             let type_arguments = (!type_arguments.0.is_empty()).then(|| Box::new(type_arguments));
 
             // If no '(' follows, this is the logical NEW record-name test (boolean expression),
-            // not an OO object constructor.  Return a simple identifier so parsing continues.
+            // not an OO object constructor. Model it as `NEW(record)`, the shape
+            // `AVAILABLE record` has.
             if !self.check(Kind::LeftParen) {
-                return Ok(self.expr(ExpressionKind::Identifier(Identifier {
+                let record = self.spanned_expr(
+                    start as u32,
+                    end as u32,
+                    ExpressionKind::Identifier(Identifier {
+                        span: Span {
+                            start: start as u32,
+                            end: end as u32,
+                        },
+                        name: class_name,
+                    }),
+                );
+                let name = Identifier {
                     span: Span {
-                        start: start as u32,
-                        end: end as u32,
+                        start: new_token.start as u32,
+                        end: new_token.end as u32,
                     },
-                    name: class_name,
-                })));
+                    name: self.source[new_token.start..new_token.end].to_string(),
+                };
+                return Ok(self.expr(ExpressionKind::FunctionCall {
+                    name,
+                    arguments: vec![record],
+                }));
             }
 
             // Parse argument list (supports INPUT/OUTPUT direction qualifiers and TABLE/BUFFER args)

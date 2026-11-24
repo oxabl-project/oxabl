@@ -283,3 +283,82 @@ z = y + 1.
 ";
     assert_eq!(uses(source), Vec::<String>::new());
 }
+
+/// The text and kind of each source of one use, or `None`.
+type Sources = Option<Vec<(String, oxabl_nulls::ValueSourceKind)>>;
+
+/// The sources of the first use of each variable, as a test sees them: the
+/// text and kind of each, or `None`.
+fn first_sources(source: &str) -> Vec<(String, Sources)> {
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let flow =
+        oxabl_flow::build_file_tokens(&program.statements, source, &tokens, &Default::default());
+    let nulls = FileNulls::default().with_values(
+        source,
+        &tokens,
+        &program.statements,
+        &flow,
+        &NullOptions::default(),
+    );
+    nulls
+        .first_values()
+        .map(|u| {
+            let sources = u.sources.as_ref().map(|found| {
+                found
+                    .iter()
+                    .map(|s| {
+                        (
+                            source[s.at.start as usize..s.at.end as usize].to_string(),
+                            s.kind,
+                        )
+                    })
+                    .collect()
+            });
+            (u.name.clone(), sources)
+        })
+        .collect()
+}
+
+#[test]
+fn a_pair_that_passes_the_unknown_value_through_a_choice_keeps_its_source() {
+    use oxabl_nulls::ValueSourceKind::Assignment;
+    let source = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n\
+DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.\n\
+IF n = 2 THEN x = ?.\n\
+ASSIGN x = (IF n = 1 THEN x ELSE 0)\n\
+       n = x * 2.\n";
+    assert_eq!(
+        first_sources(source),
+        [(
+            "x".to_string(),
+            Some(vec![("x = ?".to_string(), Assignment)])
+        )]
+    );
+}
+
+/// A choice that tests the variable can store the `?` of another value only
+/// because the variable was `?`. The list would miss that pair, so there is
+/// none.
+#[test]
+fn a_pair_whose_choice_tests_the_variable_gives_no_partial_list() {
+    let source = "DEFINE VARIABLE x AS INTEGER NO-UNDO.\n\
+DEFINE VARIABLE y AS INTEGER NO-UNDO.\n\
+DEFINE INPUT PARAMETER n AS INTEGER NO-UNDO.\n\
+IF n = 2 THEN x = ?.\n\
+y = ?.\n\
+x = (IF x = ? THEN y ELSE 0).\n\
+n = x * 2.\n";
+    let found = first_sources(source);
+    let x = found
+        .iter()
+        .find(|(name, _)| name == "x")
+        .expect("a use of x");
+    assert!(
+        x.1.as_ref().is_none_or(|list| list
+            .iter()
+            .any(|(text, _)| text == "x = (IF x = ? THEN y ELSE 0)")),
+        "{found:?}"
+    );
+}

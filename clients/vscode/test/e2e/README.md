@@ -23,6 +23,9 @@ into `.vscode-test/`.
 | `include-context` | A real `oxabl` (as `outline`) in a project with `shared.i`, included by `reads.p` and `ignores.p`. The open include shows `oxabl: fragment` in the status bar. **oxabl: Select Include Context** lists fragment mode and both roots. Choosing `ignores.p` shows `oxabl: in ignores.p` and the unused `spare-v` in the Problems panel. Choosing `reads.p` removes it. A root file shows no include context, the selection stays with the include, and fragment mode can be chosen again. |
 | `expanded-unit` | A real `oxabl` (as `outline`) with `nested.p`, which includes `mid.i`, which includes `shared.i`. **oxabl: Show Expanded Compilation Unit** opens `nested (expanded).p` beside the file with both includes folded. Unfold All shows the text between `▼` and `▲` lines for each include. Typing does not change the view. The unused `spare-v` of the same analysis is in the Problems panel. F12 on an expanded line opens `shared.i`. An unsaved edit of `nested.p` that reads `spare-v` removes the finding and leaves the disk unchanged. `missing.p` gives a reduced expansion that names `nope.i`. |
 | `definition` | A real `oxabl` (as `outline`) with `main.p` and `util/recalc.p`. The `RUN util/recalc.p` target shows as a document link. F12 on it opens `recalc.p`. F12 on a use of a local variable puts the cursor on its `DEFINE`. It fails without a binary that answers both requests. |
+| `schema` | A real `oxabl` (as `outline`) with `oxabl.toml` naming `db/shop.df`, the directory `nodf` (no `.df` in it), `../outside/extra.df` and the empty directory `../later`. The ABL Schema view lists both databases and their tables, and the message above it names `nodf`. **oxabl: Filter Schema** with `mobile` keeps only the field whose description holds it, and the view message names the filter. A click on the field opens `shop.df` with the cursor on its `ADD FIELD` line, at the name. **Copy table.field** in its context menu puts `Customer.Phone` on the clipboard. The inline action on a table opens its details page. A filter with no match says so, and a table added to the `.df` on disk then shows in the view; so does a table added to `extra.df`, outside the workspace folder, and a `.df` created in `../later` (named `LATE.DF`: the watcher takes any case of the extension). |
+| `schema-config-above` | A real `oxabl` (as `outline`). The workspace folder is `src`, and the `oxabl.toml` that names the schema is one directory above it. The ABL Schema view shows that schema, and an edit of that `oxabl.toml` that adds a `.df` shows the new database in the view. |
+| `folding` | A real `oxabl` (as `outline`) with `main.p`, a file with no indentation. **Fold All Block Comments** folds the block comment, so the server gives the kind `comment`. **Fold All** folds the procedure and shows its `END` line, and folds both blocks of an `IF ... THEN DO: ... ELSE DO:` with the `ELSE DO:` line visible. **Fold All Regions** folds the `// #region` and `&ANALYZE-SUSPEND` blocks and not the procedure. **Expand Selection** grows from a string to its statement and its procedure, and each step contains the one before it. In an `IF ... THEN` with a `DO:` block on its own line, it reaches the block and then the `IF` statement. |
 | `references` | A real `oxabl` (as `outline`) with `main.p`, `batch.p` and `util/recalc.p`. **Find All References** on a local variable gives its 5 references, and on the `RUN util/recalc.p` target lists `batch.p`, a file that is not open. **Show Call Hierarchy** on `RUN tally` shows `main.p` as its caller. On a keyword outside every routine it shows the program, called by `batch.p`, and **Show Outgoing Calls** lists `recalc.p` and `tally`. VS Code asks for no call hierarchy item where the cursor is on no word. |
 | `update-auto` | The extension installs a newer release from the fake API and sends the right headers. |
 | `update-checksum` | A wrong SHA-256 installs nothing and shows no message. |
@@ -81,17 +84,36 @@ is still running, and kills it.
 
 Two more scenarios measure what the extension costs the machine. They run only
 when `OXABL_E2E_SCENARIOS` names them, and their settings are in
-`scenarios/server.mjs`:
+`scenarios/server.mjs`.
 
 | Scenario | What it measures |
 | --- | --- |
 | `server-crash-loop` | A server that exits at once: how often the client starts it again. |
-| `server-soak` | A real `oxabl` (`OXABL_E2E_OXABL`) on a large fuzzed file that is edited for a while, then five window reloads: memory, threads and CPU of the extension host and the server, and the number of `oxabl` processes. |
+| `server-soak` | A real `oxabl` (`OXABL_E2E_OXABL`) on a large fuzzed file. Text is first typed at key-repeat speed (about 39 characters a second): the checks fail when the main thread of the window blocks for more than 1 second, when it is blocked for more than 10% of a sample, or when the window takes fewer than 28 characters a second. Then the scenario types as fast as it can and checks that the window still answers within 30 seconds. Then five window reloads. It reports memory, threads and CPU of the extension host and the server, the number of `oxabl` processes, and how long the window was blocked. Input at that stress speed (about 78 characters a second; the limit is about 45) blocks the window for seconds in every language with a grammar: see "Input faster than VS Code tokenizes" in `docs/design/vscode-extension.md`. |
+
+For example, the soak with the server off, the same text in VS Code's own C
+grammar for comparison, and a CPU profile of the window while it types:
+
+```bash
+OXABL_E2E_SCENARIOS=server-soak OXABL_E2E_NO_SERVER=1 OXABL_E2E_OXABL=<oxabl> \
+  OXABL_E2E_RUNTIME=<short dir> xvfb-run -a pnpm run test:e2e
+OXABL_E2E_SCENARIOS=server-soak OXABL_E2E_NO_SERVER=1 OXABL_E2E_OXABL=<oxabl> \
+  OXABL_E2E_RUNTIME=<short dir> OXABL_E2E_BIG_FILE=big.c xvfb-run -a pnpm run test:e2e
+OXABL_E2E_SCENARIOS=server-soak OXABL_E2E_NO_SERVER=1 OXABL_E2E_OXABL=<oxabl> \
+  OXABL_E2E_RUNTIME=<short dir> OXABL_E2E_PROFILE=window.cpuprofile xvfb-run -a pnpm run test:e2e
+```
+
+To open the file of `server-soak` by hand, write it from `clients/vscode`:
+
+```bash
+node -e 'import("./test/e2e/scenarios/server.mjs").then(m => require("fs").writeFileSync("big.p", m.fuzzedFile(400000)))'
+```
 
 Settings through the environment:
 
 - `OXABL_E2E_SCENARIOS=highlight,markdown` runs the scenarios whose name starts
   with one of the prefixes.
+- `OXABL_E2E_VSCODE_VERSION=1.147.0` runs another VS Code than the pinned one.
 - `OXABL_E2E_VSIX=<file>` tests that VSIX. Without it, the run packages the
   tree with `scripts/package-vsix.sh`.
 
