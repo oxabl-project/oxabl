@@ -389,3 +389,45 @@ fn a_lock_rule_judges_an_inherited_database_buffer() {
     // read takes none.
     assert_eq!(lines, [4], "{report}");
 }
+
+#[test]
+fn a_database_qualified_name_is_the_table_even_beside_a_temp_table_of_its_name() {
+    let root = "CLASS pkg.Root:\n    DEFINE PROTECTED TEMP-TABLE customer NO-UNDO FIELD z AS INTEGER.\nEND CLASS.\n";
+    let files = [("pkg/Root.cls", root)];
+    // The qualifier is the database name of the project's schema.
+    let schema_db = "fixture";
+    for statement in [
+        format!("FIND FIRST {schema_db}.customer NO-LOCK NO-ERROR."),
+        format!(
+            "DEFINE BUFFER dbc FOR {schema_db}.customer.\n        FIND FIRST dbc NO-LOCK NO-ERROR."
+        ),
+    ] {
+        let effect = effect_of(&files, "Root", &statement);
+        assert_eq!(effect.table, "customer", "{statement}: {effect:#?}");
+    }
+    // The name alone is the temp-table.
+    let own = effect_of(&files, "Root", "FIND FIRST customer NO-ERROR.");
+    assert_eq!(own.table, "tt:customer", "{own:#?}");
+
+    // The same beside a temp-table of the file itself.
+    let tmp = workspace(&[(
+        "p.p",
+        "DEFINE TEMP-TABLE customer NO-UNDO FIELD z AS INTEGER.\nFIND FIRST fixture.customer NO-LOCK NO-ERROR.\nFIND FIRST customer NO-ERROR.\n",
+    )]);
+    let value = oxabl(tmp.path(), &["explain", "p.p", "--json"]);
+    let tables: Vec<&str> = value["units"][0]["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["table"].as_str().unwrap())
+        .collect();
+    assert_eq!(tables, ["customer", "tt:customer"], "{value}");
+
+    // In a chain that is not read the qualified name still is the table.
+    let blind = effect_of(
+        &[("pkg/Base.cls", BASE)],
+        "Base",
+        "FIND FIRST fixture.customer NO-LOCK NO-ERROR.",
+    );
+    assert_eq!(blind.table, "customer", "{blind:#?}");
+}

@@ -5,7 +5,7 @@
 //! supertype name as the member walk of the resolver does
 //! ([`lookup_supertype`]) and ends where that walk makes a surface opaque.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use oxabl_ast::{Statement, StatementKind};
@@ -159,25 +159,37 @@ fn member_of(member: &MemberDescriptor) -> Option<Member> {
     })
 }
 
+/// The temp-tables of the chain by folded name, each with the depths of the
+/// levels that define it, nearest first.
+type TempTables<'a> = HashMap<&'a str, Vec<(usize, &'a Member)>>;
+
 fn bind(levels: &[Vec<Member>], opaque: bool) -> Vec<InheritedRecord> {
-    let mut out: Vec<InheritedRecord> = Vec::new();
-    let mut done: HashSet<&IndexName> = HashSet::new();
+    // The nearest member of each name, and the nearest one a subclass can reach.
+    let mut nearest: HashMap<&IndexName, &Member> = HashMap::new();
+    let mut reachable: HashMap<&IndexName, (usize, &Member)> = HashMap::new();
+    let mut temp_tables: TempTables<'_> = HashMap::new();
+    let mut order: Vec<&IndexName> = Vec::new();
     for (depth, level) in levels.iter().enumerate() {
         for member in level {
-            if !done.insert(&member.name) {
-                continue;
+            if let std::collections::hash_map::Entry::Vacant(e) = nearest.entry(&member.name) {
+                e.insert(member);
+                order.push(&member.name);
             }
-            // The nearest member a subclass can reach, else the nearest one.
-            let (at, chosen) = levels
-                .iter()
-                .enumerate()
-                .skip(depth)
-                .find_map(|(d, l)| {
-                    l.iter()
-                        .find(|m| m.name == member.name && m.reachable)
-                        .map(|m| (d, m))
-                })
-                .unwrap_or((depth, member));
+            if member.reachable {
+                reachable.entry(&member.name).or_insert((depth, member));
+            }
+            if member.kind == InheritedKind::TempTable {
+                temp_tables
+                    .entry(last_segment(member.name.as_atom()))
+                    .or_default()
+                    .push((depth, member));
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|name| {
+            let (at, chosen) = reachable.get(name).copied().unwrap_or((0, nearest[name]));
             let written = chosen.name.as_written().to_string();
             let binding = if !chosen.reachable {
                 InheritedBinding::Unknown(written)
@@ -186,45 +198,49 @@ fn bind(levels: &[Vec<Member>], opaque: bool) -> Vec<InheritedRecord> {
                     (InheritedKind::TempTable, _) => InheritedBinding::TempTable(written),
                     (InheritedKind::Buffer, None) => InheritedBinding::Unknown(written),
                     (InheritedKind::Buffer, Some(record)) => {
-                        buffer_binding(&levels[at..], record, opaque)
+                        buffer_binding(&temp_tables, at, record, opaque)
                     }
                 }
             };
-            out.push(InheritedRecord {
+            InheritedRecord {
                 name: chosen.name.clone(),
                 kind: chosen.kind,
                 binding,
-            });
-        }
-    }
-    out
+            }
+        })
+        .collect()
 }
 
-/// The table a buffer is `FOR`, where its declaring class is `levels[0]`.
+/// The table a buffer is `FOR`, declared at level `at` of the chain.
 ///
 /// The declaring class binds the name: a temp-table of its own, or of a class
 /// above it, hides a table of the schema. A temp-table of a class below it does
-/// not.
-fn buffer_binding(levels: &[Vec<Member>], record: &MemberRecord, opaque: bool) -> InheritedBinding {
+/// not. A name with a database qualifier is a table of the schema.
+fn buffer_binding(
+    temp_tables: &TempTables<'_>,
+    at: usize,
+    record: &MemberRecord,
+    opaque: bool,
+) -> InheritedBinding {
     let written = record.table.as_written().to_string();
     if record.temp_table {
         return InheritedBinding::TempTable(written);
     }
-    let key = last_segment(record.table.as_atom());
-    for (depth, level) in levels.iter().enumerate() {
-        let hit = level
-            .iter()
-            .find(|m| m.kind == InheritedKind::TempTable && last_segment(m.name.as_atom()) == key);
+    if !written.contains('.') {
+        let key = last_segment(record.table.as_atom());
+        let hit = temp_tables
+            .get(key)
+            .and_then(|hits| hits.iter().find(|(depth, _)| *depth >= at));
         match hit {
             // A private one hides the table from a class above its own.
-            Some(m) if depth == 0 || m.reachable => {
+            Some((depth, m)) if *depth == at || m.reachable => {
                 return InheritedBinding::TempTable(m.name.as_written().to_string());
             }
             Some(_) => return InheritedBinding::Unknown(written),
             None => {}
         }
     }
-    if opaque {
+    if opaque && !written.contains('.') {
         InheritedBinding::Unknown(written)
     } else {
         InheritedBinding::Table(written)

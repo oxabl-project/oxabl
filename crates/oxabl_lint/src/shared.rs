@@ -223,8 +223,9 @@ fn inherited(program: &[Statement], ctx: &AnalysisContext) -> Inherited {
     }
 }
 
-/// [`oxabl_scope::analyze_tokens`] under `ctx`, with its tokens when it has
-/// them.
+/// [`oxabl_scope::analyze_tokens_inherited`] under `ctx`, with the records
+/// its class inherits and its tokens when it has them. The rules a registry
+/// runs read [`RunShared::scopes`]; this is the entry of a rule run alone.
 pub(crate) fn analyze_scopes(program: &[Statement], ctx: &AnalysisContext) -> FileScopes {
     let options = scope_options(ctx);
     let schema = ctx.schema_loaded.then_some(ctx.schema);

@@ -176,3 +176,98 @@ fn a_chain_that_loops_ends_without_the_class_itself() {
     let found = records_of(classes);
     assert!(found.records.is_empty(), "{found:?}");
 }
+
+#[test]
+fn a_long_chain_with_many_records_binds_in_linear_time() {
+    const LEVELS: usize = 5;
+    const PER_LEVEL: usize = 8_000;
+    let mut classes = HashMap::new();
+    for level in 1..=LEVELS {
+        let mut members = Vec::new();
+        for n in 0..PER_LEVEL {
+            members.push(member(
+                &format!("tt{level}_{n}"),
+                SymbolKind::TempTable,
+                AccessModifier::Protected,
+                None,
+            ));
+            members.push(member(
+                &format!("b{level}_{n}"),
+                SymbolKind::Buffer,
+                AccessModifier::Protected,
+                buffer_for("customer"),
+            ));
+        }
+        let parent =
+            (level < LEVELS).then(|| &*Box::leak(format!("pkg.l{}", level + 1).into_boxed_str()));
+        classes.insert(format!("pkg.l{level}"), (parent, members));
+    }
+    let source = "CLASS app.sub INHERITS pkg.l1:\nEND CLASS.\n";
+    let tokens = oxabl_lexer::tokenize(source);
+    let program = oxabl_parser::Parser::new(&tokens, source).parse_program();
+    let classes = Classes(classes);
+
+    let start = std::time::Instant::now();
+    let found = inherited_records(&program.statements, &classes);
+    let elapsed = start.elapsed();
+
+    assert_eq!(found.records.len(), LEVELS * PER_LEVEL * 2);
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "binding {} records took {elapsed:?}",
+        found.records.len()
+    );
+}
+
+#[test]
+fn a_database_qualified_buffer_target_is_a_table_of_the_schema() {
+    let classes = Classes(HashMap::from([(
+        "pkg.base".to_string(),
+        (
+            None,
+            vec![
+                member(
+                    "customer",
+                    SymbolKind::TempTable,
+                    AccessModifier::Protected,
+                    None,
+                ),
+                member(
+                    "q_",
+                    SymbolKind::Buffer,
+                    AccessModifier::Protected,
+                    buffer_for("db.customer"),
+                ),
+            ],
+        ),
+    )]));
+    let found = records_of(classes);
+    let binding = found
+        .records
+        .iter()
+        .find(|r| r.name.as_atom().as_ref() == "q_")
+        .map(|r| r.binding.clone());
+    assert_eq!(binding, Some(InheritedBinding::Table("db.customer".into())));
+}
+
+#[test]
+fn a_qualified_buffer_target_stays_a_table_when_the_chain_is_not_read() {
+    let classes = Classes(HashMap::from([(
+        "pkg.base".to_string(),
+        (
+            Some("pkg.absent"),
+            vec![member(
+                "q_",
+                SymbolKind::Buffer,
+                AccessModifier::Protected,
+                buffer_for("db.customer"),
+            )],
+        ),
+    )]));
+    let found = records_of(classes);
+    assert!(found.opaque);
+    assert_eq!(
+        found.records[0].binding,
+        InheritedBinding::Table("db.customer".into())
+    );
+}

@@ -355,9 +355,12 @@ impl<'a> Resolver<'a> {
         }
         let d: &DefBuffer = &self.c.buffers[i];
         let key = fold(last_segment(&d.table));
-        let tt = self.temp_table_in(&key, d.unit);
+        // A database qualifier names a database table: no temp-table has one.
+        let qualified = d.table.contains('.');
+        let tt = self.temp_table_in(&key, d.unit).filter(|_| !qualified);
         let mut inherited_tt = false;
         let table = match tt {
+            None if qualified => self.db_table(&key, last_segment(&d.table)),
             Some(t) => {
                 let t = &self.c.temp_tables[t];
                 Table::TempTable {
@@ -445,6 +448,11 @@ impl<'a> Resolver<'a> {
         } else {
             written
         };
+        // A database qualifier names a database table: no buffer, temp-table or
+        // inherited record has one.
+        if name.contains('.') {
+            return self.qualified_default(key, written, create);
+        }
         if let Some(i) = self.find(&self.defined, key, unit) {
             return Some(self.def_buffer(i));
         }
@@ -483,6 +491,29 @@ impl<'a> Resolver<'a> {
         let table = self.schema_or_unknown(key, written);
         let id = self.new_buffer(written, BufferKind::Default, table, main, None);
         self.defaults.insert_first(key, main, id);
+        Some(id)
+    }
+
+    /// The default buffer of the database table `db.written`.
+    fn qualified_default(&mut self, key: &str, written: &str, create: bool) -> Option<BufferId> {
+        let main = UnitId::from_index(0);
+        // The table and a temp-table or inherited record of its name are two
+        // buffers; the others are one, as `db.t` and `t` are.
+        let shadowed = self.temp_table_in(key, main).is_some() || self.inherited.contains_key(key);
+        let slot = if shadowed {
+            format!("db.{key}")
+        } else {
+            key.to_string()
+        };
+        if let Some(id) = self.defaults.get(&slot, main) {
+            return Some(id);
+        }
+        if self.schema_table(key).is_none() && !create {
+            return None;
+        }
+        let table = self.db_table(key, written);
+        let id = self.new_buffer(written, BufferKind::Default, table, main, None);
+        self.defaults.insert_first(&slot, main, id);
         Some(id)
     }
 
