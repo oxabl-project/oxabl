@@ -1017,9 +1017,14 @@ impl Registry {
 
     /// The group with this exact name, compared case-insensitively.
     pub fn group(&self, name: &str) -> Option<&RuleGroup> {
-        self.groups
-            .iter()
-            .find(|g| g.name.eq_ignore_ascii_case(name.trim()))
+        // A rule's metadata names its group exactly, and every lint run asks
+        // once per rule; only a configured name needs the folded match.
+        self.groups.iter().find(|g| g.name == name).or_else(|| {
+            let name = name.trim();
+            self.groups
+                .iter()
+                .find(|g| g.name.eq_ignore_ascii_case(name))
+        })
     }
 
     /// The groups a configuration selector names: the group itself, or every
