@@ -48,6 +48,17 @@ pub(crate) struct HighlightTurn {
     running: Mutex<()>,
 }
 
+/// How a navigation request waits for the others of its kind.
+#[derive(Default)]
+struct Gate {
+    /// The open buffer whose cached analysis a highlight query uses.
+    buffer: Option<String>,
+    /// The highlight turn of the document, and this request's number in it.
+    turn: Option<(Arc<HighlightTurn>, u64)>,
+    /// The hover ticket, when the request is a hover.
+    ticket: Option<HoverTicket>,
+}
+
 impl Server<'_> {
     pub(crate) fn handle_definition(&mut self, req: Request) -> anyhow::Result<()> {
         let params: GotoDefinitionParams = match serde_json::from_value(req.params) {
@@ -101,16 +112,13 @@ impl Server<'_> {
             offset,
             buffer,
         };
-        let ticket = self.hovers.ticket(&req.id);
-        self.spawn_gated(
-            req.id,
-            root,
-            None,
-            None,
-            query,
-            Some(ticket),
-            |answer, encoding| serde_json::to_value(hover(answer, encoding)),
-        )
+        let gate = Gate {
+            ticket: Some(self.hovers.ticket(&req.id)),
+            ..Gate::default()
+        };
+        self.spawn_gated(req.id, root, query, gate, |answer, encoding| {
+            serde_json::to_value(hover(answer, encoding))
+        })
     }
 
     /// The session buffer of the open document at `path`.
@@ -193,20 +201,29 @@ impl Server<'_> {
         query: NavigationQuery,
         render: Render,
     ) -> anyhow::Result<()> {
-        self.spawn_gated(id, root, buffer, turn, query, None, render)
+        let gate = Gate {
+            buffer,
+            turn,
+            ticket: None,
+        };
+        self.spawn_gated(id, root, query, gate, render)
     }
 
-    /// [`Self::spawn_navigation`], behind `ticket` when there is one.
+    /// [`Self::spawn_navigation`] with every way a request can be ordered
+    /// against the others of its kind.
     fn spawn_gated(
         &mut self,
         id: RequestId,
         root: PathBuf,
-        buffer: Option<String>,
-        turn: Option<(Arc<HighlightTurn>, u64)>,
         query: NavigationQuery,
-        ticket: Option<HoverTicket>,
+        gate: Gate,
         render: Render,
     ) -> anyhow::Result<()> {
+        let Gate {
+            buffer,
+            turn,
+            ticket,
+        } = gate;
         let Some((snapshot, schema, overlay, buffer)) = self.host.with(|sessions| {
             let session = sessions.get(&self.session_root)?;
             Some((

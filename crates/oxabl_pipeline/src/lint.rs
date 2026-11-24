@@ -83,8 +83,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_analyze::{
     BranchDirective, CollectedDiagnostic, CollectedDiagnostics, DiagnosticSource, DirectInclude,
-    ExpandedFile, IncludeOriginDiagnostic, RuleSelection, SkippedText, UnresolvedInclude,
-    analyze_from_expanded, collect_from_expanded_with_summaries, expand_source_with,
+    ExpandedFile, IncludeOrigin, IncludeOriginDiagnostic, RuleSelection, SkippedText,
+    UnresolvedInclude, analyze_from_expanded, collect_from_expanded_with_summaries,
+    expand_source_with,
 };
 
 use oxabl_common::{
@@ -1744,6 +1745,17 @@ impl<'a> LintPipeline<'a> {
     /// therefore *unprotected*; that client's recovery is a panic hook plus
     /// instance reset, which lives outside this crate.
     pub fn run(&self, source: &str) -> LintResult {
+        self.run_with_include_origins(source).0
+    }
+
+    /// [`run`](Self::run), and the include files the expansion read with the
+    /// root-level site of each. `None` when the includes are not all known: on
+    /// a failed run, a fatal preprocessing failure, with preprocessing off, and
+    /// when an include did not resolve, could not be read or was elided.
+    pub fn run_with_include_origins(
+        &self,
+        source: &str,
+    ) -> (LintResult, Option<Vec<IncludeOrigin>>) {
         match catch_panic(|| {
             let expansion = self.expand(source);
             let result = self.collect(&expansion);
@@ -1752,10 +1764,20 @@ impl<'a> LintPipeline<'a> {
             } else {
                 result
             };
-            self.report_include_findings(result)
+            let origins = expansion
+                .expanded()
+                .filter(|expanded| {
+                    self.preprocess
+                        && expanded.unresolved_includes().is_empty()
+                        && expanded.nested_unresolved_includes().is_empty()
+                        && expanded.unreadable_includes().is_empty()
+                        && expanded.elided_include_offsets().is_empty()
+                })
+                .map(|expanded| expanded.include_origins().to_vec());
+            (self.report_include_findings(result), origins)
         }) {
-            Ok(result) => result,
-            Err(panic) => LintResult::failed(panic),
+            Ok(run) => run,
+            Err(panic) => (LintResult::failed(panic), None),
         }
     }
 }

@@ -3,7 +3,8 @@
 //!
 //! v1 is a diagnostics, formatting and outline server: it completes the LSP handshake,
 //! syncs open buffers incrementally, pushes `publishDiagnostics`, and answers
-//! `textDocument/formatting`, `textDocument/documentSymbol`, `workspace/symbol`,
+//! `textDocument/formatting`, `textDocument/documentSymbol`, `textDocument/foldingRange`,
+//! `textDocument/selectionRange`, `workspace/symbol`,
 //! `textDocument/definition`, `textDocument/hover`, `textDocument/documentHighlight` and
 //! `textDocument/documentLink` (see `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
@@ -29,6 +30,7 @@ pub mod debounce;
 pub mod diagnostics;
 pub mod document;
 mod document_symbol;
+mod editor_syntax;
 mod expanded_unit;
 pub mod formatting;
 mod includer_context;
@@ -51,14 +53,16 @@ use lsp_types::notification::{
     DidSaveTextDocument, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, Formatting,
-    GotoDefinition, HoverRequest, Request as _, WorkspaceSymbolRequest,
+    DocumentHighlightRequest, DocumentLinkRequest, DocumentSymbolRequest, FoldingRangeRequest,
+    Formatting, GotoDefinition, HoverRequest, Request as _, SelectionRangeRequest,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbolParams, InitializeParams, InitializeResult, PositionEncodingKind,
-    PublishDiagnosticsParams, ServerInfo, TextEdit, Uri,
+    DocumentSymbolParams, FoldingRangeParams, InitializeParams, InitializeResult,
+    PositionEncodingKind, PublishDiagnosticsParams, SelectionRangeParams, ServerInfo, TextEdit,
+    Uri,
 };
 use oxabl_pipeline::{ConfigOverrides, ConfigWarning, FormatPipeline, PipelineConfig};
 use oxabl_workspace::FeaturesConfig;
@@ -773,6 +777,8 @@ struct Negotiated {
     hierarchical_symbols: bool,
     /// Whether the client takes `relatedInformation` on a diagnostic.
     related_information: bool,
+    /// The most folding ranges the client takes (`rangeLimit`), if it says.
+    folding_range_limit: Option<usize>,
 }
 
 fn serve_initialized(
@@ -841,6 +847,13 @@ fn finish_handshake(
         .and_then(|c| c.publish_diagnostics.as_ref())
         .and_then(|c| c.related_information)
         .unwrap_or(false);
+    let folding_range_limit = init
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|c| c.folding_range.as_ref())
+        .and_then(|c| c.range_limit)
+        .map(|limit| limit as usize);
     let mut capabilities = server_capabilities(encoding);
     if options.supported
         && !options.dynamic
@@ -871,6 +884,7 @@ fn finish_handshake(
             options,
             hierarchical_symbols,
             related_information,
+            folding_range_limit,
         },
         workspace_root,
     ))
@@ -909,6 +923,8 @@ struct Server<'c> {
     hierarchical_symbols: bool,
     /// Whether the client takes `relatedInformation` on a diagnostic.
     related_information: bool,
+    /// The most folding ranges the client takes, if it says.
+    folding_range_limit: Option<usize>,
     /// Open buffers, keyed by URI (R4).
     documents: DocumentStore,
     /// The daemon's one session map. No analysis state lives in this client.
@@ -943,6 +959,8 @@ struct Server<'c> {
     lenses: code_lens::LensCache,
     /// The last outline of each open buffer, for its version.
     outlines: document_symbol::OutlineCache,
+    /// The folding and selection facts of each open buffer, for its version.
+    syntax: editor_syntax::SyntaxCache,
     /// Per-URI debounce timers (R13).
     debouncer: crate::debounce::Debouncer,
     /// The selected compilation context of each open include.
@@ -994,6 +1012,7 @@ impl<'c> Server<'c> {
             options,
             hierarchical_symbols,
             related_information,
+            folding_range_limit,
         } = negotiated;
         let formatter = FormatPipeline::new(oxabl_style::StyleGuide::default_base());
         let (context_events, context_results) = crossbeam_channel::unbounded();
@@ -1002,6 +1021,7 @@ impl<'c> Server<'c> {
             encoding: options.encoding.clone(),
             hierarchical_symbols,
             related_information,
+            folding_range_limit,
             documents: DocumentStore::new(),
             host,
             session_root,
@@ -1014,6 +1034,7 @@ impl<'c> Server<'c> {
             dependencies: HashMap::new(),
             lenses: code_lens::LensCache::new(options),
             outlines: document_symbol::OutlineCache::default(),
+            syntax: editor_syntax::SyntaxCache::default(),
             debouncer: crate::debounce::Debouncer::new(debounce_window),
             contexts: includer_context::Contexts::default(),
             highlight_turns: navigation::HighlightTurns::default(),
@@ -1066,6 +1087,10 @@ impl<'c> Server<'c> {
                                 self.handle_formatting(req)?;
                             } else if req.method == DocumentSymbolRequest::METHOD {
                                 self.handle_document_symbol(req)?;
+                            } else if req.method == FoldingRangeRequest::METHOD {
+                                self.handle_folding_range(req)?;
+                            } else if req.method == SelectionRangeRequest::METHOD {
+                                self.handle_selection_range(req)?;
                             } else if req.method == GotoDefinition::METHOD {
                                 self.handle_definition(req)?;
                             } else if req.method == HoverRequest::METHOD {
@@ -1267,6 +1292,7 @@ impl<'c> Server<'c> {
                     let doc = params.text_document;
                     self.ensure_config(&doc.uri);
                     self.outlines.invalidate(&doc.uri);
+                    self.syntax.invalidate(&doc.uri);
                     self.documents.open(doc.uri.clone(), doc.version, &doc.text);
                     // The path travels with the buffer because the *query* needs
                     // it: cross-file resolution must exclude this file from its
@@ -1295,6 +1321,7 @@ impl<'c> Server<'c> {
                     let uri = params.text_document.uri;
                     let encoding = self.encoding.clone();
                     self.outlines.invalidate(&uri);
+                    self.syntax.invalidate(&uri);
                     self.documents.change(
                         &uri,
                         params.text_document.version,
@@ -1344,6 +1371,7 @@ impl<'c> Server<'c> {
                     self.contexts.forget(&uri);
                     self.highlight_turns.remove(&uri);
                     self.outlines.invalidate(&uri);
+                    self.syntax.invalidate(&uri);
                     self.host.with(|sessions| {
                         sessions
                             .for_root(&self.session_root)
@@ -1916,6 +1944,86 @@ impl<'c> Server<'c> {
         self.respond(response)
     }
 
+    /// `textDocument/foldingRange`: syntax blocks, comments and region markers
+    /// of the open buffer's raw text. An unopened URI gives `null`.
+    fn handle_folding_range(&mut self, req: Request) -> Result<()> {
+        let params = match serde_json::from_value::<FoldingRangeParams>(req.params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.respond(Response::new_err(
+                    req.id,
+                    ErrorCode::InvalidParams as i32,
+                    format!("oxabl-lsp: invalid foldingRange params: {error}"),
+                ));
+            }
+        };
+        let uri = params.text_document.uri;
+        let Some(doc) = self.documents.get(&uri) else {
+            return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
+        };
+        let syntax = self.syntax.get_or_compute(&uri, doc.version, || {
+            oxabl_pipeline::document_syntax(&doc.text())
+        });
+        let response = match syntax {
+            Ok(syntax) => Response::new_ok(
+                req.id,
+                editor_syntax::folding_ranges(
+                    syntax,
+                    self.folding_range_limit,
+                    &doc.rope,
+                    &self.encoding,
+                ),
+            ),
+            Err(panic) => Response::new_err(
+                req.id,
+                ErrorCode::RequestFailed as i32,
+                format!("oxabl-lsp: folding ranges failed: {panic}"),
+            ),
+        };
+        self.respond(response)
+    }
+
+    /// `textDocument/selectionRange`: nested source ranges for every requested
+    /// position. An unopened URI gives `null`.
+    fn handle_selection_range(&mut self, req: Request) -> Result<()> {
+        let params = match serde_json::from_value::<SelectionRangeParams>(req.params) {
+            Ok(params) => params,
+            Err(error) => {
+                return self.respond(Response::new_err(
+                    req.id,
+                    ErrorCode::InvalidParams as i32,
+                    format!("oxabl-lsp: invalid selectionRange params: {error}"),
+                ));
+            }
+        };
+        let uri = params.text_document.uri;
+        let Some(doc) = self.documents.get(&uri) else {
+            return self.respond(Response::new_ok(req.id, serde_json::Value::Null));
+        };
+        let offsets: Vec<u32> = params
+            .positions
+            .iter()
+            .map(|position| {
+                crate::position::position_to_byte(&doc.rope, *position, &self.encoding) as u32
+            })
+            .collect();
+        let syntax = self.syntax.get_or_compute(&uri, doc.version, || {
+            oxabl_pipeline::document_syntax(&doc.text())
+        });
+        let response = match syntax {
+            Ok(syntax) => Response::new_ok(
+                req.id,
+                editor_syntax::selection_ranges(syntax, &offsets, &doc.rope, &self.encoding),
+            ),
+            Err(panic) => Response::new_err(
+                req.id,
+                ErrorCode::RequestFailed as i32,
+                format!("oxabl-lsp: selection ranges failed: {panic}"),
+            ),
+        };
+        self.respond(response)
+    }
+
     fn respond(&self, response: Response) -> Result<()> {
         self.connection
             .sender
@@ -2014,6 +2122,7 @@ mod tests {
                 },
                 hierarchical_symbols: false,
                 related_information: false,
+                folding_range_limit: None,
             },
             std::time::Duration::from_millis(10),
             None,

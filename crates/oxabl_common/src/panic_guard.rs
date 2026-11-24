@@ -157,6 +157,8 @@ pub mod panic_sites {
     pub const LSP_INDEX: &str = "lsp.index";
     /// The shared document outline.
     pub const OUTLINE: &str = "outline";
+    /// The shared folding and selection ranges.
+    pub const SYNTAX: &str = "syntax";
     /// Hover, for [`hold_if_injected`](super::hold_if_injected).
     pub const HOVER: &str = "hover";
 }
