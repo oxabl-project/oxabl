@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::paths;
+use crate::paths;
 
 const FILE_NAME: &str = "install.json";
 

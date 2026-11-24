@@ -78,7 +78,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        self.command(args).output().unwrap()
+        output(&mut self.command(args))
     }
 
     /// The installed bytes.
@@ -95,8 +95,34 @@ impl Fixture {
     }
 }
 
+/// Runs the command. A concurrent test may hold a forked copy of the write
+/// descriptor of the file this one runs, which fails the start with ETXTBSY
+/// until that fork has exec'd; starting again is safe because nothing ran.
+fn output(command: &mut Command) -> Output {
+    let mut attempts = 0;
+    loop {
+        match command.output() {
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 50 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result.unwrap(),
+        }
+    }
+}
+
 fn script(version: &str) -> Vec<u8> {
     format!("#!/bin/sh\necho 'oxabl {version}'\n").into_bytes()
+}
+
+/// A "new binary" that records the arguments of a `skill` run in the state
+/// directory and exits with `skill_exit` for it.
+fn script_recording_skill(version: &str, skill_exit: i32) -> Vec<u8> {
+    format!(
+        "#!/bin/sh\ncase \"$1\" in\n  skill) echo \"$@\" > \"$XDG_STATE_HOME/skill-args\"; \
+         echo 'refresh broke' >&2; exit {skill_exit};;\nesac\necho 'oxabl {version}'\n"
+    )
+    .into_bytes()
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -142,6 +168,55 @@ fn an_update_installs_the_release_and_rewrites_the_record() {
             "version": NEWER,
         })
     );
+}
+
+#[test]
+fn an_update_refreshes_the_installed_skill_with_the_new_binary() {
+    let fixture = Fixture::new();
+    fixture.manage();
+    fixture
+        .server
+        .release(NEWER, &script_recording_skill(NEWER, 0), None);
+
+    let output = fixture.run(&["self-update"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let args = std::fs::read_to_string(fixture.state().with_file_name("skill-args")).unwrap();
+    assert_eq!(args.trim(), "skill install --refresh");
+    assert!(!text(&output.stderr).contains("warning"));
+}
+
+#[test]
+fn a_failed_skill_refresh_is_a_warning_and_the_update_stands() {
+    let fixture = Fixture::new();
+    fixture.manage();
+    let release = script_recording_skill(NEWER, 2);
+    fixture.server.release(NEWER, &release, None);
+
+    let output = fixture.run(&["self-update"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("warning: the agent skill was not refreshed: refresh broke"),
+        "{stderr}"
+    );
+    assert_eq!(fixture.installed_bytes(), release);
+    assert_eq!(fixture.record()["version"], NEWER);
+}
+
+#[test]
+fn no_update_means_no_skill_refresh() {
+    let fixture = Fixture::new();
+    fixture.manage();
+    fixture
+        .server
+        .release(INSTALLED, &script_recording_skill(INSTALLED, 0), None);
+
+    let output = fixture.run(&["self-update"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!fixture.state().with_file_name("skill-args").exists());
 }
 
 #[test]
@@ -441,11 +516,11 @@ fn ci_and_the_opt_out_and_an_unmanaged_binary_schedule_nothing() {
         fixture.server.release(NEWER, &script(NEWER), None);
         let file = source(fixture.dir.path());
 
-        fixture
-            .command(&["check", &file.display().to_string()])
-            .env(variable, "1")
-            .output()
-            .unwrap();
+        output(
+            fixture
+                .command(&["check", &file.display().to_string()])
+                .env(variable, "1"),
+        );
 
         quiet_for_a_moment(&fixture);
     }

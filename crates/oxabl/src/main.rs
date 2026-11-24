@@ -14,7 +14,9 @@ mod build_probe;
 mod build_run;
 mod display_path;
 mod explain;
+mod paths;
 mod self_update;
+mod skill;
 mod watch;
 
 use clap::Parser as ClapParser;
@@ -409,6 +411,15 @@ enum Cli {
     /// no hand-maintained mirror. Editors (e.g. Even Better TOML) consume it for
     /// autocomplete/validation inside `oxabl.toml`.
     Schema,
+    /// Show or install the agent skill that teaches coding agents to use oxabl.
+    ///
+    /// The skill is a `SKILL.md` with reference files, in the Agent Skills
+    /// format. It is built into the binary, so its text always matches the
+    /// commands and flags of this version.
+    Skill {
+        #[command(subcommand)]
+        command: skill::Command,
+    },
     /// Build the ABL sources: plan, compile in dependency order, install.
     ///
     /// Refreshes the persisted dependency graph from the working tree (reading
@@ -792,6 +803,7 @@ fn dispatch(cli: Cli) -> ExitCode {
             idle_timeout,
         } => run_daemon(&workspace_root, idle_timeout.as_deref()),
         Cli::Schema => run_schema(),
+        Cli::Skill { command } => skill::run(command),
         Cli::Build {
             plan,
             probe,

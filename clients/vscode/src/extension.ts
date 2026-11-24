@@ -14,6 +14,7 @@ import { InactiveRegions } from "./inactiveRegions";
 import { IncluderContexts } from "./includerContext";
 import { installRecordPath, isManaged } from "./install";
 import { SchemaBrowser } from "./schemaView";
+import { installSkill } from "./skill";
 import { registerUpdates } from "./updates";
 
 let client: LanguageClient | undefined;
@@ -68,6 +69,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
     vscode.commands.registerCommand("oxabl.selectIncluderContext", () => includerContexts.select()),
     vscode.commands.registerCommand("oxabl.restartServer", restartServer),
     vscode.commands.registerCommand("oxabl.installCli", () => cli.installOrUpdate()),
+    vscode.commands.registerCommand("oxabl.installSkill", installSkillCommand),
     vscode.commands.registerCommand("oxabl.build", () => builds.buildNow()),
     vscode.commands.registerCommand("oxabl.cancelBuild", () => builds.cancelBuilds()),
     vscode.commands.registerCommand("oxabl.showBuildLog", () => builds.showLog()),
@@ -97,6 +99,28 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
 
   await startClient();
   void cli.offerInstall();
+}
+
+/**
+ * Command `oxabl.installSkill`: `oxabl skill install` with the binary the
+ * extension resolved, and its outcome as a message.
+ */
+async function installSkillCommand(): Promise<void> {
+  const found = resolveBinary();
+  if (found.kind !== "found") {
+    void vscode.window.showErrorMessage(
+      'oxabl: the CLI is not installed. Run "oxabl: Install or Update the CLI" first.',
+    );
+    return;
+  }
+  const result = await installSkill(found.command);
+  if (result.ok) {
+    log.info(`agent skill:\n${result.lines.join("\n")}`);
+    void vscode.window.showInformationMessage(`oxabl agent skill:\n${result.lines.join("\n")}`);
+  } else {
+    log.error(`agent skill: ${result.message}`);
+    void vscode.window.showErrorMessage(`oxabl: could not install the agent skill: ${result.message}`);
+  }
 }
 
 /**

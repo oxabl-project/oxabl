@@ -8,8 +8,6 @@ mod github;
 #[cfg(feature = "self-update")]
 mod install;
 #[cfg(feature = "self-update")]
-mod paths;
-#[cfg(feature = "self-update")]
 mod record;
 #[cfg(feature = "self-update")]
 mod schedule;
@@ -46,7 +44,8 @@ mod real {
     use serde::Serialize;
 
     use super::github::{Api, Version};
-    use super::{Options, install, paths, record, schedule};
+    use super::{Options, install, record, schedule};
+    use crate::paths;
 
     const LOCK: &str = "update.lock";
     const LOG: &str = "update.log";
@@ -253,7 +252,27 @@ mod real {
                 eprintln!("warning: {error}");
             }
             println!("oxabl was updated from {current} to {}", release.version);
+            refresh_skill(binary);
             Ok(ExitCode::SUCCESS)
         })
+    }
+
+    /// Brings the skill copies the user installed up to the new binary's text.
+    /// It never creates one, and its failure does not fail the update.
+    fn refresh_skill(binary: &std::path::Path) {
+        let refreshed = Command::new(binary)
+            .args(["skill", "install", "--refresh"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match refreshed {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!(
+                "warning: the agent skill was not refreshed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(error) => eprintln!("warning: the agent skill was not refreshed: {error}"),
+        }
     }
 }
