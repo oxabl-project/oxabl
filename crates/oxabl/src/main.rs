@@ -536,6 +536,7 @@ struct JsonErrorPattern {
 /// - `PREPROC010` part of an `&IF` condition the preprocessor does not evaluate
 /// - `PREPROC013` a substituted value that ends with `~`
 /// - `PREPROC002` unclosed `&IF` (inline/`skip_to_eol` regressions; #65 gate)
+/// - `SOURCE001` encrypted source, or an include that is encrypted (not checked)
 ///
 /// Rendering is delegated to [`render_diagnostics`] with a [`SourceResolver`]
 /// over the root file: root-file diagnostics get a `path:line:col` position and
@@ -1184,6 +1185,14 @@ fn format_one<'a>(
     let messages = &mut result.messages;
     let stored = match decoding.read_file(file) {
         Ok(stored) => stored,
+        Err(e) if oxabl_workspace::is_encrypted(&e) => {
+            // Never rewritten. `--stdout` still hands back the file as it is.
+            let _ = writeln!(messages, "{}: {e}", file.display());
+            if stdout {
+                result.stdout = Some(std::fs::read(file));
+            }
+            return result;
+        }
         Err(e) => {
             let _ = writeln!(messages, "error: cannot read {}: {e}", file.display());
             result.io_error = true;
@@ -1267,6 +1276,10 @@ struct CheckJsonReport {
     /// was, so ordinary walks keep their JSON.
     #[serde(skip_serializing_if = "is_zero")]
     include_files_checked: usize,
+    /// How many of `files_checked` were encrypted and so not checked. Omitted
+    /// when none was.
+    #[serde(skip_serializing_if = "is_zero")]
+    encrypted_files: usize,
     /// Whether lint findings are reported (`false` under `--no-lint`), so an
     /// empty `diagnostics` cannot be misread as "clean". The pipeline itself runs
     /// either way — parse and semantic diagnostics are never suppressed (A1).
@@ -1775,6 +1788,7 @@ fn run_check(
         fragment_roots,
         include_diagnostics,
         include_files_checked,
+        encrypted_files,
     } = totals;
 
     let baseline = match baseline.map(|run| run.finish(channels.diagnostics && !no_lint)) {
@@ -1802,6 +1816,7 @@ fn run_check(
             version: 4,
             files_checked: files.len(),
             include_files_checked,
+            encrypted_files,
             lint_enabled: channels.diagnostics && !no_lint,
             diagnostics,
             format_enabled: channels.format,
@@ -1865,6 +1880,10 @@ fn run_check(
             1 => " and 1 include file".to_string(),
             n => format!(" and {n} include files"),
         };
+        let encrypted = match encrypted_files {
+            0 => String::new(),
+            n => format!(" ({n} encrypted, not checked)"),
+        };
         let lint_channel = if !channels.diagnostics {
             "diagnostics off"
         } else if no_lint {
@@ -1880,7 +1899,7 @@ fn run_check(
             "no drift"
         };
         println!(
-            "checked {} {plural}{includes}: {lint_channel}, {format_channel}",
+            "checked {} {plural}{includes}{encrypted}: {lint_channel}, {format_channel}",
             files.len()
         );
     }
@@ -2002,6 +2021,7 @@ struct Unit {
     unjudged: usize,
     fragment_root: Option<String>,
     include_file_checked: bool,
+    encrypted: bool,
 }
 
 /// The run's report, built from its units in file order.
@@ -2015,6 +2035,7 @@ struct Totals {
     fragment_roots: Vec<String>,
     include_diagnostics: Vec<CheckJsonIncludeFinding>,
     include_files_checked: usize,
+    encrypted_files: usize,
 }
 
 impl Totals {
@@ -2028,6 +2049,7 @@ impl Totals {
         self.fragment_roots.extend(unit.fragment_root);
         self.include_diagnostics.extend(unit.include_diagnostics);
         self.include_files_checked += usize::from(unit.include_file_checked);
+        self.encrypted_files += usize::from(unit.encrypted);
     }
 }
 
@@ -2079,6 +2101,10 @@ impl CheckPass<'_> {
         let display = file.display().to_string();
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
+            Err(e) if oxabl_workspace::is_encrypted(&e) => {
+                self.report_encrypted(lint, file, indexed_path, &mut unit);
+                return unit;
+            }
             Err(e) => {
                 // Report and continue (R24): one unreadable file must not cost
                 // the caller every other file's findings.
@@ -2124,6 +2150,37 @@ impl CheckPass<'_> {
             }
         }
         unit
+    }
+
+    /// An encrypted file: its one `SOURCE001` warning, in the channel of the
+    /// preprocessor warnings, so it never moves the exit code. No other finding
+    /// is reported and the file is not format-checked.
+    fn report_encrypted(
+        &self,
+        lint: &LintPipeline<'_>,
+        file: &Path,
+        indexed_path: &Path,
+        unit: &mut Unit,
+    ) {
+        let Ok(head) = oxabl_workspace::read_encrypted_head(file) else {
+            return;
+        };
+        unit.encrypted = true;
+        // The pipeline names the file from its first bytes alone. They are not
+        // shown: the warning has no position in text.
+        let result = lint
+            .with_file(indexed_path)
+            .run(&String::from_utf8_lossy(&head));
+        surface_collected_preproc(file, "", result.diagnostics(), &mut unit.output);
+        if self.json_output {
+            let display = file.display().to_string();
+            let map = SourceMap::new("");
+            unit.preproc.extend(
+                result
+                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                    .map(|c| check_json_diagnostic(&display, &map, c)),
+            );
+        }
     }
 
     /// The diagnostics channel of one root: its parse, preprocessor, semantic and
@@ -2231,6 +2288,10 @@ impl CheckPass<'_> {
         let display = file.display().to_string();
         let source = match read_source(file, self.decoding) {
             Ok(s) => s,
+            Err(e) if oxabl_workspace::is_encrypted(&e) => {
+                self.report_encrypted(lint, file, indexed_path, &mut unit);
+                return unit;
+            }
             Err(e) => {
                 unit.output
                     .err(format!("error: cannot read {display}: {e}\n"));

@@ -215,6 +215,20 @@ impl Expansion {
     }
 }
 
+/// The one finding of an encrypted root: no parse, preprocessor or lint finding
+/// follows, since the text is not ABL.
+fn encrypted_diagnostic() -> Diagnostic {
+    Diagnostic::warning(
+        oxabl_workspace::ENCRYPTED_CODE,
+        oxabl_workspace::EncryptedSource.to_string(),
+        oxabl_common::FileSpan {
+            file: ROOT_FILE_ID,
+            span: oxabl_ast::Span { start: 0, end: 0 },
+        },
+    )
+    .with_help("the XCODE key is needed to read this file".to_string())
+}
+
 /// One lint run's outcome, kept private so a [`LintResult`] cannot be built into
 /// a contradictory state (diagnostics *and* a panic).
 enum Outcome {
@@ -1538,6 +1552,12 @@ impl<'a> LintPipeline<'a> {
         // through `run` must be contained, and the same panic through `expand`
         // must escape.
         panic_if_injected(panic_sites::ANALYZE, source);
+        if oxabl_workspace::looks_encrypted(source.as_bytes()) {
+            return Expansion {
+                inner: Err(vec![encrypted_diagnostic()]),
+                search_base: None,
+            };
+        }
         let search_base = self.config.search_base(self.file(), source);
         Expansion {
             inner: expand_source_with(

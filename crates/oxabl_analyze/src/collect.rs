@@ -221,13 +221,20 @@ impl CollectedDiagnostics {
 /// (unresolvable include — symbol loss), PREPROC008 (unterminated include
 /// reference), PREPROC009 (predefined name without a value in a condition),
 /// PREPROC010 (condition part the evaluator does not model), PREPROC013 (a
-/// substituted value ending with `~`) and PREPROC002 (unclosed `&IF`).
+/// substituted value ending with `~`) and PREPROC002 (unclosed `&IF`), and
+/// SOURCE001 (encrypted source, which is not checked).
 /// PREPROC012 (an unclosed `~{` in an include argument) is an error.
 pub fn is_loud(d: &Diagnostic) -> bool {
     matches!(d.severity, Severity::Error)
         || matches!(
             d.code.0,
-            "PREPROC002" | "PREPROC007" | "PREPROC008" | "PREPROC009" | "PREPROC010" | "PREPROC013"
+            "PREPROC002"
+                | "PREPROC007"
+                | "PREPROC008"
+                | "PREPROC009"
+                | "PREPROC010"
+                | "PREPROC013"
+                | oxabl_workspace::ENCRYPTED_CODE
         )
 }
 

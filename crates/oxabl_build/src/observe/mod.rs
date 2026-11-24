@@ -13,7 +13,6 @@ mod classes;
 mod closure;
 pub mod xref;
 
-use std::io::Read;
 use std::path::Path;
 
 use rustc_hash::FxHashMap;
@@ -26,20 +25,14 @@ use crate::key::compute::{ClassPart, KeyBase};
 use crate::refresh::{Content, Outcome, RACY_NS};
 use crate::store::{Components, ObservedClosure};
 
-/// Whether the source at `host` looks XCODE-encrypted: a control byte other
-/// than white space in its first 512 bytes, which plain source never has. The
-/// compiler reports no `INCLUDE` for an include made inside encrypted source,
-/// so a closure that holds such a file cannot be observed. A file that cannot
-/// be read counts as encrypted.
+/// Whether the source at `host` looks XCODE-encrypted, by the detector every
+/// client shares ([`oxabl_workspace::looks_encrypted`]). The compiler reports no
+/// `INCLUDE` for an include made inside encrypted source, so a closure that
+/// holds such a file cannot be observed. A file that cannot be read counts as
+/// encrypted.
 pub fn looks_encrypted(host: &Path) -> bool {
-    let mut head = [0u8; 512];
-    let read = std::fs::File::open(host).and_then(|mut file| file.read(&mut head));
-    let Ok(read) = read else {
-        return true;
-    };
-    head[..read]
-        .iter()
-        .any(|&byte| byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r' | 0x0c))
+    oxabl_workspace::read_encrypted_head(host)
+        .map_or(true, |head| oxabl_workspace::looks_encrypted(&head))
 }
 
 /// What the build needs to observe the units it compiles.
