@@ -356,30 +356,34 @@ fn find_or_start_daemon(
                         registration.pid
                     )));
                 }
-                None => match oxabl_daemon::stop_daemon(&registration, false) {
-                    Ok(()) => {
-                        notices.push(format!(
-                            "{}. Stopped it; a daemon of this version serves the root, and \
-                             its other clients reconnect",
-                            mismatch_message(&registration, root)
-                        ));
-                        busy = None;
-                        stopping = Some(StaleDaemon {
-                            registration,
-                            since: Instant::now(),
-                            killed: false,
-                        });
-                        // The old daemon's exit is not this client's start: both get
-                        // time.
-                        deadline = Instant::now() + STOP_GRACE + BUDGET;
+                None => {
+                    // Described before the signal: a daemon that has exited no longer
+                    // shows that its executable was replaced.
+                    let described = mismatch_message(&registration, root);
+                    match oxabl_daemon::stop_daemon(&registration, false) {
+                        Ok(()) => {
+                            notices.push(format!(
+                                "{described}. Stopped it; a daemon of this version serves the \
+                             root, and its other clients reconnect"
+                            ));
+                            busy = None;
+                            stopping = Some(StaleDaemon {
+                                registration,
+                                since: Instant::now(),
+                                killed: false,
+                            });
+                            // The old daemon's exit is not this client's start: both get
+                            // time.
+                            deadline = Instant::now() + STOP_GRACE + BUDGET;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            busy = Some(not_stopped(&registration, root, &error));
+                        }
+                        Err(error) => {
+                            return Err(mismatch(not_stopped(&registration, root, &error)));
+                        }
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        busy = Some(not_stopped(&registration, root, &error));
-                    }
-                    Err(error) => {
-                        return Err(mismatch(not_stopped(&registration, root, &error)));
-                    }
-                },
+                }
             },
             // Keep the latest reason rather than the first: a cause that has cleared
             // should not be the one reported, and one that has not will be read again
@@ -497,7 +501,12 @@ fn not_stopped(
 /// Whether the daemon a registration names is of an older build than this client.
 ///
 /// Versions compare by their numbers; a registration without one predates the field
-/// and is older. At an equal version the contract decides.
+/// and is older. At an equal version the contract decides. At an equal contract two
+/// builds of one version are ordered by when their executables were written: a daemon
+/// whose executable was replaced on disk, or that does not say when, is older, and one
+/// written after this client's executable is newer. Two editors on two builds of one
+/// version then leave the newer build's daemon alone and do not replace each other's
+/// daemon in turn.
 #[cfg(unix)]
 fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> bool {
     fn numbers(version: &str) -> Option<(u64, u64, u64)> {
@@ -513,7 +522,14 @@ fn older_than_this_build(registration: &oxabl_daemon_protocol::Registration) -> 
         numbers(oxabl_daemon::build_version()),
     ) {
         (Some(theirs), Some(ours)) if theirs != ours => theirs < ours,
-        _ => registration.contract_version < oxabl_daemon_protocol::CONTRACT_VERSION,
+        _ if registration.contract_version != oxabl_daemon_protocol::CONTRACT_VERSION => {
+            registration.contract_version < oxabl_daemon_protocol::CONTRACT_VERSION
+        }
+        _ => {
+            oxabl_daemon::executable_replaced(registration.pid)
+                || registration.build_modified_ms == 0
+                || registration.build_modified_ms <= oxabl_daemon::build_identity().modified_ms
+        }
     }
 }
 
@@ -537,15 +553,33 @@ fn mismatch_message(registration: &oxabl_daemon_protocol::Registration, root: &P
     } else {
         registration.daemon_version.as_str()
     };
+    let ours = oxabl_daemon::build_identity();
     format!(
-        "the oxabl daemon for {} (pid {}) is {version} with contract {}, but this client \
-         is {} with contract {}",
+        "the oxabl daemon for {} (pid {}) is {version}{} with contract {}{}, but this client \
+         is {}{} with contract {}",
         root.display(),
         registration.pid,
+        build_suffix(&registration.build),
         registration.contract_version,
+        if oxabl_daemon::executable_replaced(registration.pid) {
+            " and its executable was replaced on disk"
+        } else {
+            ""
+        },
         oxabl_daemon::build_version(),
+        build_suffix(&ours.id),
         oxabl_daemon_protocol::CONTRACT_VERSION,
     )
+}
+
+/// ` (build <id>)`, or nothing when the build is not known.
+#[cfg(unix)]
+fn build_suffix(build: &str) -> String {
+    if build.is_empty() {
+        String::new()
+    } else {
+        format!(" (build {build})")
+    }
 }
 
 #[cfg(unix)]

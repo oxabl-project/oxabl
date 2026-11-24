@@ -91,3 +91,85 @@ pub fn build_version() -> &'static str {
         .copied()
         .unwrap_or(concat!("oxabl_daemon ", env!("CARGO_PKG_VERSION")))
 }
+
+/// Who built the running executable: a hash of its bytes and when it was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildIdentity {
+    /// Sixteen hex digits of a BLAKE3 hash of the executable, or empty when it could
+    /// not be read.
+    pub id: String,
+    /// When the executable was written, in milliseconds since the Unix epoch, or 0.
+    pub modified_ms: u64,
+}
+
+/// The identity of the executable this process runs, read once.
+///
+/// A version number does not tell two development builds apart, so a daemon
+/// registers this and a client compares it with its own. The bytes come from the
+/// running executable itself (`/proc/self/exe` on Linux), not from the path it had
+/// at start, so a binary replaced on disk after start does not change the answer.
+pub fn build_identity() -> &'static BuildIdentity {
+    static IDENTITY: std::sync::OnceLock<BuildIdentity> = std::sync::OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        read_build_identity().unwrap_or(BuildIdentity {
+            id: String::new(),
+            modified_ms: 0,
+        })
+    })
+}
+
+fn read_build_identity() -> std::io::Result<BuildIdentity> {
+    use std::io::Read;
+    let mut file = if cfg!(target_os = "linux") {
+        std::fs::File::open("/proc/self/exe")?
+    } else {
+        std::fs::File::open(std::env::current_exe()?)?
+    };
+    let modified_ms = file
+        .metadata()?
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(0));
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let hash = hasher.finalize();
+    Ok(BuildIdentity {
+        id: hash.to_hex()[..16].to_string(),
+        modified_ms,
+    })
+}
+
+/// Whether the executable of process `pid` was replaced or removed on disk after it
+/// started. Only Linux says so (`/proc/<pid>/exe` ends in ` (deleted)`); elsewhere
+/// the answer is `false`, and the registered identity is the only evidence.
+pub fn executable_replaced(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::fs::read_link(format!("/proc/{pid}/exe"))
+            .is_ok_and(|target| target.as_os_str().as_bytes().ends_with(b" (deleted)"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(test)]
+mod build_identity_tests {
+    #[test]
+    fn the_running_executable_has_an_identity() {
+        let identity = super::build_identity();
+        assert_eq!(identity.id.len(), 16);
+        assert!(identity.id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(identity.modified_ms, 0);
+    }
+}

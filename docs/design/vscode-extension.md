@@ -355,8 +355,12 @@ restarts the client when the version differs. The new `oxabl lsp` then finds
 the `oxabl daemon` of the old binary still serving the root: the registration
 names the version of the binary, so it stops that older daemon (`SIGTERM`,
 `SIGKILL` after one second) and starts one of its own build, which reads
-`oxabl.toml` with the new rules. The other clients of the stopped daemon (a
-second window, the desktop app) lose their connection and start again. A newer
+`oxabl.toml` with the new rules. A binary replaced by another build of the
+same version (a local build) is found by the build hash in the registration, and
+a daemon whose executable was replaced on disk is found by `/proc/<pid>/exe` on
+Linux. `oxabl lsp` replaces such a daemon when its executable is not newer than
+its own binary, and a daemon of a replaced executable always. The other clients
+of the stopped daemon (a second window, the desktop app) lose their connection and start again. A newer
 daemon is not stopped: `oxabl lsp` shows a warning that names both versions
 and the `kill` command that stops it, then exits. A replaced daemon is written
 to the output channel (`window/logMessage`). A daemon also exits 10 minutes
