@@ -1,6 +1,8 @@
 //! U6 end-to-end: a burst of `didChange` collapses to exactly one debounced
 //! publish reflecting the final text; no stale intermediate publishes.
 
+mod support;
+
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
@@ -15,7 +17,8 @@ use lsp_types::{
 
 const WINDOW: Duration = Duration::from_millis(80);
 
-fn handshake(client: &Connection) {
+fn handshake(client: &Connection) -> tempfile::TempDir {
+    let project = support::project();
     let params = InitializeParams {
         capabilities: ClientCapabilities {
             general: Some(GeneralClientCapabilities {
@@ -24,6 +27,7 @@ fn handshake(client: &Connection) {
             }),
             ..Default::default()
         },
+        workspace_folders: support::folders(project.path()),
         ..Default::default()
     };
     client
@@ -40,6 +44,7 @@ fn handshake(client: &Connection) {
         }
     }
     notify(client, "initialized", serde_json::json!({}));
+    project
 }
 
 fn notify(client: &Connection, method: &str, params: serde_json::Value) {
@@ -82,7 +87,7 @@ fn edit_burst_collapses_to_single_final_publish() {
     let (server, client) = Connection::memory();
     let handle = thread::spawn(move || oxabl_lsp::serve_with(&server, WINDOW));
 
-    handshake(&client);
+    let _project = handshake(&client);
 
     let uri = Uri::from_str("file:///burst.p").unwrap();
     // Open with an unused variable → LINT0002; the open publish is immediate.

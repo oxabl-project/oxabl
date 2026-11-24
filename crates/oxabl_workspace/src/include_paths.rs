@@ -14,6 +14,63 @@
 
 use std::path::{Path, PathBuf};
 
+/// The environment variable that overrides `[workspace.sources].dlc`.
+pub const DLC_SOURCES_VARIABLE: &str = "OXABL_DLC_SOURCES";
+
+/// Where one `[workspace.sources].include_paths` entry points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncludeEntry {
+    /// A directory on the host.
+    Directory(PathBuf),
+    /// An entry under `$DLC` while no DLC source directory is set.
+    UnresolvedDlc,
+    /// A procedure library, by its name in `[build.libraries]`. It holds
+    /// r-code, so the analysis does not search it.
+    Library(String),
+}
+
+/// The host directory of the OpenEdge include sources: `OXABL_DLC_SOURCES`, else
+/// `configured`, a relative path anchored at `root`. `None` when neither is set.
+pub fn dlc_sources(configured: Option<&Path>, root: &Path) -> Option<PathBuf> {
+    let from_environment = std::env::var_os(DLC_SOURCES_VARIABLE).filter(|v| !v.is_empty());
+    let path = match from_environment {
+        Some(value) => PathBuf::from(value),
+        None => configured
+            .filter(|p| !p.as_os_str().is_empty())?
+            .to_path_buf(),
+    };
+    Some(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
+
+/// Resolve one include path `entry`: `$DLC` and `$DLC/...` under `dlc`,
+/// `$LIB:<name>` to a library, any other relative path under `root`.
+pub fn include_entry(root: &Path, dlc: Option<&Path>, entry: &Path) -> IncludeEntry {
+    let Some(text) = entry.to_str() else {
+        return IncludeEntry::Directory(root.join(entry));
+    };
+    if let Some(name) = text.strip_prefix("$LIB:") {
+        return IncludeEntry::Library(name.to_string());
+    }
+    let below_dlc = match text.strip_prefix("$DLC") {
+        Some("") => Some(""),
+        Some(rest) => rest.strip_prefix('/'),
+        None => None,
+    };
+    match (below_dlc, dlc) {
+        (Some(rest), Some(dlc)) => IncludeEntry::Directory(if rest.is_empty() {
+            dlc.to_path_buf()
+        } else {
+            dlc.join(rest)
+        }),
+        (Some(_), None) => IncludeEntry::UnresolvedDlc,
+        (None, _) => IncludeEntry::Directory(root.join(entry)),
+    }
+}
+
 /// Walk upward from `start` to the filesystem root, returning the nearest
 /// ancestor directory that contains an `oxabl.toml`, or `None`.
 ///

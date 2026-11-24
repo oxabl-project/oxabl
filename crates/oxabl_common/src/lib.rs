@@ -7,6 +7,7 @@ mod panic_guard;
 mod reachability;
 mod security_options;
 mod source_map;
+pub mod stack;
 mod virtual_span;
 
 pub use blank_lines::blank_lines_between;

@@ -158,7 +158,7 @@ impl LintPipeline<'_> {
         let fallback = BatchIndex::new(self.file_system(), &config.include_paths)
             .with_run_extensions(&config.run_extensions)
             .with_preprocessor(&config.preprocessor);
-        let index = self.batch_index_or(&fallback);
+        let index = self.effect_index(&fallback);
         let mut out = WorkspaceReach::default();
         if !security.reach.configured {
             return out;
@@ -417,7 +417,7 @@ struct Graph<'p, 'a> {
 impl Graph<'_, '_> {
     /// The file a program name resolves to, read.
     fn program(&mut self, name: &str) -> Option<usize> {
-        let path = self.pipeline.effect_program_path(name, self.index).ok()?;
+        let path = LintPipeline::effect_program_path(self.index, name).ok()?;
         self.read(&path)
     }
 

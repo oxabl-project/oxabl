@@ -16,6 +16,12 @@
 //! silent by design — the match above is positive on the two reported
 //! reasons, so a new reason is skip-listed without an edit here.
 //!
+//! A table that is only named in a record phrase (`FOR EACH`, `FIND`,
+//! `DEFINE BUFFER ... FOR`) is not checked: the resolver binds an unknown name
+//! there to a buffer without a schema table, because the name may be a
+//! temp-table or buffer the file cannot see (an include, a superclass). An
+//! unknown qualifier on a field reference is `undefined-symbol`'s.
+//!
 //! The operand of `NEXT-VALUE` / `CURRENT-VALUE` (and the dynamic forms with a
 //! string literal) resolves against the schema's sequences the same way: a name
 //! the loaded schema does not declare is reported as an unknown sequence.
@@ -489,6 +495,8 @@ mod tests {
         });
         vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -526,6 +534,8 @@ mod tests {
         let diags = lint_with(
             vec![
                 stmt_n(StatementKind::DefineBuffer {
+                    access: None,
+                    is_static: false,
                     name: id("bCust"),
                     target: BufferTarget::Table(id("Customer")),
                     preselect: false,
@@ -570,6 +580,8 @@ mod tests {
         let diags = lint_with_schema(
             vec![
                 stmt_n(StatementKind::DefineTempTable {
+                    access: None,
+                    is_static: false,
                     name: id("tt"),
                     no_undo: false,
                     like_table: None,
@@ -581,6 +593,7 @@ mod tests {
                         validate: false,
                         initial_value: None,
                         extent: None,
+                        span: Span::DUMMY,
                     }],
                     indexes: vec![],
                     xml_options: XmlSerializeOptions::default(),
@@ -659,6 +672,8 @@ mod tests {
         let diags = lint_with(
             vec![
                 stmt_n(StatementKind::VariableDeclaration {
+                    access: None,
+                    is_static: false,
                     name: id("x"),
                     type_source: TypeSource::Explicit(DataType::Integer),
                     initial_value: None,

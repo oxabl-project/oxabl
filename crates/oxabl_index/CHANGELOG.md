@@ -1,5 +1,193 @@
 # Changelog
 
+## [5.3.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.2.1...oxabl_index-v5.3.0) (2026-11-23)
+
+
+### Features
+
+* **lsp:** go to definition and document links ([9a89c3d](https://github.com/oxabl-project/oxabl/commit/9a89c3d344cee9ac558d7a9218565496066da4d0))
+* **lsp:** go to definition and document links ([1df981d](https://github.com/oxabl-project/oxabl/commit/1df981dfba85c1ffadd26219b36e402a881ef6ca)), closes [#407](https://github.com/oxabl-project/oxabl/issues/407) [#408](https://github.com/oxabl-project/oxabl/issues/408)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_lexer bumped from 2.0.2 to 2.0.3
+    * oxabl_parser bumped from 4.1.0 to 4.1.1
+    * oxabl_preprocessor bumped from 0.8.2 to 0.8.3
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+    * oxabl_semantic bumped from 5.1.0 to 5.2.0
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.7 to 0.5.0
+
+## [5.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.2.0...oxabl_index-v5.2.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+    * oxabl_preprocessor bumped from 0.8.1 to 0.8.2
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+    * oxabl_semantic bumped from 5.0.5 to 5.1.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.6 to 0.4.7
+
+## [5.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.1.0...oxabl_index-v5.2.0) (2026-11-18)
+
+
+### Features
+
+* **build:** r-code beside the source with [build].rcode = "beside-source" ([c4c88a7](https://github.com/oxabl-project/oxabl/commit/c4c88a7de0162dcf0a9fd792f699405125a2aa9d))
+
+
+### Bug Fixes
+
+* **index:** never search the source of RUN x.r ([82e59ac](https://github.com/oxabl-project/oxabl/commit/82e59ac054dda13dfa69211ecbf741bcc67002c1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+    * oxabl_preprocessor bumped from 0.8.0 to 0.8.1
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+    * oxabl_semantic bumped from 5.0.4 to 5.0.5
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.5 to 0.4.6
+
+## [5.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.0.3...oxabl_index-v5.1.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
+
+### Bug Fixes
+
+* **build:** resolve includes of a class from its package root, as the compiler does ([954ce9c](https://github.com/oxabl-project/oxabl/commit/954ce9c1fb6d893eae9859fa15eb5f4663d9667d))
+* **build:** resolve includes of a class from its package root, as the compiler does ([c95549f](https://github.com/oxabl-project/oxabl/commit/c95549f2a5e5418bc69585fcae56c02b07a3ec8d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+    * oxabl_preprocessor bumped from 0.7.6 to 0.8.0
+    * oxabl_semantic bumped from 5.0.3 to 5.0.4
+
+## [5.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.0.2...oxabl_index-v5.0.3) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+    * oxabl_preprocessor bumped from 0.7.5 to 0.7.6
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+    * oxabl_semantic bumped from 5.0.2 to 5.0.3
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.4 to 0.4.5
+
+## [5.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.0.1...oxabl_index-v5.0.2) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+    * oxabl_preprocessor bumped from 0.7.4 to 0.7.5
+    * oxabl_semantic bumped from 5.0.1 to 5.0.2
+
+## [5.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v5.0.0...oxabl_index-v5.0.1) (2026-11-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_parser bumped from 4.0.0 to 4.0.1
+    * oxabl_preprocessor bumped from 0.7.3 to 0.7.4
+    * oxabl_schema bumped from 0.4.3 to 0.4.4
+    * oxabl_semantic bumped from 5.0.0 to 5.0.1
+    * oxabl_workspace bumped from 3.3.0 to 3.4.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.3 to 0.4.4
+
+## [5.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v4.0.0...oxabl_index-v5.0.0) (2026-11-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **semantic:** an inherited buffer reads its table and statements resolve inherited records
+
+### Bug Fixes
+
+* **semantic:** an inherited buffer reads its table and statements resolve inherited records ([aeaa593](https://github.com/oxabl-project/oxabl/commit/aeaa59328fa762e0246b3df03787e961f0f74749))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_semantic bumped from 4.0.0 to 5.0.0
+
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.1.0...oxabl_index-v4.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** inherited data members are in scope in a subclass
+
+### Features
+
+* **pipeline:** add LintPipeline::edges_of_observed ([4ebf2b1](https://github.com/oxabl-project/oxabl/commit/4ebf2b1f6e3f078cb51d85de9bdf3691eef0c80e))
+* **pipeline:** observed analysis for the build tool's refresh ([af09fc0](https://github.com/oxabl-project/oxabl/commit/af09fc059328ea814d51b0a481e1cc2f7e64f65f))
+
+
+### Bug Fixes
+
+* **index:** inherited data members are in scope in a subclass ([fde4113](https://github.com/oxabl-project/oxabl/commit/fde41134d4d4cfd7f2d6a8e70f00bbe759146d70))
+* **parser:** read short data type spellings as data types ([2510e7f](https://github.com/oxabl-project/oxabl/commit/2510e7f2221d8747ee6cd816c76322aa65f466df))
+* **parser:** read short data type spellings as data types ([84bd0d3](https://github.com/oxabl-project/oxabl/commit/84bd0d3c8a8b0c8f5d6d48a006ce92948dcd90e0)), closes [#283](https://github.com/oxabl-project/oxabl/issues/283)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+    * oxabl_preprocessor bumped from 0.7.2 to 0.7.3
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+    * oxabl_semantic bumped from 3.0.2 to 4.0.0
+    * oxabl_workspace bumped from 3.2.0 to 3.3.0
+  * dev-dependencies
+    * oxabl_schema bumped from 0.4.2 to 0.4.3
+
 ## [3.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_index-v3.0.1...oxabl_index-v3.1.0) (2026-10-20)
 
 

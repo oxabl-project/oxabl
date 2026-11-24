@@ -11,14 +11,25 @@ use schemars::r#gen::SchemaGenerator;
 use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject};
 use serde::{Deserialize, Serialize};
 
+use crate::build_config::BuildConfig;
+
 /// Top-level configuration deserialized from `oxabl.toml`.
+///
+/// An unknown top-level table is an error, so a misspelled `[biuld]` is not a
+/// silent no-op.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub workspace: WorkspaceSection,
+
+    /// How `oxabl build` keeps state and compiles (`[build]`).
+    #[serde(default)]
+    pub build: BuildConfig,
 }
 
 /// The `[workspace]` section of `oxabl.toml`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceSection {
     /// Human-readable project name.
     pub name: String,
@@ -51,6 +62,46 @@ pub struct WorkspaceSection {
     /// names (`[workspace.preprocessor]`).
     #[serde(default)]
     pub preprocessor: PreprocessorConfig,
+
+    /// Which oxabl features the project uses (`[workspace.features]`).
+    #[serde(default)]
+    pub features: FeaturesConfig,
+}
+
+/// The `[workspace.features]` table: switches for what oxabl does in a project.
+///
+/// Both default to `true`. An unknown key is a hard error, so a misspelled
+/// switch does not leave a feature on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeaturesConfig {
+    /// Every diagnostic oxabl reports for a source file (parse, preprocessor,
+    /// semantic and lint findings), and the code lenses of the effect rules.
+    /// In `oxabl check` this turns the diagnostics channel off. Default `true`.
+    pub diagnostics: bool,
+
+    /// Formatting, so also format on save. In `oxabl check` this turns the
+    /// format-drift channel off, and `oxabl format` refuses to run. Default
+    /// `true`.
+    pub format: bool,
+}
+
+impl Default for FeaturesConfig {
+    fn default() -> Self {
+        FeaturesConfig {
+            diagnostics: true,
+            format: true,
+        }
+    }
+}
+
+impl FeaturesConfig {
+    /// Both features off: what a client that cannot read `oxabl.toml` uses, so
+    /// a project that turned a feature off never gets it back from a typo.
+    pub const OFF: FeaturesConfig = FeaturesConfig {
+        diagnostics: false,
+        format: false,
+    };
 }
 
 /// A user-facing severity level for a lint rule (`[workspace.lint]`).
@@ -565,7 +616,8 @@ impl Default for PreprocessorConfig {
 }
 
 /// The `[workspace.sources]` section.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SourcesConfig {
     /// Directories to walk for ABL *root* files — `.p`, `.w`, `.cls`, and `.v`,
     /// matched case-insensitively. `.i` is deliberately not among them: an
@@ -575,8 +627,19 @@ pub struct SourcesConfig {
     pub directories: Vec<PathBuf>,
 
     /// Include search paths, searched in order (PROPATH equivalent).
+    ///
+    /// An entry that starts with `$DLC/` (or is `$DLC`) names a directory under
+    /// [`dlc`](Self::dlc). An entry `$LIB:<name>` names a procedure library of
+    /// `[build.libraries]`; it holds r-code, so the analysis does not search it.
     #[serde(default)]
     pub include_paths: Vec<PathBuf>,
+
+    /// The host directory that holds the include sources of the OpenEdge
+    /// installation the workers use. Machine-specific, so usually set through
+    /// `OXABL_DLC_SOURCES`, which overrides it. Without either, the includes
+    /// under a `$DLC/` entry do not resolve.
+    #[serde(default)]
+    pub dlc: Option<PathBuf>,
 
     /// Search paths resolved against the directory of each root file and
     /// searched before `include_paths`, in order. Default empty.
@@ -614,7 +677,8 @@ pub struct SourcesConfig {
     pub case_insensitive_lookup: bool,
 
     /// The character encoding of source files: `"utf-8"` (the default),
-    /// `"iso-8859-1"` or `"windows-1252"`.
+    /// `"iso-8859-1"` or `"windows-1252"`. `"utf8"`, `"latin1"` and `"cp1252"`
+    /// are accepted as aliases.
     ///
     /// It applies to every file read from disk: roots, include files, classes and
     /// `.df` schema files, and `oxabl format` writes a file back in the same
@@ -737,6 +801,7 @@ impl Default for SourcesConfig {
         SourcesConfig {
             directories: Vec::new(),
             include_paths: Vec::new(),
+            dlc: None,
             root_relative_include_paths: Vec::new(),
             run_extensions: default_run_extensions(),
             case_insensitive_lookup: false,
@@ -748,7 +813,8 @@ impl Default for SourcesConfig {
 }
 
 /// The `[workspace.schema]` section.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaConfig {
     /// Paths to `.df` schema dump files.
     #[serde(default)]
@@ -774,7 +840,9 @@ impl WorkspaceConfig {
                 lint: LintConfig::default(),
                 style: StyleGuide::default_base(),
                 preprocessor: PreprocessorConfig::default(),
+                features: FeaturesConfig::default(),
             },
+            build: BuildConfig::default(),
         }
     }
 

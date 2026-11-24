@@ -366,6 +366,11 @@ empty if the method is `ABSTRACT`; the "no body" case is carried by the `is_abst
 method parameters). Empty when the setter has no parameter list. Parameters bind in the
 `PropertySet` scope so the computed SET body can reference them.
 
+Every `DefineParameter` of a parenthesized list (`METHOD`, `CONSTRUCTOR`, `FUNCTION`, `DEFINE EVENT`,
+`SET`) has a real `span`: from its direction, or its first token, to its last token.
+
+A `TempTableField` has a `span` too: from `FIELD` to its last option.
+
 ## 10. `Program.errors` non-empty does not invalidate `Program.statements`
 
 - `Program.statements` contains every successfully-parsed statement in source order, even

@@ -4,9 +4,18 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+#[cfg(not(any(target_env = "msvc", target_arch = "wasm32")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod baseline;
+mod build_cmd;
+mod build_probe;
+mod build_run;
+mod display_path;
 mod explain;
 mod sarif;
+mod self_update;
 mod watch;
 
 use clap::{Parser as ClapParser, ValueEnum};
@@ -27,7 +36,7 @@ use oxabl_pipeline::{
 use oxabl_preprocessor::Preprocessor;
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    EncodedFileSystem, FileSystem, SourceDecoding, discover_path, discover_path_in,
+    EncodedFileSystem, FeaturesConfig, FileSystem, SourceDecoding, discover_path, discover_path_in,
     walk_include_fragments,
 };
 use serde::Serialize;
@@ -44,16 +53,20 @@ enum CheckFormat {
 }
 
 #[derive(ClapParser)]
-#[command(name = "oxabl", about = "High-performance tooling for Progress ABL")]
+#[command(
+    name = "oxabl",
+    version,
+    about = "High-performance tooling for Progress ABL"
+)]
 enum Cli {
     /// Lint ABL source and report formatting drift — the one pre-commit gate.
     ///
-    /// Two channels, deliberately not merged (KTD7): lint diagnostics are
+    /// Two channels, deliberately not merged: lint diagnostics are
     /// span-anchored findings, while format drift is a per-file boolean. Folding
     /// the second into the first would mean inventing spans that do not exist,
     /// so `--json` carries two findings keys instead of one array.
     ///
-    /// Exit codes (R15): `0` with neither a lint finding nor drift, `1` when
+    /// Exit codes: `0` with neither a lint finding nor drift, `1` when
     /// either is present (or a file could not be read or analyzed), `2` on a
     /// usage or config error. `--json` adds `6` for a serialization failure,
     /// matching `analyze`.
@@ -71,6 +84,11 @@ enum Cli {
     /// Non-fatal problems (a schema file that would not load, a `--schema`
     /// directory that matched nothing) stay `warning:` lines and do not move the
     /// exit code.
+    ///
+    /// `[workspace.features]` in `oxabl.toml` turns a channel off: `diagnostics =
+    /// false` skips the parse, semantic and lint findings, `format = false` skips
+    /// the drift channel, each with a note on stderr. With both off there is
+    /// nothing to check (exit 2).
     ///
     /// `oxabl format --check` remains the format pipeline's granular dry-run —
     /// the *same* pipeline this command calls, so the two cannot diverge.
@@ -94,7 +112,7 @@ enum Cli {
         /// Skip preprocessing: do not expand includes or evaluate `&IF`.
         ///
         /// Preprocessing is **on by default** here, unlike `conformance` and
-        /// `analyze` (R19). A lint gate that does not expand includes cannot see
+        /// `analyze`. A lint gate that does not expand includes cannot see
         /// the symbols an include declares, so it reports every one of them as
         /// `undefined-symbol` — a flood of findings about the caller's own
         /// correct code. The language server always preprocesses, so leaving it
@@ -126,7 +144,7 @@ enum Cli {
         #[arg(long = "schema")]
         schema: Option<PathBuf>,
 
-        /// Suppress lint findings; parse/semantic errors still gate (R16).
+        /// Suppress lint findings; parse/semantic errors still gate.
         ///
         /// A **filter on the reported set**, not a skipped run — the same meaning
         /// `analyze --no-lint` has always had. The pipeline that produces lint
@@ -136,7 +154,7 @@ enum Cli {
         #[arg(long)]
         no_lint: bool,
 
-        /// Suppress the format-drift channel: report lint findings only (R16).
+        /// Suppress the format-drift channel: report lint findings only.
         #[arg(long)]
         no_format: bool,
 
@@ -200,7 +218,7 @@ enum Cli {
     /// This is the parser-refinement instrument, not a user-facing check — it
     /// answers "how much ABL can oxabl parse today?", which is a question about
     /// oxabl rather than about the caller's source. It is deliberately
-    /// **hidden** from `--help` (R17/R23): it stays reachable and documented for
+    /// **hidden** from `--help`: it stays reachable and documented for
     /// the corpus loop and the A/B gate without growing the advertised CLI
     /// surface.
     #[command(hide = true)]
@@ -236,10 +254,10 @@ enum Cli {
     ///
     /// This is the semantic layer's introspection tool, not a gate: it answers
     /// "what did oxabl understand about this file?", so it **exits 0 whatever it
-    /// finds** (KTD9). A file full of lint findings and a clean one are the same
+    /// finds**. A file full of lint findings and a clean one are the same
     /// success here; `oxabl check` is the command whose exit code means something.
     ///
-    /// Deliberately **hidden** from `--help` (R23), alongside `conformance`: it is
+    /// Deliberately **hidden** from `--help`, alongside `conformance`: it is
     /// a debugging instrument for oxabl's own model, so it earns its own command
     /// but not a place in the advertised surface. It stays fully reachable and
     /// `oxabl analyze --help` works as normal.
@@ -248,8 +266,8 @@ enum Cli {
     /// the file cannot be read, `3` on a fatal preprocessing failure (no model to
     /// dump), `4` on a contained internal panic, `6` on a serialization failure,
     /// `7` on an unrecognized `--format`. Single-file by design, which is why a
-    /// panic aborts here rather than being reported-and-skipped as `check` does
-    /// (R24): there is no "rest of the walk" to protect.
+    /// panic aborts here rather than being reported-and-skipped as `check` does:
+    /// there is no "rest of the walk" to protect.
     #[command(hide = true)]
     Analyze {
         /// Path to the ABL source file to analyze.
@@ -308,6 +326,11 @@ enum Cli {
     /// [workspace.style] > the safe non-mangling default. Any file that cannot be
     /// formatted faithfully (parse errors, or output that would alter the token
     /// stream) is left byte-for-byte unchanged and the reason is reported.
+    ///
+    /// An `oxabl.toml` this run cannot use is a config error (exit 2), as for
+    /// `check`; `--style` skips the file instead. `format = false` in
+    /// `[workspace.features]` also exits 2 and writes nothing; `--style` skips
+    /// that switch too.
     Format {
         /// Path to a single ABL file or a directory to format
         /// (`.p`/`.w`/`.cls`/`.v` under a directory).
@@ -338,6 +361,31 @@ enum Cli {
     },
     /// Run the language server over stdio (LSP), publishing live diagnostics.
     Lsp,
+
+    /// Check for a newer oxabl release and install it.
+    // Hidden: the advertised surface stays at the commands every build has,
+    // and a binary without the `self-update` feature only explains itself.
+    #[command(hide = true)]
+    ///
+    /// Only a binary that the installer script or the VS Code extension put in
+    /// place updates itself (exit 2 otherwise). Exit 3 when the check could not
+    /// be established: network, API, an incomplete release or a failed
+    /// verification. A binary built without the `self-update` feature exits 2.
+    /// A managed binary also checks in the background, at most once a day;
+    /// `CI` or `OXABL_NO_SELF_UPDATE` turn that off.
+    SelfUpdate {
+        /// Install nothing; print whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+
+        /// With `--check`, print the verdict as JSON.
+        #[arg(long, requires = "check")]
+        json: bool,
+
+        /// The detached worker of the automatic check.
+        #[arg(long, hide = true, conflicts_with_all = ["check", "json"])]
+        background: bool,
+    },
     /// Serve one workspace through the shared oxabl daemon.
     #[command(hide = true)]
     Daemon {
@@ -352,6 +400,106 @@ enum Cli {
     /// no hand-maintained mirror. Editors (e.g. Even Better TOML) consume it for
     /// autocomplete/validation inside `oxabl.toml`.
     Schema,
+    /// Build the ABL sources: plan, compile in dependency order, install.
+    ///
+    /// Refreshes the persisted dependency graph from the working tree (reading
+    /// only the files that changed), then compiles the units that a change
+    /// reaches on the workers that `[build.workers]` starts. `--plan` only
+    /// lists those units, and why. `--probe` instead starts the worker pool,
+    /// prints the environment identity and the schema identity of each
+    /// database, and exits.
+    /// Exit codes: `0` when everything compiled or a plan or a probe was
+    /// printed, `1` when a unit failed to compile, `2` on a usage or
+    /// configuration error (including workers that disagree), `3` when the
+    /// store, the workspace or the workers could not be used, `130` when the
+    /// command is cancelled.
+    Build {
+        /// Print the plan and compile nothing.
+        #[arg(long)]
+        plan: bool,
+
+        /// Start the worker pool and print what the workers report; with
+        /// `--plan`, also key every unit.
+        #[arg(long)]
+        probe: bool,
+
+        /// With `--plan`, also list the units that do not need to rebuild.
+        #[arg(long, requires = "plan")]
+        all: bool,
+
+        /// Treat these files as changed, as if each one had been edited.
+        #[arg(long, num_args = 1.., value_name = "PATH", requires = "plan")]
+        files: Vec<PathBuf>,
+
+        /// Treat every file that differs from this git revision as changed:
+        /// committed, staged and unstaged edits, deletions, renames and
+        /// untracked files.
+        #[arg(long, value_name = "REV", requires = "plan", conflicts_with = "files")]
+        since: Option<String>,
+
+        /// Print the plan or the probe as one JSON document.
+        #[arg(long)]
+        json: bool,
+
+        /// The workspace root. Defaults to the nearest ancestor of the current
+        /// directory that holds an `oxabl.toml`.
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+
+        /// A TOML file with the same schema as `oxabl.toml`, merged over it key
+        /// by key (an array replaces). It may set `[workspace]` `name`,
+        /// `sources`, `preprocessor` and `schema`, and `[build]`. Without an
+        /// `oxabl.toml` it is the whole configuration. `OXABL_BUILD_OVERLAY`
+        /// names it too; the flag wins.
+        #[arg(long, value_name = "FILE")]
+        config_overlay: Option<PathBuf>,
+
+        /// Print the effective configuration, each value with the flag,
+        /// environment variable, overlay, `oxabl.toml` or default it came from,
+        /// and stop. With `--json`, print it as a JSON document.
+        #[arg(
+            long,
+            conflicts_with_all = ["plan", "probe", "all", "files", "since", "events", "report", "fail_fast", "wait_lock", "yield_to_newer"]
+        )]
+        print_config: bool,
+
+        /// Number of workers; overrides `[build.workers].count`.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        workers: Option<u32>,
+
+        /// Write one JSON object for each event to stdout while the build
+        /// runs; the human output goes to stderr.
+        #[arg(long, conflicts_with_all = ["plan", "probe", "json"])]
+        events: bool,
+
+        /// Write the per-unit results of the build to this file as JSON.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["plan", "probe"])]
+        report: Option<PathBuf>,
+
+        /// Stop dispatching at the first failure.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        fail_fast: bool,
+
+        /// Neither read from nor write to any compile cache.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        no_cache: bool,
+
+        /// Do not use the remote cache; the local cache stays on.
+        #[arg(long, conflicts_with_all = ["plan", "probe"])]
+        no_remote_cache: bool,
+
+        /// Wait up to this many seconds for the workspace lock instead of
+        /// stopping when another build holds it.
+        #[arg(long, value_name = "SECONDS", conflicts_with_all = ["plan", "probe"])]
+        wait_lock: Option<u64>,
+
+        /// Step aside for any newer build: mark the workspace lock so another
+        /// `oxabl build` stops this one (exit 130) instead of failing on the
+        /// lock. For an editor or a wrapper; a terminal or agent build
+        /// preempts it.
+        #[arg(long = "yield", conflicts_with_all = ["plan", "probe"])]
+        yield_to_newer: bool,
+    },
 }
 
 enum FileResult {
@@ -501,8 +649,28 @@ fn surface_source_context(sem: &oxabl_semantic::Semantic, output: &mut Output) -
 }
 
 fn main() -> ExitCode {
+    // A daemon and the client that finds it compare this, so a daemon that outlived
+    // an upgrade of the binary is replaced.
+    oxabl_daemon::set_build_version(env!("CARGO_PKG_VERSION"));
     let cli = Cli::parse();
+    // The server runs for hours: its check starts first. A command that ends
+    // soon schedules its check after it has done its work.
+    let after = matches!(
+        cli,
+        Cli::Check { .. } | Cli::Format { .. } | Cli::Build { .. }
+    );
+    if matches!(cli, Cli::Lsp) {
+        self_update::schedule_if_due();
+    }
+    // Every command may parse ABL: give it a stack of known size, not `ulimit -s`.
+    let code = oxabl_common::stack::run(|| dispatch(cli));
+    if after {
+        self_update::schedule_if_due();
+    }
+    code
+}
 
+fn dispatch(cli: Cli) -> ExitCode {
     match cli {
         Cli::Check {
             path,
@@ -598,8 +766,54 @@ fn main() -> ExitCode {
             jobs,
         } => run_format(&path, check, stdout, style.as_deref(), job_count(jobs)),
         Cli::Lsp => run_lsp(),
+        Cli::SelfUpdate {
+            check,
+            json,
+            background,
+        } => self_update::run(&self_update::Options {
+            check,
+            json,
+            background,
+        }),
         Cli::Daemon { workspace_root } => run_daemon(&workspace_root),
         Cli::Schema => run_schema(),
+        Cli::Build {
+            plan,
+            probe,
+            all,
+            files,
+            since,
+            json,
+            root,
+            config_overlay,
+            print_config,
+            workers,
+            events,
+            report,
+            fail_fast,
+            no_cache,
+            no_remote_cache,
+            wait_lock,
+            yield_to_newer,
+        } => build_cmd::run(build_cmd::Options {
+            plan,
+            probe,
+            all,
+            files: &files,
+            since,
+            json,
+            root: root.as_deref(),
+            config_overlay: config_overlay.as_deref(),
+            print_config,
+            workers: workers.map(|n| n as usize),
+            events,
+            report: report.as_deref(),
+            fail_fast,
+            no_cache,
+            no_remote_cache,
+            wait_lock,
+            yield_to_newer,
+        }),
     }
 }
 
@@ -727,6 +941,58 @@ fn resolve_style_arg(value: &str) -> Result<StyleGuide, String> {
         .map_err(|e| format!("--style `{value}`: invalid style TOML: {e}"))
 }
 
+/// The message of an `oxabl.toml` the run could not use, if any: the whole file
+/// was discarded, so continuing would run on defaults the user did not write.
+/// An entry-point file that does not load is one too: the run would gate on
+/// security findings without the reachability the project configured.
+fn config_error(warnings: &[ConfigWarning]) -> Option<String> {
+    warnings.iter().find_map(|w| match w {
+        ConfigWarning::Config(msg) => Some(msg.clone()),
+        ConfigWarning::EntryPoints(_) => Some(w.to_string()),
+        _ => None,
+    })
+}
+
+/// The channels of a `check` run: what `[workspace.features]` and `--no-format`
+/// leave on.
+struct Channels {
+    diagnostics: bool,
+    format: bool,
+}
+
+/// Which channels `check` runs, or why it must not run at all.
+///
+/// A gate that checks nothing must never pass, so a run with no channel left is
+/// an error. `--no-lint` does not count as a channel off: it filters the
+/// reported set and the parse and semantic findings still gate.
+fn check_channels(features: FeaturesConfig, no_format: bool) -> Result<Channels, String> {
+    let channels = Channels {
+        diagnostics: features.diagnostics,
+        format: features.format && !no_format,
+    };
+    if channels.diagnostics || channels.format {
+        return Ok(channels);
+    }
+    let cause = if features.format {
+        "[workspace.features] turns diagnostics off in oxabl.toml and --no-format turns the \
+         format check off"
+    } else {
+        "[workspace.features] turns diagnostics and formatting off in oxabl.toml"
+    };
+    Err(format!("{cause}, so there is nothing to check"))
+}
+
+/// One stderr note for each feature `[workspace.features]` turns off, so a clean
+/// run is not read as a run that checked it.
+fn note_disabled_features(features: FeaturesConfig) {
+    if !features.diagnostics {
+        eprintln!("note: diagnostics are off in oxabl.toml ([workspace.features]); not checked");
+    }
+    if !features.format {
+        eprintln!("note: formatting is off in oxabl.toml ([workspace.features]); not checked");
+    }
+}
+
 /// `oxabl format`: resolve configuration once, then render the shared
 /// [`FormatPipeline`]'s decision for each discovered file per the selected mode.
 ///
@@ -785,10 +1051,9 @@ fn run_format(
     // `--style` names a whole guide, so it leaves nothing in `oxabl.toml` for the
     // run to need: it short-circuits discovery entirely rather than resolving a
     // config only to override it. That is what makes `--style` work in a tree
-    // whose `oxabl.toml` cannot be parsed. Without it, a malformed config still
-    // degrades to defaults with one `warning:` line (R7) — `format` rewrites
-    // layout rather than answering a pass/fail question, so unlike `check` (A3) it
-    // has nothing to report wrongly.
+    // whose `oxabl.toml` cannot be parsed. Without it, a config the run cannot use
+    // is a config error (exit 2), as for `check`: `--check` answers a pass/fail
+    // question, and a write would reformat the tree in a style nobody chose.
     //
     // The source encoding is the exception: `--style` still has to read the files
     // the way the tree is stored, so it takes the encoding from the config and
@@ -806,6 +1071,18 @@ fn run_format(
         ),
         None => PipelineConfig::resolve_style_only(path, &ConfigOverrides::default()),
     };
+    if let Some(msg) = config_error(&warnings) {
+        eprintln!("error: {msg}");
+        return ExitCode::from(2);
+    }
+    // `--style` skips `oxabl.toml`, so the switch it holds does not apply.
+    if !config.features.format {
+        eprintln!(
+            "error: formatting is off in oxabl.toml ([workspace.features] format = false); \
+             nothing was formatted"
+        );
+        return ExitCode::from(2);
+    }
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
@@ -1213,16 +1490,15 @@ fn run_check(
     };
     let (config, warnings) = PipelineConfig::resolve(path, &overrides);
 
-    // The one place the gate hardens where every other command degrades (A3): an
-    // `oxabl.toml` the resolver could not use is a **config error**, exit 2.
+    // An `oxabl.toml` the resolver could not use is a **config error**, exit 2.
     //
     // `ConfigWarning::Config` means the whole file was discarded, so the run would
     // proceed on defaults — and defaults are not what the user wrote. A dropped
     // `[workspace.lint]` table takes every `off` with it, so the gate reports
     // findings for rules the project switched off, and reports them under a green
-    // exit code if nothing else fires. `format`, `analyze`, `conformance` and the
-    // LSP keep degrading with a warning: none of them answers a pass/fail
-    // question, so none of them can answer it wrongly.
+    // exit code if nothing else fires. `format` and `watch` refuse likewise.
+    // `analyze`, `explain`, `conformance` and the LSP keep degrading with a
+    // warning: they dump or serve what oxabl found rather than gate on it.
     //
     // "Could not use" is broader than "malformed TOML": `StyleGuide` denies
     // unknown fields, so a syntactically valid file naming a key oxabl does not
@@ -1235,20 +1511,33 @@ fn run_check(
     //
     // An entry-point file that does not load is one too: the run would gate on
     // security findings without the reachability the project configured.
-    if let Some(msg) = warnings.iter().find_map(|w| match w {
-        ConfigWarning::Config(msg) => Some(msg.clone()),
-        ConfigWarning::EntryPoints(_) => Some(w.to_string()),
-        _ => None,
-    }) {
+    if let Some(msg) = config_error(&warnings) {
         eprintln!("error: {msg}");
         return ExitCode::from(2);
     }
     // The warnings that qualify the run, for a SARIF log as well as stderr.
     let mut run_warnings: Vec<String> = Vec::new();
+    let channels = match check_channels(config.features, no_format) {
+        Ok(channels) => channels,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::from(2);
+        }
+    };
+    // Recording findings of a channel that does not run would erase the entries
+    // the baseline holds for these files.
+    if !channels.diagnostics && baseline_file.is_some_and(|(_, update)| update) {
+        eprintln!(
+            "error: --update-baseline needs diagnostics, which [workspace.features] turns off \
+             in oxabl.toml"
+        );
+        return ExitCode::from(2);
+    }
     for warning in &warnings {
         eprintln!("warning: {warning}");
         run_warnings.push(warning.to_string());
     }
+    note_disabled_features(config.features);
 
     // Discovery through the shared walker: a named file is checked regardless of
     // extension, a directory is walked under the configured root extensions
@@ -1290,7 +1579,12 @@ fn run_check(
     // The walk's own file list — no directory scan — scanned once, on every
     // core, which is what lets a `DEFINE SHARED` consumer find its producer even
     // when no `RUN` names the producing file.
-    let producers = LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, jobs);
+    // With diagnostics off the lint pipeline never runs, so nothing scans the walk.
+    let producers = if channels.diagnostics {
+        LintPipeline::new(&config, &fs).shared_producers_parallel(&indexed, jobs)
+    } else {
+        Default::default()
+    };
     let lint = LintPipeline::new(&config, &fs)
         .with_preprocess(preprocess)
         .with_shared_producers(&producers);
@@ -1300,7 +1594,7 @@ fn run_check(
 
     // Include files in a walked directory. They count as ABL files here: a
     // directory of nothing else is checked, not a usage error.
-    let fragments: Vec<(PathBuf, PathBuf)> = if !no_lint && path.is_dir() {
+    let fragments: Vec<(PathBuf, PathBuf)> = if channels.diagnostics && !no_lint && path.is_dir() {
         walk_include_fragments(path)
             .into_iter()
             .map(|file| {
@@ -1321,8 +1615,9 @@ fn run_check(
         output: format_choice,
         root: baseline::workspace_root(path, None),
         severities: &config.lint_severities,
+        diagnostics: channels.diagnostics,
         no_lint,
-        no_format,
+        no_format: !channels.format,
         include_findings,
         baseline: baseline.as_ref(),
         format: &format,
@@ -1347,8 +1642,10 @@ fn run_check(
 
     // TX004 asks for the summaries of its callees. Built once over the walk and
     // shared, as each thread's handle would otherwise build its own.
-    let summaries = (!no_lint && lint.callee_summaries_enabled())
-        .then(|| std::sync::Arc::new(lint.build_workspace_effect_summaries(&indexed)));
+    let summaries =
+        (channels.diagnostics && !no_lint && lint.callee_summaries_enabled()).then(|| {
+            std::sync::Arc::new(lint.build_workspace_effect_summaries_parallel(&indexed, jobs))
+        });
     let lint = match &summaries {
         Some(s) => lint.with_effect_summaries(std::sync::Arc::clone(s)),
         None => lint,
@@ -1407,7 +1704,7 @@ fn run_check(
         eprintln!("suppressed: {suppressed} finding(s) by oxabl-ignore comments");
     }
 
-    let baseline = match baseline.map(|run| run.finish(!no_lint)) {
+    let baseline = match baseline.map(|run| run.finish(channels.diagnostics && !no_lint)) {
         None => None,
         Some(Ok(report)) => {
             surface_baseline(&report);
@@ -1467,9 +1764,9 @@ fn run_check(
             version: 3,
             files_checked: files.len(),
             include_files_checked,
-            lint_enabled: !no_lint,
+            lint_enabled: channels.diagnostics && !no_lint,
             diagnostics,
-            format_enabled: !no_format,
+            format_enabled: channels.format,
             format: CheckJsonFormat {
                 drifted_count: drifted.len(),
                 drifted,
@@ -1531,12 +1828,16 @@ fn run_check(
             1 => " and 1 include file".to_string(),
             n => format!(" and {n} include files"),
         };
-        let lint_channel = if no_lint {
+        let lint_channel = if !channels.diagnostics {
+            "diagnostics off"
+        } else if no_lint {
             "lint suppressed"
         } else {
             "no findings"
         };
-        let format_channel = if no_format {
+        let format_channel = if !config.features.format {
+            "format off"
+        } else if no_format {
             "format suppressed"
         } else {
             "no drift"
@@ -1715,6 +2016,8 @@ struct CheckPass<'a> {
     /// The workspace root, for the paths of SARIF results.
     root: PathBuf,
     severities: &'a LintSeverityMap,
+    /// Whether the diagnostics channel runs at all (`[workspace.features]`).
+    diagnostics: bool,
     no_lint: bool,
     no_format: bool,
     include_findings: bool,
@@ -1756,89 +2059,8 @@ impl CheckPass<'_> {
             }
         };
 
-        // The pipeline runs whatever `--no-lint` says (A1): it is the only source
-        // of parse and semantic diagnostics too, and those gate regardless.
-        //
-        // Identity, so this file is excluded from its own cross-file lookups:
-        // the bytes just read are what is being analysed, and resolving a name
-        // to the same file on disk would attribute it to itself as a foreign
-        // dependency.
-        let result = lint.with_file(indexed_path).run(&source);
-        if let Some(panic) = result.failure() {
-            unit.output
-                .err(format!("error: analysis failed on {display}: {panic}\n"));
-            unit.failures.push(CheckJsonFailure {
-                path: display.clone(),
-                reason: panic.to_string(),
-            });
-        } else {
-            // Preprocessor diagnostics keep their own channel — surfaced by the
-            // same helper `analyze` uses, so the two cannot drift. They are
-            // coverage warnings, not findings, and never move the exit code: an
-            // elided include still parses.
-            surface_collected_preproc(file, &source, result.diagnostics(), &mut unit.output);
-            // Machine-readable, through the *same* row builder the findings use
-            // (D1): an entry names its file, so two files losing coverage on
-            // different includes are two distinguishable entries.
-            //
-            // Only `--json` reads these rows, and most files have no preproc
-            // diagnostic at all — so the `SourceMap` (a scan of the whole file) is
-            // built behind both conditions, the way the findings rows below build
-            // theirs only once there is a finding.
-            if self.output == CheckFormat::Json {
-                let mut collected = result
-                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
-                    .peekable();
-                if collected.peek().is_some() {
-                    let map = SourceMap::new(&source);
-                    unit.preproc
-                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
-                }
-            }
-
-            // `--no-lint` is a **filter on the reported set**, exactly as it is
-            // for `analyze`: the lint-sourced entries go, the parse and semantic
-            // ones stay. Two chained calls to the one shared filter rather than a
-            // second hand-rolled predicate.
-            let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
-            let reported = if self.no_lint {
-                reported.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
-            } else {
-                reported
-            };
-            let fragment_root = result
-                .semantic()
-                .is_some_and(|sem| sem.source_context.is_include_fragment());
-            report_findings(
-                &display,
-                indexed_path,
-                &source,
-                reported,
-                fragment_root,
-                self,
-                &mut unit,
-            );
-
-            if self.include_findings {
-                let mut shown = result.include_origin().to_vec();
-                if self.no_lint {
-                    shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
-                }
-                report_include_findings(&display, &source, &shown, texts, self, &mut unit);
-            }
-
-            // The unjudged-symbol note is a statement about the *count-gated lint
-            // rules'* coverage, so it has nothing to qualify when those findings
-            // are suppressed.
-            if !self.no_lint
-                && let Some(sem) = result.semantic()
-            {
-                if surface_source_context(sem, &mut unit.output) {
-                    unit.fragment_root = Some(display.clone());
-                } else {
-                    unit.unjudged += surface_unjudged_symbols(sem, &mut unit.output);
-                }
-            }
+        if self.diagnostics {
+            self.diagnose(lint, texts, file, indexed_path, &source, &mut unit);
         }
 
         if !self.no_format {
@@ -1869,6 +2091,104 @@ impl CheckPass<'_> {
             }
         }
         unit
+    }
+
+    /// The diagnostics channel of one root: its parse, preprocessor, semantic and
+    /// lint findings.
+    fn diagnose(
+        &self,
+        lint: &LintPipeline<'_>,
+        texts: &mut IncludeTexts,
+        file: &Path,
+        indexed_path: &Path,
+        source: &str,
+        unit: &mut Unit,
+    ) {
+        let display = file.display().to_string();
+        // The pipeline runs whatever `--no-lint` says (A1): it is the only source
+        // of parse and semantic diagnostics too, and those gate regardless.
+        //
+        // Identity, so this file is excluded from its own cross-file lookups:
+        // the bytes just read are what is being analysed, and resolving a name
+        // to the same file on disk would attribute it to itself as a foreign
+        // dependency.
+        let result = lint.with_file(indexed_path).run(source);
+        if let Some(panic) = result.failure() {
+            unit.output
+                .err(format!("error: analysis failed on {display}: {panic}\n"));
+            unit.failures.push(CheckJsonFailure {
+                path: display.clone(),
+                reason: panic.to_string(),
+            });
+        } else {
+            // Preprocessor diagnostics keep their own channel — surfaced by the
+            // same helper `analyze` uses, so the two cannot drift. They are
+            // coverage warnings, not findings, and never move the exit code: an
+            // elided include still parses.
+            surface_collected_preproc(file, source, result.diagnostics(), &mut unit.output);
+            // Machine-readable, through the *same* row builder the findings use
+            // (D1): an entry names its file, so two files losing coverage on
+            // different includes are two distinguishable entries.
+            //
+            // Only `--json` reads these rows, and most files have no preproc
+            // diagnostic at all — so the `SourceMap` (a scan of the whole file) is
+            // built behind both conditions, the way the findings rows below build
+            // theirs only once there is a finding.
+            if self.output == CheckFormat::Json {
+                let mut collected = result
+                    .by_source(oxabl_analyze::DiagnosticSource::Preproc)
+                    .peekable();
+                if collected.peek().is_some() {
+                    let map = SourceMap::new(source);
+                    unit.preproc
+                        .extend(collected.map(|c| check_json_diagnostic(&display, &map, c)));
+                }
+            }
+
+            // `--no-lint` is a **filter on the reported set**, exactly as it is
+            // for `analyze`: the lint-sourced entries go, the parse and semantic
+            // ones stay. Two chained calls to the one shared filter rather than a
+            // second hand-rolled predicate.
+            let reported = result.excluding_source(oxabl_analyze::DiagnosticSource::Preproc);
+            let reported = if self.no_lint {
+                reported.excluding_source(oxabl_analyze::DiagnosticSource::Lint)
+            } else {
+                reported
+            };
+            let fragment_root = result
+                .semantic()
+                .is_some_and(|sem| sem.source_context.is_include_fragment());
+            report_findings(
+                &display,
+                indexed_path,
+                source,
+                reported,
+                fragment_root,
+                self,
+                unit,
+            );
+
+            if self.include_findings {
+                let mut shown = result.include_origin().to_vec();
+                if self.no_lint {
+                    shown.retain(|d| d.source != oxabl_analyze::DiagnosticSource::Lint);
+                }
+                report_include_findings(&display, source, &shown, texts, self, unit);
+            }
+
+            // The unjudged-symbol note is a statement about the *count-gated lint
+            // rules'* coverage, so it has nothing to qualify when those findings
+            // are suppressed.
+            if !self.no_lint
+                && let Some(sem) = result.semantic()
+            {
+                if surface_source_context(sem, &mut unit.output) {
+                    unit.fragment_root = Some(display.clone());
+                } else {
+                    unit.unjudged += surface_unjudged_symbols(sem, &mut unit.output);
+                }
+            }
+        }
     }
 
     /// An include file in a walked directory: only the context-free rules
@@ -1974,17 +2294,19 @@ fn in_task_order<'t, T: Sync, S, R: Send>(
         for _ in 0..jobs {
             let sender = sender.clone();
             let (next, thread_state, work) = (&next, &thread_state, &work);
-            scope.spawn(move || {
-                let mut state = thread_state();
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(task) = tasks.get(i) else { break };
-                    let result = work(&mut state, task);
-                    if sender.send((i, result)).is_err() {
-                        break;
+            oxabl_common::stack::builder()
+                .spawn_scoped(scope, move || {
+                    let mut state = thread_state();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(task) = tasks.get(i) else { break };
+                        let result = work(&mut state, task);
+                        if sender.send((i, result)).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
+                })
+                .expect("failed to spawn a worker thread");
         }
         drop(sender);
         let mut waiting: HashMap<usize, R> = HashMap::new();
@@ -2304,7 +2626,7 @@ fn report_include_findings(
     unit: &mut Unit,
 ) {
     for finding in found {
-        let display = finding.path.display().to_string();
+        let display = display_path::spell(&finding.path, root);
         let mut diagnostic = finding.diagnostic.clone();
         diagnostic.span.file = ROOT_FILE_ID;
         let text = texts.get(&finding.path).map(str::to_owned);
@@ -2356,7 +2678,7 @@ fn report_include_findings(
                 for step in &expansion.chain {
                     via.push(site_label(&previous.0, previous.1.as_deref(), step.site));
                     previous = (
-                        step.path.display().to_string(),
+                        display_path::spell(&step.path, root),
                         texts.get(&step.path).map(str::to_owned),
                     );
                 }
@@ -2395,7 +2717,7 @@ fn report_include_findings(
                         };
                         previous = texts.get(&step.path).map(str::to_owned);
                         CheckJsonChainStep {
-                            path: step.path.display().to_string(),
+                            path: display_path::spell(&step.path, root),
                             site: step.site.map(|at| CheckJsonSpan {
                                 start: at.start,
                                 end: at.end,
@@ -2709,12 +3031,7 @@ fn run_conformance(
     if debug {
         let real_fs = path_config.file_system();
         for file in &files {
-            run_debug_parse(
-                file,
-                preprocess,
-                &real_fs,
-                &path_config.include_paths_for(Some(file)),
-            );
+            run_debug_parse(file, preprocess, &real_fs, &path_config);
         }
         return ExitCode::SUCCESS;
     }
@@ -2745,11 +3062,7 @@ fn run_conformance(
         || (),
         |(), file| {
             if preprocess {
-                parse_file_with_preprocess(
-                    file,
-                    &real_fs,
-                    &path_config.include_paths_for(Some(file)),
-                )
+                parse_file_with_preprocess(file, &real_fs, &path_config)
             } else {
                 (parse_file(file, path_config.decoding), String::new())
             }
@@ -2830,7 +3143,7 @@ fn parse_file(path: &Path, decoding: SourceDecoding) -> FileResult {
 fn parse_file_with_preprocess(
     path: &Path,
     fs: &EncodedFileSystem,
-    include_paths: &[PathBuf],
+    config: &PipelineConfig,
 ) -> (FileResult, String) {
     // Read the file
     let source = match fs.read(path).map(|text| text.to_string()) {
@@ -2845,7 +3158,8 @@ fn parse_file_with_preprocess(
     };
 
     // Preprocess
-    let preprocessor = Preprocessor::new(fs, include_paths);
+    let include_paths = config.include_paths_for(Some(path), &source);
+    let preprocessor = Preprocessor::new(fs, &include_paths);
     let file_id = ROOT_FILE_ID;
     let preprocessed = match preprocessor.process(file_id, &source) {
         Ok(pf) => pf,
@@ -3122,12 +3436,7 @@ fn render_json_report(results: &[FileResult], elapsed_secs: f64) -> Result<(), E
     }
 }
 
-fn run_debug_parse(
-    path: &Path,
-    preprocess: bool,
-    fs: &EncodedFileSystem,
-    include_paths: &[PathBuf],
-) {
+fn run_debug_parse(path: &Path, preprocess: bool, fs: &EncodedFileSystem, config: &PipelineConfig) {
     let source = match fs.read(path).map(|text| text.to_string()) {
         Ok(s) => s,
         Err(e) => {
@@ -3137,7 +3446,8 @@ fn run_debug_parse(
     };
 
     let parse_source: String = if preprocess {
-        let preprocessor = Preprocessor::new(fs, include_paths);
+        let include_paths = config.include_paths_for(Some(path), &source);
+        let preprocessor = Preprocessor::new(fs, &include_paths);
         let file_id = ROOT_FILE_ID;
         match preprocessor.process(file_id, &source) {
             Ok(pf) => {

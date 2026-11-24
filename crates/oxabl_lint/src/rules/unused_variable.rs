@@ -218,6 +218,8 @@ mod tests {
     }
     fn var_decl(n: &str, ty: DataType) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -259,6 +261,8 @@ mod tests {
         // one within this file must not be flagged. Guards the within-file
         // SHARED flag → LINT0002 exemption.
         let shared = stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id("gShared"),
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -569,6 +573,8 @@ mod tests {
 
     fn temp_table(n: &str) -> Statement {
         stmt(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id(n),
             no_undo: false,
             like_table: None,

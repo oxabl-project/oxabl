@@ -13,7 +13,8 @@
     { "open": "[", "close": "]" },
     { "open": "(", "close": ")" },
     { "open": "\"", "close": "\"", "notIn": ["string"] },
-    { "open": "'", "close": "'", "notIn": ["string"] }
+    { "open": "'", "close": "'", "notIn": ["string"] },
+    { "open": "/*", "close": " */", "notIn": ["string", "comment"] }
   ],
   "surroundingPairs": [
     ["{", "}"],
@@ -21,5 +22,16 @@
     ["(", ")"],
     ["\"", "\""],
     ["'", "'"]
-  ]
+  ],
+  "wordPattern": "(-?\\d*\\.\\d\\w*)|(&?[A-Za-z_][\\w\\-#$%&]*)",
+  "indentationRules": {
+    "increaseIndentPattern": { "pattern": "^(?!\\s*(?!(?:do|repeat|finally|triggers|otherwise|get|set)\\s*:)[\\w#$%&-]+\\s*:\\s*$)(?:[^\"'/]|\"[^\"]*\"|'[^']*'|/(?![/*]))*:\\s*$", "flags": "i" },
+    "decreaseIndentPattern": { "pattern": "^\\s*END\\b(?!-)", "flags": "i" }
+  },
+  "folding": {
+    "markers": {
+      "start": "^\\s*&ANALYZE-SUSPEND|//\\s*#region",
+      "end": "^\\s*&ANALYZE-RESUME|//\\s*#endregion"
+    }
+  }
 }

@@ -205,3 +205,59 @@ fn the_flag_does_not_combine_with_a_baseline() {
     );
     assert_eq!(exit, Some(2), "{stderr}");
 }
+
+/// Include paths are spelled like the root files: relative to the working
+/// directory when the run was typed with a relative path, so a CI log carries
+/// no home directory. An include outside the workspace is reached with `..`,
+/// never by an absolute path.
+#[test]
+fn include_paths_are_relative_like_every_other_path() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().join("ws");
+    write(
+        &ws.join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n[workspace.sources]\ninclude_paths = [\".\", \"../shared\"]\n",
+    );
+    write(&ws.join("decl.i"), DECL);
+    write(
+        &dir.path().join("shared/outer.i"),
+        "DEFINE VARIABLE used-o AS INTEGER NO-UNDO.\nDEFINE VARIABLE spare-o AS INTEGER NO-UNDO.\n",
+    );
+    write(
+        &ws.join("sub/prog.p"),
+        "{decl.i}\n{outer.i}\nMESSAGE used-v used-o.\n",
+    );
+    let home = dir.path().to_string_lossy().replace('\\', "/");
+
+    let (exit, stdout, stderr) = check(&ws, &["sub/prog.p", "--json", "--include-findings"]);
+    assert_eq!(exit, Some(1), "{stdout}{stderr}");
+    let report = json(&stdout);
+    let mut paths: Vec<String> = rows(&report)
+        .iter()
+        .flat_map(|row| {
+            let chain = row["expansions"].as_array().unwrap().iter().flat_map(|e| {
+                e["chain"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| norm(&s["path"]))
+            });
+            std::iter::once(norm(&row["path"]))
+                .chain(chain)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths, ["../shared/outer.i", "decl.i"], "{report}");
+
+    let (_, stdout, _) = check(&ws, &["sub/prog.p", "--include-findings"]);
+    let out = stdout.replace('\\', "/");
+    assert!(!out.contains(&home), "no absolute path in text: {out}");
+    assert!(out.contains("decl.i:2:17: warning[LINT0002]"), "{out}");
+    assert!(
+        out.contains("../shared/outer.i:2:17: warning[LINT0002]"),
+        "{out}"
+    );
+    assert!(out.contains("reached through sub/prog.p:1:1"), "{out}");
+}

@@ -65,8 +65,9 @@ mod collect;
 
 pub use collect::{
     CollectedDiagnostic, CollectedDiagnostics, CrossFile, DiagnosticSource, DirectInclude,
-    ExpandedFile, IncludeFinding, IncludeOccurrence, IncludeOrigin, IncludeOriginDiagnostic,
-    IncludeStep, RuleSelection, analyze_from_expanded, collect_diagnostics, collect_from_expanded,
+    ExpandedFile, IncludeExpansion, IncludeFinding, IncludeOccurrence, IncludeOrigin,
+    IncludeOriginDiagnostic, IncludeStep, RuleSelection, analyze_for_navigation,
+    analyze_from_expanded, collect_diagnostics, collect_from_expanded,
     collect_from_expanded_selecting, collect_from_expanded_with,
     collect_from_expanded_with_source_context, collect_from_expanded_with_summaries,
     collect_with_model, expand_source, expand_source_with, is_loud,
@@ -74,7 +75,7 @@ pub use collect::{
 // Re-exported so a consumer of an expansion need not also depend on the
 // preprocessor just to name the unresolved-include rows the expansion carries.
 pub use oxabl_preprocessor::{
-    BranchDirective, SkippedBranch, SkippedInclude, SkippedText, UnresolvedInclude,
+    BranchDirective, SkippedBranch, SkippedInclude, SkippedText, TextLossKind, UnresolvedInclude,
 };
 
 use oxabl_ast::{NodeId, Statement};
@@ -1122,6 +1123,8 @@ mod tests {
 
     fn var_decl(n: &str, ty: DataType) -> Statement {
         Statement::new(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: ident(n),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -1296,6 +1299,8 @@ mod tests {
                 NodeId::from_u32(4),
                 oxabl_ast::Span::DUMMY,
                 StatementKind::DefineBuffer {
+                    access: None,
+                    is_static: false,
                     name: ident("bCust"),
                     target: BufferTarget::Table(ident("Customer")),
                     preselect: false,

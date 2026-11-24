@@ -2411,6 +2411,8 @@ fn parse_define_variable_simple() {
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: Identifier {
                 span: Span { start: 16, end: 21 },
                 name: "myVar".to_string()
@@ -2435,6 +2437,8 @@ fn parse_define_variable_with_initial() {
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: Identifier {
                 span: Span { start: 16, end: 23 },
                 name: "counter".to_string()
@@ -2486,6 +2490,8 @@ fn parse_var_statement_simple() {
     assert_eq!(
         stmt,
         StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: Identifier {
                 span: Span { start: 12, end: 19 },
                 name: "myCount".to_string()
@@ -6802,6 +6808,109 @@ fn parse_abstract_class() {
             assert!(!is_final);
         }
         _ => panic!("Expected Class statement"),
+    }
+}
+
+#[test]
+fn parse_class_header_modifier_orders() {
+    // (source, abstract, final, use_widget_pool, inherits, implements)
+    let cases = [
+        (
+            "CLASS a.b.Cls INHERITS Base FINAL: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS a.b.Cls INHERITS Base ABSTRACT: END CLASS.",
+            true,
+            false,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS Cls IMPLEMENTS I1 FINAL SERIALIZABLE: END CLASS.",
+            false,
+            true,
+            false,
+            false,
+            1,
+        ),
+        (
+            "CLASS Cls IMPLEMENTS I1, I2 ABSTRACT: END CLASS.",
+            true,
+            false,
+            false,
+            false,
+            2,
+        ),
+        (
+            "CLASS Cls INHERITS B IMPLEMENTS I1 USE-WIDGET-POOL FINAL SERIALIZABLE: END CLASS.",
+            false,
+            true,
+            true,
+            true,
+            1,
+        ),
+        (
+            "CLASS Cls USE-WIDGET-POOL ABSTRACT: END CLASS.",
+            true,
+            false,
+            true,
+            false,
+            0,
+        ),
+        (
+            "CLASS Cls INHERITS B FINAL USE-WIDGET-POOL: END CLASS.",
+            false,
+            true,
+            true,
+            true,
+            0,
+        ),
+        (
+            "CLASS FINAL Cls INHERITS B: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+        (
+            "CLASS Cls FINAL INHERITS B: END CLASS.",
+            false,
+            true,
+            false,
+            true,
+            0,
+        ),
+    ];
+    for (source, abs, fin, uwp, inh, imp) in cases {
+        let tokens = tokenize(source);
+        let mut parser = Parser::new(&tokens, source);
+        let stmt = parser
+            .parse_statement()
+            .unwrap_or_else(|e| panic!("{source}: {e:?}"));
+        match stmt.kind {
+            StatementKind::Class {
+                inherits,
+                implements,
+                is_abstract,
+                is_final,
+                use_widget_pool,
+                ..
+            } => {
+                assert_eq!(is_abstract, abs, "{source}: abstract");
+                assert_eq!(is_final, fin, "{source}: final");
+                assert_eq!(use_widget_pool, uwp, "{source}: use-widget-pool");
+                assert_eq!(inherits.is_some(), inh, "{source}: inherits");
+                assert_eq!(implements.len(), imp, "{source}: implements");
+            }
+            _ => panic!("Expected Class statement"),
+        }
     }
 }
 
@@ -11626,6 +11735,28 @@ fn comments_appbuilder_directive_is_line_excluding_newline() {
 }
 
 #[test]
+fn comments_led_by_a_stray_tilde_are_line_comments() {
+    for source in ["~&ANALYZE-SUSPEND x\nvar x as int.", "~~~&x\nvar x as int."] {
+        let comments = collect_program_comments(source);
+        assert_eq!(comments.len(), 1, "{source:?}");
+        assert_eq!(comments[0].kind, CommentKind::Line, "{source:?}");
+    }
+}
+
+#[test]
+fn comments_after_a_stray_tilde_and_blanks_keep_their_kind() {
+    for (source, kind) in [
+        ("~ //x\nvar x as int.", CommentKind::Line),
+        ("~ ~\t//x\nvar x as int.", CommentKind::Line),
+        ("~\t/* b */\nvar x as int.", CommentKind::Block),
+    ] {
+        let comments = collect_program_comments(source);
+        assert_eq!(comments.len(), 1, "{source:?}");
+        assert_eq!(comments[0].kind, kind, "{source:?}");
+    }
+}
+
+#[test]
 fn comments_include_and_macro_refs_are_not_comments() {
     let source = "{lib/util.i}\n{&MY-MACRO}\nvar x as int.";
     let comments = collect_program_comments(source);
@@ -12897,8 +13028,26 @@ fn put_dynamic_function_item_is_an_expression() {
 }
 
 #[test]
-fn put_with_a_non_identifier_stream_name_still_parses() {
+fn put_with_a_digit_first_stream_name_keeps_its_items() {
     let source = "PUT STREAM 2dstream UNFORMATTED apage.";
+    let program = Parser::new(&tokenize(source), source).parse_program();
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    let StatementKind::Put {
+        stream_name, items, ..
+    } = &program.statements[0].kind
+    else {
+        panic!("expected Put, got {:?}", program.statements[0].kind);
+    };
+    assert_eq!(
+        stream_name.as_ref().map(|n| n.name.as_str()),
+        Some("2dstream")
+    );
+    assert_eq!(items.len(), 1);
+}
+
+#[test]
+fn put_with_a_non_identifier_stream_name_still_parses() {
+    let source = "PUT STREAM 2 UNFORMATTED apage.";
     let program = Parser::new(&tokenize(source), source).parse_program();
     assert!(program.errors.is_empty(), "{:?}", program.errors);
     let stmt = &program.statements[0];
@@ -13031,6 +13180,106 @@ fn a_do_block_takes_while_transaction_and_on_phrases_in_any_order() {
         };
         assert!(*transaction, "{source}");
         assert!(while_condition.is_some() || to.is_some(), "{source}");
+    }
+}
+
+#[test]
+fn a_do_counting_loop_comes_before_or_after_while() {
+    for (before, after) in [
+        (
+            "DO i = 1 TO 10 WHILE more:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "DO i = 1 TO 10 BY 2 WHILE more:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10 BY 2:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "DO i = 1 TO 10 WHILE more TRANSACTION ON ERROR UNDO, LEAVE:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10 TRANSACTION ON ERROR UNDO, LEAVE:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "DO i = 1 TO 10 IN FRAME f WHILE more:\n  more = i < 5.\nEND.",
+            "DO WHILE more i = 1 TO 10 IN FRAME f:\n  more = i < 5.\nEND.",
+        ),
+    ] {
+        let shape = |source: &str| {
+            let stmts = assert_parses_clean(source);
+            let StatementKind::Do {
+                loop_var,
+                from,
+                to,
+                by,
+                while_condition,
+                transaction,
+                body,
+                ..
+            } = &stmts[0].kind
+            else {
+                panic!("{source}: expected DO, got {:?}", stmts[0].kind);
+            };
+            (
+                loop_var.as_ref().map(|v| v.name.clone()),
+                from.is_some(),
+                to.is_some(),
+                by.is_some(),
+                while_condition.is_some(),
+                *transaction,
+                body.len(),
+            )
+        };
+        let expected = shape(before);
+        assert_eq!(expected.0.as_deref(), Some("i"), "{before}");
+        assert!(expected.1 && expected.2 && expected.4, "{before}");
+        assert_eq!(shape(after), expected, "{after}");
+    }
+}
+
+#[test]
+fn a_repeat_counting_loop_comes_before_or_after_while() {
+    for (before, after) in [
+        (
+            "REPEAT i = 1 TO 10 WHILE more:\n  more = i < 5.\nEND.",
+            "REPEAT WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "REPEAT i = 1 TO 10 BY 2 WHILE more:\n  more = i < 5.\nEND.",
+            "REPEAT WHILE more i = 1 TO 10 BY 2:\n  more = i < 5.\nEND.",
+        ),
+        (
+            "REPEAT i = 1 TO 10 WHILE more TRANSACTION:\n  more = i < 5.\nEND.",
+            "REPEAT WHILE more i = 1 TO 10 TRANSACTION:\n  more = i < 5.\nEND.",
+        ),
+    ] {
+        let shape = |source: &str| {
+            let stmts = assert_parses_clean(source);
+            let StatementKind::Repeat {
+                while_condition,
+                body,
+                ..
+            } = &stmts[0].kind
+            else {
+                panic!("{source}: expected REPEAT, got {:?}", stmts[0].kind);
+            };
+            (while_condition.is_some(), body.len())
+        };
+        assert_eq!(shape(before), (true, 1), "{before}");
+        assert_eq!(shape(after), shape(before), "{after}");
+    }
+}
+
+#[test]
+fn a_counting_loop_after_while_still_needs_its_to_and_stays_single() {
+    for source in [
+        "DO WHILE more i = 1:\n  more = FALSE.\nEND.",
+        "DO WHILE more i = 1 TO 3 j = 1 TO 3:\n  more = FALSE.\nEND.",
+        "DO i = 1 TO 3 WHILE more j = 1 TO 3:\n  more = FALSE.\nEND.",
+        "REPEAT WHILE more i = 1:\n  more = FALSE.\nEND.",
+        "REPEAT WHILE more i = 1 TO 3 j = 1 TO 3:\n  more = FALSE.\nEND.",
+        "REPEAT i = 1 TO 3 WHILE more j = 1 TO 3:\n  more = FALSE.\nEND.",
+    ] {
+        let program = Parser::new(&tokenize(source), source).parse_program();
+        assert!(!program.errors.is_empty(), "{source} must stay an error");
     }
 }
 
@@ -14672,5 +14921,86 @@ fn block_headers_cut_at_the_end_of_the_file_do_not_panic() {
         let tokens = tokenize(source);
         let program = Parser::new(&tokens, source).parse_program();
         assert!(!program.errors.is_empty(), "{source}");
+    }
+}
+
+// ── INTERFACE members never have bodies ──
+
+fn interface_body(source: &str) -> Vec<Statement> {
+    let program = parse_with_errors(source);
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    assert_eq!(program.statements.len(), 1);
+    match program.statements.into_iter().next().unwrap().kind {
+        StatementKind::Interface { body, .. } => body,
+        other => panic!("Expected Interface statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn interface_members_are_flat_siblings_with_empty_bodies() {
+    let source = "INTERFACE I:\n\
+        METHOD PUBLIC VOID A().\n\
+        METHOD PUBLIC VOID B().\n\
+        DEFINE PUBLIC PROPERTY P AS INTEGER GET. SET.\n\
+        DEFINE PUBLIC EVENT E SIGNATURE VOID ().\n\
+        METHOD PUBLIC CHARACTER C(INPUT x AS INTEGER).\n\
+        END INTERFACE.";
+    let body = interface_body(source);
+    assert_eq!(body.len(), 5);
+    for stmt in &body {
+        if let StatementKind::Method { body, .. } = &stmt.kind {
+            assert!(body.is_empty());
+            let text = &source[stmt.span.start as usize..stmt.span.end as usize];
+            assert!(text.starts_with("METHOD") && text.ends_with("."), "{text}");
+            assert_eq!(text.matches('.').count(), 1, "{text}");
+        }
+    }
+    assert!(matches!(body[0].kind, StatementKind::Method { .. }));
+    assert!(matches!(body[1].kind, StatementKind::Method { .. }));
+    assert!(matches!(body[2].kind, StatementKind::Property { .. }));
+    assert!(matches!(body[3].kind, StatementKind::DefineEvent { .. }));
+    assert!(matches!(body[4].kind, StatementKind::Method { .. }));
+}
+
+#[test]
+fn interface_that_inherits_keeps_its_methods_flat() {
+    let body = interface_body(
+        "INTERFACE I INHERITS J, K:\n\
+         METHOD PUBLIC VOID A().\n\
+         METHOD PUBLIC VOID B().\n\
+         END INTERFACE.",
+    );
+    assert_eq!(body.len(), 2);
+    for stmt in &body {
+        match &stmt.kind {
+            StatementKind::Method { body, .. } => assert!(body.is_empty()),
+            other => panic!("Expected Method, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn abstract_class_method_does_not_swallow_the_next_method() {
+    let program = parse_with_errors(
+        "CLASS C:\n\
+         METHOD PUBLIC ABSTRACT VOID X().\n\
+         METHOD PUBLIC VOID Y():\n\
+         MESSAGE \"y\".\n\
+         END METHOD.\n\
+         END CLASS.",
+    );
+    assert!(program.errors.is_empty(), "{:?}", program.errors);
+    match &program.statements[0].kind {
+        StatementKind::Class { body, .. } => {
+            assert_eq!(body.len(), 2);
+            match (&body[0].kind, &body[1].kind) {
+                (StatementKind::Method { body: x, .. }, StatementKind::Method { body: y, .. }) => {
+                    assert!(x.is_empty());
+                    assert_eq!(y.len(), 1);
+                }
+                other => panic!("Expected two methods, got {other:?}"),
+            }
+        }
+        other => panic!("Expected Class statement, got {other:?}"),
     }
 }

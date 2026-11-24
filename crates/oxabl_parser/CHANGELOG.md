@@ -1,5 +1,133 @@
 # Changelog
 
+## [4.1.1](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.1.0...oxabl_parser-v4.1.1) (2026-11-23)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_lexer bumped from 2.0.2 to 2.0.3
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.8.2 to 0.8.3
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+
+## [4.1.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.5...oxabl_parser-v4.1.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+
+
+### Bug Fixes
+
+* **parser:** a comment after a stray tilde and blanks keeps its kind ([080a4e8](https://github.com/oxabl-project/oxabl/commit/080a4e800d8843d1545e7470f583e6d3116bab3c))
+* **parser:** an ENUM block may end with a bare END ([aea1993](https://github.com/oxabl-project/oxabl/commit/aea1993038fbb34355b0a96d39d40f9a883de588))
+* **parser:** stop at a nesting and chain limit, and parse on a stack of known size ([7b741da](https://github.com/oxabl-project/oxabl/commit/7b741dae5637ba90408c8ac0a857464a5c44ee13))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.8.1 to 0.8.2
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+
+## [4.0.5](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.4...oxabl_parser-v4.0.5) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.8.0 to 0.8.1
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+
+## [4.0.4](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.3...oxabl_parser-v4.0.4) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.7.6 to 0.8.0
+
+## [4.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.2...oxabl_parser-v4.0.3) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.7.5 to 0.7.6
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+
+## [4.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.1...oxabl_parser-v4.0.2) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.7.4 to 0.7.5
+
+## [4.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v4.0.0...oxabl_parser-v4.0.1) (2026-11-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.7.3 to 0.7.4
+    * oxabl_workspace bumped from 3.3.0 to 3.4.0
+
+## [4.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v3.0.2...oxabl_parser-v4.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **index:** inherited data members are in scope in a subclass
+
+### Bug Fixes
+
+* **index:** inherited data members are in scope in a subclass ([fde4113](https://github.com/oxabl-project/oxabl/commit/fde41134d4d4cfd7f2d6a8e70f00bbe759146d70))
+* **parser:** accept Add as a method or procedure name ([ae97a29](https://github.com/oxabl-project/oxabl/commit/ae97a29b8ce5654a01d5a8c9e9d715e8b9914ebe))
+* **parser:** accept an empty WHEN branch directly before END ([1de8ccb](https://github.com/oxabl-project/oxabl/commit/1de8ccb769938651acc41d20b6a7aa72c1ba7be3)), closes [#284](https://github.com/oxabl-project/oxabl/issues/284)
+* **parser:** accept call modes, empty THEN, stray comma and CAN-FIND option order ([1f0a9e3](https://github.com/oxabl-project/oxabl/commit/1f0a9e32dba796de4c1ade6bc1a16af27e1d9389))
+* **parser:** accept call modes, empty THEN, stray comma and CAN-FIND option order ([4855bae](https://github.com/oxabl-project/oxabl/commit/4855bae931ea93230e84d860a916764267952360))
+* **parser:** accept keyword and digit-first names, USE-INDEX before WHERE, and CALL ([17337bc](https://github.com/oxabl-project/oxabl/commit/17337bc20af85a48629a251ff9ef1ea82b583825))
+* **parser:** accept keyword names, digit-first names, USE-INDEX before WHERE and CALL ([e98605d](https://github.com/oxabl-project/oxabl/commit/e98605d223a7ec0893ea1e8ccb0235e57fcb6782))
+* **parser:** accept WHILE before the counting loop, and {&name } ([f593e2d](https://github.com/oxabl-project/oxabl/commit/f593e2db26f11b35dc908188246fecc5f29d8e41))
+* **parser:** accept WHILE before the counting loop, and {&name } ([d7b7e82](https://github.com/oxabl-project/oxabl/commit/d7b7e82ebc129d1e4129ef0b18d90a64fedce21f)), closes [#260](https://github.com/oxabl-project/oxabl/issues/260)
+* **parser:** read short data type spellings as data types ([2510e7f](https://github.com/oxabl-project/oxabl/commit/2510e7f2221d8747ee6cd816c76322aa65f466df))
+* **parser:** read short data type spellings as data types ([84bd0d3](https://github.com/oxabl-project/oxabl/commit/84bd0d3c8a8b0c8f5d6d48a006ce92948dcd90e0)), closes [#283](https://github.com/oxabl-project/oxabl/issues/283)
+* **parser:** treat an empty OTHERWISE like an empty WHEN before END ([53fa759](https://github.com/oxabl-project/oxabl/commit/53fa759e248a44bfbc4c1291a4265acbcbb4f171))
+
+
+### Performance Improvements
+
+* **parser:** bench the newly accepted forms on their own fixture ([e6327b8](https://github.com/oxabl-project/oxabl/commit/e6327b8163c491c445848567f1b8965c04951cfe))
+* **parser:** check short type spellings only where a class name would be ([9bfd016](https://github.com/oxabl-project/oxabl/commit/9bfd0161c87c53c89aa5dae3f65aefbc8ed0c522))
+* **parser:** skip the stray comma in the statement loops ([827d3f7](https://github.com/oxabl-project/oxabl/commit/827d3f7e83a3f434d56d2c1e4fe66d7cf53a3c01))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+  * dev-dependencies
+    * oxabl_preprocessor bumped from 0.7.2 to 0.7.3
+    * oxabl_workspace bumped from 3.2.0 to 3.3.0
+
 ## [3.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_parser-v3.0.1...oxabl_parser-v3.0.2) (2026-10-20)
 
 

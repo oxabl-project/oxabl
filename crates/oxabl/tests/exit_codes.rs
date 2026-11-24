@@ -291,12 +291,44 @@ fn check_warns_on_an_unknown_lint_name_and_keeps_the_rest_of_the_table() {
     );
 }
 
-/// …and the commands that are not gates keep degrading: a warning, then their
-/// ordinary exit code. `analyze` is an introspection dump and `format` rewrites
-/// layout — neither is answering a pass/fail question, so neither should refuse
-/// to run over a config it could not read.
+/// `format` refuses the same config, in every mode that reads it: `--check` is a
+/// gate, and a write would reformat the tree in a style nobody chose. Nothing on
+/// disk changes.
 #[test]
-fn analyze_and_format_degrade_on_the_same_unusable_config() {
+fn format_exits_2_on_a_config_it_cannot_use() {
+    let configs = [
+        "this is not valid toml {{{",
+        "[workspace]\nname = \"p\"\n[workspace.style]\nfuture-key = 1\n",
+    ];
+    for config in configs {
+        for mode in [&["--check"][..], &["--stdout"][..], &[][..]] {
+            let (dir, file) = one_file("a.p", "def var x as int.\n");
+            write(&dir.path().join("oxabl.toml"), config);
+            let mut args = vec![s("format")];
+            args.extend(mode.iter().map(|m| s(m)));
+            args.push(file.as_os_str());
+
+            let (exit, stdout, stderr) = run(&args);
+
+            assert_eq!(exit, Some(2), "{mode:?} on {config:?}: {stderr}");
+            assert!(
+                stderr.starts_with("error:") && stderr.contains("oxabl.toml"),
+                "same message shape as `check`: {stderr}"
+            );
+            assert!(stdout.is_empty(), "no output on a refusal: {stdout}");
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                "def var x as int.\n",
+                "the file is untouched"
+            );
+        }
+    }
+}
+
+/// `analyze` is an introspection dump, not a gate: it keeps degrading to
+/// defaults with a warning and exits 0.
+#[test]
+fn analyze_degrades_on_an_unusable_config() {
     let (dir, file) = one_file("a.p", CLEAN);
     write(&dir.path().join("oxabl.toml"), "this is not valid toml {{{");
 
@@ -305,15 +337,6 @@ fn analyze_and_format_degrade_on_the_same_unusable_config() {
     assert!(
         stderr.contains("warning:") && stderr.contains("oxabl.toml"),
         "and says the config was unusable: {stderr}"
-    );
-
-    // `--check` so the run cannot depend on writing: CLEAN is already formatted,
-    // so there is no drift and the code is the no-drift 0.
-    let (exit, _stdout, stderr) = run(&[s("format"), s("--check"), file.as_os_str()]);
-    assert_eq!(exit, Some(0), "stderr: {stderr}");
-    assert!(
-        stderr.contains("warning:") && stderr.contains("oxabl.toml"),
-        "format degrades with a warning too: {stderr}"
     );
 }
 

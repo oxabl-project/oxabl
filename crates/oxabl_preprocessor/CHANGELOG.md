@@ -1,5 +1,100 @@
 # Changelog
 
+## [0.8.3](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.2...oxabl_preprocessor-v0.8.3) (2026-11-23)
+
+
+### Bug Fixes
+
+* **preprocessor:** long lines and runs of unclosed braces cost memory and time in line with the input ([322fc7b](https://github.com/oxabl-project/oxabl/commit/322fc7b9e4edfe2601d03060c3508b3b0e0eb81c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+    * oxabl_workspace bumped from 3.6.1 to 3.6.2
+
+## [0.8.2](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.1...oxabl_preprocessor-v0.8.2) (2026-11-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_workspace bumped from 3.6.0 to 3.6.1
+
+## [0.8.1](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.8.0...oxabl_preprocessor-v0.8.1) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.5.0 to 3.6.0
+
+## [0.8.0](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.6...oxabl_preprocessor-v0.8.0) (2026-11-16)
+
+
+### Features
+
+* **build:** report how each class name resolves under per-directory PROPATHs ([3d96f1c](https://github.com/oxabl-project/oxabl/commit/3d96f1c262f17978a2273cf7f76f98bdd334b0a7))
+* **build:** report how each class name resolves under per-directory PROPATHs ([171d2b0](https://github.com/oxabl-project/oxabl/commit/171d2b065ce539494abb252c78aac250a90c3b72))
+
+## [0.7.6](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.5...oxabl_preprocessor-v0.7.6) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.4.0 to 3.5.0
+
+## [0.7.5](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.4...oxabl_preprocessor-v0.7.5) (2026-11-12)
+
+
+### Bug Fixes
+
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([958fe45](https://github.com/oxabl-project/oxabl/commit/958fe45edf0555ea774c125e949af5c34b30263a))
+* **preprocessor:** stop expanding at a limit of 32 MiB per file ([fbbe2ec](https://github.com/oxabl-project/oxabl/commit/fbbe2ec08e8e7b1e89c145052acea0edc25f186f)), closes [#337](https://github.com/oxabl-project/oxabl/issues/337)
+
+## [0.7.4](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.3...oxabl_preprocessor-v0.7.4) (2026-11-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_workspace bumped from 3.3.0 to 3.4.0
+
+## [0.7.3](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.2...oxabl_preprocessor-v0.7.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **parser:** accept WHILE before the counting loop, and {&name } ([f593e2d](https://github.com/oxabl-project/oxabl/commit/f593e2db26f11b35dc908188246fecc5f29d8e41))
+* **parser:** accept WHILE before the counting loop, and {&name } ([d7b7e82](https://github.com/oxabl-project/oxabl/commit/d7b7e82ebc129d1e4129ef0b18d90a64fedce21f)), closes [#260](https://github.com/oxabl-project/oxabl/issues/260)
+* **preprocessor:** split include arguments into words as the compiler does ([6911c59](https://github.com/oxabl-project/oxabl/commit/6911c5965084a74cbdafa59d9ffe7bcda686a6a8))
+* **preprocessor:** split include arguments into words as the compiler does ([bdff1d7](https://github.com/oxabl-project/oxabl/commit/bdff1d79c22cf396b39ed07b76f3d6ce670e6544)), closes [#285](https://github.com/oxabl-project/oxabl/issues/285)
+
+
+### Performance Improvements
+
+* make the noisy preprocessor benchmarks deterministic ([8f93dec](https://github.com/oxabl-project/oxabl/commit/8f93dec385ce1e57f3adeaf42bbff922440ffdf5))
+* **preprocessor:** count markers for the root source only ([1f39fa6](https://github.com/oxabl-project/oxabl/commit/1f39fa6daf87bf2a6f1523c02c68ab0c046e146c))
+* **preprocessor:** reserve span nodes and sources up front ([0963811](https://github.com/oxabl-project/oxabl/commit/09638114a567ce36e870b0c3a78252ed2e3f10b4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_workspace bumped from 3.2.0 to 3.3.0
+
 ## [0.7.2](https://github.com/oxabl-project/oxabl/compare/oxabl_preprocessor-v0.7.1...oxabl_preprocessor-v0.7.2) (2026-10-20)
 
 

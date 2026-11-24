@@ -87,6 +87,14 @@ pub(crate) fn can_start_statement(kind: Kind) -> bool {
 /// The pairs of an `ASSIGN`, and the tail a missing `=` made the parser skip.
 type AssignPairs = (SmallVec<[AssignPair; 4]>, Option<Box<SkippedTail>>);
 
+/// The `var = from TO to [BY by]` part of a `DO` header.
+struct DoCountingLoop {
+    var: Identifier,
+    from: Expression,
+    to: Expression,
+    by: Option<Expression>,
+}
+
 impl Parser<'_> {
     /// Parse one statement and stamp its full-extent span (`lo..prev_end`,
     /// including the trailing `.`/`:`) onto the returned wrapper.
@@ -98,16 +106,23 @@ impl Parser<'_> {
     /// nested or top-level — is stamped at its own dispatch. Genuinely
     /// token-less synthetic nodes (nothing consumed) collapse to a zero-width
     /// span at `lo` (R1.4).
+    // Forced: left to the inliner, it lands in another codegen unit after
+    // unrelated edits and every statement returned is copied once more.
+    #[inline(always)]
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         let lo = self.peek().start as u32;
         // Anchor the unmodelled-form harvest range on this statement's first
         // token. A bare store, deliberately: this is the parser's hottest
         // funnel, and save/restore around the call measured ~1.5% on the
         // existing fixtures. Correctness does not need it — between this store
-        // and the matching `skipped_stmt` read, the only path that recurses into
-        // `parse_statement` is the `EDITING:` body, which saves and restores the
-        // anchor itself (`skip_to_statement_end_editing_aware`).
+        // and the matching `skipped_stmt` read, the paths that recurse into
+        // `parse_statement` put the anchor back themselves: the `EDITING:` body
+        // (`skip_to_statement_end_editing_aware`) and a failed CREATE
+        // `TRIGGERS:` block (`recover_create_as_skipped`).
         self.stmt_start_token = self.current;
+        // No statement is inside an expression, so no chain is open here; a
+        // chain left open by an error is closed.
+        self.chain = 0;
         let mark = self.unmodelled.len();
         let mut stmt = match self.parse_statement_inner() {
             Ok(stmt) => stmt,
@@ -120,6 +135,25 @@ impl Parser<'_> {
         let hi = self.prev_end().max(lo);
         stmt.span = Span { start: lo, end: hi };
         Ok(stmt)
+    }
+
+    /// The compiler tolerates one stray comma right after a statement's
+    /// terminating period (`RUN a.p.,`); it belongs to no statement. Called
+    /// by the statement loops once the statement is stored: checking inside
+    /// `parse_statement` costs a copy of every statement it returns.
+    #[inline]
+    pub(crate) fn skip_stray_comma(&mut self) {
+        if self.check(Kind::Comma) {
+            self.skip_comma_after_period();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn skip_comma_after_period(&mut self) {
+        if self.prev_token_kind() == Some(Kind::Period) {
+            self.advance();
+        }
     }
 
     /// Whether the statement at the cursor is `word(...)` with the paren directly
@@ -214,7 +248,7 @@ impl Parser<'_> {
             let token = self.advance().clone(); // consume label name
             let name = self.source[token.start..token.end].to_string();
             self.advance(); // consume ':'
-            let body = self.parse_statement()?;
+            let body = self.nested(Self::parse_statement)?;
             return Ok(self.stmt(StatementKind::Label {
                 name,
                 body: Box::new(body),
@@ -243,7 +277,7 @@ impl Parser<'_> {
                 &self.source[ident_tok.start..ident_tok.end]
             );
             self.advance(); // consume ':'
-            let body = self.parse_statement()?;
+            let body = self.nested(Self::parse_statement)?;
             return Ok(self.stmt(StatementKind::Label {
                 name,
                 body: Box::new(body),
@@ -766,6 +800,13 @@ impl Parser<'_> {
             return self.parse_down_up_statement();
         }
 
+        // CALL routine [argument] ... — Host Language Call; a name must follow, so
+        // a variable called `call` still reads as an assignment target.
+        if self.check(Kind::Call) && Self::is_word_kind(self.peek_at(1).kind) {
+            let (_, hi) = self.skip_to_statement_end();
+            return Ok(self.skipped_stmt(hi));
+        }
+
         if self.check(Kind::OsDir)
             || self.check(Kind::Page)
             || self.check(Kind::Disable)
@@ -823,8 +864,16 @@ impl Parser<'_> {
         // ENUM class-name: DEFINE ENUM ... END ENUM. — ABL enumeration type
         if self.check(Kind::KwEnum) {
             self.synchronize(); // skip to end of header line
-            // Skip until END ENUM.
+            // Skip until `END [ENUM].`; the lexer makes `END ENUM` as two tokens.
             while !self.at_end() {
+                if self.check(Kind::End) {
+                    self.advance();
+                    if self.check(Kind::KwEnum) {
+                        self.advance();
+                    }
+                    self.expect_period("Expected '.' after END ENUM")?;
+                    break;
+                }
                 if self.check(Kind::EndEnum) {
                     self.advance();
                     self.expect_period("Expected '.' after END ENUM")?;
@@ -844,6 +893,7 @@ impl Parser<'_> {
         // VAR statement: positive lookahead for data type keyword, LIKE, or class name (Identifier)
         if self.check(Kind::Variable)
             && (Self::is_data_type_kind(self.peek_at(1).kind)
+                || self.short_data_type_at(1).is_some()
                 || self.check_at(1, Kind::Like)
                 || self.peek_at(1).kind == Kind::Identifier
                 || (self.check_at(1, Kind::Class) && Self::is_word_kind(self.peek_at(2).kind))
@@ -1211,18 +1261,28 @@ impl Parser<'_> {
             return self.parse_define_data_source(access, is_static);
         }
 
-        // If we consumed an access modifier or STATIC but it's not PROPERTY/DATASET/DATA-SOURCE,
-        // fall through to normal DEFINE handling (access modifier is ignored
-        // for VARIABLE/TEMP-TABLE for now — tracked in Future)
+        // Any other member keeps its access modifier and STATIC.
 
         // DEFINE TEMP-TABLE
         if self.check(Kind::TempTable) {
-            return self.parse_define_temp_table(is_new_shared, is_shared, is_new_global_shared);
+            return self.parse_define_temp_table(
+                access,
+                is_static,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+            );
         }
 
         // DEFINE BUFFER
         if self.check(Kind::Buffer) {
-            return self.parse_define_buffer(is_new_shared, is_shared, is_new_global_shared);
+            return self.parse_define_buffer(
+                access,
+                is_static,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+            );
         }
 
         // DEFINE STREAM
@@ -1246,7 +1306,13 @@ impl Parser<'_> {
 
         // DEFINE WORKFILE / WORK-TABLE — legacy synonyms for DEFINE TEMP-TABLE.
         if self.check(Kind::Workfile) || self.check(Kind::WorkTable) {
-            return self.parse_define_temp_table(is_new_shared, is_shared, is_new_global_shared);
+            return self.parse_define_temp_table(
+                access,
+                is_static,
+                is_new_shared,
+                is_shared,
+                is_new_global_shared,
+            );
         }
 
         // UI widget definitions — DEFINE BROWSE, RECTANGLE, BUTTON, IMAGE, MENU, SUB-MENU
@@ -1388,6 +1454,8 @@ impl Parser<'_> {
                             initial_value,
                             no_undo,
                             extent,
+                            access,
+                            is_static,
                             is_new_shared,
                             is_shared,
                             is_new_global_shared,
@@ -1407,6 +1475,8 @@ impl Parser<'_> {
             initial_value,
             no_undo,
             extent,
+            access,
+            is_static,
             is_new_shared,
             is_shared,
             is_new_global_shared,
@@ -1492,6 +1562,8 @@ impl Parser<'_> {
             initial_value,
             no_undo: true, // VAR implies NO-UNDO
             extent: None,
+            access: None,
+            is_static: false,
             // VAR has no SHARED syntax.
             is_new_shared: false,
             is_shared: false,
@@ -1751,6 +1823,8 @@ impl Parser<'_> {
     // Parse DEFINE TEMP-TABLE
     fn parse_define_temp_table(
         &mut self,
+        access: Option<AccessModifier>,
+        is_static: bool,
         is_new_shared: bool,
         is_shared: bool,
         is_new_global_shared: bool,
@@ -1811,6 +1885,7 @@ impl Parser<'_> {
         // Parse FIELD and INDEX definitions until period
         while !self.check(Kind::Period) && !self.at_end() {
             if self.check(Kind::Field) {
+                let field_start = self.current_span().start;
                 self.advance(); // consume FIELD
                 let field_name = self.parse_identifier()?;
 
@@ -1913,6 +1988,10 @@ impl Parser<'_> {
                     validate,
                     initial_value,
                     extent,
+                    span: Span {
+                        start: field_start,
+                        end: self.prev_end(),
+                    },
                 });
             } else if self.check(Kind::Index) {
                 self.advance(); // consume INDEX
@@ -2006,6 +2085,8 @@ impl Parser<'_> {
             no_undo,
             like_table,
             validate,
+            access,
+            is_static,
             use_indexes,
             fields,
             indexes,
@@ -2019,6 +2100,8 @@ impl Parser<'_> {
     // Parse DEFINE BUFFER name FOR [TEMP-TABLE] table [PRESELECT] [LABEL "str"].
     fn parse_define_buffer(
         &mut self,
+        access: Option<AccessModifier>,
+        is_static: bool,
         is_new_shared: bool,
         is_shared: bool,
         is_new_global_shared: bool,
@@ -2091,6 +2174,8 @@ impl Parser<'_> {
             target,
             preselect,
             label,
+            access,
+            is_static,
             xml_options,
             is_new_shared,
             is_shared,
@@ -2548,95 +2633,30 @@ impl Parser<'_> {
             }
         }
 
-        // check for loop — var may start with a preprop: DO {&tablename}i = 1 TO n
-        if Self::can_be_identifier(self.peek().kind)
-            || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
-        {
-            // peek ahead to see if this is 'var = start to end'
-            let saved_pos = self.current;
-            let potential_var = self.advance().clone();
-            let var_start = potential_var.start;
-            let mut var_end = potential_var.end;
-
-            // Consume any directly-adjacent preprop/identifier parts (e.g. i-j-{&sale-type})
-            loop {
-                let next = self.token_at(self.current);
-                if next.start != var_end {
-                    break;
-                }
-                if matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
-                    || Self::can_be_identifier(next.kind)
-                {
-                    var_end = self.advance().end;
-                } else {
-                    break;
-                }
-            }
-
-            if self.check(Kind::Equals) {
-                // It's a counting loop
-                let var_name = Identifier {
-                    span: Span {
-                        start: var_start as u32,
-                        end: var_end as u32,
-                    },
-                    name: self.source[var_start..var_end].to_string(),
-                };
-
-                loop_var = Some(var_name);
-
-                self.advance(); // consume =
-                from = Some(self.parse_expression()?);
-
-                // Expect TO, because we have a var and consumed =
-                self.expect_kind(Kind::To, "Expected TO in DO loop")?;
-                to = Some(self.parse_expression()?);
-
-                // Optional BY
-                if self.check(Kind::By) {
-                    self.advance();
-                    by = Some(self.parse_expression()?);
-                }
-
-                // Optional IN FRAME <name> after counting loop: DO i = 1 TO n IN FRAME f:
-                if self.check(Kind::KwIn) && self.check_at(1, Kind::Frame) {
-                    self.advance(); // consume IN
-                    self.advance(); // consume FRAME
-                    // frame name may be a compound preprop+identifier: {&tablename}f-builder
-                    if Self::can_be_identifier(self.peek().kind)
-                        || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
-                    {
-                        let mut name_end = self.advance().end;
-                        // Consume directly-adjacent parts of compound names.
-                        loop {
-                            let next = self.token_at(self.current);
-                            if next.start != name_end {
-                                break;
-                            }
-                            if Self::can_be_identifier(next.kind)
-                                || matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
-                            {
-                                name_end = self.advance().end;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // not a counting loop
-                self.current = saved_pos;
-            }
+        if let Some(counting) = self.parse_do_counting_loop()? {
+            loop_var = Some(counting.var);
+            from = Some(counting.from);
+            to = Some(counting.to);
+            by = counting.by;
         }
 
         // WHILE, TRANSACTION and the ON phrases, in any order:
         // DO ON ERROR UNDO, LEAVE TRANSACTION WHILE i < 3:
+        // The counting loop may also follow WHILE: DO WHILE more i = 1 TO 10:
         let mut on_actions = Vec::new();
         loop {
             let before = self.current;
             if while_condition.is_none() && self.check(Kind::KwWhile) {
                 self.advance();
                 while_condition = Some(self.parse_expression()?);
+                if loop_var.is_none()
+                    && let Some(counting) = self.parse_do_counting_loop()?
+                {
+                    loop_var = Some(counting.var);
+                    from = Some(counting.from);
+                    to = Some(counting.to);
+                    by = counting.by;
+                }
             }
             if self.check(Kind::Transaction) {
                 self.advance();
@@ -2681,6 +2701,146 @@ impl Parser<'_> {
         }))
     }
 
+    /// Parse `var = expr TO expr [BY expr] [IN FRAME f]` of a `DO` header, if
+    /// one starts here. The variable may start with a preprocessor reference:
+    /// `DO {&tablename}i = 1 TO n`. Leaves the position unchanged when the
+    /// tokens are not a counting loop.
+    fn parse_do_counting_loop(&mut self) -> ParseResult<Option<DoCountingLoop>> {
+        if !(Self::can_be_identifier(self.peek().kind)
+            || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference))
+        {
+            return Ok(None);
+        }
+        // peek ahead to see if this is 'var = start to end'
+        let saved_pos = self.current;
+        let potential_var = self.advance().clone();
+        let var_start = potential_var.start;
+        let mut var_end = potential_var.end;
+
+        // Consume any directly-adjacent preprop/identifier parts (e.g. i-j-{&sale-type})
+        loop {
+            let next = self.token_at(self.current);
+            if next.start != var_end {
+                break;
+            }
+            if matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
+                || Self::can_be_identifier(next.kind)
+            {
+                var_end = self.advance().end;
+            } else {
+                break;
+            }
+        }
+
+        if !self.check(Kind::Equals) {
+            // not a counting loop
+            self.current = saved_pos;
+            return Ok(None);
+        }
+
+        let var_name = Identifier {
+            span: Span {
+                start: var_start as u32,
+                end: var_end as u32,
+            },
+            name: self.source[var_start..var_end].to_string(),
+        };
+
+        self.advance(); // consume =
+        let from = self.parse_expression()?;
+
+        // Expect TO, because we have a var and consumed =
+        self.expect_kind(Kind::To, "Expected TO in DO loop")?;
+        let to = self.parse_expression()?;
+
+        // Optional BY
+        let mut by = None;
+        if self.check(Kind::By) {
+            self.advance();
+            by = Some(self.parse_expression()?);
+        }
+
+        // Optional IN FRAME <name> after counting loop: DO i = 1 TO n IN FRAME f:
+        if self.check(Kind::KwIn) && self.check_at(1, Kind::Frame) {
+            self.advance(); // consume IN
+            self.advance(); // consume FRAME
+            // frame name may be a compound preprop+identifier: {&tablename}f-builder
+            if Self::can_be_identifier(self.peek().kind)
+                || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
+            {
+                let mut name_end = self.advance().end;
+                // Consume directly-adjacent parts of compound names.
+                loop {
+                    let next = self.token_at(self.current);
+                    if next.start != name_end {
+                        break;
+                    }
+                    if Self::can_be_identifier(next.kind)
+                        || matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
+                    {
+                        name_end = self.advance().end;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(Some(DoCountingLoop {
+            var: var_name,
+            from,
+            to,
+            by,
+        }))
+    }
+
+    /// Consume `var = expr TO expr [BY expr]` of a `REPEAT` header, if one
+    /// starts here. The variable may be a compound preprocessor+identifier
+    /// name (e.g. `{&tablename}i`). Returns whether it consumed one; leaves
+    /// the position unchanged when the tokens are not a counting loop.
+    fn skip_repeat_counting_loop(&mut self) -> bool {
+        if !(Self::can_be_identifier(self.peek().kind)
+            || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference))
+        {
+            return false;
+        }
+        let saved_pos = self.current;
+        let mut var_end = self.advance().end;
+        // Consume any directly-adjacent compound name parts.
+        loop {
+            let next = self.token_at(self.current);
+            if next.start != var_end {
+                break;
+            }
+            if matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
+                || Self::can_be_identifier(next.kind)
+            {
+                var_end = self.advance().end;
+            } else {
+                break;
+            }
+        }
+        if self.check(Kind::Equals) {
+            self.advance(); // consume =
+            let notes = self.unmodelled.len();
+            self.drop_expression(); // from value
+            if self.check(Kind::To) {
+                self.advance(); // consume TO
+                self.drop_expression(); // to value
+                if self.check(Kind::By) {
+                    self.advance(); // consume BY
+                    self.drop_expression(); // by value
+                }
+                // The loop variable is written too.
+                self.note_unmodelled(saved_pos, self.current);
+                return true;
+            }
+            self.unmodelled.truncate(notes);
+        }
+        self.current = saved_pos; // not a counting loop; backtrack
+        false
+    }
+
     fn parse_if_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // Consumes IF
 
@@ -2708,8 +2868,14 @@ impl Parser<'_> {
         let then_lo = self.peek().start as u32;
         let mut then_branch = if self.check(Kind::Do) {
             self.parse_do_statement()?
+        } else if self.check(Kind::End) {
+            // Empty THEN branch: END belongs to the enclosing block, as for ELSE below.
+            self.stmt(StatementKind::Empty)
         } else {
-            self.parse_statement()?
+            let stmt = self.nested(Self::parse_statement)?;
+            // A stray comma may stand between the branch and ELSE.
+            self.skip_stray_comma();
+            stmt
         };
         then_branch.span = Span {
             start: then_lo,
@@ -2757,13 +2923,13 @@ impl Parser<'_> {
             let mut else_stmt = if self.check(Kind::Do) {
                 self.parse_do_statement()?
             } else if self.check(Kind::KwIf) {
-                self.parse_if_statement()?
+                self.nested(Self::parse_if_statement)?
             } else if self.check(Kind::End) {
                 // Empty ELSE branch: END belongs to the enclosing DO/FOR/REPEAT block.
                 // Don't consume it — the outer block parser handles it.
                 self.stmt(StatementKind::Empty)
             } else {
-                self.parse_statement()?
+                self.nested(Self::parse_statement)?
             };
             else_stmt.span = Span {
                 start: else_lo,
@@ -2799,52 +2965,16 @@ impl Parser<'_> {
         // Already handled at statement dispatch level; nothing extra needed here.
 
         // Optional counting loop: REPEAT var = expr TO expr [BY expr]
-        // var may be a compound preprop+identifier token pair (e.g. {&tablename}i)
-        if Self::can_be_identifier(self.peek().kind)
-            || matches!(self.peek().kind, Kind::Preprop | Kind::IncludeArgReference)
-        {
-            let saved_pos = self.current;
-            let mut var_end = self.advance().end;
-            // Consume any directly-adjacent compound name parts.
-            loop {
-                let next = self.token_at(self.current);
-                if next.start != var_end {
-                    break;
-                }
-                if matches!(next.kind, Kind::Preprop | Kind::IncludeArgReference)
-                    || Self::can_be_identifier(next.kind)
-                {
-                    var_end = self.advance().end;
-                } else {
-                    break;
-                }
-            }
-            if self.check(Kind::Equals) {
-                self.advance(); // consume =
-                let notes = self.unmodelled.len();
-                self.drop_expression(); // from value
-                if self.check(Kind::To) {
-                    self.advance(); // consume TO
-                    self.drop_expression(); // to value
-                    if self.check(Kind::By) {
-                        self.advance(); // consume BY
-                        self.drop_expression(); // by value
-                    }
-                    // The loop variable is written too.
-                    self.note_unmodelled(saved_pos, self.current);
-                } else {
-                    self.unmodelled.truncate(notes);
-                    self.current = saved_pos; // not a counting loop; backtrack
-                }
-            } else {
-                self.current = saved_pos; // not a counting loop; backtrack
-            }
-        }
+        let counted = self.skip_repeat_counting_loop();
 
-        // Optional WHILE
+        // Optional WHILE, which the counting loop may also follow
         let while_condition = if self.check(Kind::KwWhile) {
             self.advance();
-            Some(self.parse_expression()?)
+            let condition = self.parse_expression()?;
+            if !counted {
+                self.skip_repeat_counting_loop();
+            }
+            Some(condition)
         } else {
             None
         };
@@ -3106,6 +3236,21 @@ impl Parser<'_> {
         // Lock type may appear before or after WHERE (ABL is flexible)
         let lock_type_pre = self.parse_lock_type();
 
+        // USE-INDEX may also come before WHERE
+        let used_index_early = self.check(Kind::UseIndex);
+        while self.check(Kind::UseIndex) {
+            self.advance();
+            if Self::can_be_identifier(self.peek().kind) {
+                self.advance();
+            }
+        }
+        let lock_type_pre = if lock_type_pre != LockType::ShareLock {
+            self.parse_lock_type();
+            lock_type_pre
+        } else {
+            self.parse_lock_type()
+        };
+
         // optional WHERE clause — skip if WHERE is immediately followed by ':' / '.' / sort clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
@@ -3132,6 +3277,7 @@ impl Parser<'_> {
             && !self.check(Kind::Transaction)
             && !self.check(Kind::KwBreak)
             && !self.at_end()
+            && !used_index_early
             && Self::can_be_identifier(self.peek().kind)
         {
             // Implicit WHERE: table name came from a preprocessor macro that included WHERE.
@@ -3356,6 +3502,18 @@ impl Parser<'_> {
         // Parse an optional leading lock type, then WHERE, then trailing lock type.
         let lock_type_before = self.parse_lock_type();
 
+        // USE-INDEX may also come before WHERE
+        while self.check(Kind::UseIndex) {
+            self.advance();
+            self.parse_identifier().ok();
+        }
+        let lock_type_before = if lock_type_before != LockType::ShareLock {
+            self.parse_lock_type();
+            lock_type_before
+        } else {
+            self.parse_lock_type()
+        };
+
         // parse optional where clause
         let where_clause = if self.check(Kind::KwWhere) {
             self.advance();
@@ -3469,6 +3627,7 @@ impl Parser<'_> {
             }
 
             self.expect_kind(Kind::Then, "Expected THEN after WHEN value")?;
+            let empty_before_end = self.check(Kind::End);
 
             // parse statements until next WHEN, OTHERWISE, or END
             let mut body = Vec::new();
@@ -3480,15 +3639,40 @@ impl Parser<'_> {
                 self.parse_block_statement_recovering(&mut body);
             }
 
+            if body.is_empty() && matches!(self.peek().kind, Kind::Otherwise | Kind::When) {
+                self.record_error(ParseError {
+                    message: "Expected a statement after THEN".to_string(),
+                    span: self.current_span(),
+                });
+            }
+
             crate::parser::debug_assert_expr_sibling_order(&values);
             when_branches.push(WhenBranch { values, body });
+
+            if empty_before_end {
+                // An empty last branch ends the CASE; END belongs to the enclosing block.
+                return Ok(self.stmt(StatementKind::Case {
+                    expression,
+                    when_branches,
+                    otherwise: None,
+                }));
+            }
         }
 
         let otherwise = if self.check(Kind::Otherwise) {
             self.advance();
+            let empty_before_end = self.check(Kind::End);
             let mut body = Vec::new();
             while !self.check(Kind::End) && !self.at_end() {
                 self.parse_block_statement_recovering(&mut body);
+            }
+            if empty_before_end {
+                // As for an empty WHEN branch, END belongs to the enclosing block.
+                return Ok(self.stmt(StatementKind::Case {
+                    expression,
+                    when_branches,
+                    otherwise: Some(body),
+                }));
             }
             Some(body)
         } else {
@@ -3524,7 +3708,7 @@ impl Parser<'_> {
                     .to_string(),
             }
         } else {
-            self.parse_identifier()?
+            self.parse_declared_name(true)?
         };
 
         // Dotted version-number procedure names: e.g. config_18.4.2_extra lexes as
@@ -4048,8 +4232,8 @@ impl Parser<'_> {
     }
 
     /// `[STREAM s]` at the head of a stream statement. `Err(())` when the stream
-    /// is not a plain name (`STREAM-HANDLE h`, `STREAM 2dstream`), with the
-    /// cursor left on it: the caller then keeps the rest as the skipped tail.
+    /// is not a plain name (`STREAM-HANDLE h`), with the cursor left on it: the
+    /// caller then keeps the rest as the skipped tail.
     fn parse_stream_head(&mut self) -> Result<Option<Identifier>, ()> {
         if self.check(Kind::StreamHandle) {
             return Err(());
@@ -4059,7 +4243,7 @@ impl Parser<'_> {
         }
         let mark = self.current;
         self.advance();
-        match self.parse_identifier() {
+        match self.parse_stream_name() {
             Ok(name) => Ok(Some(name)),
             Err(_) => {
                 self.current = mark;
@@ -4637,12 +4821,12 @@ impl Parser<'_> {
     fn parse_put_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume PUT
 
-        // A stream name that is not an identifier (e.g. `2dstream`) leaves the
-        // whole statement to the skipped tail.
+        // A stream that is not a plain name leaves the whole statement to the
+        // skipped tail.
         let stream_mark = self.current;
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
-            match self.parse_identifier() {
+            match self.parse_stream_name() {
                 Ok(name) => Some(name),
                 Err(_) => {
                     self.current = stream_mark;
@@ -4718,7 +4902,7 @@ impl Parser<'_> {
         // Optional STREAM clause: DISPLAY STREAM stream-name ...
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
-            Some(self.parse_identifier()?)
+            Some(self.parse_stream_name()?)
         } else {
             None
         };
@@ -5758,7 +5942,8 @@ impl Parser<'_> {
     /// Parse a CLASS definition.
     ///
     /// ```text
-    /// `CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]:`
+    /// `CLASS [ABSTRACT] [FINAL] dotted-name [INHERITS name] [IMPLEMENTS name, ...]`
+    /// `    [USE-WIDGET-POOL] [ABSTRACT] [FINAL] [SERIALIZABLE]:`
     ///     body
     /// END CLASS.
     /// ```
@@ -5788,37 +5973,30 @@ impl Parser<'_> {
         // keywords used as namespace prefixes (e.g. `do.widgetobj`) are accepted.
         let name = self.parse_class_qualified_name()?;
 
-        // Parse optional ABSTRACT/FINAL after name (ABL allows either position)
-        self.parse_class_modifiers(&mut is_abstract, &mut is_final);
-
-        // Parse optional INHERITS
-        let inherits = if self.check(Kind::Inherits) {
-            self.advance();
-            Some(self.parse_class_qualified_name()?)
-        } else {
-            None
-        };
-
-        // Parse optional IMPLEMENTS (comma-separated)
+        // The options may follow any clause; ABL documents them after INHERITS/IMPLEMENTS
+        let mut use_widget_pool = false;
+        let mut inherits = None;
         let mut implements = Vec::new();
-        if self.check(Kind::Implements) {
-            self.advance();
-            implements.push(self.parse_class_qualified_name()?);
-            while self.check(Kind::Comma) {
+        loop {
+            self.parse_class_modifiers(&mut is_abstract, &mut is_final);
+            if self.check(Kind::Inherits) && inherits.is_none() {
+                self.advance();
+                inherits = Some(self.parse_class_qualified_name()?);
+            } else if self.check(Kind::Implements) && implements.is_empty() {
                 self.advance();
                 implements.push(self.parse_class_qualified_name()?);
-            }
-        }
-
-        // Trailing header options (USE-WIDGET-POOL, SERIALIZABLE), in any order
-        let mut use_widget_pool = false;
-        loop {
-            if self.check(Kind::UseWidgetPool) {
+                while self.check(Kind::Comma) {
+                    self.advance();
+                    implements.push(self.parse_class_qualified_name()?);
+                }
+            } else if self.check(Kind::UseWidgetPool) {
                 use_widget_pool = true;
-            } else if !self.check(Kind::Serializable) {
+                self.advance();
+            } else if self.check(Kind::Serializable) {
+                self.advance(); // not modelled on the AST
+            } else {
                 break;
             }
-            self.advance();
         }
 
         // Expect colon to start body
@@ -5879,6 +6057,7 @@ impl Parser<'_> {
         self.expect_kind(Kind::Colon, "Expected ':' after INTERFACE header")?;
 
         // Parse body until END INTERFACE
+        let outer_in_interface = std::mem::replace(&mut self.in_interface, true);
         let mut body = Vec::new();
         while !self.at_end() {
             if self.check(Kind::End) {
@@ -5893,6 +6072,7 @@ impl Parser<'_> {
             }
             self.parse_block_statement_recovering(&mut body);
         }
+        self.in_interface = outer_in_interface;
 
         Ok(self.stmt(StatementKind::Interface {
             name,
@@ -5971,7 +6151,7 @@ impl Parser<'_> {
         };
 
         // Parse method name
-        let name = self.parse_identifier()?;
+        let name = self.parse_declared_name(false)?;
 
         // Parse parameter list
         let parameters = self.parse_parenthesized_params()?;
@@ -6013,25 +6193,9 @@ impl Parser<'_> {
             }));
         }
 
-        // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
-        // Track whether we opened with '.' — in interface declarations, '.' is the
-        // statement terminator (no body) rather than a body opener. We detect this
-        // below by checking if the first meaningful token is END followed by a
-        // non-METHOD keyword (e.g. END INTERFACE, END CLASS).
-        let opened_with_period = self.check(Kind::Period);
-        if self.check(Kind::Colon) || self.check(Kind::Period) {
+        // In an interface a signature ends at its period and has no body.
+        if self.in_interface && self.check(Kind::Period) {
             self.advance();
-        } else {
-            return Err(ParseError {
-                message: "Expected ':' after METHOD header".to_string(),
-                span: self.current_span(),
-            });
-        }
-
-        // Interface method signatures end with '.' and have no body. Detect this by
-        // looking for END (not METHOD) immediately after the '.' opener. In that case,
-        // return an empty body so the enclosing INTERFACE parser handles END INTERFACE.
-        if opened_with_period && self.check(Kind::End) && !self.check_at(1, Kind::Method) {
             return Ok(self.stmt(StatementKind::Method {
                 access,
                 is_static,
@@ -6042,6 +6206,16 @@ impl Parser<'_> {
                 parameters,
                 body: Vec::new(),
             }));
+        }
+
+        // Non-abstract: expect ':' or '.' to open the body (legacy ABL uses '.')
+        if self.check(Kind::Colon) || self.check(Kind::Period) {
+            self.advance();
+        } else {
+            return Err(ParseError {
+                message: "Expected ':' after METHOD header".to_string(),
+                span: self.current_span(),
+            });
         }
 
         let mut body = Vec::new();
@@ -6466,7 +6640,13 @@ impl Parser<'_> {
     // CREATE WIDGET-POOL [pool] [PERSISTENT] [NO-ERROR].
     fn parse_create_statement(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume CREATE
-        let resume = (self.current, self.errors.len());
+        let resume = (self.current, self.errors.len(), self.stmt_start_token);
+        // The same tokens fail the same way again. Only a CREATE that met the
+        // nesting limit can parse when tried again less deep, and the file
+        // reports that limit (`limit_error`).
+        if self.failed_creates.contains(&resume.0) {
+            return Ok(self.recover_create_as_skipped(resume));
+        }
 
         if self.check(Kind::WidgetPool) {
             return Ok(self
@@ -6520,8 +6700,16 @@ impl Parser<'_> {
 
     /// Skip the rest of a CREATE whose tail did not parse, so the statement
     /// after it is not swallowed. The names in it are still harvested.
-    fn recover_create_as_skipped(&mut self, (resume, error_count): (usize, usize)) -> Statement {
+    ///
+    /// A failed `TRIGGERS:` block has parsed statements of its own, which moved
+    /// the harvest anchor, so the CREATE's own anchor is put back first.
+    fn recover_create_as_skipped(
+        &mut self,
+        (resume, error_count, anchor): (usize, usize, usize),
+    ) -> Statement {
         self.errors.truncate(error_count);
+        self.failed_creates.insert(resume);
+        self.stmt_start_token = anchor;
         self.current = resume;
         let (_, hi) = self.skip_to_statement_end_triggers_aware();
         self.skipped_stmt(hi)
@@ -7260,7 +7448,7 @@ impl Parser<'_> {
     /// Parse DEFINE STREAM stream-name.
     fn parse_define_stream(&mut self) -> ParseResult<Statement> {
         self.advance(); // consume STREAM
-        let name = self.parse_identifier()?;
+        let name = self.parse_stream_name()?;
         // Skip any options or include files before the terminating period
         let tail = self.skip_tail_to_statement_end();
         Ok(self.stmt_with_tail(StatementKind::DefineStream { name }, tail))
@@ -7343,7 +7531,7 @@ impl Parser<'_> {
         // e.g. OUTPUT STREAM s-log TO ...  or  OUTPUT {&stream} TO ...
         let stream_name = if self.check(Kind::Stream) {
             self.advance();
-            Some(self.parse_identifier()?)
+            Some(self.parse_stream_name()?)
         } else if self.check(Kind::Preprop) || self.check(Kind::IncludeReference) {
             // {&stream} used directly as stream name — consume and treat like a named stream
             let tok = self.advance().clone();
@@ -7636,7 +7824,8 @@ impl Parser<'_> {
             && !self.check(Kind::PreprocElse)
             && !self.check(Kind::PreprocEndif)
         {
-            stmts.push(self.parse_statement()?);
+            stmts.push(self.nested(Self::parse_statement)?);
+            self.skip_stray_comma();
         }
         crate::parser::debug_assert_stmt_sibling_order(&stmts);
         Ok(stmts)
@@ -7920,7 +8109,7 @@ impl Parser<'_> {
         }
 
         // Single statement (terminates with its own period)
-        let stmt = self.parse_statement()?;
+        let stmt = self.nested(Self::parse_statement)?;
         Ok(OnAction::Block(Box::new(stmt)))
     }
 

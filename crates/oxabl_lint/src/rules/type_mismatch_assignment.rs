@@ -373,6 +373,8 @@ mod tests {
 
     fn var_with_init(n: &str, ty: DataType, init: Expression) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(ty),
             initial_value: Some(init),
@@ -386,6 +388,8 @@ mod tests {
 
     fn var_decl(n: &str, ty: DataType) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -575,6 +579,8 @@ mod tests {
         });
         vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: oxabl_ast::BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -630,6 +636,8 @@ mod tests {
         let schema = test_schema();
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: oxabl_ast::BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -690,6 +698,8 @@ mod tests {
     fn array_target_renders_element_type_and_extent() {
         let stmts = vec![
             stmt_n(StatementKind::VariableDeclaration {
+                access: None,
+                is_static: false,
                 name: id("arr"),
                 type_source: TypeSource::Explicit(DataType::Integer),
                 initial_value: None,

@@ -202,7 +202,9 @@ fn the_visible_surface_is_exactly_the_five_user_facing_commands() {
 
     assert_eq!(
         listed,
-        vec!["check", "explain", "format", "lsp", "schema", "help"],
+        vec![
+            "check", "explain", "format", "lsp", "schema", "build", "help"
+        ],
         "the advertised surface must not grow, got:\n{help}"
     );
     for hidden in ["conformance", "analyze"] {

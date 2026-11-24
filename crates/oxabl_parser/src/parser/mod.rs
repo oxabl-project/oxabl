@@ -19,10 +19,11 @@ use oxabl_ast::{
     TypeSource,
 };
 use oxabl_lexer::{Kind, Token, is_callable_kind};
+use std::collections::HashSet;
 
 /// An error encountered during parsing, with a human-readable message and source [`Span`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
@@ -197,6 +198,28 @@ pub struct Parser<'a> {
     /// The token kinds of the method names declared in this token stream, built
     /// on first use by [`declares_method_named`](Self::declares_method_named).
     method_name_kinds: Option<Vec<Kind>>,
+    /// Statement and expression levels open at the cursor; see
+    /// [`MAX_NESTING`](Self::MAX_NESTING).
+    nesting: u32,
+    /// Operators in the left-deep chains open at the cursor; see
+    /// [`MAX_CHAIN`](Self::MAX_CHAIN).
+    chain: u32,
+    /// Whether a nesting or chain limit error is recorded: one per file is
+    /// enough, and the rest of a deep nest would fill
+    /// [`MAX_ERRORS`](Self::MAX_ERRORS).
+    too_deep_recorded: bool,
+    /// The first nesting or chain limit error the parse met. A rewind can drop
+    /// the error it recorded, so [`parse_program`](Self::parse_program) reports
+    /// this one when no limit error is left.
+    limit_error: Option<ParseError>,
+    /// Whether the cursor is in the body of an INTERFACE, where a METHOD
+    /// signature ends at its period and has no body.
+    in_interface: bool,
+    /// Token indexes after a `CREATE` whose parse failed and was skipped. A
+    /// failed CREATE is parsed again when a block around it rewinds, and its
+    /// trigger blocks hold the CREATEs after it, so without this the work
+    /// doubled with each nested CREATE.
+    failed_creates: HashSet<usize>,
     /// Byte ranges consumed without a place in a node, for
     /// [`SkippedTail::unmodelled`]. The `parse_statement` funnel moves those a
     /// statement noted, after its nested statements took theirs, onto it.
@@ -224,8 +247,100 @@ impl<'a> Parser<'a> {
             stmt_start_token: current,
             imported_classes: Vec::new(),
             method_name_kinds: None,
+            nesting: 0,
+            chain: 0,
+            too_deep_recorded: false,
+            limit_error: None,
+            in_interface: false,
+            failed_creates: HashSet::new(),
             unmodelled: Vec::new(),
         }
+    }
+
+    /// The deepest nest of statements and expressions the parser follows. A
+    /// deeper nest is a parse error, so the tree has a known depth and no
+    /// recursive pass over it can overflow its stack (see
+    /// [`oxabl_common::stack`]).
+    pub const MAX_NESTING: u32 = 256;
+
+    /// Run `parse` one nesting level deeper, or fail when that passes
+    /// [`MAX_NESTING`](Self::MAX_NESTING).
+    #[inline(always)]
+    pub(crate) fn nested<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        if self.nesting >= Self::MAX_NESTING {
+            return Err(self.too_deep());
+        }
+        self.nesting += 1;
+        let result = parse(self);
+        self.nesting -= 1;
+        result
+    }
+
+    /// The most operators the left-deep chains along one path of the tree may
+    /// hold (`a + b + c`, `a:b:c`). The parser builds a chain in a loop, but
+    /// every operator is one more level for the passes over the tree, so a
+    /// chain counts against the stack too. A level of nesting costs much more
+    /// stack than an operator, hence the larger limit; real code stays far
+    /// below it.
+    pub const MAX_CHAIN: u32 = 4096;
+
+    /// Count one more operator of a left-deep chain, or fail when that passes
+    /// [`MAX_CHAIN`](Self::MAX_CHAIN). `links` counts the chain's own
+    /// operators for [`unlink`](Self::unlink); a chain that an error abandons
+    /// stays counted until the next statement resets the count.
+    #[inline(always)]
+    pub(crate) fn link(&mut self, links: &mut u32) -> ParseResult<()> {
+        if self.chain >= Self::MAX_CHAIN {
+            return Err(self.too_long());
+        }
+        self.chain += 1;
+        *links += 1;
+        Ok(())
+    }
+
+    /// Close a chain counted with [`link`](Self::link). A chain with no
+    /// operator touches no memory here.
+    #[inline(always)]
+    pub(crate) fn unlink(&mut self, links: u32) {
+        if links != 0 {
+            self.chain -= links;
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn too_long(&mut self) -> ParseError {
+        let err = ParseError {
+            message: format!(
+                "{}{} operators; oxabl does not parse this statement",
+                Self::TOO_LONG,
+                Self::MAX_CHAIN
+            ),
+            span: self.current_span(),
+        };
+        self.limit_error.get_or_insert_with(|| err.clone());
+        err
+    }
+
+    const TOO_DEEP: &'static str = "Nesting is deeper than ";
+    const TOO_LONG: &'static str = "An operator chain is longer than ";
+
+    #[cold]
+    #[inline(never)]
+    fn too_deep(&mut self) -> ParseError {
+        let err = ParseError {
+            message: format!(
+                "{}{} levels; oxabl does not parse this statement",
+                Self::TOO_DEEP,
+                Self::MAX_NESTING
+            ),
+            span: self.current_span(),
+        };
+        self.limit_error.get_or_insert_with(|| err.clone());
+        err
     }
 
     /// Allocate a fresh [`NodeId`](oxabl_ast::NodeId) and wrap a
@@ -306,8 +421,11 @@ impl<'a> Parser<'a> {
                 break;
             }
             let pos_before = self.current;
-            match self.parse_statement() {
-                Ok(stmt) => statements.push(stmt),
+            let parsed = match self.parse_statement() {
+                Ok(stmt) => {
+                    statements.push(stmt);
+                    true
+                }
                 Err(err) => {
                     self.record_error(err);
                     if self.errors.len() >= Self::MAX_ERRORS {
@@ -321,10 +439,21 @@ impl<'a> Parser<'a> {
                     if self.current == pos_before {
                         self.advance();
                     }
+                    false
                 }
+            };
+            // Outside the match: a call inside the `Ok` arm costs a copy of
+            // every statement.
+            if parsed {
+                self.skip_stray_comma();
             }
         }
 
+        if let Some(err) = self.limit_error.take()
+            && !self.errors.iter().any(Self::is_limit_error)
+        {
+            self.errors.push(err);
+        }
         // Drain the accumulator: it holds both top-level errors recorded above
         // and any per-statement errors recovered inside block bodies during the
         // parse_statement calls. This preserves the aggregate error-reporting
@@ -377,6 +506,17 @@ impl<'a> Parser<'a> {
     /// assert.
     fn classify_comment(&self, start: usize) -> Option<CommentKind> {
         let bytes = self.source.as_bytes();
+        // The lexer keeps a stray `~` in the token that follows it (`~&x`, `~ //x`),
+        // with the blanks after it, so a comment can lead with tildes and blanks:
+        // classify it by what comes after them.
+        let start = start
+            + match bytes.get(start) {
+                Some(b'~') => bytes[start..]
+                    .iter()
+                    .take_while(|&&b| b == b'~' || b.is_ascii_whitespace())
+                    .count(),
+                _ => 0,
+            };
         match bytes.get(start) {
             Some(b'/') => match bytes.get(start + 1) {
                 Some(b'*') => Some(CommentKind::Block),
@@ -400,11 +540,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn is_limit_error(err: &ParseError) -> bool {
+        err.message.starts_with(Self::TOO_DEEP) || err.message.starts_with(Self::TOO_LONG)
+    }
+
     /// Record a recovered parse error in the accumulator, capping the total at
     /// [`MAX_ERRORS`](Self::MAX_ERRORS) so pathological input cannot grow the
     /// vector without bound. Errors past the cap are dropped (the parse still
     /// terminates because recovery always makes forward progress).
     fn record_error(&mut self, err: ParseError) {
+        if Self::is_limit_error(&err) {
+            if self.too_deep_recorded {
+                return;
+            }
+            self.too_deep_recorded = true;
+        }
         if self.errors.len() < Self::MAX_ERRORS {
             self.errors.push(err);
         }
@@ -426,8 +576,28 @@ impl<'a> Parser<'a> {
     /// must also bound its loop with `!self.at_end()` to terminate on an
     /// unterminated block.
     fn parse_block_statement_recovering(&mut self, out: &mut Vec<Statement>) {
+        if self.parse_block_statement(out) {
+            self.skip_stray_comma();
+        }
+    }
+
+    /// One statement of a block body, recovering as above; true when it parsed.
+    /// Out of line: any code after the match in the same function costs a
+    /// copy of every statement.
+    #[inline(never)]
+    fn parse_block_statement(&mut self, out: &mut Vec<Statement>) -> bool {
         let pos_before = self.current;
-        match self.parse_statement() {
+        // One nesting level, counted here and not in `parse_statement`: code
+        // after the call there costs a copy of every statement.
+        let parsed = if self.nesting >= Self::MAX_NESTING {
+            Err(self.too_deep())
+        } else {
+            self.nesting += 1;
+            let parsed = self.parse_statement();
+            self.nesting -= 1;
+            parsed
+        };
+        match parsed {
             Ok(stmt) => {
                 out.push(stmt);
                 // Incremental R1.3 check: the just-pushed statement must not
@@ -442,6 +612,7 @@ impl<'a> Parser<'a> {
                         last.span,
                     );
                 }
+                true
             }
             Err(err) => {
                 self.record_error(err);
@@ -452,6 +623,7 @@ impl<'a> Parser<'a> {
                 if self.current == pos_before && !self.at_end() {
                     self.advance();
                 }
+                false
             }
         }
     }
@@ -568,11 +740,10 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume EDITING
                 self.advance(); // consume ':'
                 // The editing body recurses through `parse_statement`, which
-                // overwrites the enclosing statement's harvest anchor. This is
-                // the only path between a `parse_statement` anchor store and the
-                // matching `skipped_stmt` read that recurses, so the save and
-                // restore live here — on a cold path — rather than in the
-                // funnel, which every statement pays for.
+                // overwrites the enclosing statement's harvest anchor. The save
+                // and restore live here — on a cold path, as for a failed CREATE
+                // `TRIGGERS:` block — rather than in the funnel, which every
+                // statement pays for.
                 let outer_anchor = self.stmt_start_token;
                 let _ = self.parse_block_body();
                 self.stmt_start_token = outer_anchor;
@@ -721,7 +892,7 @@ impl<'a> Parser<'a> {
     /// [`drop_expression`](Self::drop_expression) for a postfix expression.
     pub(crate) fn drop_postfix(&mut self) {
         let lo = self.current;
-        self.parse_postfix().ok();
+        self.nested(Self::parse_postfix).ok();
         self.note_unmodelled(lo, self.current);
     }
 
@@ -1762,7 +1933,40 @@ impl<'a> Parser<'a> {
     ///
     /// Requires no whitespace between parts to avoid consuming operators.
     fn parse_identifier(&mut self) -> ParseResult<Identifier> {
-        if !Self::can_be_identifier(self.peek().kind) {
+        let start_ok = Self::can_be_identifier(self.peek().kind);
+        self.parse_name(start_ok)
+    }
+
+    /// A name that declares a method or procedure. Reserved keywords are valid
+    /// here (`METHOD View(...)`, `PROCEDURE check:`), and so is `Add`, which is
+    /// an identifier kind but not word-like. Procedure names may also start
+    /// with a digit (`PROCEDURE 128_set_width:`).
+    fn parse_declared_name(&mut self, digit_first: bool) -> ParseResult<Identifier> {
+        let kind = self.peek().kind;
+        let start_ok = Self::is_word_kind(kind)
+            || Self::can_be_identifier(kind)
+            || (digit_first && self.digit_first_name_ahead());
+        self.parse_name(start_ok)
+    }
+
+    /// A stream name: an identifier, or a digit-first name (`2dstream`).
+    fn parse_stream_name(&mut self) -> ParseResult<Identifier> {
+        let start_ok = Self::can_be_identifier(self.peek().kind) || self.digit_first_name_ahead();
+        self.parse_name(start_ok)
+    }
+
+    /// An integer directly followed by a name part, as the lexer splits
+    /// `2dstream` into `2` and `dstream`. A bare number is not a name.
+    fn digit_first_name_ahead(&self) -> bool {
+        let first = self.peek();
+        let next = self.peek_at(1);
+        first.kind == Kind::IntegerLiteral
+            && next.start == first.end
+            && Self::can_be_identifier(next.kind)
+    }
+
+    fn parse_name(&mut self, start_ok: bool) -> ParseResult<Identifier> {
+        if !start_ok {
             return Err(ParseError {
                 message: "Expected identifier".to_string(),
                 span: self.current_span(),
@@ -1855,6 +2059,15 @@ impl<'a> Parser<'a> {
         0
     }
 
+    /// Kind of the last consumed token that is not a comment.
+    fn prev_token_kind(&self) -> Option<Kind> {
+        self.tokens[..self.current.min(self.tokens.len())]
+            .iter()
+            .rev()
+            .map(|t| t.kind)
+            .find(|k| *k != Kind::Comment)
+    }
+
     /// Parse an optional access modifier (PUBLIC, PRIVATE, PROTECTED, PACKAGE-PRIVATE).
     /// Returns None if the current token is not an access modifier.
     fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
@@ -1883,11 +2096,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A parameter statement that spans from `start` to the last consumed token.
+    fn param_stmt(&mut self, start: u32, kind: StatementKind) -> Statement {
+        let mut statement = self.stmt(kind);
+        statement.span = Span {
+            start,
+            end: self.prev_end(),
+        };
+        statement
+    }
+
     /// Parse a parenthesized parameter list for METHOD/CONSTRUCTOR/FUNCTION.
     ///
     /// `(INPUT x AS INTEGER, OUTPUT y AS CHARACTER)`
     ///
-    /// Each parameter becomes a `self.stmt(StatementKind::DefineParameter)`.
+    /// Each parameter becomes a `DefineParameter` statement that spans the
+    /// parameter, from its direction to its last token.
     fn parse_parenthesized_params(&mut self) -> ParseResult<Vec<Statement>> {
         self.expect_kind(Kind::LeftParen, "Expected '(' for parameter list")?;
         let mut params = Vec::new();
@@ -1905,6 +2129,7 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
+                let param_start = self.current_span().start;
                 let direction = match self.peek().kind {
                     Kind::Output => {
                         self.advance();
@@ -1947,14 +2172,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::Table,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::Table,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1977,10 +2205,13 @@ impl<'a> Parser<'a> {
                             target = table;
                         }
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Buffer { name, target },
-                    }));
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Buffer { name, target },
+                        },
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -1998,14 +2229,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::Dataset,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::Dataset,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2023,14 +2257,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::DatasetHandle,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::DatasetHandle,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2048,14 +2285,17 @@ impl<'a> Parser<'a> {
                     ) {
                         self.advance();
                     }
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Handle {
-                            kind: HandleParamKind::TableHandle,
-                            name,
-                            passing: HandlePassingOptions::default(),
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Handle {
+                                kind: HandleParamKind::TableHandle,
+                                name,
+                                passing: HandlePassingOptions::default(),
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2092,17 +2332,20 @@ impl<'a> Parser<'a> {
                         name: format!("${}", params.len()),
                         span: Span {
                             start: type_start,
-                            end: self.current_span().start,
+                            end: self.prev_end(),
                         },
                     };
-                    params.push(self.stmt(StatementKind::DefineParameter {
-                        direction,
-                        param_type: ParameterType::Variable {
-                            name,
-                            type_source: TypeSource::Explicit(data_type),
-                            no_undo,
+                    params.push(self.param_stmt(
+                        param_start,
+                        StatementKind::DefineParameter {
+                            direction,
+                            param_type: ParameterType::Variable {
+                                name,
+                                type_source: TypeSource::Explicit(data_type),
+                                no_undo,
+                            },
                         },
-                    }));
+                    ));
                     if !self.check(Kind::Comma) {
                         break;
                     }
@@ -2119,14 +2362,17 @@ impl<'a> Parser<'a> {
                     false
                 };
 
-                params.push(self.stmt(StatementKind::DefineParameter {
-                    direction,
-                    param_type: ParameterType::Variable {
-                        name,
-                        type_source,
-                        no_undo,
+                params.push(self.param_stmt(
+                    param_start,
+                    StatementKind::DefineParameter {
+                        direction,
+                        param_type: ParameterType::Variable {
+                            name,
+                            type_source,
+                            no_undo,
+                        },
                     },
-                }));
+                ));
 
                 if !self.check(Kind::Comma) {
                     break;
@@ -2257,17 +2503,30 @@ impl<'a> Parser<'a> {
                 }
                 Kind::LessThan => {
                     // A `<` with no name before it: balance it and drop it.
-                    self.parse_generic_type_args_inner()?;
+                    self.nested_generic_type_args()?;
                 }
                 kind if self.starts_type_argument(kind) => {
                     if let Ok(name) = self.parse_class_qualified_name() {
-                        let arguments = self.parse_generic_type_args_inner()?;
+                        let arguments = self.nested_generic_type_args()?;
                         args.push(TypeArgument { name, arguments });
                     }
                 }
                 _ => {
                     self.advance();
                 }
+            }
+        }
+    }
+
+    /// [`parse_generic_type_args_inner`](Self::parse_generic_type_args_inner)
+    /// one nesting level deeper; `None` with the error recorded past
+    /// [`MAX_NESTING`](Self::MAX_NESTING).
+    fn nested_generic_type_args(&mut self) -> Option<TypeArguments> {
+        match self.nested(|parser| Ok(parser.parse_generic_type_args_inner())) {
+            Ok(arguments) => arguments,
+            Err(err) => {
+                self.record_error(err);
+                None
             }
         }
     }
@@ -2397,8 +2656,63 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// The data type spelled by the word `offset` tokens ahead when it is a
+    /// shorter spelling than the lexer's keyword table gives (`AS i`, `AS c`,
+    /// `AS de`). A word followed by a qualifier (`c.Foo`) or a glued
+    /// preprocessor name is a class name, not a type.
+    fn short_data_type_at(&self, offset: usize) -> Option<DataType> {
+        let token = self.peek_at(offset);
+        if !Self::is_word_kind(token.kind) {
+            return None;
+        }
+        let data_type = short_data_type(&self.source[token.start..token.end])?;
+        let next = self.peek_at(offset + 1);
+        match next.kind {
+            Kind::Preprop if next.start == token.end => None,
+            Kind::Period => {
+                // Same rule as `parse_class_qualified_name`.
+                let word = self.peek_at(offset + 2);
+                let qualified = Self::is_word_kind(word.kind)
+                    && !self.source[next.end..word.start].contains('\n');
+                (!qualified).then_some(data_type)
+            }
+            _ => Some(data_type),
+        }
+    }
+
+    /// A token the keyword table already reads as a data type.
+    fn is_data_type_keyword(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Integer
+                | Kind::Int64
+                | Kind::Decimal
+                | Kind::Character
+                | Kind::Logical
+                | Kind::Date
+                | Kind::Datetime
+                | Kind::DatetimeTz
+                | Kind::Handle
+                | Kind::Rowid
+                | Kind::Recid
+                | Kind::Raw
+                | Kind::Memptr
+                | Kind::Longchar
+                | Kind::Clob
+                | Kind::Blob
+                | Kind::ComHandle
+                | Kind::KwIn
+        )
+    }
+
     fn parse_data_type(&mut self) -> ParseResult<DataType> {
         let token = self.peek();
+        if !Self::is_data_type_keyword(token.kind)
+            && let Some(data_type) = self.short_data_type_at(0)
+        {
+            self.advance();
+            return Ok(data_type);
+        }
         let data_type = match token.kind {
             Kind::Integer => DataType::Integer,
             Kind::Int64 => DataType::Int64,
@@ -2494,6 +2808,45 @@ impl<'a> Parser<'a> {
         self.advance();
         Ok(data_type)
     }
+}
+
+/// Data type spellings with the shortest prefix the compiler accepts, in the
+/// compiler's order for ties (`i`..`int` is INTEGER, not INT64; `l`, `lo` are
+/// LOGICAL, not LONGCHAR). The lexer's keyword table must stay as it is: `i`, `c`
+/// and `l` are common variable names, so these apply only where a type is expected.
+const SHORT_DATA_TYPES: &[(&str, usize, DataType)] = &[
+    ("CHARACTER", 1, DataType::Character),
+    ("INTEGER", 1, DataType::Integer),
+    ("INT64", 5, DataType::Int64),
+    ("LOGICAL", 1, DataType::Logical),
+    ("LONGCHAR", 6, DataType::Longchar),
+    ("DECIMAL", 2, DataType::Decimal),
+    ("DATE", 2, DataType::Date),
+    ("DATETIME", 8, DataType::DateTime),
+    ("DATETIME-TZ", 11, DataType::DateTimeTz),
+    ("HANDLE", 6, DataType::Handle),
+    ("WIDGET-HANDLE", 4, DataType::Handle),
+    ("COM-HANDLE", 10, DataType::Com),
+    ("RAW", 2, DataType::Raw),
+    ("RECID", 2, DataType::Recid),
+    ("ROWID", 3, DataType::Rowid),
+    ("MEMPTR", 1, DataType::Memptr),
+];
+
+fn short_data_type(text: &str) -> Option<DataType> {
+    // Most words in a type position are class names: reject them on the first letter.
+    let first = text.as_bytes().first()?.to_ascii_uppercase();
+    if !matches!(first, b'C' | b'I' | b'L' | b'D' | b'H' | b'W' | b'R' | b'M') {
+        return None;
+    }
+    SHORT_DATA_TYPES
+        .iter()
+        .filter(|(name, _, _)| name.as_bytes()[0] == first)
+        .find(|(name, min, _)| {
+            (*min..=name.len()).contains(&text.len())
+                && name[..text.len()].eq_ignore_ascii_case(text)
+        })
+        .map(|(_, _, data_type)| data_type.clone())
 }
 
 #[cfg(all(test, feature = "serde"))]

@@ -1,5 +1,37 @@
 # Changelog
 
+## [2.0.3](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.2...oxabl_lexer-v2.0.3) (2026-11-23)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.3.0 to 1.3.1
+
+## [2.0.2](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.1...oxabl_lexer-v2.0.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* **lexer:** a stray tilde starts no token ([5774583](https://github.com/oxabl-project/oxabl/commit/577458379ff97213451af3556a5a8f380a45eb7d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.2 to 1.3.0
+
+## [2.0.1](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v2.0.0...oxabl_lexer-v2.0.1) (2026-11-06)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_common bumped from 1.2.1 to 1.2.2
+
 ## [2.0.0](https://github.com/oxabl-project/oxabl/compare/oxabl_lexer-v1.0.2...oxabl_lexer-v2.0.0) (2026-10-16)
 
 

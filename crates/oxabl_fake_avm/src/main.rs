@@ -1,0 +1,183 @@
+//! A fake AVM for black-box tests of `oxabl build`.
+//!
+//! Usage: `oxabl_fake_avm <program> [--env <file>]`. `<program>` is the
+//! worker program path that oxabl passes as `{program}`; the fake checks it.
+//! The environment comes from the JSON file named by `--env`, else by
+//! `FAKE_AVM_ENV`.
+//!
+//! Two more forms stand in for the AVM outside the worker protocol. Both take
+//! the PROPATH from the `PROPATH` variable (entries split at `,` and `:`), and
+//! fail when it is unset or empty.
+//! - The runtime: `oxabl_fake_avm -p <program>` runs a program by a name or a
+//!   full path, and `oxabl_fake_avm -new <class>` makes an object of a class.
+//!   It finds the file as measured on OpenEdge: entry by entry, `<stem>.r`
+//!   before the source in each entry, no date check; a full path runs the `.r`
+//!   beside it first. It prints `RUN <name> <file> rcode` or `RUN <name> <file>
+//!   compiled-on-the-fly`, then `SAYS <text>` for each `FAKE-SAY <text>` of the
+//!   program and its includes, and the `read <path> <hash>` lines of its r-code
+//!   (of the compile in memory for a source). Then it loads each class the
+//!   program uses by the same rule and prints the same lines after `NEW
+//!   <class> <file> ...`. A name it cannot find is `** "<name>" was not found.
+//!   (293)` on stderr and exit code 1; a `.r` that is not fake r-code is error
+//!   2888.
+//! - A compile: `oxabl_fake_avm -c <name> [-save-into <dir>]` writes the r-code
+//!   of `<name>` as `COMPILE <name> SAVE [INTO <dir>]` does, beside the source
+//!   it found on the PROPATH or below `<dir>`.
+//!
+//! A compile reads the unit, its includes and the classes it uses on the
+//! request's PROPATH, and writes a text r-code file that lists what it read
+//! with a hash of each, and a time. Text in a source asks for a fault:
+//! `FAKE-FAIL` (an error at that line), `FAKE-FAIL-ONCE` (the first compile
+//! only), `FAKE-FAIL-TWICE` (the first two compiles), `FAKE-FAIL-SILENT` (a
+//! failure with no message), `FAKE-WARN`,
+//! `FAKE-WARN-NOPOS` (a warning with a number and no file, row or column),
+//! `FAKE-CRASH` (exit 1), `FAKE-CRASH-ONCE`, `FAKE-HANG`, `FAKE-SLOW` (two
+//! seconds before the outputs), `FAKE-NO-OUTPUT` (success with no output
+//! files), `FAKE-READ <path>` (a file the analysis cannot see) and
+//! `FAKE-RESOLVE-OTHER <name> <path>` (the include resolves to that path).
+//! Like the real compiler, it opens an XREF or XREF-XML file whose relative
+//! name starts with `.` with that dot removed. A request with the XREF mode
+//! `private` writes a text XREF under `verify/`. An XREF-XML names each file
+//! read as a `Source`, each include as an `INCLUDE` reference with the text
+//! between its braces (its name and arguments), and each class as a `NEW`
+//! reference. A text XREF has a `COMPILE` row, the same references as rows,
+//! and a row in each other file read, which puts the file in the second
+//! column; names with a space are quoted. `FAKE-XREF-RAW <text>` in a source
+//! ends the text XREF with that text, where `\n` is a line break and `\xHH`
+//! the byte HH.
+//!
+//! Environment variables: `FAKE_AVM_STATE` is a directory for the markers of
+//! the `-ONCE` faults; `FAKE_AVM_LOG` receives one line for each compiled
+//! unit; `FAKE_AVM_REQUEST_LOG` receives the time and type of each request,
+//! and for `COMPILE` the presence of each path of `FAKE_AVM_WATCH`;
+//! `FAKE_AVM_SCHEMA_CHANGE_AFTER=<n>` and `FAKE_AVM_SCHEMA_CHANGE_FILE=<path>`
+//! change the schema image after `n` compiles, or while the file exists;
+//! `FAKE_AVM_SCHEMA_DELAY_MS` delays each schema answer;
+//! `FAKE_AVM_SCHEMA_ERROR_AFTER=<n>` gives a wrong count after `n` compiles;
+//! `FAKE_AVM_NO_PRIVATE_XREF=1` writes no private XREF;
+//! `FAKE_AVM_XREF_LOG` receives the XREF mode of each compiled unit's request;
+//! `FAKE_AVM_COMPILE_MS=<n>` makes each compile take `n` milliseconds;
+//! `FAKE_AVM_DROP_MSG=1` sends one `MSG` line fewer than `DONE` counts.
+//!
+//! The raw digest (`RAWDIGEST`) hashes the schema records, so it changes with
+//! the image. `FAKE_AVM_RAW_SALT=<text>` changes it and not the image, as an
+//! edit of a field that the image leaves out does; so does
+//! `FAKE_AVM_RAW_CHANGE_FILE=<path>` while the file exists, and
+//! `FAKE_AVM_RAW_CHANGE_FROM=<n>` from the `n`-th raw request of the process
+//! on. `FAKE_AVM_RAW_FAULT` breaks the answer of share
+//! `FAKE_AVM_RAW_FAULT_SHARE` (default 0): `missing-piece`, `extra-piece`,
+//! `bounds`, `bad-hash`, `bad-count`, `error` (an `ERROR` line) or `exit`.
+
+mod compile;
+mod faults;
+mod frame;
+mod hashing;
+mod log;
+mod model;
+mod schema;
+mod session;
+
+use std::io::{self, BufReader};
+use std::path::{Path, PathBuf};
+
+use model::Model;
+use session::Session;
+
+const HEADER: &str = "/* oxabl-worker protocol 1 */";
+
+/// The program must exist, start with the header line and sit in a directory
+/// named after the BLAKE3 hash of its bytes.
+fn check_program(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    if text.lines().next() != Some(HEADER) {
+        return Err(format!("{} does not start with {HEADER}", path.display()));
+    }
+    let expected = blake3::hash(&bytes).to_hex().to_string();
+    let directory = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str());
+    if directory != Some(expected.as_str()) {
+        return Err(format!(
+            "{} is not in a directory named after its hash {expected}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The runtime and compile forms; `None` for the worker form.
+fn outside_the_protocol(args: &[String]) -> Option<Result<(), String>> {
+    match args {
+        [start, target] if start == "-p" || start == "-new" => {
+            Some(compile::runtime::run(start, target))
+        }
+        [flag, name] if flag == "-c" => Some(compile::runtime::compile_and_save(name, None)),
+        [flag, name, into, dir] if flag == "-c" && into == "-save-into" => {
+            Some(compile::runtime::compile_and_save(name, Some(dir)))
+        }
+        [first, ..] if matches!(first.as_str(), "-p" | "-new" | "-c") => Some(Err(
+            "usage: oxabl_fake_avm -p <program> | -new <class> | -c <name> [-save-into <dir>]"
+                .to_string(),
+        )),
+        _ => None,
+    }
+}
+
+fn main() {
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = outside_the_protocol(&all) {
+        if let Err(message) = result {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let mut args = all.into_iter();
+    let Some(program) = args.next() else {
+        eprintln!("usage: oxabl_fake_avm <program> [--env <file>]");
+        std::process::exit(2);
+    };
+    let mut env_file = std::env::var_os("FAKE_AVM_ENV").map(PathBuf::from);
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next()) {
+            ("--env", Some(file)) => env_file = Some(PathBuf::from(file)),
+            _ => {
+                eprintln!("unknown argument {arg}");
+                std::process::exit(2);
+            }
+        }
+    }
+    if let Err(message) = check_program(Path::new(&program)) {
+        eprintln!("{message}");
+        std::process::exit(2);
+    }
+    let model = match Model::load(env_file.as_deref()) {
+        Ok(model) => model,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    let faults = faults::Faults::from_env();
+    log::append(faults.log.as_deref(), "start");
+    if let Some(delay) = faults.start_delay {
+        std::thread::sleep(delay);
+    }
+    let mut session = Session {
+        model,
+        faults,
+        compiler: compile::Compiler::default(),
+        raw_requests: 0,
+    };
+    let stdin = io::stdin();
+    let mut input = BufReader::new(stdin.lock());
+    let mut out = io::stdout().lock();
+    let result = session.run(&mut input, &mut out);
+    log::append(session.faults.log.as_deref(), "exit");
+    if let Err(error) = result {
+        eprintln!("fake avm: {error}");
+        std::process::exit(1);
+    }
+}

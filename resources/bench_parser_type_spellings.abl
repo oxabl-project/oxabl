@@ -1,0 +1,37 @@
+/* Short data type spellings the compiler accepts (AS i, AS c, AS de ...),
+   beside full type names and class types in the same positions. */
+define variable sv-int as i no-undo.
+define variable sv-char as c no-undo.
+define variable sv-log as l no-undo.
+define variable sv-dec as de no-undo.
+define variable sv-date as da no-undo.
+define variable sv-recid as re no-undo.
+define variable sv-rowid as row no-undo.
+define variable sv-raw as ra no-undo.
+define variable sv-memptr as m no-undo.
+define variable sv-longchar as longch no-undo.
+define variable sv-handle as widg no-undo.
+define variable fv-int as integer no-undo.
+define variable fv-char as character no-undo.
+define variable cv-object as Progress.Lang.Object no-undo.
+define variable cv-json as JsonObject no-undo.
+
+define input parameter sp-count as i no-undo.
+define input parameter sp-name as ch no-undo.
+define output parameter sp-ok as lo no-undo.
+
+define temp-table ttShort no-undo
+    field f-int as i
+    field f-char as c
+    field f-dec as dec
+    field f-date as dat
+    field f-log as log
+    index ix-int f-int.
+
+function fnShort returns c (input p-count as i, input p-amount as de):
+    return string(p-count) + string(p-amount).
+end function.
+
+function fnFull returns character (input p-count as integer, input p-amount as decimal):
+    return string(p-count) + string(p-amount).
+end function.

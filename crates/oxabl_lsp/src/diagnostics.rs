@@ -6,9 +6,12 @@
 //! severity/code — the analysis is already done. `oxabl_common::Diagnostic`
 //! is documented as mapping 1:1 to the LSP shape.
 
+use std::path::Path;
+
 use lsp_types::{Diagnostic as LspDiagnostic, DiagnosticSeverity, NumberOrString, Range};
 use oxabl_analyze::CollectedDiagnostics;
 use oxabl_common::{Diagnostic, Severity};
+use oxabl_daemon::db::ContextDiagnostics;
 use ropey::Rope;
 
 use crate::position::byte_to_position;
@@ -26,6 +29,35 @@ pub fn to_lsp_diagnostics(
     collected
         .all()
         .map(|c| to_lsp(&c.diagnostic, rope, encoding))
+        .collect()
+}
+
+/// Convert the answer of an include's selected root, positioning each span
+/// against the include's `rope`. A root that gives no answer gives one warning
+/// at the start of the file that says why.
+pub fn context_to_lsp_diagnostics(
+    context: &ContextDiagnostics,
+    root: &Path,
+    rope: &Rope,
+    encoding: &lsp_types::PositionEncodingKind,
+) -> Vec<LspDiagnostic> {
+    if let Some(reason) = &context.failure {
+        return vec![LspDiagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some(SOURCE.to_string()),
+            message: format!(
+                "the selected compilation context {} gives no diagnostics for this file: \
+                 {reason}; select another context or fragment mode",
+                root.display()
+            ),
+            ..Default::default()
+        }];
+    }
+    context
+        .findings
+        .iter()
+        .map(|finding| to_lsp(&finding.diagnostic, rope, encoding))
         .collect()
 }
 

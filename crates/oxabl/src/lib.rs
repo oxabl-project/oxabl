@@ -489,10 +489,18 @@ pub mod pipeline {
 /// policy.
 pub mod workspace {
     pub use oxabl_workspace::{
-        DecodedSource, EncodedFileSystem, FileSystem, InMemoryFileSystem, LintConfig, LintOverride,
-        LintRuleSettings, LintSeverity, PreprocessorConfig, ROOT_EXTENSIONS, RealFileSystem,
-        RejectedLintPattern, SourceDecoding, SourceEncoding, Workspace, WorkspaceConfig,
-        discover_path, discover_path_in, find_workspace_root, is_root_file, is_root_file_in,
-        walk_directory, walk_directory_in,
+        DecodedSource, EncodedFileSystem, FeaturesConfig, FileSystem, InMemoryFileSystem,
+        LintConfig, LintOverride, LintRuleSettings, LintSeverity, PreprocessorConfig,
+        ROOT_EXTENSIONS, RealFileSystem, RejectedLintPattern, SourceDecoding, SourceEncoding,
+        Workspace, WorkspaceConfig, discover_path, discover_path_in, find_workspace_root,
+        is_root_file, is_root_file_in, walk_directory, walk_directory_in,
     };
 }
+
+/// The ABL build tool: the persisted graph store, the incremental refresh and
+/// the planner behind `oxabl build`.
+///
+/// Gated on the `cli` feature: it needs SQLite and process control, which do not
+/// build for `wasm32`.
+#[cfg(feature = "cli")]
+pub use oxabl_build as build;

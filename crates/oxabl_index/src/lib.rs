@@ -52,6 +52,7 @@
 mod batch;
 pub mod calls;
 mod closure;
+pub mod declared;
 mod deps;
 mod facts;
 mod producers;
@@ -73,9 +74,9 @@ pub use closure::{
 pub use deps::{
     BranchKind, ClosureReference, Completeness, ConditionalBranch, ConditionalInclude,
     ConditionalIncludeClosure, ConditionalReference, DegradedReason, DependencyEdge,
-    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeOriginInput,
-    NestedUnresolvedIncludeInput, UnreadableIncludeInput, UnresolvedIncludeInput,
-    UnresolvedReference, build_edge_set,
+    DependencyEdges, DirectIncludeInput, EdgeInputs, EdgeKind, EdgeTarget, IncludeName,
+    IncludeOriginInput, NestedUnresolvedIncludeInput, UnreadableIncludeInput,
+    UnresolvedIncludeInput, UnresolvedReference, build_edge_set,
 };
 pub use facts::{ClassFacts, FileFacts};
 pub use producers::{SharedProducers, definitions_in};
@@ -85,7 +86,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oxabl_ast::{AccessModifier, DataType, Statement, StatementKind};
+use oxabl_ast::{AccessModifier, BufferTarget, DataType, Statement, StatementKind, TypeSource};
 use oxabl_common::FileId;
 use oxabl_lexer::{Kind, Token};
 use oxabl_parser::Parser;
@@ -93,8 +94,8 @@ use oxabl_preprocessor::{PreprocessedFile, Preprocessor, SpanNode};
 use oxabl_schema::Schema;
 use oxabl_semantic::{
     AnalysisContext, ClassDescriptor, ClassKind, ImportContext, IndexName, IndexedFileId,
-    MemberDescriptor, MemberType, ProgramSignatures, ResolvedType, ScopeId, SymbolFlags,
-    SymbolKind, declare_pass,
+    MemberDescriptor, MemberRecord, MemberType, ProgramSignatures, ResolvedType, ScopeId,
+    SymbolFlags, SymbolKind, declare_pass,
 };
 use oxabl_workspace::{FileSystem, PreprocessorConfig};
 
@@ -112,7 +113,7 @@ const INDEXED_FILE: FileId = FileId::new(1);
 pub struct IncludeContext<'a> {
     pub fs: &'a dyn FileSystem,
     pub include_paths: &'a [PathBuf],
-    /// Paths resolved against the directory of the file being indexed and searched
+    /// Paths resolved against the base directory of the file being indexed and searched
     /// before `include_paths`; see [`search::root_include_paths`].
     pub root_relative_paths: &'a [PathBuf],
     /// Answers the AVM's predefined names (`{&OPSYS}` and friends).
@@ -130,14 +131,15 @@ impl<'a> IncludeContext<'a> {
         }
     }
 
-    /// The search paths of the file at `file`: the root-relative paths against
-    /// its directory, then the include paths.
-    pub fn paths_for(&self, file: &Path) -> std::borrow::Cow<'a, [PathBuf]> {
+    /// The search paths of the file at `file` with the text `source`: the
+    /// root-relative paths against its base directory
+    /// ([`search::search_base`]), then the include paths.
+    pub fn paths_for(&self, file: &Path, source: &str) -> std::borrow::Cow<'a, [PathBuf]> {
         if self.root_relative_paths.is_empty() {
             return std::borrow::Cow::Borrowed(self.include_paths);
         }
         std::borrow::Cow::Owned(search::root_include_paths(
-            file,
+            search::search_base(file, source).as_deref(),
             self.root_relative_paths,
             self.include_paths,
         ))
@@ -145,14 +147,14 @@ impl<'a> IncludeContext<'a> {
 }
 
 /// [`index_file`] for the file at `path`, its includes read with the search
-/// paths of its own directory.
+/// paths of its base directory.
 pub fn index_file_at(
     file: IndexedFileId,
     path: &Path,
     source: &str,
     includes: &IncludeContext<'_>,
 ) -> (FileFacts, Vec<PathBuf>) {
-    let paths = includes.paths_for(path);
+    let paths = includes.paths_for(path, source);
     let includes = IncludeContext {
         include_paths: &paths,
         root_relative_paths: &[],
@@ -185,7 +187,7 @@ pub fn program_signatures_at(
     if written.main.is_some() && written.procedures.iter().all(|(_, s)| s.is_some()) {
         return (Some(written), Vec::new());
     }
-    let paths = includes.paths_for(path);
+    let paths = includes.paths_for(path, source);
     let includes = IncludeContext {
         include_paths: &paths,
         root_relative_paths: &[],
@@ -282,7 +284,7 @@ pub(crate) fn expanded_text_at(
     source: &str,
     includes: &IncludeContext<'_>,
 ) -> Option<String> {
-    let paths = includes.paths_for(path);
+    let paths = includes.paths_for(path, source);
     let includes = IncludeContext {
         include_paths: &paths,
         root_relative_paths: &[],
@@ -652,6 +654,7 @@ fn enum_members(tokens: &[Token], source: &str) -> (Option<Vec<MemberDescriptor>
                     ty: MemberType::Untyped,
                     access: AccessModifier::Public,
                     is_static: true,
+                    record: None,
                 });
                 i += 1;
                 if tokens.get(i).is_some_and(|t| t.kind == Kind::Equals) {
@@ -674,23 +677,39 @@ fn enum_members(tokens: &[Token], source: &str) -> (Option<Vec<MemberDescriptor>
     (ok.then_some(members), i)
 }
 
-/// Project the members a class or interface body declares itself.
+/// Project the members a class or interface body declares itself: methods,
+/// properties, and the data members a subclass reaches by name (variables,
+/// buffers, temp-tables, datasets, data-sources, events).
 ///
-/// Methods and properties only. A class-level `DEFINE VARIABLE` is reachable as
-/// a data member in ABL, but no planned consumer asks for one, so indexing it
-/// would be a fact nothing reads.
+/// A data member written without an access modifier is `PRIVATE`, as in ABL.
 fn declared_members(body: &[Statement]) -> Arc<[MemberDescriptor]> {
     let mut members = Vec::new();
+    collect_members(body, &mut members);
+    members.into()
+}
+
+fn collect_members(body: &[Statement], members: &mut Vec<MemberDescriptor>) {
+    let data = |name: &oxabl_ast::Identifier,
+                kind: SymbolKind,
+                ty: MemberType,
+                access: Option<AccessModifier>,
+                is_static: bool| MemberDescriptor {
+        name: IndexName::new(&name.name),
+        kind,
+        ty,
+        access: access.unwrap_or(AccessModifier::Private),
+        is_static,
+        record: None,
+    };
     for stmt in body {
-        if let StatementKind::Method {
-            access,
-            is_static,
-            return_type,
-            name,
-            ..
-        } = &stmt.kind
-        {
-            members.push(MemberDescriptor {
+        match &stmt.kind {
+            StatementKind::Method {
+                access,
+                is_static,
+                return_type,
+                name,
+                ..
+            } => members.push(MemberDescriptor {
                 name: IndexName::new(&name.name),
                 // The same kind the declare pass gives a locally declared
                 // method, so a synthesized member is indistinguishable from a
@@ -703,25 +722,122 @@ fn declared_members(body: &[Statement]) -> Arc<[MemberDescriptor]> {
                     .map_or(MemberType::Untyped, member_type),
                 access: *access,
                 is_static: *is_static,
-            });
-        } else if let StatementKind::Property {
-            access,
-            is_static,
-            name,
-            data_type,
-            ..
-        } = &stmt.kind
-        {
-            members.push(MemberDescriptor {
+                record: None,
+            }),
+            StatementKind::Property {
+                access,
+                is_static,
+                name,
+                data_type,
+                ..
+            } => members.push(MemberDescriptor {
                 name: IndexName::new(&name.name),
                 kind: SymbolKind::Property,
                 ty: member_type(data_type),
                 access: *access,
                 is_static: *is_static,
-            });
+                record: None,
+            }),
+            StatementKind::VariableDeclaration {
+                name,
+                type_source,
+                extent,
+                access,
+                is_static,
+                ..
+            } => {
+                let ty = match type_source {
+                    TypeSource::Explicit(declared) => match (declared.class_name(), extent) {
+                        (Some(_), _) | (None, None) => member_type(declared),
+                        (None, Some(n)) => MemberType::portable(ResolvedType::Array {
+                            element: Box::new(ResolvedType::from_data_type(declared)),
+                            extent: if *n == 0 { None } else { Some(*n) },
+                        })
+                        .unwrap_or(MemberType::Untyped),
+                    },
+                    TypeSource::Like { .. } => MemberType::Untyped,
+                };
+                members.push(data(name, SymbolKind::Variable, ty, *access, *is_static));
+            }
+            StatementKind::DefineTempTable {
+                name,
+                access,
+                is_static,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::TempTable,
+                MemberType::Untyped,
+                *access,
+                *is_static,
+            )),
+            StatementKind::DefineBuffer {
+                name,
+                target,
+                access,
+                is_static,
+                ..
+            } => {
+                let (table, temp_table) = match target {
+                    BufferTarget::Table(t) => (t, false),
+                    BufferTarget::TempTable(t) => (t, true),
+                };
+                members.push(MemberDescriptor {
+                    record: Some(MemberRecord {
+                        table: IndexName::new(&table.name),
+                        temp_table,
+                    }),
+                    ..data(
+                        name,
+                        SymbolKind::Buffer,
+                        MemberType::Untyped,
+                        *access,
+                        *is_static,
+                    )
+                });
+            }
+            StatementKind::DefineDataset {
+                name,
+                access,
+                is_static,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::Dataset,
+                MemberType::Untyped,
+                *access,
+                *is_static,
+            )),
+            StatementKind::DefineDataSource {
+                name,
+                access,
+                is_static,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::DataSource,
+                MemberType::Untyped,
+                *access,
+                *is_static,
+            )),
+            StatementKind::DefineEvent {
+                access,
+                is_static,
+                name,
+                ..
+            } => members.push(data(
+                name,
+                SymbolKind::Event,
+                MemberType::Untyped,
+                Some(*access),
+                *is_static,
+            )),
+            StatementKind::Block(inner) | StatementKind::VariableDeclarationList(inner) => {
+                collect_members(inner, members);
+            }
+            _ => {}
         }
     }
-    members.into()
 }
 
 /// Lower a declared [`DataType`] into a form that survives the file boundary.

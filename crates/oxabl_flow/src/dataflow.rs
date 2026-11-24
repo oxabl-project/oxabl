@@ -224,12 +224,19 @@ fn solve_forward<A: Analysis>(
     let order = order(cfg);
     let heads = heads(cfg, &order, true);
     let mut work: VecDeque<NodeIx> = order.into();
+    // Scratch facts, so a fact that owns buffers reuses them through `clone_from`.
+    let mut fact = initial.clone();
+    let mut incoming = initial.clone();
     while let Some(node) = work.pop_front() {
         budget = budget.checked_sub(1).ok_or(Exhausted)?;
         queued.remove(node.index());
-        let mut fact = start(node);
+        fact.clone_from(if node == cfg.entry() {
+            &boundary
+        } else {
+            &initial
+        });
         for e in cfg.predecessors(node) {
-            let mut incoming = before[e.from.index()].clone();
+            incoming.clone_from(&before[e.from.index()]);
             a.transfer_edge(cfg, e.from, e, &mut incoming);
             a.join(&mut fact, &incoming);
         }
@@ -238,7 +245,7 @@ fn solve_forward<A: Analysis>(
         }
         work_left = work_left.checked_sub(a.fact_cost(&fact)).ok_or(Exhausted)?;
         if fact != before[node.index()] {
-            before[node.index()] = fact;
+            std::mem::swap(&mut before[node.index()], &mut fact);
             for e in cfg.successors(node) {
                 if queued.insert(e.to.index()) {
                     work.push_back(e.to);
@@ -281,12 +288,14 @@ fn solve_backward<A: Analysis>(
     let order: Vec<NodeIx> = order(cfg).into_iter().rev().collect();
     let heads = heads(cfg, &order, false);
     let mut work: VecDeque<NodeIx> = order.into();
+    let mut fact = initial.clone();
+    let mut outgoing = initial.clone();
     while let Some(node) = work.pop_front() {
         budget = budget.checked_sub(1).ok_or(Exhausted)?;
         queued.remove(node.index());
-        let mut fact = start(node);
+        fact.clone_from(if is_exit(node) { &boundary } else { &initial });
         for e in cfg.successors(node) {
-            let mut outgoing = before[e.to.index()].clone();
+            outgoing.clone_from(&before[e.to.index()]);
             a.transfer_edge(cfg, node, e, &mut outgoing);
             a.join(&mut fact, &outgoing);
         }
@@ -295,7 +304,7 @@ fn solve_backward<A: Analysis>(
         }
         work_left = work_left.checked_sub(a.fact_cost(&fact)).ok_or(Exhausted)?;
         if fact != before[node.index()] {
-            before[node.index()] = fact;
+            std::mem::swap(&mut before[node.index()], &mut fact);
             for e in cfg.predecessors(node) {
                 if queued.insert(e.from.index()) {
                     work.push_back(e.from);

@@ -1,0 +1,487 @@
+>/* Account.cls - original sample class for the grammar snapshot tests. */
+#^^ source.abl comment.block.abl punctuation.definition.comment.begin.abl
+#  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.abl comment.block.abl
+#                                                                       ^^ source.abl comment.block.abl punctuation.definition.comment.end.abl
+>USING Progress.Lang.*.
+#^^^^^ source.abl keyword.other.using.abl
+#     ^ source.abl
+#      ^^^^^^^^^^^^^^^ source.abl entity.name.namespace.abl
+#                     ^ source.abl punctuation.terminator.statement.abl
+>USING bank.model.Owner.
+#^^^^^ source.abl keyword.other.using.abl
+#     ^ source.abl
+#      ^^^^^^^^^^^^^^^^ source.abl entity.name.namespace.abl
+#                      ^ source.abl punctuation.terminator.statement.abl
+>
+>CLASS bank.model.Account INHERITS bank.model.Base IMPLEMENTS bank.model.IAuditable, bank.model.IPrintable FINAL:
+#^^^^^ source.abl storage.type.class.abl
+#     ^ source.abl
+#      ^^^^^^^^^^^^^^^^^^ source.abl entity.name.type.class.abl
+#                        ^ source.abl
+#                         ^^^^^^^^ source.abl storage.modifier.abl
+#                                 ^ source.abl
+#                                  ^^^^^^^^^^^^^^^ source.abl entity.other.inherited-class.abl
+#                                                 ^ source.abl
+#                                                  ^^^^^^^^^^ source.abl storage.modifier.abl
+#                                                            ^ source.abl
+#                                                             ^^^^^^^^^^^^^^^^^^^^^ source.abl entity.other.inherited-class.abl
+#                                                                                  ^ source.abl punctuation.separator.comma.abl
+#                                                                                   ^ source.abl
+#                                                                                    ^^^^^^^^^^^^^^^^^^^^^ source.abl entity.other.inherited-class.abl
+#                                                                                                         ^ source.abl
+#                                                                                                          ^^^^^ source.abl storage.modifier.abl
+#                                                                                                               ^ source.abl punctuation.separator.colon.abl
+>
+>    DEFINE PRIVATE VARIABLE dBalance AS DECIMAL NO-UNDO.
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.define.abl
+#          ^ source.abl
+#           ^^^^^^^ source.abl storage.modifier.abl
+#                  ^ source.abl
+#                   ^^^^^^^^ source.abl keyword.other.abl
+#                           ^ source.abl
+#                            ^^^^^^^^ source.abl entity.name.variable.abl
+#                                    ^ source.abl
+#                                     ^^ source.abl keyword.other.abl
+#                                       ^ source.abl
+#                                        ^^^^^^^ source.abl storage.type.abl
+#                                               ^ source.abl
+#                                                ^^^^^^^ source.abl storage.modifier.abl
+#                                                       ^ source.abl punctuation.terminator.statement.abl
+>    DEFINE PRIVATE STATIC VARIABLE iNext AS INTEGER INITIAL 1 NO-UNDO.
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.define.abl
+#          ^ source.abl
+#           ^^^^^^^ source.abl storage.modifier.abl
+#                  ^ source.abl
+#                   ^^^^^^ source.abl storage.modifier.abl
+#                         ^ source.abl
+#                          ^^^^^^^^ source.abl keyword.other.abl
+#                                  ^ source.abl
+#                                   ^^^^^ source.abl entity.name.variable.abl
+#                                        ^ source.abl
+#                                         ^^ source.abl keyword.other.abl
+#                                           ^ source.abl
+#                                            ^^^^^^^ source.abl storage.type.abl
+#                                                   ^ source.abl
+#                                                    ^^^^^^^ source.abl keyword.other.abl
+#                                                           ^ source.abl
+#                                                            ^ source.abl constant.numeric.integer.abl
+#                                                             ^ source.abl
+#                                                              ^^^^^^^ source.abl storage.modifier.abl
+#                                                                     ^ source.abl punctuation.terminator.statement.abl
+>
+>    DEFINE PUBLIC PROPERTY Owner AS bank.model.Owner NO-UNDO
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.define.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl storage.modifier.abl
+#                 ^ source.abl
+#                  ^^^^^^^^ source.abl keyword.other.abl
+#                          ^ source.abl
+#                           ^^^^^ source.abl entity.name.variable.abl
+#                                ^ source.abl
+#                                 ^^ source.abl keyword.other.abl
+#                                   ^ source.abl
+#                                    ^^^^^^^^^^^^^^^^ source.abl entity.name.type.abl
+#                                                    ^ source.abl
+#                                                     ^^^^^^^ source.abl storage.modifier.abl
+>        GET.
+#^^^^^^^^ source.abl
+#        ^^^ source.abl keyword.other.abl
+#           ^ source.abl punctuation.terminator.statement.abl
+>        PRIVATE SET.
+#^^^^^^^^ source.abl
+#        ^^^^^^^ source.abl storage.modifier.abl
+#               ^ source.abl
+#                ^^^ source.abl keyword.other.abl
+#                   ^ source.abl punctuation.terminator.statement.abl
+>
+>    DEFINE PUBLIC PROPERTY Number AS INTEGER NO-UNDO GET. SET.
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.define.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl storage.modifier.abl
+#                 ^ source.abl
+#                  ^^^^^^^^ source.abl keyword.other.abl
+#                          ^ source.abl
+#                           ^^^^^^ source.abl entity.name.variable.abl
+#                                 ^ source.abl
+#                                  ^^ source.abl keyword.other.abl
+#                                    ^ source.abl
+#                                     ^^^^^^^ source.abl storage.type.abl
+#                                            ^ source.abl
+#                                             ^^^^^^^ source.abl storage.modifier.abl
+#                                                    ^ source.abl
+#                                                     ^^^ source.abl keyword.other.abl
+#                                                        ^ source.abl punctuation.terminator.statement.abl
+#                                                         ^ source.abl
+#                                                          ^^^ source.abl keyword.other.abl
+#                                                             ^ source.abl punctuation.terminator.statement.abl
+>
+>    DEFINE PUBLIC EVENT Overdrawn SIGNATURE VOID (INPUT dAmount AS DECIMAL).
+#^^^^ source.abl
+#    ^^^^^^ source.abl keyword.other.define.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl storage.modifier.abl
+#                 ^ source.abl
+#                  ^^^^^ source.abl keyword.other.abl
+#                       ^ source.abl
+#                        ^^^^^^^^^ source.abl entity.name.variable.abl
+#                                 ^ source.abl
+#                                  ^^^^^^^^^ source.abl keyword.other.abl
+#                                           ^ source.abl
+#                                            ^^^^ source.abl storage.type.abl
+#                                                ^ source.abl
+#                                                 ^ source.abl punctuation.section.parens.begin.abl
+#                                                  ^^^^^ source.abl storage.modifier.abl
+#                                                       ^ source.abl
+#                                                        ^^^^^^^ source.abl variable.parameter.abl
+#                                                               ^ source.abl
+#                                                                ^^ source.abl keyword.other.abl
+#                                                                  ^ source.abl
+#                                                                   ^^^^^^^ source.abl storage.type.abl
+#                                                                          ^ source.abl punctuation.section.parens.end.abl
+#                                                                           ^ source.abl punctuation.terminator.statement.abl
+>
+>    CONSTRUCTOR PUBLIC Account(INPUT poOwner AS bank.model.Owner):
+#^^^^ source.abl
+#    ^^^^^^^^^^^ source.abl storage.type.method.abl
+#               ^ source.abl
+#                ^^^^^^ source.abl storage.modifier.abl
+#                      ^ source.abl
+#                       ^^^^^^^ source.abl entity.name.function.method.abl
+#                              ^ source.abl punctuation.section.parens.begin.abl
+#                               ^^^^^ source.abl storage.modifier.abl
+#                                    ^ source.abl
+#                                     ^^^^^^^ source.abl variable.parameter.abl
+#                                            ^ source.abl
+#                                             ^^ source.abl keyword.other.abl
+#                                               ^ source.abl
+#                                                ^^^^^^^^^^^^^^^^ source.abl entity.name.type.abl
+#                                                                ^ source.abl punctuation.section.parens.end.abl
+#                                                                 ^ source.abl punctuation.separator.colon.abl
+>        SUPER().
+#^^^^^^^^ source.abl
+#        ^^^^^ source.abl support.function.abl
+#             ^ source.abl punctuation.section.parens.begin.abl
+#              ^ source.abl punctuation.section.parens.end.abl
+#               ^ source.abl punctuation.terminator.statement.abl
+>        THIS-OBJECT:Owner = poOwner.
+#^^^^^^^^ source.abl
+#        ^^^^^^^^^^^ source.abl variable.language.abl
+#                   ^ source.abl punctuation.accessor.abl
+#                    ^^^^^ source.abl variable.other.property.abl
+#                         ^ source.abl
+#                          ^ source.abl keyword.operator.assignment.abl
+#                           ^ source.abl
+#                            ^^^^^^^ source.abl variable.other.abl
+#                                   ^ source.abl punctuation.terminator.statement.abl
+>        Number = iNext.
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl variable.other.abl
+#              ^ source.abl
+#               ^ source.abl keyword.operator.assignment.abl
+#                ^ source.abl
+#                 ^^^^^ source.abl variable.other.abl
+#                      ^ source.abl punctuation.terminator.statement.abl
+>        iNext = iNext + 1.
+#^^^^^^^^ source.abl
+#        ^^^^^ source.abl variable.other.abl
+#             ^ source.abl
+#              ^ source.abl keyword.operator.assignment.abl
+#               ^ source.abl
+#                ^^^^^ source.abl variable.other.abl
+#                     ^ source.abl
+#                      ^ source.abl keyword.operator.arithmetic.abl
+#                       ^ source.abl
+#                        ^ source.abl constant.numeric.integer.abl
+#                         ^ source.abl punctuation.terminator.statement.abl
+>    END CONSTRUCTOR.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^^^^^^^ source.abl keyword.other.abl
+#                   ^ source.abl punctuation.terminator.statement.abl
+>
+>    METHOD PUBLIC VOID Deposit(INPUT dAmount AS DECIMAL):
+#^^^^ source.abl
+#    ^^^^^^ source.abl storage.type.method.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl storage.modifier.abl
+#                 ^ source.abl
+#                  ^^^^ source.abl storage.type.abl
+#                      ^ source.abl
+#                       ^^^^^^^ source.abl entity.name.function.method.abl
+#                              ^ source.abl punctuation.section.parens.begin.abl
+#                               ^^^^^ source.abl storage.modifier.abl
+#                                    ^ source.abl
+#                                     ^^^^^^^ source.abl variable.parameter.abl
+#                                            ^ source.abl
+#                                             ^^ source.abl keyword.other.abl
+#                                               ^ source.abl
+#                                                ^^^^^^^ source.abl storage.type.abl
+#                                                       ^ source.abl punctuation.section.parens.end.abl
+#                                                        ^ source.abl punctuation.separator.colon.abl
+>        IF dAmount <= 0 THEN
+#^^^^^^^^ source.abl
+#        ^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^^^^^^^ source.abl variable.other.abl
+#                  ^ source.abl
+#                   ^^ source.abl keyword.operator.comparison.abl
+#                     ^ source.abl
+#                      ^ source.abl constant.numeric.integer.abl
+#                       ^ source.abl
+#                        ^^^^ source.abl keyword.control.abl
+>            UNDO, THROW NEW AppError("Amount must be positive", 1).
+#^^^^^^^^^^^^ source.abl
+#            ^^^^ source.abl keyword.control.abl
+#                ^ source.abl punctuation.separator.comma.abl
+#                 ^ source.abl
+#                  ^^^^^ source.abl keyword.control.abl
+#                       ^ source.abl
+#                        ^^^ source.abl keyword.operator.new.abl
+#                           ^ source.abl
+#                            ^^^^^^^^ source.abl entity.name.type.abl
+#                                    ^ source.abl punctuation.section.parens.begin.abl
+#                                     ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                                      ^^^^^^^^^^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                                             ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                              ^ source.abl punctuation.separator.comma.abl
+#                                                               ^ source.abl
+#                                                                ^ source.abl constant.numeric.integer.abl
+#                                                                 ^ source.abl punctuation.section.parens.end.abl
+#                                                                  ^ source.abl punctuation.terminator.statement.abl
+>        dBalance += dAmount.
+#^^^^^^^^ source.abl
+#        ^^^^^^^^ source.abl variable.other.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.operator.assignment.compound.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl variable.other.abl
+#                           ^ source.abl punctuation.terminator.statement.abl
+>    END METHOD.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^^ source.abl keyword.other.abl
+#              ^ source.abl punctuation.terminator.statement.abl
+>
+>    METHOD PUBLIC LOGICAL Withdraw(INPUT dAmount AS DECIMAL):
+#^^^^ source.abl
+#    ^^^^^^ source.abl storage.type.method.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl storage.modifier.abl
+#                 ^ source.abl
+#                  ^^^^^^^ source.abl storage.type.abl
+#                         ^ source.abl
+#                          ^^^^^^^^ source.abl entity.name.function.method.abl
+#                                  ^ source.abl punctuation.section.parens.begin.abl
+#                                   ^^^^^ source.abl storage.modifier.abl
+#                                        ^ source.abl
+#                                         ^^^^^^^ source.abl variable.parameter.abl
+#                                                ^ source.abl
+#                                                 ^^ source.abl keyword.other.abl
+#                                                   ^ source.abl
+#                                                    ^^^^^^^ source.abl storage.type.abl
+#                                                           ^ source.abl punctuation.section.parens.end.abl
+#                                                            ^ source.abl punctuation.separator.colon.abl
+>        IF dAmount > dBalance THEN DO:
+#^^^^^^^^ source.abl
+#        ^^ source.abl keyword.control.abl
+#          ^ source.abl
+#           ^^^^^^^ source.abl variable.other.abl
+#                  ^ source.abl
+#                   ^ source.abl keyword.operator.comparison.abl
+#                    ^ source.abl
+#                     ^^^^^^^^ source.abl variable.other.abl
+#                             ^ source.abl
+#                              ^^^^ source.abl keyword.control.abl
+#                                  ^ source.abl
+#                                   ^^ source.abl keyword.control.abl
+#                                     ^ source.abl punctuation.separator.colon.abl
+>            Overdrawn:Publish(dAmount - dBalance).
+#^^^^^^^^^^^^ source.abl
+#            ^^^^^^^^^ source.abl variable.other.abl
+#                     ^ source.abl punctuation.accessor.abl
+#                      ^^^^^^^ source.abl entity.name.function.member.abl
+#                             ^ source.abl punctuation.section.parens.begin.abl
+#                              ^^^^^^^ source.abl variable.other.abl
+#                                     ^ source.abl
+#                                      ^ source.abl keyword.operator.arithmetic.abl
+#                                       ^ source.abl
+#                                        ^^^^^^^^ source.abl variable.other.abl
+#                                                ^ source.abl punctuation.section.parens.end.abl
+#                                                 ^ source.abl punctuation.terminator.statement.abl
+>            RETURN FALSE.
+#^^^^^^^^^^^^ source.abl
+#            ^^^^^^ source.abl keyword.control.abl
+#                  ^ source.abl
+#                   ^^^^^ source.abl constant.language.boolean.abl
+#                        ^ source.abl punctuation.terminator.statement.abl
+>        END.
+#^^^^^^^^ source.abl
+#        ^^^ source.abl keyword.control.abl
+#           ^ source.abl punctuation.terminator.statement.abl
+>        dBalance -= dAmount.
+#^^^^^^^^ source.abl
+#        ^^^^^^^^ source.abl variable.other.abl
+#                ^ source.abl
+#                 ^^ source.abl keyword.operator.assignment.compound.abl
+#                   ^ source.abl
+#                    ^^^^^^^ source.abl variable.other.abl
+#                           ^ source.abl punctuation.terminator.statement.abl
+>        RETURN TRUE.
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl keyword.control.abl
+#              ^ source.abl
+#               ^^^^ source.abl constant.language.boolean.abl
+#                   ^ source.abl punctuation.terminator.statement.abl
+>    END METHOD.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^^ source.abl keyword.other.abl
+#              ^ source.abl punctuation.terminator.statement.abl
+>
+>    METHOD PUBLIC STATIC bank.model.Account Open(INPUT poOwner AS CLASS bank.model.Owner):
+#^^^^ source.abl
+#    ^^^^^^ source.abl storage.type.method.abl
+#          ^ source.abl
+#           ^^^^^^ source.abl storage.modifier.abl
+#                 ^ source.abl
+#                  ^^^^^^ source.abl storage.modifier.abl
+#                        ^ source.abl
+#                         ^^^^^^^^^^^^^^^^^^ source.abl entity.name.type.abl
+#                                           ^ source.abl
+#                                            ^^^^ source.abl entity.name.function.method.abl
+#                                                ^ source.abl punctuation.section.parens.begin.abl
+#                                                 ^^^^^ source.abl storage.modifier.abl
+#                                                      ^ source.abl
+#                                                       ^^^^^^^ source.abl variable.parameter.abl
+#                                                              ^ source.abl
+#                                                               ^^ source.abl keyword.other.abl
+#                                                                 ^ source.abl
+#                                                                  ^^^^^ source.abl keyword.other.abl
+#                                                                       ^ source.abl
+#                                                                        ^^^^^^^^^^^^^^^^ source.abl entity.name.type.abl
+#                                                                                        ^ source.abl punctuation.section.parens.end.abl
+#                                                                                         ^ source.abl punctuation.separator.colon.abl
+>        DEFINE VARIABLE oAccount AS bank.model.Account NO-UNDO.
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl keyword.other.define.abl
+#              ^ source.abl
+#               ^^^^^^^^ source.abl keyword.other.abl
+#                       ^ source.abl
+#                        ^^^^^^^^ source.abl entity.name.variable.abl
+#                                ^ source.abl
+#                                 ^^ source.abl keyword.other.abl
+#                                   ^ source.abl
+#                                    ^^^^^^^^^^^^^^^^^^ source.abl entity.name.type.abl
+#                                                      ^ source.abl
+#                                                       ^^^^^^^ source.abl storage.modifier.abl
+#                                                              ^ source.abl punctuation.terminator.statement.abl
+>        oAccount = NEW bank.model.Account(poOwner).
+#^^^^^^^^ source.abl
+#        ^^^^^^^^ source.abl variable.other.abl
+#                ^ source.abl
+#                 ^ source.abl keyword.operator.assignment.abl
+#                  ^ source.abl
+#                   ^^^ source.abl keyword.operator.new.abl
+#                      ^ source.abl
+#                       ^^^^^^^^^^^^^^^^^^ source.abl entity.name.type.abl
+#                                         ^ source.abl punctuation.section.parens.begin.abl
+#                                          ^^^^^^^ source.abl variable.other.abl
+#                                                 ^ source.abl punctuation.section.parens.end.abl
+#                                                  ^ source.abl punctuation.terminator.statement.abl
+>        RETURN oAccount.
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl keyword.control.abl
+#              ^ source.abl
+#               ^^^^^^^^ source.abl variable.other.abl
+#                       ^ source.abl punctuation.terminator.statement.abl
+>    END METHOD.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^^ source.abl keyword.other.abl
+#              ^ source.abl punctuation.terminator.statement.abl
+>
+>    METHOD OVERRIDE PUBLIC CHARACTER ToString():
+#^^^^ source.abl
+#    ^^^^^^ source.abl storage.type.method.abl
+#          ^ source.abl
+#           ^^^^^^^^ source.abl storage.modifier.abl
+#                   ^ source.abl
+#                    ^^^^^^ source.abl storage.modifier.abl
+#                          ^ source.abl
+#                           ^^^^^^^^^ source.abl storage.type.abl
+#                                    ^ source.abl
+#                                     ^^^^^^^^ source.abl entity.name.function.method.abl
+#                                             ^ source.abl punctuation.section.parens.begin.abl
+#                                              ^ source.abl punctuation.section.parens.end.abl
+#                                               ^ source.abl punctuation.separator.colon.abl
+>        RETURN SUBSTITUTE("Account &1 of &2: &3", Number, Owner:Name, STRING(dBalance)).
+#^^^^^^^^ source.abl
+#        ^^^^^^ source.abl keyword.control.abl
+#              ^ source.abl
+#               ^^^^^^^^^^ source.abl support.function.abl
+#                         ^ source.abl punctuation.section.parens.begin.abl
+#                          ^ source.abl string.quoted.double.abl punctuation.definition.string.begin.abl
+#                           ^^^^^^^^^^^^^^^^^^^^ source.abl string.quoted.double.abl
+#                                               ^ source.abl string.quoted.double.abl punctuation.definition.string.end.abl
+#                                                ^ source.abl punctuation.separator.comma.abl
+#                                                 ^ source.abl
+#                                                  ^^^^^^ source.abl variable.other.abl
+#                                                        ^ source.abl punctuation.separator.comma.abl
+#                                                         ^ source.abl
+#                                                          ^^^^^ source.abl variable.other.abl
+#                                                               ^ source.abl punctuation.accessor.abl
+#                                                                ^^^^ source.abl variable.other.property.abl
+#                                                                    ^ source.abl punctuation.separator.comma.abl
+#                                                                     ^ source.abl
+#                                                                      ^^^^^^ source.abl support.function.abl
+#                                                                            ^ source.abl punctuation.section.parens.begin.abl
+#                                                                             ^^^^^^^^ source.abl variable.other.abl
+#                                                                                     ^ source.abl punctuation.section.parens.end.abl
+#                                                                                      ^ source.abl punctuation.section.parens.end.abl
+#                                                                                       ^ source.abl punctuation.terminator.statement.abl
+>    END METHOD.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^^ source.abl keyword.other.abl
+#              ^ source.abl punctuation.terminator.statement.abl
+>
+>    DESTRUCTOR PUBLIC Account():
+#^^^^ source.abl
+#    ^^^^^^^^^^ source.abl storage.type.method.abl
+#              ^ source.abl
+#               ^^^^^^ source.abl storage.modifier.abl
+#                     ^ source.abl
+#                      ^^^^^^^ source.abl entity.name.function.method.abl
+#                             ^ source.abl punctuation.section.parens.begin.abl
+#                              ^ source.abl punctuation.section.parens.end.abl
+#                               ^ source.abl punctuation.separator.colon.abl
+>        dBalance = 0.
+#^^^^^^^^ source.abl
+#        ^^^^^^^^ source.abl variable.other.abl
+#                ^ source.abl
+#                 ^ source.abl keyword.operator.assignment.abl
+#                  ^ source.abl
+#                   ^ source.abl constant.numeric.integer.abl
+#                    ^ source.abl punctuation.terminator.statement.abl
+>    END DESTRUCTOR.
+#^^^^ source.abl
+#    ^^^ source.abl keyword.control.abl
+#       ^ source.abl
+#        ^^^^^^^^^^ source.abl keyword.other.abl
+#                  ^ source.abl punctuation.terminator.statement.abl
+>
+>END CLASS.
+#^^^ source.abl keyword.control.abl
+#   ^ source.abl
+#    ^^^^^ source.abl keyword.other.abl
+#         ^ source.abl punctuation.terminator.statement.abl
+>

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/oxabl-project/oxabl/compare/oxabl_style-v0.2.0...oxabl_style-v0.2.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **cli:** drop internal requirement tags from help and schema text ([f1d1dfc](https://github.com/oxabl-project/oxabl/commit/f1d1dfc6d93c4543f8da31cf3d5c7278bba7515a))
+* **cli:** user-facing gaps found while writing the user docs ([d34d5e7](https://github.com/oxabl-project/oxabl/commit/d34d5e790391fddecf68ced90ba79edd8c20e432))
+
 ## [0.2.0](https://github.com/oxabl-project/oxabl/compare/oxabl_style-v0.1.0...oxabl_style-v0.2.0) (2026-08-14)
 
 

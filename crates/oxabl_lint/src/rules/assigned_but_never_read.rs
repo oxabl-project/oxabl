@@ -458,6 +458,8 @@ mod tests {
     }
     fn var_decl(n: &str) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -470,6 +472,8 @@ mod tests {
     }
     fn shared_var_decl(n: &str) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(n),
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -579,6 +583,8 @@ mod tests {
     fn fires_on_an_array_element_assignment() {
         // `arr[i] = 1` credits the array symbol, so the walk descends to it.
         let arr = stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id("arr"),
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -675,6 +681,8 @@ mod tests {
         // dead store. LINT0002 owns the warn-or-silent call for these.
         let stmts = vec![
             stmt(StatementKind::DefineTempTable {
+                access: None,
+                is_static: false,
                 name: id("tt"),
                 no_undo: false,
                 like_table: None,

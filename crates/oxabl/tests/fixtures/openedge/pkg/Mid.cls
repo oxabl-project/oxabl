@@ -1,0 +1,5 @@
+CLASS pkg.Mid INHERITS pkg.Base:
+    METHOD PUBLIC CHARACTER Depth():
+        RETURN "mid".
+    END METHOD.
+END CLASS.

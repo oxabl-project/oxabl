@@ -565,3 +565,61 @@ fn zero_jobs_is_a_usage_error() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(fs::read_to_string(&file).unwrap(), MIS_INDENTED);
 }
+
+/// Format `source` under `keyword_case = "Preserve"` with the expanding keyword
+/// options on, twice, and return the first result after checking that the second
+/// run changes nothing.
+fn expand_under_preserve(source: &str) -> String {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"t\"\n[workspace.style]\nkeyword_case = \"Preserve\"\n\
+         keyword_abbreviation = \"AbbreviateNothing\"\nend_with_type = true\n",
+    );
+    let file = tmp.path().join("a.p");
+    write(&file, source);
+    let out = oxabl().arg("format").arg(&file).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let first = fs::read_to_string(&file).unwrap();
+    let out = oxabl()
+        .arg("format")
+        .arg("--check")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "a second run changes nothing:\n{first}"
+    );
+    first
+}
+
+/// Under `Preserve`, a word the formatter expands or inserts takes the letter
+/// case of the token it replaces or follows: a lowercase file stays lowercase,
+/// an uppercase one stays uppercase, and a capitalised one is capitalised.
+#[test]
+fn preserve_keeps_the_case_of_expanded_and_inserted_words() {
+    assert_eq!(
+        expand_under_preserve("def var i as int no-undo.\nprocedure foo:\n    i = 1.\nend.\n"),
+        "define variable i as integer no-undo.\nprocedure foo:\n    i = 1.\nend procedure.\n"
+    );
+    assert_eq!(
+        expand_under_preserve("DEF VAR i AS INT NO-UNDO.\nPROCEDURE foo:\n    i = 1.\nEND.\n"),
+        "DEFINE VARIABLE i AS INTEGER NO-UNDO.\nPROCEDURE foo:\n    i = 1.\nEND PROCEDURE.\n"
+    );
+    assert_eq!(
+        expand_under_preserve("Def Var i As Int No-undo.\nProcedure foo:\n    i = 1.\nEnd.\n"),
+        "Define Variable i As Integer No-undo.\nProcedure foo:\n    i = 1.\nEnd Procedure.\n"
+    );
+}
+
+/// A file that mixes cases gets each word in the case of its own neighbour.
+#[test]
+fn preserve_follows_each_token_in_a_mixed_case_file() {
+    assert_eq!(
+        expand_under_preserve(
+            "DEFINE VARIABLE i as int.\nprocedure foo:\nend.\nFUNCTION f RETURNS INT ():\n    RETURN 1.\nEND.\n"
+        ),
+        "DEFINE VARIABLE i as integer.\nprocedure foo:\nend procedure.\nFUNCTION f RETURNS INTEGER ():\n    RETURN 1.\nEND FUNCTION.\n"
+    );
+}

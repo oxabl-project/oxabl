@@ -6,10 +6,14 @@ src/**
 node_modules/**
 esbuild.mjs
 tsconfig.json
-vitest.config.*
+vitest*.config.*
 scripts/**
 **/*.test.ts
 **/*.map
 **/tsconfig.json
 pnpm-lock.yaml
 pnpm-workspace.yaml
+test/**
+dist/**
+.vscode-test/**
+*.vsix

@@ -1,0 +1,308 @@
+//! Reading a unit, its includes and the classes it uses.
+
+use std::collections::HashSet;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use sha2::{Digest, Sha256};
+
+use super::outcome::{Outcome, Read};
+use super::resolve::{self, Found};
+use super::scan::{Fault, scan};
+use super::{Compiler, output};
+use crate::faults::Faults;
+
+/// What one `COMPILE` request fixes for all its units.
+pub struct Context<'a> {
+    pub propath: &'a [String],
+    pub stage: &'a Path,
+    pub xref: &'a str,
+    pub debug_list: bool,
+    pub listing: bool,
+    pub dlc: &'a Path,
+    pub faults: &'a Faults,
+    /// Whether a class compiled on the side leaves r-code in the stage; a
+    /// compile outside the protocol leaves none.
+    pub save_strays: bool,
+    /// The compile names of the request.
+    pub request: &'a [String],
+}
+
+/// A class a session has bound: the file, its hash then, and what the
+/// class read.
+#[derive(Clone)]
+pub struct Bound {
+    real: PathBuf,
+    sha256: String,
+    reads: Vec<Read>,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn class_of_unit(name: &str) -> Option<String> {
+    name.strip_suffix(".cls")
+        .map(|stem| stem.replace('/', ".").to_ascii_lowercase())
+}
+
+impl Compiler {
+    pub(super) fn compile_unit(&mut self, ctx: &Context<'_>, name: &str) -> io::Result<Outcome> {
+        let mut out = Outcome::new();
+        let Some(found) = resolve::find(ctx.propath, name, ctx.dlc) else {
+            out.fail(name, 0, 293, &format!("Cannot find or open file {name}"));
+            return Ok(out);
+        };
+        let out = self.compile_found(ctx, name, &found);
+        if out.ok && !out.no_output {
+            output::write(ctx, name, &out)?;
+        }
+        Ok(out)
+    }
+
+    /// Compiles the unit `name`, found at `found`, and writes nothing.
+    pub fn compile_found(&mut self, ctx: &Context<'_>, name: &str, found: &Found) -> Outcome {
+        let mut out = Outcome::new();
+        let mut visited: HashSet<String> = class_of_unit(name).into_iter().collect();
+        self.visit_file(ctx, name, found, &mut out, &mut visited, true);
+        if out.slow {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        out
+    }
+
+    fn visit_file(
+        &mut self,
+        ctx: &Context<'_>,
+        unit: &str,
+        found: &Found,
+        out: &mut Outcome,
+        visited: &mut HashSet<String>,
+        is_unit: bool,
+    ) {
+        let bytes = match std::fs::read(&found.real) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                out.fail(&found.shown, 0, 293, &format!("Cannot read: {error}"));
+                return;
+            }
+        };
+        out.record(Read {
+            shown: found.shown.clone(),
+            sha256: sha256_hex(&bytes),
+            listed: true,
+        });
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        if is_unit {
+            out.source = text.clone();
+        }
+        let found_in_text = scan(&text);
+        for raw in &found_in_text.xref_raw {
+            out.xref_raw.extend_from_slice(raw);
+        }
+        out.says.extend(found_in_text.says.iter().cloned());
+        for (fault, row) in &found_in_text.faults {
+            apply(*fault, *row, &found.shown, unit, ctx.faults, out);
+        }
+        for path in &found_in_text.reads {
+            if let Ok(bytes) = std::fs::read(path) {
+                out.record(Read {
+                    shown: path.clone(),
+                    sha256: sha256_hex(&bytes),
+                    listed: true,
+                });
+            }
+        }
+        for (include, text) in found_in_text
+            .includes
+            .iter()
+            .zip(&found_in_text.include_texts)
+        {
+            out.references.push(("INCLUDE", text.clone()));
+            let other = found_in_text
+                .resolve_other
+                .iter()
+                .find(|(name, _)| name == include)
+                .map(|(_, path)| resolve::Found {
+                    shown: path.clone(),
+                    real: PathBuf::from(path),
+                })
+                .filter(|file| file.real.is_file());
+            match other.or_else(|| resolve::find(ctx.propath, include, ctx.dlc)) {
+                Some(file) if out.has_read(&file.shown) => {}
+                Some(file) => self.visit_file(ctx, unit, &file, out, visited, false),
+                None => out.fail(
+                    &found.shown,
+                    0,
+                    293,
+                    &format!("Cannot find or open include file {include}"),
+                ),
+            }
+        }
+        for class in &found_in_text.classes {
+            out.references.push(("NEW", class.clone()));
+            if !out.uses.iter().any(|used| used.eq_ignore_ascii_case(class)) {
+                out.uses.push(class.clone());
+            }
+            self.visit_class(ctx, unit, class, out, visited);
+        }
+    }
+
+    fn visit_class(
+        &mut self,
+        ctx: &Context<'_>,
+        unit: &str,
+        class: &str,
+        out: &mut Outcome,
+        visited: &mut HashSet<String>,
+    ) {
+        let lower = class.to_ascii_lowercase();
+        if !visited.insert(lower.clone()) {
+            return;
+        }
+        if let Some(bound) = self.classes.get(&lower).cloned() {
+            let same =
+                std::fs::read(&bound.real).is_ok_and(|bytes| sha256_hex(&bytes) == bound.sha256);
+            if same {
+                for read in bound.reads {
+                    out.record(read);
+                }
+                return;
+            }
+            self.classes.remove(&lower);
+        }
+        let relative = class.replace('.', "/");
+        let rcode = format!("{relative}.r");
+        let source = format!("{relative}.cls");
+        // The first entry that holds the r-code or the source decides, the
+        // r-code first; `$OUT` is the first entry.
+        for entry in ctx.propath {
+            let entry = std::slice::from_ref(entry);
+            if let Some(found) = resolve::find(entry, &rcode, ctx.dlc)
+                && let Ok(bytes) = std::fs::read(&found.real)
+            {
+                if let Some(stale) = stale_partner(ctx, unit, &bytes) {
+                    out.fail(
+                        &found.shown,
+                        0,
+                        12927,
+                        &format!(
+                            "{} was compiled from another version of {stale}",
+                            found.shown
+                        ),
+                    );
+                    out.fail(
+                        &found.shown,
+                        0,
+                        196,
+                        &format!("Could not understand {class}"),
+                    );
+                }
+                let read = Read {
+                    shown: found.shown,
+                    sha256: sha256_hex(&bytes),
+                    listed: false,
+                };
+                self.bind(lower, found.real, read.sha256.clone(), vec![read.clone()]);
+                out.record(read);
+                return;
+            }
+            let Some(found) = resolve::find(entry, &source, ctx.dlc) else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(&found.real) else {
+                return;
+            };
+            let real = found.real.clone();
+            let mut side = Outcome::new();
+            self.visit_file(ctx, unit, &found, &mut side, visited, false);
+            if ctx.save_strays {
+                let _ = output::write_stray(ctx, &relative);
+            }
+            self.bind(lower, real, sha256_hex(&bytes), side.reads.clone());
+            out.merge(side);
+            return;
+        }
+    }
+
+    fn bind(&mut self, class: String, real: PathBuf, sha256: String, reads: Vec<Read>) {
+        self.classes.insert(
+            class,
+            Bound {
+                real,
+                sha256,
+                reads,
+            },
+        );
+    }
+}
+
+/// The model of error 12927, as measured with r-code of two classes of a
+/// cycle that each compiled against another version of the other: class
+/// r-code of another unit of the request, compiled from a source of that unit
+/// whose bytes have changed since, does not fit the class being compiled.
+/// The unit it names, or `None` when the r-code fits.
+fn stale_partner(ctx: &Context<'_>, unit: &str, rcode: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(rcode);
+    let mut lines = text.lines();
+    let name = lines.find_map(|line| line.strip_prefix("unit "))?;
+    if name == unit || !ctx.request.iter().any(|other| other == name) {
+        return None;
+    }
+    let (path, sha256) = lines
+        .find_map(|line| line.strip_prefix("read "))?
+        .split_once(' ')?;
+    let now = std::fs::read(path).ok().map(|bytes| sha256_hex(&bytes));
+    (now.as_deref() != Some(sha256)).then(|| name.to_string())
+}
+
+fn marker(faults: &Faults, kind: &str, unit: &str) -> Option<PathBuf> {
+    let state = faults.state.as_ref()?;
+    Some(state.join(format!("{kind}-{}", unit.replace('/', "_"))))
+}
+
+fn apply(fault: Fault, row: usize, file: &str, unit: &str, faults: &Faults, out: &mut Outcome) {
+    match fault {
+        Fault::Fail => out.fail(file, row, 1234, "FAKE-FAIL"),
+        Fault::Warn => out.warn(file, row, "FAKE-WARN"),
+        Fault::WarnNoPosition => out.warn_without_position("FAKE-WARN-NOPOS"),
+        Fault::Crash => std::process::exit(1),
+        Fault::FailOnce => {
+            if let Some(marker) = marker(faults, "fail-once", unit)
+                && !marker.exists()
+            {
+                let _ = std::fs::write(&marker, b"");
+                out.fail(file, row, 1234, "FAKE-FAIL-ONCE");
+            }
+        }
+        Fault::FailTwice => {
+            for kind in ["fail-twice-1", "fail-twice-2"] {
+                if let Some(marker) = marker(faults, kind, unit)
+                    && !marker.exists()
+                {
+                    let _ = std::fs::write(&marker, b"");
+                    out.fail(file, row, 1234, "FAKE-FAIL-TWICE");
+                    return;
+                }
+            }
+        }
+        Fault::CrashOnce => match marker(faults, "crash-once", unit) {
+            Some(marker) if !marker.exists() => {
+                let _ = std::fs::write(&marker, b"");
+                std::process::exit(1);
+            }
+            Some(_) => {}
+            None => std::process::exit(1),
+        },
+        Fault::Hang => loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        },
+        Fault::Slow => out.slow = true,
+        Fault::NoOutput => out.no_output = true,
+        Fault::FailSilent => out.ok = false,
+    }
+}

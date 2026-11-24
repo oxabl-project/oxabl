@@ -18,7 +18,6 @@ pub(crate) fn block_children(kind: &StatementKind) -> Option<Vec<&Statement>> {
         | StatementKind::Repeat { body, .. }
         | StatementKind::ForEach { body, .. }
         | StatementKind::Procedure { body, .. }
-        | StatementKind::Function { body, .. }
         | StatementKind::Class { body, .. }
         | StatementKind::Interface { body, .. }
         | StatementKind::Catch { body, .. }
@@ -26,27 +25,25 @@ pub(crate) fn block_children(kind: &StatementKind) -> Option<Vec<&Statement>> {
         | StatementKind::Destructor { body } => {
             out.extend(body.iter());
         }
-        StatementKind::Method {
-            parameters, body, ..
-        }
-        | StatementKind::Constructor {
-            parameters, body, ..
-        } => {
-            out.extend(parameters.iter());
+        StatementKind::Method { body, .. } | StatementKind::Constructor { body, .. } => {
             out.extend(body.iter());
         }
+        // The parser prepends the signature parameters to a function body.
+        // They belong to the header, and a function body defines no parameter.
+        StatementKind::Function { body, .. } => {
+            out.extend(
+                body.iter()
+                    .skip_while(|s| matches!(s.kind, StatementKind::DefineParameter { .. })),
+            );
+        }
         StatementKind::Property {
-            get_body,
-            set_body,
-            set_parameters,
-            ..
+            get_body, set_body, ..
         } => {
             let mut any = false;
             if let Some(b) = get_body {
                 any = true;
                 out.extend(b.iter());
             }
-            out.extend(set_parameters.iter());
             if let Some(b) = set_body {
                 any = true;
                 out.extend(b.iter());
@@ -92,9 +89,8 @@ pub(crate) fn block_children(kind: &StatementKind) -> Option<Vec<&Statement>> {
         }
         _ => return None,
     }
-    // Signature parameters are synthesized `DefineParameter` statements with no
-    // source extent. They own no line, and their `0..0` span would sort them
-    // first and make them claim line 0.
+    // Statements with no source extent own no line, and their `0..0` span would
+    // sort them first and make them claim line 0.
     out.retain(|s| s.span != Span::DUMMY);
     // Guarantee source order regardless of field declaration order.
     out.sort_by_key(|s| s.span.start);

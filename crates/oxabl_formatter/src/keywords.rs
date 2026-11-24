@@ -326,18 +326,44 @@ fn type_list_entries(
     entries
 }
 
+/// `word` in the letter case of `reference`: lowercase when `reference` has no
+/// uppercase letter, uppercase when it has no lowercase letter, otherwise
+/// capitalised (each hyphen-separated part).
+pub(crate) fn case_like(word: &str, reference: &str) -> String {
+    let upper = reference.chars().any(char::is_uppercase);
+    let lower = reference.chars().any(char::is_lowercase);
+    match (upper, lower) {
+        (false, _) => word.to_ascii_lowercase(),
+        (true, false) => word.to_ascii_uppercase(),
+        (true, true) => word
+            .to_ascii_lowercase()
+            .split('-')
+            .map(|part| {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_ascii_uppercase().to_string() + chars.as_str()
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("-"),
+    }
+}
+
 /// Transform one keyword token's source text per the style.
 ///
 /// Abbreviation expansion (`AbbreviateNothing`) replaces the token with its
-/// canonical single-word full form when one exists; recasing then applies. Any
-/// symbolic operator (no letters) is unaffected. `AbbreviateEverything` is not
-/// shortened in v1 (treated as `KeepAbbreviations`).
+/// canonical single-word full form when one exists, in the letter case of the
+/// token it replaces; a token already in full form is left as written. Recasing
+/// then applies. Any symbolic operator (no letters) is unaffected.
+/// `AbbreviateEverything` is not shortened in v1 (treated as
+/// `KeepAbbreviations`).
 pub(crate) fn transform_token(raw: &str, kind: Kind, style: &StyleGuide) -> String {
     let mut s = raw.to_string();
     if style.keyword_abbreviation == KeywordAbbreviation::AbbreviateNothing
         && let Some(full) = canonical_keyword(kind)
+        && !raw.eq_ignore_ascii_case(full)
     {
-        s = full.to_string();
+        s = case_like(full, raw);
     }
     match style.keyword_case {
         KeywordCase::Uppercase => s.to_ascii_uppercase(),

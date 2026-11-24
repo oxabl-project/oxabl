@@ -1,0 +1,172 @@
+//! What a source text refers to and which faults it asks for.
+
+/// A fault a source asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    Fail,
+    FailOnce,
+    FailTwice,
+    Warn,
+    WarnNoPosition,
+    Crash,
+    CrashOnce,
+    Hang,
+    Slow,
+    NoOutput,
+    FailSilent,
+}
+
+/// The references and faults of one text.
+#[derive(Default)]
+pub struct Scan {
+    /// Include names, from `{name}`, `{name args}` and `{"name" args}`.
+    pub includes: Vec<String>,
+    /// The text between the braces of each include, as an XREF names it.
+    pub include_texts: Vec<String>,
+    /// Class names, from `INHERITS`, `IMPLEMENTS` and `NEW`.
+    pub classes: Vec<String>,
+    /// Paths named by `FAKE-READ`.
+    pub reads: Vec<String>,
+    /// Texts named by `FAKE-SAY`: what the program prints when it runs.
+    pub says: Vec<String>,
+    /// Each fault with the line it is on, counted from 1.
+    pub faults: Vec<(Fault, usize)>,
+    /// `FAKE-RESOLVE-OTHER <name> <path>`: the include `name` resolves to `path`.
+    pub resolve_other: Vec<(String, String)>,
+    /// `FAKE-XREF-RAW <text>`: bytes for the end of a text XREF, with `\n` for
+    /// a line break and `\xHH` for the byte HH.
+    pub xref_raw: Vec<Vec<u8>>,
+}
+
+const FAULTS: [(&str, Fault); 11] = [
+    ("FAKE-CRASH-ONCE", Fault::CrashOnce),
+    ("FAKE-FAIL-SILENT", Fault::FailSilent),
+    ("FAKE-FAIL-ONCE", Fault::FailOnce),
+    ("FAKE-FAIL-TWICE", Fault::FailTwice),
+    ("FAKE-CRASH", Fault::Crash),
+    ("FAKE-FAIL", Fault::Fail),
+    ("FAKE-WARN-NOPOS", Fault::WarnNoPosition),
+    ("FAKE-WARN", Fault::Warn),
+    ("FAKE-HANG", Fault::Hang),
+    ("FAKE-SLOW", Fault::Slow),
+    ("FAKE-NO-OUTPUT", Fault::NoOutput),
+];
+
+/// Each include of a line: its name and the text between its braces.
+fn include_name(text: &str) -> Vec<(String, String)> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else { break };
+        let inner = after[..close].trim();
+        let first = inner.split_whitespace().next().unwrap_or("");
+        let first = first.trim_matches('"');
+        let usable = !first.is_empty()
+            && !first.starts_with(['&', '{', '*'])
+            && !first.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && !first.contains('&');
+        if usable {
+            names.push((first.to_string(), inner.to_string()));
+        }
+        rest = &after[close + 1..];
+    }
+    names
+}
+
+fn class_name(word: &str) -> Option<String> {
+    let name = word
+        .split(['(', ',', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('.');
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn classes_of(line: &str) -> Vec<String> {
+    let mut classes = Vec::new();
+    let words: Vec<&str> = line.split_whitespace().collect();
+    for (at, word) in words.iter().enumerate() {
+        match word.to_ascii_uppercase().as_str() {
+            "INHERITS" | "NEW" => {
+                classes.extend(words.get(at + 1).and_then(|next| class_name(next)));
+            }
+            "IMPLEMENTS" => {
+                let rest = words[at + 1..].join(" ");
+                classes.extend(rest.split(',').filter_map(|part| class_name(part.trim())));
+            }
+            _ => {}
+        }
+    }
+    classes
+}
+
+pub fn scan(text: &str) -> Scan {
+    let mut found = Scan::default();
+    for (index, line) in text.lines().enumerate() {
+        for (marker, fault) in FAULTS {
+            if line.contains(marker) {
+                found.faults.push((fault, index + 1));
+                break;
+            }
+        }
+        if let Some((_, rest)) = line.split_once("FAKE-RESOLVE-OTHER") {
+            let mut words = rest.trim().trim_end_matches("*/").split_whitespace();
+            if let (Some(name), Some(path)) = (words.next(), words.next()) {
+                found
+                    .resolve_other
+                    .push((name.to_string(), path.to_string()));
+            }
+            continue;
+        }
+        if let Some((_, raw)) = line.split_once("FAKE-XREF-RAW") {
+            let raw = raw.trim().trim_end_matches("*/").trim();
+            found.xref_raw.push(raw_bytes(raw));
+            continue;
+        }
+        if let Some((_, text)) = line.split_once("FAKE-SAY") {
+            let text = text.trim().trim_end_matches("*/").trim();
+            found.says.push(text.to_string());
+            continue;
+        }
+        if let Some((_, path)) = line.split_once("FAKE-READ") {
+            let path = path.trim().trim_end_matches("*/").trim();
+            found.reads.push(path.to_string());
+        }
+        for (name, text) in include_name(line) {
+            found.includes.push(name);
+            found.include_texts.push(text);
+        }
+        found.classes.extend(classes_of(line));
+    }
+    found
+}
+
+/// The bytes of a `FAKE-XREF-RAW` text: `\n` is a line break and `\xHH` the
+/// byte HH, so a test can write an XREF that is not UTF-8.
+fn raw_bytes(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut rest = text.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        rest = after;
+        if byte == b'\\' {
+            if let Some(after) = rest.strip_prefix(b"n") {
+                bytes.push(b'\n');
+                rest = after;
+                continue;
+            }
+            let hex = rest
+                .strip_prefix(b"x")
+                .and_then(|after| after.get(..2))
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            if let Some(value) = hex {
+                bytes.push(value);
+                rest = &rest[3..];
+                continue;
+            }
+        }
+        bytes.push(byte);
+    }
+    bytes
+}

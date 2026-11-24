@@ -44,9 +44,10 @@ use crate::index::ImportCandidate;
 use crate::symbol::RecordSource;
 use crate::{
     AnalysisContext, ClassKind, ClassLookup, ImportContext, IndexAnswer, IndexName, IndexedFileId,
-    LocateKind, Located, MemberDescriptor, MemberType, NamespaceId, NodeIndexVec, ResolvedType,
-    ScopeId, ScopeKind, ScopeTree, SupertypeRef, Supertypes, Symbol, SymbolFlags, SymbolId,
-    SymbolKind, SymbolTable, UnlinkedRun, builtins, diagnostics, resolve_span,
+    LocateKind, Located, MemberDescriptor, MemberRecord, MemberType, NamespaceId, NodeIndexVec,
+    ResolvedType, ScopeId, ScopeKind, ScopeTree, Site, SiteTarget, SupertypeRef, Supertypes,
+    Symbol, SymbolFlags, SymbolId, SymbolKind, SymbolTable, UnlinkedRun, builtins, diagnostics,
+    resolve_span,
 };
 
 fn method_signature(parameters: &[Statement]) -> Vec<String> {
@@ -1088,15 +1089,7 @@ impl<'a> Walker<'a> {
     /// as one dotted identifier. The database part is stripped and the bare
     /// table name is what resolves; see [`strip_db_qualifier`].
     fn schema_table_id(&self, table: &Identifier) -> Option<TableId> {
-        self.ctx
-            .schema
-            .resolve_table_with_metaschema(&fold_atom(&table.name))
-            .or_else(|| {
-                let bare = strip_db_qualifier(&table.name)?;
-                self.ctx
-                    .schema
-                    .resolve_table_with_metaschema(&fold_atom(bare))
-            })
+        schema_table_named(self.ctx.schema, &fold_atom(&table.name))
     }
 
     /// Core insertion routine. Returns the new `SymbolId` on success;
@@ -1743,8 +1736,12 @@ struct InheritedMember {
     /// an interface contract far more often than an overload.
     data_type: Option<ResolvedType>,
     flags: SymbolFlags,
+    /// The table a buffer member is `FOR`, resolved when the symbol is minted.
+    record: Option<MemberRecord>,
     /// `None` until the first reference names this member.
     symbol: Option<SymbolId>,
+    /// The file of the nearest class in the walk that declares it.
+    file: IndexedFileId,
 }
 
 impl<'a> ResolveWalker<'a> {
@@ -2110,6 +2107,23 @@ impl<'a> ResolveWalker<'a> {
     /// `External` (`FROM ASSEMBLY`) or unlooked-for name is not the workspace's to
     /// supply, and neither is a miss in a namespace the AVM ships.
     fn note_class_site(&mut self, raw: &str, lookup: TypeLookup, site: VirtualSpan) {
+        self.note_class_site_at(raw, lookup, site, Some(site));
+    }
+
+    /// [`Self::note_class_site`] with the navigation site apart from the
+    /// dependency site: a declared type is recorded at the declared name.
+    fn note_class_site_at(
+        &mut self,
+        raw: &str,
+        lookup: TypeLookup,
+        site: VirtualSpan,
+        navigation: Option<VirtualSpan>,
+    ) {
+        if self.ctx.record_sites
+            && let Some(navigation) = navigation
+        {
+            self.note_type_site(raw, lookup, navigation);
+        }
         let (name, outcome) = match lookup {
             TypeLookup::Indexed(sym) => {
                 let Some(file) = self
@@ -2170,7 +2184,38 @@ impl<'a> ResolveWalker<'a> {
         if lookup == TypeLookup::NotFound && could_be_builtin_type(raw) {
             return;
         }
-        self.note_class_site(raw, lookup, site);
+        let navigation = if self.ctx.record_sites {
+            self.type_name_after(raw, site)
+        } else {
+            None
+        };
+        self.note_class_site_at(raw, lookup, site, navigation);
+    }
+
+    /// Where the declared type `raw` is written after the declared name at
+    /// `name`, for navigation: the declared type carries no span of its own.
+    fn type_name_after(&self, raw: &str, name: VirtualSpan) -> Option<VirtualSpan> {
+        const WINDOW: usize = 4096;
+        let text = self.ctx.source;
+        let from = name.end as usize;
+        let window = text.get(from..text.len().min(from + WINDOW))?;
+        let is_word = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.');
+        let lower = window.to_ascii_lowercase();
+        let wanted = raw.to_ascii_lowercase();
+        let mut start = 0;
+        while let Some(found) = lower[start..].find(&wanted) {
+            let at = start + found;
+            let end = at + wanted.len();
+            let before = at.checked_sub(1).map(|i| window.as_bytes()[i]);
+            let after = window.as_bytes().get(end).copied();
+            let bounded = !before.is_some_and(is_word)
+                && !after.is_some_and(|byte| is_word(byte) && byte != b'.');
+            if bounded {
+                return Some(VirtualSpan::new((from + at) as u32, (from + end) as u32));
+            }
+            start = at + 1;
+        }
+        None
     }
 
     /// [`Self::note_class_name`] for every class a declared type names — both
@@ -2275,6 +2320,9 @@ impl<'a> ResolveWalker<'a> {
         cf.synth_classes.insert(name.clone(), sym);
         cf.indexed_class_of.insert(sym, name.clone());
         cf.indexed_class_file.insert(sym, file);
+        if self.ctx.record_sites {
+            self.symbols.record_class_file(sym, file);
+        }
         // The class's own header, recorded on the symbol the same way a local
         // header's is. Needed the moment a cross-file class became a real
         // `ResolvedType::Class`: `coercion::ClassLattice` climbs from a value's
@@ -2873,6 +2921,7 @@ impl<'a> ResolveWalker<'a> {
                     .unwrap_or(scope);
                 // The implicit FOR EACH buffer was declared by the declare
                 // pass in this block scope; resolve it so `read_count` bumps.
+                self.link_inherited_record(stmt.id, buffer, bs);
                 self.resolve_statement_ident(
                     buffer,
                     bs,
@@ -3525,6 +3574,7 @@ impl<'a> ResolveWalker<'a> {
     // ------------------------------------------------------------------
 
     fn walk_expression(&mut self, expr: &Expression, scope: ScopeId, mode: AccessMode) {
+        self.note_site(expr.span, SiteTarget::Reference(expr.id));
         match &expr.kind {
             ExpressionKind::Literal(_) => {}
 
@@ -4066,6 +4116,7 @@ impl<'a> ResolveWalker<'a> {
     /// class, and a future unused-import rule needs to be able to tell the
     /// difference.
     fn resolve_using(&mut self, id: NodeId, type_name: &str, name_span: Span, source: UsingSource) {
+        self.note_site(name_span, SiteTarget::Using(id));
         if !self.ctx.index_loaded || type_name.ends_with('*') {
             return;
         }
@@ -4156,6 +4207,7 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         in_handle: bool,
     ) {
+        self.note_site(name_span, SiteTarget::Run(id));
         if !self.ctx.index_loaded {
             return;
         }
@@ -4797,7 +4849,11 @@ impl<'a> ResolveWalker<'a> {
                 // The scope tree first, always: a locally declared name must not
                 // be shadowed by a workspace class that happens to share it.
                 self.walk_expression(expr, scope, AccessMode::Read);
-                self.try_receiver_type(expr.id, &id.name, scope, identifier_span(id), whole);
+                // `:name` reads an attribute of the widget in focus; it is never
+                // a type name.
+                if !id.name.starts_with(':') {
+                    self.try_receiver_type(expr.id, &id.name, scope, identifier_span(id), whole);
+                }
                 self.soften_unresolved_to_external(expr.id);
             }
             ExpressionKind::FieldAccess { qualifier, field } => {
@@ -4856,6 +4912,66 @@ impl<'a> ResolveWalker<'a> {
         }
     }
 
+    /// Record where a name is written, when the context asks for navigation sites.
+    fn note_site(&mut self, span: Span, target: SiteTarget) {
+        if self.ctx.record_sites {
+            self.symbols.record_site(Site {
+                span: VirtualSpan::new(span.start, span.end),
+                target,
+            });
+        }
+    }
+
+    /// The sites of a field access that the walk does not reach as expressions:
+    /// the field name, and each qualifier of a `db.table.field` chain.
+    fn note_field_sites(&mut self, qualifier: &Expression, field: &Identifier, expr_id: NodeId) {
+        if !self.ctx.record_sites {
+            return;
+        }
+        self.note_site(field.span, SiteTarget::Reference(expr_id));
+        let mut next = Some(qualifier);
+        while let Some(expr) = next {
+            self.note_site(expr.span, SiteTarget::Reference(expr.id));
+            next = match &expr.kind {
+                ExpressionKind::FieldAccess { qualifier, field } => {
+                    self.note_site(field.span, SiteTarget::Reference(expr.id));
+                    Some(qualifier)
+                }
+                _ => None,
+            };
+        }
+    }
+
+    /// Record a class name in a type position with what it resolved to.
+    fn note_type_site(&mut self, raw: &str, lookup: TypeLookup, site: VirtualSpan) {
+        let name = fold_atom(raw);
+        let resolution = match lookup {
+            TypeLookup::Local(sym) | TypeLookup::Indexed(sym) => Resolution::Resolved(sym),
+            TypeLookup::NotFound => Resolution::Unresolved {
+                name,
+                reason: UnresolvedReason::AbsentFromWorkspace,
+            },
+            TypeLookup::Unusable => Resolution::Unresolved {
+                name,
+                reason: UnresolvedReason::PresentButUnusable,
+            },
+            TypeLookup::Unknowable => Resolution::Unresolved {
+                name,
+                reason: UnresolvedReason::Unknowable,
+            },
+            TypeLookup::Builtin(_) | TypeLookup::External | TypeLookup::NotLooked => {
+                Resolution::Unresolved {
+                    name,
+                    reason: UnresolvedReason::External,
+                }
+            }
+        };
+        self.symbols.record_site(Site {
+            span: site,
+            target: SiteTarget::Type(resolution),
+        });
+    }
+
     fn soften_unresolved_to_external(&mut self, expr_id: NodeId) {
         if let Some(Resolution::Unresolved {
             name,
@@ -4876,6 +4992,7 @@ impl<'a> ResolveWalker<'a> {
     /// `GET-CLASS` call in the `Types` namespace, the way a `NEW` operand is, and
     /// record the answer on the operand's node.
     fn resolve_type_operand(&mut self, operand: &Expression, raw: &str, scope: ScopeId) {
+        self.note_site(operand.span, SiteTarget::Reference(operand.id));
         let span = VirtualSpan::new(operand.span.start, operand.span.end);
         let lookup = self.resolve_type_name(raw, scope, span);
         self.note_class_site(raw, lookup, span);
@@ -4933,12 +5050,55 @@ impl<'a> ResolveWalker<'a> {
         namespaces: &[NamespaceId],
         mode: AccessMode,
     ) -> Option<SymbolId> {
-        let sym = self.lookup_statement_ident(id, scope, namespaces)?;
+        let sym = match self.lookup_statement_ident(id, scope, namespaces) {
+            Some(sym) => sym,
+            None => self.lookup_inherited_ident(id, namespaces)?,
+        };
+        self.note_site(id.span, SiteTarget::Symbol(sym));
         self.bump_count(sym, mode);
         if self.track_block_vars {
             self.note_block_var_use(sym, scope, mode);
         }
         Some(sym)
+    }
+
+    /// The inherited member a statement-position name means, tried after the
+    /// scope chain like on the expression path. `None` for an inaccessible one.
+    fn lookup_inherited_ident(
+        &mut self,
+        id: &Identifier,
+        namespaces: &[NamespaceId],
+    ) -> Option<SymbolId> {
+        let class = self.current_class?;
+        match self.lookup_inherited(class, &fold_atom(&id.name), namespaces, id) {
+            InheritedLookup::Member(sym) => Some(sym),
+            InheritedLookup::Inaccessible | InheritedLookup::Absent => None,
+        }
+    }
+
+    /// Point the implicit buffer a `FOR EACH` declared in `block` at the table
+    /// of the inherited member of the same name, which hides a schema table.
+    ///
+    /// The declare pass cannot see a superclass, so it linked the buffer to a
+    /// schema table of that name, or to none.
+    fn link_inherited_record(&mut self, owner: NodeId, id: &Identifier, block: ScopeId) {
+        let atom = fold_atom(&id.name);
+        let Some(class) = self.current_class else {
+            return;
+        };
+        // A buffer an enclosing declaration bound here is not this statement's.
+        let Some(implicit) = self.tree.get(block).get_in(NamespaceId::Buffers, &atom) else {
+            return;
+        };
+        if self.symbols.get(implicit).declaration != owner {
+            return;
+        }
+        let namespaces = [NamespaceId::Buffers, NamespaceId::Tables];
+        if let InheritedLookup::Member(member) =
+            self.lookup_inherited(class, &atom, &namespaces, id)
+        {
+            self.symbols.get_mut(implicit).table_id = self.symbols.get(member).table_id;
+        }
     }
 
     /// Resolve a name the statement uses as a record: `FIND`, `CREATE`,
@@ -4978,7 +5138,9 @@ impl<'a> ResolveWalker<'a> {
             .flatten()
             .map(fold_atom)
             .find_map(|atom| Some((schema.resolve_table(&atom)?, atom)))?;
-        Some(self.synth_table_buffer_symbol(tid, &atom, id))
+        let sym = self.synth_table_buffer_symbol(tid, &atom, id);
+        self.note_site(id.span, SiteTarget::Symbol(sym));
+        Some(sym)
     }
 
     /// Note the table a declaration copies with `LIKE`: the table of
@@ -5003,12 +5165,48 @@ impl<'a> ResolveWalker<'a> {
                 name: qualifier.to_string(),
             }
         };
-        if self
-            .lookup_statement_ident(&table, scope, &[NamespaceId::Buffers, NamespaceId::Tables])
-            .is_none()
+        let local = self.lookup_statement_ident(
+            &table,
+            scope,
+            &[NamespaceId::Buffers, NamespaceId::Tables],
+        );
+        let record = match local {
+            Some(sym) => {
+                self.note_site(table.span, SiteTarget::Symbol(sym));
+                Some(sym)
+            }
+            None => self.schema_default_buffer(&table),
+        };
+        if !whole_table
+            && self.ctx.record_sites
+            && let Some(record) = record
         {
-            self.schema_default_buffer(&table);
+            self.note_like_field_site(record, source, &table);
         }
+    }
+
+    /// Record the field of `LIKE record.field`, for navigation: the declaration
+    /// copies it, so no reference names it.
+    fn note_like_field_site(&mut self, record: SymbolId, source: &Identifier, table: &Identifier) {
+        let Some(name) = source.name.get(table.name.len() + 1..) else {
+            return;
+        };
+        let span = Span {
+            start: table.span.end + 1,
+            end: source.span.end,
+        };
+        let target = match self.symbols.record_source(record) {
+            Some(RecordSource::Schema(tid)) => SiteTarget::SchemaField(tid),
+            Some(RecordSource::TempTable(tt)) => {
+                match self.temp_table_field(tt, &fold_atom(name), 0) {
+                    Some(FieldHit::Declared(sym)) => SiteTarget::Symbol(sym),
+                    Some(FieldHit::Schema(tid, _)) => SiteTarget::SchemaField(tid),
+                    None => return,
+                }
+            }
+            None => return,
+        };
+        self.note_site(span, target);
     }
 
     /// Note the tables the `LIKE` frame fields copy.
@@ -5230,12 +5428,22 @@ impl<'a> ResolveWalker<'a> {
         if fold_atom(&buffer.name) == fold_atom(&target.name) {
             return;
         }
-        self.resolve_statement_ident(
+        let resolved = self.resolve_statement_ident(
             target,
             scope,
             &[NamespaceId::Buffers, NamespaceId::Tables],
             AccessMode::Read,
         );
+        if resolved.is_none() && self.ctx.record_sites && self.ctx.schema_loaded {
+            let schema = self.ctx.schema;
+            let table = [Some(target.name.as_str()), strip_db_qualifier(&target.name)]
+                .into_iter()
+                .flatten()
+                .find_map(|name| schema.resolve_table(&fold_atom(name)));
+            if let Some(table) = table {
+                self.note_site(target.span, SiteTarget::Table(table));
+            }
+        }
     }
 
     /// Resolve `qualifier.field`. When the qualifier is a bare identifier,
@@ -5255,6 +5463,7 @@ impl<'a> ResolveWalker<'a> {
         scope: ScopeId,
         mode: AccessMode,
     ) {
+        self.note_field_sites(qualifier, field, expr_id);
         // The qualifier is typically an Identifier (table/buffer name).
         // Non-identifier qualifiers (e.g. `foo():bar.baz`) are walked
         // normally; field is External and not recorded. A three-part
@@ -5290,6 +5499,40 @@ impl<'a> ResolveWalker<'a> {
                 self.references.insert(expr_id, resolution);
             }
             None => {
+                // An inherited buffer or temp-table, tried after the scope
+                // chain and before the schema, as on the bare-name path.
+                if let Some(class) = self.current_class {
+                    match self.lookup_inherited(
+                        class,
+                        &qatom,
+                        &[NamespaceId::Buffers, NamespaceId::Tables],
+                        qid,
+                    ) {
+                        InheritedLookup::Member(qsym) => {
+                            self.references
+                                .insert(qualifier.id, Resolution::Resolved(qsym));
+                            self.bump_count(qsym, AccessMode::Read);
+                            let resolution = self.field_resolution(qsym, field, mode);
+                            self.references.insert(expr_id, resolution);
+                            return;
+                        }
+                        InheritedLookup::Inaccessible => {
+                            for (id, name) in
+                                [(qualifier.id, qatom), (expr_id, fold_atom(&field.name))]
+                            {
+                                self.references.insert(
+                                    id,
+                                    Resolution::Unresolved {
+                                        name,
+                                        reason: UnresolvedReason::PresentButUnusable,
+                                    },
+                                );
+                            }
+                            return;
+                        }
+                        InheritedLookup::Absent => {}
+                    }
+                }
                 // Schema fallback for the bare `Customer.Name` case: the
                 // qualifier is no local buffer/table, but if it names a
                 // schema table it binds a synthesized default buffer and
@@ -5476,6 +5719,33 @@ impl<'a> ResolveWalker<'a> {
         field: &Identifier,
         mode: AccessMode,
     ) -> Resolution {
+        let resolution = self.record_field_resolution(qsym, field, mode);
+        if self.ctx.record_sites && matches!(resolution, Resolution::Unresolved { .. }) {
+            self.note_temp_table_field_site(qsym, field);
+        }
+        resolution
+    }
+
+    /// Record where a field of a temp-table is named through a qualifier. The
+    /// resolution leaves such a field unresolved, so navigation needs the site.
+    fn note_temp_table_field_site(&mut self, qsym: SymbolId, field: &Identifier) {
+        let Some(RecordSource::TempTable(tt)) = self.symbols.record_source(qsym) else {
+            return;
+        };
+        let target = match self.temp_table_field(tt, &fold_atom(&field.name), 0) {
+            Some(FieldHit::Declared(sym)) => SiteTarget::Symbol(sym),
+            Some(FieldHit::Schema(tid, _)) => SiteTarget::SchemaField(tid),
+            None => return,
+        };
+        self.note_site(field.span, target);
+    }
+
+    fn record_field_resolution(
+        &mut self,
+        qsym: SymbolId,
+        field: &Identifier,
+        mode: AccessMode,
+    ) -> Resolution {
         let field_atom = fold_atom(&field.name);
         match self.symbols.get(qsym).table_id {
             Some(tid) if self.ctx.schema_loaded => {
@@ -5521,6 +5791,7 @@ impl<'a> ResolveWalker<'a> {
     /// Without a schema nothing is known about sequences, so the answer is
     /// `NoSchema` rather than a claim that the name is undefined.
     fn resolve_sequence_operand(&mut self, op: &crate::SequenceOperand) {
+        self.note_site(op.span, SiteTarget::Reference(op.expr.id));
         let atom = fold_atom(op.name);
         let resolution = if !self.ctx.schema_loaded {
             Resolution::Unresolved {
@@ -5577,6 +5848,9 @@ impl<'a> ResolveWalker<'a> {
             )
         });
         self.synth_fields.insert((tid, field_atom.clone()), sym);
+        if self.ctx.record_sites {
+            self.symbols.record_field_table(sym, tid);
+        }
         sym
     }
 
@@ -5613,7 +5887,7 @@ impl<'a> ResolveWalker<'a> {
         // Copied out of the map rather than borrowed across the insert below,
         // which needs `&mut self.symbols`. Scoped in a block for the same reason:
         // the borrow of the cross-file state must end before that insert.
-        let (kind, namespace, data_type, flags) = {
+        let (kind, namespace, data_type, flags, record, file) = {
             let Some(member) = cf.inherited.get(&key) else {
                 // Probed only in the namespaces the reference site is looking in,
                 // so an inaccessible member cannot soften a reference that was
@@ -5644,8 +5918,11 @@ impl<'a> ResolveWalker<'a> {
                 // one that agrees keeps its type.
                 member.data_type.clone(),
                 member.flags,
+                member.record.clone(),
+                member.file,
             )
         };
+        let table_id = record.and_then(|r| self.inherited_buffer_table(class, &r));
         // The declared type goes onto the symbol, exactly as a local
         // declaration's would.
         //
@@ -5661,15 +5938,47 @@ impl<'a> ResolveWalker<'a> {
         // one type channel instead of two.
         let sym = self.symbols.insert(Symbol {
             data_type,
-            flags,
+            flags: flags | SymbolFlags::INHERITED,
+            table_id,
             ..Symbol::synthesized(atom.clone(), namespace, kind, identifier_span(use_site))
         });
+        if self.ctx.record_sites {
+            self.symbols.record_member_file(sym, file);
+        }
         // Re-acquired rather than held across the insert above. The entry is
         // known to exist — the read that got us here found it.
         if let Some(member) = self.cross_file_mut().inherited.get_mut(&key) {
             member.symbol = Some(sym);
         }
         InheritedLookup::Member(sym)
+    }
+
+    /// The schema table an inherited buffer reads, so that its fields and its
+    /// database dependency resolve as a local buffer's do.
+    ///
+    /// `None` for a temp-table, and for a name the schema does not know. A
+    /// temp-table of that name in the chain wins over a schema table, as
+    /// [`Self::record_source_of`] has it in the declaring file; one the class
+    /// cannot reach still hides it.
+    fn inherited_buffer_table(&self, class: SymbolId, record: &MemberRecord) -> Option<TableId> {
+        if record.temp_table || !self.ctx.schema_loaded {
+            return None;
+        }
+        let atom = record.table.as_atom();
+        let cf = self.cross_file()?;
+        let names_record = |kind| {
+            cf.inherited
+                .get(&(class, atom.clone()))
+                .is_some_and(|m| m.kind == kind)
+        };
+        if names_record(SymbolKind::TempTable)
+            || cf
+                .inherited_inaccessible
+                .contains(&(class, NamespaceId::Buffers, atom.clone()))
+        {
+            return None;
+        }
+        schema_table_named(self.ctx.schema, atom)
     }
 
     /// Queue the class the supertype name `raw` means, for the walk of `class`.
@@ -5812,7 +6121,7 @@ impl<'a> ResolveWalker<'a> {
             // absent-parent case looks exactly like a parent that resolved and
             // contributed nothing. The analyze envelope's dependency-state
             // section is what reads it.
-            match index.class(&name) {
+            let declaring = match index.class(&name) {
                 IndexAnswer::Found(descriptor) => {
                     self.symbols
                         .record_class_lookup(name.as_atom(), ClassLookup::Linked(descriptor.file));
@@ -5829,6 +6138,7 @@ impl<'a> ResolveWalker<'a> {
                             &mut queue,
                         );
                     }
+                    descriptor.file
                 }
                 // A supertype no file on the paths declares, or one that cannot
                 // be known statically, contributes nothing — and no diagnostic:
@@ -5876,7 +6186,7 @@ impl<'a> ResolveWalker<'a> {
                         .record_class_lookup(name.as_atom(), ClassLookup::Unknowable);
                     continue;
                 }
-            }
+            };
             match index.class_members(&name) {
                 IndexAnswer::Found(members) => {
                     for member in members.iter() {
@@ -5890,7 +6200,12 @@ impl<'a> ResolveWalker<'a> {
                         // reference that was never about it.
                         let namespace = match member.kind {
                             SymbolKind::Function => NamespaceId::Functions,
-                            SymbolKind::Property => NamespaceId::Values,
+                            SymbolKind::Property
+                            | SymbolKind::Variable
+                            | SymbolKind::Dataset
+                            | SymbolKind::DataSource => NamespaceId::Values,
+                            SymbolKind::Buffer | SymbolKind::TempTable => NamespaceId::Buffers,
+                            SymbolKind::Event => NamespaceId::Events,
                             // The index reports methods and properties and
                             // nothing else; a kind that gained membership later
                             // must choose its own namespace rather than
@@ -5964,7 +6279,9 @@ impl<'a> ResolveWalker<'a> {
                                 data_type,
                                 flags: access_flag(member.access)
                                     | flag_if(member.is_static, SymbolFlags::STATIC),
+                                record: member.record.clone(),
                                 symbol: None,
+                                file: declaring,
                             });
                     }
                 }
@@ -6064,6 +6381,16 @@ impl<'a> ResolveWalker<'a> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Case-insensitive lookup of an already folded table name, or of its
+/// unique leading abbreviation, in the application schema and the built-in
+/// metaschema. A database qualifier is stripped as [`strip_db_qualifier`] says.
+fn schema_table_named(schema: &oxabl_schema::Schema, atom: &OxablAtom) -> Option<TableId> {
+    schema.resolve_table_with_metaschema(atom).or_else(|| {
+        let bare = strip_db_qualifier(atom)?;
+        schema.resolve_table_with_metaschema(&fold_atom(bare))
+    })
+}
 
 /// Strip a leading database qualifier from a dotted table name, returning the
 /// bare table name — `dictdb._file` → `_file`, `sports.Customer` → `Customer`.
@@ -6747,6 +7074,8 @@ mod tests {
 
     fn var_stmt(name: &str, ty: DataType) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -6760,6 +7089,8 @@ mod tests {
 
     fn var_stmt_extent(name: &str, ty: DataType, extent: u32) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -6826,6 +7157,8 @@ mod tests {
     #[test]
     fn variable_like_leaves_type_none() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id("x"),
             type_source: TypeSource::Like {
                 source: id("Customer.CustNum"),
@@ -6915,6 +7248,8 @@ mod tests {
     #[test]
     fn define_buffer_lives_in_buffers() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("bCust"),
             target: BufferTarget::Table(id("Customer")),
             preselect: false,
@@ -6931,6 +7266,8 @@ mod tests {
     #[test]
     fn define_temp_table_declares_table_and_fields() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id("ttCust"),
             no_undo: false,
             like_table: None,
@@ -6943,6 +7280,7 @@ mod tests {
                     validate: false,
                     initial_value: None,
                     extent: None,
+                    span: Span::DUMMY,
                 },
                 TempTableField {
                     name: id("Name"),
@@ -6950,6 +7288,7 @@ mod tests {
                     validate: false,
                     initial_value: None,
                     extent: None,
+                    span: Span::DUMMY,
                 },
             ],
             indexes: vec![],
@@ -6987,9 +7326,12 @@ mod tests {
             validate: false,
             initial_value: None,
             extent: None,
+            span: Span::DUMMY,
         };
         let tt = |name: &str, fname: &str| {
             stmt(StatementKind::DefineTempTable {
+                access: None,
+                is_static: false,
                 name: id(name),
                 no_undo: true,
                 like_table: None,
@@ -7037,8 +7379,11 @@ mod tests {
             validate: false,
             initial_value: None,
             extent: None,
+            span: Span::DUMMY,
         };
         let (_, _, diags) = run(vec![stmt(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id("tt-order"),
             no_undo: true,
             like_table: None,
@@ -7861,6 +8206,8 @@ mod tests {
         is_new_global: bool,
     ) -> Statement {
         stmt(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(DataType::Integer),
             initial_value: None,
@@ -7911,6 +8258,8 @@ mod tests {
     #[test]
     fn shared_temp_table_has_shared_flag() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id("tt"),
             no_undo: false,
             like_table: None,
@@ -7930,6 +8279,8 @@ mod tests {
     #[test]
     fn shared_buffer_has_new_shared_flag() {
         let (tree, symbols, _) = run(vec![stmt(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("b"),
             target: BufferTarget::Table(id("customer")),
             preselect: false,
@@ -8420,6 +8771,8 @@ mod tests {
 
     fn var_stmt_n(name: &str, ty: DataType) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: None,
@@ -8433,6 +8786,8 @@ mod tests {
 
     fn var_stmt_with_init(name: &str, ty: DataType, init: Expression) -> Statement {
         stmt_n(StatementKind::VariableDeclaration {
+            access: None,
+            is_static: false,
             name: id(name),
             type_source: TypeSource::Explicit(ty),
             initial_value: Some(init),
@@ -8799,6 +9154,8 @@ mod tests {
         let cf_id = cf.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -8898,6 +9255,8 @@ mod tests {
         let fa_id = fa.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -8941,6 +9300,8 @@ mod tests {
         (
             vec![
                 stmt_n(StatementKind::DefineBuffer {
+                    access: None,
+                    is_static: false,
                     name: id("bCust"),
                     target: BufferTarget::Table(id("Customer")),
                     preselect: false,
@@ -8976,6 +9337,8 @@ mod tests {
     fn declare_buffer_for_missing_table_is_none() {
         let schema = test_schema();
         let stmts = vec![stmt_n(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("b"),
             target: BufferTarget::Table(id("Ghost")),
             preselect: false,
@@ -8997,6 +9360,8 @@ mod tests {
     fn declare_buffer_for_temp_table_is_none() {
         let schema = test_schema();
         let stmts = vec![stmt_n(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id("b"),
             target: BufferTarget::TempTable(id("tt")),
             preselect: false,
@@ -9148,6 +9513,8 @@ mod tests {
         });
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9226,6 +9593,8 @@ mod tests {
         let fa_id = fa.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("b"),
                 target: BufferTarget::Table(id("Ghost")),
                 preselect: false,
@@ -9262,6 +9631,8 @@ mod tests {
         let fa2_id = fa2.id;
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9652,6 +10023,8 @@ mod tests {
     fn unmodelled_statement_credits_only_the_values_namespace() {
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("b-cust"),
                 target: BufferTarget::Table(id("customer")),
                 preselect: false,
@@ -9736,6 +10109,8 @@ mod tests {
     fn resolve_delete_buffer_bumps_read_count() {
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9877,6 +10252,8 @@ mod tests {
         let stmts = vec![
             var_stmt_n("customer", DataType::Integer),
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("customer"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -9908,6 +10285,8 @@ mod tests {
         let stmts = vec![
             var_stmt_n("customer", DataType::Integer),
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("customer"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -10262,6 +10641,8 @@ mod tests {
     fn resolve_create_buffer_bumps_write() {
         let stmts = vec![
             stmt_n(StatementKind::DefineBuffer {
+                access: None,
+                is_static: false,
                 name: id("bCust"),
                 target: BufferTarget::Table(id("Customer")),
                 preselect: false,
@@ -10349,6 +10730,8 @@ mod tests {
 
     fn tt_stmt_n(name: &str) -> Statement {
         stmt_n(StatementKind::DefineTempTable {
+            access: None,
+            is_static: false,
             name: id(name),
             no_undo: false,
             like_table: None,
@@ -10365,6 +10748,8 @@ mod tests {
 
     fn buffer_stmt_n(name: &str, target: BufferTarget) -> Statement {
         stmt_n(StatementKind::DefineBuffer {
+            access: None,
+            is_static: false,
             name: id(name),
             target,
             preselect: false,

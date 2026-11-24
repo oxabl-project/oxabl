@@ -41,9 +41,9 @@ use oxabl_common::{Diagnostic, LintSeverityMap};
 use oxabl_schema::{Schema, SchemaLoader};
 use oxabl_style::StyleGuide;
 use oxabl_workspace::{
-    EncodedFileSystem, LintConfig, PreprocessorConfig, SourceDecoding, WorkspaceConfig,
-    default_root_extensions, default_run_extensions, find_workspace_root,
-    normalize_root_extensions, normalize_run_extensions,
+    EncodedFileSystem, FeaturesConfig, IncludeEntry, LintConfig, PreprocessorConfig,
+    SourceDecoding, WorkspaceConfig, default_root_extensions, default_run_extensions, dlc_sources,
+    find_workspace_root, include_entry, normalize_root_extensions, normalize_run_extensions,
 };
 
 /// A non-fatal problem hit while resolving configuration.
@@ -57,7 +57,9 @@ pub enum ConfigWarning {
     /// unknown key in `[workspace.style]` or `[workspace.preprocessor]`, which
     /// use `deny_unknown_fields`, or a `[workspace.lint]` value that is not a
     /// severity). Every configured surface degrades to its
-    /// default; caller overrides still apply.
+    /// default; caller overrides still apply. The one exception is
+    /// [`PipelineConfig::features`], which counts as off: a project that turned
+    /// a feature off must not get it back from a typo.
     ///
     /// Exactly one of these is produced per resolution, however many surfaces
     /// the bad file would have fed.
@@ -210,6 +212,13 @@ pub struct PipelineConfig {
     /// Extensions that make a file in a walked directory an ABL root, without the
     /// dot (`[workspace.sources].root_extensions`). Default `p`, `w`, `cls`, `v`.
     pub root_extensions: Vec<String>,
+
+    /// Which features the project uses (`[workspace.features]`). Both on
+    /// without an `oxabl.toml` (off for an editor, see
+    /// [`resolve_for_editor`](Self::resolve_for_editor)), both off with one that
+    /// was rejected. Read by every client: the CLI, the language server and the
+    /// daemon.
+    pub features: FeaturesConfig,
 }
 
 impl Default for PipelineConfig {
@@ -236,6 +245,7 @@ impl Default for PipelineConfig {
             case_insensitive_lookup: false,
             decoding: SourceDecoding::default(),
             root_extensions: default_root_extensions(),
+            features: FeaturesConfig::default(),
         }
     }
 }
@@ -247,14 +257,32 @@ impl PipelineConfig {
         EncodedFileSystem::new(self.decoding)
     }
 
-    /// The search paths of the file at `file`: each root-relative path resolved
-    /// against its directory, then [`include_paths`](Self::include_paths), each
-    /// once. The include paths alone with no file or no root-relative path.
-    pub fn include_paths_for(&self, file: Option<&Path>) -> Cow<'_, [PathBuf]> {
-        match file {
-            Some(file) if !self.root_relative_include_paths.is_empty() => {
+    /// The search paths of the file at `file` with the text `source`: each
+    /// root-relative path resolved against its base directory
+    /// ([`search_base`](Self::search_base)), then
+    /// [`include_paths`](Self::include_paths), each once. The include paths
+    /// alone with no file or no root-relative path.
+    pub fn include_paths_for(&self, file: Option<&Path>, source: &str) -> Cow<'_, [PathBuf]> {
+        self.include_paths_from(self.search_base(file, source).as_deref())
+    }
+
+    /// The directory the root-relative paths of the file at `file` with the
+    /// text `source` are resolved against: its own directory, or for a class
+    /// its package root, as the compiler searches
+    /// ([`search_base`](oxabl_index::search::search_base)). `None` with no file
+    /// or no root-relative path.
+    pub fn search_base(&self, file: Option<&Path>, source: &str) -> Option<PathBuf> {
+        let file = file.filter(|_| !self.root_relative_include_paths.is_empty())?;
+        oxabl_index::search::search_base(file, source)
+    }
+
+    /// [`include_paths_for`](Self::include_paths_for) for a file whose base
+    /// directory is `base`.
+    pub fn include_paths_from(&self, base: Option<&Path>) -> Cow<'_, [PathBuf]> {
+        match base {
+            Some(base) if !self.root_relative_include_paths.is_empty() => {
                 Cow::Owned(oxabl_index::search::root_include_paths(
-                    file,
+                    Some(base),
                     &self.root_relative_include_paths,
                     &self.include_paths,
                 ))
@@ -287,7 +315,24 @@ impl PipelineConfig {
     /// Warnings are non-fatal by construction — a malformed `oxabl.toml` yields
     /// defaults plus one [`ConfigWarning::Config`], never an error.
     pub fn resolve(anchor: &Path, overrides: &ConfigOverrides) -> (Self, Vec<ConfigWarning>) {
-        resolve_at(anchor, overrides, SchemaLoading::Load)
+        let (config, warnings, _) = resolve_at(anchor, overrides, SchemaLoading::Load);
+        (config, warnings)
+    }
+
+    /// [`resolve`](Self::resolve) for an editor. With no `oxabl.toml` above the
+    /// anchor, both [`features`](Self::features) are off: an editor offers only
+    /// what needs no setup (the outline) until a project opts in with an
+    /// `oxabl.toml`, so installing the CLI never starts formatting or linting
+    /// code that no project asked for.
+    pub fn resolve_for_editor(
+        anchor: &Path,
+        overrides: &ConfigOverrides,
+    ) -> (Self, Vec<ConfigWarning>) {
+        let (mut config, warnings, found) = resolve_at(anchor, overrides, SchemaLoading::Load);
+        if !found {
+            config.features = FeaturesConfig::OFF;
+        }
+        (config, warnings)
     }
 
     /// Resolve everything except the schema, which stays [`Schema::empty`] with
@@ -309,7 +354,8 @@ impl PipelineConfig {
         anchor: &Path,
         overrides: &ConfigOverrides,
     ) -> (Self, Vec<ConfigWarning>) {
-        resolve_at(anchor, overrides, SchemaLoading::Skip)
+        let (config, warnings, _) = resolve_at(anchor, overrides, SchemaLoading::Skip);
+        (config, warnings)
     }
 }
 
@@ -320,8 +366,9 @@ enum SchemaLoading {
     Skip,
 }
 
-/// The shared body of both public resolvers: find the root once, read the file
-/// once, hand the parsed value to the derivation.
+/// The shared body of the public resolvers: find the root once, read the file
+/// once, hand the parsed value to the derivation. The flag says whether an
+/// `oxabl.toml` was found, readable or not.
 ///
 /// Both entry points funnel through here so the one-parse invariant (KTD3) holds
 /// for every caller — a second resolver with its own discovery-and-read would be
@@ -330,7 +377,7 @@ fn resolve_at(
     anchor: &Path,
     overrides: &ConfigOverrides,
     schema: SchemaLoading,
-) -> (PipelineConfig, Vec<ConfigWarning>) {
+) -> (PipelineConfig, Vec<ConfigWarning>, bool) {
     let start_dir = start_dir(anchor);
 
     let root = find_workspace_root(&start_dir);
@@ -338,18 +385,26 @@ fn resolve_at(
 
     match parsed {
         // A config exists and parsed: derive everything from that one value.
-        Some((root, Ok(config))) => derive(&config, root, overrides, schema),
+        Some((root, Ok(config))) => {
+            let (config, warnings) = derive(&config, root, overrides, schema);
+            (config, warnings, true)
+        }
         // A config exists but is unreadable or malformed. Degrade every
         // configured surface to its default and report once — not once per
         // surface, which is what the three `resolved_*` helpers do today.
         Some((root, Err(message))) => {
-            let (config, mut warnings) =
+            let (mut config, mut warnings) =
                 derive(&WorkspaceConfig::defaults(), root, overrides, schema);
+            config.features = FeaturesConfig::OFF;
             warnings.insert(0, ConfigWarning::Config(message));
-            (config, warnings)
+            (config, warnings, true)
         }
         // No config anywhere above the anchor: overrides only, silently.
-        None => derive(&WorkspaceConfig::defaults(), &start_dir, overrides, schema),
+        None => {
+            let (config, warnings) =
+                derive(&WorkspaceConfig::defaults(), &start_dir, overrides, schema);
+            (config, warnings, false)
+        }
     }
 }
 
@@ -392,13 +447,17 @@ fn derive(
     // order-preserving dedup so a directory named by both a flag and the config
     // is not stat'd twice per include lookup.
     let mut include_paths: Vec<PathBuf> = overrides.include_paths.iter().map(absolutize).collect();
+    let dlc = dlc_sources(config.workspace.sources.dlc.as_deref(), root);
     include_paths.extend(
         config
             .workspace
             .sources
             .include_paths
             .iter()
-            .map(|p| anchor_to(root, p)),
+            .filter_map(|entry| match include_entry(root, dlc.as_deref(), entry) {
+                IncludeEntry::Directory(directory) => Some(directory),
+                IncludeEntry::UnresolvedDlc | IncludeEntry::Library(_) => None,
+            }),
     );
     let mut seen = std::collections::HashSet::new();
     include_paths.retain(|p| seen.insert(p.clone()));
@@ -483,48 +542,21 @@ fn derive(
                     case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
                     decoding,
                     root_extensions,
+                    features: config.workspace.features,
                 },
                 warnings,
             );
         }
     };
 
-    // `--schema` replaces the configured set rather than adding to it; absent it,
-    // `[workspace.schema].files` is the set. Either way the entries go through the
-    // same expansion, so a directory means the same thing wherever it is written.
-    let entries: Vec<PathBuf> = match schema_path {
-        Some(path) => vec![path.clone()],
-        None => config
-            .workspace
-            .schema
-            .files
-            .iter()
-            .map(|f| anchor_to(root, f))
-            .collect(),
-    };
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in &entries {
-        files.extend(expand_schema_entry(entry, &mut warnings));
-    }
-
-    // Nothing to open — no entries at all, or every entry was a directory that
-    // yielded nothing (already warned about) — reads as no schema, so
-    // schema-dependent diagnostics stay off. Otherwise load diagnostics are
-    // non-fatal: a partially-loaded schema drives resolution better than none,
-    // and an intentionally empty `.df` is a schema the user supplied.
-    let (schema, schema_loaded) = if files.is_empty() {
-        (Schema::empty(), false)
-    } else {
-        // The databases the schema describes are the ones connected, unless the
-        // config says which are. A file name is only a guess at the logical name,
-        // so this list stays apart from the one the config states.
-        if preprocessor.databases.is_none() {
-            preprocessor.inferred_databases = Some(logical_database_names(&files));
-        }
-        let (schema, diags) = SchemaLoader::load_files(&files, &EncodedFileSystem::new(decoding));
-        warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
-        (schema, true)
-    };
+    let (schema, schema_loaded) = load_schema(
+        config,
+        root,
+        schema_path,
+        &mut preprocessor,
+        decoding,
+        &mut warnings,
+    );
 
     (
         PipelineConfig {
@@ -543,9 +575,119 @@ fn derive(
             case_insensitive_lookup: config.workspace.sources.case_insensitive_lookup,
             decoding,
             root_extensions,
+            features: config.workspace.features,
         },
         warnings,
     )
+}
+
+/// The schema a configuration names, and whether one was loaded.
+///
+/// `--schema` replaces the configured set rather than adding to it; absent it,
+/// `[workspace.schema].files` is the set. Either way the entries go through the
+/// same expansion, so a directory means the same thing wherever it is written.
+fn load_schema(
+    config: &WorkspaceConfig,
+    root: &Path,
+    schema_path: Option<&PathBuf>,
+    preprocessor: &mut PreprocessorConfig,
+    decoding: SourceDecoding,
+    warnings: &mut Vec<ConfigWarning>,
+) -> (Schema, bool) {
+    let files = schema_files(config, root, schema_path, warnings);
+
+    // Nothing to open — no entries at all, or every entry was a directory that
+    // yielded nothing (already warned about) — reads as no schema, so
+    // schema-dependent diagnostics stay off. Otherwise load diagnostics are
+    // non-fatal: a partially-loaded schema drives resolution better than none,
+    // and an intentionally empty `.df` is a schema the user supplied.
+    if files.is_empty() {
+        return (Schema::empty(), false);
+    }
+    // The databases the schema describes are the ones connected, unless the
+    // config says which are. A file name is only a guess at the logical name,
+    // so this list stays apart from the one the config states.
+    if preprocessor.databases.is_none() {
+        preprocessor.inferred_databases = Some(logical_database_names(&files));
+    }
+    let (schema, diags) = SchemaLoader::load_files(&files, &EncodedFileSystem::new(decoding));
+    warnings.extend(diags.into_iter().map(ConfigWarning::Schema));
+    (schema, true)
+}
+
+/// The `.df` files a configuration names, directories expanded.
+fn schema_files(
+    config: &WorkspaceConfig,
+    root: &Path,
+    schema_path: Option<&PathBuf>,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Vec<PathBuf> {
+    let entries: Vec<PathBuf> = match schema_path {
+        Some(path) => vec![path.clone()],
+        None => config
+            .workspace
+            .schema
+            .files
+            .iter()
+            .map(|f| anchor_to(root, f))
+            .collect(),
+    };
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in &entries {
+        files.extend(expand_schema_entry(entry, warnings));
+    }
+    files
+}
+
+/// Resolve like [`resolve_from_config`], but leave the schema empty and
+/// unloaded. [`PipelineConfig::load_schema`] loads it when a run needs it, and
+/// [`configured_schema_files`] names the files without reading them.
+///
+/// For a client that decides after resolving whether it analyses anything, so
+/// that a run which analyses nothing never parses a `.df`.
+pub fn resolve_from_config_deferred(
+    config: &WorkspaceConfig,
+    root: &Path,
+    overrides: &ConfigOverrides,
+) -> (PipelineConfig, Vec<ConfigWarning>) {
+    derive(config, root, overrides, SchemaLoading::Skip)
+}
+
+/// The `.df` files `config` names under `overrides`, directories expanded, in
+/// the order [`resolve_from_config`] loads them. Nothing is read.
+pub fn configured_schema_files(
+    config: &WorkspaceConfig,
+    root: &Path,
+    overrides: &ConfigOverrides,
+) -> (Vec<PathBuf>, Vec<ConfigWarning>) {
+    let mut warnings = Vec::new();
+    let files = schema_files(config, root, overrides.schema_path.as_ref(), &mut warnings);
+    (files, warnings)
+}
+
+impl PipelineConfig {
+    /// Load the schema of `config` into a configuration that
+    /// [`resolve_from_config_deferred`] left without one, as
+    /// [`resolve_from_config`] would have.
+    pub fn load_schema(
+        &mut self,
+        config: &WorkspaceConfig,
+        root: &Path,
+        overrides: &ConfigOverrides,
+    ) -> Vec<ConfigWarning> {
+        let mut warnings = Vec::new();
+        let (schema, loaded) = load_schema(
+            config,
+            root,
+            overrides.schema_path.as_ref(),
+            &mut self.preprocessor,
+            self.decoding,
+            &mut warnings,
+        );
+        self.schema = schema;
+        self.schema_loaded = loaded;
+        warnings
+    }
 }
 
 /// A warning for each `[workspace.lint]` name the built-in rule registry does
@@ -1626,11 +1768,11 @@ mod tests {
 
         let file = root.join("app/main.p");
         assert_eq!(
-            config.include_paths_for(Some(&file)).into_owned(),
+            config.include_paths_for(Some(&file), "").into_owned(),
             [root.join("app"), root.join("app/rf"), root.join("inc")]
         );
         assert_eq!(
-            config.include_paths_for(None).into_owned(),
+            config.include_paths_for(None, "").into_owned(),
             config.include_paths
         );
         assert!(config.searches_any_path());
@@ -1643,7 +1785,7 @@ mod tests {
             ..PipelineConfig::default()
         };
         assert!(matches!(
-            config.include_paths_for(Some(Path::new("/app/main.p"))),
+            config.include_paths_for(Some(Path::new("/app/main.p")), ""),
             Cow::Borrowed(paths) if paths == [PathBuf::from("/inc")]
         ));
         let none = PipelineConfig {

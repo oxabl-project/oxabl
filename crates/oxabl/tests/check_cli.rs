@@ -555,6 +555,40 @@ fn a_schema_dir_with_no_df_files_warns_instead_of_flooding_findings() {
     );
 }
 
+/// What `unknown-table-or-field` reports under a loaded schema: an unknown field
+/// and an unknown sequence. A table named only in a record phrase is not
+/// reported; the rule's description says so.
+#[test]
+fn a_loaded_schema_reports_unknown_fields_and_sequences_but_not_record_phrase_tables() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("src").join("cust.p");
+    write(
+        &file,
+        "DEFINE VARIABLE n AS INTEGER NO-UNDO.\n\
+         FOR EACH Item NO-LOCK:\nEND.\n\
+         FIND FIRST Stock NO-LOCK NO-ERROR.\n\
+         FOR EACH Customer NO-LOCK:\n  DISPLAY Customer.NoSuchField.\nEND.\n\
+         n = NEXT-VALUE(NoSuchSeq).\nMESSAGE n.\n",
+    );
+    let schema_dir = tmp.path().join("schema");
+    write(
+        &schema_dir.join("s.df"),
+        "ADD TABLE \"Customer\"\nADD FIELD \"CustNum\" OF \"Customer\" AS integer\n",
+    );
+
+    let run = check([
+        Path::new("--schema").as_os_str(),
+        schema_dir.as_os_str(),
+        Path::new("--no-format").as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    let lines: Vec<&str> = run.stdout.lines().filter(|l| l.contains("[LINT")).collect();
+    assert_eq!(lines.len(), 2, "stdout:\n{}", run.stdout);
+    assert!(lines[0].contains("LINT0003") && lines[0].contains("unknown field `NoSuchField`"));
+    assert!(lines[1].contains("LINT0003") && lines[1].contains("unknown sequence `NoSuchSeq`"));
+}
+
 // ---------------------------------------------------------------------------
 // Preprocessing is on by default (R19)
 // ---------------------------------------------------------------------------
@@ -1022,6 +1056,31 @@ fn the_same_walk_with_no_search_path_keeps_the_json_shape_and_does_not_guess() {
     );
 }
 
+/// `WHILE` before the counting loop in a block header, and whitespace before the
+/// closing brace of `{&name }`, are valid ABL that used to be parse errors.
+#[test]
+fn a_while_before_the_counting_loop_and_a_spaced_variable_ref_parse_clean() {
+    let (_tmp, file) = project(
+        "header.p",
+        "&SCOPED-DEFINE first-arg 1\nDEFINE VARIABLE i AS INTEGER NO-UNDO.\nDEFINE VARIABLE more AS LOGICAL NO-UNDO INITIAL TRUE.\nREPEAT WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.\nDO WHILE more i = 1 TO 10:\n  more = i < 5.\nEND.\ni = MAXIMUM({&first-arg }, {&first-arg   }).\nMESSAGE i.\n",
+    );
+
+    let run = check([
+        Path::new("--json").as_os_str(),
+        Path::new("--no-format").as_os_str(),
+        file.as_os_str(),
+    ]);
+
+    let parse_errors: Vec<_> = run.json()["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "PARSE001")
+        .cloned()
+        .collect();
+    assert!(parse_errors.is_empty(), "{}", run.stdout);
+}
+
 /// An integer literal past `i64` used to make the lexer print to stdout ahead of
 /// the JSON document, corrupting machine-readable output.
 #[test]
@@ -1116,6 +1175,43 @@ fn the_job_count_changes_nothing_a_run_reports() {
             assert_eq!(parallel.stdout, serial.stdout, "-j {jobs} {flags:?}");
             assert_eq!(parallel.stderr, serial.stderr, "-j {jobs} {flags:?}");
         }
+    }
+}
+
+#[test]
+fn callee_summaries_are_the_same_at_any_job_count() {
+    let tmp = TempDir::new().unwrap();
+    write(
+        &tmp.path().join("oxabl.toml"),
+        "[workspace]\nname = \"p\"\n\n[workspace.lint]\nenable = [\"strict.transactions\"]\n",
+    );
+    // Callers whose callees lie one to three calls away, some of them shared,
+    // so the summaries are built over several breadth-first frontiers.
+    for k in 0..24 {
+        write(
+            &tmp.path().join(format!("r{k:02}.p")),
+            &format!("DO TRANSACTION:\nRUN lib/m{}.p.\nEND.\n", k % 6),
+        );
+    }
+    for m in 0..6 {
+        write(
+            &tmp.path().join(format!("lib/m{m}.p")),
+            &format!("RUN lib/l{}.p.\nFIND FIRST Customer NO-LOCK.\n", m % 3),
+        );
+    }
+    write(&tmp.path().join("lib/l0.p"), "RUN lib/l1.p.\n");
+    write(&tmp.path().join("lib/l1.p"), "RUN lib/l0.p.\n");
+    write(&tmp.path().join("lib/l2.p"), "CREATE Customer.\n");
+    let dir = tmp.path().to_str().unwrap();
+    let run = |jobs: &str| check([dir, "--json", "--no-format", "-I", dir, "-j", jobs]);
+    let serial = run("1");
+    assert_eq!(serial.code, Some(1), "{}", serial.stderr);
+    assert!(serial.stdout.contains("TX004"), "{}", serial.stdout);
+    for jobs in ["2", "7", "64"] {
+        let parallel = run(jobs);
+        assert_eq!(parallel.code, serial.code, "-j {jobs}");
+        assert_eq!(parallel.stdout, serial.stdout, "-j {jobs}");
+        assert_eq!(parallel.stderr, serial.stderr, "-j {jobs}");
     }
 }
 

@@ -1,0 +1,1276 @@
+---
+title: "oxabl build: the compile key specification"
+status: proposed
+date: 2026-11-02
+---
+
+# The compile key specification
+
+Part of [the oxabl build PRD](../build-tool.md).
+
+A compile key is 32 bytes. It names one compile: one unit, with everything the AVM can read
+or use when it compiles that unit. Two implementations that follow this document must
+produce the same key for the same inputs. The [worked example](#worked-example) gives
+exact values to check against.
+
+## Properties
+
+1. **Complete.** A change to any input that can change the r-code, the XREF, the debug
+   list or the listing changes the key. Where oxabl cannot prove that an input is
+   complete, the unit gets no key ([the fail-closed rule](#the-fail-closed-rule)).
+2. **Portable.** The key does not contain the workspace root, the host, the user, the
+   time, the branch or the output directory. Two checkouts of one commit at different
+   paths on different machines get the same keys.
+3. **Canonical.** Every input has one encoding. Field boundaries are explicit.
+4. **Conservative first.** A dependency counts by its full bytes, and a database counts by
+   its full schema image. [Signature-aware keys](#follow-up-signature-aware-keys) are a
+   follow-up.
+
+A key maps to *any valid output* of its inputs. r-code is not byte-deterministic: two
+compiles of one source differ in a header timestamp and other fields. So a cache never
+checks an entry by compiling again. The first accepted write wins, and trust in an entry
+comes from who wrote it (the oxabl-cache design), not from a comparison.
+
+## Hash function
+
+- **Content hash** of a file: `BLAKE3(bytes)`, the standard unkeyed BLAKE3 hash of the raw
+  file bytes, 32 bytes. No decoding, no line-ending change, no BOM removal: the compiler
+  reads bytes. `b3sum` gives the same value.
+
+  Exception: a file under `$DLC` is hashed **by the worker**, from the copy that the AVM
+  compiles with, as `SHA-256(bytes)` (the worker computes SHA-256 natively). In a closure
+  entry its algorithm is `sha256`; for every other file it is `blake3`. One worker hashes
+  each `$DLC/...` closure file once per build, in the DLC hash phase between the closure
+  step and the key step (`HASH`,
+  [worker-protocol.md](worker-protocol.md#hashing-worker-side-files)). Oxabl also hashes the
+  host mirror's copy with SHA-256; when the two differ, every unit with that file in its
+  closure is unkeyable (K6, `dlc-mirror-mismatch: <path>`), because the analysis read
+  other bytes than the compiler will. So a patch to an include inside the OpenEdge
+  installation changes the key even when the first line of `$DLC/version` does not change.
+- **Derived hashes** use BLAKE3 in derive-key mode (`blake3::Hasher::new_derive_key`) with
+  a context string. The context string gives domain separation and carries the spec
+  version:
+
+| Value | Context string |
+| --- | --- |
+| Compile key | `oxabl 2026-11 compile key v1` |
+| Environment identity | `oxabl 2026-11 compile environment v1` |
+| Schema identity | `oxabl 2026-11 schema image v3` |
+
+A change to this specification that changes any encoded byte uses new context strings
+(`v2`). Old and new keys can then never be equal.
+
+Rejected: SHA-256 (about 5 times slower than BLAKE3 on one core, and BLAKE3 also runs on
+many cores); a plain hash with a prefix (derive-key mode gives the same separation by
+construction).
+
+## Encoding
+
+All material is a byte string built from these primitives:
+
+| Primitive | Bytes |
+| --- | --- |
+| `u64(x)` | 8 bytes, little-endian. |
+| `bytes(b)` | `u64(length of b)` then `b`. |
+| `str(s)` | `bytes(UTF-8 of s)`. No Unicode normalisation. A string that is not valid UTF-8 cannot be encoded; see K5. |
+| `hash(h)` | The 32 raw bytes, with no length prefix. |
+| `list(f, xs)` | `u64(number of xs)`, then `f(x)` for each `x` in the order the rule gives. |
+| `section(name)` | `str(name)`. Each section of material starts with its name. |
+
+Every variable-length field has a length prefix, and every list has a count, so no two
+different inputs encode to the same bytes.
+
+## Canonical paths
+
+A canonical path is a UTF-8 string with `/` as the separator, no `.` or `..` component, no
+empty component, no leading `./` and no trailing `/`. Case is the case on disk.
+
+- A file or directory under the workspace root: its path relative to the root. The root
+  itself is `.`.
+- A file or directory under the host DLC source directory (`[workspace.sources].dlc`): `$DLC/`
+  followed by its path relative to that directory. `$DLC` alone is the directory itself.
+- The output directory, as a PROPATH entry only: `$OUT`. With `[build].rcode =
+  "beside-source"` there is no `$OUT`.
+- A procedure library outside the root and outside `$DLC`, named in `[build.libraries]`, as a
+  PROPATH entry only: `$LIB:<name>`.
+
+Any other path (another absolute directory, a path through a symbolic link that leaves the
+root) has no canonical form. Oxabl resolves symbolic links lexically: a path is canonical
+when its lexical form is under the root, and the file it names is read through the link.
+
+## The unit PROPATH and the compile name
+
+The **unit PROPATH** is the search path that the worker sets before it compiles the unit,
+as a list of canonical paths, in order:
+
+1. `$OUT`, unless `[build].rcode` is `beside-source`.
+2. Each `[workspace.sources].root_relative_include_paths` entry, joined to the unit's
+   **base directory** and made canonical (`.` with a procedure in `src/ar` gives `src/ar`).
+   The base directory of a procedure (`.p`, `.w`, ...) is its own directory. The base
+   directory of a class unit is its **package root**: its directory minus one component for
+   each package segment of the class name it declares (`a/pkg/Foo.cls`, declaring
+   `pkg.Foo`, has the package root `a`). A class unit whose directory does not end with its
+   package path is skipped with `package-mismatch: <declared name>`, because the compiler
+   would reject it.
+3. Each `[workspace.sources].include_paths` entry, made canonical. An entry that is not
+   under the root, not under `$DLC` and not a `$LIB:` name is a configuration error for
+   `oxabl build` (exit code 2), because it has no portable form.
+4. The **DLC default entries**: each entry of the worker's own startup PROPATH (reported in
+   the handshake) that is under the worker's `$DLC`, in its order, as `$DLC/...`. These are
+   the libraries of the installation (`OpenEdge.Core.pl`, `netlib/OpenEdge.Net.pl`, ...),
+   which the AVM would search if oxabl did not set PROPATH. Startup entries outside `$DLC`
+   are dropped, with one warning per build that names them.
+
+Duplicates after the first are removed.
+
+Each entry is a directory or a procedure library. In the key, an entry carries a **digest**:
+
+- `dir` for a directory under the root or under `$DLC`. Its source files enter the key
+  through the closure, file by file. A `$LIB:` entry that the worker reports as a directory
+  (a folder of r-code) has no digest that covers its bytes: every unit with it on its
+  PROPATH is unkeyable (K6, `unhashable-library: $LIB:<name>`).
+- `sha256:<64 lower-case hex>` for a library (a `.pl` file, or any entry that the worker
+  reports as a file): the SHA-256 of the library's bytes, which the worker computes and
+  reports ([worker-protocol.md](worker-protocol.md#hashing-worker-side-files)). A library
+  holds r-code that the compiler can read, so its bytes are an input. SHA-256 is used
+  because ABL computes it natively (`MESSAGE-DIGEST`); BLAKE3 stays the hash for every file
+  oxabl reads itself.
+- `absent` for an entry that the worker reports as missing. An entry that the worker cannot
+  hash makes the environment unknown for the units that use it (K6).
+
+The **compile name** is the unit path relative to the first entry other than `$OUT` that
+holds it. For a class unit it must be the package path with the extension (`pkg/Foo.cls`): the
+first entry that holds the class unit must be its package root, or an `include_paths`
+entry that is the same directory. Otherwise the unit is skipped with
+`package-root-not-on-propath: <package root>` (for example, a class `a/pkg/Foo.cls` with no
+`.` in `root_relative_include_paths` and no `a` in `include_paths`). A unit that no entry
+holds is skipped (`not-on-propath`).
+
+A unit whose compile name resolves, on the unit PROPATH, to a different file first is
+skipped (`shadowed-by`).
+
+The **output name** names the unit's output files: its r-code is `$OUT/<output stem>.r`,
+and its XREF, debug list and listing are `<output name>.<extension>` in their directories.
+It is the compile name, except for a procedure (not a class unit) that a
+`root_relative_include_paths` entry holds: then it is the unit path, so the r-code sits
+beside where the source is, as a compile with `SAVE` and no `INTO` puts it. Procedures of
+one name in different directories (`ar/post.p`, `gl/post.p`, each compiled as
+`post.p` from its own directory) so keep their own outputs. A class unit keeps its package
+path, because the compiler finds class r-code in `$OUT` by class name. The worker still
+compiles and stages by compile name; only the place of the outputs, and their paths in a
+cache entry, follow the output name.
+
+With `[build].rcode = "beside-source"` the output name of every unit is its unit path, and
+its r-code is `<unit path stem>.r` beside its source. A class unit's r-code is then
+`<package root>/<pkg>/<Name>.r`, where the compiler finds it by class name. Its XREF, debug
+list and listing are `<unit path>.<extension>` in their directories, so two class units of
+one name in two package roots keep their own files. A unit outside the root is skipped
+(`outside-root`): oxabl writes no r-code outside the root.
+
+Two units whose r-code would land on one path collide: `x.p` and `x.w` in one directory, or
+`x.p` and `x.cls`. The output stems are compared ignoring ASCII case, because r-code is
+often deployed to case-insensitive systems. In each colliding group, the unit with the
+smallest unit path (by bytes) compiles, and every other unit is skipped with
+`output-collision: <path of the unit that compiles>`. So two keys never install over one
+final path. With the r-code beside the source, only units of one directory can collide. A
+file that the walk reaches through two spellings (a linked directory) is one unit, so two
+units never name one real file.
+
+The worker compiles `COMPILE VALUE(<compile name>)` with the unit PROPATH as worker-side
+paths (`$OUT` is the worker-side output directory, a root-relative entry is relative to the
+worker's working directory, which is the worker root). Every entry the worker sees is
+relative or under the DLC, so the paths that the r-code embeds are relative, and the
+r-code does not depend on where the root is. The OpenEdge suite proves this
+(`portable_rcode`, [testing.md](testing.md#opt-in-openedge-suite)). If that test fails,
+the spec moves to `v2` and adds the worker root to the key.
+
+## The closure
+
+The closure is the set of files whose bytes the compile of a unit can read.
+
+Let `E(n)` be the stored edges of an analysed node `n` ([store.md](store.md#blob-encoding)).
+The **compile-time kinds** are: direct include, transitive include, class, conditional
+include (resolved) and conditional class (resolved).
+
+`closure(U)` is the smallest set `S` of canonical paths such that, for each analysed node
+`n` in `{U}` and in `S`, every edge of `E(n)` whose kind is a compile-time kind has its
+target in `S`. `U` itself is never in `S`.
+
+- Include files are not analysed alone. The analysis of the unit (or of the class) that
+  includes them reports their own includes and the classes they name as edges of that
+  unit, so they are in `S` through the unit.
+- Each class source in `S` is analysed as a node, so its includes, its super class, its
+  interfaces and the classes it names are in `S`.
+- Conditional includes and classes (a name in an `&IF` branch that oxabl did not take) are
+  in `S` when they resolve. Oxabl's `&IF` evaluation can differ from the AVM's; this keeps
+  the key a superset of what any branch reads. Such a branch is read as text, so `x:member`
+  there may name a class `x` or a variable `x`. The compiler takes a variable that is
+  defined before the use (measured, `a_variable_hides_a_class_of_the_same_name`), so `x` is
+  no class name when the main block of the unit defines a variable or parameter `x` earlier
+  in the same file and include, or in an include or at a place of the root file that comes
+  earlier.
+- Not in `S`: `RUN` targets, shared producers and schema tables. The compiler does not open
+  a `RUN` target or a shared producer. Schema enters the key through the environment.
+
+The closure is computed iteratively with a visited set over the in-memory graph, so cycles
+end.
+
+The closure assumes that the compile resolves each class name to the file, and each
+include inside a class to the file, that the analysis resolved. Two rules make the
+analysis search what the compile searches:
+
+- **The analysis search base.** The analysis resolves the `root_relative_include_paths`
+  of a file against its base directory, as the unit PROPATH does: the directory of a
+  procedure, and the package root of a class (see
+  [The unit PROPATH](#the-unit-propath-and-the-compile-name)). Oxabl reads the package
+  from the `CLASS`, `INTERFACE` or `ENUM` statement of the class's own text. A class whose
+  name is not written out, or whose directory does not end with its package path, is
+  analysed from its own directory. The includes that a class reaches, also through
+  another include, are searched with the class's search paths. The CLI, the language
+  server and the daemon use the same rule, so their diagnostics agree with the compile.
+- **K10.** A class source that does not compile as a unit on the unit's own PROPATH id (a
+  class that is not a unit, or a class unit that is skipped or has another PROPATH id) is
+  compiled in memory under the PROPATH of the unit that uses it. Its analysis searched from
+  its own package root. With `root_relative_include_paths` non-empty, oxabl searches each
+  include and class name of such a class again on the user's unit PROPATH (`hit(P, name)`
+  of [Uniform resolution](#uniform-resolution)), with any
+  number of PROPATH ids. When the first file found is not the file the analysis resolved,
+  the user is unkeyable (`class-propath: <name> in <class> finds <file>, analysed <file>`;
+  `finds nothing` when no entry holds the name). This is the U3 check alone.
+
+With one PROPATH id, every unit, and every class compiled in memory for it, then searches
+the entries that the analysis searched. With more than one PROPATH id a class can resolve
+to different files for different units, and the `$OUT` tree has one `.r` per class name,
+which the compiler prefers to a source on a later entry. So with more than one PROPATH id
+oxabl checks each class name with an emulation of the compiler's search
+([K9](#per-unit-propath-classes)). Class r-code that oxabl does not hash takes the key away
+with any number of PROPATH ids ([K11](#class-r-code)), and one narrow conflict remains to
+check ([K8](#class-conflicts)).
+
+The remaining gap: oxabl analyses a class that is not a unit once, from its own package
+root. K9 and K10 make a user unkeyable when its own PROPATH reads another file, but oxabl
+does not analyse such a class once per PROPATH id, so the user has no key instead of a key
+over the files its compile reads.
+
+### Per-unit PROPATH classes
+
+A **PROPATH id** is one distinct unit PROPATH (the list of entries with their digests). The
+build has more than one PROPATH id when `root_relative_include_paths` is non-empty and gives
+units in different directories different PROPATHs. Oxabl counts the PROPATH ids over the
+**whole graph** (every unit, whatever the rebuild set).
+
+With more than one PROPATH id, a unit that is a class unit or whose closure reaches a class
+source is keyed when every named edge it reaches is **uniform**
+([Uniform resolution](#uniform-resolution)). Otherwise it is unkeyable under K9, with one
+reason for each edge that is not uniform:
+`per-unit-propath-classes: <name> (<files>)` for a class, and
+`per-unit-propath-classes: {<include>} in <class> (<files>)` for an include, where `files`
+are the analysed file and every other file that the name can resolve to. Such a unit still
+compiles locally, as the AVM resolves it, and is never fetched from or written to a cache.
+The build prints one warning that counts these units and names the first edges. Units that
+reach no class keep their keys as before, because includes resolve per unit and the closure
+follows each unit's own PROPATH.
+
+#### Class units and the order of the compiles
+
+The compiler binds a class from the first PROPATH entry that holds its r-code or its source
+([Measured](#follow-up-classes-under-per-unit-propaths)). `$OUT` is the first entry of every
+unit PROPATH, and holds the r-code of every class unit that compiles in this build:
+
+- **Order.** A user has a compile-time edge to each class it names, so the scheduler puts
+  the class unit in an earlier job, and the user's job starts only after it finished
+  ([build-tool.md](../build-tool.md)). A fetched class unit is installed before its users
+  start, as a compile is. So when a user compiles, `$OUT` holds the r-code of this build.
+- **A class unit that fails** loses its old r-code, so its users bind what their PROPATH
+  finds after `$OUT`, which the key need not hold. Such a user is **tainted**: the build
+  records it without a key (note `a unit it reads failed in this build`), so the next plan
+  compiles it again, and it is never written to a cache.
+- **A class unit that is skipped** (an output collision, a package mismatch) writes no
+  r-code: for its users it is a class that is not a unit, bound by the search.
+- **A cycle.** Units in one compile-time cycle compile in one job, so they cannot read each
+  other's r-code of this build first. The compiler has no rule of its own for a cycle
+  (measured): it binds the first r-code it finds for the other class, also stray r-code
+  beside the source, or the r-code that the last build left in `$OUT`, and the r-code it
+  makes depends on the bytes of the r-code it bound. So a job of more than one unit
+  compiles in **passes** ([Passes over a cycle](#passes-over-a-cycle)), and its last pass
+  reads only this build's r-code of the cycle from `$OUT`. Members of a cycle are then
+  class units read from `$OUT` like any other.
+- **A class edge that the analysis misses** leaves the user unordered against the class, so
+  it can bind the `$OUT` r-code of an earlier build. This is the closure assumption that
+  every key makes, with one PROPATH id too: the key cannot hold a class that the closure
+  lacks. Known losses of the analysis are K1 (`degraded`), K2 and K4.
+
+The users of a class unit read it from its r-code alone. Measured: the compiler does not
+open `pkg/Foo.cls` or its includes, even when a later entry holds another include of the
+same name. So for such a user only the file of the class matters, not its includes: the
+class unit's own compile resolved them on its own PROPATH, and its own key holds them. A
+user inherits what makes that compile read other files than the analysis: the edges that
+are not uniform for the class unit (K9, K11), and its K10 reasons.
+
+#### Passes over a cycle
+
+Measured on OpenEdge 12.8.9 (`a_cycle_binds_the_first_rcode_it_finds_for_the_other_class`,
+`a_second_pass_after_a_propath_reset_binds_only_this_builds_rcode` and
+`build_cycle_with_stray_rcode_gives_clean_rcode` in
+`crates/oxabl/tests/build_openedge/class_binding.rs`):
+
+- A cycle member `A` that binds r-code of `B` made from another source (stray r-code beside
+  `B.cls`, or last build's `$OUT/pkg/B.r`) gives an `A.r` that differs from a clean compile,
+  also when that `B` is compatible (one more method). When the other `B` lacks a member that
+  `A` calls, the compile fails (12927). With no r-code first, the compile reads `B.cls`.
+- A compile that binds the r-code of the pass before gives clean r-code, whatever that pass
+  bound: the r-code a compile makes depends on the interface of the classes it binds, and
+  the interface of `B.r` comes from `B.cls`.
+- A session keeps a class bound to its file while the PROPATH stays the same and the file
+  does not change: stray r-code bound once stays bound, also after `MULTI-COMPILE` is turned
+  off and on. Setting PROPATH to `""` and back makes the next compile bind again.
+
+So a job of more than one unit compiles in passes, all on one worker:
+
+1. **Pass 1** compiles every unit and installs the outputs, but reports nothing.
+2. Before each later pass, and after the last one, the worker gets a **rebind**: a
+   `COMPILE` request with no unit on an empty PROPATH id. The next request sets the unit
+   PROPATH again, so the session binds every class again.
+3. When every unit compiled in pass 1, **pass 2** is the last pass. Otherwise pass 2 too
+   reports nothing, and **pass 3** is the last pass.
+4. The results of the last pass count. It is **settled** when every unit compiled in the
+   pass before: then every unit read this build's r-code of the others. A last pass that is
+   not settled records its units without a key (note
+   `a class of its cycle did not compile in the pass before, so it may have read r-code of
+   another build`), so the next build compiles them again, and writes nothing to a cache.
+
+A worker lost in a pass that reports nothing puts the whole job back. One lost in a last
+pass that is not settled puts back the units it did not finish, still without a key.
+
+The cost is one more compile of each unit of a cycle, and a third one when pass 1 fails.
+
+#### Uniform resolution
+
+`oxabl build --plan --probe --json` reports, with more than one PROPATH id, for each unit
+that is a class or reaches one, whether its named edges are uniform (`class_resolution`).
+
+A **named edge** is a name as written (a class name, or an include name), the file that
+writes it, and the file `T` the analysis resolved it to. The named edges of a unit are:
+
+- every class edge of the unit and of each class source in its closure;
+- every include edge of the unit when it is a class unit, on its own PROPATH;
+- every include edge of each class in its closure whose source its compile reads (a class
+  that is not a class unit compiling into `$OUT` before it), at any depth;
+- for each class unit it reads from `$OUT`: the named edges of that class unit, that is,
+  what that compile read.
+
+The include edges of a procedure's own include tree stay per unit, as before.
+
+`hit(P, name)` is what PROPATH id `P` finds after `$OUT`: for an include, the first entry
+that holds the name as written; for a class, the first entry that holds `<pkg>/<Name>.r` or
+`<pkg>/<Name>.cls`, the r-code first in an entry, with the package path spelled as in `T`.
+A match is exact in case, as on Linux: a file that matches only when case is ignored is not
+found. A `$LIB:` entry before the hit counts as another file, because oxabl cannot list a
+library. A DLC default entry is not searched for workspace names.
+
+For a **class edge**: when a class unit of this build has the r-code stem of the name, the
+user binds it from `$OUT`. The edge is uniform when that class unit is `T` (else `U1`).
+Otherwise the edge is uniform when:
+
+- **rcode.** `hit` on the unit's own PROPATH is not r-code (else K11, see
+  [Class r-code](#class-r-code));
+- **U3.** `hit` on the unit's own PROPATH is `T`;
+- **U1.** for every PROPATH id `P` of the build, `hit(P, name)` is `T` or nothing.
+
+For an **include edge** of a class whose source the compile reads: U3, and U1 over every
+PROPATH id. For the include edges of a class unit on its own PROPATH: U3 alone.
+
+A name that oxabl cannot turn into a path (an include name the analysis did not record, or
+a class file whose path does not end with the class name) is not uniform (`name`). Oxabl
+reads the class name in the case of `T`, because the analysis keeps class names in lower
+case.
+
+U1 counts every PROPATH id, not only those of the units that reach the class, because a
+class that is not a unit is compiled in memory in whichever session reaches it. A session
+binds a class again after a change of PROPATH (measured), so this is cautious, not needed.
+
+Uniformity is computed at each plan from the working tree, with one memo of the directory
+listings, and is never stored. A new file that shadows a name (`b/pkg/Foo.cls`) makes the
+edge not uniform at the next plan: the users lose their key, compile, and fetch nothing.
+
+#### The key under several PROPATH ids
+
+The key material does not change. It is sound for a uniform unit for these reasons:
+
+- The closure holds `T` and, for a class whose source the compile reads, the class's own
+  closure, by path and content. Uniformity says that the compile binds exactly these files.
+- For a class unit read from `$OUT`, the r-code there is the output of the class unit's own
+  compile. Its inputs are the class source and its closure, which the user's closure holds
+  (the closure is transitive), the environment, the options and the worker program, which
+  are the same for both, and the class unit's PROPATH. The PROPATH ids of one build differ
+  only in their root-relative entries, which are workspace directories (digest `dir`), whose
+  files enter the key through the closure. The class unit's own reasons that would make its
+  compile read other files are inherited (above).
+- The user's own PROPATH section, with its digests, is in the key, so two units of one
+  content and different PROPATHs do not share a key unless they compile the same.
+- Two machines that both have a key proved uniformity on their own tree, so they agree on
+  every binding.
+
+A unit lives at one path and so has one PROPATH id; a class unit is compiled once under its
+own id. No cache entry was shared between ids before, and none is lost.
+
+### Class r-code
+
+Measured on OpenEdge 12.8.9 ([Measured](#follow-up-classes-under-per-unit-propaths)): the
+compiler binds a class from the first PROPATH entry that holds `<pkg>/<Name>.r` or
+`<pkg>/<Name>.cls`, exact in case. In that entry the r-code wins, whatever the dates of the
+files. `$OUT` is the first entry, and the build compiles each class unit into it before the
+units that use it (classes before their users).
+
+So a class that is not a class unit of this build (a class outside
+`[workspace.sources].directories`, or a class unit that is skipped) is bound from its first
+hit on the user's PROPATH. When that hit is r-code (a `.r` that an older compile with `SAVE`
+left beside the source, or a `.r` in an earlier entry), the compile reads bytes that the key
+does not hold, and an edit of that `.r` would not change the key. The unit is unkeyable
+under K11 (`class-rcode: <file>`), also with one PROPATH id. The build prints one warning
+that counts these units and names the first r-code files. R-code beside a class unit does
+no harm: the users bind the class unit's r-code in `$OUT`.
+
+A unit keyed by its [observed closure](#the-observed-closure) may use any listed class, so a
+listed class that is not a class unit of this build gives the class part the reason
+`observed-class: <class>: class-rcode: <file>` when r-code comes before it on the PROPATH
+under any name its path can have (`Foo`, `pkg.Foo`, ...): the class part does not know its
+package.
+
+R-code in a `$LIB:` library is covered: the library's digest is in the key (K3 accepts a
+library class only through a hashed library). A `$LIB:` entry before the class source
+counts as another file only for the uniform resolution (U1).
+
+#### Class r-code beside the source
+
+With `[build].rcode = "beside-source"` there is no `$OUT`, and the r-code of a unit of the
+build is at its path with `.r`. The search treats that path as a fact of the plan, not of
+the disk, so a key does not change when the first build writes the file:
+
+- the r-code beside a class unit that compiles is that class unit (its `.cls`), present or
+  not: the build deletes it before anything compiles and compiles the class before its
+  users. The users then pass U3 and U1 on that hit, as for any class source;
+- the r-code beside a procedure that compiles is r-code, present or not. A class name that
+  it shadows is K11;
+- the r-code beside a skipped unit is absent: the build deletes it. A unit skipped by an
+  `output-collision` has the r-code of the unit that compiles;
+- any other `.r` is read from the disk, as above (K11).
+
+### Class conflicts
+
+With one PROPATH id, a class name resolves to one file, with one exception: a class name that
+K3 accepted as external (unresolved, but supplied by a hashed library) can also be the name
+of a workspace class: a class unit, or the target of a class edge, that the analysis of
+this unit did not reach (for example through a spelling that differs in case with
+`case_insensitive_lookup = false`). The compiler can then read that class's `.r` from `$OUT`
+in place of the library class that the key covers.
+
+So, over the **whole graph**, a name that K3 accepted is **in conflict** when any class unit
+or class edge target has the same name (ignoring ASCII case, as the AVM does). Every unit
+whose closure holds such an accepted name is unkeyable under K8 (`class-conflict: <name>`).
+The build prints one warning per name, for example:
+
+```text
+warning: class Acme.Util.X is accepted as external ($LIB:acme) but src/Acme/Util/X.cls
+         also has that name; 3 units that use it are compiled without a key
+```
+
+The build does not stop; these units compile as the AVM resolves them and are never cached.
+
+### Follow-up: classes under per-unit PROPATHs
+
+Six blockers stood between K9 as one switch for the build and keys for units that use
+classes under per-unit PROPATHs. Their state now:
+
+1. **The shared `$OUT` tree.** Closed for uniform names. The compiler prefers `$OUT` r-code
+   to any later entry (measured), so oxabl does not need a per-unit view of `$OUT`: a user
+   whose analysis found another file than the class unit in `$OUT` fails U1 and has no key.
+   Still real for names that are not uniform: such a user binds the other class and can fail
+   locally (error 12927 in `per_unit_propath_class_binding`), or silently bind it.
+2. **Sessions.** Closed. A session binds a class again after a change of PROPATH (measured,
+   `session_binds_a_class_again_after_a_propath_change`), and for a uniform name every
+   session binds one file. No session rule is needed.
+3. **External names.** Closed: K8 is computed over the whole graph by name, whatever the
+   number of PROPATH ids.
+4. **Class units.** Closed. Users read a class unit from its r-code in `$OUT` alone
+   (measured), so its includes need agree only for its own compile, which the analysis
+   searches from the same package root.
+5. **Classes that are not units.** Closed for uniform names: when every name inside the
+   class resolves to one file under every PROPATH id, the in-memory compile reads the same
+   files whichever user compiles it. Still open: keying a user of a class that is not a
+   unit whose names resolve differently per PROPATH id, which needs its edges per id.
+6. **V3 coverage of classes.** Open, and the same with one PROPATH id: the `XREF-XML` names
+   no class file ([cache.md](cache.md#what-v3-covers)), so the closure is the only guard.
+   The guard is now an emulation of the measured search. The `FileID` log names class reads
+   for the first compile that binds each class in a fresh session (measured), a possible V3
+   source.
+
+Also open: a local "up to date" stamp for units that stay unkeyable under K9, so that a
+no-change build compiles none of them either.
+
+**Measured** (OpenEdge 12.8.9; tests in `crates/oxabl/tests/build_openedge/class_binding.rs`,
+listed in [testing.md](testing.md)). Each test uses two versions of a class that differ in
+one member, so the compile of a user shows which version it bound.
+
+- The compiler takes the first PROPATH entry that holds `pkg/Foo.r` or `pkg/Foo.cls`. In that
+  entry, r-code wins over the source, whichever file is newer.
+- So `$OUT` r-code of a class wins over any later entry, in a fresh session, with
+  `MULTI-COMPILE` on and off. A user of a member that only a later source has fails with
+  error 12927.
+- Stray r-code beside a class source is bound when no earlier entry holds the class. This
+  holds when the class is not a unit (its r-code is never in `$OUT`), and when `$OUT` has no
+  r-code of it yet. It is harmless when the class is a unit that the build compiles into
+  `$OUT` before the user, because `$OUT` comes first (`oxabl build` test pair).
+- An entry that holds only a stale `.r` beats a later entry with the source. An entry with
+  only the source beats a later entry with a stale `.r`.
+- On Linux the match is exact in case, for source and for r-code (error 5638).
+- A user, and a class that inherits it, read a class that has r-code in `$OUT` from that
+  r-code alone: `pkg/Foo.cls` and its includes are not opened, even when a later entry holds
+  a different `x.i`. Include uniformity matters for a class only when the compiler reads its
+  source.
+- The `FileID` log of `LOG-MANAGER` names every file a compile opens, with the unit,
+  definitions-only includes, class sources and their includes, and class r-code. A class that
+  an earlier compile of the same session bound is not named again, so the log is a full read
+  set only for the first compile that binds each class in a fresh session. For 300 compiles
+  of a small unit the log added about 10% (106 ms to 117 ms).
+
+### Measured: runtime and r-code beside the source
+
+Facts for a design that writes r-code beside the source; no rule above changes. OpenEdge
+12.8.9, tests in `crates/oxabl/tests/build_openedge/runtime.rs`, listed in
+[testing.md](testing.md). The runtime PROPATH of each run comes from the environment.
+
+- **The runtime search.** `RUN x.p` takes the first PROPATH entry that holds `x.r` or `x.p`,
+  and in that entry the r-code, whatever the dates of the files. This is the rule of the
+  compiler for a class. A class gets the r-code in its entry too, also when it is made at
+  run time (`DYNAMIC-NEW`).
+- **Names.** `RUN x`, `RUN x.r`, `RUN x.p` and `-p x.p` search the PROPATH. The full path of
+  a source (`RUN VALUE("<dir>/x.p")`, `-p <dir>/x.p`) runs `<dir>/x.r` when it exists, also
+  when an earlier entry holds another `x.r`. So r-code in a separate directory serves a
+  program that starts by name, and only r-code beside the source serves a program that
+  starts by the path of its source. A runtime that searches only the source entries never
+  runs r-code in a separate directory: after an edit and a build it runs the r-code that an
+  older compile left beside the source.
+- **`COMPILE ... SAVE` writes a new file.** `SAVE` and `SAVE INTO` over an existing `.r`
+  give a new inode. A hard link to the old file keeps the old bytes.
+- **Procedure r-code is no compile input.** The compile of `u.p` by name opens `u.r` when
+  the PROPATH search finds it first (the `FileID` log), and does not open the `.r` of a `RUN`
+  target. The r-code is equivalent to a compile without those files under the r-code
+  oracle, also when `u.r` holds random bytes or r-code of another version.
+- **Classes in place.** With the source entries alone on the compile PROPATH (no `$OUT`), a
+  class unit compiled `SAVE INTO` its package root puts its r-code beside the source, and its
+  users in that directory and in another source directory bind that file. Stale r-code at
+  that path is bound until the class compiles over it; then the users bind the new r-code.
+- **A cycle in place.** Two passes in fresh sessions over `pkg.A` <-> `pkg.B` with stale but
+  compatible r-code beside both give r-code equivalent to a clean build's. Stale r-code that
+  lacks a member the other class calls makes every compile of both passes fail (12927), and
+  a failed compile writes no r-code, so the stale files stay.
+
+## The observed closure
+
+Some units have no key only because oxabl cannot read their closure from their source: a
+construct that the analysis does not model, or an include name that it cannot compute. The
+analysis of such a unit is degraded (K1), or finds include names that do not resolve (K2) or
+that it cannot compute (K4). The compiler reads these files without a problem, and its
+the cross-reference names the includes it read. Such a unit gets a key from its **observed closure**:
+the files that the compiler read at the last successful compile of the unit, and every class
+source that the compile could read.
+
+**Encrypted source never qualifies.** The compiler gives no `INCLUDE` reference for an
+include made inside `XCODE`-encrypted source (measured on OpenEdge 12.8: an encrypted program
+read six files through its own includes, and every `INCLUDE` reference of its `XREF-XML` came
+from an unencrypted include). A definitions-only include made there leaves no trace at all,
+so the observed closure of such a unit can miss a file it read. A unit whose source, or any
+file of whose closure, looks encrypted gets no observed closure: the compile records none
+(the note says the file looks encrypted), and a stored closure gives
+`observed-encrypted: <path>`. A file looks encrypted when its first 512 bytes hold a control
+byte other than tab, line feed, carriage return and form feed: encrypted files start with
+one (measured: `0x11` and `0x13`), and plain source has none there. A file that cannot be
+read counts as encrypted. Such a unit compiles at each build.
+
+### Which units qualify
+
+A unit qualifies when each reason that it has no key is one of these, found in the
+analysis of the unit itself (not of a class source in its closure):
+
+- K1 `degraded: <unit>: <reason>`;
+- K2 `unresolved-include: <name> in <unit>`;
+- K4 `computed-name: <name> in <unit>` for an include.
+
+Any other reason keeps the unit unkeyable: K3, K4 for a class name or a class statement,
+and K5 to K11. A class unit never qualifies: its closure is an input of each user of the
+class, so it must come from the analysis. A unit whose include the compiler cannot find
+either fails to compile, so it records no observed closure.
+
+### Classes: the class part
+
+The `XREF-XML` cannot tell which classes a compile used. It names no class file
+([cache.md](cache.md#what-v3-covers)). A class that is used only as a type gives no reference
+at all. Measured on OpenEdge 12.8, these compile clean and give no class reference:
+`DEFINE VARIABLE o AS pkg.Leaf` (only `STRING "o"`), `USING pkg.*.` with
+`DEFINE VARIABLE o AS Leaf`, `TYPE-OF(x, pkg.Leaf)`, `DEFINE INPUT PARAMETER ip AS
+pkg.Leaf`, `FUNCTION f RETURNS pkg.Leaf` (only `FUNCTION f`), and a variable of an
+interface type. Only some uses give a reference: `NEW`, `INVOKE`, `CAST` and `ACCESS`. So no
+list of reference types can show that a compile used no class.
+
+So an observed closure holds every class that the compile could read. That is the **class
+part** of the unit PROPATH:
+
+- the **listing**: every class source (`.cls`) below the workspace entries of the unit
+  PROPATH (the entries under the root), and every class unit of the workspace, whose r-code
+  is in `$OUT`. The listing is in the stored closure, so a class that is added or removed
+  changes the observed closure;
+- for each listed class, the class itself and its closure as the analysis found it
+  ([The closure](#the-closure)): its includes and the classes it reads. The bytes of a class do
+  not cover an include that the class reads.
+
+Each listed class must pass the rules of the key as if it were the unit (K1 to K6 and K8,
+with the unit PROPATH), and must not hold a name that K8 finds in conflict. With
+`root_relative_include_paths` non-empty, a listed class that is not a class unit compiling
+into `$OUT` must also pass K10: the unit PROPATH resolves each of its names to the file the
+analysis did. Such a class must not have r-code before it on the unit PROPATH (K11,
+[Class r-code](#class-r-code)). A listed class unit that compiles needs neither: the unit
+compiles after every class unit and reads it from `$OUT`. K7 does not
+apply: a class unit that is skipped (for example `package-root-not-on-propath`, a class with
+no package in a directory that is not on the PROPATH) does not take the key away. It stays
+in the listing, with its bytes and its closure. This is sound: no successful compile can use
+it as a class. By the name it declares, the PROPATH holds no such source, and `$OUT` holds no
+r-code of it, because it never compiles and the build removes outputs that no unit owns. By
+its path name, the compiler finds the source, sees another name and fails (error 12629), and
+a failed compile records nothing. Any other read of the file is covered by its bytes in the
+key. Otherwise no unit on that
+PROPATH gets a key from an observed closure: `observed-class: <class>: <reason>`. A listed
+class that oxabl did not analyse (a `.cls` outside `[workspace.sources].directories` that no
+analysis reaches) gives `observed-class-unanalysed: <class>`, and a directory that cannot be
+listed gives `observed-classes-unlisted: <why>`.
+
+Classes under `$DLC` entries and in `$LIB:` libraries are not listed. They have the trust
+that a parsed closure gives them, and no more: the digests of the PROPATH entries, the
+`$DLC` version in the environment, and `[build.external_packages]`.
+
+### What a compile records
+
+After a successful compile of a unit that qualifies, the build reads the unit's
+cross-reference: the private text `XREF`, or the `xref` output the user asked for, in either
+format. The build records nothing,
+and the unit keeps no key, when one of these steps fails:
+
+1. **Each include, resolved on the host.** Each `INCLUDE` reference gives an include name.
+   OpenEdge writes the text of the include, with its arguments, and sometimes in quotes
+   (`gl/global-input.i &PASS`, `"se/decrypt.i  &company = v-company"`). The name is the
+   first word, without the quotes. The build resolves the name on the unit PROPATH on the
+   host, as the compiler does: the first entry that holds the file. `$OUT` is the r-code
+   directory, and a `$LIB:` entry is passed over, because the key holds its bytes. The file
+   goes into the closure, and each path searched before it goes into the **absent set**.
+   A name that resolves to nothing, that leaves its entry, or that is absolute with no
+   canonical form, records nothing. This step covers an include that holds only
+   preprocessor definitions, which has no `Source` element.
+2. **The compiler agrees.** Each `Source` element must map to a canonical path, as V3 maps
+   it. It must be the unit, a file that step 1 found, or a listed class. R-code in `$OUT`
+   and a member of a library pass, as in V3. With the r-code beside the source no r-code
+   passes. Otherwise the host and the compiler resolve differently.
+
+The store keeps the closure, the absent set and the listing of the class part, as the plan
+found it ([store.md](store.md#columns)). The refresh tracks their files as it tracks the
+files that an analysis read.
+
+### The observed-closure key
+
+At the next plan, a unit that qualifies and has a stored observed closure gets a key: the
+material of [the key](#the-key), with the observed files and the class part as the closure,
+each file by content (a `$DLC/...` file by the worker's SHA-256, as in a parsed closure). The
+section is named `observed-closure` in place of `closure`, so an observed-closure key never
+equals a key from the parsed closure. The absent set and the listing are not in the
+material: they are checked. The unit has no key when:
+
+- a file of the closure is absent now (`observed-missing: <path>`), cannot be read, or is a
+  `$DLC/...` file whose worker copy differs from the host mirror
+  (`observed-unreadable: <path>`);
+- a path of the absent set holds something now (`observed-shadowed: <path>`): an include can
+  resolve to it first;
+- the unit or a file of the closure looks encrypted (`observed-encrypted: <path>`);
+- the listing now differs from the stored one (`observed-classes-changed: +<class>` or
+  `-<class>`);
+- the class part has a reason (see above).
+
+These reasons follow the other reasons of the unit. The unit compiles, and the compile
+records a new observed closure.
+
+**Why this is sound.** A compile is a function of the unit, the files it reads and the
+environment. The compiler decides which file to read next only from the bytes it read
+already, from the PROPATH and from the environment, and the key holds all of them. When the
+unit, each include it read and each class it could read are the same, and no new file can
+shadow an include, it reads the same files again and makes equivalent r-code. ccache's
+manifest mode uses the same argument.
+
+### Order of the compiles
+
+The compile of a unit that qualifies can read class r-code from `$OUT`, which is first on
+its PROPATH. So it starts only after every class unit of the rebuild set has finished in this
+build. Otherwise it could read the `.r` of the last build and be cached under a key that
+holds the new class source. The scheduler adds an edge from each such unit to each class unit
+of the pass. When the edges close a cycle, the units are in one job, and in a job the units
+that qualify compile last.
+
+### The key after the compile
+
+So that the next build compiles nothing, the build also keys the unit right after a compile
+that recorded a new observed closure, from the bytes on disk. It does so only when each
+file is the one the compiler read: the refresh of this build hashed the same bytes before
+the compile, or the file did not change (its `ctime` and `mtime`) since two seconds before
+the build started. Each path of the absent set must still be absent, the classes listed
+again after the compile must be the ones the plan listed, and a `$DLC/...` file gives no key
+here. Otherwise the result has no key: the next plan keys the unit from the stored closure,
+and the unit compiles once more under that key.
+
+### Verification and the cache
+
+When a unit compiles under an observed-closure key, the build reads its cross-reference again.
+
+- **The same closure** (the same files, absent set and listing): the key stands. V1, V2 and
+  V3 apply as for any keyed unit, with the observed files and the class part as the closure,
+  and the outputs are written to the local and the remote cache.
+- **Another closure**: the key does not describe this compile. The build stores the new
+  closure, writes nothing to a cache, and records the key made after the compile, or none.
+
+A compile with no key before it is never written to a cache.
+
+### Limits
+
+- A machine with no store (a fresh CI runner) has no observed closure, so it compiles such a
+  unit once. The remote cache serves such a unit only under a key that a machine with a store
+  wrote.
+- Any change to any workspace class on the PROPATH, or to what it reads, compiles such a
+  unit again, and one workspace class without a key leaves such units without a key.
+- The rules trust the compiler's cross-reference to give an `INCLUDE` reference for each
+  include made in unencrypted source, the definitions-only ones too. The opt-in OpenEdge
+  tests `xref_xml_observed_closure` and `xref_text_observed_closure`
+  ([testing.md](testing.md#tests)) pin it.
+
+## Environment identity
+
+The environment identity is a hash of what the AVM session brings to the compile. It comes
+from the worker's handshake ([worker-protocol.md](worker-protocol.md#handshake)), at
+each build. It never comes from configuration alone.
+
+Material, in this order:
+
+```text
+section("openedge")    str(dlc_version) str(proversion)
+section("platform")    str(opsys) str(window_system) str(batch_mode) str(process_architecture)
+section("session")     str(cpinternal) str(cpstream) str(cpcoll) str(cpcase)
+                       str(date_format) str(year_offset)
+                       str(numeric_decimal_point) str(numeric_separator)
+section("parameters")  list(param, parameters)        param = str(name) str(value)
+section("databases")   list(database, databases)      database = str(logical_name) str(dbtype)
+                                                                 list(str, aliases)
+                                                                 hash(schema_identity)
+```
+
+| Field | Source in the worker | Canonical form |
+| --- | --- | --- |
+| `dlc_version` | The first line of `$DLC/version` | Trailing white space removed. |
+| `proversion` | `PROVERSION` | As reported. |
+| `opsys`, `window_system` | `OPSYS`, `SESSION:WINDOW-SYSTEM` | As reported. |
+| `batch_mode` | `SESSION:BATCH-MODE` | `yes` or `no`. |
+| `process_architecture` | `PROCESS-ARCHITECTURE` | Decimal. |
+| `cpinternal` ... `cpcase` | `SESSION:CPINTERNAL`, `CPSTREAM`, `CPCOLL`, `CPCASE` | As reported. |
+| `date_format`, `year_offset` | `SESSION:DATE-FORMAT`, `SESSION:YEAR-OFFSET` | As reported; offset in decimal. |
+| `numeric_decimal_point`, `numeric_separator` | `SESSION:NUMERIC-DECIMAL-POINT`, `SESSION:NUMERIC-SEPARATOR` | As reported. |
+| `parameters` | `SESSION:STARTUP-PARAMETERS` | See [Startup parameters](#startup-parameters). |
+| `databases` | `NUM-DBS`, `LDBNAME(i)`, `DBTYPE(i)`, `NUM-ALIASES`, `ALIAS(j)` | In connection order. Logical names and aliases in ASCII lower case. Aliases of the database sorted by bytes. |
+| `schema_identity` | The schema image of the database | See [Schema identity](#schema-identity). |
+
+### Startup parameters
+
+The worker reports `SESSION:STARTUP-PARAMETERS`, a comma-separated list. The AVM expands
+each `.pf` file into it: `-pf /work/build.pf,-inp 77777,-tok 4321,(end .pf),-Mm 8192` for a
+`.pf` that holds `-inp` and `-tok` (measured on OpenEdge 12.8). Oxabl parses it:
+
+1. Split on `,`.
+2. Remove each item that is exactly `(end .pf)`, and each item whose name is `-pf`. The
+   parameters that a `.pf` held stay, so a parameter has one canonical form whether it came
+   from a `.pf` or from the command line.
+3. An item that does not start with `-` continues the value of the item before it (the comma
+   is kept). This handles a value that holds a comma.
+4. Split each item at the first space into a name and a value. An item with no space has
+   the value `""`.
+5. Remove every parameter whose name is in the drop list.
+6. **File values.** For each remaining value that is not `""`, oxabl asks the worker to hash
+   the path that the value names (relative to the worker root when relative). When the
+   worker reports a file, the value becomes `sha256:<hex>` of its bytes, so
+   `-compileroptionsfile`, `-ininame` and any other file-valued parameter count by content,
+   not by path. When it reports a directory (`-assemblies`), the environment is unknown for
+   every unit (K6, `unhashable-parameter: -assemblies`). When nothing exists at the path, the
+   value stays as written. This rule needs no list of file-valued parameters, so a parameter
+   that oxabl does not know is still keyed by content.
+7. For a name that occurs more than once, keep the last one (the AVM uses the last one).
+8. Sort by name, by bytes. Names and values keep their case.
+
+The **drop list** holds only parameters that name a connection, a file of this process, a
+log or a secret, and `-trig`:
+
+```text
+-p -param -pf -b -q -T -trig -db -ld -H -S -N -U -P -1 -ct -dt
+-clientlog -logginglevel -logentrytypes -logthreshold -numlogfiles
+-basekey -keyvalue
+```
+
+`-trig` names the directory of the schema trigger procedures, which only a running program
+reads. Measured on OpenEdge 12.8.9 (`the_trigger_directory_changes_no_rcode_and_no_key`):
+a unit that creates and deletes rows of a table with triggers, and a trigger procedure,
+give equivalent r-code with the trigger directory, with a directory of broken triggers and
+with no `-trig`. Kept, it would make every unit unkeyable, because its value is a
+directory.
+
+Every other parameter stays, with its value. Some of them do not change r-code (`-mmax`,
+`-s`, `-inp`). Keeping them costs cache misses when two machines start the AVM differently.
+It never gives a wrong hit. A parameter moves to the drop list only with an OpenEdge-suite
+test that shows it does not change the r-code.
+
+Dropped parameters are never stored, printed or sent. `-U`, `-P` and `-keyvalue` can hold
+secrets.
+
+### Schema identity
+
+The worker builds a **schema image** of each connected database and hashes it on the worker
+side ([worker-protocol.md](worker-protocol.md#schema-image)). The image is a list of
+**entries**:
+
+| Entry kind | Name | Records in the entry, in this order |
+| --- | --- | --- |
+| `db` | `""` | the one `_Db` record of the database |
+| `system` | `""` | one `system-table` record for each table that is not a user table (`_File._Tbl-Type <> "T"`: virtual system tables, the metaschema, the SQL catalog), by `_File-Name`, then `_Owner` |
+| `table` | the table name | the `_File` record of the table; its `_Field` records by field name; its `_Index` records by index name, each followed by its `_Index-Field` records by `_Index-Seq`; its `_File-Trig` records by `_Event`; its `_Field-Trig` records by `_Field-Recid`, then `_Event` |
+| `sequence` | the sequence name | the `_Sequence` record |
+
+There is one `db` entry, one `system` entry, one `table` entry per user table
+(`_File._Tbl-Type = "T"`), and one `sequence` entry per sequence.
+
+**System tables.** R-code records the name and CRC of every table it reads, a virtual system
+table or a metaschema table too (`RCODE-INFO:TABLE-CRC-LIST`). Their definitions differ
+between databases: on OpenEdge 12.8.9, a database created new has 56 virtual system tables
+and `_Connect` with CRC 28084, while databases that an older release created have 55 and
+CRC 29759, and a unit that reads `_Connect` compiles to r-code with the CRC of the database
+it compiled against. An edit of a metaschema table (`_User`) changes its CRC,
+and r-code of the old CRC then fails with error 1896. So the `system` entry holds, for each
+of these tables, a `system-table` record with two fields after the type: the table name and
+`_crc=<_CRC>` (`_crc=?` for the SQL catalog tables, which have no CRC). Two databases with
+the same user tables but other system tables have two identities.
+
+**Canonical entry text.** Each record is one line: its fields, each percent-encoded as in
+the protocol framing ([worker-protocol.md](worker-protocol.md#framing)), joined by `TAB`,
+ended by `LF`. The fields of a record are:
+
+1. the record type (`db`, `system-table`, `table`, `field`, `index`, `index-field`,
+   `table-trigger`, `field-trigger`, `sequence`);
+2. its name fields: none for `db`; the table name and `_crc=<_CRC>` for `system-table`
+   (it has no other fields); the table name for `table`; table and field for
+   `field`; table and index for `index`; table, index, `_Index-Seq` and field name for
+   `index-field`; table and event for `table-trigger`; table, field and event for
+   `field-trigger`; the name for `sequence`;
+3. one `name=value` pair for each field of the metaschema buffer, in buffer order
+   (`BUFFER-FIELD(i)` for `i` from 1 to `NUM-FIELDS`), with the field name in ASCII lower
+   case, except the excluded fields below. Each pair is one field of the line, encoded as
+   a whole.
+
+A value is `STRING(value)`; `HEX-ENCODE(value)` for a `RAW` field; `?` for the unknown value
+**of every data type** (character, integer, date, logical and the others). An array field
+is **one** pair `name[]=v1%00v2%00...`: each element is percent-encoded and the elements are
+joined with `%00`, which cannot occur inside an encoded value. A `RECID` or `ROWID` field is
+written as the row it points at: `table/<table>`, `field/<table>/<field>`,
+`index/<table>/<index>` or `db` (for example `_prime-index=index/customer/custnum`). A
+pointer to a row that is not in the image keeps its raw value; that is sound, because a
+different value can only cause a miss.
+
+**Excluded fields:**
+
+- fields of data type `BLOB` or `CLOB`;
+- `_last-change`, `_last-modified` and `_mod-sequence`: time stamps and counters that
+  differ between two databases loaded from one `.df` (measured on OpenEdge 12.8);
+- `_ianum` and every field with `area` in its name (storage areas).
+
+The canonical text is ASCII, because the encoding replaces every other byte, so its bytes do
+not depend on the worker's code page. The worker hashes it with
+`MESSAGE-DIGEST("SHA-256", ...)` over a `LONGCHAR` and reports, per entry, the kind, the
+name, the number of records and the lower-case hex SHA-256.
+
+**Identity.** Oxabl encodes each entry and sorts the encoded entries by bytes:
+
+```text
+encode(entry)   = str(kind) str(name) u64(records) str(sha256 hex)
+schema_identity = derive_key("oxabl 2026-11 schema image v3",
+                             u64(number of entries) || encoded entries in sorted order)
+```
+
+The identity does not depend on the order in which entries arrive, nor on how the imaging is
+split between workers ([worker-protocol.md](worker-protocol.md#schema-image)).
+
+Version 3 of the context string added the `system` entry. It changed every schema identity,
+and so every compile key, once: no key made before it is reused.
+
+The image covers the CRC of each table and also what the CRC does not cover and the
+compiler puts into r-code: labels, formats, initial values, validation expressions, help,
+view-as phrases and compile-time security (`_Can-*`). The OpenEdge suite proves on scratch
+databases that two databases loaded from one `.df` give one identity, and that each of these
+`.df` edits changes it: field label, field format, add index, change primary index,
+validation expression and message, field help, add field, add table, add sequence, drop
+index, drop field.
+
+**A build images a database unless the raw digest shows that its records did not change**
+since the image that the last build stored ([The raw digest](#the-raw-digest)). The
+fingerprint is never trusted to skip imaging; see [Database fingerprints](#database-fingerprints).
+`oxabl build --probe` always images.
+
+Rejected: the table CRCs alone (they do not cover labels, formats and validation); the
+`.df` files of `[workspace.schema]` (they can differ from the database that the AVM
+compiles against, and nothing would tell); sending every record to oxabl and hashing there
+(version 1 of this spec: 6.6 million lines and 296 MB for one real database, 10 minutes per
+probe, against about 50 s with hashing on the worker, and 6 s with the work split across 8
+workers).
+
+### Database fingerprints
+
+The worker also reports a **fingerprint** per database: `_Db._Db-guid` and
+`_DbStatus._DbStatus-CacheStamp` (`?` when unavailable). It is part of the environment
+agreement: every worker must report the same fingerprints, which catches two workers that
+reach different databases. It is **never** used to skip imaging, because it does not see
+every change that changes r-code. Measured on scratch databases, one `.df` edit per probe
+(OpenEdge 12.8.9; reproduced by `schema_edit_table` in the slice 10 suite). The stamp does
+**not** move for a primary-index change, an added sequence or a dropped field, all of which
+change r-code:
+
+| Edit | Schema identity changed | Cache stamp changed |
+| --- | --- | --- |
+| field label | yes | yes |
+| field format | yes | yes |
+| add index | yes | yes |
+| change primary index | yes | **no** |
+| validation expression and message | yes | yes |
+| field help | yes | yes |
+| add field | yes | yes |
+| add table | yes | yes |
+| add sequence | yes | **no** |
+| drop index | yes | yes |
+| drop field | yes | **no** |
+
+The stamp also has one-second resolution, and the GUID stayed the same for databases
+created from one empty database, so neither identifies a database or its schema. Measured
+on more edits, the stamp missed 37 of 94 dictionary edits, an SQL `ALTER SEQUENCE` and
+`proutil convchar`. The change test that skips imaging is the raw digest.
+
+### The raw digest
+
+The **raw digest** of a database is a hash of every record of the eight metaschema tables
+that the image reads (`_File`, `_Field`, `_Index`, `_Index-Field`, `_File-Trig`,
+`_Field-Trig`, `_Sequence`, `_Db`), all rows and not only the user tables, as the database
+stores them. The worker reads each record with `RAW-TRANSFER` into a `RAW` field and hashes
+it with SHA-256 ([worker-protocol.md](worker-protocol.md#raw-digest)). The image is a
+function of these records, so equal records give an equal image: an equal raw digest proves
+that the stored image still holds. No edit table must stay complete, no stamp and no clock
+take part, and the test covers SQL DDL, `proutil`, a restore and a copy the same way.
+
+**What is hashed.** For each record, in this order: the table kind (1 byte, 1 to 8 as in
+the list above), the record id (8 bytes), the length of the record (4 bytes) and the record
+bytes, big-endian. The worker puts these into a 1 MB buffer; the SHA-256 of a full buffer
+starts the next one. The lengths are `LENGTH(x, "RAW")`: `LENGTH(x)` counts characters in a
+`-cpinternal UTF-8` session, which cuts records and makes the digest depend on the code page.
+
+**Pieces.** The rows of `_File`, `_Sequence` and `_Db` are the piece `head`. The other rows
+go into 16 pieces by the record id of the `_File` row (for `_Index-Field`, the `_Index` row)
+they belong to; the bounds are record ids of `_File` rows, so a piece does not depend on
+the number of workers. A row that names no record is in piece 0. Oxabl checks that it has
+`head` and all 16 pieces once, that `head` comes from share 0, that the bounds join with
+open ends, and that every worker saw the same number of `_File` rows and the same physical
+name. The digest is the SHA-256 of the 17 piece digests, `head` first. At most 8 workers
+make one pass; more give nothing (measured).
+
+**What is stored.** After it images a database, the build makes a second raw pass. When the
+two passes agree, it keeps the image in `<state>/schema-images.json` with the raw digest and
+this binding: the logical name, the physical name, `_Db._Db-guid`, the hash of the worker
+program, the context string of the schema identity, the form of the digest (piece count and
+framing version) and the first line of `$DLC/version`. A stored image whose binding differs
+in any field is void. A change between the two passes stores nothing, so the next build
+images again. The file holds the entries of each image, and oxabl hashes them again on load:
+an entry that does not give the stored identity voids the image.
+
+**At the start.** A raw pass over every database. A database whose digest and binding equal
+the stored ones takes the stored image and identity. Every other database is imaged: no
+stored image, another digest or binding, a missing or extra piece, bounds that do not join,
+a worker error or a lost worker. An error is never "unchanged". A worker that fails the pass
+is out of step; oxabl starts another in its place.
+
+**In V2.** When every database has a stored digest, each schema check of the build is a raw
+pass, not an imaging ([cache.md](cache.md#verification)). A changed digest means a changed
+schema: the held sets and every later set of the build are not written, as for a changed
+identity. The build does not image again; the next build does, because its raw pass differs.
+
+**The digest is never a key.** It holds record ids, so it names "this database since the
+last imaging", not a schema. A dump and load into a new database gives another digest (and
+another identity).
+
+**Measured on OpenEdge 12.8.9** (5 databases, 59,947 metaschema rows, client-server,
+`-cpinternal UTF-8`): no edit of 367 on scratch databases changed the identity and left the
+digest equal. The edits were every `.df` edit of the dictionary, a direct ABL assignment to
+every field of the 8 tables, `proutil` (`idxactivate`, `idxbuild`, `convchar`, `updatevst`),
+`dbtool` and SQL DDL. Some edits change the digest and not the identity (`proutil updatevst`,
+SQL `PRO_CASE_SENSITIVE`, some `_Db` fields); each costs one imaging. A worker that stays
+connected sees the committed changes of other sessions at once. One pass took 152 ms with
+8 workers and 372 ms with 1, against 3.6 s for the imaging.
+
+## Compile options
+
+`[build.compile]` lowers to exactly these pairs, all present, sorted by name:
+
+| Name | Value |
+| --- | --- |
+| `attr-space` | `true` or `false` |
+| `generate-md5` | `true` or `false` |
+| `languages` | The configured languages joined with `:`, in configured order; `""` when none. |
+| `min-size` | `true` or `false` |
+| `options` | The `OPTIONS` entries in ASCII lower case, sorted, without duplicates, joined with `,`; `""` when none. |
+| `stream-io` | `true` or `false` |
+| `v6frame` | `true` or `false` |
+
+Material: `list(pair, pairs)` with `pair = str(name) str(value)`.
+
+## Outputs
+
+The requested output kinds, sorted by bytes. `rcode` is always present. The others are
+`debug-list`, `listing`, and one of `xref` or `xref-xml`.
+
+The private text `XREF` that verification uses ([cache.md](cache.md#verification)) is not a
+requested output and is not in the key. The OpenEdge suite proves that XREF does not change
+the r-code (`xref_does_not_change_rcode`). If that test fails, verification compiles into
+a separate private compile instead.
+
+## Worker program
+
+The worker program has two parts ([worker-protocol.md](worker-protocol.md#two-parts)). Only
+the **compile part** decides how a unit compiles, so the worker section is
+`hash(BLAKE3(bytes of the compile part))`. A change to the compile part changes every key.
+A change to the driver part (the protocol, the schema image, the messages) changes none.
+
+**The alias.** Before the split, the section held the BLAKE3 hash of the whole program of
+release 5.3.2. The compile part of the split is, statement for statement, what compiled in
+that release. So, for exactly that one compile-part digest, the section holds the old
+whole-program digest, and no key of any user moves in the release that made the split. Any
+other compile part stands for its own digest. The alias is one constant and one comparison
+(`crates/oxabl_build/src/worker/program.rs`). The first edit of the compile part ends it,
+because the digest then differs, and that edit moves every key once, as a change to the
+compile should.
+
+**The guards.** The golden digest of the compile part and the lint of the driver part
+(`crates/oxabl_build/tests/worker_program.rs`) are described in
+[worker-protocol.md](worker-protocol.md#two-parts). The golden vectors pin the digest that
+release 5.3.2 put in the keys, so a worker program that moves a key fails them.
+
+The stored schema images stay bound to the hash of the whole program, because the driver part
+makes them: a new driver images the schema once again, and no unit rebuilds for it.
+
+## The key
+
+```text
+material =
+    section("unit")         str(unit_path) str(compile_name) hash(content(unit))
+    section("closure")      list(entry, closure sorted by path bytes)
+                            entry = str(path) str(algorithm) hash(content(path))
+                            (section("observed-closure") for the observed closure)
+    section("propath")      list(propath_entry, unit PROPATH in search order)
+                            propath_entry = str(entry) str(digest)
+    section("environment")  hash(environment_identity)
+    section("options")      list(pair, compile options)
+    section("outputs")      list(str, output kinds)
+    section("worker")       hash(content(compile part of the worker program))
+
+compile_key = derive_key("oxabl 2026-11 compile key v1", material)
+```
+
+`unit_path` and each closure path are canonical paths. The unit path is in the key, because
+the r-code names its source. For a unit keyed by [the observed closure](#the-observed-closure),
+the closure is the observed one and the section is named `observed-closure`.
+
+### What the key leaves out, and why
+
+| Left out | Why |
+| --- | --- |
+| The workspace root and the worker root | Workers compile with relative paths; `portable_rcode` proves the r-code does not depend on them. |
+| The output directory location | Only the token `$OUT` is in the PROPATH. |
+| The host, the user, the time | Not compile inputs. |
+| The oxabl version | It changes keys only through the worker program, the spec version and the closure it finds. |
+| File stats | Content decides. |
+| `[workspace.sources].encoding` | The AVM decodes source with `-cpstream`, which the environment holds. |
+| Branch and commit | Content addressing shares entries between branches. |
+
+### Component digests
+
+`results.components` keeps, for the planner's reasons only, the BLAKE3 hash of the encoded
+bytes of each section above (seven hashes, in section order). The environment section is
+the environment identity itself, which also keys the `environments` table of the store, so
+the planner can name the fields that changed. Component digests are not part of the key
+specification.
+
+## The fail-closed rule
+
+A unit is **unkeyable** when any of these is true. An unkeyable unit has no key. It is never
+fetched from a cache and never written to a cache. It compiles on every build, and the plan
+gives each reason. The one exception is a unit that has no key only because oxabl cannot
+read its closure: [the observed closure](#the-observed-closure) can key it.
+
+| Rule | Condition | Reason text |
+| --- | --- | --- |
+| K1 | The unit, or a class source in its closure, has a degraded edge set. | `degraded: <path>: <reason>` |
+| K2 | The unit, or a class source in its closure, has an unresolved include (any kind, any reason). | `unresolved-include: <name> in <path>` |
+| K3 | ... has an unresolved class, unless its reason is *absent from workspace* or *external*, its name starts with a prefix of `[build.external_packages]` (compared ignoring ASCII case), and one of the library entries listed for that prefix is on the unit PROPATH (so the library's bytes are in the key). | `unresolved-class: <name> in <path>` |
+| K4 | ... has a reference with a computed name in an include or class position (`{{&x}.i}`, a conditional include with `{&...}` in its name). A class unit whose `CLASS` name is not written out is also K4 (`computed-name: class statement in <path>`, `conditional-name: class statement in <path>`), unless exactly one directory can be its package root, and, with `root_relative_include_paths` non-empty, that directory is the unit's own directory (the analysis searches from there). | `computed-name: <name> in <path>` |
+| K5 | A file in the closure, or the unit, is absent, cannot be read, or has no canonical path. | `outside-workspace: <path>`, `unreadable: <path>` |
+| K6 | The environment was not established in this build (no probe, a failed probe, or a schema imaging failure for any database). | `environment-unknown` |
+| K7 | The unit is skipped (`not-on-propath`, `shadowed-by`, `output-collision`, `package-mismatch`, `package-root-not-on-propath`). | the skip reason |
+| K8 | The unit's closure holds a class name that K3 accepted as external, and a class unit or class edge target in the whole graph has that name ([Class conflicts](#class-conflicts)). | `class-conflict: <name>` |
+| K9 | The build has more than one PROPATH id, the unit is a class unit or its closure reaches a class source, and a named edge it reaches is not uniform ([Per-unit PROPATH classes](#per-unit-propath-classes)). | `per-unit-propath-classes: <name> (<files>)`, `per-unit-propath-classes: {<include>} in <class> (<files>)` |
+| K10 | `root_relative_include_paths` is non-empty, and the unit's closure holds a class source that does not compile as a unit on the unit's PROPATH id, with an include or class name that the unit PROPATH resolves to another file than the analysis did ([The closure](#the-closure)). | `class-propath: <name> in <class> finds <file>, analysed <file>` |
+| K11 | The unit's compile binds class r-code that oxabl does not hash: a class in its closure that is not a class unit compiling into `$OUT` in this build, and whose first PROPATH hit (the first entry that holds `<pkg>/<Name>.r` or `<pkg>/<Name>.cls`, exact in case, the r-code first) on the unit's PROPATH is r-code ([Class r-code](#class-r-code)). With any number of PROPATH ids. | `class-rcode: <file>` |
+
+**A name a superclass declares is not a class.** A class that `INHERITS` a workspace
+class reads the data members of that class as names in its own scope: variables, buffers,
+temp-tables, datasets, data-sources and events, as well as methods and properties. This
+holds through any depth of `INHERITS`. `PROTECTED` and `PUBLIC` members are inherited. A
+`PRIVATE` member is not, and a data member written without an access modifier is `PRIVATE`.
+So `req_:ToString()`, with `req_` a `PROTECTED` variable of the superclass, is no class
+reference and gives no K3 reason. A name that no class in the chain declares, and that is
+not a class either, keeps its K3 reason. A superclass that oxabl cannot read keeps its own
+K3 reason, so the unit has no key.
+
+**An inherited buffer reads its table.** A buffer that a workspace superclass declares `FOR`
+a database table reads that table in the subclass. A field of the buffer resolves against
+the schema, and the subclass has a schema-table dependency edge on the table. A temp-table
+of the same name in the chain hides the schema table, also a `PRIVATE` one, as it does in
+the superclass. The key needs no table of its own: the schema identity is in every key
+([Schema identity](#schema-identity)). A change to the table changes the key of the
+subclass, and a change to any other table changes it too.
+
+**An include is judged in its includer's context.** K1 to K4 read the analyses of the
+unit and of the class sources in its closure only. A closure file reached only through
+include edges contributes nothing of its own standalone analysis, even when it is also a
+unit (a `.v` file is a root and is often included): a `.v` that degrades on its own because
+it uses `{&table}` does not make its includer unkeyable, because the includer's analysis
+expands it with the includer's definitions, and anything degraded there is a K1 of the
+includer. K5 and K6 still check every closure file. A file that is both an include target and
+a class source is always judged by its own analysis too (fail-closed).
+
+**A class name that is not written out.** The compiler checks the `CLASS` name against
+the compile name (the name given to `COMPILE`, without its extension, `/` as `.`) and
+refuses a unit with error 12629 otherwise. This holds when the name is `{&n}`, is set in
+an `&IF`, or comes from an include. Oxabl chooses the compile name, so for such a unit it
+derives the class name from it. A unit whose real name differs fails to compile, and a
+failed unit is never cached: the derivation cannot give a wrong cache hit. The package
+root is the one directory that is the unit's directory or an ancestor of it and is on the
+unit PROPATH built for it. With two or more such directories (`root_relative_include_paths`,
+or two `include_paths` entries that hold the file), or when a name part has a `.`, no one
+name is known and K4 stays. The derived name also serves the class-conflict check (K8).
+
+`[build.external_packages]` maps a class name prefix to the library entries that supply
+it. The default maps `OpenEdge.` and `Progress.` to `$DLC`, which means any `.pl` library
+under `$DLC` on the unit PROPATH whose digest is `sha256:`; a `dir` entry such as `$DLC/tty`
+does not count. A prefix is accepted only through an entry with a `sha256:` digest, so the
+library's bytes are in the key. A prefix whose libraries are not on the unit PROPATH, or
+have no `sha256:` digest, leaves the unit unkeyable: no prefix is trusted by name alone. A workspace that ships its own classes under such a prefix has them as files,
+and then they are edges, not unresolved names.
+
+Two more rules govern cache **writes** only. They do not remove the key:
+
+- **Taint.** A unit whose closure holds a unit that failed in this build is not written to a
+  cache, and is recorded locally without a key, so the next build compiles it again. A failed
+  class unit leaves no r-code in `$OUT`, so its users bound what their PROPATH found after
+  it ([Class units and the order of the compiles](#class-units-and-the-order-of-the-compiles)).
+- **Verification.** A unit is written to a cache only after it passes verification
+  ([cache.md](cache.md#verification)).
+
+A degraded unit compiling on every build is a cost the plan shows. The fix is in the
+workspace configuration (include paths, the DLC sources, the preprocessor values) or in
+oxabl's analysis. A degraded unit is never made incremental by a guess.
+
+## Worked example
+
+These inputs are illustrative. They are not real OpenEdge output.
+
+Schema image of database `ledger`, four entries. Entry texts (`\t` is `TAB`, `\n` is `LF`):
+
+```text
+db         ""          1 record    db\t_db-coll-name=ICU-UCA\t_db-type=PROGRESS\t_db-xl-name=UTF-8\n
+system     ""          1 record    system-table\t_Connect\t_crc=28084\n
+table      customer    5 records   table\tcustomer\t_can-read=*\t_crc=12345\t_dump-name=customer\t_prime-index=index/customer/custnum\n
+                                   field\tcustomer\tcustnum\t_data-type=integer\t_decimals=?\t_format=>>>>9\t_label=Cust Num\t_view-as=?\n
+                                   field\tcustomer\tname\t_data-type=character\t_decimals=?\t_format=x(30)\t_label=Name\t_view-as=?\n
+                                   index\tcustomer\tcustnum\t_active=yes\t_unique=yes\n
+                                   index-field\tcustomer\tcustnum\t1\tcustnum\t_ascending=yes\n
+sequence   next-cust   1 record    sequence\tnext-cust\t_cycle-ok=no\t_seq-incr=1\t_seq-init=1\n
+```
+
+| Entry | SHA-256 of the entry text |
+| --- | --- |
+| `db` | `481e13c6d939c677a3c1490550c757a7c14e2f239df9870a19d3ac2251ff3678` |
+| `system` | `a476ad6419566e97a5b710f1f2e90d5ac5a866210007f9c16b83949584b3915d` |
+| `table customer` | `38c22afa820d544f4ffa4550cf322aee17d2e7a7539f96bf253d494f20216aaa` |
+| `sequence next-cust` | `563c917df85ba47de60ec29c499935236d5d2cc3e440c4fc9f6e348357302295` |
+
+Environment:
+
+```text
+openedge     "OpenEdge Release 12.8.9", "12.8"
+platform     "UNIX", "TTY", "yes", "64"
+session      "UTF-8", "UTF-8", "ICU-UCA", "BASIC", "mdy", "1950", ".", ","
+parameters   [("-cpinternal","UTF-8"), ("-cpstream","UTF-8"), ("-d","mdy"), ("-inp","32000")]
+databases    [("ledger", "PROGRESS", ["dictdb"], <schema identity>)]
+```
+
+Unit `src/ar/post.p`, compile name `ar/post.p`, bytes
+`{inc/ledger.i}\n{adecomm/x.i}\nMESSAGE "post".\n`.
+
+Closure, sorted by path bytes:
+
+| Path | Algorithm | Bytes | Hash |
+| --- | --- | --- | --- |
+| `$DLC/src/adecomm/x.i` | `sha256` (worker) | `DEFINE VARIABLE y AS CHARACTER NO-UNDO.\n` | `63789d696f620f34d75a81ee06dbac5cc9f6be2bccee4052f067e021ffa1acdd` |
+| `src/inc/ledger.i` | `blake3` | `DEFINE VARIABLE x AS INTEGER NO-UNDO.\n` | `0b547367c7b6f2702a1cedf8d6e7a6c4a646ba1e89229a91052712e69427b058` |
+
+Unit PROPATH: `$OUT` (`dir`), `src` (`dir`), `$DLC/src` (`dir`),
+`$DLC/tty/netlib/OpenEdge.Net.pl` (`sha256:` of the bytes `library bytes`, which is
+`8c45ce4e5a5cb0c03670ca09e153a24b1c7b7f94141c4da68f31ce8e91bc1bf8`). Default compile
+options. Outputs: `rcode`. Worker program bytes: `/* oxabl worker */\n`.
+
+| Value | Hex |
+| --- | --- |
+| schema identity | `2bfdee56efffdb1bf4d2a592a2e875372e1c2f2373993480cc16030af2c0d05c` |
+| environment identity | `34547a66f9075660bd5e6e6985e9299a0bd03a1902e386fb2d63957cd8bbf6ad` |
+| content of the unit | `46fc37de67aabc0750c364e9958c080394046a163ac10ffa9f2f482e811d3b9a` |
+| content of the worker program | `c90f59b20862aa76cdd3a16915d2662583c01e49f381d7db0810e5d9bc397fb8` |
+| key material length | 817 bytes |
+| compile key | `651bcd1456028b791da95fbe6dec163e10126c459bfe6955427eadad24bb7bf2` |
+
+Slice 5 adds `crates/oxabl_build/tests/key_vectors.json` with this example and one vector
+per rule of the encoding (an empty closure, two databases, a parameter that appears twice,
+a value with a comma). The test drives `oxabl build --plan --json` with the fake AVM and
+compares every key.
+
+## Follow-up: signature-aware keys
+
+The downstream tool keys a class's dependents on the class **signature** (its name,
+inheritance, and visible members), so a method body edit rebuilds only that class. Oxabl
+will do the same, as a `v2` key, only with this proof:
+
+1. **A signature extractor** that keeps everything the compiler reads from a class when it
+   compiles a user of it: the header, `USING`, every non-private member and its full
+   declaration, temp-table and dataset definitions of any access, members from includes,
+   preprocessor text, and any text the parser could not structure. It errs towards keeping
+   text.
+2. **An r-code equivalence oracle.** A normaliser that removes the known non-deterministic
+   fields from r-code, proven on the corpus: compiling one source twice gives equal
+   normalised r-code for every unit.
+3. **A mutation campaign.** For a sample of at least 1,000 class edits that leave the
+   signature unchanged (body edits, private member edits, comment edits), recompile every
+   dependent with a real AVM and show equal normalised r-code. Zero counterexamples.
+4. **Order still holds.** Dependents compile against the class's new r-code, so the
+   scheduler order does not change.
+
+Until all four exist, the closure counts each class by its full bytes.

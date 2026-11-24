@@ -1,4 +1,4 @@
-use oxabl_pipeline::{LintPipeline, PipelineConfig};
+use oxabl_pipeline::{LintPipeline, PipelineConfig, WorkspaceEffects};
 use oxabl_schema::test_support::customer_schema;
 use oxabl_workspace::InMemoryFileSystem;
 use std::path::{Path, PathBuf};
@@ -184,4 +184,83 @@ fn per_directory_opt_in_enables_the_provider() {
         !run.with_file("/src/other/main.p")
             .callee_summaries_enabled()
     );
+}
+
+/// Programs three calls deep behind each root, with shared callees, a cycle,
+/// a persistent library and a missing program, so later frontiers find
+/// programs that earlier ones also reach.
+fn call_tree() -> (InMemoryFileSystem, Vec<PathBuf>) {
+    let mut fs = InMemoryFileSystem::new();
+    let mut known = Vec::new();
+    for k in 0..12 {
+        let root = PathBuf::from(format!("/src/r{k:02}.p"));
+        fs.insert(
+            root.clone(),
+            format!(
+                "DO TRANSACTION:\nRUN m{}.p.\nRUN m{}.p.\nEND.\nRUN lib.p PERSISTENT.\nRUN q{k}.p.",
+                k % 5,
+                (k * 7) % 5
+            ),
+        );
+        known.push(root);
+    }
+    for m in 0..5 {
+        fs.insert(
+            PathBuf::from(format!("/src/m{m}.p")),
+            format!(
+                "RUN l{}.p.\nRUN l{}.p.\nFIND FIRST Customer NO-LOCK.",
+                m % 3,
+                (m + 1) % 3
+            ),
+        );
+    }
+    fs.insert(
+        "/src/l0.p".into(),
+        "RUN l1.p.\nFIND FIRST Customer NO-LOCK.",
+    );
+    fs.insert("/src/l1.p".into(), "RUN l0.p.\nRUN read-only IN h.");
+    fs.insert("/src/l2.p".into(), "CREATE Customer.\nRUN deep.p.");
+    fs.insert("/src/deep.p".into(), "{missing.i}\nRUN l0.p.");
+    fs.insert(
+        "/src/lib.p".into(),
+        "PROCEDURE read-only:\nFIND FIRST Customer NO-LOCK.\nEND PROCEDURE.",
+    );
+    known.push("/src/l2.p".into());
+    known.push("/src/notes.i".into());
+    (fs, known)
+}
+
+#[test]
+fn the_thread_count_changes_no_summary() {
+    let (fs, known) = call_tree();
+    let config = config();
+    let run = LintPipeline::new(&config, &fs);
+    let mut paths = known.clone();
+    paths.extend(["m0", "m4", "l0", "l1", "deep", "lib"].map(|p| format!("/src/{p}.p").into()));
+    let report = |effects: WorkspaceEffects| {
+        let files: Vec<_> = paths
+            .iter()
+            .map(|p| {
+                effects
+                    .file(p)
+                    .map(|f| (f.summaries().to_vec(), f.effect_lenses()))
+            })
+            .collect();
+        let any = effects.file(&known[0]).unwrap();
+        let names: Vec<&str> = (0..).map_while(|n| any.callee_name(n)).collect();
+        format!("{files:?}\n{names:?}")
+    };
+    let serial = report(run.build_workspace_effect_summaries(&known));
+    assert!(serial.contains("/src/deep.p::"), "{serial}");
+    assert!(
+        serial.contains("Partial") || serial.contains("partial"),
+        "{serial}"
+    );
+    for threads in [1, 2, 3, 8, 64] {
+        assert_eq!(
+            report(run.build_workspace_effect_summaries_parallel(&known, threads)),
+            serial,
+            "{threads} threads"
+        );
+    }
 }

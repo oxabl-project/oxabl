@@ -243,7 +243,7 @@ fn two_clients_connect_concurrently_and_share_one_session() {
             second.connected_clients, 2,
             "the second client joins the first client's session"
         );
-        assert_eq!(second.daemon_version, oxabl_daemon::DAEMON_VERSION);
+        assert_eq!(second.daemon_version, oxabl_daemon::build_version());
 
         // One session for one root, whichever client asks.
         assert_eq!(

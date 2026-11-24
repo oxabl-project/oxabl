@@ -214,8 +214,8 @@ impl<'a> StatementText<'a> {
             return None;
         }
         let mut depth = 0usize;
-        for i in open..self.tokens.len() {
-            match self.tokens[i].kind {
+        for (i, token) in self.tokens.iter().enumerate().skip(open) {
+            match token.kind {
                 Kind::LeftParen => depth += 1,
                 Kind::RightParen => {
                     depth -= 1;
@@ -278,8 +278,8 @@ impl<'a> StatementText<'a> {
         };
         let mut out = Vec::new();
         let (mut depth, mut start) = (0usize, open + 1);
-        for i in open + 1..close {
-            match self.tokens[i].kind {
+        for (i, token) in self.tokens.iter().enumerate().take(close).skip(open + 1) {
+            match token.kind {
                 Kind::LeftParen => depth += 1,
                 Kind::RightParen => depth -= 1,
                 Kind::Comma if depth == 0 => {

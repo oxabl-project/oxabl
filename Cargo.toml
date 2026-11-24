@@ -25,5 +25,16 @@ members = [
     "crates/oxabl_scope",
     "crates/oxabl_effects",
     "crates/oxabl_nulls",
+    "crates/oxabl_build",
+    "crates/oxabl_build_remote",
+    "crates/oxabl_fake_avm",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+oxabl-cache-client = "0.2.0"
+
+# The oxabl-cache server, admin and member binaries the remote-cache tests run
+# against: the revision the client above was published from.
+[workspace.metadata.oxabl-cache]
+binaries-rev = "0adaa4899993205d48ba994799ed21b59d0529f9"

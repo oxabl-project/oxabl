@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use oxabl_common::FileId;
 use oxabl_preprocessor::{MAX_INCLUDE_DEPTH, Preprocessor};
+use oxabl_workspace::Observed;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::deps::{ClosureReference, ConditionalIncludeClosure};
@@ -59,7 +60,7 @@ pub struct ClosureExpansions {
 type ExpansionKey = (PathBuf, String, Vec<PathBuf>);
 
 /// What a target read, once one call has read it; `None` when it could not.
-type ExpansionSlot = Arc<OnceLock<Option<Arc<Read>>>>;
+type ExpansionSlot = Arc<OnceLock<Observed<Option<Arc<Read>>>>>;
 
 /// The closure of each of `names`, expanded on its own through `includes`.
 ///
@@ -216,8 +217,11 @@ fn expand(
                     .entry(key)
                     .or_default(),
             );
-            slot.get_or_init(|| read(path, name, includes).map(Arc::new))
-                .clone()?
+            slot.get_or_init(|| {
+                Observed::capture(includes.fs, || read(path, name, includes).map(Arc::new))
+            })
+            .attributed(includes.fs)
+            .clone()?
         }
         None => Arc::new(read(path, name, includes)?),
     };

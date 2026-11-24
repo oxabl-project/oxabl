@@ -1,0 +1,217 @@
+//! Where each unit compiles from: its PROPATH, its compile name, and whether
+//! it compiles at all.
+
+use std::collections::BTreeMap;
+
+use oxabl_workspace::RcodePlace;
+
+use rustc_hash::FxHashMap;
+
+use crate::config::BuildWorkspace;
+use crate::paths::propath::{
+    Placement, Search, base_directory, canonical_entry, derive_base, is_class_unit, place,
+};
+use crate::paths::{Declared, PathMap, declared_name};
+use crate::refresh::{Outcome, parallel};
+
+/// One unit's place in the build.
+#[derive(Debug)]
+pub struct Placed {
+    /// The index of its PROPATH in [`Layout::propaths`]; `None` when its
+    /// package directory does not match the class it declares.
+    pub propath: Option<usize>,
+    pub class: bool,
+    /// What a class unit's own text says about its name; `Absent` for a
+    /// unit that is not a class.
+    pub declared: Declared,
+    /// The class name taken from the compile name, for a class unit whose
+    /// text does not give it and that has exactly one possible package root.
+    pub derived: Option<String>,
+    pub placement: Placement,
+}
+
+impl Placed {
+    /// The name the class has: the one its text gives, else the derived one.
+    pub fn class_name(&self) -> Option<&str> {
+        self.declared.name().or(self.derived.as_deref())
+    }
+}
+
+/// The placements of all units, by position in `Outcome::units`.
+#[derive(Debug)]
+pub struct Layout {
+    /// The distinct unit PROPATHs; a PROPATH id is an index into it.
+    pub propaths: Vec<Vec<String>>,
+    pub units: Vec<Placed>,
+}
+
+fn read_declared(paths: &PathMap, unit: &str) -> Declared {
+    match std::fs::read(paths.absolute(unit)) {
+        Ok(bytes) => declared_name(&String::from_utf8_lossy(&bytes)),
+        Err(_) => Declared::Absent,
+    }
+}
+
+/// The stem r-code of `name` lands at, lower-cased: r-code is often deployed
+/// to case-insensitive systems.
+fn stem(name: &str) -> String {
+    let stem = match name.rsplit_once('.') {
+        Some((stem, extension)) if !extension.contains('/') => stem,
+        _ => name,
+    };
+    stem.to_ascii_lowercase()
+}
+
+/// Skips every unit of a group that shares an output with another, except the
+/// one with the smallest path.
+fn skip_collisions(outcome: &Outcome, units: &mut [Placed]) {
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (at, placed) in units.iter().enumerate() {
+        if let Placement::Compiles { output, .. } = &placed.placement {
+            groups.entry(stem(output)).or_default().push(at);
+        }
+    }
+    for group in groups.values_mut().filter(|group| group.len() > 1) {
+        group.sort_by(|a, b| {
+            let (a, b) = (outcome.units[*a], outcome.units[*b]);
+            outcome.name(a).cmp(outcome.name(b))
+        });
+        let winner = outcome.name(outcome.units[group[0]]).to_string();
+        for at in &group[1..] {
+            units[*at].placement = Placement::Skipped(format!("output-collision: {winner}"));
+        }
+    }
+}
+
+/// Places every unit of `outcome`.
+pub fn lay_out(outcome: &Outcome, paths: &PathMap, search: &Search) -> Layout {
+    let declared: Vec<Declared> = parallel::map(&outcome.units, |id| {
+        let path = outcome.name(*id);
+        if is_class_unit(path) {
+            read_declared(paths, path)
+        } else {
+            Declared::Absent
+        }
+    });
+    let work: Vec<usize> = (0..outcome.units.len()).collect();
+    let derived: Vec<Option<(String, String)>> = parallel::map(&work, |at| {
+        let path = outcome.name(outcome.units[*at]);
+        match is_class_unit(path) && declared[*at].name().is_none() {
+            true => derive_base(search, paths, path),
+            false => None,
+        }
+    });
+    let mut by_base: FxHashMap<String, usize> = FxHashMap::default();
+    let mut ids: FxHashMap<Vec<String>, usize> = FxHashMap::default();
+    let mut propaths: Vec<Vec<String>> = Vec::new();
+    let mut staged: Vec<(Option<usize>, Result<String, String>)> = Vec::new();
+    for ((id, declared), derived) in outcome.units.iter().zip(&declared).zip(&derived) {
+        let path = outcome.name(*id);
+        let base = match (declared, derived) {
+            (Declared::Name(_), _) | (_, None) => base_directory(path, declared.name()),
+            (_, Some((base, _))) => Ok(base.clone()),
+        };
+        let propath = base.as_ref().ok().map(|base| {
+            *by_base.entry(base.clone()).or_insert_with(|| {
+                let propath = search.propath(paths, base);
+                *ids.entry(propath.clone()).or_insert_with(|| {
+                    propaths.push(propath);
+                    propaths.len() - 1
+                })
+            })
+        });
+        staged.push((propath, base));
+    }
+    let is_file = |canonical: &str| {
+        std::fs::metadata(paths.absolute(canonical)).is_ok_and(|meta| meta.is_file())
+    };
+    let placements = parallel::map(&work, |at| {
+        let path = outcome.name(outcome.units[*at]);
+        let placement = match &staged[*at] {
+            (Some(propath), Ok(base)) => place(
+                path,
+                base,
+                &search.own_entries(paths, base),
+                declared[*at].name().is_some() || derived[*at].is_some(),
+                &propaths[*propath],
+                is_file,
+            ),
+            (_, Err(reason)) => Placement::Skipped(reason.clone()),
+            (None, Ok(_)) => unreachable!("a base directory has a PROPATH"),
+        };
+        match placement {
+            Placement::Compiles { .. } if search.beside_source() && path.starts_with(['$', '/']) => {
+                Placement::Skipped("outside-root: r-code beside the source needs a source below the workspace root".to_string())
+            }
+            Placement::Compiles { name, .. } if search.beside_source() => Placement::Compiles {
+                name,
+                output: path.to_string(),
+            },
+            placement => placement,
+        }
+    });
+    let mut units: Vec<Placed> = placements
+        .into_iter()
+        .zip(staged)
+        .zip(declared)
+        .zip(derived)
+        .zip(&outcome.units)
+        .map(
+            |((((placement, (propath, _)), declared), derived), id)| Placed {
+                propath,
+                class: is_class_unit(outcome.name(*id)),
+                declared,
+                derived: derived.map(|(_, name)| name),
+                placement,
+            },
+        )
+        .collect();
+    skip_collisions(outcome, &mut units);
+    Layout { propaths, units }
+}
+
+/// The PROPATH search of the workspace, with the worker's DLC default entries
+/// `defaults` last. Fails on an include path with no portable form.
+pub fn search(
+    workspace: &BuildWorkspace,
+    paths: &PathMap,
+    defaults: Vec<String>,
+) -> Result<Search, String> {
+    let sources = &workspace.config.workspace.sources;
+    let include = sources
+        .include_paths
+        .iter()
+        .map(|entry| canonical_entry(paths, &workspace.config.build.libraries, entry))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|message| format!("[workspace.sources].include_paths: {message}"))?;
+    Ok(Search::new(
+        sources.root_relative_include_paths.clone(),
+        include,
+        defaults,
+        workspace.config.build.rcode == RcodePlace::BesideSource,
+    ))
+}
+
+/// Why each unit of `outcome` cannot compile where it is, by position in
+/// `Outcome::units`, from the paths and the configuration alone. The DLC
+/// default entries come after every workspace entry, so they cannot hold or
+/// shadow a unit under the root; a unit outside the root is never judged.
+/// `None` when the include paths are unusable.
+pub fn skips(workspace: &BuildWorkspace, outcome: &Outcome) -> Option<Vec<Option<String>>> {
+    let settings = &workspace.settings;
+    let paths = PathMap::new(&settings.root, settings.dlc.as_deref());
+    let search = search(workspace, &paths, Vec::new()).ok()?;
+    let layout = lay_out(outcome, &paths, &search);
+    let skips = layout
+        .units
+        .into_iter()
+        .zip(&outcome.units)
+        .map(|(placed, id)| match placed.placement {
+            Placement::Skipped(reason) if !outcome.name(*id).starts_with(['$', '/']) => {
+                Some(reason)
+            }
+            _ => None,
+        })
+        .collect();
+    Some(skips)
+}

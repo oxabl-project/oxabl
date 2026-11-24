@@ -75,7 +75,7 @@ impl Required {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct Fact {
     pub values: Vec<u8>,
     /// Per local: the conditions on every path that carries its `?` source.
@@ -84,6 +84,23 @@ pub(super) struct Fact {
     pub held: Required,
     /// The leading locals a condition may name: those a test reads.
     pub limit: usize,
+}
+impl Clone for Fact {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+            requires: self.requires.clone(),
+            held: self.held.clone(),
+            limit: self.limit,
+        }
+    }
+    /// Reuses the buffers of `self`: the solver clones a fact per edge.
+    fn clone_from(&mut self, source: &Self) {
+        self.values.clone_from(&source.values);
+        self.requires.clone_from(&source.requires);
+        self.held.clone_from(&source.held);
+        self.limit = source.limit;
+    }
 }
 impl Deref for Fact {
     type Target = [u8];
@@ -104,15 +121,19 @@ impl Fact {
             held: Required::new(),
             limit,
         };
-        let certain = f.certain();
-        for i in 0..f.values.len() {
-            if f.values[i] & QUESTION != 0 {
+        f.add_sources();
+        f
+    }
+    /// Make every `?` value a source under the conditions that hold here.
+    fn add_sources(&mut self) {
+        let certain = self.certain();
+        for i in 0..self.values.len() {
+            if self.values[i] & QUESTION != 0 {
                 let mut r = certain.clone();
-                f.own(&mut r, i);
-                f.requires.insert(i, r);
+                self.own(&mut r, i);
+                self.requires.insert(i, r);
             }
         }
-        f
     }
     /// The atom "logical local `i` is true"; the next bit is "not true".
     /// Atoms are even, so `a ^ 1` is the opposite of `a`.
@@ -173,8 +194,14 @@ impl Fact {
     pub fn cost(&self) -> usize {
         self.values.len() / 16 + self.requires.values().map(|r| 1 + r.words()).sum::<usize>()
     }
+    /// The same as `Fact::new(vec![value; self.len()], self.limit)`, in place.
     pub fn fill(&mut self, value: u8) {
-        *self = Self::new(vec![value; self.len()], self.limit);
+        self.values.fill(value);
+        self.requires.clear();
+        self.held = Required::new();
+        if value & QUESTION != 0 {
+            self.add_sources();
+        }
     }
     pub fn certain(&self) -> Required {
         let mut out = self.held.clone();
@@ -325,7 +352,7 @@ impl Fact {
             return;
         }
         if self.dead() {
-            *self = other.clone();
+            self.clone_from(other);
             return;
         }
         self.held.intersect(&other.held);

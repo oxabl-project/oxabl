@@ -56,12 +56,17 @@ cargo run -p oxabl_codegen -- atoms    # Writes build.rs (complete file)
 cargo run -p oxabl_codegen -- callable # Writes callable.rs (is_callable_kind)
 cargo run -p oxabl_codegen -- builtins # Writes builtins.rs (built-in function registry)
 cargo run -p oxabl_codegen -- reserved # Writes reserved.rs (reserved keywords)
+cargo run -p oxabl_codegen -- grammar  # Writes the VS Code extension's TextMate grammar
 
 # Show statistics without writing files
 cargo run -p oxabl_codegen -- summary
 ```
 
 Generated files are written directly to their target locations and include a "DO NOT EDIT" header.
+
+### The VS Code grammar
+
+`clients/vscode/syntaxes/abl.tmLanguage.json` is generated. Change its structure in `resources/abl.tmLanguage.template.json` (`{{word:NAME}}` and `{{keywords:CATEGORY}}` placeholders) or the keyword data, then run `cargo run -p oxabl_codegen -- grammar`. The CI job `Grammar drift` fails when the committed grammar is not the generated one. Test it from `clients/vscode`: `pnpm test` (corpus and regex compile), `pnpm run test:grammar` (assertion and snapshot tests), `OXABL_E2E_OXABL=$PWD/../../target/debug/oxabl OXABL_E2E_RUNTIME=<short dir> xvfb-run -a pnpm run test:e2e` (the packaged VSIX in a real VS Code; run `cargo build -p oxabl` first, because the `outline` scenario uses the real language server and fails without these variables). The categories, the rules and the release and self-update design are in `docs/design/vscode-extension.md`.
 
 ### The OpenEdge metaschema catalog
 
@@ -81,24 +86,35 @@ DLC=/path/to/dlc scripts/gen-metaschema-df.sh
 
 See `crates/oxabl_schema/METASCHEMA.md`.
 
+## Fuzzing and soak tests
+
+- `fuzz/` holds `cargo-fuzz` targets (lex, preprocess and parse, lint, format, outline, navigate) in a crate outside the workspace; see `fuzz/README.md`. The CI job `Fuzz targets` formats and lints it on stable; running a target needs nightly and `cargo-fuzz`. `.github/workflows/fuzz.yml` runs every target and the grammar fuzz each night and fails on any finding.
+- `crates/oxabl/tests/navigation_sweep_lsp.rs` asks for a definition at every position of files full of awkward table, field and file names, through `oxabl lsp`, and wants a well-formed answer each time.
+- `scripts/soak/` drives `oxabl lsp` and `oxabl daemon` and counts memory, threads and processes; see `scripts/soak/README.md`.
+- `clients/vscode/test/grammar/fuzz.test.ts` fuzzes the TextMate grammar for slow lines and deep rule stacks (`pnpm test`; a longer run with `OXABL_FUZZ_SECONDS`).
+
 ## Architecture
 
 ### Workspace Structure
 
-- `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary
-- `crates/oxabl_pipeline` - The shared lint and format run every client drives; sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
+- `crates/oxabl` - Umbrella library (the curated public API) and the CLI binary. Its `self-update` cargo feature (off by default, like `remote-cache`; the release binary has both) adds `oxabl self-update` and the background check of a managed binary (`src/self_update/`: the GitHub reader, the install procedure, the install record, the schedule). It reuses the `reqwest` and `rustls` stack that `remote-cache` links, so no second HTTP stack. `scripts/install.sh` is the installer and shares the install record (`install.json`) with the updater and the VS Code extension
+- `crates/oxabl_pipeline` - The shared lint and format run every client drives, the document outline (`outline`, see `docs/design/document-outline.md`), and go to definition and document links (`navigation`, see `docs/design/navigation.md`); sits *beneath* `oxabl_lsp`, `oxabl_wasm`, and the umbrella
 - `crates/oxabl_index` - Cross-file fact extraction, the in-run batch index and the static call graph; sits *beneath* `oxabl_pipeline`
 - `crates/oxabl_daemon` - The session core: one salsa instance per workspace root, serving several clients; the **only** crate that may know about salsa
 - `crates/oxabl_daemon_protocol` - Wire types and the contract version for the daemon's `oxabl/*` methods; depends on serde and nothing else
 - `crates/oxabl_lexer` - Tokenizer for ABL source code (MVP complete)
 - `crates/oxabl_ast` - AST node definitions (expressions, statements, literals)
-- `crates/oxabl_parser` - Parser for ABL source code (actively developed)
-- `crates/oxabl_common` - Shared utilities including `SourceMap` and the `catch_panic` guard
+- `crates/oxabl_parser` - Parser for ABL source code (actively developed). It stops at `Parser::MAX_NESTING` levels of nesting and `Parser::MAX_CHAIN` operators in a left-deep chain and reports a `PARSE001` error, so every recursive pass over its tree has a known depth. `crates/oxabl/tests/deep_nesting.rs` tests this through the CLI and the daemon
+- `crates/oxabl_common` - Shared utilities including `SourceMap`, the `catch_panic` guard and `stack`, the stack size of every thread that parses or analyses ABL. A stack overflow aborts the process and `catch_panic` cannot stop it, so start such a thread with `stack::builder()` or `stack::run`, never `thread::spawn` or `scope.spawn`
 - `crates/oxabl_codegen` - Code generation tool for lexer keywords
 - `crates/oxabl_flow` - Control-flow graphs per unit with ABL block semantics, plus a dataflow solver
 - `crates/oxabl_handles` - Lifetimes of dynamic objects per unit (create, free and escape sites, leaking paths), read by the `strict.handles` rules
 - `crates/oxabl_scope` - Buffer scopes, transaction blocks and lock modes per unit, as the compiler assigns them, plus the `COMPILE ... LISTING` block-table parser its oracle harness uses
-- `crates/oxabl_effects` - Database effects per unit (table, operation, lock, access shape, likely index), transitive summaries over the call graph, and the `COMPILE ... XREF` parser its oracle harness uses
+- `crates/oxabl_effects` - Database effects per unit (table, operation, lock, access shape, likely index), transitive summaries over the call graph, the `COMPILE ... XREF` parser its oracle harness uses, and the reader of the files that `XREF-XML` says the compiler opened
+- `crates/oxabl_build` - The `oxabl build` tool: the SQLite graph store with its generations and crash recovery, the incremental refresh that hashes before it parses and keeps an observation set per analysed file, the in-memory graph, the planner that says which units must rebuild and why (`oxabl build --plan`), and the AVM worker pool with the `OXW1` worker protocol (the worker program is `resources/oxabl_worker_compile.p`, which the compile key hashes, and `oxabl_worker_driver.p`, embedded and joined; a test lints the driver part), the configuration (`config`: `oxabl.toml` with the `--config-overlay` file merged over it key by key, the rules that refuse a key an overlay may not set, a secret-looking key and a trust key of the remote cache, and the effective settings with their sources for `--print-config`), the compile environment and its identity (`oxabl build --probe`), and the compile key of each unit with the fail-closed rules that withhold it (`oxabl build --plan --probe`), the scheduler (jobs over the strongly connected components of the compile-time graph, priority by critical path), output ownership, staging and promotion (below `[build].output`, or with `[build].rcode = "beside-source"` beside each unit's source, `output/in_place.rs`; the manifest `<state>/installed` of that r-code and the removal of r-code no unit expects, also after a change of mode, `output/manifest.rs` and `output/orphans.rs`), the stored compile results and the results-based plan reasons, `oxabl build` itself (`run`: the fetch of keyable units, dispatch, retry, lost workers, cancel, `--events`, `--report`), the cache seam (`cache`: `ArtifactCache` with a streaming fetch and uploader, the local cache with quarantine and eviction, the chain of two caches, the mode and trust rules, the per-job directory) and the verification of what a cache may store (`verify`: V1 rehash, V2 schema check, V3 read check; the `XREF-XML` reader is `oxabl_effects::xref_xml`), and the observed closure (`observe`: the files the compiler read, from its `XREF-XML` `Source` elements and `INCLUDE` references, with every workspace class on the PROPATH and what it reads, which key a unit that oxabl cannot read, such as an include name it cannot compute; never encrypted source, whose includes the compiler does not report; such a unit compiles after the class units of the build). Sits above `oxabl_pipeline`; the umbrella re-exports it as `oxabl::build` under `cli`
+- `crates/oxabl_build_remote` - `RemoteCache`, the `ArtifactCache` over the oxabl-cache client, behind the umbrella feature `remote-cache`. The client is the crates.io `oxabl-cache-client`, in the root `Cargo.toml`'s `[workspace.dependencies]`; `[workspace.metadata.oxabl-cache] binaries-rev` pins the oxabl-cache revision the test binaries are built from, the one the client was published from. Only this crate links it; CI fails when `cargo tree -p oxabl_build` or a default `oxabl` build names an oxabl-cache crate. Its black-box tests are `crates/oxabl/tests/build_remote_*.rs` and run against the real server, admin and member binaries (`scripts/remote-cache-binaries.sh <dir>` builds them at `binaries-rev`; `OXABL_CACHE_SERVER_BIN`, `OXABL_CACHE_ADMIN_BIN` and `OXABL_CACHE_BIN` name them; a missing binary fails the tests): `cargo test -p oxabl --features remote-cache --test build_remote_cache --test build_remote_faults --test build_remote_trust`
+- `crates/oxabl_fake_avm` - A fake AVM that speaks the worker protocol, including compile requests, the faults the build tests need and error 12927 for stale class r-code of a cycle, for black-box tests of `oxabl build`. It also stands in for the runtime (`-p <program>`, `-new <class>`) and for a project's own `COMPILE ... SAVE` (`-c`), with the PROPATH from the `PROPATH` variable; the shared case table `crates/oxabl/tests/common/runtime_cases.rs` runs against it (`build_runtime_fake.rs`) and against OpenEdge (`build_openedge/runtime.rs`). Not published. It has no oxabl dependency, on purpose: CI fails when `cargo tree -p oxabl_fake_avm` names an oxabl crate
+- Real-AVM suite - `crates/oxabl/tests/build_openedge.rs` and `build_openedge_scratch.rs` (with `build_openedge/`, `common/openedge/` and `fixtures/openedge/`): the opt-in tests of `oxabl build` against OpenEdge. Every test is `#[ignore]` and fails, never skips, without its `OXABL_OPENEDGE_*` variables; the variables and the commands are in `docs/overview.md`, "Testing against a real AVM". CI builds them and runs none
 - `crates/oxabl_nulls` - Unknown values per unit: buffers a failed `FIND ... NO-ERROR` may leave without a record and the field references that read them, and local variables that may hold `?` with the uses they reach
 
 (Not exhaustive — the workspace also holds `oxabl_preprocessor`, `oxabl_semantic`, `oxabl_schema`, `oxabl_lint`, `oxabl_analyze`, `oxabl_formatter`, `oxabl_style`, `oxabl_workspace`, `oxabl_lsp`, and `oxabl_wasm`; see the status section below.)
@@ -140,6 +156,8 @@ Generates:
 
 ## CI & Release Process
 
+Every job in `ci.yml` and `codspeed.yml` has a `timeout-minutes` of about three times its usual run time, so a hung step (such as a toolchain setup that never returns) fails in minutes, not after GitHub's six-hour default. Raise a job's limit when it grows; do not remove it.
+
 ### Automated Releases (`.github/workflows/release.yml`)
 
 Uses [Release Please](https://github.com/googleapis/release-please) for fully automated versioning and changelogs. Use conventional commits.
@@ -150,6 +168,10 @@ Uses [Release Please](https://github.com/googleapis/release-please) for fully au
 - `.release-please-manifest.json` — tracks the current version
 
 While pre-1.0, `bump-minor-pre-major` is enabled so breaking changes bump minor instead of major.
+
+The VS Code extension (`clients/vscode`) is its own Release Please component, `oxabl_vscode` (`release-type: node`, tags `oxabl_vscode-vX.Y.Z`). The `vsix` job packages it with `clients/vscode/scripts/package-vsix.sh` (the script the CI job `VS Code client` runs on every pull request) and uploads `oxabl-vscode-<version>.vsix` and its `.sha256` to that release. The extension updates itself from those two assets, so their names are a contract (`docs/design/vscode-extension.md`).
+
+The release workflow's `binary` job builds the static Linux binary with `--features remote-cache,self-update` (`scripts/build-musl.sh`, in a `rust:alpine` container) and uploads it with a `.sha256` file to the release of the `oxabl` crate. On `workflow_dispatch` it runs only with the input `tag` naming an existing `oxabl-vX.Y.Z` release, and builds that tag (the `vsix` job likewise with an `oxabl_vscode-vX.Y.Z` tag): the way to add the assets to a release whose asset jobs did not run. Without `tag`, a manual run uploads nothing. The CI job `musl-binary` builds the same binary on every pull request and starts it in `ubuntu:22.04` (`scripts/check-musl.sh`, which also runs `oxabl self-update --check` against a closed loopback port and wants exit 3). The CI job `Self-update` runs `cargo test -p oxabl --features self-update --test self_update`, and the job `Install script` runs `scripts/install.sh` under shellcheck, dash and bash against a fake release server (`crates/oxabl/tests/install_script.rs`). The `check` job fails when a default `oxabl` or `oxabl_build` build names a `reqwest`, `rustls` or `tokio` crate.
 
 ## Benchmarks
 
@@ -164,7 +186,10 @@ cargo bench -p oxabl_common --bench source_map_bench
 
 **When the `/codspeed` skills are available, use them for benchmark work** — setup, optimization, and flamegraph analysis.
 
-**When implementing new features**, consider whether a new benchmark is warranted. If the feature adds a new parsing construct, expression type, or hot path, add a benchmark or extend an existing fixture file to cover it. This ensures CodSpeed catches regressions as the codebase grows.
+**When implementing new features**, consider whether a new benchmark is warranted. If the feature adds a new parsing construct, expression type, or hot path, add a benchmark to cover it. This ensures CodSpeed catches regressions as the codebase grows.
+
+- Put new forms in a **new fixture with its own bench** (as `compiler_forms` and `type_spellings` do), not in an existing fixture. CodSpeed compares a bench by name, so a grown fixture reads as a regression, and it hides a real cost of the change in the old input.
+- Measure the existing benches against the base **before** you add a fixture, with the same input on both sides. When the machine is loaded, count instructions instead of wall time: `valgrind --tool=callgrind --toggle-collect='*parse_program*' oxabl conformance -j 1 <file>` on a base and a candidate release binary.
 
 ## ASD-STE100 Simplified Technical English
 

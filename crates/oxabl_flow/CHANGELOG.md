@@ -1,5 +1,96 @@
 # Changelog
 
+## [0.4.1](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.4.0...oxabl_flow-v0.4.1) (2026-11-23)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_lexer bumped from 2.0.2 to 2.0.3
+  * dev-dependencies
+    * oxabl_parser bumped from 4.1.0 to 4.1.1
+
+## [0.4.0](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.8...oxabl_flow-v0.4.0) (2026-11-20)
+
+
+### Features
+
+* ABL document outline, and no-setup defaults for the editor ([375b8c4](https://github.com/oxabl-project/oxabl/commit/375b8c4704d4de20e8104c188fb0b9b7d6f2f855))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 4.0.0 to 5.0.0
+    * oxabl_lexer bumped from 2.0.1 to 2.0.2
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.5 to 4.1.0
+
+## [0.3.8](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.7...oxabl_flow-v0.3.8) (2026-11-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.4 to 4.0.5
+
+## [0.3.7](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.6...oxabl_flow-v0.3.7) (2026-11-16)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.3 to 4.0.4
+
+## [0.3.6](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.5...oxabl_flow-v0.3.6) (2026-11-13)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.2 to 4.0.3
+
+## [0.3.5](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.4...oxabl_flow-v0.3.5) (2026-11-12)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.1 to 4.0.2
+
+## [0.3.4](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.3...oxabl_flow-v0.3.4) (2026-11-11)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dev-dependencies
+    * oxabl_parser bumped from 4.0.0 to 4.0.1
+
+## [0.3.3](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.2...oxabl_flow-v0.3.3) (2026-11-06)
+
+
+### Performance Improvements
+
+* **nulls:** reuse fact buffers in the dataflow solver ([7425896](https://github.com/oxabl-project/oxabl/commit/7425896f545d730499e0ad0cddc8c8f93e89dfa1))
+* **pipeline:** build TX004's workspace summaries on all cores ([75d9f8e](https://github.com/oxabl-project/oxabl/commit/75d9f8e1bc29a50364db54900c7161e53680dcb6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * oxabl_ast bumped from 3.0.0 to 4.0.0
+    * oxabl_lexer bumped from 2.0.0 to 2.0.1
+  * dev-dependencies
+    * oxabl_parser bumped from 3.0.2 to 4.0.0
+
 ## [0.3.2](https://github.com/oxabl-project/oxabl/compare/oxabl_flow-v0.3.1...oxabl_flow-v0.3.2) (2026-10-20)
 
 

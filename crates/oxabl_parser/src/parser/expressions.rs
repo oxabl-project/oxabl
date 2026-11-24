@@ -11,8 +11,10 @@ use super::{ParseError, ParseResult, Parser, debug_assert_expr_sibling_order};
 use crate::literal::token_to_literal;
 
 impl Parser<'_> {
+    /// Every expression the grammar nests goes through here or through one of
+    /// the few `nested` calls that bypass it, so each is one nesting level.
     pub fn parse_expression(&mut self) -> ParseResult<Expression> {
-        self.parse_ternary()
+        self.nested(Self::parse_ternary)
     }
 
     pub fn parse_ternary(&mut self) -> ParseResult<Expression> {
@@ -34,11 +36,11 @@ impl Parser<'_> {
 
         self.expect_kind(Kind::Then, "Expected 'THEN' after IF condition")?;
 
-        let then_expr = self.parse_ternary()?; // recursive for nested ternary in then branch
+        let then_expr = self.nested(Self::parse_ternary)?;
 
         self.expect_kind(Kind::KwElse, "Expected 'ELSE' in IF expression")?;
 
-        let else_expr = self.parse_ternary()?; // recursive for nested ternary in else branch
+        let else_expr = self.nested(Self::parse_ternary)?;
 
         let hi = self.prev_end();
         Ok(self.spanned_expr(
@@ -53,26 +55,32 @@ impl Parser<'_> {
     }
 
     pub fn parse_or(&mut self) -> ParseResult<Expression> {
+        let mut links = 0;
         let mut expr = self.parse_and()?;
         while self.check(Kind::Or) {
+            self.link(&mut links)?;
             let lo = expr.span.start;
             self.advance();
             let right = self.parse_and()?;
             let hi = self.prev_end();
             expr = self.spanned_expr(lo, hi, ExpressionKind::Or(Box::new(expr), Box::new(right)));
         }
+        self.unlink(links);
         Ok(expr)
     }
 
     pub fn parse_and(&mut self) -> ParseResult<Expression> {
+        let mut links = 0;
         let mut expr = self.parse_comparison()?;
         while self.check(Kind::And) {
+            self.link(&mut links)?;
             let lo = expr.span.start;
             self.advance();
             let right = self.parse_comparison()?;
             let hi = self.prev_end();
             expr = self.spanned_expr(lo, hi, ExpressionKind::And(Box::new(expr), Box::new(right)));
         }
+        self.unlink(links);
         Ok(expr)
     }
 
@@ -149,9 +157,11 @@ impl Parser<'_> {
     }
 
     pub fn parse_additive(&mut self) -> ParseResult<Expression> {
+        let mut links = 0;
         let mut expr = self.parse_multiplicative()?;
         loop {
             if self.check(Kind::Add) || self.check(Kind::Minus) {
+                self.link(&mut links)?;
                 let lo = expr.span.start;
                 let op_kind = self.peek().kind;
                 self.advance();
@@ -179,6 +189,7 @@ impl Parser<'_> {
                 // Only fires when the LHS is already string-like (literal, preprop ref, or
                 // a prior implicit concat). This prevents consuming display items or other
                 // adjacent tokens as accidental concatenation.
+                self.link(&mut links)?;
                 let lo = expr.span.start;
                 let right_exp = self.parse_multiplicative()?;
                 let hi = self.prev_end();
@@ -191,12 +202,15 @@ impl Parser<'_> {
                 break;
             }
         }
+        self.unlink(links);
         Ok(expr)
     }
 
     pub fn parse_multiplicative(&mut self) -> ParseResult<Expression> {
+        let mut links = 0;
         let mut expr = self.parse_unary()?;
         while self.check(Kind::Star) || self.check(Kind::Slash) || self.check(Kind::Modulo) {
+            self.link(&mut links)?;
             let lo = expr.span.start;
             let op_kind = self.peek().kind;
             self.advance();
@@ -231,6 +245,7 @@ impl Parser<'_> {
                 _ => unreachable!(),
             }
         }
+        self.unlink(links);
         Ok(expr)
     }
 
@@ -239,20 +254,20 @@ impl Parser<'_> {
             // Prefix form: `lo` is the `-` token, captured before advancing.
             let lo = self.peek().start as u32;
             self.advance();
-            let expr = self.parse_unary()?;
+            let expr = self.nested(Self::parse_unary)?;
             let hi = self.prev_end();
             return Ok(self.spanned_expr(lo, hi, ExpressionKind::Negate(Box::new(expr))));
         }
         if self.check(Kind::Add) {
             // Unary plus — identity operation (e.g. "- + value" means subtract unary+value)
             self.advance();
-            return self.parse_unary();
+            return self.nested(Self::parse_unary);
         }
         if self.check(Kind::Not) {
             // Prefix form: `lo` is the `NOT` token, captured before advancing.
             let lo = self.peek().start as u32;
             self.advance();
-            let expr = self.parse_unary()?;
+            let expr = self.nested(Self::parse_unary)?;
             let hi = self.prev_end();
             return Ok(self.spanned_expr(lo, hi, ExpressionKind::Not(Box::new(expr))));
         }
@@ -260,6 +275,7 @@ impl Parser<'_> {
     }
 
     pub fn parse_postfix(&mut self) -> ParseResult<Expression> {
+        let mut links = 0;
         let mut expr = self.parse_primary()?;
 
         // Literals can't have postfix operations (member access, method calls, etc.)
@@ -300,19 +316,23 @@ impl Parser<'_> {
                 if !next_is_member {
                     break;
                 }
+                self.link(&mut links)?;
                 expr = self.parse_member_or_method(expr)?;
             } else if self.check(Kind::LeftBracket) {
+                self.link(&mut links)?;
                 expr = self.parse_array_access(expr)?;
             } else if self.check(Kind::Period)
                 && Self::can_have_field_access(&expr)
                 && self.is_field_access_ahead()
             {
+                self.link(&mut links)?;
                 expr = self.parse_field_access(expr)?;
             } else {
                 break;
             }
         }
 
+        self.unlink(links);
         Ok(expr)
     }
 
@@ -590,7 +610,7 @@ impl Parser<'_> {
     fn parse_primary_inner(&mut self) -> ParseResult<Expression> {
         // Inline ternary: IF expr THEN expr ELSE expr — valid in any expression position
         if self.check(Kind::KwIf) {
-            return self.parse_ternary();
+            return self.nested(Self::parse_ternary);
         }
 
         // Implicit widget attribute/method: :attribute or :method(args)
@@ -906,7 +926,7 @@ impl Parser<'_> {
                     let id = self.parse_identifier()?;
                     self.expr(ExpressionKind::Identifier(id))
                 } else {
-                    self.parse_primary()?
+                    self.nested(Self::parse_primary)?
                 };
             let mut arguments = vec![class];
             // Parse optional argument list
@@ -914,15 +934,7 @@ impl Parser<'_> {
                 self.advance();
                 if !self.check(Kind::RightParen) {
                     loop {
-                        if matches!(
-                            self.peek().kind,
-                            Kind::Input | Kind::Output | Kind::InputOutput
-                        ) {
-                            self.advance();
-                        }
-                        if let Ok(arg) = self.parse_expression() {
-                            arguments.push(arg);
-                        }
+                        arguments.push(self.parse_call_argument()?);
                         if !self.check(Kind::Comma) {
                             break;
                         }
@@ -956,17 +968,10 @@ impl Parser<'_> {
                     self.advance();
                     arguments.push(self.parse_expression()?);
                 }
-                // Additional comma-separated arguments, each with an optional
-                // direction, which is not part of the argument.
+                // Additional comma-separated arguments, with parameter modes
                 while self.check(Kind::Comma) {
                     self.advance();
-                    if matches!(
-                        self.peek().kind,
-                        Kind::Input | Kind::Output | Kind::InputOutput
-                    ) {
-                        self.advance();
-                    }
-                    arguments.push(self.parse_expression()?);
+                    arguments.push(self.parse_call_argument()?);
                 }
             }
             self.expect_kind(Kind::RightParen, "Expected ')' after DYNAMIC-FUNCTION")?;
@@ -1006,45 +1011,47 @@ impl Parser<'_> {
                 self.parse_identifier().ok(); // consume parent table name
             }
 
-            // Lock type may appear before or after WHERE (ABL is flexible).
-            let lock_type_before = self.parse_lock_type();
-
-            // Optional WHERE clause
-            let where_clause = if self.check(Kind::KwWhere) {
-                self.advance();
-                Some(Box::new(self.parse_expression()?))
-            } else {
-                None
-            };
-
-            // Trailing lock type (canonical position); prefer the first one found
-            let lock_type_after = self.parse_lock_type();
-            let lock_type = if lock_type_before != oxabl_ast::LockType::ShareLock {
-                lock_type_before
-            } else {
-                lock_type_after
-            };
-
-            // Optional USE-INDEX hint (e.g. CAN-FIND(t WHERE cond USE-INDEX idx))
-            if self.check(Kind::UseIndex) {
-                self.advance(); // consume USE-INDEX
-                if Self::can_be_identifier(self.peek().kind) {
-                    self.advance(); // consume index name
+            // The record-phrase options may come in any order; the first explicit
+            // lock type wins and WHERE may appear once.
+            let mut lock_type = None;
+            let mut where_clause = None;
+            let mut no_error = false;
+            loop {
+                match self.peek().kind {
+                    Kind::NoLock | Kind::ShareLock | Kind::ExclusiveLock | Kind::Preprop => {
+                        let parsed = self.parse_lock_type();
+                        lock_type.get_or_insert(parsed);
+                    }
+                    Kind::KwWhere if where_clause.is_none() => {
+                        self.advance();
+                        where_clause = Some(Box::new(self.parse_expression()?));
+                    }
+                    Kind::UseIndex => {
+                        self.advance();
+                        if Self::can_be_identifier(self.peek().kind) {
+                            self.advance(); // consume index name
+                        }
+                    }
+                    // USING field [AND field]...
+                    Kind::Using => {
+                        self.advance();
+                        self.nested(Self::parse_postfix)?;
+                        while self.check(Kind::And) {
+                            self.advance();
+                            self.nested(Self::parse_postfix)?;
+                        }
+                    }
+                    Kind::NoWait => {
+                        self.advance();
+                    }
+                    Kind::NoError => {
+                        self.advance();
+                        no_error = true;
+                    }
+                    _ => break,
                 }
             }
-
-            // Optional NO-WAIT — don't block if record is locked by another user
-            if self.check(Kind::NoWait) {
-                self.advance();
-            }
-
-            // Optional NO-ERROR
-            let no_error = if self.check(Kind::NoError) {
-                self.advance();
-                true
-            } else {
-                false
-            };
+            let lock_type = lock_type.unwrap_or(oxabl_ast::LockType::ShareLock);
 
             self.expect_kind(
                 Kind::RightParen,
@@ -1124,7 +1131,7 @@ impl Parser<'_> {
                     arguments: vec![],
                 }));
             }
-            let arg = self.parse_postfix()?;
+            let arg = self.nested(Self::parse_postfix)?;
             return Ok(self.expr(ExpressionKind::FunctionCall {
                 name,
                 arguments: vec![arg],
@@ -1226,7 +1233,7 @@ impl Parser<'_> {
             {
                 self.advance();
             } else if Self::can_be_identifier(self.peek().kind)
-                && let Ok(first_expr) = self.parse_postfix()
+                && let Ok(first_expr) = self.nested(Self::parse_postfix)
             {
                 arguments.push(first_expr);
             }
@@ -1265,7 +1272,7 @@ impl Parser<'_> {
             // field name — may be an identifier, qualified field, indexed access, or
             // parenthesized expression like (expr1 - expr2)
             if (Self::can_be_identifier(self.peek().kind) || self.check(Kind::LeftParen))
-                && let Ok(field_expr) = self.parse_postfix()
+                && let Ok(field_expr) = self.nested(Self::parse_postfix)
             {
                 arguments.push(field_expr);
             }
@@ -1280,7 +1287,7 @@ impl Parser<'_> {
             Kind::Input | Kind::Output | Kind::InputOutput
         ) {
             self.advance(); // consume the direction qualifier
-            return self.parse_primary();
+            return self.nested(Self::parse_primary);
         }
 
         // Identifiers and callable keywords (built-in functions like NOW, TRIM, etc.)
@@ -1340,6 +1347,41 @@ impl Parser<'_> {
                 end: self.peek().end as u32,
             },
         })
+    }
+
+    /// One call argument: `[INPUT|OUTPUT|INPUT-OUTPUT] [TABLE|TABLE-HANDLE|DATASET|
+    /// DATASET-HANDLE|DATA-SOURCE] expr [IN FRAME|BROWSE name] [BIND|BY-VALUE|
+    /// BY-REFERENCE|APPEND]...`. Only the operand is kept, like the other call forms.
+    fn parse_call_argument(&mut self) -> ParseResult<Expression> {
+        if matches!(
+            self.peek().kind,
+            Kind::Input | Kind::Output | Kind::InputOutput
+        ) {
+            self.advance();
+        }
+        if matches!(
+            self.peek().kind,
+            Kind::Table
+                | Kind::TableHandle
+                | Kind::Dataset
+                | Kind::DatasetHandle
+                | Kind::DataSource
+        ) {
+            self.advance();
+        }
+        let argument = self.parse_expression()?;
+        if self.check(Kind::KwIn) && matches!(self.peek_at(1).kind, Kind::Frame | Kind::Browse) {
+            self.advance(); // consume IN
+            self.advance(); // consume FRAME or BROWSE
+            self.consume_widget_name();
+        }
+        while matches!(
+            self.peek().kind,
+            Kind::Bind | Kind::ByValue | Kind::ByReference | Kind::Append
+        ) {
+            self.advance();
+        }
+        Ok(argument)
     }
 
     pub fn parse_function_call(&mut self, name: Identifier) -> ParseResult<Expression> {
