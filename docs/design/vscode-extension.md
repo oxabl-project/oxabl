@@ -144,8 +144,9 @@ how each part works and why.
   nested deeper than 50 levels, the highlighting ends the comment too early.
   The compiler has no such limit. Real files nest fewer than 10 levels.
 - Continuous input of more than about 45 characters a second into a large
-  file can block the window for seconds. This is a limit of VS Code, not of
-  the grammar, so the extension does not change it. See
+  file can block the window for seconds in a headless run. On a desktop the
+  same input gave stale colours, not a blocked window. This is a limit of
+  VS Code, not of the grammar, so the extension does not change it. See
   [Input faster than VS Code tokenizes](#input-faster-than-vs-code-tokenizes).
 
 ### Input faster than VS Code tokenizes
@@ -205,6 +206,13 @@ the pending edits, and in the rendering of the changed lines. The language
 configuration and bracket pair colorization have no effect. The grammars of
 VS Code itself have the same effect as the ABL grammar.
 
+All numbers above come from the headless harness (Xvfb, software
+rendering). On a desktop (Wayland, VS Code 1.147.0), input of about 80
+characters a second gave no input lag and no blocked window. The colours of
+the file changed between comment and code for about 60 seconds after the
+typing stopped, while the tokenizer worker caught up. The scenario does not
+measure this backlog: the timer only sees a blocked main thread.
+
 The full hang of the issue (a click that times out after 120 seconds, and
 the memory growth from 1.3 GB to 2.1 GB) did not occur in these runs. The
 window answered within 3 seconds. The memory of the VS Code processes grew
@@ -221,7 +229,9 @@ so the extension does not set it. A person who is affected can set it to
 The `server-soak` scenario types at about 39 characters a second first. It
 fails when the window blocks for more than 1 second, when it is blocked for
 more than 10% of a sample, or when the window takes the keys at fewer than
-28 characters a second (a slow window gets less load).
+28 characters a second (a slow window gets less load). The scenario is not in
+the default CI run: it runs only when `OXABL_E2E_SCENARIOS` names it, so
+nothing runs these checks automatically.
 
 ### Tests
 
