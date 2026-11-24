@@ -25,9 +25,13 @@ inputs:
     description: >-
       Fetch every dependency of the workspace and the fuzz crate, and save the
       registry when no entry exists for the lock files. Set it in one job
-      only, so the entry always holds the whole set.
+      only, so the entry always holds the whole set. Like every save of this
+      action, it runs on master only.
     default: "false"
 
+# Caches are saved on master only, which every branch and pull request can
+# read; a pull request only restores. A save on a pull request ref is visible
+# to that pull request alone and takes room from master's entries.
 runs:
   using: composite
   steps:
@@ -69,7 +73,7 @@ runs:
         restore-keys: cargo-registry-${{ runner.os }}-
 
     - name: Fetch every dependency
-      if: inputs.save-registry == 'true' && steps.registry.outputs.cache-hit != 'true'
+      if: inputs.save-registry == 'true' && github.ref == 'refs/heads/master' && steps.registry.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -81,7 +85,7 @@ runs:
         fi
 
     - name: Save the cargo registry
-      if: inputs.save-registry == 'true' && steps.registry.outputs.cache-hit != 'true'
+      if: inputs.save-registry == 'true' && github.ref == 'refs/heads/master' && steps.registry.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:
         path: |
@@ -120,7 +124,7 @@ runs:
     - name: Restore the cargo binaries
       id: bins-cache
       if: inputs.bins != ''
-      uses: actions/cache@v6
+      uses: actions/cache/restore@v6
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
@@ -139,3 +143,10 @@ runs:
           [ -n "$b" ] || continue
           timeout 1200 cargo install --locked "$b"
         done
+
+    - name: Save the cargo binaries
+      if: inputs.bins != '' && github.ref == 'refs/heads/master' && steps.bins-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ steps.bins.outputs.paths }}
+        key: ${{ steps.bins.outputs.key }}
