@@ -74,8 +74,10 @@ runs:
       run: |
         set -euo pipefail
         timeout 600 cargo fetch --locked
+        # Not --locked: the fuzz lock file names the workspace crates by
+        # version, and a release moves them without touching it.
         if [ -f fuzz/Cargo.lock ]; then
-          timeout 600 cargo fetch --locked --manifest-path fuzz/Cargo.toml
+          timeout 600 cargo fetch --manifest-path fuzz/Cargo.toml
         fi
 
     - name: Save the cargo registry
