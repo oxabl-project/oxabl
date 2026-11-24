@@ -177,12 +177,20 @@ From `clients/vscode`:
   missing binary (a line in the output channel, no message), the self-update
   against a fake GitHub API, the install of the CLI and the build loop against
   a fake `oxabl` (see [The build loop](#the-build-loop)), the outline (Outline
-  view, breadcrumbs and "Go to Symbol in File") from a real `oxabl` binary, and
-  screenshots. The `outline` scenario needs `OXABL_E2E_OXABL` and
+  view, breadcrumbs and "Go to Symbol in File") and the ABL Schema view from a
+  real `oxabl` binary, and screenshots. The `outline` scenario needs `OXABL_E2E_OXABL` and
   `OXABL_E2E_RUNTIME` and fails without them. It removes every `oxabl` from
   `PATH` and sets `VSCODE_CLI=1` (otherwise VS Code reads the login shell's
   `PATH` and starts a real language server), and fails when a scenario leaves
   a process running.
+
+## The schema view
+
+The **ABL Schema** view in the Explorer shows the `.df` files of
+`[workspace.schema]` from the language server's `oxabl/schema` request, with a
+filter, "Open in .df", copy commands and a details page per table. It asks the
+server only after it is visible for the first time, so activation does not
+read the schema. See [schema-browser.md](schema-browser.md).
 
 ## Releases
 

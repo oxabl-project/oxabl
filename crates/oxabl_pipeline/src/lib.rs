@@ -61,6 +61,10 @@
 //! view, breadcrumbs and "Go to Symbol in File". It reads the raw source, like
 //! [`FormatPipeline`], so every span is a byte range of the buffer as written.
 //!
+//! [`schema_view`] — the configured `.df` files as a tree of databases, tables,
+//! fields, indexes and sequences, for an editor's schema browser, and
+//! [`schema_table`], one table as the browser and the hover show it.
+//!
 //! [`resolve_diagnostic`] and its siblings — the single derivation of line and
 //! column from a byte span, for the byte-offset clients. The language server
 //! deliberately does not use it (R13, KTD5); see [`position`].
@@ -84,6 +88,7 @@ mod outline;
 mod parity;
 pub mod position;
 mod reverse;
+mod schema_view;
 
 pub use config::{
     ConfigOverrides, ConfigWarning, PipelineConfig, configured_schema_files, resolve_from_config,
@@ -93,6 +98,11 @@ pub use format::{FormatOutcome, FormatPipeline, NotFormatted, NotFormattedKind};
 pub use lint::{Expansion, LintPipeline, LintResult, NotObserving, ObservedEdges, SharedRun};
 pub use navigate::{Link, Navigation, Target};
 pub use outline::{OutlineKind, OutlineSymbol, outline};
+pub use schema_view::{
+    SchemaDatabase, SchemaField, SchemaIndex, SchemaIndexField, SchemaProblem, SchemaSequence,
+    SchemaTable, SchemaView, TextPosition, TextRange, schema_database, schema_table, schema_view,
+    schema_view_table, schema_view_until,
+};
 // Re-exported so a consumer of `LintResult::include_origin` can name its rows.
 pub use oxabl_analyze::{IncludeOccurrence, IncludeOriginDiagnostic, IncludeStep};
 pub use position::{

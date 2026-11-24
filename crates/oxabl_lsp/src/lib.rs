@@ -8,7 +8,9 @@
 //! `docs/design/navigation.md`). Strict database rules can also enable effect code lenses. An open include can be analysed in a
 //! root that expands it (`oxabl/includerContexts`, `oxabl/selectIncluderContext`), and
 //! `oxabl/expandedUnit` shows the source parsed for a file after preprocessing; see
-//! `docs/design/include-context.md`.
+//! `docs/design/include-context.md`. `oxabl/schema` and `oxabl/schemaTable`
+//! answer the configured `.df` files as a tree for a schema browser; see
+//! `docs/design/schema-browser.md`.
 //!
 //! **This crate orchestrates nothing.** Both the analysis and the formatting are
 //! [`oxabl_pipeline`]'s, and the salsa substrate that memoizes them is
@@ -32,6 +34,7 @@ pub mod formatting;
 mod includer_context;
 mod navigation;
 pub mod position;
+mod schema;
 mod workspace_symbol;
 
 use std::collections::HashMap;
@@ -822,6 +825,8 @@ struct Server<'c> {
     /// Where context workers report, and where the main loop reads them.
     context_events: crossbeam_channel::Sender<includer_context::ContextEvent>,
     context_results: crossbeam_channel::Receiver<includer_context::ContextEvent>,
+    /// The generation of the newest `oxabl/schema` request; an older one stops.
+    schema_requests: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// A completed background diagnostics computation, tagged with the buffer
@@ -884,6 +889,7 @@ impl<'c> Server<'c> {
             contexts: includer_context::Contexts::default(),
             context_events,
             context_results,
+            schema_requests: Default::default(),
         }
     }
 
@@ -939,6 +945,10 @@ impl<'c> Server<'c> {
                                 self.handle_includer_contexts(req)?;
                             } else if req.method == includer_context::SELECT_METHOD {
                                 self.handle_select_includer_context(req)?;
+                            } else if req.method == schema::METHOD {
+                                self.handle_schema(req)?;
+                            } else if req.method == schema::TABLE_METHOD {
+                                self.handle_schema_table(req)?;
                             } else if req.method == WorkspaceSymbolRequest::METHOD {
                                 workspace_symbol::spawn(
                                     req,
