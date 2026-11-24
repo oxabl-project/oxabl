@@ -1796,14 +1796,9 @@ impl ProcessContext<'_> {
             Ok(c) => c,
             Err(e) => {
                 self.diagnostics.push(if oxabl_workspace::is_encrypted(&e) {
-                    // Like an unresolvable include, the symbols it declares are
-                    // unknown, so the loss is a warning that is always shown.
                     Diagnostic::warning(
                         oxabl_workspace::ENCRYPTED_CODE,
-                        format!(
-                            "include '{include_name}' is {} — symbols it declares cannot be checked",
-                            oxabl_workspace::EncryptedSource
-                        ),
+                        oxabl_workspace::encrypted_include_note(include_name),
                         site,
                     )
                 } else {
@@ -1818,6 +1813,7 @@ impl ProcessContext<'_> {
                     path,
                     site,
                     via: self.site_stack.clone(),
+                    encrypted: oxabl_workspace::is_encrypted(&e),
                 });
                 return None;
             }

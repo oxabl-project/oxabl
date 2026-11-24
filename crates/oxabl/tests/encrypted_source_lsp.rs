@@ -116,16 +116,44 @@ fn an_encrypted_include_gives_the_includer_buffer_one_warning() {
     );
 }
 
-/// The header with plain text after it is not encrypted: the buffer is
-/// analysed, not skipped.
+/// An open buffer of a root that includes an include of an include that is
+/// encrypted: one warning at the root's reference, no other finding.
+#[test]
+fn a_nested_encrypted_include_gives_the_includer_buffer_one_warning() {
+    let dir = tree();
+    fs::write(dir.path().join("mid.i"), "{enc.i}\n").unwrap();
+    let mut session = Session::start(dir.path());
+    let root = dir.path().join("nest.p");
+    session.open(
+        &root,
+        "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\n{mid.i}\nMESSAGE typo.\n",
+    );
+    let diagnostics = published(&session, &root);
+    assert_one_encrypted_warning(&diagnostics);
+    assert_eq!(
+        diagnostics[0]["range"]["start"]["line"], 1,
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("include 'enc.i'"),
+        "{diagnostics:?}"
+    );
+}
+
+/// The header with plain text after it, in a file long enough to show that it
+/// is not random, is not encrypted: the buffer is analysed, not skipped.
 #[test]
 fn the_header_with_plain_text_after_it_is_not_skipped() {
     let dir = tree();
     let mut session = Session::start(dir.path());
     let path = dir.path().join("marked.p");
     let header = String::from_utf8(HEADER.to_vec()).unwrap();
-    session.open(&path, &format!("{header}\nDISPLAY y.\n"));
+    session.open(&path, &format!("{header}\n{}", "DISPLAY y.\n".repeat(30)));
     let diagnostics = published(&session, &path);
+    assert!(!diagnostics.is_empty(), "the buffer is analysed");
     assert!(
         diagnostics.iter().all(|d| d["code"] != "SOURCE001"),
         "{diagnostics:?}"

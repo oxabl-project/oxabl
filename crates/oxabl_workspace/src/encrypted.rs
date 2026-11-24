@@ -10,14 +10,20 @@
 //!
 //! * it starts with the 10 header bytes of the encrypted files seen so far
 //!   ([`HEADER`]), and
-//! * its first [`HEAD_LEN`] bytes have the profile of random data: at least
-//!   [`MIN_DISTINCT`] different control byte values, and at least one control
-//!   byte in [`MAX_GAP`] bytes. Random data holds about one control byte in
-//!   ten, spread over most of the 27 values. Plain source repeats one or two
-//!   (a printer escape, a stray end-of-file byte).
+//! * it is shorter than [`PROFILE_MIN_LEN`] bytes, or its first [`HEAD_LEN`]
+//!   bytes have the profile of random data: at least [`MIN_DISTINCT`] different
+//!   control byte values, and at least one control byte in [`MAX_GAP`] bytes.
+//!   Random data holds about one control byte in ten, spread over most of the
+//!   27 values. Plain source repeats one or two (a printer escape, a stray
+//!   end-of-file byte).
 //!
-//! A file with another header, a short file and a file that is plain text with
-//! control bytes are all read as source.
+//! A short file has too few bytes to show the profile: a random file of 50
+//! bytes fails it half of the time, and a miss would splice the bytes into the
+//! includer with no message. So a short file is judged by the header alone. The
+//! header holds DC3 and BEL, which plain ABL does not start with.
+//!
+//! A file with another header and a file that is plain text with control bytes
+//! are read as source.
 //!
 //! Tab, line feed, form feed, carriage return and NUL do not count as control
 //! bytes: white space is plain, and NUL is what text in UTF-16 holds.
@@ -40,6 +46,11 @@ pub const HEAD_LEN: usize = 512;
 /// The first bytes of the encrypted files seen so far.
 pub const HEADER: [u8; 10] = [0x13, 0x59, 0x2f, 0x25, 0x07, 0x09, 0x31, 0x49, 0x3b, 0x25];
 
+/// A file with the header and fewer bytes than this is encrypted without the
+/// profile test. At this length a random file fails the profile less than once
+/// in 100 000 times.
+pub const PROFILE_MIN_LEN: usize = 256;
+
 /// The least number of different control byte values in a file that is
 /// encrypted.
 pub const MIN_DISTINCT: usize = 6;
@@ -54,6 +65,9 @@ pub fn looks_encrypted(head: &[u8]) -> bool {
     let head = &head[..head.len().min(HEAD_LEN)];
     if !head.starts_with(&HEADER) {
         return false;
+    }
+    if head.len() < PROFILE_MIN_LEN {
+        return true;
     }
     let mut seen = 0u32;
     let mut controls = 0usize;
@@ -105,6 +119,14 @@ impl From<EncryptedSource> for io::Error {
     }
 }
 
+/// The text of the finding for an include that is encrypted. The unit that
+/// reaches it is not checked in full, and says so.
+pub fn include_note(name: &str) -> String {
+    format!(
+        "include '{name}' is {EncryptedSource}: the unit is not fully checked and its findings are withheld"
+    )
+}
+
 /// Whether `error` says that the file is encrypted.
 pub fn is_encrypted(error: &io::Error) -> bool {
     error
@@ -144,10 +166,24 @@ mod tests {
     }
 
     #[test]
-    fn the_header_alone_is_not_enough() {
-        assert!(!looks_encrypted(&HEADER));
+    fn a_short_file_with_the_header_is_encrypted_without_a_profile() {
+        assert!(looks_encrypted(&HEADER));
+        // A one-line include of 30 bytes holds too few control bytes to show a
+        // profile; most random files of this length fail it.
+        for len in [11, 30, 50, 90, PROFILE_MIN_LEN - 1] {
+            for start in 0..20 {
+                let mut bytes = HEADER.to_vec();
+                bytes.extend(random(start * 97 + len).into_iter().skip(start * 97));
+                assert!(looks_encrypted(&bytes), "len {len} start {start}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_with_the_header_and_plain_text_is_read_as_source() {
         let mut bytes = HEADER.to_vec();
-        bytes.extend(b"MESSAGE 1.\n");
+        bytes.extend(b"MESSAGE 1.\n".repeat(30));
+        assert!(bytes.len() >= PROFILE_MIN_LEN);
         assert!(!looks_encrypted(&bytes));
     }
 
@@ -201,7 +237,7 @@ mod tests {
         assert!(looks_encrypted(&sparse));
         // Density, but too few values.
         let mut few = HEADER.to_vec();
-        few.extend([0x1b, 0x07, 0x1b, 0x07, 0x1a].repeat(30));
+        few.extend([0x1b, 0x07, 0x1b, 0x07, 0x1a].repeat(60));
         assert!(!looks_encrypted(&few));
     }
 

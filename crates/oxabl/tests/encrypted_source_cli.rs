@@ -423,6 +423,36 @@ fn check_text(dir: &Path, file: &str) -> (Option<i32>, String) {
     (out.status.code(), all)
 }
 
+/// The encrypted bytes of a one-line include: the header and 30 random bytes,
+/// too few to show a profile.
+fn short_encrypted_bytes() -> Vec<u8> {
+    encrypted_bytes()[..40].to_vec()
+}
+
+/// What `file` gives when `enc.i` is readable (the control: it has findings) and
+/// when it is encrypted: one `SOURCE001`, no other finding, exit 0.
+#[track_caller]
+fn assert_withheld(dir: &Path, file: &str, extra: &[&str]) -> String {
+    let check = |dir: &Path| {
+        let mut args = vec!["check", "--no-format"];
+        args.extend_from_slice(extra);
+        args.push(file);
+        let out = run(dir, &args);
+        let all = format!("{}{}", stderr(&out), String::from_utf8_lossy(&out.stdout));
+        (out.status.code(), all)
+    };
+    let encrypted = fs::read(dir.join("enc.i")).unwrap();
+    fs::write(dir.join("enc.i"), "/* x */\n").unwrap();
+    let (code, control) = check(dir);
+    assert_eq!(code, Some(1), "the control has findings: {control}");
+    fs::write(dir.join("enc.i"), encrypted).unwrap();
+    let (code, all) = check(dir);
+    assert_eq!(code, Some(0), "{all}");
+    assert_eq!(all.matches("SOURCE001").count(), 1, "{all}");
+    assert_no_garbage_findings(&all);
+    all
+}
+
 /// The include may read the variables of its includer and write to them, so
 /// nothing is called unused or never read.
 #[test]
@@ -434,32 +464,140 @@ fn an_encrypted_include_makes_no_unused_or_never_read_claim() {
          w = \"x\".\n{enc.i}\n",
     )
     .unwrap();
-    let (code, all) = check_text(tmp.path(), "d.p");
-    assert_eq!(code, Some(0), "{all}");
-    assert!(all.contains("SOURCE001"), "{all}");
-    for lint in ["LINT0002", "LINT0005", "LINT0006"] {
-        assert!(!all.contains(lint), "{lint}: {all}");
-    }
-    fs::write(
-        tmp.path().join("e.p"),
-        "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\nw = \"x\".\n",
-    )
-    .unwrap();
-    let (_, all) = check_text(tmp.path(), "e.p");
-    assert!(all.contains("LINT0002"), "the control: {all}");
+    assert_withheld(tmp.path(), "d.p", &[]);
 }
 
-/// A name used before the include cannot come from it.
+/// Findings before and after the include are withheld alike: the include
+/// may define any name, and the unit is not fully checked.
 #[test]
-fn a_name_used_before_an_encrypted_include_is_still_undefined() {
+fn an_encrypted_include_withholds_the_names_before_it_too() {
     let tmp = tree("");
     fs::write(
         tmp.path().join("b.p"),
         "MESSAGE before-name.\n{enc.i}\nMESSAGE after-name.\n",
     )
     .unwrap();
-    let (code, all) = check_text(tmp.path(), "b.p");
-    assert_eq!(code, Some(1), "{all}");
-    assert!(all.contains("before-name"), "{all}");
-    assert!(!all.contains("after-name"), "{all}");
+    assert_withheld(tmp.path(), "b.p", &[]);
+}
+
+/// An include of an include: one `SOURCE001` at the root's own `{...}`.
+#[test]
+fn a_nested_encrypted_include_is_reported_once_at_the_root_reference() {
+    for encoding in ENCODINGS {
+        let tmp = tree(encoding);
+        fs::write(tmp.path().join("mid.i"), "{enc.i}\n").unwrap();
+        fs::write(
+            tmp.path().join("nest.p"),
+            "DEFINE VARIABLE v AS CHARACTER NO-UNDO.\n{mid.i}\nMESSAGE typo.\n",
+        )
+        .unwrap();
+        let all = assert_withheld(tmp.path(), "nest.p", &[]);
+        assert!(
+            all.contains("nest.p:2:1")
+                && all.contains("include 'enc.i' is encrypted, not checked")
+                && all.contains("reached through this include"),
+            "{all}"
+        );
+
+        let out = run(tmp.path(), &["check", "--json", "--no-format", "nest.p"]);
+        assert_eq!(out.status.code(), Some(0));
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["diagnostics"], serde_json::json!([]), "{report}");
+        let preproc = report["preproc"].as_array().unwrap();
+        assert_eq!(preproc.len(), 1, "{report}");
+        assert_eq!(preproc[0]["code"], "SOURCE001");
+        assert_eq!(preproc[0]["path"], "nest.p");
+    }
+}
+
+/// A class member may be defined in the include, after the method that uses it.
+#[test]
+fn a_class_with_an_encrypted_include_reports_no_undefined_symbol() {
+    let tmp = tree("");
+    fs::write(
+        tmp.path().join("cls.cls"),
+        "CLASS cls:\n  METHOD PUBLIC VOID m():\n    x = 1.\n  END METHOD.\n  {enc.i}\nEND CLASS.\n",
+    )
+    .unwrap();
+    assert_withheld(tmp.path(), "cls.cls", &[]);
+}
+
+/// A temp-table definition include, when encrypted, gives no unknown field.
+#[test]
+fn an_encrypted_table_definition_include_reports_no_unknown_field() {
+    let tmp = tree("");
+    fs::create_dir(tmp.path().join("schema")).unwrap();
+    fs::write(
+        tmp.path().join("schema/s.df"),
+        "ADD TABLE \"Customer\"\nADD FIELD \"CustNum\" OF \"Customer\" AS integer\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("tt.p"),
+        "{enc.i}\nFIND FIRST ttCust NO-ERROR.\nDISPLAY ttCust.name.\n\
+         FIND FIRST Customer NO-LOCK NO-ERROR.\nDISPLAY Customer.Nme.\n",
+    )
+    .unwrap();
+    let all = assert_withheld(tmp.path(), "tt.p", &["--schema", "schema"]);
+    assert!(!all.contains("LINT0003"), "{all}");
+}
+
+/// A preprocessor name that the include defines is empty for the preprocessor.
+#[test]
+fn an_encrypted_include_that_may_define_a_preprocessor_name_gives_no_parse_error() {
+    let tmp = tree("");
+    fs::write(
+        tmp.path().join("pp.p"),
+        "{enc.i}\nDEFINE VARIABLE v AS CHARACTER NO-UNDO.\nv = {&GREETING}.\nMESSAGE v.\n",
+    )
+    .unwrap();
+    assert_withheld(tmp.path(), "pp.p", &[]);
+}
+
+/// A one-line encrypted include has too few bytes for a profile. It is still
+/// named, not spliced into the includer.
+#[test]
+fn a_short_encrypted_include_is_named_and_not_spliced_in() {
+    for encoding in ENCODINGS {
+        let tmp = tree(encoding);
+        fs::write(tmp.path().join("enc.i"), short_encrypted_bytes()).unwrap();
+        fs::write(tmp.path().join("sm.p"), "{enc.i}\nMESSAGE \"x\".\n").unwrap();
+        let (code, all) = check_text(tmp.path(), "sm.p");
+        assert_eq!(code, Some(0), "{encoding}: {all}");
+        assert_eq!(all.matches("SOURCE001").count(), 1, "{encoding}: {all}");
+        assert_no_garbage_findings(&all);
+        let (code, all) = check_text(tmp.path(), "enc.i");
+        assert_eq!(code, Some(0), "{all}");
+        assert_eq!(all.matches("SOURCE001").count(), 1, "{all}");
+    }
+}
+
+/// The formatter reads no include, so an encrypted include changes nothing for it.
+#[test]
+fn format_of_a_root_does_not_depend_on_an_encrypted_include() {
+    let tmp = tree("");
+    fs::write(
+        tmp.path().join("f.p"),
+        "{enc.i}\nDEFINE VARIABLE x AS INTEGER NO-UNDO.\nIF TRUE THEN DO:\nx=1.\nEND.\nMESSAGE x.\n",
+    )
+    .unwrap();
+    let encrypted = run(tmp.path(), &["format", "--stdout", "f.p"]);
+    assert_eq!(encrypted.status.code(), Some(0), "{}", stderr(&encrypted));
+    fs::write(tmp.path().join("enc.i"), "/* x */\n").unwrap();
+    let readable = run(tmp.path(), &["format", "--stdout", "f.p"]);
+    assert_eq!(encrypted.stdout, readable.stdout);
+    assert!(String::from_utf8_lossy(&encrypted.stdout).contains("\n    x=1."));
+}
+
+/// A unit that cannot be preprocessed at all, and also reaches encrypted
+/// source, is still reported as that alone.
+#[test]
+fn an_encrypted_include_beside_a_fatal_preprocessor_error_is_reported_alone() {
+    let tmp = tree("");
+    fs::write(tmp.path().join("bad.i"), b"\xff\xfe\xfa abc").unwrap();
+    fs::write(tmp.path().join("fatal.p"), "{enc.i}{bad.i}").unwrap();
+    let (code, all) = check_text(tmp.path(), "fatal.p");
+    assert_eq!(code, Some(0), "{all}");
+    assert_eq!(all.matches("SOURCE001").count(), 1, "{all}");
+    assert_no_garbage_findings(&all);
 }

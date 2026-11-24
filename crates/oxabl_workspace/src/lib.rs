@@ -27,8 +27,9 @@ pub use discovery::{
 };
 pub use encoding::{DecodedSource, SourceDecoding, SourceEncoding};
 pub use encrypted::{
-    ENCRYPTED_CODE, EncryptedSource, HEAD_LEN as ENCRYPTED_HEAD_LEN, is_encrypted, looks_encrypted,
-    may_be_encrypted, read_head as read_encrypted_head,
+    ENCRYPTED_CODE, EncryptedSource, HEAD_LEN as ENCRYPTED_HEAD_LEN,
+    include_note as encrypted_include_note, is_encrypted, looks_encrypted, may_be_encrypted,
+    read_head as read_encrypted_head,
 };
 pub use file_system::{EncodedFileSystem, FileSystem, InMemoryFileSystem, RealFileSystem};
 pub use include_paths::{

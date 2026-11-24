@@ -96,6 +96,8 @@ pub struct UnreadableInclude {
     /// The enclosing include sites that led here, outermost first. Empty when the
     /// reference was written in the file being processed.
     pub via: Vec<FileSpan>,
+    /// The file is encrypted source: it was refused, not merely unreadable.
+    pub encrypted: bool,
 }
 
 /// The directive that opens a conditional branch.
