@@ -5,6 +5,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use oxabl::lexer::Kind;
+use oxabl::style::KeywordCase;
+use oxabl::workspace::WorkspaceConfig;
 use serde_json::Value;
 
 const PREFIXES: [&str; 9] = [
@@ -65,6 +68,11 @@ fn render_keywords(body: &str, lower: bool) -> String {
 /// Fill the placeholders: the default text, the first choice, and nothing for
 /// a bare tab stop. Every use of one number must give the same text.
 fn fill_placeholders(prefix: &str, body: &str) -> String {
+    fill(prefix, body, false)
+}
+
+/// With `blank`, every placeholder gives no text at all.
+fn fill(prefix: &str, body: &str, blank: bool) -> String {
     let chars: Vec<char> = body.chars().collect();
     let mut out = String::new();
     let mut seen: BTreeMap<String, String> = BTreeMap::new();
@@ -120,7 +128,9 @@ fn fill_placeholders(prefix: &str, body: &str) -> String {
                 "{prefix}: placeholder {number} has two defaults"
             );
         }
-        out.push_str(&text);
+        if !blank {
+            out.push_str(&text);
+        }
     }
     out
 }
@@ -178,19 +188,95 @@ fn every_body_parses_with_lowercase_keywords() {
     }
 }
 
+/// The body with every marker and every placeholder taken out. What is left
+/// is the text that no keyword case changes.
+fn unmarked_text(snippet: &Snippet) -> String {
+    let mut out = String::new();
+    let mut rest = snippet.body.as_str();
+    while let Some(open) = rest.find("<<") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let close = after.find(">>").expect("unclosed keyword marker");
+        out.push(' ');
+        rest = &after[close + 2..];
+    }
+    out.push_str(rest);
+    fill(&snippet.prefix, &out, true)
+}
+
+/// The words of `text` that the lexer takes as keywords.
+fn keywords_in(text: &str) -> Vec<String> {
+    oxabl::lexer::tokenize(text)
+        .iter()
+        .filter(|t| !matches!(t.kind, Kind::Identifier | Kind::Eof | Kind::Invalid))
+        .map(|t| &text[t.start..t.end])
+        .filter(|word| word.starts_with(|c: char| c.is_ascii_alphabetic()))
+        .map(str::to_string)
+        .collect()
+}
+
 #[test]
-fn a_keyword_outside_a_marker_shows_in_the_lowercase_text() {
+fn no_keyword_is_left_outside_a_marker() {
     for snippet in load() {
-        let rendered = render_keywords(&snippet.body, true);
-        let filled = fill_placeholders(&snippet.prefix, &rendered);
-        let run = filled
-            .split(|c: char| !c.is_ascii_alphabetic())
-            .find(|w| w.len() > 1 && w.chars().all(|c| c.is_ascii_uppercase()));
+        let left = keywords_in(&unmarked_text(&snippet));
         assert!(
-            run.is_none(),
-            "{}: `{}` is upper case in the lowercase text; put it in a keyword marker",
-            snippet.prefix,
-            run.unwrap_or("")
+            left.is_empty(),
+            "{}: {left:?} is a keyword outside a keyword marker; the project's keyword case cannot reach it",
+            snippet.prefix
+        );
+    }
+}
+
+#[test]
+fn the_keyword_finder_sees_a_keyword() {
+    assert_eq!(keywords_in("find x no-lock ."), ["find", "no-lock"]);
+    assert!(keywords_in("Customer.CustNum = 1 .").is_empty());
+}
+
+#[derive(serde::Deserialize)]
+struct CaseTable {
+    cases: Vec<KeywordCaseText>,
+}
+
+#[derive(serde::Deserialize)]
+struct KeywordCaseText {
+    name: String,
+    toml: Vec<String>,
+    expected: String,
+    #[serde(default)]
+    rejected: bool,
+}
+
+/// The case of the snippets that the server's reader gives for `toml`: lower
+/// for `Lowercase`, upper for anything else, including a rejected file (the
+/// server then uses its defaults).
+fn server_case(toml: &str) -> (&'static str, bool) {
+    match WorkspaceConfig::from_toml(toml) {
+        Ok(config) if config.workspace.style.keyword_case == KeywordCase::Lowercase => {
+            ("lower", false)
+        }
+        Ok(_) => ("upper", false),
+        Err(_) => ("upper", true),
+    }
+}
+
+/// `clients/vscode/test/keyword-case.json` is shared with the extension's own
+/// reader (`keywordCaseOf`, checked by vitest). Each case says what the server
+/// does, so the two readers cannot drift without a test going red.
+#[test]
+fn the_server_agrees_with_the_shared_keyword_case_table() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../clients/vscode/test/keyword-case.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let table: CaseTable = serde_json::from_str(&text).expect("the table is JSON");
+    assert!(table.cases.len() >= 10, "the table lost its cases");
+    for case in &table.cases {
+        let (got, rejected) = server_case(&case.toml.join("\n"));
+        assert_eq!(got, case.expected, "{}: keyword case", case.name);
+        assert_eq!(
+            rejected, case.rejected,
+            "{}: rejected by the server",
+            case.name
         );
     }
 }

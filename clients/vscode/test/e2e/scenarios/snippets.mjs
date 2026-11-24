@@ -8,6 +8,8 @@ import { NO_SERVER_LOG, installVsix, launch, makeProfile, waitForLog } from "../
 // The snippets need no server: no `oxabl` binary is on the path here. Two projects, one
 // with `keyword_case = "Lowercase"` in `[workspace.style]` and one with none, show the keyword
 // case of the inserted text. Choosing a snippet from the suggest widget inserts its body.
+// The extension keeps what it read from `oxabl.toml`, so the last step changes the file of the
+// first project on disk and wants the new case at once.
 
 const PROJECTS = {
   upper: { toml: '[workspace]\nname = "upper"\n', expect: "DO TRANSACTION ON ERROR UNDO, THROW:" },
@@ -65,6 +67,29 @@ export async function snippets(ctx) {
       );
       await screenshot(page, `${name}-${dir}`);
     }
+
+    // The first project had no setting and was read already. A change of its oxabl.toml must reach the next snippet.
+    await page.locator(".tabs-container .tab", { hasText: "new.p" }).nth(0).click();
+    await page.locator(".monaco-editor .view-lines").first().click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.press("Delete");
+    fs.writeFileSync(path.join(profile.workspace, "upper", "oxabl.toml"), PROJECTS.lower.toml);
+    await sleep(2000);
+    await page.keyboard.type("trycat");
+    await page.keyboard.press("Control+Space");
+    await waitFor(
+      "the trycatch snippet in the suggest widget",
+      async () => (await page.locator(".suggest-widget .monaco-list-row").allTextContents()).some((t) => t.includes("trycatch")),
+      { timeout: 20_000, interval: 300 },
+    ).catch(() => undefined);
+    await page.keyboard.press("Enter");
+    await sleep(500);
+    const changed = await visible(page);
+    check(
+      `${name}: a change of oxabl.toml on disk gives the new case`,
+      changed[0]?.includes(PROJECTS.lower.expect) === true,
+      `lines: ${changed.join(" | ")}`,
+    );
   } finally {
     await vs.close();
     await server.close();

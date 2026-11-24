@@ -297,14 +297,29 @@ because a contributed file has one keyword case. So the snippets need no
 - The extension writes the marked words in upper case or in lower case. It
   takes the case from `keyword_case` in `[workspace.style]` of the nearest
   `oxabl.toml` at or above the file (`keywordCaseOf` in `src/snippets.ts`
-  reads the plain, dotted and inline forms of the key). `Lowercase` gives
-  lower case. `Uppercase`, `Preserve` and no setting give upper case, because
-  `Preserve` has no case to follow. A file that is not on disk gets upper
-  case.
+  reads the plain, dotted and inline forms of the key, with quoted key parts,
+  and skips multi-line strings). `Lowercase` gives lower case. `Uppercase`,
+  `Preserve` and no setting give upper case, because `Preserve` has no case
+  to follow. A file that is not on disk gets upper case.
+- `keywordCaseOf` is a line reader, not a TOML parser. When the server
+  rejects the file for another reason (for example an unknown key), the server
+  uses its defaults, but the reader still gives the setting of the file.
+  `clients/vscode/test/keyword-case.json` lists texts of `oxabl.toml` with the
+  case the server uses. Vitest checks the reader against the table. The Rust
+  test in `vscode_snippets.rs` checks `WorkspaceConfig` against the same
+  table. Add a text there when you change the reader. A later step can ask the
+  server for the style it resolved and keep the reader only for the case
+  where no server runs.
+- The extension keeps each `oxabl.toml` lookup in memory (`memoizeReader`), so
+  a completion request does not read the disk again. A change of any
+  `oxabl.toml` in the workspace clears the memory. A file outside the
+  workspace folders gives no change event, so reopen the window after you
+  edit it. A request that VS Code cancels stops its search.
 - Placeholders and choices are never in a marker, except a keyword inside
   them (`${3:<<CHARACTER>>}`). A sample table or field name is not a keyword.
-- Do not put a keyword outside a marker. A test fails on an upper case word in
-  the lower case text.
+- Do not put a keyword outside a marker, in any case. A Rust test takes out
+  the markers and the placeholders of each body and fails when the oxabl lexer
+  finds a keyword in what is left.
 - `crates/oxabl/tests/vscode_snippets.rs` fills the markers and the
   placeholders of every body, in both cases, and parses the result with oxabl.
   A `method` body is parsed inside a class.
@@ -315,6 +330,27 @@ because a contributed file has one keyword case. So the snippets need no
 Not done yet: server snippets with the real tables and fields of the `.df`.
 The server has no completion provider yet. They belong to code completion,
 which gives one list for snippets and other items.
+
+### Hand-off to the server's completion
+
+The provider of the extension uses the selector `"abl"`. The language client
+uses `{ scheme: "file", language: "abl" }`, which VS Code scores higher. VS
+Code asks the providers in groups, from the highest score down, and stops at
+the first group that returns an item. So when the server returns one item, VS
+Code does not ask the snippet provider at all, and the snippets show only
+where the server has no item. Do not rely on VS Code to merge the two lists.
+
+When the server gets a `completionProvider` (the code completion work):
+
+- The server serves the static snippets too. It has the resolved
+  `StyleGuide`, so it needs no TOML reader.
+- The extension drops its snippet provider when
+  `client.initializeResult.capabilities.completionProvider` is set. It keeps
+  the provider where no server runs.
+- The same change adds a test that fails when both lists exist at the same
+  time.
+- The same change removes `keywordCaseOf` and the shared table
+  `test/keyword-case.json`, or keeps them only for the case with no server.
 
 ## Releases
 

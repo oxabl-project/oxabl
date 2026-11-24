@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { keywordCaseFor, parseSnippets, renderBody, type Snippet } from "./snippets";
+import { keywordCaseFor, memoizeReader, parseSnippets, renderBody, type Snippet } from "./snippets";
 
 /** The file that a path names, or `undefined` when it is not there. */
 async function readIfPresent(file: string): Promise<string | undefined> {
@@ -19,7 +19,8 @@ async function readIfPresent(file: string): Promise<string | undefined> {
 /**
  * Offer the snippets of `snippets/abl.json` as completion items in ABL files.
  * They need no language server. The keywords follow `keyword_case` of the
- * nearest `oxabl.toml`, and are upper case where it names none.
+ * nearest `oxabl.toml`, and are upper case where it names none. Each file that
+ * the search reads is kept until an `oxabl.toml` is created, changed or deleted.
  */
 export async function registerSnippets(
   extensionPath: string,
@@ -32,12 +33,21 @@ export async function registerSnippets(
     log.error(`snippets: not loaded: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
-  return vscode.languages.registerCompletionItemProvider("abl", {
-    async provideCompletionItems(document) {
+  const files = memoizeReader(readIfPresent);
+  const watcher = vscode.workspace.createFileSystemWatcher("**/oxabl.toml");
+  const provider = vscode.languages.registerCompletionItemProvider("abl", {
+    async provideCompletionItems(document, _position, token) {
       const keywordCase =
         document.uri.scheme === "file"
-          ? await keywordCaseFor(path.dirname(document.uri.fsPath), readIfPresent).catch(() => "upper" as const)
+          ? await keywordCaseFor(
+              path.dirname(document.uri.fsPath),
+              files.read,
+              () => token.isCancellationRequested,
+            ).catch(() => "upper" as const)
           : "upper";
+      if (keywordCase === undefined) {
+        return [];
+      }
       return snippets.map((snippet) => {
         const item = new vscode.CompletionItem(snippet.prefix, vscode.CompletionItemKind.Snippet);
         const body = renderBody(snippet.body, keywordCase);
@@ -48,4 +58,11 @@ export async function registerSnippets(
       });
     },
   });
+  return vscode.Disposable.from(
+    provider,
+    watcher,
+    watcher.onDidCreate(files.clear),
+    watcher.onDidChange(files.clear),
+    watcher.onDidDelete(files.clear),
+  );
 }

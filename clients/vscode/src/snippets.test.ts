@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { keywordCaseFor, keywordCaseOf, parseSnippets, renderBody } from "./snippets";
+import { keywordCaseFor, keywordCaseOf, memoizeReader, parseSnippets, renderBody } from "./snippets";
 
 const shipped = fs.readFileSync(path.join(__dirname, "..", "snippets", "abl.json"), "utf8");
 
@@ -90,6 +90,21 @@ describe("keywordCaseOf", () => {
   });
 });
 
+describe("keywordCaseOf against the table shared with the server", () => {
+  const table = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "test", "keyword-case.json"), "utf8"),
+  ) as { cases: { name: string; toml: string[]; expected: string; reader?: string }[] };
+
+  it("has cases", () => {
+    expect(table.cases.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(table.cases)("$name", ({ toml, expected, reader }) => {
+    expect(keywordCaseOf(toml.join("\n"))).toBe(reader ?? expected);
+    expect(keywordCaseOf(toml.join("\r\n"))).toBe(reader ?? expected);
+  });
+});
+
 describe("keywordCaseFor", () => {
   const files: Record<string, string> = {
     "/p/oxabl.toml": '[workspace.style]\nkeyword_case = "Lowercase"\n',
@@ -114,5 +129,51 @@ describe("keywordCaseFor", () => {
       return read(file);
     };
     expect(await keywordCaseFor("/p/src", failing)).toBe("lower");
+  });
+});
+
+describe("keywordCaseFor with a cancelled request", () => {
+  it("stops before the next read and gives no answer", async () => {
+    const reads: string[] = [];
+    let cancelled = false;
+    const read = async (file: string) => {
+      reads.push(file);
+      cancelled = true;
+      return undefined;
+    };
+    expect(await keywordCaseFor("/a/b/c", read, () => cancelled)).toBeUndefined();
+    expect(reads).toEqual(["/a/b/c/oxabl.toml"]);
+  });
+});
+
+describe("memoizeReader", () => {
+  it("reads each file once, present or absent, until it is cleared", async () => {
+    const reads: string[] = [];
+    const cached = memoizeReader(async (file) => {
+      reads.push(file);
+      return file === "/p/oxabl.toml" ? "x" : undefined;
+    });
+    expect(await cached.read("/p/oxabl.toml")).toBe("x");
+    expect(await cached.read("/p/oxabl.toml")).toBe("x");
+    expect(await cached.read("/q/oxabl.toml")).toBeUndefined();
+    expect(await cached.read("/q/oxabl.toml")).toBeUndefined();
+    expect(reads).toEqual(["/p/oxabl.toml", "/q/oxabl.toml"]);
+    cached.clear();
+    await cached.read("/p/oxabl.toml");
+    expect(reads).toHaveLength(3);
+  });
+
+  it("does not keep a read that failed", async () => {
+    let calls = 0;
+    const cached = memoizeReader(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("EACCES");
+      }
+      return "x";
+    });
+    await expect(cached.read("/p/oxabl.toml")).rejects.toThrow("EACCES");
+    await Promise.resolve();
+    expect(await cached.read("/p/oxabl.toml")).toBe("x");
   });
 });
