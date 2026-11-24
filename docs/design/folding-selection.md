@@ -58,7 +58,7 @@ the client shows:
 - When code follows the end of a range on its last line, the range stops at
   the end of the line before. So a fold never hides code such as the `&ELSE 3`
   in `2 &ELSE 3` or a statement after `b = 2.`. A comment that ends on that line
-  can hide. A range that becomes one line is not sent.
+  can hide, also a `//` comment. A range that becomes one line is not sent.
 - Only one range starts on each line: the innermost one. VS Code keeps only
   the first range that starts on a line, so the server makes that choice
   itself. In `IF a THEN DO: ... END. ELSE DO: ... END.`, the `DO` blocks fold
@@ -95,8 +95,8 @@ can contain:
 
 1. The token at the position, also a comment. When the position is between
    two tokens, a word (a name, a keyword, a literal, or a reference) wins over
-   a closing `)` or `]`, which wins over other punctuation. The left token
-   wins a tie. So a cursor at the end of `Name` in `Customer.Name.` selects
+   a closing `)` or `]`, which wins over other punctuation. A word or a
+   closing bracket on the left wins a tie. So a cursor at the end of `Name` in `Customer.Name.` selects
    `Name`, then `Customer.Name`. A cursor between `)` and `.` in
    `foo(a + b).` selects `)`, then `foo(a + b)`.
 2. Each containing expression, from small to large.
@@ -133,9 +133,11 @@ the pass on the files of the outline bench (6,000 and 8,400 lines). The
 `parse/*` bench there gives the cost of the lex and parse alone. The stdio test
 `a_large_file_answers_both_requests` runs both requests on a file of 33,000
 lines, and it fails when a request takes more than 20 seconds in a debug
-build. The stdio test `a_long_line_costs_no_more_than_many_lines` puts 150,000
-statements on one line and on 150,000 lines. It fails when the one line takes
-more than three times as long, plus 2 seconds. That file has 15,000 ranges, and 6,000 of them are not inside another range.
+build. That file has 15,000 ranges, and 6,000 of them are not inside another range.
 With VS Code's `rangeLimit` of 5000, the editor gets the first 5000 of those
 6,000 ranges. A file with more top-level ranges than the limit cannot fold
 all of them.
+
+The stdio test `a_long_line_costs_no_more_than_many_lines` puts 150,000
+statements on one line and on 150,000 lines. It fails when the one line takes
+more than three times as long, plus 2 seconds.

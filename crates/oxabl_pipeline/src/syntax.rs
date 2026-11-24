@@ -140,8 +140,8 @@ impl DocumentSyntax {
     }
 
     /// The token at `offset`. Between two tokens, a word wins over a closing
-    /// bracket, which wins over other punctuation, and the left token wins a
-    /// tie. So a cursor at the end of a name selects the name, and a cursor
+    /// bracket, which wins over other punctuation, and a word or a closing
+    /// bracket on the left wins a tie. So a cursor at the end of a name selects the name, and a cursor
     /// after `)` selects the call that it closes.
     fn word_at(&self, offset: u32) -> Option<Span> {
         let at = self.words.partition_point(|(span, _)| span.start <= offset);
@@ -308,7 +308,12 @@ impl<'a> Builder<'a> {
         self.tokens[from..]
             .iter()
             .take_while(|token| token.start < line_end && token.kind != Kind::Eof)
-            .any(|token| token.kind != Kind::Comment || token.end > line_end)
+            .any(|token| {
+                // A `//` comment token holds its line break, so test its last
+                // byte, not its end.
+                token.kind != Kind::Comment
+                    || self.line_of(token.end.saturating_sub(1) as u32) != self.line_of(offset)
+            })
     }
 
     fn single_line(&self, span: Span) -> bool {

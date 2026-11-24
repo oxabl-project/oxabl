@@ -381,6 +381,12 @@ c = 3. MESSAGE "after".
 ASSIGN
 a = 1
 b = 2. /* note */
+ASSIGN
+a = 1
+b = 2. // note
+/* c
+d */ // tail
+x = 1.
 "#;
     let mut session = Session::start(root.path());
     session.open(&path, source);
@@ -389,6 +395,8 @@ b = 2. /* note */
         (0, 4, None),   // the statement around the conditional; its branches are one line each
         (5, 6, None),   // ASSIGN stops before the line with `MESSAGE "after"`
         (10, 12, None), // a trailing comment may hide
+        (13, 15, None), // a trailing `//` comment may hide too
+        (16, 17, Some("comment".to_string())), // and does not take the block comment's line
     ];
     assert_eq!(fold_lines(&folds), expected, "{folds:#?}");
 }
